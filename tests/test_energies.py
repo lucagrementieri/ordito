@@ -64,6 +64,20 @@ def test_edge_length_loss_matches_pytorch3d(
     assert np.allclose(loss_wp, loss_p3d, rtol=1e-5, atol=0.0)
 
 
+def test_edge_length_loss_edges_change_no_answer(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Ordito against ordito: ``unique_edges=`` only spares the edge sort; the loss is unchanged."""
+    _mesh_tm, mesh_wp = sphere_irregular
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    plain = od.energies.edge_length_loss(mesh.vertices, mesh.faces, 0.3)
+    given = od.energies.edge_length_loss(
+        mesh.vertices, mesh.faces, 0.3, unique_edges=mesh.edges_unique
+    )
+    assert plain > 0.0
+    assert given == plain
+
+
 @pytest.mark.parity("normal_consistency_loss", "pytorch3d")
 def test_normal_consistency_loss_matches_pytorch3d(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
@@ -128,6 +142,20 @@ def test_normal_consistency_loss_matches_pytorch3d(
     flipped_wp = od.energies.normal_consistency_loss(flipped_vertices_wp, flipped_faces_wp)
     assert np.allclose(flipped_p3d, loss_p3d, rtol=1e-5, atol=0.0)
     assert flipped_wp > 3.0 * flipped_p3d
+
+
+def test_normal_consistency_loss_adjacency_changes_no_answer(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Ordito against ordito: ``face_adjacency=`` only spares the face pairing."""
+    _mesh_tm, mesh_wp = sphere_irregular
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    plain = od.energies.normal_consistency_loss(mesh.vertices, mesh.faces)
+    given = od.energies.normal_consistency_loss(
+        mesh.vertices, mesh.faces, face_adjacency=mesh.face_adjacency
+    )
+    assert plain > 0.0
+    assert given == plain
 
 
 @pytest.mark.parametrize(
@@ -200,6 +228,34 @@ def test_laplacian_smoothing_loss_methods_are_three_quantities(
             mesh_wp.points,
             mesh_wp.indices,
             "cotan",  # pyright: ignore[reportArgumentType]  # the off-menu value under test
+        )
+
+
+@pytest.mark.parametrize("method", ["uniform", "cot", "cotcurv"])
+def test_laplacian_smoothing_loss_pattern_changes_no_answer(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], method: Literal["uniform", "cot", "cotcurv"]
+) -> None:
+    """
+    Ordito against ordito: ``pattern=`` only spares the operator's sort, so the loss is unchanged.
+
+    Each method takes the pattern of the operator it assembles, and the other one is refused.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    operators = ("laplacian_directed", "cotmatrix")
+    right, wrong = operators if method == "uniform" else operators[::-1]
+    pattern = od.laplacian.mesh_operator_pattern(faces_wp, vertices_wp.size, operator=right)
+
+    plain = od.energies.laplacian_smoothing_loss(vertices_wp, faces_wp, method)
+    given = od.energies.laplacian_smoothing_loss(vertices_wp, faces_wp, method, pattern=pattern)
+    assert plain > 0.0
+    assert given == plain
+    with pytest.raises(ValueError, match="pattern was built for"):
+        od.energies.laplacian_smoothing_loss(
+            vertices_wp,
+            faces_wp,
+            method,
+            pattern=od.laplacian.mesh_operator_pattern(faces_wp, vertices_wp.size, operator=wrong),
         )
 
 
@@ -532,6 +588,30 @@ def test_vector_area_matrix_matches_igl_derived(
     assert abs(area_igl).max() > 1e-3  # non-vacuity: the rims contribute
     area_wp = bsr_to_csr(od.energies.vector_area_matrix(mesh_wp.points, mesh_wp.indices))
     assert sparse_allclose(area_wp, area_igl, rtol=1e-5, atol=1e-5)
+
+
+def test_vector_area_matrix_mates_change_no_answer(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: ``mates=`` only spares the boundary search its halfedge pairing.
+
+    The saddle has a rim, so the matrix has entries, and they must match the plain call's.
+    """
+    _mesh_tm, mesh_wp = saddle_graded
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    mates_wp = od.halfedge.halfedge_mates(faces_wp, vertices_wp.size)
+
+    plain_bsr = od.energies.vector_area_matrix(vertices_wp, faces_wp)
+    given_bsr = od.energies.vector_area_matrix(vertices_wp, faces_wp, mates=mates_wp)
+    n_stored = int(plain_bsr.offsets.numpy()[-1])
+    assert n_stored > 0
+    assert np.array_equal(given_bsr.offsets.numpy(), plain_bsr.offsets.numpy())
+    for given_wp, plain_wp in (
+        (given_bsr.columns, plain_bsr.columns),
+        (given_bsr.values, plain_bsr.values),
+    ):
+        assert np.array_equal(given_wp.numpy()[:n_stored], plain_wp.numpy()[:n_stored])
 
 
 @pytest.mark.parametrize(

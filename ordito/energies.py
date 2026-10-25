@@ -61,7 +61,11 @@ from ordito.laplacian import MeshOperatorPattern, cotmatrix_entries, mesh_operat
 
 
 def edge_length_loss(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], target_length: float = 0.0
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    target_length: float = 0.0,
+    *,
+    unique_edges: odt.Array2dInt32 | None = None,
 ) -> float:
     """
     Mean squared deviation of the undirected edge lengths from a resting length.
@@ -79,6 +83,11 @@ def edge_length_loss(
         ``(3 * n_faces,)`` triangle index buffer.
     target_length
         Resting edge length ``L0``.
+    unique_edges
+        ``(n_edges, 2)`` [`edges_unique`][ordito.edges.edges_unique] of ``faces``, which depend on
+        the connectivity alone: a loop moving the vertices over fixed faces builds them once
+        ([`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique]) and each call then skips the
+        edge sort. Trusted, not checked.
 
     Returns
     -------
@@ -88,7 +97,7 @@ def edge_length_loss(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``unique_edges`` are not all on one device.
 
     See Also
     --------
@@ -117,11 +126,13 @@ def edge_length_loss(
     print(f"{od.energies.edge_length_loss(vertices, faces, target_length=1.0):.4f}")  # 0.0572
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, unique_edges=unique_edges)
     # The bound is supplied and the range check skipped: both are host readbacks that
     # serialise the pipeline, and this wrapper trusts its connectivity the same way its
     # own per-edge kernels below do.
-    lengths = edges_unique_length(vertices, faces, n_vertices=vertices.size, validate=False)
+    lengths = edges_unique_length(
+        vertices, faces, unique_edges, n_vertices=vertices.size, validate=False
+    )
     if lengths.size == 0:
         return 0.0
     terms = kernel_energies.EdgeDeviationTerms()
@@ -131,7 +142,12 @@ def edge_length_loss(
     return _mean_of_terms(kernel_energies.EDGE_DEVIATION_SUM, terms, lengths.size, lengths.device)
 
 
-def normal_consistency_loss(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> float:
+def normal_consistency_loss(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    face_adjacency: odt.Array2dInt32 | None = None,
+) -> float:
     """
     Mean ``1 - cos(theta)`` over the pairs of faces sharing an edge.
 
@@ -146,6 +162,11 @@ def normal_consistency_loss(vertices: wp.array[wp.vec3], faces: wp.array[wp.int3
         ``(n_vertices,)`` positions.
     faces
         ``(3 * n_faces,)`` triangle index buffer.
+    face_adjacency
+        ``(m, 2)`` [`face_adjacency`][ordito.adjacency.face_adjacency] of ``faces``, which depends
+        on the connectivity alone: a loop moving the vertices over fixed faces builds it once
+        ([`Trimesh.face_adjacency`][ordito.mesh.Trimesh.face_adjacency]) and each call then skips
+        the sort that pairs the faces. Trusted, not checked.
 
     Returns
     -------
@@ -155,7 +176,7 @@ def normal_consistency_loss(vertices: wp.array[wp.vec3], faces: wp.array[wp.int3
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``face_adjacency`` are not all on one device.
 
     See Also
     --------
@@ -189,8 +210,8 @@ def normal_consistency_loss(vertices: wp.array[wp.vec3], faces: wp.array[wp.int3
     print(f"{od.energies.normal_consistency_loss(vertices, faces):.4f}")  # 0.0000
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
-    angles = od.adjacency.face_adjacency_angles(vertices, faces)
+    require_same_device(vertices=vertices, faces=faces, face_adjacency=face_adjacency)
+    angles = od.adjacency.face_adjacency_angles(vertices, faces, face_adjacency)
     if angles.size == 0:
         return 0.0
     terms = kernel_energies.DihedralTerms()
@@ -203,6 +224,8 @@ def laplacian_smoothing_loss(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     method: Literal["uniform", "cot", "cotcurv"] = "uniform",
+    *,
+    pattern: MeshOperatorPattern | None = None,
 ) -> float:
     """
     Mean magnitude of a Laplacian residual per vertex, under one of three normalizations.
@@ -228,6 +251,12 @@ def laplacian_smoothing_loss(
         ``(3 * n_faces,)`` triangle index buffer.
     method
         Which normalization, as above.
+    pattern
+        A [`mesh_operator_pattern`][ordito.laplacian.mesh_operator_pattern] of ``faces``, which
+        depends on the connectivity alone: a loop moving the vertices over fixed faces builds it
+        once and each call then skips the operator's sort. Built for ``"laplacian_directed"`` with
+        ``method="uniform"`` and for ``"cotmatrix"``
+        ([`Trimesh.mesh_operator_pattern`][ordito.mesh.Trimesh.mesh_operator_pattern]) otherwise.
 
     Returns
     -------
@@ -237,9 +266,10 @@ def laplacian_smoothing_loss(
     Raises
     ------
     ValueError
-        If ``method`` is not one of ``"uniform"``, ``"cot"`` or ``"cotcurv"``.
+        If ``method`` is not one of ``"uniform"``, ``"cot"`` or ``"cotcurv"``, or if ``pattern`` was
+        built for another operator or vertex count.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``pattern`` are not all on one device.
 
     See Also
     --------
@@ -277,25 +307,33 @@ def laplacian_smoothing_loss(
     print(f"{unit:.4f} {big:.4f}")  # 0.0139 0.0279
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(
+        vertices=vertices, faces=faces, pattern=None if pattern is None else pattern.offsets
+    )
     if method not in ("uniform", "cot", "cotcurv"):
         raise ValueError(f'method must be "uniform", "cot" or "cotcurv", got {method!r}')
     n_vertices = vertices.size
+    operator = "laplacian_directed" if method == "uniform" else "cotmatrix"
+    if pattern is not None and (pattern.operator != operator or pattern.n_vertices != n_vertices):
+        raise ValueError(
+            f"pattern was built for operator={pattern.operator!r} over {pattern.n_vertices} "
+            f"vertices; method={method!r} needs operator={operator!r} over {n_vertices}"
+        )
     if n_vertices == 0 or faces.size == 0:
         return 0.0
     device = vertices.device
     norms = _launch.empty(n_vertices, dtype=wp.float32, device=device)
     if method == "uniform":
-        operator = od.laplacian.laplacian(vertices, faces, equal_weight=True)
+        laplacian = od.laplacian.laplacian(vertices, faces, equal_weight=True, pattern=pattern)
         # Each method's per-row scales are formed in the row's own thread, so no scale buffer
         # exists.
         _launch.launch(
             kernel_energies.laplacian_smoothing_norms,
             dim=n_vertices,
             inputs=[
-                operator.offsets,
-                operator.columns,
-                operator.values,
+                laplacian.offsets,
+                laplacian.columns,
+                laplacian.values,
                 vertices,
                 None,
                 kernel_energies.SMOOTHING_UNIFORM,
@@ -324,7 +362,9 @@ def laplacian_smoothing_loss(
         selector = kernel_energies.SMOOTHING_COTCURV
     # The cotangent Laplacian's row is written by the thread that takes its residual, over its
     # pattern; each method's per-row scales are formed in the same thread.
-    _, _, offsets, columns, run_start, keys, count, order = mesh_operator_pattern(faces, n_vertices)
+    if pattern is None:
+        pattern = mesh_operator_pattern(faces, n_vertices)
+    _, _, offsets, columns, run_start, keys, count, order = pattern
     values = _launch.empty(columns.size, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_energies.laplacian_smoothing_cot_norms,
@@ -1281,7 +1321,10 @@ def lscm_hessian(
 
 
 def vector_area_matrix(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    mates: wp.array[wp.int32] | None = None,
 ) -> odt.BsrMatrix[wp.float64]:
     """
     Boundary vector-area matrix ``A``: the signed area enclosed by the UV boundary curve.
@@ -1299,6 +1342,10 @@ def vector_area_matrix(
         ``(n_vertices,)`` mesh vertex positions; only the count and device are used.
     faces
         ``(3 * n_faces,)`` triangle index buffer.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
+        the boundary search reads rather than pairing the halfedges again. Trusted, not checked.
 
     Returns
     -------
@@ -1308,7 +1355,7 @@ def vector_area_matrix(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -1341,10 +1388,10 @@ def vector_area_matrix(
     print(od.energies.vector_area_matrix(vertices, faces).nnz_sync())  # 0
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     device = faces.device
     n_vertices = vertices.size
-    boundary = od.boundary.oriented_boundary_edges(vertices, faces)
+    boundary = od.boundary.oriented_boundary_edges(vertices, faces, mates=mates)
     n_be = int(boundary.shape[0])
     if n_be == 0:
         return od.array.empty_square_bsr(2 * n_vertices, wp.float64, device)

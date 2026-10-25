@@ -343,7 +343,7 @@ def triangulate_point_cloud(
     # reduce the cloud and read the corners back.
     bounds = od.bounds.aabb(points)
     if crit_hole_length < 0.0:
-        crit_hole_length = 0.1 * _box_diagonal(bounds)
+        crit_hole_length = 0.1 * od.bounds.box_diagonal(*bounds)
     # Dense (n, k+1) nearest-neighbour table; slot 0 is the point itself and is skipped in-kernel.
     neighbor_idx, neighbor_dist = od.neighbors.query_nearest(points, points, k=k + 1, bounds=bounds)
 
@@ -403,17 +403,6 @@ def triangulate_point_cloud(
         deduplicate=False,
         nondegenerate=True,
     )
-
-
-def _box_diagonal(bounds: tuple[wp.vec3, wp.vec3]) -> float:
-    """
-    Length of a box's diagonal, bit for bit what ``bounds.enclosing_diagonal`` returns.
-
-    Both read the same ``float32`` corners and take the norm of their ``float32`` difference.
-    """
-    lower = np.array(bounds[0], dtype=np.float32)
-    upper = np.array(bounds[1], dtype=np.float32)
-    return float(np.linalg.norm(upper - lower))
 
 
 def _box_center(bounds: tuple[wp.vec3, wp.vec3]) -> wp.vec3:

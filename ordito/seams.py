@@ -52,6 +52,7 @@ def crease_edges(
     angle: float = 30.0,
     *,
     include_boundary: bool = False,
+    mates: wp.array[wp.int32] | None = None,
 ) -> odt.Array2dInt32:
     """
     Edges where the surface bends by more than ``angle``.
@@ -75,6 +76,11 @@ def crease_edges(
         angle at all, so it is neither a crease nor not one — but it *is* already a seam, and a
         caller building a cut set usually wants it. Defaults to ``False``, which is the pure
         dihedral answer.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), to spare
+        the pairing sort; only the selected halfedges are then put in key order. Trusted, not
+        checked.
 
     Returns
     -------
@@ -89,7 +95,7 @@ def crease_edges(
     ValueError
         If ``angle`` is outside ``[0, 180]``.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -109,7 +115,7 @@ def crease_edges(
     print(creases.shape)  # (12, 2)
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     if not 0.0 <= angle <= 180.0:
         raise ValueError(f"angle must be in [0, 180] degrees, got {angle}")
 
@@ -126,7 +132,9 @@ def crease_edges(
     # those bits are sorted.
     n_vertices = vertices.size
     n = 3 * n_faces
-    mates, key_order = od.halfedge.halfedge_mates(faces, n_vertices, return_key_order=True)
+    key_order = None
+    if mates is None:
+        mates, key_order = od.halfedge.halfedge_mates(faces, n_vertices, return_key_order=True)
     flags = odt.empty_2d((2 if include_boundary else 1, n), wp.int32, device=device)
     _launch.launch(
         kernel_seams.crease_flags,
@@ -570,6 +578,7 @@ def uv_seam_vertex_mask(
     match: Literal["index", "uv"] | None = None,
     tolerance: float = 0.0,
     n_vertices: int | None = None,
+    twins: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.bool]:
     """
     Per-vertex mask marking the endpoints of every UV seam.
@@ -597,6 +606,11 @@ def uv_seam_vertex_mask(
     n_vertices
         Total vertex count. When ``None`` it is inferred with
         [`array.index_bound`][ordito.array.index_bound], which costs a host readback.
+    twins
+        ``(3 * n_faces,)`` precomputed [`halfedge_twins`][ordito.halfedge.halfedge_twins], as
+        [`uv_seam_edges`][ordito.seams.uv_seam_edges] takes them
+        ([`Trimesh.halfedge_twins`][ordito.mesh.Trimesh.halfedge_twins]). Passing them skips the
+        pairing, its manifold and winding checks and their host readback.
 
     Returns
     -------
@@ -610,10 +624,10 @@ def uv_seam_vertex_mask(
         without ``face_texcoords``, if ``face_texcoords`` is present but not the same length as
         ``faces`` or has an entry outside ``[0, texcoords.shape[0])``, if ``face_texcoords`` is
         ``None`` and ``texcoords`` is not length ``3 * n_faces``, if ``faces`` is not
-        edge-manifold or not consistently wound, or if ``match`` is neither ``"index"`` nor
-        ``"uv"``.
+        edge-manifold or not consistently wound (only when ``twins`` is ``None``), or if ``match``
+        is neither ``"index"`` nor ``"uv"``.
     RuntimeError
-        If ``faces``, ``texcoords`` and ``face_texcoords`` are not all on one device.
+        If ``faces``, ``texcoords``, ``face_texcoords`` and ``twins`` are not all on one device.
 
     See Also
     --------
@@ -640,7 +654,9 @@ def uv_seam_vertex_mask(
     print(mask.numpy().tolist())  # [True, False, True, False]
     ```
     """
-    require_same_device(faces=faces, texcoords=texcoords, face_texcoords=face_texcoords)
+    require_same_device(
+        faces=faces, texcoords=texcoords, face_texcoords=face_texcoords, twins=twins
+    )
     match_uv = _validate_uv_inputs(faces, texcoords, face_texcoords, match)
     device = faces.device
     if n_vertices is None:
@@ -649,7 +665,8 @@ def uv_seam_vertex_mask(
     n_halfedges = faces.size // 3 * 3
     if n_halfedges == 0 or n_vertices == 0:
         return mask
-    twins = od.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
+    if twins is None:
+        twins = od.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
     # The same per-halfedge classification ``uv_seam_edges`` compacts, marked straight onto the
     # vertices: a seam row's endpoints are its halfedge's own, so no row needs to exist.
     _launch.launch(

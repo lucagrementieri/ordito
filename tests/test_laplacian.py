@@ -927,6 +927,47 @@ def test_robust_laplacian_warning_repeats_run_to_run(
     assert len(messages) == 1
 
 
+def test_robust_laplacian_hints_change_no_answer(
+    sphere_well_shaped: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: ``pattern=`` and ``mates=`` only spare work.
+
+    Without the flips the cotmatrix pattern of the input faces must assemble the same operator,
+    and with them the mates must seed the same flips; a pattern beside the flips is refused, since
+    they change the edges the operator sums over. On the well-shaped sphere, whose lengths
+    determine the operator, so no rounding warning fires.
+    """
+    _mesh_tm, mesh_wp = sphere_well_shaped
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    mesh = od.Trimesh(vertices_wp, faces_wp)
+
+    plain_bsr = od.laplacian.robust_laplacian(vertices_wp, faces_wp, use_intrinsic_delaunay=False)
+    given_bsr = od.laplacian.robust_laplacian(
+        vertices_wp, faces_wp, use_intrinsic_delaunay=False, pattern=mesh.mesh_operator_pattern
+    )
+    n_stored = int(plain_bsr.offsets.numpy()[-1])
+    assert np.array_equal(given_bsr.offsets.numpy(), plain_bsr.offsets.numpy())
+    for given_wp, plain_wp in (
+        (given_bsr.columns, plain_bsr.columns),
+        (given_bsr.values, plain_bsr.values),
+    ):
+        assert np.array_equal(given_wp.numpy()[:n_stored], plain_wp.numpy()[:n_stored])
+
+    plain_bsr = od.laplacian.robust_laplacian(vertices_wp, faces_wp)
+    given_bsr = od.laplacian.robust_laplacian(vertices_wp, faces_wp, mates=mesh.halfedge_mates)
+    n_stored = int(plain_bsr.offsets.numpy()[-1])
+    assert np.array_equal(given_bsr.offsets.numpy(), plain_bsr.offsets.numpy())
+    for given_wp, plain_wp in (
+        (given_bsr.columns, plain_bsr.columns),
+        (given_bsr.values, plain_bsr.values),
+    ):
+        assert np.array_equal(given_wp.numpy()[:n_stored], plain_wp.numpy()[:n_stored])
+
+    with pytest.raises(ValueError, match="use_intrinsic_delaunay=False"):
+        od.laplacian.robust_laplacian(vertices_wp, faces_wp, pattern=mesh.mesh_operator_pattern)
+
+
 def test_mollify_intrinsic_is_a_no_op_on_a_clean_mesh(
     sphere_irregular: tuple[object, wp.Mesh],
 ) -> None:

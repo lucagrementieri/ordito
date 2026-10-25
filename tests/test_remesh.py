@@ -897,6 +897,26 @@ def test_isotropic_remesh_is_reproducible(saddle_graded: tuple[tm.Trimesh, wp.Me
     assert outputs[1:] == outputs[:-1]
 
 
+def test_isotropic_remesh_bounds_change_no_answer(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: ``bounds=`` only spares the reduction that measures the box.
+
+    The default target is scaled off the box diagonal, so the given box must remesh to the same
+    mesh, bit for bit.
+    """
+    _mesh_tm, mesh_wp = saddle_graded
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+
+    plain = od.remesh.isotropic_remesh(vertices_wp, faces_wp, iterations=2)
+    given = od.remesh.isotropic_remesh(
+        vertices_wp, faces_wp, iterations=2, bounds=od.bounds.aabb(vertices_wp)
+    )
+    assert np.array_equal(given[0].numpy(), plain[0].numpy())
+    assert np.array_equal(given[1].numpy(), plain[1].numpy())
+
+
 # ---------------------------------------------------------------------------
 # Vertex-clustering decimation vs open3d / pymeshlab
 # ---------------------------------------------------------------------------
@@ -1088,6 +1108,33 @@ def test_subdivide_region_to_size_never_writes_into_the_caller(device: str) -> N
     assert out_vertices_wp.ptr != vertices_wp.ptr
     # Non-vacuity: the flip pass really had something to do, so the copy was load-bearing.
     assert not np.array_equal(out_faces_wp.numpy(), faces_before)
+
+
+@pytest.mark.parametrize("delaunay", [True, False])
+def test_subdivide_region_to_size_returns_its_edges(device: str, delaunay: bool) -> None:
+    """
+    Ordito against ordito: ``return_edges=True`` adds ``edges_unique`` of the result, nothing else.
+
+    The returned pair must equal ``edges_unique`` of the returned faces, row for row, and the mesh
+    must be the one the plain call returns. Both flip settings, since with flips the pair comes
+    from the closing pass's sort and without them from the last split pass's grouping.
+    """
+    vertices_wp, faces_wp = od.creation.grid(count=(5, 5), device=device)
+    corners_np = vertices_wp.numpy()[faces_wp.numpy().reshape(-1, 3)]
+    region_wp = wp.array(corners_np.mean(axis=1)[:, 0] < 0.0, dtype=wp.bool, device=device)
+
+    plain = od.remesh.subdivide_region_to_size(
+        vertices_wp, faces_wp, region_wp, 0.1, delaunay=delaunay
+    )
+    given = od.remesh.subdivide_region_to_size(
+        vertices_wp, faces_wp, region_wp, 0.1, delaunay=delaunay, return_edges=True
+    )
+    assert plain[1].size > faces_wp.size
+    for plain_wp, given_wp in zip(plain, given[:3], strict=True):
+        assert np.array_equal(given_wp.numpy(), plain_wp.numpy())
+    unique_wp, inverse_wp = od.edges.edges_unique(plain[1], n_vertices=plain[0].size)
+    assert np.array_equal(given[3].numpy(), unique_wp.numpy())
+    assert np.array_equal(given[4].numpy(), inverse_wp.numpy())
 
 
 @pytest.mark.parametrize("voxel_size", [0.1, 0.3])
@@ -3053,6 +3100,27 @@ def test_intrinsic_delaunay_metric_matches_meshlib(
     )
 
 
+def test_intrinsic_delaunay_mates_change_no_answer(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: ``mates=`` only spares the pairing that seeds the twin table.
+
+    The saddle's needles flip, so the loop the twins drive runs, and all three outputs must match
+    the plain call's bit for bit.
+    """
+    _mesh_tm, mesh_wp = saddle_graded
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    mates_wp = od.halfedge.halfedge_mates(faces_wp, vertices_wp.size)
+
+    plain = od.remesh.intrinsic_delaunay(vertices_wp, faces_wp)
+    given = od.remesh.intrinsic_delaunay(vertices_wp, faces_wp, mates=mates_wp)
+    assert plain[2] > 0
+    assert given[2] == plain[2]
+    assert np.array_equal(given[0].numpy(), plain[0].numpy())
+    assert np.array_equal(given[1].numpy(), plain[1].numpy())
+
+
 def _assert_same_mesh_under_vertex_match(
     vertices_wp: wp.array[wp.vec3],
     faces_wp: wp.array[wp.int32],
@@ -3201,6 +3269,23 @@ def test_subdivide_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> 
     _assert_same_mesh_under_vertex_match(
         vertices_wp, faces_wp, vertices_upsampled_igl, faces_upsampled_igl, 1e-5
     )
+
+
+def test_subdivide_edges_change_no_answer(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Ordito against ordito: ``unique_edges=`` / ``inverse=`` only spare the edge sort.
+
+    The mesh's cached ``edges_unique`` pair must give the plain call's subdivision, bit for bit.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+
+    plain = od.remesh.subdivide(mesh.vertices, mesh.faces)
+    given = od.remesh.subdivide(
+        mesh.vertices, mesh.faces, unique_edges=mesh.edges_unique, inverse=mesh.edges_unique_inverse
+    )
+    assert np.array_equal(given[0].numpy(), plain[0].numpy())
+    assert np.array_equal(given[1].numpy(), plain[1].numpy())
 
 
 # --------------------------------------------------------------------------------------
@@ -3530,6 +3615,26 @@ def test_subdivide_loop_operator_carries_a_field(
     ).numpy()
     assert carried_uv_np.shape == (n_out, 2)
     assert np.allclose(carried_uv_np.sum(axis=1), 1.0, rtol=1e-6, atol=1e-6)
+
+
+def test_subdivide_loop_edges_change_no_answer(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: ``unique_edges=`` / ``inverse=`` only spare the edge sort.
+
+    The mesh's cached ``edges_unique`` pair must give the plain call's positions and faces, bit for
+    bit.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+
+    plain = od.remesh.subdivide_loop(mesh.vertices, mesh.faces)
+    given = od.remesh.subdivide_loop(
+        mesh.vertices, mesh.faces, unique_edges=mesh.edges_unique, inverse=mesh.edges_unique_inverse
+    )
+    assert np.array_equal(given[0].numpy(), plain[0].numpy())
+    assert np.array_equal(given[1].numpy(), plain[1].numpy())
 
 
 def test_transfer_through_operator_guards_and_empty_inputs(device: str) -> None:

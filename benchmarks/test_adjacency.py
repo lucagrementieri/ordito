@@ -204,7 +204,11 @@ def test_face_connected_component_labels(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "ordito":
         faces_wp = bench_case.faces_wp
-        labels = bench_case.run(lambda: od.adjacency.face_connected_component_labels(faces_wp))
+        labels = bench_case.run(
+            lambda: od.adjacency.face_connected_component_labels(
+                faces_wp, n_vertices=bench_case.n_vertices
+            )
+        )
         assert labels.shape == (bench_case.n_faces,)
         return
     faces_np = bench_case.faces_np

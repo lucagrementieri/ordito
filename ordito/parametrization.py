@@ -643,6 +643,8 @@ def arap(
     uv_init: wp.array[wp.vec2],
     max_iterations: int = 10,
     tolerance: float = 1e-7,
+    *,
+    pattern: od.laplacian.MeshOperatorPattern | None = None,
 ) -> wp.array[wp.vec2]:
     """
 
@@ -687,6 +689,10 @@ def arap(
     tolerance
         Relative residual tolerance of the inner conjugate-gradient solve (``> 0``). See Notes for
         why the default is looser than the ``1e-8`` the other solvers in this module use.
+    pattern
+        A ``"cotmatrix"`` [`mesh_operator_pattern`][ordito.laplacian.mesh_operator_pattern] of
+        ``faces`` ([`Trimesh.mesh_operator_pattern`][ordito.mesh.Trimesh.mesh_operator_pattern]),
+        which spares the cotangent assembly its sort.
 
     Returns
     -------
@@ -699,10 +705,11 @@ def arap(
     ValueError
         If ``max_iterations < 1``, if ``tolerance <= 0``, if there are interior vertices but
         ``fixed_indices`` is empty, if ``fixed_indices`` and ``fixed_uv`` have different lengths,
-        or if ``fixed_indices`` repeats a vertex or holds one outside ``[0, n_vertices)``.
+        if ``fixed_indices`` repeats a vertex or holds one outside ``[0, n_vertices)``, or if
+        ``pattern`` was built for another operator or vertex count.
     RuntimeError
-        If ``vertices``, ``faces``, ``fixed_indices``, ``fixed_uv`` and ``uv_init`` are not all on
-        one device.
+        If ``vertices``, ``faces``, ``fixed_indices``, ``fixed_uv``, ``uv_init`` and ``pattern``
+        are not all on one device.
 
     See Also
     --------
@@ -759,6 +766,7 @@ def arap(
         fixed_indices=fixed_indices,
         fixed_uv=fixed_uv,
         uv_init=uv_init,
+        pattern=None if pattern is None else pattern.offsets,
     )
     if max_iterations < 1:
         raise ValueError(f"arap max_iterations must be >= 1, got {max_iterations}.")
@@ -785,7 +793,9 @@ def arap(
     # Cotangents computed once and reused by both the Laplacian build and the rest-edge flattening;
     # single native-float64 operator build, so nothing is recast or rebuilt (see cotmatrix docs).
     cot_entries = cotmatrix_entries(vertices, faces, dtype=wp.float64)
-    laplacian = cotmatrix(vertices, faces, cot_entries=cot_entries, dtype=wp.float64)
+    laplacian = cotmatrix(
+        vertices, faces, cot_entries=cot_entries, dtype=wp.float64, pattern=pattern
+    )
 
     # Partition vertices into pinned (fixed) and interior (free), and extract the global-step
     # operator with it: the interior block of Q = -L and the constant boundary term -(-L)_ub bc.

@@ -550,6 +550,21 @@ def test_arap_is_reproducible_when_deterministic(saddle_graded: tuple[tm.Trimesh
     assert np.allclose(arrival_wp.numpy(), uv_np, rtol=1e-5, atol=1e-5)
 
 
+def test_arap_pattern_changes_no_answer(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Ordito against ordito: ``pattern=`` only spares the cotangent assembly its sort.
+
+    The faces' ``"cotmatrix"`` pattern must give the plain call's UV bit for bit.
+    """
+    _, mesh_wp = saddle_graded
+    boundary_wp, boundary_uv_wp, uv_init_wp = _harmonic_warm_start(mesh_wp)
+    arguments = (mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, uv_init_wp)
+    pattern = od.laplacian.mesh_operator_pattern(mesh_wp.indices, mesh_wp.points.size)
+
+    plain_np = od.parametrization.arap(*arguments).numpy()
+    assert np.array_equal(od.parametrization.arap(*arguments, pattern=pattern).numpy(), plain_np)
+
+
 @pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
 @pytest.mark.parity("lscm", "igl")
 def test_lscm_matches_igl(request: pytest.FixtureRequest, mesh_name: str):

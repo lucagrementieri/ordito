@@ -32,6 +32,7 @@ def is_edge_manifold(
     *,
     n_vertices: int | None = None,
     validate: bool = True,
+    mates: wp.array[wp.int32] | None = None,
 ) -> bool:
     """
     Whether every undirected mesh edge is shared by a manifold number of faces.
@@ -55,6 +56,12 @@ def is_edge_manifold(
         and shares the verdict's readback. Pass ``False`` only where both bounds are structurally
         guaranteed -- a face buffer this package produced itself, or one an entry point has
         already validated.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]). Each
+        halfedge's mate code is its edge's share count, so the verdict is then one pass over them
+        and no edge is counted. Trusted, not checked; ``faces`` is not read, so neither
+        ``n_vertices`` nor ``validate`` has an effect.
 
     Returns
     -------
@@ -65,7 +72,10 @@ def is_edge_manifold(
     Raises
     ------
     ValueError
-        If ``validate`` is ``True`` and a face index is negative or reaches the vertex count.
+        If ``validate`` is ``True``, ``mates`` is ``None`` and a face index is negative or reaches
+        the vertex count.
+    RuntimeError
+        If ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -100,11 +110,21 @@ def is_edge_manifold(
     print(od.validation.is_edge_manifold(faces))  # False
     ```
     """
+    require_same_device(faces=faces, mates=mates)
     n_faces = faces.size // 3
     if n_faces == 0:
         return True
 
     device = faces.device
+    if mates is not None:
+        violation = _launch.zeros(1, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_validation.mate_manifold_violation,
+            dim=mates.size,
+            inputs=[mates, allow_boundary_edges, violation],
+            device=device,
+        )
+        return int(read_scalar(violation)) == 0
     # ``flags[0]`` is the verdict and ``flags[1]`` the range check, read back together.
     flags = _launch.zeros(2, dtype=wp.int32, device=device)
     # The keys come straight off ``faces``: packing them there costs no more than hashing the
@@ -854,7 +874,11 @@ def edge_winding_consistent_mask(
 
 
 def face_orientation_bits(
-    faces: wp.array[wp.int32], *, n_vertices: int | None = None
+    faces: wp.array[wp.int32],
+    *,
+    n_vertices: int | None = None,
+    face_adjacency: odt.Array2dInt32 | None = None,
+    face_adjacency_edges: odt.Array2dInt32 | None = None,
 ) -> tuple[wp.array[wp.int32], odt.Array2dInt32, wp.array[wp.int32], int]:
     """
     Per-face Z2 orientation bits (relative to each component seed) plus signed face-adjacency edges.
@@ -895,6 +919,15 @@ def face_orientation_bits(
         Optional vertex count, forwarded to
         [`face_adjacency`][ordito.adjacency.face_adjacency]: it narrows the sort that pairs the
         faces. Trusted, not checked: it must exceed every index in ``faces``.
+    face_adjacency
+        ``(m, 2)`` precomputed face-adjacency pairs from
+        [`face_adjacency`][ordito.adjacency.face_adjacency]
+        ([`Trimesh.face_adjacency`][ordito.mesh.Trimesh.face_adjacency]), which spares the sort
+        that pairs the faces; ``signed_edges`` is then this array itself. Must be given together
+        with ``face_adjacency_edges``.
+    face_adjacency_edges
+        ``(m, 2)`` shared-edge vertex pairs aligned with ``face_adjacency``
+        (``return_edges=True``). Must be given together with ``face_adjacency``.
 
     Returns
     -------
@@ -906,6 +939,13 @@ def face_orientation_bits(
         ``(m,)`` Z2 sign per adjacency edge.
     m : int
         Number of face-adjacency rows.
+
+    Raises
+    ------
+    ValueError
+        If only one of ``face_adjacency`` and ``face_adjacency_edges`` is given.
+    RuntimeError
+        If ``faces``, ``face_adjacency`` and ``face_adjacency_edges`` are not all on one device.
 
     See Also
     --------
@@ -928,11 +968,18 @@ def face_orientation_bits(
     print(signed_edges.numpy().tolist(), m)  # [[0, 1]] 1
     ```
     """
+    require_same_device(
+        faces=faces, face_adjacency=face_adjacency, face_adjacency_edges=face_adjacency_edges
+    )
+    od.adjacency.require_paired_adjacency(face_adjacency, face_adjacency_edges)
     device = faces.device
     n_faces = faces.size // 3
-    adjacency, adjacency_edges = od.adjacency.face_adjacency(
-        faces, return_edges=True, n_vertices=n_vertices
-    )
+    if face_adjacency is None or face_adjacency_edges is None:
+        adjacency, adjacency_edges = od.adjacency.face_adjacency(
+            faces, return_edges=True, n_vertices=n_vertices
+        )
+    else:
+        adjacency, adjacency_edges = face_adjacency, face_adjacency_edges
     m = int(adjacency.shape[0])
 
     if m == 0:

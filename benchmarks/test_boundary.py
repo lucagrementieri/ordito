@@ -264,7 +264,9 @@ def test_ears(bench_case: BenchCase) -> None:
     """
     if bench_case.kind == "ordito":
         faces = bench_case.faces_wp
-        ears, opposite = bench_case.run(lambda: od.boundary.ears(faces))
+        ears, opposite = bench_case.run(
+            lambda: od.boundary.ears(faces, n_vertices=bench_case.n_vertices)
+        )
         assert ears.shape == opposite.shape
         return
     faces_np = bench_case.faces_np

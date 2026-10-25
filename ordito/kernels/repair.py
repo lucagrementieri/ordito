@@ -1166,27 +1166,33 @@ def select_and_flatten_degree3(
 
 
 @wp.kernel
-def sever_barrier_pairs(
-    shared: wp.array2d[wp.int32],
+def sever_barrier_twins(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
     barrier_keys: wp.array[wp.uint64],
-    adjacency: wp.array2d[wp.int32],
     out_pairs: wp.array2d[wp.int32],
     out_barrier: wp.array[wp.bool],
 ) -> None:
-    # The face pairs with every pair across a barrier edge turned into a self-loop, so a labelling
-    # over them sees the barrier as cut: a self-loop joins nothing, and the pair keeps its row, so
-    # no compaction is needed. A pair is across a barrier when its shared edge's
-    # ``array.pack_edge_key`` at ``INDEX_RADIX_PAIR`` is in the sorted ``barrier_keys`` -- a
-    # few hundred loop edges, searched here rather than hashed and matched in a pass of their own.
-    # Written to a new buffer rather than in place, with the mask beside it, so the caller keeps the
-    # faces across each barrier edge.
-    k = wp.int32(wp.tid())
-    key = pack_edge_key(shared[k, 0], shared[k, 1], wp.uint64(INDEX_RADIX_PAIR))
-    cut = binary_search_sorted_contains(barrier_keys, key)
-    f0 = adjacency[k, 0]
-    out_pairs[k, 0] = f0
-    out_pairs[k, 1] = wp.where(cut, f0, adjacency[k, 1])
-    out_barrier[k] = cut
+    # The face pairs across every twinned edge, read straight off the halfedge twins, with every
+    # pair across a barrier edge turned into a self-loop, so a labelling over them sees the barrier
+    # as cut: a self-loop joins nothing, and every row keeps its slot, so no compaction is needed.
+    # A pair is written once, by its lower halfedge; the upper one and a boundary halfedge write a
+    # self-loop. A pair is across a barrier when its edge's ``array.pack_edge_key`` at
+    # ``INDEX_RADIX_PAIR`` is in the sorted ``barrier_keys`` -- a few hundred loop edges, searched
+    # here rather than hashed and matched in a pass of their own. The mask beside the pairs lets the
+    # caller find the faces across each barrier edge (halfedge ``h`` and its twin).
+    h = wp.int32(wp.tid())
+    f = h // 3
+    t = twins[h]
+    partner = f
+    cut = False
+    if t > h:
+        key = pack_edge_key(faces[h], faces[halfedge_next(h)], wp.uint64(INDEX_RADIX_PAIR))
+        cut = binary_search_sorted_contains(barrier_keys, key)
+        partner = wp.where(cut, f, t // 3)
+    out_pairs[h, 0] = f
+    out_pairs[h, 1] = partner
+    out_barrier[h] = cut
 
 
 # ``remove_tunnels``' complete search: the shortest non-separating loop through each root.

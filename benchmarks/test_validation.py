@@ -101,10 +101,11 @@ def test_is_vertex_manifold(bench_case: BenchCase) -> None:
     the answers agree exactly on edge-manifold input (the parity test pins that class down).
     """
     if bench_case.kind == "ordito":
-        assert bench_case.run(lambda: od.validation.is_vertex_manifold(bench_case.faces_wp)) in (
-            True,
-            False,
-        )
+        assert bench_case.run(
+            lambda: od.validation.is_vertex_manifold(
+                bench_case.faces_wp, n_vertices=bench_case.n_vertices
+            )
+        ) in (True, False)
     elif bench_case.kind == "open3d":
         assert bench_case.run(bench_case.mesh_o3d.is_vertex_manifold) in (True, False)
     elif bench_case.kind == "pymeshlab":  # writes a per-vertex bool selection: ordito's shape
@@ -168,7 +169,9 @@ def test_is_edge_manifold(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "ordito":
         faces = bench_case.faces_wp
-        assert bench_case.run(lambda: od.validation.is_edge_manifold(faces)) in (True, False)
+        assert bench_case.run(
+            lambda: od.validation.is_edge_manifold(faces, n_vertices=bench_case.n_vertices)
+        ) in (True, False)
         return
     if bench_case.kind == "open3d":
         mesh_o3d = bench_case.mesh_o3d
@@ -255,7 +258,7 @@ def test_face_orientation_bits(bench_case: BenchCase) -> None:
     if bench_case.kind == "ordito":
         faces = bench_case.faces_wp
         _bits, _edges, _seeds, n_components = bench_case.run(
-            lambda: od.validation.face_orientation_bits(faces)
+            lambda: od.validation.face_orientation_bits(faces, n_vertices=bench_case.n_vertices)
         )
         assert n_components >= 1
     elif bench_case.kind == "igl":

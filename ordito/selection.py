@@ -23,6 +23,7 @@ def region_boundary_edges(
     n_vertices: int | None = None,
     *,
     oriented: bool = False,
+    mates: wp.array[wp.int32] | None = None,
 ) -> odt.Array2dInt32:
     """
     Interior edges on the boundary of a face region.
@@ -48,6 +49,11 @@ def region_boundary_edges(
         [`faces_left_of_contour`][ordito.selection.faces_left_of_contour] reads — the two are
         inverse and round-trip exactly. The default ascending form carries no orientation at all,
         so feeding it to that function seeds *both* sides and returns the whole mesh.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), to spare
+        the pairing sort; only the selected halfedges are then put in key order. Trusted, not
+        checked.
 
     Returns
     -------
@@ -60,7 +66,7 @@ def region_boundary_edges(
     ValueError
         If ``face_mask`` does not have one entry per face.
     RuntimeError
-        If ``faces`` and ``face_mask`` are not all on one device.
+        If ``faces``, ``face_mask`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -85,7 +91,7 @@ def region_boundary_edges(
     print(seam.shape)  # (4, 2)
     ```
     """
-    require_same_device(faces=faces, face_mask=face_mask)
+    require_same_device(faces=faces, face_mask=face_mask, mates=mates)
     device = faces.device
     n_faces = faces.size // 3
     if face_mask.size != n_faces:
@@ -99,7 +105,9 @@ def region_boundary_edges(
     # it, else only the seam's halfedges sorted: ascending key order either way, no unique-edge
     # table, and one readback, of the seam size.
     n = 3 * n_faces
-    mates, key_order = od.halfedge.halfedge_mates(faces, n_vertices, return_key_order=True)
+    key_order = None
+    if mates is None:
+        mates, key_order = od.halfedge.halfedge_mates(faces, n_vertices, return_key_order=True)
     inclusive = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_selection.mark_region_seam,

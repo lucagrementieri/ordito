@@ -447,6 +447,31 @@ def test_is_edge_manifold_rejects_out_of_range_indices(
     assert od.validation.is_edge_manifold(mesh_wp.indices, n_vertices=bound)
 
 
+@pytest.mark.parametrize("mesh_name", [*MESHES, "fin"])
+@pytest.mark.parametrize("allow_boundary_edges", [True, False])
+def test_is_edge_manifold_mates_change_no_answer(
+    request: pytest.FixtureRequest, device: str, mesh_name: str, allow_boundary_edges: bool
+) -> None:
+    """
+    Ordito against ordito: read off the mates, the verdict is the counted one.
+
+    The counting path carries the references; the mate codes are each edge's share count, so the
+    two must agree on the fixtures (open and closed, so a boundary flips the strict answer) and on
+    a fin, which is never edge-manifold.
+    """
+    if mesh_name == "fin":
+        faces_wp = wp.array([0, 1, 2, 2, 1, 3, 2, 3, 4, 1, 2, 5], dtype=wp.int32, device=device)
+        n_vertices = 6
+    else:
+        _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+        faces_wp, n_vertices = mesh_wp.indices, mesh_wp.points.size
+    mates_wp = od.halfedge.halfedge_mates(faces_wp, n_vertices)
+
+    counted = od.validation.is_edge_manifold(faces_wp, allow_boundary_edges)
+    read = od.validation.is_edge_manifold(faces_wp, allow_boundary_edges, mates=mates_wp)
+    assert read is counted
+
+
 def test_is_vertex_manifold_precomputed_shortcut(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
@@ -1281,6 +1306,30 @@ def test_face_orientation_bits_are_reproducible_on_non_orientable_input(
         assert bool(orient_np.any())
     frustrated_np = (orient_np[edges_np[:, 0]] ^ orient_np[edges_np[:, 1]]) != signs_np
     assert bool(frustrated_np.any()) is (mesh_name != "sphere_irregular")
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "mobius"])
+def test_face_orientation_bits_adjacency_changes_no_answer(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: a supplied face adjacency only spares the sort that pairs the faces.
+
+    All four outputs must match the plain call's, on an orientable mesh and a non-orientable one;
+    the returned signed edges are then the supplied table itself.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_wp = mesh_wp.indices
+    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(faces_wp, return_edges=True)
+
+    plain = od.validation.face_orientation_bits(faces_wp)
+    given = od.validation.face_orientation_bits(
+        faces_wp, face_adjacency=adjacency_wp, face_adjacency_edges=adjacency_edges_wp
+    )
+    assert given[3] == plain[3] > 0
+    assert given[1] is adjacency_wp
+    for given_wp, plain_wp in zip(given[:3], plain[:3], strict=True):
+        assert np.array_equal(given_wp.numpy(), plain_wp.numpy())
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])

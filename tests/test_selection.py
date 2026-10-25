@@ -274,6 +274,32 @@ def test_region_boundary_edges_bucketed_match_the_key_sort(
     assert np.array_equal(sorted_np, bucketed_np)
 
 
+@pytest.mark.parametrize("oriented", [False, True])
+def test_region_boundary_edges_mates_change_no_answer(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], oriented: bool
+) -> None:
+    """
+    Ordito against ordito: ``mates=`` only spares the pairing sort.
+
+    Given the faces' mates, only the seam's halfedges are put in key order, and the rows must be
+    the plain call's.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    mask_np = mesh_tm.triangles_center[:, 0] < 0.2
+    face_mask = wp.array(mask_np, dtype=wp.bool, device=mesh_wp.indices.device)
+    n_vertices = len(mesh_tm.vertices)
+    mates_wp = od.halfedge.halfedge_mates(mesh_wp.indices, n_vertices)
+
+    plain_np = od.selection.region_boundary_edges(
+        mesh_wp.indices, face_mask, n_vertices, oriented=oriented
+    ).numpy()
+    given_np = od.selection.region_boundary_edges(
+        mesh_wp.indices, face_mask, n_vertices, oriented=oriented, mates=mates_wp
+    ).numpy()
+    assert len(plain_np) > 0
+    assert np.array_equal(given_np, plain_np)
+
+
 @pytest.mark.parametrize(
     ("entry_point", "message"),
     [

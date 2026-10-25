@@ -467,6 +467,20 @@ def test_inflate_deflates_and_handles_edge_cases(device: str) -> None:
         od.smoothing.inflate(vertices_wp, faces_wp, 0.1, iterations=-1)
 
 
+def test_inflate_vertex_faces_change_no_answer(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Ordito against ordito: ``vertex_faces=`` only spares the incidence build."""
+    _mesh_tm, mesh_wp = sphere_irregular
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    plain_np = od.smoothing.inflate(mesh.vertices, mesh.faces, 0.05).numpy()
+    given_np = od.smoothing.inflate(
+        mesh.vertices, mesh.faces, 0.05, vertex_faces=mesh.vertex_face_adjacency
+    ).numpy()
+    assert not np.array_equal(plain_np, mesh.vertices.numpy())
+    assert np.array_equal(given_np, plain_np)
+
+
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("filter_humphrey", "trimesh")
 def test_filter_humphrey(request: pytest.FixtureRequest, mesh_name: str) -> None:
@@ -835,6 +849,20 @@ def test_relax_keep_volume_matches_meshlib(device: str) -> None:
     )
     shrunk = abs(warp_to_trimesh(plain_wp, faces_wp).volume)
     assert abs(kept - start) < abs(shrunk - start)
+
+
+def test_relax_keep_volume_edges_change_no_answer(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Ordito against ordito: ``unique_edges=`` only spares the edge sort."""
+    _mesh_tm, mesh_wp = sphere_irregular
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    plain_np = od.smoothing.relax_keep_volume(mesh.vertices, mesh.faces, iterations=3).numpy()
+    given_np = od.smoothing.relax_keep_volume(
+        mesh.vertices, mesh.faces, iterations=3, unique_edges=mesh.edges_unique
+    ).numpy()
+    assert not np.array_equal(plain_np, mesh.vertices.numpy())
+    assert np.array_equal(given_np, plain_np)
 
 
 @pytest.mark.parity("relax_approx", "meshlib")
@@ -1851,6 +1879,23 @@ def test_smooth_region_empty_region(device: str):
 @pytest.mark.parametrize(
     "smoother", [od.smoothing.smooth_region, od.smoothing.smooth_region_fixed_rim]
 )
+def test_region_smoothers_edges_change_no_answer(
+    device: str, smoother: Callable[..., wp.array[wp.vec3]]
+) -> None:
+    """Ordito against ordito: the ``edges_unique`` pair only spares the edge sort."""
+    _vertices_np, _faces_np, _free_np, v_wp, f_wp, free_wp = _sphere_region_wp(device)
+    mesh = od.Trimesh(v_wp, f_wp)
+    plain_np = smoother(v_wp, f_wp, free_wp).numpy()
+    given_np = smoother(
+        v_wp, f_wp, free_wp, unique_edges=mesh.edges_unique, inverse=mesh.edges_unique_inverse
+    ).numpy()
+    assert not np.array_equal(plain_np, v_wp.numpy())
+    assert np.array_equal(given_np, plain_np)
+
+
+@pytest.mark.parametrize(
+    "smoother", [od.smoothing.smooth_region, od.smoothing.smooth_region_fixed_rim]
+)
 def test_region_smoothers_leave_an_unreferenced_free_vertex_where_it_is(
     device: str, smoother: Callable[..., wp.array[wp.vec3]]
 ) -> None:
@@ -2761,6 +2806,20 @@ def test_filter_two_step_without_normal_filtering_is_a_fixed_point(
         filtered_wp = od.smoothing.filter_two_step(mesh_wp.points, mesh_wp.indices)
     assert np.allclose(fitted_wp.numpy(), mesh_wp.points.numpy(), rtol=1e-5, atol=1e-5)
     assert np.abs(filtered_wp.numpy() - mesh_wp.points.numpy()).max() > 1e-3
+
+
+def test_filter_two_step_mates_change_no_answer(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Ordito against ordito: ``mates=`` only spares the pairing the normal filter reads."""
+    _mesh_tm, mesh_wp = sphere_irregular
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    plain_np = od.smoothing.filter_two_step(mesh.vertices, mesh.faces).numpy()
+    given_np = od.smoothing.filter_two_step(
+        mesh.vertices, mesh.faces, mates=mesh.halfedge_mates
+    ).numpy()
+    assert not np.array_equal(plain_np, mesh.vertices.numpy())
+    assert np.array_equal(given_np, plain_np)
 
 
 def test_filter_two_step_rejects_a_threshold_outside_a_half_turn(

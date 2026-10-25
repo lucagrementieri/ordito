@@ -289,7 +289,12 @@ def make_solid(
     # The fill finds the rims itself and returns the faces unchanged (a copy) when there is none, so
     # no separate boundary test runs first.
     before = counts()
-    faces = od.holes.fill_min_weight(vertices, faces)
+    # A component filter has compacted the faces, so their indices are below the vertex count by
+    # construction and the fill needs no reduction to bound them; the caller's own faces keep it,
+    # as the guard against a negative index.
+    faces = od.holes.fill_min_weight(
+        vertices, faces, n_vertices=vertices.size if keep_largest else None
+    )
     version += int(counts() != before)
     for _ in range(max_iter):
         n_faces_before = faces.size
@@ -326,7 +331,10 @@ def make_solid(
     # removal deletes that sliver and reopens the rim, and the two then trade the same faces
     # forever -- so the fill goes last.
     before = counts()
-    faces = od.holes.fill_min_weight(vertices, faces)
+    # The faces here are a compacting stage's output, or else the ones the first fill left: it
+    # range-checked them whenever it filled a rim, and with none filled there is none here to fill.
+    # Either way the bound is the vertex count.
+    faces = od.holes.fill_min_weight(vertices, faces, n_vertices=vertices.size)
     version += int(counts() != before)
     if keep_largest and clean_after["components"] != version:
         vertices, faces = remove_small_components(vertices, faces, keep_largest=True)
@@ -1047,6 +1055,7 @@ def remove_small_components(
     min_faces: int | None = None,
     min_area: float | None = None,
     min_diameter: float | None = None,
+    labels: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Drop face-connected components that are too small, by one of four measures of "small".
@@ -1090,6 +1099,12 @@ def remove_small_components(
         exactly, so a component at the threshold is kept or dropped the same way on every call.
     min_diameter
         Minimum bounding-box diagonal for a component to be kept.
+    labels
+        ``(n_faces,)`` face component labels of ``faces``, each a face id naming its component, as
+        [`face_connected_component_labels`][ordito.adjacency.face_connected_component_labels]
+        returns them
+        ([`Trimesh.face_connected_component_labels`][ordito.mesh.Trimesh.face_connected_component_labels]),
+        to spare the labelling. Trusted, not checked.
 
     Returns
     -------
@@ -1103,7 +1118,7 @@ def remove_small_components(
     ValueError
         If no criterion is given, or if more than one is.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``labels`` are not all on one device.
 
     See Also
     --------
@@ -1153,7 +1168,7 @@ def remove_small_components(
     print(kept_vertices.shape, kept_faces.shape[0] // 3)  # (162,) 320
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, labels=labels)
     given = (keep_largest, min_faces is not None, min_area is not None, min_diameter is not None)
     if sum(given) != 1:
         raise ValueError(
@@ -1166,7 +1181,8 @@ def remove_small_components(
     if n_faces == 0:
         return vertices, faces
 
-    labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
+    if labels is None:
+        labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
 
     # Each criterion accumulates one per-component table; the others stay ``None`` and are never
     # read. The table is then thresholded inside the submesh extraction's own marking pass, so no
@@ -1236,7 +1252,10 @@ def remove_small_components(
 
 
 def split_non_manifold_vertices(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    mates: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]:
     """
 
@@ -1264,6 +1283,10 @@ def split_non_manifold_vertices(
         ``(n_vertices,)`` mesh vertex positions.
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), to spare
+        pairing the halfedges again. Trusted, not checked.
 
     Returns
     -------
@@ -1281,7 +1304,7 @@ def split_non_manifold_vertices(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     Notes
     -----
@@ -1344,14 +1367,16 @@ def split_non_manifold_vertices(
     print(od.validation.is_vertex_manifold(new_faces))  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     device = faces.device
     n_faces = faces.size // 3
     if n_faces == 0:
         empty_index = _launch.empty(0, dtype=wp.int32, device=device)
         return _launch.empty(0, dtype=wp.vec3, device=vertices.device), faces, empty_index
 
-    return _split_corners(vertices, faces, od.halfedge.halfedge_mates(faces, vertices.size))
+    if mates is None:
+        mates = od.halfedge.halfedge_mates(faces, vertices.size)
+    return _split_corners(vertices, faces, mates)
 
 
 def _split_corners(
@@ -1399,7 +1424,11 @@ def _split_corners(
 
 
 def collapse_small_triangles(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], epsilon: float = 1e-6
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    epsilon: float = 1e-6,
+    *,
+    bounds: tuple[wp.vec3, wp.vec3] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Collapse triangles smaller than a bounding-box-relative area threshold.
@@ -1424,6 +1453,10 @@ def collapse_small_triangles(
     epsilon
         Relative area tolerance. The doubled-area threshold is ``2 * epsilon * bbd ** 2``; larger
         values collapse more (and larger) triangles.
+    bounds
+        The box enclosing ``vertices`` when the caller holds it, typically
+        [`Trimesh.bounds`][ordito.mesh.Trimesh.bounds]. Its diagonal scales ``epsilon``, so passing
+        it spares the reduction and readback that measure the box again. Trusted, not checked.
 
     Returns
     -------
@@ -1482,7 +1515,11 @@ def collapse_small_triangles(
     if n_faces == 0 or vertices.size == 0:
         return _launch.clone(vertices), _launch.clone(faces)
 
-    bbd = od.bounds.enclosing_diagonal(vertices)
+    bbd = (
+        od.bounds.enclosing_diagonal(vertices)
+        if bounds is None
+        else od.bounds.box_diagonal(*bounds)
+    )
     min_dbl_area = wp.float32(2.0 * epsilon * bbd * bbd)
 
     current_vertices = vertices
@@ -2533,7 +2570,11 @@ def make_winding_consistent(
 
 
 def make_volume(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, multibody: bool = False
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    multibody: bool = False,
+    mates: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.int32]:
     """
     Orient faces so the mesh encloses a positive signed volume (normals point outward).
@@ -2554,6 +2595,10 @@ def make_volume(
         whole. Under [`is_deterministic`][ordito.config.is_deterministic] each component's volume
         is summed exactly, so a component of near-zero volume is flipped or kept the same way on
         every call.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), to spare
+        pairing the halfedges again. Trusted, not checked.
 
     Returns
     -------
@@ -2564,7 +2609,7 @@ def make_volume(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -2598,8 +2643,8 @@ def make_volume(
     print(f"{od.measures.volume(vertices, fixed):.3f}")  # 4.047
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
-    return _outward_faces(vertices, faces, multibody=multibody, owned=False)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
+    return _outward_faces(vertices, faces, multibody=multibody, owned=False, mates=mates)
 
 
 def make_normals_outward(
@@ -2789,7 +2834,11 @@ _GROUP_MEASURES = {
 
 
 def remove_folded_faces(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, angle: float = 160.0
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    angle: float = 160.0,
+    mates: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Drop faces that fold back over their own ring, and reindex.
@@ -2813,6 +2862,10 @@ def remove_folded_faces(
         faces against its neighbours (see above). MeshLab's
         ``folded_faces_angle_threshold``, whose default of ``160`` is this one. Must be in
         ``(0, 180]``.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), to spare
+        pairing the halfedges again. Trusted, not checked.
 
     Returns
     -------
@@ -2824,7 +2877,7 @@ def remove_folded_faces(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
     ValueError
         If ``angle`` is not in ``(0, 180]``.
 
@@ -2862,14 +2915,15 @@ def remove_folded_faces(
     print(faces.shape[0] // 3, new_faces.shape[0] // 3)  # 32 30
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     if not 0.0 < angle <= 180.0:
         raise ValueError(f"angle must be in (0, 180] degrees, got {angle}")
     device = faces.device
     n_faces = faces.size // 3
     if n_faces == 0:
         return _launch.clone(vertices), _launch.clone(faces)
-    mates = od.halfedge.halfedge_mates(faces, vertices.size)
+    if mates is None:
+        mates = od.halfedge.halfedge_mates(faces, vertices.size)
     # The fold decision and the submesh extraction's marking pass in one launch; the keep mask it
     # writes is what the compaction reads.
     keep = _launch.empty(n_faces, dtype=wp.bool, device=device)
@@ -3335,15 +3389,19 @@ def remove_tunnels(
     # dropping the genus by one per loop. The face labels of the cut mesh say which -- every
     # component after the first is one loop too many -- and they are read before cutting, so the
     # mesh is cut once, along the family that survives.
-    labels, sides = _cut_face_labels(faces, selected, vertices.size)
+    labels, sides = _cut_face_labels(faces, selected, basis.twins)
     labels_np = labels.numpy()
     if np.unique(labels_np).size > 1:
         selected = _independent_loops(selected, labels_np, sides())
-    cut_vertices, cut_faces = _cut_along_loops(vertices, faces, selected)
+    cut_vertices, cut_faces = _cut_along_loops(vertices, faces, selected, basis.twins)
     cut_vertices = cast("wp.array[wp.vec3]", cut_vertices)
+    # The cut writes every face index below its own vertex count, so the fill needs no reduction
+    # to bound them.
     return (
         cut_vertices,
-        od.holes.fill_min_weight(cut_vertices, cut_faces, metric=metric),
+        od.holes.fill_min_weight(
+            cut_vertices, cut_faces, metric=metric, n_vertices=cut_vertices.size
+        ),
         len(selected),
     )
 
@@ -3595,7 +3653,7 @@ def _disjoint_loops(loops: list[np.ndarray]) -> list[np.ndarray]:
 
 
 def _cut_face_labels(
-    faces: wp.array[wp.int32], loops: list[np.ndarray], n_vertices: int
+    faces: wp.array[wp.int32], loops: list[np.ndarray], twins: wp.array[wp.int32]
 ) -> tuple[wp.array[wp.int32], Callable[[], dict[tuple[int, int], tuple[int, int]]]]:
     """
     Label the faces as cutting along ``loops`` would leave them, without cutting.
@@ -3604,14 +3662,14 @@ def _cut_face_labels(
     pair of an edge-manifold surface adjacent -- a pair across a non-loop edge at a loop vertex lies
     on one side of the loop there -- so the cut mesh's face adjacency is the input's with the loop
     edges' pairs removed. Severing those pairs in place of removing them keeps the face numbering,
-    which the cut preserves too, so these labels are the cut mesh's own.
+    which the cut preserves too, so these labels are the cut mesh's own. The pairs are read off
+    ``twins``, ``faces``' verified halfedge twins, so no adjacency table is sorted for them.
 
     Also returns a function reading back the severed pairs themselves, keyed by their ascending
     edge: the two faces across each loop edge, which telling a loop's two sides apart needs. It is
     a function because only a dependent family needs it, and it costs three readbacks.
     """
     device = faces.device
-    adjacency, shared = od.adjacency.face_adjacency(faces, return_edges=True, n_vertices=n_vertices)
     # Each cycle's edges as ascending rows, which is what a cut keys on.
     cut_edges = np.concatenate(
         [np.sort(np.stack([loop, np.roll(loop, -1)], axis=1), axis=1) for loop in loops]
@@ -3621,13 +3679,13 @@ def _cut_face_labels(
         dtype=wp.uint64,
         device=device,
     )
-    n_pairs = int(adjacency.shape[0])
-    severed = odt.empty_2d((n_pairs, 2), wp.int32, device=device)
-    barrier = _launch.empty(n_pairs, dtype=wp.bool, device=device)
+    n_halfedges = twins.size
+    severed = odt.empty_2d((n_halfedges, 2), wp.int32, device=device)
+    barrier = _launch.empty(n_halfedges, dtype=wp.bool, device=device)
     _launch.launch(
-        kernel_repair.sever_barrier_pairs,
-        dim=n_pairs,
-        inputs=[shared, barrier_keys, adjacency, severed, barrier],
+        kernel_repair.sever_barrier_twins,
+        dim=n_halfedges,
+        inputs=[faces, twins, barrier_keys, severed, barrier],
         device=device,
     )
     labels = od.graph.connected_component_labels_from_edges(
@@ -3638,9 +3696,12 @@ def _cut_face_labels(
         # A loop edge is one pair of a few hundred; the readbacks are of the mesh-sized buffers
         # the table is picked out of.
         rows = np.flatnonzero(barrier.numpy())
+        faces_np = faces.numpy()
+        twins_np = twins.numpy()
+        tips = rows - rows % 3 + (rows + 1) % 3
         return {
-            (int(a), int(b)): (int(f0), int(f1))
-            for (a, b), (f0, f1) in zip(shared.numpy()[rows], adjacency.numpy()[rows], strict=True)
+            (int(min(a, b)), int(max(a, b))): (int(h // 3), int(t // 3))
+            for a, b, h, t in zip(faces_np[rows], faces_np[tips], rows, twins_np[rows], strict=True)
         }
 
     return labels, sides
@@ -3682,9 +3743,17 @@ def _independent_loops(
 
 
 def _cut_along_loops(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], loops: list[np.ndarray]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    loops: list[np.ndarray],
+    twins: wp.array[wp.int32],
 ) -> tuple[wp.array[wp.vec3] | wp.array[wp.vec3d], wp.array[wp.int32]]:
-    """Cut the mesh along the edges of a family of closed vertex-index cycles."""
+    """
+    Cut the mesh along the edges of a family of closed vertex-index cycles.
+
+    ``twins`` are ``faces``' verified halfedge twins, which the cut reads rather than pairing the
+    halfedges and checking them again.
+    """
     # Each cycle's edges as ascending rows, which is what a cut keys on.
     cut_edges = _launch.array(
         np.concatenate(
@@ -3693,7 +3762,9 @@ def _cut_along_loops(
         dtype=wp.int32,
         device=faces.device,
     )
-    return od.seams.cut_along_edges(vertices, faces, odt.as_array2d(cut_edges, wp.int32))
+    return od.seams.cut_along_edges(
+        vertices, faces, odt.as_array2d(cut_edges, wp.int32), twins=twins
+    )
 
 
 def _cycle_length(vertices: wp.array[wp.vec3], loop: wp.array[wp.int32]) -> float:

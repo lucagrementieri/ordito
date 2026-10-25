@@ -24,7 +24,7 @@ from tests.comparisons import (
     lexsort_rows,
     same_partition,
 )
-from tests.conftest import OPEN_MESHES, open_cylinder_arrays
+from tests.conftest import BOUNDARY_MESHES, OPEN_MESHES, open_cylinder_arrays
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
@@ -243,6 +243,31 @@ def test_fill_cone_matches_meshlib(request: pytest.FixtureRequest, mesh_name: st
         lexsort_rows(canonical_winding(filled_faces_wp.numpy()[n_faces:])),
         lexsort_rows(canonical_winding(faces_ml)),
     )
+
+
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
+def test_fill_fan_and_cone_mates_change_no_answer(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: ``mates=`` only spares the boundary walk its halfedge pairing.
+
+    Both fills, given the faces' own ``halfedge_mates``, must return what they return without them,
+    bit for bit; every fixture has a rim, so the fills (where the mates are read) do run.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    mates_wp = od.halfedge.halfedge_mates(faces_wp, vertices_wp.size)
+
+    fan_wp = od.holes.fill_fan(vertices_wp, faces_wp)
+    assert fan_wp.size > faces_wp.size
+    assert np.array_equal(
+        od.holes.fill_fan(vertices_wp, faces_wp, mates=mates_wp).numpy(), fan_wp.numpy()
+    )
+    cone_vertices_wp, cone_faces_wp = od.holes.fill_cone(vertices_wp, faces_wp)
+    given_vertices_wp, given_faces_wp = od.holes.fill_cone(vertices_wp, faces_wp, mates=mates_wp)
+    assert np.array_equal(given_vertices_wp.numpy(), cone_vertices_wp.numpy())
+    assert np.array_equal(given_faces_wp.numpy(), cone_faces_wp.numpy())
 
 
 @pytest.mark.parametrize("method", ["fill_fan", "fill_cone", "fill_min_weight"])
@@ -1249,6 +1274,39 @@ def test_fill_min_weight_rejects_unknown_metric(saddle_graded: tuple[tm.Trimesh,
             call()
 
 
+@pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
+def test_fill_min_weight_hints_change_no_answer(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: ``n_vertices=`` and ``mates=`` only spare work.
+
+    The bound orders the rim keys, and any bound above every index orders them alike; the mates are
+    the pairing the boundary walk would do itself. So ``fill_min_weight`` and
+    ``fill_loops_min_weight`` must give the faces they give without them, bit for bit. Every
+    fixture has a rim, so the fill (where both are read) runs.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    mates_wp = od.halfedge.halfedge_mates(faces_wp, vertices_wp.size)
+
+    inferred_wp = od.holes.fill_min_weight(vertices_wp, faces_wp)
+    given_wp = od.holes.fill_min_weight(
+        vertices_wp, faces_wp, n_vertices=vertices_wp.size, mates=mates_wp
+    )
+    assert inferred_wp.size > faces_wp.size
+    assert np.array_equal(given_wp.numpy(), inferred_wp.numpy())
+
+    loops = _fillable_loops(vertices_wp, faces_wp)
+    loops_inferred_wp = od.holes.fill_loops_min_weight(
+        vertices_wp, faces_wp, loops, "plane_normalized", True
+    )
+    loops_given_wp = od.holes.fill_loops_min_weight(
+        vertices_wp, faces_wp, loops, "plane_normalized", True, n_vertices=vertices_wp.size
+    )
+    assert np.array_equal(loops_given_wp.numpy(), loops_inferred_wp.numpy())
+
+
 # ---------------------------------------------------------------------------
 # fill_small
 # ---------------------------------------------------------------------------
@@ -1440,6 +1498,24 @@ def test_fill_small_vertex_bound_changes_no_answer(device: str) -> None:
 
     inferred_wp = od.holes.fill_small(vertices_wp, faces_wp, max_edges=16)
     given_wp = od.holes.fill_small(vertices_wp, faces_wp, max_edges=16, n_vertices=vertices_wp.size)
+
+    assert inferred_wp.size - faces_wp.size == 3 * sum(size - 2 for size in sizes)
+    assert np.array_equal(given_wp.numpy(), inferred_wp.numpy())
+
+
+def test_fill_small_mates_change_no_answer(device: str) -> None:
+    """
+    Ordito against ordito: ``mates=`` only spares the boundary walk its halfedge pairing.
+
+    Both rims are filled at ``max_edges=16``, so the walk that reads the mates runs and the faces
+    must match the ones built without them, bit for bit.
+    """
+    _holed_tm, vertices_wp, faces_wp, sizes = _two_rims_of_different_edge_count(device)
+    assert sorted(sizes) == [10, 16]
+    mates_wp = od.halfedge.halfedge_mates(faces_wp, vertices_wp.size)
+
+    inferred_wp = od.holes.fill_small(vertices_wp, faces_wp, max_edges=16)
+    given_wp = od.holes.fill_small(vertices_wp, faces_wp, max_edges=16, mates=mates_wp)
 
     assert inferred_wp.size - faces_wp.size == 3 * sum(size - 2 for size in sizes)
     assert np.array_equal(given_wp.numpy(), inferred_wp.numpy())
@@ -1727,6 +1803,26 @@ def test_fill_smooth_triangulate_only(saddle_graded: tuple[tm.Trimesh, wp.Mesh])
     expected_faces = od.holes.fill_min_weight(mesh_wp.points, mesh_wp.indices)
     assert np.array_equal(new_faces.numpy(), expected_faces.numpy())
     assert np.array_equal(new_vertices.numpy(), mesh_wp.points.numpy())
+
+
+def test_fill_smooth_hints_change_no_answer(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Ordito against ordito: ``n_vertices=`` and ``mates=`` only spare work.
+
+    The saddle's one rim is filled and refined either way, and the hinted call must return the
+    vertices and faces the plain one does, bit for bit.
+    """
+    _mesh_tm, mesh_wp = saddle_graded
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    mates_wp = od.halfedge.halfedge_mates(faces_wp, vertices_wp.size)
+
+    plain_vertices_wp, plain_faces_wp = od.holes.fill_smooth(vertices_wp, faces_wp)
+    given_vertices_wp, given_faces_wp = od.holes.fill_smooth(
+        vertices_wp, faces_wp, n_vertices=vertices_wp.size, mates=mates_wp
+    )
+    assert plain_faces_wp.size > faces_wp.size
+    assert np.array_equal(given_vertices_wp.numpy(), plain_vertices_wp.numpy())
+    assert np.array_equal(given_faces_wp.numpy(), plain_faces_wp.numpy())
 
 
 # Not ``saddle_graded``: a cap over its saddle-shaped rim lies on both sides of the surface, so the
@@ -2066,6 +2162,25 @@ def test_stitch_argument_order_invariant(device: str) -> None:
     )
 
 
+def test_stitch_mates_change_no_answer(device: str) -> None:
+    """
+    Ordito against ordito: ``mates_a=`` / ``mates_b=`` only spare the two boundary walks.
+
+    Each mesh's own ``halfedge_mates`` must leave the stitched mesh bit for bit as it is without.
+    """
+    (_, _, vertices_a, faces_a), (_, _, vertices_b, faces_b) = _capsule_halves(device, 7, 13, 0.7)
+    mates_a = od.halfedge.halfedge_mates(faces_a, vertices_a.size)
+    mates_b = od.halfedge.halfedge_mates(faces_b, vertices_b.size)
+
+    plain_vertices_wp, plain_faces_wp = od.holes.stitch(vertices_a, faces_a, vertices_b, faces_b)
+    given_vertices_wp, given_faces_wp = od.holes.stitch(
+        vertices_a, faces_a, vertices_b, faces_b, mates_a=mates_a, mates_b=mates_b
+    )
+    assert plain_faces_wp.size > faces_a.size + faces_b.size
+    assert np.array_equal(given_vertices_wp.numpy(), plain_vertices_wp.numpy())
+    assert np.array_equal(given_faces_wp.numpy(), plain_faces_wp.numpy())
+
+
 @pytest.mark.parametrize(
     ("n_a", "n_b", "phase", "offset", "ratio_bound"),
     [(16, 11, 0.3, 0.0, 1.0 + 1e-6), (17, 11, 0.9, 0.4, 1.25)],
@@ -2351,6 +2466,50 @@ def test_stitch_min_weight_edge_length_reaches_the_band_optimum(
     assert np.isclose(total, _band_edge_length_optimum(va_np, loop_a, vb_np, loop_b), rtol=1e-5)
 
 
+def test_stitch_min_weight_hints_change_no_answer(device: str) -> None:
+    """
+    Ordito against ordito: the vertex bounds and the mates only spare work.
+
+    Each bound orders its rim's keys, and any bound above every index orders them alike, so
+    ``stitch_min_weight`` and ``stitch_loops_min_weight`` must stitch exactly as without them.
+    """
+    (_, _, vertices_a, faces_a), (_, _, vertices_b, faces_b) = _capsule_halves(device, 7, 13, 0.7)
+    mates_a = od.halfedge.halfedge_mates(faces_a, vertices_a.size)
+    mates_b = od.halfedge.halfedge_mates(faces_b, vertices_b.size)
+
+    plain = od.holes.stitch_min_weight(vertices_a, faces_a, vertices_b, faces_b)
+    given = od.holes.stitch_min_weight(
+        vertices_a,
+        faces_a,
+        vertices_b,
+        faces_b,
+        n_vertices_a=vertices_a.size,
+        n_vertices_b=vertices_b.size,
+        mates_a=mates_a,
+        mates_b=mates_b,
+    )
+    assert plain[1].size > faces_a.size + faces_b.size
+    assert np.array_equal(given[0].numpy(), plain[0].numpy())
+    assert np.array_equal(given[1].numpy(), plain[1].numpy())
+
+    loop_a = od.boundary.boundary_loops(vertices_a, faces_a)[0]
+    loop_b = od.boundary.boundary_loops(vertices_b, faces_b)[0]
+    loops_plain = od.holes.stitch_loops_min_weight(
+        vertices_a, faces_a, loop_a, vertices_b, faces_b, loop_b
+    )
+    loops_given = od.holes.stitch_loops_min_weight(
+        vertices_a,
+        faces_a,
+        loop_a,
+        vertices_b,
+        faces_b,
+        loop_b,
+        n_vertices_a=vertices_a.size,
+        n_vertices_b=vertices_b.size,
+    )
+    assert np.array_equal(loops_given[1].numpy(), loops_plain[1].numpy())
+
+
 def _band_edge_length_optimum(
     vertices_a_np: np.ndarray,
     loop_a: wp.array[wp.int32],
@@ -2451,6 +2610,32 @@ def test_stitch_smooth_triangulate_only_is_stitch_min_weight(device: str):
     assert patch_np.size == band_faces.size // 3 > n_before  # non-vacuity: a band was added
     assert not patch_np[:n_before].any()
     assert patch_np[n_before:].all()
+
+
+def test_stitch_smooth_hints_change_no_answer(device: str) -> None:
+    """
+    Ordito against ordito: the vertex bounds and the mates only spare work.
+
+    The hemispheres are stitched and the band refined either way, and the hinted call must return
+    the plain call's mesh bit for bit.
+    """
+    (vertices_a, faces_a), (vertices_b, faces_b) = _hemisphere_pair(device)
+
+    plain_vertices_wp, plain_faces_wp = od.holes.stitch_smooth(
+        vertices_a, faces_a, vertices_b, faces_b
+    )
+    given_vertices_wp, given_faces_wp = od.holes.stitch_smooth(
+        vertices_a,
+        faces_a,
+        vertices_b,
+        faces_b,
+        n_vertices_a=vertices_a.size,
+        n_vertices_b=vertices_b.size,
+        mates_a=od.halfedge.halfedge_mates(faces_a, vertices_a.size),
+        mates_b=od.halfedge.halfedge_mates(faces_b, vertices_b.size),
+    )
+    assert np.array_equal(given_vertices_wp.numpy(), plain_vertices_wp.numpy())
+    assert np.array_equal(given_faces_wp.numpy(), plain_faces_wp.numpy())
 
 
 @pytest.mark.parity("stitch_smooth", "meshlib")

@@ -484,6 +484,8 @@ def robust_laplacian(
     dtype: type = wp.float32,
     *,
     use_intrinsic_delaunay: bool = True,
+    pattern: MeshOperatorPattern | None = None,
+    mates: wp.array[wp.int32] | None = None,
 ) -> odt.BsrMatrix[wp.float32]:
     """
     Cotangent Laplacian that a bad triangulation cannot poison, via mollification and flips.
@@ -521,6 +523,16 @@ def robust_laplacian(
         Flip to the intrinsic Delaunay triangulation first (default), the name and the default
         ``potpourri3d``'s solvers use. The vertex set — and so the matrix's shape and meaning — is
         the same either way; only the edges it sums over change.
+    pattern
+        A [`mesh_operator_pattern`][ordito.laplacian.mesh_operator_pattern] of ``faces`` for
+        ``"cotmatrix"``
+        ([`Trimesh.mesh_operator_pattern`][ordito.mesh.Trimesh.mesh_operator_pattern]), which spares
+        the assembly its sort. Only with ``use_intrinsic_delaunay=False``: the flips change the
+        edges the operator sums over.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces``, handed
+        to [`intrinsic_delaunay`][ordito.remesh.intrinsic_delaunay] so it pairs no halfedges.
+        Trusted, not checked; read only when ``use_intrinsic_delaunay`` is on.
 
     Returns
     -------
@@ -530,8 +542,11 @@ def robust_laplacian(
 
     Raises
     ------
+    ValueError
+        If ``pattern`` is given with ``use_intrinsic_delaunay`` on, or was built for another
+        operator or vertex count.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces``, ``pattern`` and ``mates`` are not all on one device.
 
     Warns
     -----
@@ -574,16 +589,27 @@ def robust_laplacian(
     print(np.allclose((robust @ x).numpy(), (plain @ x).numpy(), atol=1e-5))  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(
+        vertices=vertices,
+        faces=faces,
+        pattern=None if pattern is None else pattern.offsets,
+        mates=mates,
+    )
+    if use_intrinsic_delaunay and pattern is not None:
+        raise ValueError("robust_laplacian: pattern needs use_intrinsic_delaunay=False")
     if use_intrinsic_delaunay:
-        intrinsic_faces, lengths, _ = od.remesh.intrinsic_delaunay(vertices, faces, epsilon=epsilon)
+        intrinsic_faces, lengths, _ = od.remesh.intrinsic_delaunay(
+            vertices, faces, epsilon=epsilon, mates=mates
+        )
     else:
         intrinsic_faces = faces
         lengths, _ = mollify_intrinsic(vertices, faces, epsilon=epsilon)
     entries = cotmatrix_entries_intrinsic(lengths, dtype=dtype)
     worst = _intrinsic_rounding_ratio(vertices.size, intrinsic_faces, lengths)
     # Assembled before the check is read, so the host queues it while the device runs the check.
-    laplacian = cotmatrix(vertices, intrinsic_faces, cot_entries=entries, dtype=dtype)
+    laplacian = cotmatrix(
+        vertices, intrinsic_faces, cot_entries=entries, dtype=dtype, pattern=pattern
+    )
     _warn_if_lengths_undetermined(worst)
     return laplacian
 

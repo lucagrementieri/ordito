@@ -307,6 +307,32 @@ def test_transfer_onto_vertices_vec2_field(device: str):
         assert np.array_equal(transferred_wp.numpy()[:, column], scalar_transfer_wp.numpy())
 
 
+def test_transfer_onto_vertices_prebuilt_mesh_changes_no_answer(device: str) -> None:
+    """
+    Ordito against ordito: a prebuilt ``mesh=`` only spares the BVH build.
+
+    The source's own ``Trimesh.warp_mesh`` must give the values and distances the arrays give, bit
+    for bit, on targets off the source surface (so the distances are not all zero).
+    """
+    source_vertices, source_faces = od.creation.icosphere(subdivisions=2, device=device)
+    target_vertices, _ = od.creation.icosphere(subdivisions=3, radius=1.1, device=device)
+    values = wp.array(source_vertices.numpy()[:, 2], dtype=wp.float32, device=device)
+
+    plain = od.interpolation.transfer_onto_vertices(
+        source_vertices, source_faces, values, target_vertices
+    )
+    given = od.interpolation.transfer_onto_vertices(
+        source_vertices,
+        source_faces,
+        values,
+        target_vertices,
+        mesh=od.Trimesh(source_vertices, source_faces).warp_mesh,
+    )
+    assert plain[1].numpy().min() > 0.0
+    assert np.array_equal(given[0].numpy(), plain[0].numpy())
+    assert np.array_equal(given[1].numpy(), plain[1].numpy())
+
+
 def test_transfer_onto_vertices_survives_a_sliver_source_face(device: str):
     """
     Class B: against the source field's own linear form, which a sliver must not destroy.

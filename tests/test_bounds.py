@@ -212,6 +212,21 @@ def test_enclosing_diagonal_ignores_an_empty_second_set(device: str) -> None:
     assert alone == od.bounds.enclosing_diagonal(cloud_wp, empty_wp)
 
 
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+def test_box_diagonal_is_the_enclosing_diagonal(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: the diagonal of a held box is ``enclosing_diagonal``'s, bit for bit.
+
+    ``enclosing_diagonal`` carries the references (above); this pins the host form callers use
+    with a cached box to it, exactly, since a remesh scales its target off the number.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    lower, upper = od.bounds.aabb(mesh_wp.points)
+    assert od.bounds.box_diagonal(lower, upper) == od.bounds.enclosing_diagonal(mesh_wp.points)
+
+
 def _corner_box_np(lower_wp: wp.vec3, upper_wp: wp.vec3) -> np.ndarray:
     """
     Cut the low corner out of a box: 60% of each side, padded 1% outward on the low side.

@@ -654,3 +654,17 @@ def test_principal_curvature_is_scale_equivariant(
     assert np.abs(pv1_unit_np).min() > 0.5
     assert np.allclose(pv1_small_wp.numpy() * scale, pv1_unit_np, rtol=1e-4, atol=1e-4)
     assert np.allclose(pv2_small_wp.numpy() * scale, pv2_unit_np, rtol=1e-4, atol=1e-4)
+
+
+def test_principal_curvature_mean_edge_length_changes_no_answer(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Ordito against ordito: ``mean_edge_length=`` only spares the reduction that measures it."""
+    _mesh_tm, mesh_wp = saddle_graded
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    plain = od.curvature.principal_curvature(mesh.vertices, mesh.faces)
+    given = od.curvature.principal_curvature(
+        mesh.vertices, mesh.faces, mean_edge_length=mesh.mean_edge_length
+    )
+    for given_wp, plain_wp in zip(given, plain, strict=True):
+        assert np.array_equal(given_wp.numpy(), plain_wp.numpy())

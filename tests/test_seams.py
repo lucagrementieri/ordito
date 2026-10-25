@@ -235,6 +235,27 @@ def test_crease_edges_bucketed_match_the_key_sort(
     assert np.array_equal(sorted_np, bucketed_np)
 
 
+def test_crease_edges_mates_change_no_answer(
+    sphere_irregular_cap: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: ``mates=`` only spares the pairing sort.
+
+    Given the faces' mates, only the flagged halfedges are put in key order, and the creases and
+    boundary must come back as the plain call returns them, row for row.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular_cap
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    mates_wp = od.halfedge.halfedge_mates(faces, vertices.size)
+
+    plain_np = od.seams.crease_edges(vertices, faces, 10.0, include_boundary=True).numpy()
+    given_np = od.seams.crease_edges(
+        vertices, faces, 10.0, include_boundary=True, mates=mates_wp
+    ).numpy()
+    assert len(plain_np) > 0
+    assert np.array_equal(given_np, plain_np)
+
+
 def test_cut_along_edges_is_geometrically_a_noop(device: str) -> None:
     """Every output vertex sits exactly where its input did, so the surface is unchanged."""
     box_tm = tm.creation.box(extents=[1.0, 2.0, 3.0])
@@ -720,6 +741,34 @@ def test_uv_seam_vertex_mask_matches_pymeshlab(
         # Dropping the boundary can only ever remove marks, and on an open mesh it must remove some.
         assert not (mask_wp.numpy() & ~selected_pml).any()
         assert bool((mask_wp.numpy() != selected_pml).any()) == (not mesh_tm.is_watertight)
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_uv_seam_vertex_mask_twins_change_no_answer(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: ``twins=`` only spares the pairing and its checks.
+
+    The atlas has a seam ring, so the mask is not empty, and it must match the plain call's.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
+    wedge_uv_np = _spherical_wedge_atlas(np.asarray(mesh_tm.vertices, dtype=np.float64), faces_np)
+    texcoords_wp = points_to_warp_uv(wedge_uv_np, str(mesh_wp.device))
+    n_vertices = mesh_wp.points.size
+
+    plain_np = od.seams.uv_seam_vertex_mask(
+        mesh_wp.indices, texcoords_wp, n_vertices=n_vertices
+    ).numpy()
+    given_np = od.seams.uv_seam_vertex_mask(
+        mesh_wp.indices,
+        texcoords_wp,
+        n_vertices=n_vertices,
+        twins=od.halfedge.halfedge_twins(mesh_wp.indices, n_vertices),
+    ).numpy()
+    assert plain_np.any()
+    assert np.array_equal(given_np, plain_np)
 
 
 # Not ``conftest.MESHES``: the spherical wedge atlas has no foldover on ``cave_cube``.

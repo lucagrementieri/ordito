@@ -803,6 +803,32 @@ def test_is_edge_and_vertex_manifold_closed_meshes(
     assert mesh.is_self_intersecting is False
 
 
+@pytest.mark.parametrize("mesh_name", [*MESHES, "fin"])
+def test_is_edge_manifold_agrees_with_and_without_cached_mates(
+    request: pytest.FixtureRequest, device: str, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: the property's two paths give one answer.
+
+    A fresh mesh counts its edges; one whose ``halfedge_mates`` are cached reads the verdict off
+    them. Both must equal the module function's answer, on the fixtures (manifold) and on a fin
+    (an edge with three faces), so both answers occur.
+    """
+    if mesh_name == "fin":
+        vertices_wp = wp.zeros(6, dtype=wp.vec3, device=device)
+        faces_wp = wp.array([0, 1, 2, 2, 1, 3, 2, 3, 4, 1, 2, 5], dtype=wp.int32, device=device)
+    else:
+        _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+        vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    expected = od.validation.is_edge_manifold(faces_wp)
+    assert expected is (mesh_name != "fin")
+
+    assert od.Trimesh(vertices_wp, faces_wp).is_edge_manifold is expected
+    mesh = od.Trimesh(vertices_wp, faces_wp)
+    _ = mesh.halfedge_mates
+    assert mesh.is_edge_manifold is expected
+
+
 @pytest.mark.parametrize("unused", ["interior", "trailing"])
 @pytest.mark.parametrize("adjacency_cached", [False, True])
 def test_is_vertex_manifold_sized_by_the_vertex_buffer(

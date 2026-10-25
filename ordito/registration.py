@@ -553,6 +553,7 @@ def icp_point_to_plane(
     robust_scale: float | None = None,
     damping: float = 1e-6,
     target_mesh: wp.Mesh | None = None,
+    target_face_normals: wp.array[wp.vec3] | None = None,
 ) -> tuple[wp.array[wp.mat44], wp.array[wp.vec3], float]:
     """
     Point-to-plane iterative closest point registration with optional robust loss.
@@ -613,6 +614,12 @@ def icp_point_to_plane(
         ([`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one), or
         [`mesh_from_points`][ordito.neighbors.mesh_from_points] of ``target_vertices`` for a
         point-cloud target. Not checked against them: the search answers for the geometry it holds.
+    target_face_normals
+        ``(n_faces,)`` unit face normals of a mesh target, as
+        [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas] gives them
+        ([`Trimesh.face_normals`][ordito.mesh.Trimesh.face_normals] caches them), to spare the pass
+        that forms them on every call. Trusted, not checked; only used when ``target_faces`` is
+        given.
 
     Returns
     -------
@@ -638,8 +645,8 @@ def icp_point_to_plane(
         (``target_faces is None``) and ``target_normals`` is not provided, or does not have the
         same length as ``target_vertices``.
     RuntimeError
-        If ``a``, ``target_vertices``, ``target_faces``, ``target_normals``, ``initial`` and
-        ``target_mesh`` are not all on one device.
+        If ``a``, ``target_vertices``, ``target_faces``, ``target_normals``, ``initial``,
+        ``target_mesh`` and ``target_face_normals`` are not all on one device.
 
     See Also
     --------
@@ -673,6 +680,7 @@ def icp_point_to_plane(
         target_normals=target_normals,
         initial=initial,
         target_mesh=target_mesh,
+        target_face_normals=target_face_normals,
     )
     device = a.device
     n = a.size
@@ -708,7 +716,9 @@ def icp_point_to_plane(
         target_vertices, target_faces, "icp_point_to_plane", target_mesh
     )
     face_normals: wp.array[wp.vec3] | None = None
-    if is_mesh:
+    if is_mesh and target_face_normals is not None:
+        face_normals = target_face_normals
+    elif is_mesh:
         assert target_faces is not None
         face_normals, _ = od.triangles.face_normals_and_areas(target_vertices, target_faces)
 

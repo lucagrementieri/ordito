@@ -170,7 +170,9 @@ def test_euler_characteristic(bench_case: BenchCase) -> None:
     """
     if bench_case.kind == "ordito":
         faces = bench_case.faces_wp
-        result = bench_case.run(lambda: od.measures.euler_characteristic(faces))
+        result = bench_case.run(
+            lambda: od.measures.euler_characteristic(faces, n_vertices=bench_case.n_vertices)
+        )
     else:
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
         result = bench_case.run(

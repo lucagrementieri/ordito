@@ -460,6 +460,8 @@ def test_corner_normals(bench_case: BenchCase, creased: bool) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     creases = od.seams.crease_edges(vertices, faces, angle=crease_angle) if creased else None
     normals = bench_case.run(
-        lambda: od.triangles.corner_normals(vertices, faces, creases, weighting="area")
+        lambda: od.triangles.corner_normals(
+            vertices, faces, creases, weighting="area", n_vertices=bench_case.n_vertices
+        )
     )
     assert normals.shape == (bench_case.n_faces, 3)

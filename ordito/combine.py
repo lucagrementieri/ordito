@@ -118,7 +118,11 @@ def concatenate(
 
 
 def split(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, copy: bool = False
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    copy: bool = False,
+    labels: wp.array[wp.int32] | None = None,
 ) -> list[tuple[wp.array[wp.vec3], wp.array[wp.int32]]]:
     """
     Split a mesh into connected components by face adjacency.
@@ -148,6 +152,9 @@ def split(
     copy
         Return independent buffers instead of views into the batched result. One allocation per
         buffer of each component, so the returned list no longer pins the batched buffers.
+    labels
+        ``(n_faces,)`` face component labels, as
+        [`split_with_offsets`][ordito.combine.split_with_offsets] takes them.
 
     Returns
     -------
@@ -158,7 +165,7 @@ def split(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``labels`` are not all on one device.
 
     See Also
     --------
@@ -187,8 +194,10 @@ def split(
     print(part_vertices.size, part_faces.size // 3)  # 8 12
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
-    vertices_all, vertex_offsets, faces_all, face_offsets = split_with_offsets(vertices, faces)
+    require_same_device(vertices=vertices, faces=faces, labels=labels)
+    vertices_all, vertex_offsets, faces_all, face_offsets = split_with_offsets(
+        vertices, faces, labels=labels
+    )
     if vertex_offsets.size == 2:
         # One component is the whole of both buffers, so its offsets need no readback.
         if copy:
@@ -200,7 +209,10 @@ def split(
 
 
 def split_with_offsets(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    labels: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Split a mesh into connected components, returned as two CSR buffers.
@@ -216,6 +228,13 @@ def split_with_offsets(
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
+    labels
+        ``(n_faces,)`` face component labels of ``faces``, each component's smallest face id, as
+        [`face_connected_component_labels`][ordito.adjacency.face_connected_component_labels]
+        returns them
+        ([`Trimesh.face_connected_component_labels`][ordito.mesh.Trimesh.face_connected_component_labels]),
+        to spare the labelling. Trusted, not checked: the components come out in the order of these
+        labels.
 
     Returns
     -------
@@ -235,7 +254,7 @@ def split_with_offsets(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``labels`` are not all on one device.
 
     See Also
     --------
@@ -258,13 +277,17 @@ def split_with_offsets(
     print(face_offsets.numpy())  # [ 0 12 16]
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, labels=labels)
     device = vertices.device
     n_faces = faces.size // 3
     if n_faces == 0:
         return (*_launch.empty_packed(wp.vec3, device), *_launch.empty_packed(wp.int32, device))
 
-    face_labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
+    face_labels = (
+        od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
+        if labels is None
+        else labels
+    )
 
     # Every label is a face id, below ``n_faces``, so the radix sort stops at that bit width instead
     # of running all 32 bits.

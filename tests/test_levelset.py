@@ -1308,3 +1308,21 @@ def test_thicken_mesh_guards(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> No
         od.levelset.thicken_mesh(mesh_wp.points, mesh_wp.indices, 0.1, outside=-1.0)
     with pytest.raises(ValueError, match="at least one face"):
         od.levelset.thicken_mesh(mesh_wp.points, warp_empty(0, wp.int32, mesh_wp.device), 0.1)
+
+
+def test_thicken_mesh_mates_change_no_answer(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Ordito against ordito: ``mates=`` only spares the rim search its halfedge pairing.
+
+    The saddle has a rim, so the shell has side walls, and the hinted call must return the plain
+    call's shell bit for bit.
+    """
+    _mesh_tm, mesh_wp = saddle_graded
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    mates_wp = od.halfedge.halfedge_mates(faces_wp, vertices_wp.size)
+
+    plain = od.levelset.thicken_mesh(vertices_wp, faces_wp, 0.01)
+    given = od.levelset.thicken_mesh(vertices_wp, faces_wp, 0.01, mates=mates_wp)
+    assert plain[1].size > 2 * faces_wp.size
+    assert np.array_equal(given[0].numpy(), plain[0].numpy())
+    assert np.array_equal(given[1].numpy(), plain[1].numpy())

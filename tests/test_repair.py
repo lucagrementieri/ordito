@@ -1314,6 +1314,27 @@ def test_make_volume_multibody(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> 
     assert not (ok_a and ok_b)
 
 
+@pytest.mark.parametrize("multibody", [False, True])
+def test_make_volume_mates_change_no_answer(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], multibody: bool
+) -> None:
+    """
+    Ordito against ordito: ``mates=`` only spares the pairing behind the labels and the volume.
+
+    An inside-out sphere is turned outward either way, and the faces must match bit for bit.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    inverted_wp = od.repair.reverse_winding(mesh_wp.indices)
+    mates_wp = od.halfedge.halfedge_mates(inverted_wp, mesh_wp.points.size)
+
+    plain_np = od.repair.make_volume(mesh_wp.points, inverted_wp, multibody=multibody).numpy()
+    given_np = od.repair.make_volume(
+        mesh_wp.points, inverted_wp, multibody=multibody, mates=mates_wp
+    ).numpy()
+    assert not np.array_equal(plain_np, inverted_wp.numpy())
+    assert np.array_equal(given_np, plain_np)
+
+
 def test_multibody_orientation_is_reproducible_when_deterministic(
     bohemian_dome: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
@@ -1948,6 +1969,36 @@ def test_remove_small_components_min_area_is_reproducible_when_deterministic(
     assert kept_counts[0] == 3 * mesh_tm.faces.shape[0]
 
 
+@pytest.mark.parametrize("criterion", ["keep_largest", "min_faces", "min_area"])
+def test_remove_small_components_labels_change_no_answer(
+    three_shells: _ThreeShells, criterion: str
+) -> None:
+    """
+    Ordito against ordito: ``labels=`` only spares the component labelling.
+
+    The faces' own ``face_connected_component_labels`` must keep exactly the plain call's mesh,
+    bit for bit, under each criterion's per-component table.
+    """
+    _mesh_tm, vertices_wp, faces_wp = three_shells
+    labels_wp = od.adjacency.face_connected_component_labels(faces_wp, n_vertices=vertices_wp.size)
+
+    def remove(labels: wp.array[wp.int32] | None) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+        if criterion == "keep_largest":
+            return od.repair.remove_small_components(
+                vertices_wp, faces_wp, keep_largest=True, labels=labels
+            )
+        if criterion == "min_faces":
+            return od.repair.remove_small_components(
+                vertices_wp, faces_wp, min_faces=100, labels=labels
+            )
+        return od.repair.remove_small_components(vertices_wp, faces_wp, min_area=1.0, labels=labels)
+
+    plain = remove(None)
+    given = remove(labels_wp)
+    assert np.array_equal(given[0].numpy(), plain[0].numpy())
+    assert np.array_equal(given[1].numpy(), plain[1].numpy())
+
+
 # --------------------------------------------------------------------------------------
 # split_non_manifold_vertices
 # --------------------------------------------------------------------------------------
@@ -2209,6 +2260,23 @@ def test_split_non_manifold_vertices_matches_pymeshfix(device: str) -> None:
     assert split_faces_wp.size // 3 == faces_pmf.shape[0]
     assert od.validation.is_vertex_manifold(split_faces_wp)
     assert od.validation.is_vertex_manifold(numpy_to_warp(vertices_pmf, faces_pmf, device)[1])
+
+
+def test_split_non_manifold_vertices_mates_change_no_answer(device: str) -> None:
+    """
+    Ordito against ordito: ``mates=`` only spares the pairing the corner graph is built from.
+
+    The bowtie is cut either way, and all three outputs must match bit for bit.
+    """
+    vertices_np, faces_np = _bowtie_np()
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    mates_wp = od.halfedge.halfedge_mates(faces_wp, vertices_wp.size)
+
+    plain = od.repair.split_non_manifold_vertices(vertices_wp, faces_wp)
+    given = od.repair.split_non_manifold_vertices(vertices_wp, faces_wp, mates=mates_wp)
+    assert plain[0].size == vertices_wp.size + 1
+    for given_wp, plain_wp in zip(given, plain, strict=True):
+        assert np.array_equal(given_wp.numpy(), plain_wp.numpy())
 
 
 @pytest.mark.parity(
@@ -2582,6 +2650,27 @@ def test_collapse_small_triangles_matches_meshlib(
     assert len(kept_ml - kept_wp) <= 1
 
 
+def test_collapse_small_triangles_bounds_change_no_answer(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: ``bounds=`` only spares the reduction that measures the box.
+
+    The area threshold is scaled off the box diagonal, so the given box must collapse the same
+    faces, bit for bit; the saddle's needles fall under ``epsilon=1e-4``, so some do collapse.
+    """
+    _mesh_tm, mesh_wp = saddle_graded
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+
+    plain = od.repair.collapse_small_triangles(vertices_wp, faces_wp, epsilon=1e-4)
+    given = od.repair.collapse_small_triangles(
+        vertices_wp, faces_wp, epsilon=1e-4, bounds=od.bounds.aabb(vertices_wp)
+    )
+    assert plain[1].size < faces_wp.size
+    assert np.array_equal(given[0].numpy(), plain[0].numpy())
+    assert np.array_equal(given[1].numpy(), plain[1].numpy())
+
+
 def _kept_input_vertices(vertices_np: np.ndarray, output: tm.Trimesh) -> set[int]:
     # The input vertex each output vertex sits on; the float32 round trip is the only slack.
     distance, index = KDTree(vertices_np).query(np.asarray(output.vertices))
@@ -2746,6 +2835,24 @@ def test_remove_folded_faces_drops_exactly_the_folded_pairs(
     kept_vertices_wp, kept_faces_wp = od.repair.remove_folded_faces(mesh_wp.points, mesh_wp.indices)
     kept_np = kept_vertices_wp.numpy()[kept_faces_wp.numpy().reshape(-1, 3)].astype(np.float64)
     assert_unordered_rows_equal(kept_np.reshape(-1, 9), expected_np.reshape(-1, 9))
+
+
+def test_remove_folded_faces_mates_change_no_answer(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: ``mates=`` only spares the pairing the fold test reads neighbours from.
+
+    The sphere's fold is dropped either way, and the kept mesh must match bit for bit.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    mates_wp = od.halfedge.halfedge_mates(mesh_wp.indices, mesh_wp.points.size)
+
+    plain = od.repair.remove_folded_faces(mesh_wp.points, mesh_wp.indices)
+    given = od.repair.remove_folded_faces(mesh_wp.points, mesh_wp.indices, mates=mates_wp)
+    assert plain[1].size < mesh_wp.indices.size
+    assert np.array_equal(given[0].numpy(), plain[0].numpy())
+    assert np.array_equal(given[1].numpy(), plain[1].numpy())
 
 
 @pytest.mark.parametrize("angle", [0.0, 180.5])
@@ -3698,14 +3805,15 @@ def test_remove_tunnels_keeps_one_of_two_parallel_loops(torus: tuple[tm.Trimesh,
     assert not set(rings[0].tolist()) & set(rings[1].tolist())  # disjoint, as the rule requires
 
     faces_wp = mesh_wp.indices
-    labels_wp, sides = od.repair._cut_face_labels(faces_wp, rings, mesh_wp.points.size)  # pyright: ignore[reportPrivateUsage]
+    twins_wp = od.halfedge.halfedge_twins(faces_wp, mesh_wp.points.size)
+    labels_wp, sides = od.repair._cut_face_labels(faces_wp, rings, twins_wp)  # pyright: ignore[reportPrivateUsage]
     labels_np = labels_wp.numpy()
     assert np.unique(labels_np).size == 2  # non-vacuity: the pair really is dependent
     kept = od.repair._independent_loops(rings, labels_np, sides())  # pyright: ignore[reportPrivateUsage]
     assert len(kept) == 1
 
     cut_vertices_wp, cut_faces_wp = od.repair._cut_along_loops(  # pyright: ignore[reportPrivateUsage]
-        mesh_wp.points, faces_wp, kept
+        mesh_wp.points, faces_wp, kept, twins_wp
     )
     filled_wp = od.holes.fill_min_weight(cast("wp.array[wp.vec3]", cut_vertices_wp), cut_faces_wp)
     assert _genus(filled_wp) == 0

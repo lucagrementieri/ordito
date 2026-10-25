@@ -35,6 +35,7 @@ def principal_curvature(
     frame_independent: bool = True,
     face_normals: wp.array[wp.vec3] | None = None,
     face_areas: wp.array[wp.float32] | None = None,
+    mean_edge_length: float | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.float32]]:
     """
     Principal curvature directions and magnitudes per vertex via quadric fitting.
@@ -72,6 +73,11 @@ def principal_curvature(
         [`Trimesh.face_areas`][ordito.mesh.Trimesh.face_areas] cache the pair.
     face_areas
         ``(n_faces,)`` face areas; see ``face_normals``.
+    mean_edge_length
+        The mesh's [`mean_edge_length`][ordito.edges.mean_edge_length] when the caller holds it
+        ([`Trimesh.mean_edge_length`][ordito.mesh.Trimesh.mean_edge_length]), which scales
+        ``radius``; passing it spares the reduction and readback that measure it. Trusted, not
+        checked.
 
     Returns
     -------
@@ -135,7 +141,9 @@ def principal_curvature(
     # ``scaledRadius``. Not ``mean_unique_edge_length``: switching to it takes the mean deviation
     # from ``igl.principal_curvature`` on an open half-torus from 0.0056 to 0.0117 and drops the
     # within-5% fraction from 99.3% to 98.5%.
-    avg_edge = od.edges.mean_edge_length(vertices, faces)
+    avg_edge = (
+        od.edges.mean_edge_length(vertices, faces) if mean_edge_length is None else mean_edge_length
+    )
     scaled_radius = float(radius) * avg_edge
 
     # Collect vertex neighborhoods as geodesic balls (libigl getSphere) on device. A Euclidean ball

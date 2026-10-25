@@ -1657,6 +1657,29 @@ def test_icp_point_to_plane_convergence_stop_matches_the_host_rule(device: str) 
         assert cost == expected_cost
 
 
+def test_icp_point_to_plane_face_normals_change_no_answer(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: ``target_face_normals=`` only spares the pass that forms them.
+
+    A shifted copy of the sphere registers onto it either way, to the same transform, points and
+    cost, bit for bit.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    target = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    shifted_np = target.vertices.numpy() + np.array([0.05, -0.02, 0.03], dtype=np.float32)
+    source_wp = points_to_warp(shifted_np, str(mesh_wp.device))
+
+    plain = od.registration.icp_point_to_plane(source_wp, target.vertices, target.faces)
+    given = od.registration.icp_point_to_plane(
+        source_wp, target.vertices, target.faces, target_face_normals=target.face_normals
+    )
+    assert np.array_equal(given[0].numpy(), plain[0].numpy())
+    assert np.array_equal(given[1].numpy(), plain[1].numpy())
+    assert given[2] == plain[2]
+
+
 def test_icp_point_to_plane_validates_its_arguments(device: str) -> None:
     """
     Not a library comparison: the ``robust_kernel`` menu's guard and the ``target_normals`` one.

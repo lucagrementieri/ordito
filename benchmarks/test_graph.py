@@ -442,7 +442,9 @@ def test_face_connected_component_labels_depth(bench_case: BenchCase) -> None:
         assert labels_np.shape == (n_faces,)
         return
     labels = bench_case.run(
-        lambda: od.adjacency.face_connected_component_labels(bench_case.faces_wp)
+        lambda: od.adjacency.face_connected_component_labels(
+            bench_case.faces_wp, n_vertices=bench_case.n_vertices
+        )
     )
     assert labels.shape == (n_faces,)
 

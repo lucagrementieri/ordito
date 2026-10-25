@@ -817,6 +817,8 @@ def mesh_with_mesh(
     faces_b: wp.array[wp.int32],
     *,
     max_triangle_collisions: int = 16,
+    mesh_a: wp.Mesh | None = None,
+    mesh_b: wp.Mesh | None = None,
 ) -> odt.Array2dVec3:
     """
     Intersect two meshes, returning line segments along the intersection curve(s).
@@ -835,6 +837,12 @@ def mesh_with_mesh(
     max_triangle_collisions
         Broad-phase slots reserved per query triangle. Not a cap: the candidates of a triangle with
         more go to an overflow list, so the answer does not depend on it.
+    mesh_a, mesh_b
+        A ``wp.Mesh`` already built over ``vertices_a`` / ``faces_a`` (respectively ``vertices_b``
+        / ``faces_b``), to spare the BVH build, as
+        [`mesh_collision_pairs`][ordito.intersection.mesh_collision_pairs] takes them: only the
+        mesh with fewer faces (``a`` on a tie) is read, and neither is checked against the arrays.
+        [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is what to pass.
 
     Returns
     -------
@@ -846,7 +854,8 @@ def mesh_with_mesh(
     ValueError
         If ``max_triangle_collisions`` is less than 1.
     RuntimeError
-        If ``vertices_a``, ``faces_a``, ``vertices_b`` and ``faces_b`` are not all on one device.
+        If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b``, ``mesh_a`` and ``mesh_b`` are
+        not all on one device.
 
     Examples
     --------
@@ -866,11 +875,23 @@ def mesh_with_mesh(
     ```
     """
     require_same_device(
-        vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
+        vertices_a=vertices_a,
+        faces_a=faces_a,
+        vertices_b=vertices_b,
+        faces_b=faces_b,
+        mesh_a=mesh_a,
+        mesh_b=mesh_b,
     )
     device = vertices_a.device
     candidates = _candidate_face_pairs(
-        vertices_a, faces_a, vertices_b, faces_b, max_triangle_collisions, "mesh_with_mesh"
+        vertices_a,
+        faces_a,
+        vertices_b,
+        faces_b,
+        max_triangle_collisions,
+        "mesh_with_mesh",
+        mesh_a=mesh_a,
+        mesh_b=mesh_b,
     )
     if candidates is None:
         return odt.empty_2d((0, 2), wp.vec3, device=device)
@@ -1094,6 +1115,8 @@ def collision_masks(
     faces_b: wp.array[wp.int32],
     *,
     max_triangle_collisions: int = 16,
+    mesh_a: wp.Mesh | None = None,
+    mesh_b: wp.Mesh | None = None,
 ) -> tuple[wp.array[wp.bool], wp.array[wp.bool]]:
     """
     Which faces of each mesh are involved in a collision with the other, as one mask per mesh.
@@ -1111,6 +1134,12 @@ def collision_masks(
     max_triangle_collisions
         Broad-phase slots reserved per query triangle. Not a cap: a triangle with more candidates
         walks the rest again on the device, so the answer does not depend on it.
+    mesh_a, mesh_b
+        A ``wp.Mesh`` already built over ``vertices_a`` / ``faces_a`` (respectively ``vertices_b``
+        / ``faces_b``), to spare the BVH build, as
+        [`mesh_collision_pairs`][ordito.intersection.mesh_collision_pairs] takes them: only the
+        mesh with fewer faces (``a`` on a tie) is read, and neither is checked against the arrays.
+        [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is what to pass.
 
     Returns
     -------
@@ -1123,7 +1152,8 @@ def collision_masks(
     ValueError
         If ``max_triangle_collisions`` is less than 1.
     RuntimeError
-        If ``vertices_a``, ``faces_a``, ``vertices_b`` and ``faces_b`` are not all on one device.
+        If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b``, ``mesh_a`` and ``mesh_b`` are
+        not all on one device.
 
     See Also
     --------
@@ -1145,7 +1175,12 @@ def collision_masks(
     ```
     """
     require_same_device(
-        vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
+        vertices_a=vertices_a,
+        faces_a=faces_a,
+        vertices_b=vertices_b,
+        faces_b=faces_b,
+        mesh_a=mesh_a,
+        mesh_b=mesh_b,
     )
     device = vertices_a.device
     n_faces_a = faces_a.size // 3
@@ -1166,6 +1201,8 @@ def collision_masks(
         faces_b,
         max_triangle_collisions,
         "mesh_collision_pairs",
+        mesh_a=mesh_a,
+        mesh_b=mesh_b,
         grow=False,
     )
     if candidates is None:
@@ -2026,7 +2063,11 @@ def _cap_section_loops(
             continue
         fallback.append(odt.as_dense(cycles[start:stop]))
     if fallback:
-        faces = od.holes.fill_loops_min_weight(vertices, faces, fallback, "plane_normalized", True)
+        # The clip wrote every face index below its own vertex count, so the fill needs no reduction
+        # to bound them.
+        faces = od.holes.fill_loops_min_weight(
+            vertices, faces, fallback, "plane_normalized", True, n_vertices=vertices.size
+        )
     if n_cap_rows == 0:
         return faces
     # With every loop capped by its ear clip, its rows land where they sit in the triangulation,

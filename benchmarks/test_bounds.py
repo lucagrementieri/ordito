@@ -227,6 +227,19 @@ def test_enclosing_diagonal(bench_case: BenchCase) -> None:
     assert diagonal_igl > 0.0
 
 
+@pytest.mark.benchmark(group="box_diagonal")
+@pytest.mark.benchlibs("ordito")
+def test_box_diagonal(bench_lib: BenchLibrary) -> None:
+    """
+    The diagonal of a box the caller already holds: host arithmetic on two corners, no launch.
+
+    What a caller with a cached [`Trimesh.bounds`][ordito.mesh.Trimesh.bounds] pays in place of
+    the ``enclosing_diagonal`` row above. Ordito only: it is two ``float32`` corners and a norm.
+    """
+    lower, upper = wp.vec3(-1.0, 0.0, 2.0), wp.vec3(1.0, 3.0, 4.0)
+    assert bench_lib.run(lambda: od.bounds.box_diagonal(lower, upper)) > 0.0
+
+
 # Box for every containment row: the low corner of the mesh's own bounds, 60% of each side and
 # padded 1% outward, which is the construction ``tests/test_bounds.py`` documents. Fixed rather than
 # swept: the predicate is six comparisons per point whatever the box holds, so the *selectivity* is

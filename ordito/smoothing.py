@@ -362,6 +362,7 @@ def inflate(
     pre_smooth: bool = True,
     gradual: bool = True,
     lamb: float = 0.5,
+    vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Inflate a surface under uniform pressure: normal displacement alternating with smoothing.
@@ -410,6 +411,12 @@ def inflate(
     lamb
         Relaxation strength of each Laplacian pass, as
         [`filter_laplacian`][ordito.smoothing.filter_laplacian] takes it.
+    vertex_faces
+        ``(3 * n_faces,)`` and ``(n_vertices + 1,)`` optional precomputed
+        [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency] as
+        ``(vertex_faces, offsets)``. Depends on the connectivity alone -- which this flow never
+        changes -- so one CSR serves every call over the same mesh, and
+        [`Trimesh.vertex_face_adjacency`][ordito.mesh.Trimesh.vertex_face_adjacency] has it cached.
 
     Returns
     -------
@@ -422,7 +429,7 @@ def inflate(
     ValueError
         If ``iterations`` is negative.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``vertex_faces`` are not all on one device.
 
     See Also
     --------
@@ -446,7 +453,7 @@ def inflate(
     print(od.measures.volume(inflated, faces) > od.measures.volume(vertices, faces))  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, vertex_faces=vertex_faces)
     if iterations < 0:
         raise ValueError(f"iterations must be non-negative, got {iterations}")
     device = faces.device
@@ -463,7 +470,11 @@ def inflate(
     # vertex's normal over the vertex-face table built once here, and every buffer and the
     # constraint's device state are reused. Same arithmetic as the composed calls, up to the
     # normal sums' order.
-    vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    vf_indices, vf_offsets = (
+        vertex_faces
+        if vertex_faces is not None
+        else od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    )
     positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     displaced = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     wide = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
@@ -1025,6 +1036,8 @@ def relax_keep_volume(
     force: float = 0.5,
     region: wp.array[wp.bool] | None = None,
     max_displacement: float | None = None,
+    *,
+    unique_edges: odt.Array2dInt32 | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Uniform relaxation with the shrinkage taken out **locally**, rather than rescaled away.
@@ -1060,6 +1073,10 @@ def relax_keep_volume(
     max_displacement
         Clamp every vertex into a ball of this radius around its **input** position, applied after
         each pass. ``None`` leaves the relaxation unbounded.
+    unique_edges
+        ``(n_edges, 2)`` [`edges_unique`][ordito.edges.edges_unique] of ``faces``
+        ([`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique]), the edges the neighbour
+        rows are built from, to spare the edge sort. Trusted, not checked.
 
     Returns
     -------
@@ -1072,7 +1089,7 @@ def relax_keep_volume(
         If ``iterations`` is negative, if ``max_displacement`` is negative, or if ``region`` is not
         a length-``n_vertices`` ``wp.bool`` array.
     RuntimeError
-        If ``vertices``, ``faces`` and ``region`` are not all on one device.
+        If ``vertices``, ``faces``, ``region`` and ``unique_edges`` are not all on one device.
 
     See Also
     --------
@@ -1102,7 +1119,7 @@ def relax_keep_volume(
     print(abs(ratio - 1.0) < 0.01)  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces, region=region)
+    require_same_device(vertices=vertices, faces=faces, region=region, unique_edges=unique_edges)
     device = vertices.device
     n_vertices = vertices.size
     active, limit = _relaxation_state(vertices, iterations, region, max_displacement)
@@ -1111,7 +1128,8 @@ def relax_keep_volume(
 
     # Sorted rows: the ring sums below run in row order, and sorted rows are exactly the CSR
     # structure a triplet build would give, with no sort of every edge twice.
-    unique_edges, _ = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
+    if unique_edges is None:
+        unique_edges, _ = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
     columns, offsets = od.graph.edges_to_neighbor_lists(
         n_vertices, unique_edges, validate=False, sort_rows=True
     )
@@ -2278,6 +2296,9 @@ def smooth_region_fixed_rim(
     faces: wp.array[wp.int32],
     free_mask: wp.array[wp.bool],
     stabilizer: float = 0.0,
+    *,
+    unique_edges: odt.Array2dInt32 | None = None,
+    inverse: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Reposition a free vertex region as the umbrella-Laplacian solution with a sharp fixed boundary.
@@ -2298,6 +2319,13 @@ def smooth_region_fixed_rim(
     stabilizer
         Optional attraction to the original position (adds to the diagonal), which also makes the
         system solvable for a fully-free component. Defaults to ``0``.
+    unique_edges, inverse
+        ``(n_edges, 2)`` and ``(3 * n_faces,)`` [`edges_unique`][ordito.edges.edges_unique] pair
+        for ``faces`` when the caller holds it --
+        [`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique] and
+        [`Trimesh.edges_unique_inverse`][ordito.mesh.Trimesh.edges_unique_inverse] -- to spare the
+        edge sort the region's topology starts from. Trusted, not checked. Both must be given
+        together; either being ``None`` rebuilds them.
 
     Returns
     -------
@@ -2308,7 +2336,8 @@ def smooth_region_fixed_rim(
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``faces`` and ``free_mask`` are not all on one device.
+        If ``vertices``, ``faces``, ``free_mask``, ``unique_edges`` and ``inverse`` are not all on
+        one device.
 
     See Also
     --------
@@ -2347,8 +2376,15 @@ def smooth_region_fixed_rim(
     print(np.abs(smoothed.numpy()[:, 2]).max() < 1e-5)  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces, free_mask=free_mask)
-    region = _region_topology(vertices, faces, free_mask)
+    require_same_device(
+        vertices=vertices,
+        faces=faces,
+        free_mask=free_mask,
+        unique_edges=unique_edges,
+        inverse=inverse,
+    )
+    edges = None if unique_edges is None or inverse is None else (unique_edges, inverse)
+    region = _region_topology(vertices, faces, free_mask, edges)
     if region is None:
         return _launch.clone(vertices)
     return _solve_region_fixed_rim(vertices, faces, free_mask, region, stabilizer)
@@ -2359,6 +2395,9 @@ def smooth_region(
     faces: wp.array[wp.int32],
     free_mask: wp.array[wp.bool],
     edge_weights: str = "cotan",
+    *,
+    unique_edges: odt.Array2dInt32 | None = None,
+    inverse: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Reposition a free vertex region so the surface is smooth across the region boundary too.
@@ -2379,6 +2418,13 @@ def smooth_region(
         ``(n_vertices,)`` mask of the vertices to reposition.
     edge_weights
         ``"cotan"`` (default, clamped cotangent weights) or ``"unit"`` (uniform).
+    unique_edges, inverse
+        ``(n_edges, 2)`` and ``(3 * n_faces,)`` [`edges_unique`][ordito.edges.edges_unique] pair
+        for ``faces`` when the caller holds it --
+        [`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique] and
+        [`Trimesh.edges_unique_inverse`][ordito.mesh.Trimesh.edges_unique_inverse] -- to spare the
+        edge sort the region's topology starts from. Trusted, not checked. Both must be given
+        together; either being ``None`` rebuilds them.
 
     Returns
     -------
@@ -2391,7 +2437,8 @@ def smooth_region(
     ValueError
         If ``edge_weights`` is not ``"cotan"`` or ``"unit"``.
     RuntimeError
-        If ``vertices``, ``faces`` and ``free_mask`` are not all on one device.
+        If ``vertices``, ``faces``, ``free_mask``, ``unique_edges`` and ``inverse`` are not all on
+        one device.
 
     See Also
     --------
@@ -2427,8 +2474,15 @@ def smooth_region(
     print(np.abs(smoothed.numpy()[:, 2]).max() < 1e-5)  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces, free_mask=free_mask)
-    region = _region_topology(vertices, faces, free_mask)
+    require_same_device(
+        vertices=vertices,
+        faces=faces,
+        free_mask=free_mask,
+        unique_edges=unique_edges,
+        inverse=inverse,
+    )
+    edges = None if unique_edges is None or inverse is None else (unique_edges, inverse)
+    region = _region_topology(vertices, faces, free_mask, edges)
     if region is None:
         return _launch.clone(vertices)
     return _solve_region_smooth(vertices, faces, free_mask, region, edge_weights)
@@ -2547,10 +2601,25 @@ def refine_and_smooth_region(
     """
     require_same_device(vertices=vertices, faces=faces, patch_face_mask=patch_face_mask)
     device = faces.device
+    edges: tuple[odt.Array2dInt32, wp.array[wp.int32]] | None = None
     if refine == "density":
         vertices, faces, patch_face_mask = od.remesh.refine_region_to_density(
             vertices, faces, patch_face_mask, max_angle_change=max_angle_change_after_flip
         )
+    elif refine == "max_edge" and smooth_curvature:
+        # The refinement already holds the sort of its result's edges, which the smoothing below
+        # groups.
+        refined = od.remesh.subdivide_region_to_size(
+            vertices,
+            faces,
+            patch_face_mask,
+            max_edge=max_edge,
+            max_splits=max_edge_splits,
+            max_angle_change=max_angle_change_after_flip,
+            return_edges=True,
+        )
+        vertices, faces, patch_face_mask, unique_edges, inverse = refined
+        edges = (unique_edges, inverse)
     elif refine == "max_edge":
         vertices, faces, patch_face_mask = od.remesh.subdivide_region_to_size(
             vertices,
@@ -2568,7 +2637,8 @@ def refine_and_smooth_region(
     n = vertices.size
     # One edge grouping serves the boundary mask and both regions' topology: the solves move
     # vertices, never connectivity.
-    edges = od.edges.edges_unique(faces, n_vertices=n, validate=False)
+    if edges is None:
+        edges = od.edges.edges_unique(faces, n_vertices=n, validate=False)
     bd_mask = _boundary_verts_mask(n, edges, device)
     # New (interior patch) vertices are the tail appended by subdivision, minus mesh-boundary verts.
     free = _launch.empty(n, dtype=wp.bool, device=device)
@@ -3528,6 +3598,7 @@ def filter_two_step(
     threshold: float = 60.0,
     normal_iterations: int = 20,
     fit_iterations: int = 20,
+    mates: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Feature-preserving smoothing: filter the face normals, then fit the vertices to them.
@@ -3562,6 +3633,11 @@ def filter_two_step(
         Normal-diffusion passes per outer pass. MeshLab's ``stepnormalnum``, default ``20``.
     fit_iterations
         Vertex-fitting gradient steps per outer pass. MeshLab's ``stepfitnum``, default ``20``.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
+        the normal filter reads for its neighbours rather than pairing the halfedges again.
+        Trusted, not checked.
 
     Returns
     -------
@@ -3573,7 +3649,7 @@ def filter_two_step(
     ValueError
         If ``threshold`` is outside ``[0, 180]``.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -3610,7 +3686,7 @@ def filter_two_step(
     print(off_surface.mean() < np.abs(np.abs(noisy.numpy()) - 0.5).min(axis=1).mean())  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     device = vertices.device
     n = vertices.size
     n_faces = faces.size // 3
@@ -3622,7 +3698,8 @@ def filter_two_step(
     # The topology is fixed, so both incidence tables are built once for every pass of both halves:
     # the halfedge mates the normal passes read their neighbours off, and the vertex -> face rows
     # the fit steps gather over, whose lengths are the incident-face counts that set the step.
-    mates = od.halfedge.halfedge_mates(faces, n)
+    if mates is None:
+        mates = od.halfedge.halfedge_mates(faces, n)
     vf_offsets, vertex_faces = _incidence_rows(faces, 3, n)
     # The fit steps ping-pong between two buffers of this call; the input is only ever read.
     positions = vertices

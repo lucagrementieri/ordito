@@ -1467,13 +1467,19 @@ class Trimesh:
 
         Notes
         -----
-        Triggers a device-to-host synchronization on first access.
+        Triggers a device-to-host synchronization on first access. Read off `halfedge_mates` when
+        they are already cached -- one pass over the mate codes -- and otherwise by counting the
+        edges, which is cheaper than pairing the halfedges for it.
 
         See Also
         --------
         [`ordito.validation.is_edge_manifold`][]
         """
-        return od.validation.is_edge_manifold(self._faces, n_vertices=self.n_vertices)
+        return od.validation.is_edge_manifold(
+            self._faces,
+            n_vertices=self.n_vertices,
+            mates=cast("wp.array[wp.int32] | None", self._cache.get("halfedge_mates")),
+        )
 
     @_CachedProperty
     def is_vertex_manifold(self) -> bool:
@@ -1526,10 +1532,9 @@ class Trimesh:
 
         Notes
         -----
-        Triggers a device-to-host synchronization on first access. Unlike the other
-        adjacency-based predicates on this class, this does not reuse `face_adjacency`: the
-        underlying propagation engine rebuilds it internally and does not accept a
-        precomputed adjacency.
+        Triggers a device-to-host synchronization on first access. The orientation is propagated
+        over `halfedge_mates`, the table the other mate-based predicates here share, so no
+        face-adjacency table is built for it.
 
         See Also
         --------
@@ -2657,9 +2662,13 @@ class Trimesh:
         print([part.n_faces for part in parts])  # [12, 12]
         ```
         """
+        # The labels are this mesh's own cached property, so a mesh that has counted its bodies
+        # splits without labelling them again, and one that has not keeps them for later.
         return [
             Trimesh(vertices, faces)
-            for vertices, faces in od.combine.split(self._vertices, self._faces, copy=copy)
+            for vertices, faces in od.combine.split(
+                self._vertices, self._faces, copy=copy, labels=self.face_connected_component_labels
+            )
         ]
 
     def copy(self) -> Trimesh:

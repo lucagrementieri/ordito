@@ -215,7 +215,11 @@ def _table_view(tables: wp.array[wp.int32], start: int, stop: int) -> wp.array[w
 
 
 def fill_fan(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], preserve_largest_hole: bool = False
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    preserve_largest_hole: bool = False,
+    *,
+    mates: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.int32]:
     """
     Fill every boundary hole with a triangle fan from each loop's first vertex.
@@ -235,6 +239,10 @@ def fill_fan(
         When ``True``, leave the single largest boundary loop (greatest perimeter) open and fill
         only the rest. This turns a mesh with a known disk-like topology into a single-boundary
         disk, which is the input a robust UV parametrization expects.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
+        the boundary walk reads rather than pairing the halfedges again. Trusted, not checked.
 
     Returns
     -------
@@ -247,7 +255,7 @@ def fill_fan(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -281,10 +289,12 @@ def fill_fan(
     print(od.validation.is_watertight(vertices, filled))  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     device = faces.device
     n_faces = faces.size // 3
-    packed = _hole_loops(vertices, faces, preserve_largest_hole) if n_faces > 0 else None
+    packed = (
+        _hole_loops(vertices, faces, preserve_largest_hole, mates=mates) if n_faces > 0 else None
+    )
     if packed is None:
         return _launch.clone(faces)
 
@@ -306,7 +316,11 @@ def fill_fan(
 
 
 def fill_cone(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], preserve_largest_hole: bool = False
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    preserve_largest_hole: bool = False,
+    *,
+    mates: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Fill every boundary hole by coning it onto a new centroid vertex.
@@ -327,6 +341,10 @@ def fill_cone(
         When ``True``, leave the single largest boundary loop (greatest perimeter) open and fill
         only the rest. This turns a mesh with a known disk-like topology into a single-boundary
         disk, which is the input a robust UV parametrization expects.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
+        the boundary walk reads rather than pairing the halfedges again. Trusted, not checked.
 
     Returns
     -------
@@ -342,7 +360,7 @@ def fill_cone(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -376,10 +394,12 @@ def fill_cone(
     print(od.validation.is_watertight(filled_vertices, filled_faces))  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     device = faces.device
     n_faces = faces.size // 3
-    packed = _hole_loops(vertices, faces, preserve_largest_hole) if n_faces > 0 else None
+    packed = (
+        _hole_loops(vertices, faces, preserve_largest_hole, mates=mates) if n_faces > 0 else None
+    )
     if packed is None:
         return _launch.clone(vertices), _launch.clone(faces)
 
@@ -542,6 +562,9 @@ def fill_min_weight(
     resolve_multiple_edges: bool = True,
     preserve_largest_hole: bool = False,
     smooth_boundary: bool = True,
+    *,
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.int32]:
     """
     Fill every boundary hole with a minimum-weight triangulation over its existing vertices.
@@ -615,6 +638,14 @@ def fill_min_weight(
         When ``True`` (default), the dihedral edge metrics also score the hole
         rim edges against the existing adjacent faces, so the patch blends smoothly into the surface
         instead of turning sharply at the boundary. No effect on the triangle-only metrics.
+    n_vertices
+        Optional exclusive bound on the vertex indices, typically ``vertices.size``. Trusted, not
+        checked: it spares the reduction that otherwise range-checks ``faces`` and infers the
+        bound, and its host readback, whenever a loop is filled.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
+        the boundary walk reads rather than pairing the halfedges again. Trusted, not checked.
 
     Returns
     -------
@@ -627,9 +658,10 @@ def fill_min_weight(
     Raises
     ------
     ValueError
-        If ``metric`` is not one of the supported metric names.
+        If ``metric`` is not one of the supported metric names, or if ``n_vertices`` is ``None``, a
+        loop is filled and ``faces`` holds a negative index.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -661,16 +693,22 @@ def fill_min_weight(
     print(od.validation.is_watertight(vertices, filled))  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     _check_fill_metric(metric)
     n_faces = faces.size // 3
     if n_faces == 0:
         return _launch.clone(faces)
-    loops = _hole_loops(vertices, faces, preserve_largest_hole)
+    loops = _hole_loops(vertices, faces, preserve_largest_hole, mates=mates)
     if loops is None:
         return _launch.clone(faces)
     return _fill_packed_loops(
-        vertices, faces, loops, metric, resolve_multiple_edges, smooth_boundary
+        vertices,
+        faces,
+        loops,
+        metric,
+        resolve_multiple_edges,
+        smooth_boundary,
+        n_vertices=n_vertices,
     )
 
 
@@ -681,6 +719,8 @@ def fill_loops_min_weight(
     metric: str,
     resolve_multiple_edges: bool,
     smooth_boundary: bool = True,
+    *,
+    n_vertices: int | None = None,
 ) -> wp.array[wp.int32]:
     """
     Min-weight-triangulate the given boundary ``loops`` and append the fill faces.
@@ -708,6 +748,10 @@ def fill_loops_min_weight(
         When ``True``, forbid chords that duplicate an existing mesh edge.
     smooth_boundary
         See [`fill_min_weight`][ordito.holes.fill_min_weight].
+    n_vertices
+        Optional exclusive bound on the vertex indices, typically ``vertices.size``. Trusted, not
+        checked: it spares the reduction that otherwise range-checks ``faces`` and infers the
+        bound, and its host readback, whenever a loop is filled.
 
     Returns
     -------
@@ -719,7 +763,8 @@ def fill_loops_min_weight(
     ------
     ValueError
         If ``metric`` is not one of the names
-        [`fill_min_weight`][ordito.holes.fill_min_weight] lists.
+        [`fill_min_weight`][ordito.holes.fill_min_weight] lists, or if ``n_vertices`` is ``None``, a
+        loop is filled and ``faces`` holds a negative index.
     RuntimeError
         If ``vertices``, ``faces`` and ``loops`` are not all on one device.
 
@@ -754,7 +799,13 @@ def fill_loops_min_weight(
     if len(loops) == 0:
         return _launch.clone(faces)
     return _fill_packed_loops(
-        vertices, faces, _pack_loops(loops), metric, resolve_multiple_edges, smooth_boundary
+        vertices,
+        faces,
+        _pack_loops(loops),
+        metric,
+        resolve_multiple_edges,
+        smooth_boundary,
+        n_vertices=n_vertices,
     )
 
 
@@ -1147,6 +1198,7 @@ def fill_small(
     *,
     max_edges: int | None = None,
     n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.int32]:
     """
     Fill only the *small* boundary loops, sized either by perimeter or by boundary-edge count.
@@ -1190,6 +1242,10 @@ def fill_small(
         Optional exclusive bound on the vertex indices, typically ``vertices.size``. Trusted, not
         checked: it spares the reduction that otherwise range-checks ``faces`` and infers the
         bound, and its host readback, whenever a loop is filled.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
+        the boundary walk reads rather than pairing the halfedges again. Trusted, not checked.
 
     Returns
     -------
@@ -1204,7 +1260,7 @@ def fill_small(
         If neither ``max_perimeter`` nor ``max_edges`` is given, or if both are; or if
         ``n_vertices`` is ``None``, a loop is filled and ``faces`` holds a negative index.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     Notes
     -----
@@ -1245,11 +1301,13 @@ def fill_small(
     print(len(od.boundary.boundary_loops(vertices, filled)))  # 1
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     if (max_perimeter is None) == (max_edges is None):
         raise ValueError("pass exactly one of max_perimeter or max_edges")
 
-    filled = _fill_small(vertices, faces, max_perimeter, max_edges, n_vertices=n_vertices)
+    filled = _fill_small(
+        vertices, faces, max_perimeter, max_edges, mates=mates, n_vertices=n_vertices
+    )
     return _launch.clone(faces) if filled is faces else filled
 
 
@@ -1307,6 +1365,8 @@ def fill_smooth(
     smooth_boundary: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
     return_patch: Literal[False] = False,
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def fill_smooth(
@@ -1326,6 +1386,8 @@ def fill_smooth(
     smooth_boundary: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
     return_patch: Literal[True],
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]: ...
 def fill_smooth(
     vertices: wp.array[wp.vec3],
@@ -1344,6 +1406,8 @@ def fill_smooth(
     smooth_boundary: bool = True,
     refine: Literal["max_edge", "density"] = "max_edge",
     return_patch: bool = False,
+    n_vertices: int | None = None,
+    mates: wp.array[wp.int32] | None = None,
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
     | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]
@@ -1404,6 +1468,14 @@ def fill_smooth(
         target can. ``max_edge`` and ``max_edge_splits`` are ignored under ``"density"``.
     return_patch
         When ``True``, also return a length-``n_out_faces`` ``wp.bool`` mask of the patch faces.
+    n_vertices
+        Optional exclusive bound on the vertex indices, typically ``vertices.size``. Trusted, not
+        checked: it spares the reduction that otherwise range-checks ``faces`` and infers the
+        bound, and its host readback, whenever a loop is filled.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
+        the boundary walk reads rather than pairing the halfedges again. Trusted, not checked.
 
     Returns
     -------
@@ -1419,9 +1491,10 @@ def fill_smooth(
     Raises
     ------
     ValueError
-        If ``metric``, ``edge_weights`` or ``refine`` is unknown.
+        If ``metric``, ``edge_weights`` or ``refine`` is unknown, or if ``n_vertices`` is ``None``,
+        a loop is filled and ``faces`` holds a negative index.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     See Also
     --------
@@ -1458,7 +1531,7 @@ def fill_smooth(
     print(od.validation.is_watertight(filled_vertices, filled_faces))  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     _check_fill_metric(metric)
     if edge_weights not in ("cotan", "unit"):
         raise ValueError(f"edge_weights must be 'cotan' or 'unit', got {edge_weights!r}")
@@ -1466,7 +1539,9 @@ def fill_smooth(
 
     device = faces.device
     n_faces = faces.size // 3
-    packed = _hole_loops(vertices, faces, preserve_largest_hole) if n_faces > 0 else None
+    packed = (
+        _hole_loops(vertices, faces, preserve_largest_hole, mates=mates) if n_faces > 0 else None
+    )
     if packed is None:
         empty = _patch_mask(faces.size // 3, faces.size // 3, device)
         result = (_launch.clone(vertices), _launch.clone(faces))
@@ -1475,7 +1550,13 @@ def fill_smooth(
     n_faces_before = n_faces
     n_vertices_before = vertices.size
     faces_filled = _fill_packed_loops(
-        vertices, faces, packed, metric, resolve_multiple_edges, smooth_boundary
+        vertices,
+        faces,
+        packed,
+        metric,
+        resolve_multiple_edges,
+        smooth_boundary,
+        n_vertices=n_vertices,
     )
     n_faces_after = faces_filled.size // 3
     patch_mask = _patch_mask(n_faces_before, n_faces_after, device)
@@ -1644,7 +1725,11 @@ def refill_region(
         return (*result, empty) if return_patch else result
 
     packed = _pack_loops(new_loops)
-    faces_filled = _fill_packed_loops(kept_vertices, kept_faces, packed, metric, True, True)
+    # The kept faces come out of the deletion's compaction, so every index is below the kept
+    # vertex count by construction and the fill needs no reduction to bound them.
+    faces_filled = _fill_packed_loops(
+        kept_vertices, kept_faces, packed, metric, True, True, n_vertices=kept_vertices.size
+    )
     patch_mask = _patch_mask(n_kept_faces, faces_filled.size // 3, device)
     if triangulate_only:
         result = (kept_vertices, faces_filled)
@@ -2083,6 +2168,9 @@ def stitch(
     faces_a: wp.array[wp.int32],
     vertices_b: wp.array[wp.vec3],
     faces_b: wp.array[wp.int32],
+    *,
+    mates_a: wp.array[wp.int32] | None = None,
+    mates_b: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Stitch two single-boundary open meshes into one watertight mesh.
@@ -2100,6 +2188,10 @@ def stitch(
         ``(n_vertices,)`` vertex positions of each mesh.
     faces_a, faces_b
         ``(3 * n_faces,)`` flat triangle index buffers of each mesh.
+    mates_a, mates_b
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of each mesh's faces
+        when the caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]),
+        which the boundary walks read rather than pairing the halfedges again. Trusted, not checked.
 
     Returns
     -------
@@ -2115,7 +2207,8 @@ def stitch(
     ValueError
         If either mesh does not have exactly one boundary loop of at least 3 vertices.
     RuntimeError
-        If ``vertices_a``, ``faces_a``, ``vertices_b`` and ``faces_b`` are not all on one device.
+        If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b``, ``mates_a`` and ``mates_b`` are
+        not all on one device.
 
     See Also
     --------
@@ -2144,10 +2237,15 @@ def stitch(
     ```
     """
     require_same_device(
-        vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
+        vertices_a=vertices_a,
+        faces_a=faces_a,
+        vertices_b=vertices_b,
+        faces_b=faces_b,
+        mates_a=mates_a,
+        mates_b=mates_b,
     )
     loop_a, loop_b = _single_boundary_loops(
-        vertices_a, faces_a, vertices_b, faces_b, caller="stitch"
+        vertices_a, faces_a, vertices_b, faces_b, caller="stitch", mates_a=mates_a, mates_b=mates_b
     )
     return stitch_loops(vertices_a, faces_a, loop_a, vertices_b, faces_b, loop_b)
 
@@ -2159,6 +2257,11 @@ def stitch_min_weight(
     faces_b: wp.array[wp.int32],
     metric: str = "complex_stitch",
     up_dir: tuple[float, float, float] | None = None,
+    *,
+    n_vertices_a: int | None = None,
+    n_vertices_b: int | None = None,
+    mates_a: wp.array[wp.int32] | None = None,
+    mates_b: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Stitch two single-boundary open meshes with a minimum-weight band.
@@ -2178,6 +2281,14 @@ def stitch_min_weight(
         [`stitch_loops_min_weight`][ordito.holes.stitch_loops_min_weight].
     up_dir
         Up direction for the ``"vertical"`` metric.
+    n_vertices_a, n_vertices_b
+        Optional exclusive bounds on each mesh's vertex indices, typically ``vertices_a.size`` and
+        ``vertices_b.size``. Trusted, not checked: each spares the reduction that otherwise
+        range-checks that mesh's faces and infers its bound, and its host readback.
+    mates_a, mates_b
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of each mesh's faces
+        when the caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]),
+        which the boundary walks read rather than pairing the halfedges again. Trusted, not checked.
 
     Returns
     -------
@@ -2190,9 +2301,10 @@ def stitch_min_weight(
     ------
     ValueError
         If either mesh does not have exactly one boundary loop of at least 3 vertices, or ``metric``
-        is unknown.
+        is unknown, or if a bound is ``None`` and that mesh's faces hold a negative index.
     RuntimeError
-        If ``vertices_a``, ``faces_a``, ``vertices_b`` and ``faces_b`` are not all on one device.
+        If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b``, ``mates_a`` and ``mates_b`` are
+        not all on one device.
 
     See Also
     --------
@@ -2227,13 +2339,33 @@ def stitch_min_weight(
     ```
     """
     require_same_device(
-        vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
+        vertices_a=vertices_a,
+        faces_a=faces_a,
+        vertices_b=vertices_b,
+        faces_b=faces_b,
+        mates_a=mates_a,
+        mates_b=mates_b,
     )
     loop_a, loop_b = _single_boundary_loops(
-        vertices_a, faces_a, vertices_b, faces_b, caller="stitch_min_weight"
+        vertices_a,
+        faces_a,
+        vertices_b,
+        faces_b,
+        caller="stitch_min_weight",
+        mates_a=mates_a,
+        mates_b=mates_b,
     )
     return stitch_loops_min_weight(
-        vertices_a, faces_a, loop_a, vertices_b, faces_b, loop_b, metric, up_dir
+        vertices_a,
+        faces_a,
+        loop_a,
+        vertices_b,
+        faces_b,
+        loop_b,
+        metric,
+        up_dir,
+        n_vertices_a=n_vertices_a,
+        n_vertices_b=n_vertices_b,
     )
 
 
@@ -2255,6 +2387,10 @@ def stitch_smooth(
     edge_weights: str = "cotan",
     refine: Literal["max_edge", "density"] = "max_edge",
     return_patch: Literal[False] = False,
+    n_vertices_a: int | None = None,
+    n_vertices_b: int | None = None,
+    mates_a: wp.array[wp.int32] | None = None,
+    mates_b: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def stitch_smooth(
@@ -2274,6 +2410,10 @@ def stitch_smooth(
     edge_weights: str = "cotan",
     refine: Literal["max_edge", "density"] = "max_edge",
     return_patch: Literal[True],
+    n_vertices_a: int | None = None,
+    n_vertices_b: int | None = None,
+    mates_a: wp.array[wp.int32] | None = None,
+    mates_b: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]: ...
 def stitch_smooth(
     vertices_a: wp.array[wp.vec3],
@@ -2292,6 +2432,10 @@ def stitch_smooth(
     edge_weights: str = "cotan",
     refine: Literal["max_edge", "density"] = "max_edge",
     return_patch: bool = False,
+    n_vertices_a: int | None = None,
+    n_vertices_b: int | None = None,
+    mates_a: wp.array[wp.int32] | None = None,
+    mates_b: wp.array[wp.int32] | None = None,
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
     | tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]
@@ -2333,6 +2477,14 @@ def stitch_smooth(
         See [`fill_smooth`][ordito.holes.fill_smooth].
     return_patch
         See [`fill_smooth`][ordito.holes.fill_smooth].
+    n_vertices_a, n_vertices_b
+        Optional exclusive bounds on each mesh's vertex indices, typically ``vertices_a.size`` and
+        ``vertices_b.size``. Trusted, not checked: each spares the reduction that otherwise
+        range-checks that mesh's faces and infers its bound, and its host readback.
+    mates_a, mates_b
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of each mesh's faces
+        when the caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]),
+        which the boundary walks read rather than pairing the halfedges again. Trusted, not checked.
 
     Returns
     -------
@@ -2348,9 +2500,11 @@ def stitch_smooth(
     ------
     ValueError
         If either mesh lacks exactly one boundary loop, or ``metric`` / ``edge_weights`` /
-        ``refine`` is unknown.
+        ``refine`` is unknown, or if a bound is ``None`` and that mesh's faces hold a negative
+        index.
     RuntimeError
-        If ``vertices_a``, ``faces_a``, ``vertices_b`` and ``faces_b`` are not all on one device.
+        If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b``, ``mates_a`` and ``mates_b`` are
+        not all on one device.
 
     See Also
     --------
@@ -2394,7 +2548,12 @@ def stitch_smooth(
     ```
     """
     require_same_device(
-        vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
+        vertices_a=vertices_a,
+        faces_a=faces_a,
+        vertices_b=vertices_b,
+        faces_b=faces_b,
+        mates_a=mates_a,
+        mates_b=mates_b,
     )
     _check_stitch_metric(metric)
     if edge_weights not in ("cotan", "unit"):
@@ -2402,14 +2561,29 @@ def stitch_smooth(
     _check_refine(refine)
 
     loop_a, loop_b = _single_boundary_loops(
-        vertices_a, faces_a, vertices_b, faces_b, caller="stitch_smooth"
+        vertices_a,
+        faces_a,
+        vertices_b,
+        faces_b,
+        caller="stitch_smooth",
+        mates_a=mates_a,
+        mates_b=mates_b,
     )
 
     device = faces_a.device
     n_faces_before = (faces_a.size + faces_b.size) // 3
     n_vertices_before = vertices_a.size + vertices_b.size
     combined_vertices, combined_faces = stitch_loops_min_weight(
-        vertices_a, faces_a, loop_a, vertices_b, faces_b, loop_b, metric, up_dir
+        vertices_a,
+        faces_a,
+        loop_a,
+        vertices_b,
+        faces_b,
+        loop_b,
+        metric,
+        up_dir,
+        n_vertices_a=n_vertices_a,
+        n_vertices_b=n_vertices_b,
     )
     n_faces_after = combined_faces.size // 3
     patch_mask = _patch_mask(n_faces_before, n_faces_after, device)
@@ -2507,6 +2681,8 @@ def _single_boundary_loops(
     faces_b: wp.array[wp.int32],
     *,
     caller: str,
+    mates_a: wp.array[wp.int32] | None = None,
+    mates_b: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Return the one boundary loop of each mesh, or raise naming ``caller``.
@@ -2514,9 +2690,18 @@ def _single_boundary_loops(
     The shared precondition of the whole ``stitch*`` family: each mesh must have exactly one hole
     to zip to the other's. Loops shorter than three vertices are degenerate rather than holes and
     are dropped before counting, so a mesh carrying one is rejected on its real loop count.
+    ``mates_a`` / ``mates_b`` are each mesh's halfedge mates when the caller holds them.
     """
-    loops_a = [loop for loop in od.boundary.boundary_loops(vertices_a, faces_a) if loop.size >= 3]
-    loops_b = [loop for loop in od.boundary.boundary_loops(vertices_b, faces_b) if loop.size >= 3]
+    loops_a = [
+        loop
+        for loop in od.boundary.boundary_loops(vertices_a, faces_a, mates=mates_a)
+        if loop.size >= 3
+    ]
+    loops_b = [
+        loop
+        for loop in od.boundary.boundary_loops(vertices_b, faces_b, mates=mates_b)
+        if loop.size >= 3
+    ]
     if len(loops_a) != 1 or len(loops_b) != 1:
         raise ValueError(
             f"{caller} requires each mesh to have exactly one boundary loop (>= 3 vertices); "
@@ -2866,6 +3051,9 @@ def stitch_loops_min_weight(
     loop_b: wp.array[wp.int32],
     metric: str = "complex_stitch",
     up_dir: tuple[float, float, float] | None = None,
+    *,
+    n_vertices_a: int | None = None,
+    n_vertices_b: int | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Join two meshes with a **minimum-weight** cylindrical band between one boundary loop on each.
@@ -2896,6 +3084,10 @@ def stitch_loops_min_weight(
           ``up_dir``.
     up_dir
         Up direction for the ``"vertical"`` metric (defaults to ``(0, 0, 1)``); ignored otherwise.
+    n_vertices_a, n_vertices_b
+        Optional exclusive bounds on each mesh's vertex indices, typically ``vertices_a.size`` and
+        ``vertices_b.size``. Trusted, not checked: each spares the reduction that otherwise
+        range-checks that mesh's faces and infers its bound, and its host readback.
 
     Returns
     -------
@@ -2909,7 +3101,8 @@ def stitch_loops_min_weight(
     Raises
     ------
     ValueError
-        If either loop has fewer than 3 vertices, or ``metric`` is unknown.
+        If either loop has fewer than 3 vertices, or ``metric`` is unknown, or if a bound is
+        ``None`` and that mesh's faces hold a negative index.
     RuntimeError
         If ``vertices_a``, ``faces_a``, ``loop_a``, ``vertices_b``, ``faces_b`` and ``loop_b`` are
         not all on one device.
@@ -2960,8 +3153,8 @@ def stitch_loops_min_weight(
     device = faces_a.device
     metric_id = _STITCH_METRIC_IDS[metric]
     offset = vertices_a.size
-    table_a = _EdgeTable(vertices_a, faces_a)
-    table_b = _EdgeTable(vertices_b, faces_b)
+    table_a = _EdgeTable(vertices_a, faces_a, n_vertices_a)
+    table_b = _EdgeTable(vertices_b, faces_b, n_vertices_b)
 
     # Reverse loop A so the two rims wind oppositely (facing), then align both at the closest pair.
     # Everything runs on the device, the band's traceback included, so the one thing read back is

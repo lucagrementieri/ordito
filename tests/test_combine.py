@@ -306,6 +306,29 @@ def test_split_with_offsets_matches_split(three_parts: list[MeshPair]) -> None:
         assert copy_vertices_wp.ptr != view_vertices_wp.ptr
 
 
+def test_split_labels_change_no_answer(three_parts: list[MeshPair]) -> None:
+    """
+    Ordito against ordito: ``labels=`` only spares the component labelling.
+
+    The faces' own ``face_connected_component_labels`` must split the mesh exactly as without
+    them, in both forms.
+    """
+    concat_vertices_wp, concat_faces_wp = _concatenate_parts(three_parts)
+    labels_wp = od.adjacency.face_connected_component_labels(concat_faces_wp)
+
+    plain = od.combine.split_with_offsets(concat_vertices_wp, concat_faces_wp)
+    given = od.combine.split_with_offsets(concat_vertices_wp, concat_faces_wp, labels=labels_wp)
+    for given_wp, plain_wp in zip(given, plain, strict=True):
+        assert np.array_equal(given_wp.numpy(), plain_wp.numpy())
+    parts_wp = od.combine.split(concat_vertices_wp, concat_faces_wp, labels=labels_wp)
+    assert len(parts_wp) == 3
+    for (given_vertices_wp, given_faces_wp), (plain_vertices_wp, plain_faces_wp) in zip(
+        parts_wp, od.combine.split(concat_vertices_wp, concat_faces_wp), strict=True
+    ):
+        assert np.array_equal(given_vertices_wp.numpy(), plain_vertices_wp.numpy())
+        assert np.array_equal(given_faces_wp.numpy(), plain_faces_wp.numpy())
+
+
 def test_split_copies_many_components(device: str) -> None:
     """
     Ordito against ordito: forty components copy out equal to their views, into owned buffers.

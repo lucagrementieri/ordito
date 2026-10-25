@@ -219,6 +219,14 @@ def mate_share_count(mate: wp.int32) -> wp.int32:
     return wp.where(mate >= 0, wp.int32(2), wp.where(mate == -1, wp.int32(1), wp.int32(3)))
 
 
+@wp.func
+def mate_edge_manifold(mate: wp.int32, allow_boundary: wp.bool) -> wp.bool:
+    """Whether a halfedge's undirected edge is edge-manifold, from its mate code alone."""
+    # The one decision both mate-driven kernels below make: the mask clears a face on it and the
+    # verdict raises a flag.
+    return edge_manifold(mate_share_count(mate), allow_boundary)
+
+
 @wp.kernel
 def mate_manifold_mask(
     mates: wp.array[wp.int32], allow_boundary: wp.bool, out_mask: wp.array[wp.bool]
@@ -234,8 +242,23 @@ def mate_manifold_mask(
     stores the same ``False``.
     """
     h = wp.int32(wp.tid())
-    if not edge_manifold(mate_share_count(mates[h]), allow_boundary):
+    if not mate_edge_manifold(mates[h], allow_boundary):
         out_mask[h // 3] = False
+
+
+@wp.kernel
+def mate_manifold_violation(
+    mates: wp.array[wp.int32], allow_boundary: wp.bool, out_violation: wp.array[wp.int32]
+) -> None:
+    """
+    Raise ``out_violation[0]`` when some halfedge's undirected edge is not edge-manifold.
+
+    ``mate_manifold_mask``'s test reduced to the verdict, for a caller holding the mates: one
+    thread per halfedge, and an unsynchronized store because every writer stores the same ``1``.
+    """
+    h = wp.int32(wp.tid())
+    if not mate_edge_manifold(mates[h], allow_boundary):
+        out_violation[0] = 1
 
 
 @wp.func

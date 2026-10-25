@@ -890,11 +890,12 @@ def _settle_undecided_winding(
 
 def _is_closed_and_consistent(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> bool:
     """Whether every edge has exactly two faces that traverse it in opposite directions."""
-    # Winding first: it is the cheaper of the two sorts, and an inconsistent input stops there.
-    n_vertices = vertices.size
-    return od.validation.is_winding_consistent(
-        faces, n_vertices=n_vertices
-    ) and od.validation.is_edge_manifold(faces, allow_boundary_edges=False, n_vertices=n_vertices)
+    # One pairing serves both tests: the mates carry each edge's share count as well as its partner.
+    # Winding first, and an inconsistent input stops there.
+    mates = od.halfedge.halfedge_mates(faces, vertices.size)
+    return od.validation.is_winding_consistent(faces, mates=mates) and (
+        od.validation.is_edge_manifold(faces, allow_boundary_edges=False, mates=mates)
+    )
 
 
 def thicken_mesh(
@@ -903,6 +904,7 @@ def thicken_mesh(
     thickness: float,
     *,
     outside: float = 0.0,
+    mates: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Turn a surface into a solid shell of given thickness, keeping the input's triangulation.
@@ -931,6 +933,10 @@ def thicken_mesh(
     outside
         Distance the shell also extends outward, so the input surface ends up ``outside`` in from
         the outer face. Zero (the default) leaves the input surface as the outer face exactly.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
+        the rim search reads rather than pairing the halfedges again. Trusted, not checked.
 
     Returns
     -------
@@ -944,7 +950,7 @@ def thicken_mesh(
     ValueError
         If ``thickness`` is not positive, ``outside`` is negative, or ``faces`` is empty.
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     Notes
     -----
@@ -987,7 +993,7 @@ def thicken_mesh(
     print(od.validation.is_watertight(shell_vertices, shell_faces))  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     if thickness <= 0.0:
         raise ValueError("thickness must be positive")
     if outside < 0.0:
@@ -1008,7 +1014,7 @@ def thicken_mesh(
         inputs=[vertices, faces, normal_sums],
         device=device,
     )
-    rim = od.boundary.oriented_boundary_edges(vertices, faces)
+    rim = od.boundary.oriented_boundary_edges(vertices, faces, mates=mates)
     n_rim = int(rim.shape[0])
 
     out_vertices = _launch.empty(2 * n_vertices, dtype=wp.vec3, device=device)

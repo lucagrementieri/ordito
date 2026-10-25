@@ -282,6 +282,7 @@ def transfer_onto_vertices(
     target_vertices: wp.array[wp.vec3],
     *,
     max_dist: float | None = None,
+    mesh: wp.Mesh | None = None,
 ) -> tuple[wp.array[DType], wp.array[wp.float32]]:
     """
     Resample a source mesh's per-vertex field onto another mesh's vertices.
@@ -315,6 +316,11 @@ def transfer_onto_vertices(
         zero-filled output and report ``inf`` in the returned distance, which is how a caller
         detects them. When ``None``, derived from the box enclosing both meshes, so every target
         hits.
+    mesh
+        A ``wp.Mesh`` already built over ``source_vertices`` and ``source_faces``, to spare the BVH
+        build this otherwise pays on every call. Not checked against them: a mesh over other
+        geometry silently answers for that geometry.
+        [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is what to pass.
 
     Returns
     -------
@@ -330,8 +336,8 @@ def transfer_onto_vertices(
     ValueError
         If ``source_values`` does not have one entry per source vertex.
     RuntimeError
-        If ``source_vertices``, ``source_faces``, ``source_values`` and ``target_vertices`` are not
-        all on one device.
+        If ``source_vertices``, ``source_faces``, ``source_values``, ``target_vertices`` and
+        ``mesh`` are not all on one device.
 
     See Also
     --------
@@ -365,6 +371,7 @@ def transfer_onto_vertices(
         source_faces=source_faces,
         source_values=source_values,
         target_vertices=target_vertices,
+        mesh=mesh,
     )
     device = target_vertices.device
     n_target = target_vertices.size
@@ -379,9 +386,10 @@ def transfer_onto_vertices(
     if n_target == 0 or source_faces.size == 0:
         return out_values, _launch.full(n_target, float("inf"), dtype=wp.float32, device=device)
 
-    require_nonempty_mesh(source_faces, "transfer_onto_vertices")
-    # The mesh aliases the caller's buffers and is discarded here, so it needs no copy.
-    mesh = wp.Mesh(points=source_vertices, indices=source_faces)
+    if mesh is None:
+        require_nonempty_mesh(source_faces, "transfer_onto_vertices")
+        # The mesh aliases the caller's buffers and is discarded here, so it needs no copy.
+        mesh = wp.Mesh(points=source_vertices, indices=source_faces)
     distance = _launch.empty(n_target, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_interpolation.TRANSFER_ONTO_VERTICES[source_values.dtype],

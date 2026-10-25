@@ -220,6 +220,47 @@ def enclosing_diagonal(points: wp.array[wp.vec3], other: wp.array[wp.vec3] | Non
     return float(np.linalg.norm(-corners_np[3:] - corners_np[:3]))
 
 
+def box_diagonal(min_bound: wp.vec3, max_bound: wp.vec3) -> float:
+    """
+    Diagonal of an axis-aligned box given by its corners, as a host float.
+
+    The same number [`enclosing_diagonal`][ordito.bounds.enclosing_diagonal] returns for the points
+    whose [`aabb`][ordito.bounds.aabb] the corners are, bit for bit: both take the norm of the
+    ``float32`` corner difference. So a caller that already holds a box -- a
+    [`Trimesh.bounds`][ordito.mesh.Trimesh.bounds] -- gets the diagonal without the reduction and
+    readback that measure it again.
+
+    Parameters
+    ----------
+    min_bound
+        Lower corner.
+    max_bound
+        Upper corner.
+
+    Returns
+    -------
+    float
+        ``|max_bound - min_bound|``.
+
+    See Also
+    --------
+    [`enclosing_diagonal`][ordito.bounds.enclosing_diagonal]
+
+    Examples
+    --------
+    ```python
+    import ordito as od
+
+    vertices, _ = od.creation.box()
+    lower, upper = od.bounds.aabb(vertices)
+    print(od.bounds.box_diagonal(lower, upper) == od.bounds.enclosing_diagonal(vertices))  # True
+    ```
+    """
+    lower = np.array(min_bound, dtype=np.float32)
+    upper = np.array(max_bound, dtype=np.float32)
+    return float(np.linalg.norm(upper - lower))
+
+
 def points_in_aabb(
     points: wp.array[wp.vec3], min_bound: wp.vec3, max_bound: wp.vec3
 ) -> wp.array[wp.int32]:

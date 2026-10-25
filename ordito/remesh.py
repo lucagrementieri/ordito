@@ -142,6 +142,7 @@ def isotropic_remesh(
     smooth: bool = True,
     reproject: bool = True,
     max_deviation: float | None = None,
+    bounds: tuple[wp.vec3, wp.vec3] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
 
@@ -207,6 +208,11 @@ def isotropic_remesh(
         lie on its own feature curve. It moves no further than the bound requires, and a vertex
         already inside the band is untouched — but if the feature curves must be honoured exactly,
         leave this ``None``.
+    bounds
+        The box enclosing ``vertices`` when the caller holds it, typically
+        [`Trimesh.bounds`][ordito.mesh.Trimesh.bounds]. Its diagonal scales the default target and
+        the closest-point search, so passing it spares the reduction and readback that measure the
+        box again. Trusted, not checked.
 
     Returns
     -------
@@ -296,7 +302,11 @@ def isotropic_remesh(
     current_vertices = vertices
     current_faces = faces
 
-    diag = od.bounds.enclosing_diagonal(vertices)
+    diag = (
+        od.bounds.enclosing_diagonal(vertices)
+        if bounds is None
+        else od.bounds.box_diagonal(*bounds)
+    )
     sizing_input: wp.array[wp.float32] | None = None
     if target_length is None or isinstance(target_length, int | float):
         target = float(target_length) if target_length is not None else 0.01 * diag
@@ -368,7 +378,9 @@ def isotropic_remesh(
             split_limit: float | wp.array[wp.float32] = 4.0 / 3.0 * target
             if sizing_input is not None:
                 split_limit = _length_bands(
-                    _sizing_at(current_vertices, vertices, faces, sizing_input, query_radius),
+                    _sizing_at(
+                        current_vertices, vertices, faces, sizing_input, query_radius, original_mesh
+                    ),
                     target,
                     current_vertices.size,
                     device,
@@ -393,7 +405,9 @@ def isotropic_remesh(
         incidence: _EdgeIncidence | None = None
         if collapse:
             low, high = _length_bands(
-                _sizing_at(current_vertices, vertices, faces, sizing_input, query_radius),
+                _sizing_at(
+                    current_vertices, vertices, faces, sizing_input, query_radius, original_mesh
+                ),
                 target,
                 current_vertices.size,
                 device,
@@ -500,17 +514,19 @@ def _sizing_at(
     faces: wp.array[wp.int32],
     sizing_input: wp.array[wp.float32] | None,
     query_radius: float,
+    mesh: wp.Mesh | None,
 ) -> wp.array[wp.float32] | None:
     """
     Sample the input mesh's sizing field at ``positions``, via their closest points on that surface.
 
     ``None`` in, ``None`` out, so the uniform-target path costs nothing and the caller needs no
-    branch of its own.
+    branch of its own. ``mesh`` is the input surface's BVH, built once by the caller (it always is
+    when a sizing field is given), so no sample rebuilds it.
     """
     if sizing_input is None:
         return None
     return od.interpolation.transfer_onto_vertices(
-        vertices, faces, sizing_input, positions, max_dist=query_radius
+        vertices, faces, sizing_input, positions, max_dist=query_radius, mesh=mesh
     )[0]
 
 
@@ -3246,6 +3262,8 @@ def intrinsic_delaunay(
     faces: wp.array[wp.int32],
     epsilon: float = TOLERANCE_MOLLIFY,
     max_iter: int = 100,
+    *,
+    mates: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.int32], odt.Array2dFloat32, int]:
     """
     Retriangulate to the intrinsic Delaunay triangulation, without moving a vertex.
@@ -3276,6 +3294,10 @@ def intrinsic_delaunay(
         triangle has no well-defined angles to test.
     max_iter
         Cap on the number of parallel flip rounds.
+    mates
+        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
+        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
+        seed the flip loop's twin table without pairing the halfedges again. Trusted, not checked.
 
     Returns
     -------
@@ -3289,7 +3311,7 @@ def intrinsic_delaunay(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
     Notes
     -----
@@ -3328,7 +3350,7 @@ def intrinsic_delaunay(
     print(edge_lengths.shape)  # (2, 3)
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, mates=mates)
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
@@ -3349,7 +3371,7 @@ def intrinsic_delaunay(
     _launch.launch(
         kernel_remesh.pair_intrinsic_twins,
         dim=n_half,
-        inputs=[faces, od.halfedge.halfedge_mates(faces, n_vertices)],
+        inputs=[faces, od.halfedge.halfedge_mates(faces, n_vertices) if mates is None else mates],
         outputs=[twin, intrinsic_faces, face_claim],
         device=device,
     )
@@ -3410,7 +3432,11 @@ def intrinsic_delaunay(
 
 
 def subdivide(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    unique_edges: odt.Array2dInt32 | None = None,
+    inverse: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Subdivide a mesh by splitting every face into four triangles.
@@ -3425,6 +3451,13 @@ def subdivide(
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
+    unique_edges, inverse
+        ``(n_edges, 2)`` and ``(3 * n_faces,)`` [`edges_unique`][ordito.edges.edges_unique] pair
+        for ``faces`` when the caller holds it --
+        [`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique] and
+        [`Trimesh.edges_unique_inverse`][ordito.mesh.Trimesh.edges_unique_inverse] -- to spare the
+        edge sort. Trusted, not checked. Both must be given together; either being ``None``
+        rebuilds them.
 
     Returns
     -------
@@ -3435,7 +3468,7 @@ def subdivide(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces``, ``unique_edges`` and ``inverse`` are not all on one device.
 
     See Also
     --------
@@ -3453,7 +3486,7 @@ def subdivide(
     print(new_vertices.shape, new_faces.shape)  # (26,) (144,)
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, unique_edges=unique_edges, inverse=inverse)
     device = vertices.device
     n_vertices = vertices.size
 
@@ -3463,7 +3496,8 @@ def subdivide(
         # and a caller that mutates a "subdivided" mesh must not reach back into its own input.
         return _launch.clone(vertices), _launch.clone(faces)
 
-    unique_edges, inverse = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
+    if unique_edges is None or inverse is None:
+        unique_edges, inverse = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
     n_unique = int(unique_edges.shape[0])
 
     # One buffer sized for its final use: the originals copied into the prefix and one midpoint per
@@ -3488,13 +3522,25 @@ def subdivide_loop(
     faces: wp.array[wp.int32],
     *,
     return_operator: Literal[False] = False,
+    unique_edges: odt.Array2dInt32 | None = None,
+    inverse: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
 def subdivide_loop(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, return_operator: Literal[True]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    return_operator: Literal[True],
+    unique_edges: odt.Array2dInt32 | None = None,
+    inverse: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], odt.BsrMatrix[wp.float32]]: ...
 def subdivide_loop(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, return_operator: bool = False
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    return_operator: bool = False,
+    unique_edges: odt.Array2dInt32 | None = None,
+    inverse: wp.array[wp.int32] | None = None,
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
     | tuple[wp.array[wp.vec3], wp.array[wp.int32], odt.BsrMatrix[wp.float32]]
@@ -3534,6 +3580,13 @@ def subdivide_loop(
         ``new_vertices == P @ vertices`` and **any** per-vertex attribute can be carried through the
         subdivision by the same matrix (see
         [`ordito.interpolation.transfer_through_operator`][ordito.interpolation.transfer_through_operator]).
+    unique_edges, inverse
+        ``(n_edges, 2)`` and ``(3 * n_faces,)`` [`edges_unique`][ordito.edges.edges_unique] pair
+        for ``faces`` when the caller holds it --
+        [`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique] and
+        [`Trimesh.edges_unique_inverse`][ordito.mesh.Trimesh.edges_unique_inverse] -- to spare the
+        edge sort. Trusted, not checked. Both must be given together; either being ``None``
+        rebuilds them.
 
     Returns
     -------
@@ -3552,7 +3605,7 @@ def subdivide_loop(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not all on one device.
+        If ``vertices``, ``faces``, ``unique_edges`` and ``inverse`` are not all on one device.
 
     Notes
     -----
@@ -3604,7 +3657,7 @@ def subdivide_loop(
     print(od.measures.volume(new_vertices, new_faces) < od.measures.volume(vertices, faces))  # True
     ```
     """
-    require_same_device(vertices=vertices, faces=faces)
+    require_same_device(vertices=vertices, faces=faces, unique_edges=unique_edges, inverse=inverse)
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
@@ -3619,7 +3672,8 @@ def subdivide_loop(
             )
         return _launch.clone(vertices), _launch.clone(faces)
 
-    unique_edges, inverse = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
+    if unique_edges is None or inverse is None:
+        unique_edges, inverse = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
     n_unique = int(unique_edges.shape[0])
 
     # Two zeroed buffers, one per dtype, split into the six accumulators: per unique edge, how many
@@ -4029,6 +4083,7 @@ def _extend_sizing_field(
     return extended
 
 
+@overload
 def subdivide_region_to_size(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -4039,7 +4094,47 @@ def subdivide_region_to_size(
     delaunay: bool = True,
     max_angle_change: float | None = math.pi / 6.0,
     max_deviation: float | None = None,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]:
+    *,
+    return_edges: Literal[False] = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]: ...
+@overload
+def subdivide_region_to_size(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    region: wp.array[wp.bool],
+    max_edge: float,
+    max_iter: int = 10,
+    max_splits: int | None = None,
+    delaunay: bool = True,
+    max_angle_change: float | None = math.pi / 6.0,
+    max_deviation: float | None = None,
+    *,
+    return_edges: Literal[True],
+) -> tuple[
+    wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool], odt.Array2dInt32, wp.array[wp.int32]
+]: ...
+def subdivide_region_to_size(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    region: wp.array[wp.bool],
+    max_edge: float,
+    max_iter: int = 10,
+    max_splits: int | None = None,
+    delaunay: bool = True,
+    max_angle_change: float | None = math.pi / 6.0,
+    max_deviation: float | None = None,
+    *,
+    return_edges: bool = False,
+) -> (
+    tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]
+    | tuple[
+        wp.array[wp.vec3],
+        wp.array[wp.int32],
+        wp.array[wp.bool],
+        odt.Array2dInt32,
+        wp.array[wp.int32],
+    ]
+):
     """
     Subdivide only a face region until its edges are at most ``max_edge`` long.
 
@@ -4080,6 +4175,10 @@ def subdivide_region_to_size(
         the gate.
     max_deviation
         Surface-deviation gate for the flip pass. ``None`` disables it.
+    return_edges
+        Also return the [`edges_unique`][ordito.edges.edges_unique] pair of ``new_faces``, which
+        the passes already hold the sort for, so a caller about to group the result's edges need
+        not sort them again.
 
     Returns
     -------
@@ -4090,6 +4189,11 @@ def subdivide_region_to_size(
         ``(3 * n_out_faces,)`` flat buffer of the refined faces.
     new_region : wp.array[wp.bool]
         ``(n_out_faces,)`` region mask; child faces inherit their parent's membership.
+    unique_edges : odt.Array2dInt32
+        ``(n_edges, 2)`` [`edges_unique`][ordito.edges.edges_unique] of ``new_faces``, only with
+        ``return_edges``.
+    inverse : wp.array[wp.int32]
+        ``(3 * n_out_faces,)`` its corner map, only with ``return_edges``.
 
     Raises
     ------
@@ -4131,7 +4235,10 @@ def subdivide_region_to_size(
     if region.size != n_faces:
         raise ValueError(f"region must have length n_faces={n_faces}, got {region.size}")
     if n_faces == 0:
-        return _launch.clone(vertices), _launch.clone(faces), _launch.clone(region)
+        result = (_launch.clone(vertices), _launch.clone(faces), _launch.clone(region))
+        if return_edges:
+            return *result, odt.empty_2d((0, 2), wp.int32, device=device), result[1]
+        return result
 
     max_edge_f = wp.float32(max_edge)
     current_vertices = vertices
@@ -4141,6 +4248,9 @@ def subdivide_region_to_size(
     # The flip pass's working set over ``current_faces``, kept while that buffer lives: its edge
     # sort already is the next pass's ``edges_unique``, and the closing flip pass starts from it.
     topology: _FlipTopology | None = None
+    # The last pass's edge grouping, which is of the faces the loop leaves (``return_edges``).
+    unique_edges: odt.Array2dInt32 | None = None
+    inverse: wp.array[wp.int32] | None = None
 
     for i in range(max_iter + 1):
         n_faces = current_faces.size // 3
@@ -4229,6 +4339,10 @@ def subdivide_region_to_size(
         current_vertices, current_faces = _launch.clone(vertices), _launch.clone(faces)
 
     if delaunay:
+        # The closing pass builds the topology it is handed, so one held here outlives it and
+        # carries the sort its edge grouping needs.
+        if return_edges and topology is None:
+            topology = _FlipTopology(current_faces, current_vertices.size)
         _flip_region_faces(
             current_vertices,
             current_faces,
@@ -4238,8 +4352,21 @@ def subdivide_region_to_size(
             50,
             topology,
         )
-
+        if return_edges and topology is not None and topology.built:
+            unique_edges, inverse = topology.edges_unique()
+        elif return_edges:
+            unique_edges, inverse = od.edges.edges_unique(
+                current_faces, n_vertices=current_vertices.size, validate=False
+            )
     new_region = od.array.astype(region_flags, wp.bool)
+    if return_edges:
+        # Without the flip pass, the grouping the loop's last pass took is of the faces it left:
+        # every pass that splits loops back to group again before it can stop.
+        if unique_edges is None or inverse is None:
+            unique_edges, inverse = od.edges.edges_unique(
+                current_faces, n_vertices=current_vertices.size, validate=False
+            )
+        return current_vertices, current_faces, new_region, unique_edges, inverse
     return current_vertices, current_faces, new_region
 
 

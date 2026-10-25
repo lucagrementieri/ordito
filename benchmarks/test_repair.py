@@ -197,7 +197,9 @@ def test_resolve_duplicated_faces(bench_case: BenchCase, fraction: float) -> Non
         return
     if bench_case.kind == "ordito":
         faces_dup = _faces_with_duplicates_wp(bench_case, fraction)
-        resolved, kept = bench_case.run(lambda: od.repair.resolve_duplicated_faces(faces_dup))
+        resolved, kept = bench_case.run(
+            lambda: od.repair.resolve_duplicated_faces(faces_dup, n_vertices=bench_case.n_vertices)
+        )
         assert resolved.size == kept.size * 3
         assert kept.size > 0
     else:
