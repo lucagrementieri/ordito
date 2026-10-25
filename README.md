@@ -199,7 +199,7 @@ uv run basedpyright             # type checking (0 errors expected)
 
 uv run zensical serve           # preview the docs locally
 
-uv run pytest --device=cpu --cov=ordito        # coverage, the way CI measures it
+uv run pytest --device=cpu -n 4 --cov=ordito   # coverage, the way CI measures it
 ```
 
 The coverage badge measures the Python wrapper layer on the CPU backend, which is what CI can

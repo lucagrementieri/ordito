@@ -30,6 +30,12 @@ Usage
     That turns the deterministic CPU device into an oracle for the CUDA-only tile code, which the
     ordinary CPU pass, running one lane per block, never executes. Opt-in: a CPU block costs a fixed
     price per launch far above the one-lane form.
+``uv run python -m tests.devices --cpu-workers 0``
+    Runs the CPU passes in one process. By default they run under ``pytest-xdist`` with
+    ``--cpu-workers`` processes (8, at most the core count): a CPU kernel runs on one thread, so one
+    process leaves the other cores idle, and past 8 workers the slowest tests set the wall clock
+    while every worker still holds its own copy of the reference stack. The CUDA pass stays one
+    process, so concurrent workers do not compete for the one device's memory.
 ``uv run python -m tests.devices -- -x -k grouping``
     Everything after ``--`` is forwarded to both pytest invocations.
 
@@ -73,13 +79,20 @@ def main(argv: list[str] | None = None) -> int:
         help="add a CPU pass with --cpu-blocks (every lane of a CPU block runs)",
     )
     parser.add_argument(
+        "--cpu-workers",
+        type=int,
+        default=min(8, os.cpu_count() or 1),
+        help="xdist workers for the CPU passes; 0 runs them in one process (default: 8)",
+    )
+    parser.add_argument(
         "pytest_args", nargs="*", help="extra arguments forwarded to both pytest passes"
     )
     args = parser.parse_args(argv)
 
     # The static scans of the source tree (``device_agnostic``) answer the same in every process,
     # and they were a fifth of the CPU pass's wall clock; only the CUDA pass runs them.
-    cpu_extra = ["--skip-device-agnostic", *args.pytest_args]
+    workers = ["-n", str(args.cpu_workers)] if args.cpu_workers > 0 else []
+    cpu_extra = ["--skip-device-agnostic", *workers, *args.pytest_args]
     results = [
         _run("cuda pass", "cuda", hide_cuda=False, extra=args.pytest_args),
         # ``both`` in a CUDA-hidden process resolves to ["cpu"] and disables the slow_cpu skip, so

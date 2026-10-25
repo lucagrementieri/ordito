@@ -239,9 +239,13 @@ jobs:
       # the badge has been published. Ordering matters: if the threshold failed this step, a real
       # coverage regression on `main` would abort before the badge updated, leaving it frozen at
       # the last good number. A badge that silently stops moving is worse than one showing a drop.
+      #
+      # Four xdist workers, one per vCPU: a CPU kernel runs on one thread, so one process left
+      # three cores idle (2.2x on four cores, cold kernel cache or warm). pytest-cov merges the
+      # workers' data; the passed/skipped counts and the coverage figure equal a serial run's.
       - name: pytest (CPU device, with coverage)
         run: >
-          uv run pytest --device=cpu -q
+          uv run pytest --device=cpu -q -n 4
           --cov=ordito
           --cov-report=term
           --cov-report=json

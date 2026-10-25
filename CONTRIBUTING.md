@@ -48,7 +48,7 @@ CI additionally measures coverage on its CPU run and fails below a floor, so if 
 moving code in the wrapper layer, check it the way CI will:
 
 ```bash
-uv run pytest --device=cpu --cov=ordito --cov-report=term
+uv run pytest --device=cpu -n 4 --cov=ordito --cov-report=term
 ```
 
 The measurement covers `ordito/*.py` and deliberately not `ordito/kernels/`. A `@wp.kernel`

@@ -511,6 +511,12 @@ implementation. `trimesh` is the default; §7.6 covers the other eight libraries
 - Both-device coverage is a two-process job: `uv run python -m tests.devices` (a CUDA pass, then a
   CPU pass with `CUDA_VISIBLE_DEVICES=""`), because Warp's CPU work is much slower once CUDA is
   initialised (§12.1). Never use `--device=both` on a GPU box for CPU coverage.
+- CPU runs are parallel, CUDA runs are not. The CPU passes of `tests.devices` run under
+  `pytest-xdist` (`--cpu-workers`, default 8; CI's `pytest-cpu` uses `-n 4`): a CPU kernel runs on
+  one thread, so workers scale until the slowest tests set the wall clock, and xdist matched the
+  serial run's pass, skip and coverage counts exactly. A CUDA run stays one process, or the
+  workers compete for the device's memory. A test must therefore not depend on another test
+  having run in its process.
 - While developing, run `uv run python -m pytest tests/test_<module>.py -q --device=cuda` only.
 - Use `tests.devices` when a change is device-dependent by construction (`launch_tiled` kernel (§12.2),
   `_device.prefers_tiled_reduction`, device-gated constant (§13.2)).
