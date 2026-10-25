@@ -940,6 +940,9 @@ def _fill_packed_loops(
         smooth_boundary,
         dp,
         prev,
+        _launch.view(
+            state, kernel_holes.FILL_STATE_SPAN_BASE, kernel_holes.FILL_STATE_SPAN_BASE + 1
+        ),
     )
 
     if metric in _METRICS_WITH_BAD_TERMS:
@@ -975,6 +978,11 @@ def _fill_packed_loops(
                 smooth_boundary,
                 dp,
                 prev,
+                _launch.view(
+                    state,
+                    kernel_holes.FILL_STATE_RETRY_SPAN_BASE,
+                    kernel_holes.FILL_STATE_RETRY_SPAN_BASE + 1,
+                ),
             )
 
     return _traceback_fill_faces(faces, loops, prev, state, edge_table.n_vertices)
@@ -1076,6 +1084,7 @@ def _run_hole_dp(
     smooth_boundary: bool,
     dp: wp.array[wp.float32],
     prev: wp.array[wp.int32],
+    span_base: wp.array[wp.int32],
     tiled: bool | None = None,
     captured: bool | None = None,
 ) -> None:
@@ -1110,7 +1119,8 @@ def _run_hole_dp(
 
     ``dp`` / ``prev`` are filled in place. They are bound into ``HoleFillTables`` rather than
     passed per launch, because their pointers are invariant across the sweep -- see that struct's
-    docstring.
+    docstring. ``span_base`` is a zeroed one-entry view the sweep steps (a slot of the fill's state
+    buffer, one per sweep), so the sweep allocates nothing of its own.
 
     ``tiled`` selects the per-span engine: a block per interval with its lanes striding the apex
     loop, or one thread per interval. Both produce byte-identical ``dp`` / ``prev`` on **both**
@@ -1163,10 +1173,10 @@ def _run_hole_dp(
     # launches pay milliseconds to keep them in the signature. See ``HoleFillTables``.
     tables.dp = dp
     tables.prev = prev
-    # The first span of the group a launch belongs to; the launch argument is the offset within it.
-    # Allocated holding its value rather than filled afterwards, and the plain loop below is simply
-    # one group covering every span, so both paths read the same convention.
-    tables.span_base = _launch.full(1, 2, dtype=wp.int32, device=device)
+    # How far the replays have moved the recorded group on; the launch argument is the span the
+    # first group gives it. The caller's zeroed slot, and the plain loop below is simply one group
+    # covering every span at base 0, so both paths read the same convention.
+    tables.span_base = span_base
     tables.metric_id = wp.int32(metric_id)
     tables.combine_id = wp.int32(combine_id)
     tables.smooth_bd = wp.int32(1 if smooth_boundary else 0)
@@ -1187,13 +1197,13 @@ def _run_hole_dp(
 
     if not captured:
         for span in range(2, loops.max_size):
-            issue(span - 2, loops.max_size - span)
+            issue(span, loops.max_size - span)
         return
     group = kernel_holes.HOLE_DP_GRAPH_SPANS
     with wp.ScopedCapture(resolved) as capture:
         for offset in range(group):
             # Sized for the first group, which is the widest any later one needs.
-            issue(offset, max(n_spans - offset, 1))
+            issue(offset + 2, max(n_spans - offset, 1))
         _launch.launch(
             kernel_holes.advance_span_base,
             dim=1,

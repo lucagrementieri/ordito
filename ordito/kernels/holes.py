@@ -365,11 +365,14 @@ def init_dp_base(
 # traceback fell short of the padded ``B - 2`` per loop (``traceback_fill_triangles``). One
 # allocation serves both, since the second read is after the first. The rim-edge passes' face
 # range flag (``probe_rim_edges``, ``mark_forbidden_chords``) sits beside the shortfall and comes
-# back in its read. Python-scope only: kernels write the flag through a view of its slot.
+# back in its read. The last two slots are the two DP sweeps' ``HoleFillTables.span_base``, laid
+# down zeroed with the rest. Python-scope only: kernels reach these slots through views.
 FILL_STATE_RETRY = wp.constant(0)
 FILL_STATE_SHORTFALL = wp.constant(1)
 FILL_STATE_BAD_INDEX = 2
-FILL_STATE_SLOTS = 3
+FILL_STATE_SPAN_BASE = 3
+FILL_STATE_RETRY_SPAN_BASE = 4
+FILL_STATE_SLOTS = 5
 
 
 # Lanes per block of ``fill_dp_span_tiled``: one block owns one interval and its lanes stride the
@@ -496,7 +499,8 @@ class HoleFillTables:
     The per-span launches differ in exactly one thing -- which span they are -- so moving that one
     value onto the device makes consecutive launches *identical*, and an identical sequence is the
     one thing CUDA graph capture pays for. The launch argument is then the offset within the
-    recorded group and ``span_base[0]`` is the group's first span, stepped on the device by
+    recorded group plus the span it starts at, and ``span_base[0]`` (``0`` for the first group)
+    how far the replays have moved the group on, stepped on the device by
     [`advance_span_base`][ordito.kernels.holes.advance_span_base]. See ``holes._run_hole_dp``.
 
     Build it ONCE in the wrapper and reuse it: construction is not free, and doing it per launch
@@ -679,8 +683,9 @@ def fill_dp_span(tables: HoleFillTables, span_offset: wp.int32) -> None:
     # arithmetic already moved: ``apex_cost`` went from 19 parameters to 14 when the tables became
     # ``HoleFillTables``.
     ell, i = wp.tid()
-    # The span is the group's base plus this launch's offset within it, so that every launch of a
-    # recorded group is byte-identical bar one integer -- see ``HoleFillTables.span_base``.
+    # The span is the base the replays have stepped plus this launch's span in the first group, so
+    # that every launch of a recorded group is byte-identical bar one integer -- see
+    # ``HoleFillTables.span_base``.
     span = tables.span_base[0] + span_offset
     if tables.active[ell] == 0:
         return
@@ -763,7 +768,7 @@ def fill_dp_span_tiled(tables: HoleFillTables, span_offset: wp.int32) -> None:
     # strict ``<`` scan returns. Lanes with no apex, and an all-non-finite interval, both leave
     # ``(inf, -1)`` and agree with the serial kernel there too.
     ell, i, t = wp.tid()
-    # As in ``fill_dp_span``: the group's base span plus this launch's offset within the group.
+    # As in ``fill_dp_span``: the stepped base plus this launch's span in the first group.
     span = tables.span_base[0] + span_offset
     # Every guard below is warp-uniform (it reads only ``ell``, ``i`` and ``span``), so the whole
     # block returns together and the tile reductions never run in divergent control flow.
@@ -847,8 +852,8 @@ def fill_dp_span_tiled(tables: HoleFillTables, span_offset: wp.int32) -> None:
 
 @wp.kernel(enable_backward=False)
 def advance_span_base(step: wp.int32, out_span_base: wp.array[wp.int32]) -> None:
-    # dim=1. Close a recorded group of span launches by moving the base on to the next group's
-    # first span. It is the last node of the graph ``holes._run_hole_dp`` records, so every span
+    # dim=1. Close a recorded group of span launches by moving the base on by one group's spans.
+    # It is the last node of the graph ``holes._run_hole_dp`` records, so every span
     # kernel of the group has already read the old base by the time it runs, and consecutive
     # replays serialize on the stream -- which is the whole reason the step cannot instead be
     # folded into the last span kernel, whose blocks read the base at their own start and would
