@@ -1531,11 +1531,22 @@ def accumulate_loop_frame(polyline: wp.array[wp.vec3], out_sums: wp.array[wp.flo
 
 @wp.kernel
 def accumulate_loop_frames(
-    polylines: wp.array[wp.vec3], offsets: wp.array[wp.int32], out_sums: wp.array[wp.float32]
+    polylines: wp.array[wp.vec3],
+    offsets: wp.array[wp.int32],
+    max_ring: wp.int32,
+    out_sums: wp.array[wp.float32],
+    out_bases: wp.array[wp.int32],
 ) -> None:
     # ``loop_frame`` of every packed loop ``polylines[offsets[r] : offsets[r + 1]]``, one block per
     # loop (``dim=(n_loops,)`` at ``LOOP_FRAME_BLOCK_DIM``), into row ``r`` of ``RING_SUMS_SIZE``
     # slots: each loop's frame is the one ``accumulate_loop_frame`` gives it alone, bit for bit.
+    #
+    # Lane 0 also writes the face rows ``triangulate_rings`` reserves for the loop (``n - 2`` for
+    # an ``n``-point loop) into ``out_bases[r + 1]`` of the zeroed ``(n_loops + 2,)`` buffer, for an
+    # in-place scan of its ``n_loops + 1`` prefix; the trailing slot counts the loops longer than
+    # ``max_ring``, which ``triangulate_rings`` leaves to the round loop. Both totals sit side by
+    # side for one readback. The frames do not need the reservation, so the two per-loop passes
+    # share this launch.
     #
     # Folding this into ``triangulate_rings``' prologue (the frame over the first
     # ``LOOP_FRAME_BLOCK_DIM`` of its lanes, the rest contributing nothing, so the same triangle
@@ -1545,6 +1556,10 @@ def accumulate_loop_frames(
     ring, lane = wp.tid()
     start = offsets[ring]
     n = offsets[ring + 1] - start
+    if lane == 0:
+        out_bases[ring + 1] = wp.max(n - 2, 0)
+        if n > max_ring:
+            wp.atomic_add(out_bases, out_bases.shape[0] - 1, 1)
     if n < 3:
         return
     loop_frame(polylines, start, n, lane, out_sums, ring * RING_SUMS_SIZE)
@@ -2721,21 +2736,6 @@ def ring_ear_loop_continue(
         rounds[LOOP_CONDITION] = wp.int32(1)
     else:
         rounds[row + RING_LIVE] = wp.int32(0)
-
-
-@wp.kernel
-def reserved_ring_rows(
-    offsets: wp.array[wp.int32], max_ring: wp.int32, out_bases: wp.array[wp.int32]
-) -> None:
-    # The face rows ``triangulate_rings`` reserves per loop (``n - 2`` for an ``n``-point loop) into
-    # ``out_bases[r + 1]`` of the zeroed ``(n_loops + 2,)`` buffer, for an in-place scan of its
-    # ``n_loops + 1`` prefix; the trailing slot counts the loops longer than ``max_ring``, which
-    # ``triangulate_rings`` leaves to the round loop. Both totals sit side by side for one readback.
-    r = wp.int32(wp.tid())
-    n = offsets[r + 1] - offsets[r]
-    out_bases[r + 1] = wp.max(n - 2, 0)
-    if n > max_ring:
-        wp.atomic_add(out_bases, out_bases.shape[0] - 1, 1)
 
 
 @wp.kernel

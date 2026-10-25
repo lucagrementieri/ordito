@@ -1596,19 +1596,20 @@ def polyline_triangulate_from_offsets(
             odt.empty_2d((0, 3), wp.int32, device=device),
             _launch.zeros(1, dtype=wp.int32, device=device),
         )
-    max_ring = kernel_polyline.EAR_ONE_BLOCK_MAX
     # Each loop's reserved face rows, scanned into bases, and the number of loops too long for the
     # block launch, read back together: the reservation sizes the shared face buffer, and a long
     # loop adds the packed round loop. One zeroed buffer holds the bases, the long-loop count after
-    # them and then the face counts.
+    # them and then the face counts. The frame pass writes the reservation beside each loop's frame.
     buffer = _launch.zeros(2 * n_loops + 3, dtype=wp.int32, device=device)
     bases = _launch.view(buffer, 0, n_loops + 2)
     bases_scan = _launch.view(buffer, 0, n_loops + 1)
     face_offsets = _launch.view(buffer, n_loops + 2, 2 * n_loops + 3)
-    _launch.launch(
-        kernel_polyline.reserved_ring_rows,
-        dim=n_loops,
-        inputs=[offsets, wp.int32(max_ring), bases],
+    sums = _launch.zeros(n_loops * kernel_polyline.RING_SUMS_SIZE, dtype=wp.float32, device=device)
+    _launch.launch_tiled(
+        kernel_polyline.accumulate_loop_frames,
+        dim=(n_loops,),
+        inputs=[polylines, offsets, wp.int32(kernel_polyline.EAR_ONE_BLOCK_MAX), sums, bases],
+        block_dim=kernel_polyline.LOOP_FRAME_BLOCK_DIM,
         device=device,
     )
     _launch.array_scan(bases_scan, out_array=bases_scan, inclusive=True)
@@ -1616,7 +1617,9 @@ def polyline_triangulate_from_offsets(
 
     if n_reserved == 0:
         return odt.empty_2d((0, 3), wp.int32, device=device), face_offsets
-    faces, ends = _triangulate_rings(polylines, offsets, bases, n_reserved, face_offsets, n_long)
+    faces, ends = _triangulate_rings(
+        polylines, offsets, bases, sums, n_reserved, face_offsets, n_long
+    )
     _launch.array_scan(face_offsets, out_array=face_offsets, inclusive=True)
     # Sizes the output: the faces the loops actually wrote.
     n_rows = int(read_scalar(face_offsets))
@@ -1639,6 +1642,7 @@ def _triangulate_rings(
     polylines: wp.array[wp.vec3],
     offsets: wp.array[wp.int32],
     bases: wp.array[wp.int32],
+    sums: wp.array[wp.float32],
     n_reserved: int,
     face_counts: wp.array[wp.int32],
     n_long: int,
@@ -1650,18 +1654,11 @@ def _triangulate_rings(
     ``ends[r]`` is the row after its last; loops shorter than three points write none, and the
     zeroed ``(n_loops + 1,)`` ``face_counts`` gets each loop's face count in slot ``r + 1``. One
     block per loop projects it and clips it when it has at most ``EAR_ONE_BLOCK_MAX`` points; the
-    ``n_long`` longer ones are triangulated together by ``_triangulate_long_rings``.
+    ``n_long`` longer ones are triangulated together by ``_triangulate_long_rings``. ``sums``
+    holds every loop's frame (``kernels/polyline.accumulate_loop_frames``).
     """
     device = polylines.device
     n_loops = offsets.size - 1
-    sums = _launch.zeros(n_loops * kernel_polyline.RING_SUMS_SIZE, dtype=wp.float32, device=device)
-    _launch.launch_tiled(
-        kernel_polyline.accumulate_loop_frames,
-        dim=(n_loops,),
-        inputs=[polylines, offsets, sums],
-        block_dim=kernel_polyline.LOOP_FRAME_BLOCK_DIM,
-        device=device,
-    )
     n_points = polylines.size
     points2d = _launch.empty(n_points, dtype=wp.vec2, device=device)
     faces = odt.empty_2d((max(n_reserved, 1), 3), wp.int32, device=device)
