@@ -654,40 +654,30 @@ def _winding_band_field(
         device=device,
     )
 
-    # The column counts along z and, as their cross-check, along x.
+    # The column counts along z and, as their cross-check, along x: ``crossings[0]`` and
+    # ``crossings[1]``, each kernel below covering both directions in one launch.
     inv_step = wp.vec3(*(1.0 / step for step in steps))
-    crossings = [_launch.zeros(shape, dtype=wp.int32, device=device) for _ in range(2)]
+    crossings = _launch.zeros((2, *shape), dtype=wp.int32, device=device)
     ambiguous = _launch.zeros(shape, dtype=wp.int32, device=device)
-    columns = [(shape[0], shape[1]), (shape[1], shape[2])]
-    for axis in range(2):
+    _launch.launch(
+        kernel_levelset.rasterize_face_crossings,
+        dim=(2, n_faces),
+        inputs=[vertices, faces, lower, inv_step, crossings, ambiguous],
+        device=device,
+    )
+    if chain.shape[0] > 0:
         _launch.launch(
-            kernel_levelset.rasterize_face_crossings,
-            dim=n_faces,
-            inputs=[vertices, faces, lower, inv_step, wp.int32(axis), crossings[axis], ambiguous],
+            kernel_levelset.rasterize_cone_crossings,
+            dim=(2, chain.shape[0]),
+            inputs=[vertices, chain, labels, lower, inv_step, crossings, ambiguous],
             device=device,
         )
-        if chain.shape[0] > 0:
-            _launch.launch(
-                kernel_levelset.rasterize_cone_crossings,
-                dim=chain.shape[0],
-                inputs=[
-                    vertices,
-                    chain,
-                    labels,
-                    lower,
-                    inv_step,
-                    wp.int32(axis),
-                    crossings[axis],
-                    ambiguous,
-                ],
-                device=device,
-            )
-        _launch.launch(
-            kernel_levelset.column_suffix_sums,
-            dim=columns[axis],
-            inputs=[wp.int32(axis), crossings[axis]],
-            device=device,
-        )
+    _launch.launch(
+        kernel_levelset.column_suffix_sums,
+        dim=(2, max(shape[0], shape[1]), max(shape[1], shape[2])),
+        inputs=[crossings],
+        device=device,
+    )
 
     winding = odt.empty_3d(shape, wp.float32, device=device)
     slots = odt.empty_3d(shape, wp.int32, device=device)
@@ -699,8 +689,8 @@ def _winding_band_field(
         inputs=[
             lower,
             step,
-            crossings[0],
-            crossings[1],
+            odt.as_dense(crossings[0]),
+            odt.as_dense(crossings[1]),
             ambiguous,
             distance,
             vertices,
@@ -755,12 +745,16 @@ def _boundary_chain(faces: wp.array[wp.int32], n_vertices: int) -> odt.Array2dIn
         inputs=[faces, mates, net],
         device=device,
     )
-    counts = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
+    # The counts go straight into the tail of the total-terminated offsets, scanned in place there
+    # (``array.counts_to_offsets`` without its own counts buffer).
+    offsets = _launch.zeros(n_halfedges + 1, dtype=wp.int32, device=device)
+    tail = _launch.view(offsets, 1, n_halfedges + 1)
     _launch.launch(
-        kernel_levelset.boundary_chain_counts, dim=n_halfedges, inputs=[net, counts], device=device
+        kernel_levelset.boundary_chain_counts, dim=n_halfedges, inputs=[net, tail], device=device
     )
+    _launch.array_scan(tail, out_array=tail, inclusive=True)
     # The chain's length sizes it.
-    offsets, total = od.array.counts_to_offsets(counts)
+    total = int(read_scalar(offsets))
     chain = odt.empty_2d((total, 2), wp.int32, device=device)
     if total > 0:
         _launch.launch(
