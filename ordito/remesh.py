@@ -438,16 +438,22 @@ def isotropic_remesh(
             if current_faces is faces:
                 current_faces = _launch.clone(faces)
             flips, topology = _valence_flip_pass(current_vertices, current_faces, feature)
-            if flips:
+            if flips and not (smooth or reproject):
                 # A flip rewrote the faces in place, so the grouping is stale; the flip loop's own
                 # key sort regroups them without re-packing every corner's key.
                 incidence = _edge_incidence(
+                    current_faces, current_vertices.size, topology.edges_unique()
+                )
+            elif flips:
+                # The same regroup, with the topology counted in its emit.
+                incidence = _edge_incidence(
                     current_faces,
                     current_vertices.size,
-                    topology.edges_unique(),
-                    vertices=current_vertices if smooth or reproject else None,
+                    vertices=current_vertices,
                     feature=feature,
                     ring=smooth_ring,
+                    keys=(*topology.sorted_corner_keys(), current_vertices.size),
+                    presorted=True,
                 )
         # The deviation bound runs inside the smoothing launch whenever there is one.
         clamped = False
@@ -567,6 +573,7 @@ def _edge_incidence(
     feature: wp.float32 | None = None,
     ring: bool = False,
     keys: tuple[wp.array[wp.uint64], wp.array[wp.int32], int] | None = None,
+    presorted: bool = False,
     spare: tuple[int, int] = (0, 0),
 ) -> _EdgeIncidence:
     """
@@ -587,7 +594,8 @@ def _edge_incidence(
     that grouping's emit (``kernels/remesh.emit_edge_topology``): the same rows, corner map and
     tables. ``keys``, ``(keys, order, base)``, are that sort's double-width buffers already holding
     every corner's key packed against ``base`` (at least ``n_vertices``) and the identity payload,
-    as a collapse pass's compaction writes them.
+    as a collapse pass's compaction writes them, and with ``presorted`` already sorted
+    (``_FlipTopology.sorted_corner_keys``).
 
     ``spare``, ``(per_edge, fixed)``, carves ``per_edge * m + fixed`` more unfilled ``int32``
     entries into the topology's allocation for the caller (``_EdgeIncidence.spare``).
@@ -616,7 +624,9 @@ def _edge_incidence(
     if grouping is not None:
         m = int(grouping[0].shape[0])
     else:
-        key_buffer, order, _ranks, m = _sorted_corner_edges(faces, n_vertices, keys)
+        key_buffer, order, _ranks, m = _sorted_corner_edges(
+            faces, n_vertices, keys, presorted=presorted
+        )
         sort_buffers = (key_buffer, order)
     # One zeroed buffer: the two CSRs' counts, the edge face counts and the feature counts.
     n_features = 0 if feature is None else n_vertices
@@ -1581,6 +1591,17 @@ class _FlipTopology:
         self._flips_since_build += count
         if self._flips_since_build > self._flip_budget:
             self.rebuild(read_count=False, incremental=True)
+
+    def sorted_corner_keys(self) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
+        """
+        Return the double-width key and payload buffers of the faces' current corner-key sort.
+
+        The sort ``edges_unique`` groups, packed against ``n_vertices`` and re-sorted first if a
+        flip made it stale. Requires a build; the payload's upper half is the caller's scratch.
+        """
+        if self._sorted_stale:
+            self._sort()
+        return self._keys, self._order
 
     def edges_unique(self) -> tuple[odt.Array2dInt32, wp.array[wp.int32]]:
         """
@@ -4222,6 +4243,8 @@ def _sorted_corner_edges(
     faces: wp.array[wp.int32],
     n_vertices: int,
     keys: tuple[wp.array[wp.uint64], wp.array[wp.int32], int] | None = None,
+    *,
+    presorted: bool = False,
 ) -> tuple[wp.array[wp.uint64], wp.array[wp.int32], wp.array[wp.int32], int]:
     """
     ``(keys, order, ranks, m)``: the radix sort of every corner's edge key and its run ranks.
@@ -4232,7 +4255,8 @@ def _sorted_corner_edges(
     edge at sorted position ``i``) and ``m`` the unique-edge count, read back. ``keys``, ``(keys,
     order, base)``, are such buffers already holding every corner's key packed against ``base``
     (at least ``n_vertices``) and the identity payload, so the key launch is skipped; any such base
-    sorts the corners as ``n_vertices`` does.
+    sorts the corners as ``n_vertices`` does. ``presorted`` says they are sorted already (a flip
+    loop's current sort), which skips the sort too.
     """
     device = faces.device
     n = faces.size
@@ -4248,9 +4272,10 @@ def _sorted_corner_edges(
         )
     else:
         key_buffer, order, base = keys
-    _launch.radix_sort_pairs(
-        key_buffer, order, count=n, end_bit=min(64, max(1, (base * base - 1).bit_length()))
-    )
+    if not presorted:
+        _launch.radix_sort_pairs(
+            key_buffer, order, count=n, end_bit=min(64, max(1, (base * base - 1).bit_length()))
+        )
     ranks = _launch.view(order, n, 2 * n)
     _launch.launch(
         kernel_grouping.MARK_SORTED_RUN_STARTS[wp.uint64],
