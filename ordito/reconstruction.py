@@ -941,8 +941,9 @@ def _poisson_solve_level(
             ],
             device=device,
         )
-    rhs = _launch.empty(n_nodes, dtype=wp.float32, device=device)
-    smoother = _launch.empty(n_nodes, dtype=wp.float32, device=device)
+    rhs, smoother = _carve(
+        _launch.empty(_carved_size([n_nodes] * 2), dtype=wp.float32, device=device), [n_nodes] * 2
+    )
     _launch.launch(
         kernel_reconstruction.poisson_level_setup,
         dim=(res, res, res),
@@ -994,24 +995,19 @@ def _solve_screened_poisson(
     tile = int(kernel_cg.CG_TILE)
     span, blocks, fold = kernel_cg.cg_layout(n, od.linalg.CG_FOLD_MAX_BLOCKS)
     stride = blocks * span
-    # The five vectors in one allocation; every entry is written by ``poisson_cg_initial``.
-    vectors = _launch.empty(5 * stride, dtype=wp.float32, device=device)
-    r, u, w, p, s = (odt.as_dense(vectors[k * stride : (k + 1) * stride]) for k in range(5))
-    # Every entry a fold reads, ``[0, blocks)``, is written by the partials launch before it.
-    partials = _launch.empty((3, 1, blocks), dtype=wp.float64, device=device)
-    # The per-solve scalars in one allocation, the squared threshold and the dots' ``(r.r, gamma)``
-    # leading so the pair the caller tests is contiguous, then the coefficients and the
-    # recurrence's four scalars.
-    scalars = _launch.empty((10, 1), dtype=wp.float64, device=device)
-    atol_sq = odt.as_dense(scalars[0, 0:1])
-    dots = odt.as_array2d(odt.as_dense(scalars[1:3]), wp.float64)
-    coefficients = odt.as_array2d(odt.as_dense(scalars[3:6]), wp.float64)
-    gamma_old, alpha_old, gamma_new, alpha_new = (
-        odt.as_dense(scalars[row, 0:1]) for row in range(6, 10)
+    # The V-cycle's vectors and coarse operators ride in the solve's ``float32`` allocation.
+    work = _cg_workspace(stride, blocks, _PoissonMultigrid.widths(res), 0, device)
+    r, u, w, p, s = work.vectors
+    partials, atol_sq, dots, coefficients = (
+        work.partials,
+        work.atol_sq,
+        work.dots,
+        work.coefficients,
     )
-    state = _launch.empty(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
+    gamma_old, alpha_old, gamma_new, alpha_new = work.recurrence
+    state = work.state
     screen_f = wp.float32(screen)
-    multigrid = _PoissonMultigrid(weights, screen, res, smoother, device)
+    multigrid = _PoissonMultigrid(weights, screen, res, smoother, work.extra, device)
     # The V-cycle's first pre-smoothing sweep is pointwise, so the launches that produce the
     # residual write it too -- this one and every round's ``cg_update``, whose Jacobi apply with
     # ``smoother`` as the scaling is that sweep exactly.
@@ -1087,7 +1083,7 @@ def _solve_screened_poisson(
         multigrid.apply(r, u)
 
     run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), round_)
-    return odt.as_dense(scalars.flatten()[0:2])
+    return work.residual_pair
 
 
 # Damped-Jacobi sweeps before and after each coarse-grid correction, the damping, the sweeps on the
@@ -1146,18 +1142,20 @@ class _PoissonMultigrid:
         screen: float,
         res: int,
         smoother: wp.array[wp.float32],
+        storage: list[wp.array[wp.float32]],
         device: wp.DeviceLike,
     ) -> None:
+        """Build the hierarchy below ``res`` in ``storage``, the views ``widths(res)`` lists."""
         self._device = device
         self._screen = wp.float32(screen)
         self._levels: list[_GridLevel] = []
+        views = iter(storage)
         lap = 1.0
         w, smooth = weights, smoother
         finest = True
         while True:
-            n = res**3
             owned = 3 if finest else 5
-            vectors = [_launch.empty(n, dtype=wp.float32, device=device) for _ in range(owned)]
+            vectors = [next(views) for _ in range(owned)]
             b, x = (None, None) if finest else (vectors.pop(), vectors.pop())
             self._levels.append(_GridLevel(res, wp.float32(lap), w, smooth, b, x, *vectors))
             finest = False
@@ -1165,8 +1163,8 @@ class _PoissonMultigrid:
                 break
             res_c = (res - 1) // 2 + 1
             lap *= 2.0
-            w_c = _launch.empty(res_c**3, dtype=wp.float32, device=device)
-            smooth_c = _launch.empty(res_c**3, dtype=wp.float32, device=device)
+            w_c = next(views)
+            smooth_c = next(views)
             _launch.launch(
                 kernel_reconstruction.poisson_mg_coarsen,
                 dim=(res_c, res_c, res_c),
@@ -1175,6 +1173,20 @@ class _PoissonMultigrid:
                 device=device,
             )
             res, w, smooth = res_c, w_c, smooth_c
+
+    @staticmethod
+    def widths(res: int) -> list[int]:
+        """
+        Return the widths of the vectors below a ``res`` grid, in the order ``__init__`` takes them.
+
+        Every vector is one buffer's view, so the whole hierarchy is one allocation (the caller's).
+        """
+        widths = [res**3] * 3
+        while res > _MG_COARSEST:
+            res = (res - 1) // 2 + 1
+            widths += [res**3] * 2
+            widths += [res**3] * 5
+        return widths
 
     @property
     def start(self) -> wp.array[wp.float32]:
@@ -1357,13 +1369,15 @@ def _screened_poisson_band(
     data = _band_data(
         sample_bands, points, normals, cube_lower, cube_size, confidence, missing, device
     )
-    base_b = _launch.zeros(res_b**3, dtype=wp.float32, device=device)
-    base_w = _launch.zeros(res_b**3, dtype=wp.float32, device=device)
+    base_b, base_w = _carve(
+        _launch.zeros(_carved_size([res_b**3] * 2), dtype=wp.float32, device=device), [res_b**3] * 2
+    )
     _restrict_band(sample_bands[base + 1], *data[base + 1], None, res_b, base_b, base_w, missing)
 
     lap_b = float(1 << (depth - base))
-    rhs = _launch.empty(res_b**3, dtype=wp.float32, device=device)
-    smoother = _launch.empty(res_b**3, dtype=wp.float32, device=device)
+    rhs, smoother = _carve(
+        _launch.empty(_carved_size([res_b**3] * 2), dtype=wp.float32, device=device), [res_b**3] * 2
+    )
     _launch.launch(
         kernel_poisson_band.dense_base_setup,
         dim=(res_b, res_b, res_b),
@@ -1427,8 +1441,12 @@ def _screened_poisson_band(
     for level in range(base + 1, depth + 1):
         band = bands[level]
         source = sample_bands[level]
-        b = _launch.zeros(band.n_nodes, dtype=wp.float32, device=device)
-        w = _launch.zeros(band.n_nodes, dtype=wp.float32, device=device)
+        # The data, weights and solution in one allocation; the solution's zeros are overwritten by
+        # its first start.
+        b, w, x = _carve(
+            _launch.zeros(_carved_size([band.n_nodes] * 3), dtype=wp.float32, device=device),
+            [band.n_nodes] * 3,
+        )
         _launch.launch(
             kernel_poisson_band.embed_band_data,
             dim=source.n_nodes,
@@ -1436,15 +1454,7 @@ def _screened_poisson_band(
             outputs=[b, w],
             device=device,
         )
-        states[level] = _BandState(
-            band,
-            float(1 << (depth - level)),
-            b,
-            w,
-            b,
-            _launch.empty(band.n_nodes, dtype=wp.float32, device=device),
-            None,
-        )
+        states[level] = _BandState(band, float(1 << (depth - level)), b, w, b, x, None)
         rounds = _BAND_ROUNDS_FINEST if level == depth else _BAND_ROUNDS
         _band_level_solve(
             states[level],
@@ -1487,10 +1497,13 @@ def _screened_poisson_band(
             )
         else:
             if coarse.previous is None:
-                states[level - 1] = coarse = coarse._replace(
-                    rhs=_launch.empty(coarse.band.n_nodes, dtype=wp.float32, device=device),
-                    previous=_launch.empty(coarse.band.n_nodes, dtype=wp.float32, device=device),
+                tau_rhs, previous = _carve(
+                    _launch.empty(
+                        _carved_size([coarse.band.n_nodes] * 2), dtype=wp.float32, device=device
+                    ),
+                    [coarse.band.n_nodes] * 2,
                 )
+                states[level - 1] = coarse = coarse._replace(rhs=tau_rhs, previous=previous)
             assert coarse.previous is not None
             coarse_args = [
                 coarse.band.brick_coords,
@@ -1715,8 +1728,10 @@ def _band_level_solve(
     corrected by the prolonged change of the coarse one since ``previous``.
     """
     band = state.band
-    rhs = _launch.empty(band.n_nodes, dtype=wp.float32, device=device)
-    inv_diag = _launch.empty(band.n_nodes, dtype=wp.float32, device=device)
+    rhs, inv_diag = _carve(
+        _launch.empty(_carved_size([band.n_nodes] * 2), dtype=wp.float32, device=device),
+        [band.n_nodes] * 2,
+    )
     coarse_map, coarse_x, nbk_c, res_c = _band_coarse_args(coarse, base_x, res_b)
     _launch.launch(
         kernel_poisson_band.band_level_setup,
@@ -1753,7 +1768,11 @@ def _band_hierarchy_flags(
     for level in range(depth - 1, base, -1):
         nbk_f = ((1 << (level + 1)) + 8) // 8
         nbk_c = ((1 << level) + 8) // 8
-        projected = _launch.zeros(nbk_c**3, dtype=wp.int32, device=device)
+        # The projection's zeroed flags and the dilation's (written whole), in one allocation.
+        projected, grown = _carve(
+            _launch.zeros(_carved_size([nbk_c**3] * 2), dtype=wp.int32, device=device),
+            [nbk_c**3] * 2,
+        )
         _launch.launch(
             kernel_poisson_band.project_bricks,
             dim=(nbk_f, nbk_f, nbk_f),
@@ -1761,7 +1780,6 @@ def _band_hierarchy_flags(
             outputs=[projected],
             device=device,
         )
-        grown = _launch.empty(nbk_c**3, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_poisson_band.dilate_bricks,
             dim=(nbk_c, nbk_c, nbk_c),
@@ -1794,11 +1812,22 @@ def _compact_bands(
     if tail is not None:
         _launch.copy(totals, tail, dest_offset=n_sets, count=1)
     values = [int(value) for value in read_values(totals, 0, totals.size)]
+    # Every set's brick map in one allocation, and every set's brick coordinates in another.
+    nbks = [(res + 7) // 8 for _flags, res in flag_sets]
+    maps = _carve(
+        _launch.empty(_carved_size([nbk**3 for nbk in nbks]), dtype=wp.int32, device=device),
+        [nbk**3 for nbk in nbks],
+    )
+    coords = _carve(
+        _launch.empty(
+            _carved_size([max(n, 1) for n in values[:n_sets]]), dtype=wp.vec3i, device=device
+        ),
+        [max(n, 1) for n in values[:n_sets]],
+    )
     levels: list[_BandLevel] = []
-    for (flags, res), n_bricks in zip(flag_sets, values[:n_sets], strict=True):
-        nbk = (res + 7) // 8
-        brick_map = _launch.empty(nbk**3, dtype=wp.int32, device=device)
-        brick_coords = _launch.empty(max(n_bricks, 1), dtype=wp.vec3i, device=device)
+    for (flags, res), n_bricks, nbk, brick_map, brick_coords in zip(
+        flag_sets, values[:n_sets], nbks, maps, coords, strict=True
+    ):
         _launch.launch(
             kernel_poisson_band.compact_bricks,
             dim=nbk**3,
@@ -1880,8 +1909,10 @@ def _band_data(
     data = {depth: (b, weights)}
     for level in range(depth - 1, min(bands) - 1, -1):
         coarse = bands[level]
-        coarse_b = _launch.zeros(coarse.n_nodes, dtype=wp.float32, device=device)
-        coarse_w = _launch.zeros(coarse.n_nodes, dtype=wp.float32, device=device)
+        coarse_b, coarse_w = _carve(
+            _launch.zeros(_carved_size([coarse.n_nodes] * 2), dtype=wp.float32, device=device),
+            [coarse.n_nodes] * 2,
+        )
         _restrict_band(
             bands[level + 1], *data[level + 1], coarse, coarse.res, coarse_b, coarse_w, missing
         )
@@ -2030,18 +2061,18 @@ def _solve_band_level(
     tile = int(kernel_cg.CG_TILE)
     span, blocks, fold = kernel_cg.cg_layout(n, od.linalg.CG_FOLD_MAX_BLOCKS)
     stride = blocks * span
-    vectors = _launch.empty(5 * stride, dtype=wp.float32, device=device)
-    r, u, w, p, s = (odt.as_dense(vectors[k * stride : (k + 1) * stride]) for k in range(5))
-    partials = _launch.empty((3, 1, blocks), dtype=wp.float64, device=device)
-    scalars = _launch.empty((10, 1), dtype=wp.float64, device=device)
-    atol_sq = odt.as_dense(scalars[0, 0:1])
-    dots = odt.as_array2d(odt.as_dense(scalars[1:3]), wp.float64)
-    coefficients = odt.as_array2d(odt.as_dense(scalars[3:6]), wp.float64)
-    gamma_old, alpha_old, gamma_new, alpha_new = (
-        odt.as_dense(scalars[row, 0:1]) for row in range(6, 10)
+    work = _cg_workspace(stride, blocks, [], 1, device)
+    r, u, w, p, s = work.vectors
+    partials, atol_sq, dots, coefficients = (
+        work.partials,
+        work.atol_sq,
+        work.dots,
+        work.coefficients,
     )
-    state = _launch.empty(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
-    iterations = _launch.empty(1, dtype=wp.int32, device=device)
+    gamma_old, alpha_old, gamma_new, alpha_new = work.recurrence
+    state = work.state
+    iterations = work.counts
+    assert iterations is not None
     level = [band.brick_coords, band.brick_map, band.nbk, band.res, wp.float32(lap), weights]
     screen_f = wp.float32(screen)
     _launch.launch_tiled(
@@ -2110,6 +2141,80 @@ def _solve_band_level(
         )
 
     run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), round_)
+
+
+def _cg_workspace(
+    stride: int, blocks: int, extra: list[int], counts: int, device: wp.DeviceLike
+) -> _CgWorkspace:
+    """
+    One conjugate-gradient solve's buffers, one allocation per dtype.
+
+    The five ``float32`` vectors of ``stride`` entries, then a view per ``extra`` width (a
+    preconditioner's vectors); the ``(3, 1, blocks)`` dot partials and the ten per-solve scalars
+    in ``float64``; the loop state and ``counts`` more ``int32`` slots. Every entry is written
+    before it is read, by the solve's initial launch or the seed.
+    """
+    widths = [stride] * 5 + extra
+    vectors = _carve(_launch.empty(_carved_size(widths), dtype=wp.float32, device=device), widths)
+    reals = _launch.empty(3 * blocks + 10, dtype=wp.float64, device=device)
+    scalars = _launch.view(reals, 3 * blocks, 3 * blocks + 10)
+    ints = _launch.empty(kernel_array.LOOP_STATE_SIZE + counts, dtype=wp.int32, device=device)
+    return _CgWorkspace(
+        vectors[:5],
+        vectors[5:],
+        _launch.view(reals, 0, 3 * blocks).reshape((3, 1, blocks)),
+        _launch.view(scalars, 0, 1),
+        odt.as_array2d(_launch.view(scalars, 1, 3).reshape((2, 1)), wp.float64),
+        odt.as_array2d(_launch.view(scalars, 3, 6).reshape((3, 1)), wp.float64),
+        [_launch.view(scalars, row, row + 1) for row in range(6, 10)],
+        _launch.view(scalars, 0, 2),
+        _launch.view(ints, 0, kernel_array.LOOP_STATE_SIZE),
+        _launch.view(ints, kernel_array.LOOP_STATE_SIZE, ints.size) if counts > 0 else None,
+    )
+
+
+class _CgWorkspace(NamedTuple):
+    """``_cg_workspace``'s views."""
+
+    vectors: list[wp.array[wp.float32]]
+    """``r, u, w, p, s``."""
+    extra: list[wp.array[wp.float32]]
+    """One view per requested width."""
+    partials: wp.array[wp.float64]
+    """``(3, 1, blocks)`` per-block dot partials."""
+    atol_sq: wp.array[wp.float64]
+    """``(1,)`` squared threshold."""
+    dots: odt.Array2dFloat64
+    """``(2, 1)`` ``(r.r, gamma)``."""
+    coefficients: odt.Array2dFloat64
+    """``(3, 1)`` step coefficients."""
+    recurrence: list[wp.array[wp.float64]]
+    """``gamma_old, alpha_old, gamma_new, alpha_new``, each ``(1,)``."""
+    residual_pair: wp.array[wp.float64]
+    """``(2,)`` squared threshold and squared residual, the pair the caller tests."""
+    state: wp.array[wp.int32]
+    """``(kernel_array.LOOP_STATE_SIZE,)`` device loop state."""
+    counts: wp.array[wp.int32] | None
+    """The requested ``int32`` slots, ``None`` for none."""
+
+
+# Each carved view starts on a multiple of this many elements.
+_CARVE_ALIGN = 32
+
+
+def _carved_size(widths: list[int]) -> int:
+    """Return the length of a buffer ``_carve`` cuts ``widths`` from."""
+    return sum(-(-width // _CARVE_ALIGN) * _CARVE_ALIGN for width in widths)
+
+
+def _carve(buffer: wp.array[odt.DType], widths: list[int]) -> list[wp.array[odt.DType]]:
+    """Cut consecutive dense views of ``widths`` entries off ``buffer``, each start aligned."""
+    views: list[wp.array[odt.DType]] = []
+    start = 0
+    for width in widths:
+        views.append(_launch.view(buffer, start, start + width))
+        start += -(-width // _CARVE_ALIGN) * _CARVE_ALIGN
+    return views
 
 
 @functools.cache
