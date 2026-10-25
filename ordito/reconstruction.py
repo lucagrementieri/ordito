@@ -351,9 +351,12 @@ def triangulate_point_cloud(
     if normals is None:
         normals = od.points.estimate_normals(points, neighbor_idx)
 
-    # Per-point local fan triangulation: point ``v``'s fan fills ``out_tris[v, :count]``.
-    out_tris = _launch.empty((n, k, 3), dtype=wp.int32, device=device)
-    fan_counts = _launch.empty(n, dtype=wp.int32, device=device)
+    # Per-point local fan triangulation: point ``v``'s fan fills ``out_tris[v, :count]``. The fans
+    # and their counts in one allocation.
+    tri_rows, fan_counts = _carve(
+        _launch.empty(_carved_size([3 * n * k, n]), dtype=wp.int32, device=device), [3 * n * k, n]
+    )
+    out_tris = tri_rows.reshape((n, k, 3))
     _launch.launch(
         kernel_reconstruction.build_local_triangulations,
         dim=n,
@@ -450,7 +453,8 @@ def _repeated_oriented_triangles(
     )
 
     rows = tris.reshape((-1, 3))
-    flags = _launch.empty(n_candidates, dtype=wp.int32, device=device)
+    # The run flags live in the payload's upper half, the sort's scratch and free once it ran.
+    flags = _launch.view(slots, n_candidates, 2 * n_candidates)
     _launch.launch(
         kernel_reconstruction.repeated_triangle_flags,
         dim=n_candidates,
