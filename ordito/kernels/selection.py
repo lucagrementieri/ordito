@@ -70,11 +70,13 @@ def pack_group_vertex_keys(
     group_offsets: wp.array[wp.int32],
     radix: wp.int64,
     out_keys: wp.array[wp.int64],
+    out_order: wp.array[wp.int32],
 ) -> None:
     # ``group * radix + vertex`` for every corner of every selected face, with ``radix`` the source
     # vertex count. Ascending key order is exactly ``(group, vertex)`` lexicographic order, which is
     # what lets a single global ``unique_1d`` do the work of one dedup per group and still emit each
-    # group's vertices ascending by original index.
+    # group's vertices ascending by original index. The keys and the identity payload land in the
+    # leading halves of the radix sort's double-width buffers, so no key buffer is copied there.
     #
     # ``group_offsets`` is the CSR start of each group, so the group owning position ``p`` is the
     # last one starting at or before it — a binary search rather than a materialized per-position
@@ -85,6 +87,7 @@ def pack_group_vertex_keys(
     group = binary_search_index(group_offsets, position) - 1
     face = group_face_indices[position]
     out_keys[corner] = wp.int64(group) * radix + wp.int64(faces[face * 3 + corner % 3])
+    out_order[corner] = corner
 
 
 @wp.kernel

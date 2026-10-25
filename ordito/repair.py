@@ -68,6 +68,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device, require_valid_faces
+from ordito.adjacency import _face_component_forest  # pyright: ignore[reportPrivateUsage]
 from ordito.constants import INDEX_RADIX_PAIR, TILE_1D
 from ordito.grouping import (
     _unique_keys_core,  # pyright: ignore[reportPrivateUsage]
@@ -607,14 +608,24 @@ def _vertex_classes(
     # vertices to. The keys and the identity payload go into the leading halves of the sort's
     # double-width buffers, and the grouping reads each class's first occurrence off the stable
     # sort in the launch that writes the inverse, as ``unique_rows`` does.
+    # The relative buckets (``epsilon`` not positive) need no bounds, so their keys are packed in
+    # the launch that writes the identity rather than to a buffer of their own first.
     keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
     order = _launch.empty(2 * n, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_array.KEYS_AND_IDENTITY[wp.uint64],
-        dim=n,
-        inputs=[hash_vector_rows(vertices, epsilon=epsilon), keys, order],
-        device=device,
-    )
+    if epsilon > 0.0:
+        _launch.launch(
+            kernel_array.KEYS_AND_IDENTITY[wp.uint64],
+            dim=n,
+            inputs=[hash_vector_rows(vertices, epsilon=epsilon), keys, order],
+            device=device,
+        )
+    else:
+        _launch.launch(
+            kernel_repair.bucket_vertex_keys_and_identity,
+            dim=n,
+            inputs=[vertices, keys, order],
+            device=device,
+        )
     inverse, first, _counts = _unique_keys_core(keys, order, None, False)
     return inverse, first
 
@@ -1015,19 +1026,21 @@ def _edge_manifold_survivors(
     keep = None
     if prefilter is not None:
         keep, keep_flags = prefilter
-        kept = od.array.flatnonzero_in_place(keep_flags)
-        # Readback: the kept count decides whether the prefilter dropped anything to gather out.
-        if kept.size != faces.size // 3:
-            tested = od.array.gather(faces.reshape((-1, 3)), kept).reshape((-1,))
+        # Readback: the kept count decides whether the prefilter dropped anything to compact out.
+        n_kept = _scan_kept_count(keep_flags)
+        if n_kept != faces.size // 3:
+            tested = _compact_scanned_faces(faces, keep_flags, n_kept)
+    # Each pass's flags are scanned at once, for the count that stops the loop, but the faces they
+    # keep are compacted only once another pass is going to test them, so the last pass writes no
+    # face buffer and no index list sits between the scan and the compaction.
     pending = None
     for _ in range(max_iter):
-        # The previous pass's removal is applied only once another pass is going to test it.
         if pending is not None:
-            tested = od.array.gather(tested.reshape((-1, 3)), pending).reshape((-1,))
+            tested = _compact_scanned_faces(tested, *pending)
         n_faces = tested.size // 3
         if n_faces == 0:
             break
-        # ``validation.edge_manifold_mask`` with the flags its indices are compacted from written
+        # ``validation.edge_manifold_mask`` with the flags its survivors are compacted from written
         # by the same per-face pass, so no fill and no bool-to-flag pass sit before the scan.
         mates = od.halfedge.halfedge_mates(tested, n_vertices)
         manifold = _launch.empty(n_faces, dtype=wp.bool, device=tested.device)
@@ -1039,12 +1052,34 @@ def _edge_manifold_survivors(
             outputs=[manifold, flags],
             device=tested.device,
         )
-        pending = od.array.flatnonzero_in_place(flags)
         # Readback: the kept count is the stopping test.
-        if pending.size == n_faces:
+        n_kept = _scan_kept_count(flags)
+        if n_kept == n_faces:
             break  # already edge-manifold
         faces, keep = tested, manifold
+        pending = (flags, n_kept)
     return faces, keep
+
+
+def _scan_kept_count(flags: wp.array[wp.int32]) -> int:
+    """Scan ``0`` / ``1`` face flags in place and return how many are set (one tail readback)."""
+    _launch.array_scan(flags, out_array=flags, inclusive=True)
+    return int(read_scalar(flags))
+
+
+def _compact_scanned_faces(
+    faces: wp.array[wp.int32], inclusive: wp.array[wp.int32], n_kept: int
+) -> wp.array[wp.int32]:
+    """Return the ``n_kept`` faces whose flags ``_scan_kept_count`` scanned, in face order."""
+    kept = _launch.empty(3 * n_kept, dtype=wp.int32, device=faces.device)
+    if n_kept > 0:
+        _launch.launch(
+            kernel_repair.compact_scanned_faces,
+            dim=inclusive.size,
+            inputs=[inclusive, faces, kept],
+            device=faces.device,
+        )
+    return kept
 
 
 def remove_small_components(
@@ -1181,13 +1216,26 @@ def remove_small_components(
     if n_faces == 0:
         return vertices, faces
 
-    if labels is None:
+    counts_faces = min_area is None and min_diameter is None
+    counts = None
+    if labels is None and counts_faces:
+        # The face-count criteria histogram the labels in the flatten that writes them.
+        parents = _face_component_forest(faces, vertices.size, None)
+        labels = _launch.empty(n_faces, dtype=wp.int32, device=device)
+        counts = _launch.zeros(n_faces, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_repair.flatten_and_count_labels,
+            dim=n_faces,
+            inputs=[parents, labels, counts],
+            device=device,
+        )
+    elif labels is None:
         labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
 
     # Each criterion accumulates one per-component table; the others stay ``None`` and are never
     # read. The table is then thresholded inside the submesh extraction's own marking pass, so no
     # separate keep-mask pass runs.
-    counts = statistic = corners = best = None
+    statistic = corners = best = None
     statistic_sums = _launch.empty_group_sum_pass()
     if min_area is not None:
         criterion = kernel_repair.COMPONENT_MIN_AREA
@@ -1205,10 +1253,14 @@ def remove_small_components(
             device=device,
         )
     else:
-        counts = _launch.zeros(n_faces, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_scatter.count_occurrences, dim=n_faces, inputs=[labels, counts], device=device
-        )
+        if counts is None:
+            counts = _launch.zeros(n_faces, dtype=wp.int32, device=device)
+            _launch.launch(
+                kernel_scatter.count_occurrences,
+                dim=n_faces,
+                inputs=[labels, counts],
+                device=device,
+            )
         if min_faces is not None:
             criterion = kernel_repair.COMPONENT_MIN_FACES
         else:
@@ -1909,11 +1961,12 @@ def straighten_boundary(
         return (faces, 0) if return_count else faces
 
     added = 0
-    # One emit cursor for the whole loop, zeroed per pass rather than reallocated: a four-byte
-    # buffer per iteration is an allocation where a memset does.
+    # One emit cursor for the whole loop, allocated zeroed and re-zeroed before each later pass
+    # rather than reallocated: a four-byte buffer per pass is an allocation where a memset does.
     cursor = _launch.zeros(1, dtype=wp.int32, device=device)
-    for _ in range(iterations):
-        _launch.zero_(cursor)
+    for iteration in range(iterations):
+        if iteration > 0:
+            _launch.zero_(cursor)
         n_faces = faces.size // 3
         n_halfedges = 3 * n_faces
         twins = od.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
@@ -1924,7 +1977,8 @@ def straighten_boundary(
         rim_links = _launch.full(2 * n_halfedges, -1, dtype=wp.int32, device=device)
         rim_next = odt.as_dense(rim_links[:n_halfedges])
         rim_prev = odt.as_dense(rim_links[n_halfedges:])
-        candidate = _launch.zeros(n_halfedges, dtype=wp.bool, device=device)
+        # ``wp.empty``: the pass writes every halfedge's candidate flag.
+        candidate = _launch.empty(n_halfedges, dtype=wp.bool, device=device)
         # One launch: a halfedge's notch test needs only the successor this same thread computes,
         # so linking the rim and classifying it are one pass rather than two with the link table
         # written out and read back between them.

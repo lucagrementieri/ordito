@@ -3,6 +3,7 @@
 import warp as wp
 
 from ordito.kernels import array as kernel_array
+from ordito.kernels.algorithms.connected_components import find_representative
 from ordito.kernels.array import sorted_run_start
 
 wp.set_module_options({"enable_backward": False})
@@ -20,6 +21,19 @@ def offset_packed_faces(
     i = wp.int32(wp.tid())
     piece = kernel_array.binary_search_index(piece_starts, i) - 1
     faces[i] = faces[i] + vertex_offsets[piece]
+
+
+@wp.kernel
+def flatten_labels_and_identity(
+    parents: wp.array[wp.int32], out_keys: wp.array[wp.int32], out_order: wp.array[wp.int32]
+) -> None:
+    # ``connected_components.ecl_flatten`` writing each face's component label straight into the
+    # leading half of the radix sort's double-width key buffer, beside the identity payload, for
+    # ``split_with_offsets``' label sort: no label buffer is filled to be copied there by
+    # ``array.keys_and_identity``.
+    f = wp.int32(wp.tid())
+    out_keys[f] = find_representative(parents, f)
+    out_order[f] = f
 
 
 @wp.kernel

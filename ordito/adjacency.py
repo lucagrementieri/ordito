@@ -1047,11 +1047,33 @@ def face_connected_component_labels(
         )
     if n_faces == 0:
         return _launch.empty(0, dtype=wp.int32, device=faces.device)
+    device = faces.device
+    parents = _face_component_forest(faces, n_vertices, mates)
+    labels = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_connected_components.ecl_flatten,
+        dim=n_faces,
+        inputs=[parents, labels],
+        device=device,
+    )
+    return labels
+
+
+def _face_component_forest(
+    faces: wp.array[wp.int32], n_vertices: int | None, mates: wp.array[wp.int32] | None
+) -> wp.array[wp.int32]:
+    """
+    [`face_connected_component_labels`][ordito.adjacency.face_connected_component_labels]' forest.
+
+    The ``(n_faces,)`` union-find parents before the flatten, for a caller whose own flatten pass
+    does more with each label than store it. ``n_faces`` must be positive; ``mates`` is trusted.
+    """
     # The adjacency pairs straight off the halfedge mates, one union-find edge per halfedge (a
     # self-loop where no pair starts), formed inside the pre-hook and hook kernels: no compacted
     # table, no host read of its length, and no per-halfedge edge table written only to be read
     # back twice. The labels are each component's smallest face id whatever edges are hooked.
     device = faces.device
+    n_faces = faces.size // 3
     if mates is None:
         mates = od.halfedge.halfedge_mates(faces, n_vertices)
     n = mates.size
@@ -1064,14 +1086,7 @@ def face_connected_component_labels(
             kernel_connected_components.ecl_compress, dim=n_faces, inputs=[parents], device=device
         )
     _launch.launch(kernel_adjacency.mate_pair_hook, dim=n, inputs=[mates, parents], device=device)
-    labels = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_connected_components.ecl_flatten,
-        dim=n_faces,
-        inputs=[parents, labels],
-        device=device,
-    )
-    return labels
+    return parents
 
 
 def sorted_face_edge_keys(

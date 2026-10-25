@@ -1,7 +1,10 @@
 import warp as wp
 
 from ordito.constants import INDEX_RADIX_PAIR
-from ordito.kernels.algorithms.connected_components import write_corner_component_rank
+from ordito.kernels.algorithms.connected_components import (
+    find_representative,
+    write_corner_component_rank,
+)
 from ordito.kernels.array import (
     binary_search_index,
     binary_search_sorted_contains,
@@ -16,7 +19,7 @@ from ordito.kernels.array import (
     update_argmin_pair,
 )
 from ordito.kernels.bounds import packed_box_diagonal
-from ordito.kernels.grouping import hash_slot, next_slot
+from ordito.kernels.grouping import hash_slot, next_slot, pack_vec3
 from ordito.kernels.halfedge import (
     HALFEDGE_DEFECT_NONE,
     halfedge_destination,
@@ -38,12 +41,7 @@ from ordito.kernels.triangles import (
     triangle_quality,
     write_corner_triple,
 )
-from ordito.kernels.validation import (
-    edge_manifold,
-    face_defective,
-    face_parity_flip,
-    mate_share_count,
-)
+from ordito.kernels.validation import face_defective, face_mates_edge_manifold, face_parity_flip
 
 wp.set_module_options({"enable_backward": False})
 
@@ -91,6 +89,19 @@ def compact_referenced(
     out_remap[t] = slot
     out_vertices[slot] = vertices[t]
     out_inverse[slot] = t
+
+
+@wp.kernel
+def bucket_vertex_keys_and_identity(
+    vertices: wp.array[wp.vec3], out_keys: wp.array[wp.uint64], out_order: wp.array[wp.int32]
+) -> None:
+    # ``grouping.hash_vector_rows`` at ``epsilon == 0`` (``grouping.pack_vec3``'s relative buckets)
+    # written straight into the leading halves of the radix sort's double-width key and payload
+    # buffers with the identity permutation, so no key buffer is filled to be copied into them by
+    # ``array.keys_and_identity``.
+    i = wp.int32(wp.tid())
+    out_keys[i] = pack_vec3(vertices[i])
+    out_order[i] = i
 
 
 @wp.kernel
@@ -221,6 +232,21 @@ def compact_kept_duplicate_runs(
     out_kept[row] = f
     for k in range(3):
         out_faces[3 * row + k] = faces[3 * f + k]
+
+
+@wp.kernel
+def flatten_and_count_labels(
+    parents: wp.array[wp.int32], out_labels: wp.array[wp.int32], out_counts: wp.array[wp.int32]
+) -> None:
+    # ``connected_components.ecl_flatten`` with ``scatter.count_occurrences`` over the labels it
+    # writes, for ``remove_small_components``' face-count criteria: each face counts itself into its
+    # own component as it resolves the label, so the histogram is not a second launch reading the
+    # labels back. Integer atomics, so the counts are the same in any order. ``out_counts`` arrives
+    # zeroed.
+    f = wp.int32(wp.tid())
+    label = find_representative(parents, f)
+    out_labels[f] = label
+    wp.atomic_add(out_counts, label, 1)
 
 
 @wp.kernel
@@ -360,16 +386,13 @@ def face_mate_manifold_flags(
     """
     ``validation.mate_manifold_mask`` per face, also writing the mask as a ``0`` / ``1`` flag.
 
-    For ``repair``'s edge-manifold passes, which compact the manifold faces' indices: the flag is
-    what ``array.flatnonzero_in_place`` scans, so neither the all-``True`` fill nor a bool-to-flag
-    pass sits between the test and the scan. The two kernels differ only in their thread domain and
-    outputs; the per-edge rule is ``edge_manifold`` of ``mate_share_count`` in both.
+    For ``repair``'s edge-manifold passes, which compact the manifold faces: the flag is what
+    ``compact_scanned_faces`` reads once scanned in place, so neither the all-``True`` fill nor a
+    bool-to-flag pass sits between the test and the scan. The two kernels differ only in their
+    outputs; the per-face rule is ``face_mates_edge_manifold`` in both.
     """
     f = wp.int32(wp.tid())
-    keep = wp.bool(True)
-    for k in range(3):
-        if not edge_manifold(mate_share_count(mates[3 * f + k]), allow_boundary):
-            keep = False
+    keep = face_mates_edge_manifold(mates, f, allow_boundary)
     out_mask[f] = keep
     out_flags[f] = wp.where(keep, wp.int32(1), wp.int32(0))
 
@@ -382,13 +405,28 @@ def nondegenerate_face_flags(
     out_flags: wp.array[wp.int32],
 ) -> None:
     # ``triangles.face_nondegenerate_mask`` also writing the mask as the ``0`` / ``1`` flag
-    # ``array.flatnonzero_in_place`` scans, for ``remove_degenerate_and_non_manifold_faces``'
-    # prefilter: ``mark_nondegenerate_faces`` with a plain flag in place of the submesh marking.
+    # ``compact_scanned_faces`` reads once scanned, for
+    # ``remove_degenerate_and_non_manifold_faces``' prefilter: ``mark_nondegenerate_faces`` with a
+    # plain flag in place of the submesh marking.
     f = wp.int32(wp.tid())
     v0, v1, v2 = face_vertices(vertices, faces, f)
     keep = triangle_nondegenerate(v0, v1, v2)
     out_keep[f] = keep
     out_flags[f] = wp.where(keep, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def compact_scanned_faces(
+    inclusive: wp.array[wp.int32], faces: wp.array[wp.int32], out_faces: wp.array[wp.int32]
+) -> None:
+    # The faces whose ``0`` / ``1`` flag the caller scanned in place, at their compact rows: the
+    # ``scatter.scatter_index_where_scanned`` pass and the row gather it would feed, in one launch
+    # with no index buffer between them.
+    f = wp.int32(wp.tid())
+    row, count = scanned_count(inclusive, f)
+    if count != 0:
+        a, b, c = corner_triple(faces, f)
+        write_corner_triple(out_faces, row, a, b, c)
 
 
 @wp.kernel
@@ -1014,6 +1052,47 @@ def compact_kept_faces_and_vertices(
             out_vertices[start - n_kept] = vertices[t]
 
 
+@wp.func
+def rim_notch_closable(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    h: wp.int32,
+    outgoing: wp.int32,
+    min_normal_dot: wp.float32,
+    max_aspect_ratio: wp.float32,
+) -> wp.bool:
+    # A notch that can be closed by one triangle, indexed by the boundary halfedge *entering* it.
+    # That halfedge runs ``previous -> v`` and its successor runs ``v -> following``, with the
+    # surface on their left, so a face attached outside the rim must carry the halfedges
+    # ``v -> previous`` and ``following -> v`` -- which is the triangle ``(following, v,
+    # previous)``, and that winding is what makes the result consistently oriented rather than
+    # merely watertight.
+    #
+    # Two gates, both from the caller: the new triangle's normal must agree with the two rim faces
+    # it will border -- which are the two halfedges' own faces, so no lookup can pair it with the
+    # wrong one -- and its aspect ratio must be finite enough to be worth adding.
+    if outgoing < 0:
+        return False
+    previous = faces[h]
+    v = halfedge_destination(faces, h)
+    following = halfedge_destination(faces, outgoing)
+    if previous == following:
+        return False  # a two-edge rim loop spans no notch
+    normal = triangle_normal(vertices[following], vertices[v], vertices[previous])
+    if wp.length(normal) == 0.0:
+        return False
+    # The two rim faces' normals are formed here, from the only faces read, rather than taken from
+    # a per-face normal buffer filled for the whole mesh.
+    entering_normal, _ = face_normals_and_area(vertices, faces, h // 3)
+    if wp.dot(normal, entering_normal) < min_normal_dot:
+        return False
+    outgoing_normal, _ = face_normals_and_area(vertices, faces, outgoing // 3)
+    if wp.dot(normal, outgoing_normal) < min_normal_dot:
+        return False
+    ratio = triangle_aspect_ratio(vertices[following], vertices[v], vertices[previous])
+    return not (ratio > max_aspect_ratio)
+
+
 @wp.kernel
 def collect_rim_links_and_candidates(
     vertices: wp.array[wp.vec3],
@@ -1036,9 +1115,9 @@ def collect_rim_links_and_candidates(
     # exactly one writer, both rim loops keep their own links, and the bordering faces are read off
     # the halfedges themselves rather than from a third table.
     #
-    # The notch test below rides in this same pass. It reads ``rim_next`` only at its own
-    # halfedge, which this thread has just computed and still holds in ``following`` -- so run
-    # apart it cost a launch and a full round trip of the link table through global memory to
+    # The notch test (``rim_notch_closable``) rides in this same pass. It reads ``rim_next`` only
+    # at its own halfedge, which this thread has just computed and still holds in ``following`` --
+    # so run apart it cost a launch and a full round trip of the link table through global memory to
     # recover a successor that never had to leave a register. ``out_rim_prev`` is still scattered
     # for the emit pass that follows, which genuinely does need every link written.
     #
@@ -1046,46 +1125,19 @@ def collect_rim_links_and_candidates(
     # halfedge-twin build plus a handful of launches around one readback, so the host was already
     # waiting on the device. What this buys is a launch and a round trip of the link table, not a
     # measurable speed-up -- worth having, not worth quoting.
+    #
+    # Every halfedge writes its candidate flag, so ``out_candidate`` arrives unfilled.
     h = wp.int32(wp.tid())
     if twins[h] >= 0:
+        out_candidate[h] = False
         return
     following = next_boundary_halfedge(faces, twins, h)
     out_rim_next[h] = following
     if following >= 0:
         out_rim_prev[following] = h
-    # A notch that can be closed by one triangle, indexed by the boundary halfedge *entering* it.
-    # That halfedge runs ``previous -> v`` and its successor runs ``v -> following``, with the
-    # surface on their left, so a face attached outside the rim must carry the halfedges
-    # ``v -> previous`` and ``following -> v`` -- which is the triangle ``(following, v,
-    # previous)``, and that winding is what makes the result consistently oriented rather than
-    # merely watertight.
-    #
-    # Two gates, both from the caller: the new triangle's normal must agree with the two rim faces
-    # it will border -- which are the two halfedges' own faces, so no lookup can pair it with the
-    # wrong one -- and its aspect ratio must be finite enough to be worth adding.
-    outgoing = following
-    if outgoing < 0:
-        return
-    previous = faces[h]
-    v = halfedge_destination(faces, h)
-    following = halfedge_destination(faces, outgoing)
-    if previous == following:
-        return  # a two-edge rim loop spans no notch
-    normal = triangle_normal(vertices[following], vertices[v], vertices[previous])
-    if wp.length(normal) == 0.0:
-        return
-    # The two rim faces' normals are formed here, from the only faces read, rather than taken from
-    # a per-face normal buffer filled for the whole mesh.
-    entering_normal, _ = face_normals_and_area(vertices, faces, h // 3)
-    if wp.dot(normal, entering_normal) < min_normal_dot:
-        return
-    outgoing_normal, _ = face_normals_and_area(vertices, faces, outgoing // 3)
-    if wp.dot(normal, outgoing_normal) < min_normal_dot:
-        return
-    ratio = triangle_aspect_ratio(vertices[following], vertices[v], vertices[previous])
-    if ratio > max_aspect_ratio:
-        return
-    out_candidate[h] = True
+    out_candidate[h] = rim_notch_closable(
+        vertices, faces, h, following, min_normal_dot, max_aspect_ratio
+    )
 
 
 @wp.kernel

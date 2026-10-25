@@ -227,23 +227,35 @@ def mate_edge_manifold(mate: wp.int32, allow_boundary: wp.bool) -> wp.bool:
     return edge_manifold(mate_share_count(mate), allow_boundary)
 
 
+@wp.func
+def face_mates_edge_manifold(
+    mates: wp.array[wp.int32], f: wp.int32, allow_boundary: wp.bool
+) -> wp.bool:
+    """Whether all three edges of face ``f`` are edge-manifold, from its halfedges' mate codes."""
+    # The per-face verdict both face-mask kernels write: ``mate_manifold_mask`` here and
+    # ``repair.face_mate_manifold_flags``, which also writes it as a ``0`` / ``1`` flag.
+    keep = wp.bool(True)
+    for k in range(3):
+        if not mate_edge_manifold(mates[3 * f + k], allow_boundary):
+            keep = False
+    return keep
+
+
 @wp.kernel
 def mate_manifold_mask(
     mates: wp.array[wp.int32], allow_boundary: wp.bool, out_mask: wp.array[wp.bool]
 ) -> None:
     """
-    Clear the face flag of every halfedge whose undirected edge is not edge-manifold.
+    Write every face's edge-manifold flag from its three halfedges' mate codes.
 
-    One thread per halfedge. [`edge_manifold`][ordito.kernels.validation.edge_manifold] only asks
+    One thread per face. [`edge_manifold`][ordito.kernels.validation.edge_manifold] only asks
     whether an edge's face-share count is one, two, or more, which the halfedge's mate code
     (``halfedge.halfedge_mates``) says outright: ``-1`` one, a partner two, ``<= -2`` three or
-    more. So no unique-edge table, no inverse and no count array is built, and ``out_mask``
-    (arriving all ``True``) needs no gather. The stores are unsynchronized because every writer
-    stores the same ``False``.
+    more. So no unique-edge table, no inverse and no count array is built, and since each thread
+    writes its own face's entry, ``out_mask`` arrives unfilled.
     """
-    h = wp.int32(wp.tid())
-    if not mate_edge_manifold(mates[h], allow_boundary):
-        out_mask[h // 3] = False
+    f = wp.int32(wp.tid())
+    out_mask[f] = face_mates_edge_manifold(mates, f, allow_boundary)
 
 
 @wp.kernel

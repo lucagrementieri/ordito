@@ -209,6 +209,16 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "face's fate in the submesh extraction's own marking pass; submesh_from_face_mask would "
         "need the keep mask built by a pass of its own first"
     ),
+    ("combine", "adjacency._face_component_forest"): (
+        "split_with_offsets sorts the component labels, so its flatten writes them straight into "
+        "the radix sort's double-width buffers; face_connected_component_labels would store them "
+        "for a launch to copy there"
+    ),
+    ("repair", "adjacency._face_component_forest"): (
+        "remove_small_components' face-count criteria histogram the component labels in the "
+        "flatten that writes them; face_connected_component_labels would store the labels for a "
+        "second launch to count"
+    ),
     ("repair", "grouping._unique_keys_core"): (
         "the vertex weld groups tolerance-quantized position keys, which stay in repair because "
         "the tolerance is repair policy (duplicate_vertex_inverse's docstring), and reads each "
@@ -229,6 +239,10 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "make_volume and make_normals_outward test closedness and fold the volume in one launch "
         "and one readback, as is_volume does; is_volume's public answer also needs the winding "
         "test, and is_edge_manifold plus measures.volume is a launch and a readback each"
+    ),
+    ("selection", "grouping._unique_sorted_runs"): (
+        "submeshes_from_face_groups packs its (group, vertex) keys straight into the radix sort's "
+        "double-width buffers with the identity payload; unique_1d would copy them there first"
     ),
     ("bounds", "selection._compact_marked_submesh"): (
         "crop_mesh decides each face's fate from the box in the marking pass, as repair's passes "

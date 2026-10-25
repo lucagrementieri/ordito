@@ -24,6 +24,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import require_same_device
+from ordito.adjacency import _face_component_forest  # pyright: ignore[reportPrivateUsage]
 from ordito.kernels import combine as kernel_combine
 
 
@@ -283,17 +284,26 @@ def split_with_offsets(
     if n_faces == 0:
         return (*_launch.empty_packed(wp.vec3, device), *_launch.empty_packed(wp.int32, device))
 
-    face_labels = (
-        od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
-        if labels is None
-        else labels
-    )
-
     # Every label is a face id, below ``n_faces``, so the radix sort stops at that bit width instead
     # of running all 32 bits.
-    sorted_labels, sorted_face_ids = od.array.sort_and_argsort(
-        face_labels, end_bit=max(1, (n_faces - 1).bit_length())
-    )
+    end_bit = max(1, (n_faces - 1).bit_length())
+    if labels is None:
+        # The labelling's flatten writes the labels and the identity payload straight into the
+        # sort's double-width buffers.
+        parents = _face_component_forest(faces, vertices.size, None)
+        keys_buffer = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+        order_buffer = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_combine.flatten_labels_and_identity,
+            dim=n_faces,
+            inputs=[parents, keys_buffer, order_buffer],
+            device=device,
+        )
+        sorted_labels, sorted_face_ids = od.array.sort_and_argsort_in_place(
+            keys_buffer, order_buffer, end_bit=end_bit
+        )
+    else:
+        sorted_labels, sorted_face_ids = od.array.sort_and_argsort(labels, end_bit=end_bit)
 
     # Segment boundaries of the label-sorted array: position 0, every label change, and the end.
     is_start = _launch.empty(n_faces + 1, dtype=wp.int32, device=device)

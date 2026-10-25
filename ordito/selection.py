@@ -11,6 +11,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
 from ordito.constants import INDEX_RADIX_PAIR
+from ordito.grouping import _unique_sorted_runs  # pyright: ignore[reportPrivateUsage]
 from ordito.halfedge import halfedge_twins, require_matching_twins
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import selection as kernel_selection
@@ -665,16 +666,22 @@ def submeshes_from_face_groups(
         )
 
     n_corners = 3 * n_selected
-    keys = _launch.empty(n_corners, dtype=wp.int64, device=device)
+    keys = _launch.empty(2 * n_corners, dtype=wp.int64, device=device)
+    order = _launch.empty(2 * n_corners, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_selection.pack_group_vertex_keys,
         dim=n_corners,
-        inputs=[faces, group_face_indices, group_offsets, wp.int64(radix), keys],
+        inputs=[faces, group_face_indices, group_offsets, wp.int64(radix), keys, order],
         device=device,
     )
 
-    # A key is ``group * radix + vertex``, below ``k * radix``.
-    unique_keys, inverse = od.grouping.unique_1d(keys, return_inverse=True, max_value=k * radix - 1)
+    # ``unique_1d(return_inverse=True)``'s sorted path over the keys already in the sort's buffers.
+    # A key is ``group * radix + vertex``, below ``k * radix``: only those bits are sorted.
+    unique_keys, inverse, _counts, _first = _unique_sorted_runs(
+        keys, order, n_corners, True, True, False, False, max(1, (k * radix - 1).bit_length())
+    )
+    assert unique_keys is not None
+    assert inverse is not None
     n_slots = unique_keys.size
     # One decode per unique slot answers everything its key is needed for: the slot's group, the
     # group's vertex count (a histogram, so an empty group still gets a zero-length entry and no

@@ -247,10 +247,11 @@ def edge_manifold_mask(
             faces, _validated_vertex_bound(faces, n_vertices, validate, "edge_manifold_mask")
         )
     )
-    out_mask = _launch.full(n_faces, True, dtype=wp.bool, device=device)
+    # ``wp.empty``: the pass writes every face's entry.
+    out_mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_validation.mate_manifold_mask,
-        dim=mates.size,
+        dim=n_faces,
         inputs=[mates, wp.bool(allow_boundary_edges), out_mask],
         device=device,
     )
