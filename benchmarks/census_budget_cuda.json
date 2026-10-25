@@ -3276,12 +3276,12 @@
  },
  "benchmarks/test_holes.py::test_fill_small[holes_many-ordito-cuda]": {
   "counts": {
-   "launch": 18,
-   "alloc": 30,
-   "memset": 12,
+   "launch": 17,
+   "alloc": 29,
+   "memset": 11,
    "d2d": 1,
    "h2d": 1,
-   "d2h": 6,
+   "d2h": 5,
    "scan": 2,
    "sort": 2
   }

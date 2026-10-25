@@ -3066,10 +3066,10 @@
  },
  "benchmarks/test_holes.py::test_fill_small[holes_many-ordito-cpu]": {
   "counts": {
-   "launch": 18,
-   "alloc": 29,
-   "h2h": 3,
-   "readback": 6,
+   "launch": 17,
+   "alloc": 28,
+   "h2h": 2,
+   "readback": 5,
    "scan": 2,
    "sort": 2
   }

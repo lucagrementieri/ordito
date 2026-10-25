@@ -274,12 +274,15 @@ def test_fill_small(bench_case: BenchCase) -> None:
 
     So one point is the DP over many short loops and the other is the loop measure and the
     threshold with nothing to fill, which is what this function adds over ``fill_min_weight``.
+    ``n_vertices=`` is passed, as the mesh knows it, sparing the fill its index-bound readback.
     Ordito only: the pymeshfix and pymeshlab comparisons in ``tests/test_holes.py`` cannot carry a
     row (see the exemption there).
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     result = bench_case.run(
-        lambda: od.holes.fill_small(vertices, faces, max_edges=_FILL_SMALL_MAX_EDGES),
+        lambda: od.holes.fill_small(
+            vertices, faces, max_edges=_FILL_SMALL_MAX_EDGES, n_vertices=vertices.size
+        ),
         rounds=_ROUNDS,
     )
     assert result.size >= faces.size

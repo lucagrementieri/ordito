@@ -1427,6 +1427,24 @@ def test_fill_small_requires_exactly_one_threshold(
         od.holes.fill_small(mesh_wp.points, mesh_wp.indices, **kwargs)
 
 
+def test_fill_small_vertex_bound_changes_no_answer(device: str) -> None:
+    """
+    Ordito against ordito: ``n_vertices=`` only spares the inferred index bound.
+
+    The bound orders the rim keys, and any bound above every index orders them alike, so the
+    trusted ``vertices.size`` must give the faces the inferred bound gives, bit for bit. Both rims
+    are filled at ``max_edges=16``, so the fill (where the bound is read) runs.
+    """
+    _holed_tm, vertices_wp, faces_wp, sizes = _two_rims_of_different_edge_count(device)
+    assert sorted(sizes) == [10, 16]
+
+    inferred_wp = od.holes.fill_small(vertices_wp, faces_wp, max_edges=16)
+    given_wp = od.holes.fill_small(vertices_wp, faces_wp, max_edges=16, n_vertices=vertices_wp.size)
+
+    assert inferred_wp.size - faces_wp.size == 3 * sum(size - 2 for size in sizes)
+    assert np.array_equal(given_wp.numpy(), inferred_wp.numpy())
+
+
 @pytest.mark.parity(
     "fill_min_weight",
     "pymeshfix",

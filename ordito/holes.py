@@ -1146,6 +1146,7 @@ def fill_small(
     max_perimeter: float | None = None,
     *,
     max_edges: int | None = None,
+    n_vertices: int | None = None,
 ) -> wp.array[wp.int32]:
     """
     Fill only the *small* boundary loops, sized either by perimeter or by boundary-edge count.
@@ -1185,6 +1186,10 @@ def fill_small(
         24-edge rim is filled at ``max_edges=24`` and left open at 23. A closed loop has as many
         edges as vertices, so this is also its vertex count. Mutually exclusive with
         ``max_perimeter``.
+    n_vertices
+        Optional exclusive bound on the vertex indices, typically ``vertices.size``. Trusted, not
+        checked: it spares the reduction that otherwise range-checks ``faces`` and infers the
+        bound, and its host readback, whenever a loop is filled.
 
     Returns
     -------
@@ -1196,7 +1201,8 @@ def fill_small(
     Raises
     ------
     ValueError
-        If neither ``max_perimeter`` nor ``max_edges`` is given, or if both are.
+        If neither ``max_perimeter`` nor ``max_edges`` is given, or if both are; or if
+        ``n_vertices`` is ``None``, a loop is filled and ``faces`` holds a negative index.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -1243,7 +1249,7 @@ def fill_small(
     if (max_perimeter is None) == (max_edges is None):
         raise ValueError("pass exactly one of max_perimeter or max_edges")
 
-    filled = _fill_small(vertices, faces, max_perimeter, max_edges)
+    filled = _fill_small(vertices, faces, max_perimeter, max_edges, n_vertices=n_vertices)
     return _launch.clone(faces) if filled is faces else filled
 
 
@@ -1262,8 +1268,7 @@ def _fill_small(
     For a caller that owns ``faces`` and so needs no copy of them. ``mates`` are ``faces``'
     halfedge mates when the caller holds them (a ``-2`` code need not name the lowest halfedge),
     which the boundary walk then reads rather than pairing the halfedges again. ``n_vertices`` is
-    ``vertices.size`` from a caller whose face indices are known to lie in ``[0, n_vertices)``,
-    which spares the fill its index-bound reduction and readback. Exactly one threshold, unchecked.
+    as in [`fill_small`][ordito.holes.fill_small]. Exactly one threshold, unchecked.
     """
     packed = _hole_loops(vertices, faces, mates=mates)
     if packed is None:
