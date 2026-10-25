@@ -908,14 +908,6 @@ def canonical_edge_crossing_at(
 
 
 @wp.func
-def canonical_edge_crossing(
-    vertices: wp.array[wp.vec3], values: wp.array[wp.float32], i: wp.int32, j: wp.int32
-) -> wp.vec3:
-    # ``canonical_edge_crossing_at`` over a tabulated field.
-    return canonical_edge_crossing_at(vertices, values, wp.vec3(), wp.vec3(), i, j)
-
-
-@wp.func
 def face_edge_crossing(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -963,7 +955,7 @@ def write_clip_crossing(
 ) -> wp.int32:
     # Write the level set's crossing on edge ``edge`` of face ``f`` at output vertex ``index`` and
     # return the index. Computed where the face is emitted rather than tabulated by a pass of its
-    # own: ``canonical_edge_crossing`` makes every evaluation of an edge bitwise equal.
+    # own: ``canonical_edge_crossing_at`` makes every evaluation of an edge bitwise equal.
     out_vertices[index] = face_edge_crossing(
         vertices, faces, vertex_dots, plane_normal, plane_origin, f, edge
     )
@@ -1252,6 +1244,8 @@ def split_crossed_edge_flags(
 def split_crossed_edge_vertices(
     vertices: wp.array[wp.vec3],
     vertex_dots: wp.array[wp.float32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
     keys: wp.array[wp.int64],
     halfedges: wp.array[wp.int32],
     rank: wp.array[wp.int32],
@@ -1261,10 +1255,11 @@ def split_crossed_edge_vertices(
     out_points: wp.array[wp.vec3],
 ) -> None:
     # Give every crossed cut-face halfedge its edge's new vertex, and have the first halfedge of
-    # each edge write the crossing point. ``canonical_edge_crossing`` interpolates from a canonical
-    # endpoint, so both faces' views of the edge agree. ``out_points`` is the whole output vertex
-    # buffer: the input's ``vertex_base`` positions, copied by the first threads of this launch (it
-    # runs over ``max(n_halfedges, vertex_base)``), then the crossings.
+    # each edge write the crossing point. ``canonical_edge_crossing_at`` interpolates from a
+    # canonical endpoint, so both faces' views of the edge agree. ``out_points`` is the whole
+    # output vertex buffer: the input's ``vertex_base`` positions, copied by the first threads of
+    # this launch (it runs over ``max(n_halfedges, vertex_base)``), then the crossings. An empty
+    # ``vertex_dots`` is the plane split's, whose plane dots are formed here (``vertex_level``).
     q = wp.int32(wp.tid())
     if q < vertex_base:
         out_points[q] = vertices[q]
@@ -1279,7 +1274,9 @@ def split_crossed_edge_vertices(
     if first != 0:
         high = wp.int32(key // key_base)
         low = wp.int32(key % key_base)
-        out_points[vertex_base + slot] = canonical_edge_crossing(vertices, vertex_dots, low, high)
+        out_points[vertex_base + slot] = canonical_edge_crossing_at(
+            vertices, vertex_dots, plane_normal, plane_origin, low, high
+        )
 
 
 @wp.func
@@ -1413,8 +1410,10 @@ def emit_split_faces(
 
 @wp.func
 def plane_crossed_halfedge(
+    vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    vertex_dots: wp.array[wp.float32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
     tolerance: wp.float32,
     f: wp.int32,
     k: wp.int32,
@@ -1432,17 +1431,23 @@ def plane_crossed_halfedge(
     # two-value set cannot do. Either way ``remesh.write_split_children``' 3-split branch is
     # unreachable from here. Both halfedges of an edge give the same verdict, so the crossing point
     # is computed once per *edge* (``split_crossed_edge_vertices``) and the split is crack-free.
+    # The plane dots are formed per corner (``point_plane_dot``, as ``vertex_level`` forms them)
+    # rather than read from a table a pass of its own would write.
     a = faces[3 * f + k]
     b = faces[3 * f + (k + 1) % 3]
-    sign_a = kernel_array.sign_with_tolerance(vertex_dots[a], tolerance)
-    sign_b = kernel_array.sign_with_tolerance(vertex_dots[b], tolerance)
+    dot_a = point_plane_dot(vertices[a], plane_normal, plane_origin)
+    dot_b = point_plane_dot(vertices[b], plane_normal, plane_origin)
+    sign_a = kernel_array.sign_with_tolerance(dot_a, tolerance)
+    sign_b = kernel_array.sign_with_tolerance(dot_b, tolerance)
     return sign_a * sign_b < wp.int32(0)
 
 
 @wp.kernel
 def plane_split_child_counts(
+    vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    vertex_dots: wp.array[wp.float32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
     tolerance: wp.float32,
     out_counts: wp.array[wp.int32],
 ) -> None:
@@ -1452,15 +1457,17 @@ def plane_split_child_counts(
     f = wp.int32(wp.tid())
     count = wp.int32(1)
     for k in range(3):
-        if plane_crossed_halfedge(faces, vertex_dots, tolerance, f, k):
+        if plane_crossed_halfedge(vertices, faces, plane_normal, plane_origin, tolerance, f, k):
             count += 1
     out_counts[f] = count
 
 
 @wp.kernel
 def plane_crossed_halfedge_keys(
+    vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    vertex_dots: wp.array[wp.float32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
     tolerance: wp.float32,
     face_offsets: wp.array[wp.int32],
     key_base: wp.int64,
@@ -1474,7 +1481,7 @@ def plane_crossed_halfedge_keys(
     f = wp.int32(wp.tid())
     slot = face_offsets[f] - f
     for k in range(3):
-        if plane_crossed_halfedge(faces, vertex_dots, tolerance, f, k):
+        if plane_crossed_halfedge(vertices, faces, plane_normal, plane_origin, tolerance, f, k):
             a = faces[3 * f + k]
             b = faces[3 * f + (k + 1) % 3]
             out_keys[slot] = unique_edge_order_key(wp.int64(a), wp.int64(b), key_base)
@@ -1520,7 +1527,6 @@ def plane_face_above(
 @wp.kernel
 def emit_plane_split_faces(
     faces: wp.array[wp.int32],
-    vertex_dots: wp.array[wp.float32],
     tolerance: wp.float32,
     cut_vertices: wp.array[wp.int32],
     face_offsets: wp.array[wp.int32],
@@ -1544,7 +1550,7 @@ def emit_plane_split_faces(
     slot = face_offsets[f] - f
     mv = wp.vec3i(-1, -1, -1)
     for k in range(3):
-        if plane_crossed_halfedge(faces, vertex_dots, tolerance, f, k):
+        if plane_crossed_halfedge(vertices, faces, plane_normal, plane_origin, tolerance, f, k):
             mv[k] = cut_vertices[slot]
             slot += 1
     fv = wp.vec3i(faces[f * 3 + 0], faces[f * 3 + 1], faces[f * 3 + 2])
