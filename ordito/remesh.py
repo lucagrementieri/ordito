@@ -3578,8 +3578,23 @@ def intrinsic_delaunay(
     # into the buffer the loop flips in place and arms the claim table for the first round;
     # ``fixup_twin_remap`` re-arms it for every later one.
     twin = _launch.full(n_half, -1, dtype=wp.int32, device=device)
-    intrinsic_faces = _launch.empty(n_half, dtype=wp.int32, device=device)
-    face_claim = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    # Every unfilled ``int32`` table of the loop in one allocation, and both masks in another.
+    # The remap, masks and count are cleared by every round's candidate pass before anything
+    # reads them.
+    intrinsic_faces, face_claim, quad_rows, neighbor_rows, remap, count = _split_buffer(
+        _launch.empty(10 * n_half + n_faces + 1, dtype=wp.int32, device=device),
+        n_half,
+        n_faces,
+        4 * n_half,
+        4 * n_half,
+        n_half,
+        1,
+    )
+    flip, no_remap = _split_buffer(
+        _launch.empty(2 * n_half, dtype=wp.bool, device=device), n_half, n_half
+    )
+    quad = odt.as_array2d(quad_rows.reshape((n_half, 4)), wp.int32)
+    neighbors = odt.as_array2d(neighbor_rows.reshape((n_half, 4)), wp.int32)
     _launch.launch(
         kernel_remesh.pair_intrinsic_twins,
         dim=n_half,
@@ -3588,14 +3603,7 @@ def intrinsic_delaunay(
         device=device,
     )
 
-    flip = _launch.empty(n_half, dtype=wp.bool, device=device)
-    quad = odt.empty_2d((n_half, 4), wp.int32, device=device)
     new_length = _launch.empty(n_half, dtype=wp.float32, device=device)
-    neighbors = odt.empty_2d((n_half, 4), wp.int32, device=device)
-    # Cleared by every round's candidate pass before anything reads them.
-    remap = _launch.empty(n_half, dtype=wp.int32, device=device)
-    no_remap = _launch.empty(n_half, dtype=wp.bool, device=device)
-    count = _launch.empty(1, dtype=wp.int32, device=device)
 
     total = 0
     for _ in range(max_iter):
