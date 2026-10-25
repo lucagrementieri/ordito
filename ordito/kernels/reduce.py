@@ -476,13 +476,16 @@ def store_block_total_divided(
     is_last: wp.Function,
     divisor: wp.float32,
 ):
-    # ``store_block_total`` whose reproducible result slot holds the total divided by ``divisor``,
-    # the division done once by the last block, so a mean needs no launch of its own. The
-    # ``atomic_add`` form has no last block: its slot holds the undivided total, and the caller
-    # divides (``ordito.config.is_deterministic``, which ``_launch.block_partials`` reads to pick
-    # the form, tells it which it got). The
-    # division is ``total / divisor`` per component, the one a ``wp.map(wp.div, ...)`` makes.
+    # ``store_block_total`` whose result slot holds the total divided by ``divisor``, so a mean
+    # needs no launch of its own. The reproducible form divides once, in the last block, the
+    # division ``total / divisor`` per component a ``wp.map(wp.div, ...)`` makes; the
+    # ``atomic_add`` form has no last block, so each block adds its own fold divided (arrival
+    # order already leaves the last bits free there).
     folded = block_sum(local)
+    if out.shape[0] == stride:
+        if lane == 0:
+            wp.atomic_add(out, slot, folded / divisor)
+        return
     if stage_block_fold(block, lane, folded, out, slot, stride, is_last) != 0:
         n_blocks = (out.shape[0] - stride - 1) // stride
         zero = type(folded)(wp.float32(0.0))
