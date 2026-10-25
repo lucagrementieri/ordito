@@ -2,10 +2,10 @@ from typing import Any
 
 import warp as wp
 
-from ordito.constants import TILE_1D, TOLERANCE_PLANAR_CONSTANT
+from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D, TOLERANCE_PLANAR_CONSTANT
 from ordito.kernels.array import RegisterBlockedTable, morton_code_30, morton_frame, to_vec3d
 from ordito.kernels.predicates import point_triangle_offset
-from ordito.kernels.proximity import box_diagonal_d, closest_point_query
+from ordito.kernels.proximity import box_diagonal_d, closest_face_normal, closest_point_query
 from ordito.kernels.ray import longest_ray_distance
 from ordito.kernels.reduce import block_sum, minmax_vec3_chunk
 from ordito.kernels.sample import fibonacci_direction
@@ -82,6 +82,34 @@ def bundle_setup(
     else:
         r = t - chunks
         out_directions[r] = fibonacci_direction(r, out_directions.shape[0], z_span)
+
+
+@wp.kernel
+def tangent_sphere_setup(
+    mesh_id: wp.uint64,
+    mesh_points: wp.array[wp.vec3],
+    mesh_faces: wp.array[wp.int32],
+    points: wp.array[wp.vec3],
+    out_corners: wp.array[wp.float32],
+    out_normals: wp.array[wp.vec3],
+) -> None:
+    # The tangent-sphere passes' two boxes and, when ``out_normals`` is not length-zero, the query
+    # normals in one launch: ``reduce.minmax_vec3_pair_chunked``'s side-by-side form (the mesh's
+    # box 0, the points' box 1) from the leading ``chunks_1d(n_mesh) + chunks_1d(n_points)``
+    # threads, then ``proximity.normals_at_closest_faces_computed``'s normal, unbounded, one
+    # trailing thread a point.
+    t = wp.int32(wp.tid())
+    chunks_a = (mesh_points.shape[0] + TILE_1D - 1) // TILE_1D
+    chunks = chunks_a + (points.shape[0] + TILE_1D - 1) // TILE_1D
+    if t < chunks_a:
+        minmax_vec3_chunk(mesh_points, t, out_corners, wp.int32(0))
+    elif t < chunks:
+        minmax_vec3_chunk(points, t - chunks_a, out_corners, wp.int32(1))
+    else:
+        i = t - chunks
+        out_normals[i] = closest_face_normal(
+            mesh_id, points[i], wp.float32(FLOAT32_INF_CONSTANT), mesh_points, mesh_faces
+        )
 
 
 @wp.func

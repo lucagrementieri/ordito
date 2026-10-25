@@ -1130,6 +1130,23 @@ def normals_at_closest_faces(
     out_normals[tid] = face_normals[closest_face_or_first(mesh_id, points[tid], max_dist)]
 
 
+@wp.func
+def closest_face_normal(
+    mesh_id: wp.uint64,
+    p: wp.vec3,
+    max_dist: wp.float32,
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+) -> wp.vec3:
+    # The normal of ``p``'s closest face (``closest_face_or_first``), formed from its corners by the
+    # same ``face_normals_and_area`` the per-face table is built with, so the value is the table's
+    # entry. Shared by ``normals_at_closest_faces_computed`` and
+    # ``visibility.tangent_sphere_setup``.
+    face = closest_face_or_first(mesh_id, p, max_dist)
+    normal, _area = kernel_triangles.face_normals_and_area(vertices, faces, face)
+    return normal
+
+
 @wp.kernel
 def normals_at_closest_faces_computed(
     mesh_id: wp.uint64,
@@ -1139,14 +1156,11 @@ def normals_at_closest_faces_computed(
     faces: wp.array[wp.int32],
     out_normals: wp.array[wp.vec3],
 ) -> None:
-    # ``normals_at_closest_faces`` with the hit face's normal formed from its corners in the thread,
-    # by the same ``face_normals_and_area`` the per-face table is built with, so the value is the
-    # table's entry. The two kernels differ only in where the normal comes from: a whole-mesh table
-    # costs a launch and two face-sized buffers the queries read a few entries of.
+    # ``normals_at_closest_faces`` with the hit face's normal formed in the thread
+    # (``closest_face_normal``). The two kernels differ only in where the normal comes from: a
+    # whole-mesh table costs a launch and two face-sized buffers the queries read a few entries of.
     tid = wp.int32(wp.tid())
-    face = closest_face_or_first(mesh_id, points[tid], max_dist)
-    normal, _area = kernel_triangles.face_normals_and_area(vertices, faces, face)
-    out_normals[tid] = normal
+    out_normals[tid] = closest_face_normal(mesh_id, points[tid], max_dist, vertices, faces)
 
 
 @wp.func
