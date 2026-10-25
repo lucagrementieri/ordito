@@ -226,16 +226,15 @@ def bucketed_halfedge_mates(
     out_mates[h] = bucketed_halfedge_mate(faces, degrees, ends, buckets, h)
 
 
-@wp.kernel
-def sorted_halfedge_mates(
-    sorted_keys: wp.array[wp.uint64], order: wp.array[wp.int32], out_mates: wp.array[wp.int32]
-) -> None:
-    # ``halfedge.halfedge_mates`` from the radix sort of the halfedges' undirected keys, one thread
-    # per sorted position: an edge's halfedges are its run of equal keys, and the stable sort of
-    # an identity payload leaves them in ascending halfedge order, so the run's first payload is
-    # the edge's lowest halfedge, as ``bucketed_halfedge_mate`` takes it. The walk to the run's
-    # ends is a run's length, a few halfedges on anything but a non-manifold book of faces.
-    i = wp.int32(wp.tid())
+@wp.func
+def sorted_run_mate(
+    sorted_keys: wp.array[wp.uint64], order: wp.array[wp.int32], i: wp.int32
+) -> wp.int32:
+    # The mate code of halfedge ``order[i]`` from the radix sort of the halfedges' undirected keys:
+    # an edge's halfedges are its run of equal keys, and the stable sort of an identity payload
+    # leaves them in ascending halfedge order, so the run's first payload is the edge's lowest
+    # halfedge, as ``bucketed_halfedge_mate`` takes it. The walk to the run's ends is a run's
+    # length, a few halfedges on anything but a non-manifold book of faces.
     n = sorted_keys.shape[0]
     key = sorted_keys[i]
     start = i
@@ -248,7 +247,17 @@ def sorted_halfedge_mates(
     other = wp.int32(-1)
     if end - start == 2:
         other = order[wp.where(i == start, start + 1, start)]
-    out_mates[order[i]] = mate_from_run(end - start, other, order[start])
+    return mate_from_run(end - start, other, order[start])
+
+
+@wp.kernel
+def sorted_halfedge_mates(
+    sorted_keys: wp.array[wp.uint64], order: wp.array[wp.int32], out_mates: wp.array[wp.int32]
+) -> None:
+    # ``halfedge.halfedge_mates`` from the edge-key sort, one thread per sorted position. The twin
+    # builds read the same code in ``pair_sorted_halfedge`` rather than through this table.
+    i = wp.int32(wp.tid())
+    out_mates[order[i]] = sorted_run_mate(sorted_keys, order, i)
 
 
 # ``mate_twin_defect``'s defect slots, those of ``halfedge_twins``' two rejections.
@@ -379,6 +388,79 @@ def pair_bucketed_halfedges_and_ring_starts(
     record_ring_start(faces, h, twin, out_ring_starts)
 
 
+@wp.func
+def pair_sorted_halfedge(
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    i: wp.int32,
+    out_twins: wp.array[wp.int32],
+    out_defect_counts: wp.array[wp.int32],
+) -> tuple[wp.int32, wp.int32]:
+    # The twin of halfedge ``h = order[i]`` from the edge-key sort under ``mate_twin_defect``, the
+    # sort path's sibling of ``pair_bucketed_halfedge``: the mate code ``sorted_halfedge_mates``
+    # would write, turned into the twin by the same thread, so no mate table is stored and read
+    # back. Returns ``(h, twin)``; the twin is written to ``out_twins[h]``, its defect counted.
+    h = order[i]
+    twin, defect = mate_twin_defect(faces, sorted_run_mate(sorted_keys, order, i), h)
+    if defect != HALFEDGE_DEFECT_NONE:
+        wp.atomic_add(out_defect_counts, defect, 1)
+    out_twins[h] = twin
+    return h, twin
+
+
+@wp.kernel
+def pair_sorted_halfedges(
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    out_twins: wp.array[wp.int32],
+    out_defect_counts: wp.array[wp.int32],
+) -> None:
+    # The twin table and its two defect counts from the edge-key sort, one thread per sorted
+    # position; ``twins_from_mates`` over ``sorted_halfedge_mates``' table gives the same, in two
+    # launches and a mate buffer. Every halfedge is one sorted position, so every entry is written.
+    i = wp.int32(wp.tid())
+    pair_sorted_halfedge(sorted_keys, order, faces, i, out_twins, out_defect_counts)
+
+
+@wp.func
+def record_ring_degree_and_start(
+    faces: wp.array[wp.int32],
+    h: wp.int32,
+    twin: wp.int32,
+    out_degrees: wp.array[wp.int32],
+    out_starts: wp.array2d[wp.int32],
+) -> None:
+    # Both per-vertex questions the ring walk needs before it can start: the ring size (every face
+    # contributes exactly one outgoing halfedge per corner, so it is how often the vertex appears
+    # in the flat face buffer) and the walk's start candidates (``record_ring_start``). Both are a
+    # scatter over the same ``faces[h]`` index, so they share one pass rather than a
+    # ``scatter.count_occurrences`` launch of their own over the same buffer. ``out_degrees``
+    # arrives zeroed and ``out_starts`` filled with ``INT32_MAX``.
+    wp.atomic_add(out_degrees, faces[h], 1)
+    record_ring_start(faces, h, twin, out_starts)
+
+
+@wp.kernel
+def pair_sorted_halfedges_and_ring_starts(
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    out_twins: wp.array[wp.int32],
+    out_defect_counts: wp.array[wp.int32],
+    out_degrees: wp.array[wp.int32],
+    out_ring_starts: wp.array2d[wp.int32],
+) -> None:
+    # ``pair_sorted_halfedges`` for ``halfedge.vertex_one_rings``, which takes each halfedge's ring
+    # degree and walk-start bid as soon as its twin is known: the ``ring_degrees_and_starts`` pass
+    # the walk would otherwise take over the finished table. Differs from ``pair_sorted_halfedges``
+    # only in the ``record_ring_degree_and_start`` call.
+    i = wp.int32(wp.tid())
+    h, twin = pair_sorted_halfedge(sorted_keys, order, faces, i, out_twins, out_defect_counts)
+    record_ring_degree_and_start(faces, h, twin, out_degrees, out_ring_starts)
+
+
 @wp.kernel
 def twins_from_mates(
     faces: wp.array[wp.int32],
@@ -497,17 +579,10 @@ def ring_degrees_and_starts(
     out_degrees: wp.array[wp.int32],
     out_starts: wp.array2d[wp.int32],
 ) -> None:
-    # One thread per halfedge, answering both per-vertex questions the ring walk needs before it
-    # can start: the ring size (every face contributes exactly one outgoing halfedge per corner, so
-    # it is how often the vertex appears in the flat face buffer) and the walk's start candidates
-    # (``record_ring_start``), for a twin table the call did not pair itself.
-    #
-    # Both halves are a scatter over the same ``faces[h]`` index, so they share one pass rather
-    # than a ``scatter.count_occurrences`` launch of their own over the same buffer.
-    # ``out_degrees`` arrives zeroed and ``out_starts`` filled with ``INT32_MAX``.
+    # One thread per halfedge: ``record_ring_degree_and_start`` for a twin table the call did not
+    # pair itself.
     h = wp.int32(wp.tid())
-    wp.atomic_add(out_degrees, faces[h], 1)
-    record_ring_start(faces, h, twins[h], out_starts)
+    record_ring_degree_and_start(faces, h, twins[h], out_degrees, out_starts)
 
 
 @wp.kernel

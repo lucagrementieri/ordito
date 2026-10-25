@@ -539,8 +539,7 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # it, so ``out_`` would advertise it as the answer -- the same role, and the same exemption, as
     # ``adjacency.scatter_vertex_faces``' argument of that name. ``bfs_push_level``'s ``state`` is
     # the level loop's persistent word -- the level to claim and the claim flag -- carried across
-    # launches and both read and written every level, which is the ``forest_link`` case one kernel
-    # down.
+    # launches and both read and written every level.
     ("graph", "scatter_neighbor_lists"): frozenset({"cursor"}),
     # ``signed_distance_level_set``'s winding lattice: ``column_suffix_sums`` turns each column's
     # per-node crossing deltas into suffix sums where they lie; ``take_exact_winding`` and
@@ -569,9 +568,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.conjugate_gradient", "cg_one_block"): frozenset({"scratch", "narrow"}),
     # The heat method's normalization shifts and orients the distance field where it lies.
     ("heat", "shift_and_orient"): frozenset({"phi"}),
-    # Boruvka's accepted edges leave the candidate set in place: what the caller reads afterwards
-    # is the candidates the dual forest did not take, so ``candidate`` is input and result at once.
-    ("homology", "forest_link"): frozenset({"candidate"}),
     ("holes", "fill_dp_span"): frozenset({"tables"}),
     # ``join_closest_components``' round state, carried across its launches: the rim table edited
     # in place, the component map, the state word, the running best key (decoded, then re-armed)
@@ -626,10 +622,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # scratch / persistent state
     ("adjacency", "scatter_vertex_faces"): frozenset({"cursor"}),
     ("smoothing", "scatter_incidence_rows"): frozenset({"cursor"}),
-    # ``state`` is ``shorten_loop_with_offsets``' device-side loop word: every sweep kernel reads
-    # its parity and stop flag, and this one counts the sweep's accepted replacements into it for
-    # ``shorten_loop_advance`` to read and clear. The answers are the count and arc tables.
-    ("geodesic_walk", "shorten_loop_counts"): frozenset({"state"}),
     # ``descent_paths``' first counting pass flags the paths that stopped short in ``short_paths``
     # (and counts them in its last slot); the completion pass reads the flags back as its mask.
     ("geodesic_walk", "descent_paths"): frozenset({"short_paths"}),
