@@ -398,24 +398,27 @@ def store_block_sum(
     out: wp.array[Any],
     base: wp.int32,
     stride: wp.int32,
-):
+) -> wp.int32:
     # The reproducible ``commit_block_sum``: the block's fold of each lane's register vector into
     # slots ``base:base + len(local)`` of its row, and of the result row once the last block has
     # added every row (see the note above). Every block of the launch must reach this, and every
     # lane of it (it is block-collective). The vector-row form of ``stage_block_value`` and
-    # ``fold_block_values``: a row of ``len(local)`` slots stored and added at once.
+    # ``fold_block_values``: a row of ``len(local)`` slots stored and added at once. Returns
+    # non-zero, in every lane, for the block that wrote the result row (lane 0 wrote it, so that
+    # lane reads it back without a fence); 0 for every block of the atomic commit.
     folded = block_sum(local)
     if out.shape[0] == stride:
         if lane == 0:
             for slot in range(len(folded)):
                 wp.atomic_add(out, base + slot, folded[slot])
-        return
+        return wp.int32(0)
     n_blocks = (out.shape[0] - stride - 1) // stride
     if lane == 0:
         row = stride + 1 + block * stride + base
         for slot in range(len(folded)):
             out[row + slot] = folded[slot]
-    if block_last_ticket(lane, out, stride, folded[0], n_blocks, last_ticket) != 0:
+    last = block_last_ticket(lane, out, stride, folded[0], n_blocks, last_ticket)
+    if last != 0:
         thread_fence()
         # Row by row: every slot of a row is an independent load, so ``len(local)`` are in flight
         # where a slot-by-slot walk waited on each row in turn. A narrow row is walked two at a
@@ -444,6 +447,7 @@ def store_block_sum(
             for slot in range(len(grand)):
                 out[base + slot] = grand[slot]
             out[stride] = zero
+    return last
 
 
 @wp.func

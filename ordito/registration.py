@@ -251,8 +251,26 @@ def _procrustes_into(
     _launch.launch_tiled(
         kernel_registration.fit_transform_and_accumulate_cost,
         dim=blocks,
-        inputs=[a, b, weights, acc, reflection, translation, scale, stride],
-        outputs=[out_matrix, out_transformed],
+        inputs=[
+            a,
+            b,
+            weights,
+            acc,
+            reflection,
+            translation,
+            scale,
+            stride,
+            blocks,
+            wp.float64(0.0),
+            wp.int32(0),
+        ],
+        outputs=[
+            out_matrix,
+            out_transformed,
+            _zero_length(wp.mat44, device),
+            _zero_length(wp.int32, device),
+            _zero_length(wp.int32, device),
+        ],
         block_dim=TILE_1D,
         device=device,
     )
@@ -429,7 +447,7 @@ def icp(
     assert search_index is not None
 
     # Every buffer is allocated once and rewritten in place by every round. The fit lands in
-    # ``fitted`` and is copied into ``total`` only once ``point_to_point_round`` has seen that it
+    # ``fitted`` and is kept in ``total`` only once ``close_point_to_point_round`` has seen that it
     # carried weight; ``state`` is the shared round / condition word; ``acc`` is the fit's moments
     # plus the kept fit's cost, which is also the "previous cost" the convergence test reads.
     closest = _launch.empty(n, dtype=wp.vec3, device=device)
@@ -444,7 +462,12 @@ def icp(
     stride = int(kernel_registration.ICP_POINT_ACC_SIZE)
     acc, _ = _launch.block_partials(blocks, stride, wp.float32, device)
     fitted = _launch.empty(1, dtype=wp.mat44, device=device)
-    state = _launch.zeros(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
+    # The loop state, then the integer ticket that elects the fit's last block to close the round
+    # under the atomic commit (``kernel_registration.last_atomic_block``): one zeroed allocation.
+    words = kernel_array.LOOP_STATE_SIZE
+    state_and_ticket = _launch.zeros(words + 1, dtype=wp.int32, device=device)
+    state = _launch.view(state_and_ticket, 0, words)
+    ticket = _launch.view(state_and_ticket, words, words + 1)
 
     search_inputs = [
         search_index.id,
@@ -467,11 +490,15 @@ def icp(
         translation,
         scale,
         stride,
+        blocks,
+        wp.float64(threshold),
+        wp.int32(max_iterations),
         fitted,
         _zero_length(wp.vec3, device),
+        total,
+        state,
+        ticket,
     ]
-    round_inputs = [wp.float64(threshold), wp.int32(max_iterations), fitted]
-    round_outputs = [acc, total, state]
 
     def iterate() -> None:
         _launch.launch(
@@ -487,18 +514,12 @@ def icp(
             block_dim=TILE_1D,
             device=device,
         )
+        # The fit, its cost and the round's close (``close_point_to_point_round``) in one launch.
         _launch.launch_tiled(
             kernel_registration.fit_transform_and_accumulate_cost,
             dim=blocks,
             inputs=fit_inputs,
             block_dim=TILE_1D,
-            device=device,
-        )
-        _launch.launch(
-            kernel_registration.point_to_point_round,
-            dim=1,
-            inputs=round_inputs,
-            outputs=round_outputs,
             device=device,
         )
 
@@ -749,15 +770,20 @@ def icp_point_to_plane(
     acc, _ = _launch.block_partials(blocks, stride, wp.float32, device)
     step = _launch.empty(1, dtype=wp.mat44, device=device)
     total = initial_matrix
-    state = _launch.zeros(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
+    # The loop state, then the integer ticket that elects the accumulation's last block to close
+    # the round under the atomic commit (``kernel_registration.last_atomic_block``).
+    words = kernel_array.LOOP_STATE_SIZE
+    state_and_ticket = _launch.zeros(words + 1, dtype=wp.int32, device=device)
+    state = _launch.view(state_and_ticket, 0, words)
+    ticket = _launch.view(state_and_ticket, words, words + 1)
 
     # The correspondence step is one launch: the step applied to each point, and its match on the
     # target -- the closest point on a mesh, or the nearest vertex of a cloud through the hoisted
     # collapsed-triangle mesh (``kernel_registration.icp_match``). The target normal is read by
     # the accumulation at the match's index, from the face normals of a mesh or the per-vertex
-    # normals of a cloud, so an iteration is three launches: search, accumulate, and the ``dim=1``
-    # round. The first search moves ``a`` by the seed, bit for bit what ``_apply_transform``
-    # writes.
+    # normals of a cloud, so an iteration is two launches: search, and the accumulation whose last
+    # block closes the round. The first search moves ``a`` by the seed, bit for bit what
+    # ``_apply_transform`` writes.
     #
     # Measure this kind of change with ``threshold=-inf``, or the reading is fiction: with the
     # convergence break live the two arms stop at *different* iterations.
@@ -779,7 +805,14 @@ def icp_point_to_plane(
             device=device,
         )
 
-    def accumulate() -> None:
+    round_inputs = [wp.float32(damping), wp.float64(threshold), wp.int32(max_iterations)]
+    no_matrix = _zero_length(wp.mat44, device)
+    no_state = _zero_length(wp.int32, device)
+
+    def accumulate(close: bool) -> None:
+        # ``close``: the launch's last block also closes the round
+        # (``kernel_registration.close_point_to_plane_round``); otherwise it only sums.
+        round_outputs = [total, step, state, ticket] if close else [no_matrix] * 2 + [no_state] * 2
         _launch.launch_tiled(
             kernel_registration.accumulate_point_to_plane,
             dim=blocks,
@@ -793,8 +826,10 @@ def icp_point_to_plane(
                 wp.int32(kind),
                 wp.float32(scale_value if scale_value is not None else 0.0),
                 stride,
-                acc,
+                blocks,
+                *round_inputs,
             ],
+            outputs=[acc, *round_outputs],
             block_dim=TILE_1D,
             device=device,
         )
@@ -808,22 +843,9 @@ def icp_point_to_plane(
             current, closest, normal_table, distance, triangle_id, max_d, kind
         )
 
-    round_inputs = [wp.float32(damping), wp.float64(threshold), wp.int32(max_iterations)]
-    round_outputs = [acc, total, step, state]
-
-    def close_round() -> None:
-        _launch.launch(
-            kernel_registration.point_to_plane_round,
-            dim=1,
-            inputs=round_inputs,
-            outputs=round_outputs,
-            device=device,
-        )
-
     def iterate() -> None:
         search(True)
-        accumulate()
-        close_round()
+        accumulate(close=True)
 
     # --- iteration 0, issued from the host: it may need the robust scale, a host reduction ---
     # The weight sum it tests is over the correspondences that survive the ``max_distance`` gate,
@@ -841,10 +863,9 @@ def icp_point_to_plane(
     if max_iterations > 0:
         search(False)
         resolve_scale()
-        accumulate()
-        close_round()
+        accumulate(close=True)
         # --- iterations 1.., one recorded body replayed on the device with no readback ---
-        # ``close_round`` seeded the condition; the body is a fixed three-launch sequence over
+        # Round 0's close seeded the condition; the body is a fixed two-launch sequence over
         # buffers it rewrites in place, so it records once per call. Recording costs about what
         # issuing a round does even when the condition is already clear, so a one-iteration call,
         # which the host knows cannot run a second, skips it.
@@ -871,11 +892,11 @@ def icp_point_to_plane(
     # from: one more correspondence pass at the returned pose -- which is also where the last step
     # is applied -- and one more accumulation over it, into the accumulators the last round zeroed.
     # With no iteration run it scores the seed. After a weightless stop the step is the identity
-    # (``point_to_plane_round``), so this pass finds the same correspondences, sums zero weight
-    # again and reports ``inf`` -- the stop costs no readback of its own.
+    # (``close_point_to_plane_round``), so this pass finds the same correspondences, sums zero
+    # weight again and reports ``inf`` -- the stop costs no readback of its own.
     search(stepped)
     resolve_scale()
-    accumulate()
+    accumulate(close=False)
     cost, weight_sum = read_values(acc, int(kernel_registration.ICP_COST), 2)
     if float(weight_sum) <= 0.0:
         return total, current, math.inf
