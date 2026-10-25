@@ -3996,11 +3996,13 @@ class _JoinRim:
         the last join returns at once on the device.
         """
         device = faces.device
-        # One pairing for both the rim and the components. Mates given without a key order sort
-        # only the boundary halfedges for the rim's order, where a pairing of its own would sort
-        # (or bucket) every halfedge a second time.
-        mates = od.halfedge.halfedge_mates(faces, vertices.size)
-        boundary = od.boundary.oriented_boundary_edges(vertices, faces, mates=mates)
+        # One pairing for both the rim and the components, its key order (when it sorted) handed
+        # on so the rim rows are read in it; a bucketed pairing has none, and the rim then sorts
+        # only the boundary halfedges, where a pairing of its own would sort every halfedge again.
+        mates, key_order = od.halfedge.halfedge_mates(faces, vertices.size, return_key_order=True)
+        boundary = od.boundary.oriented_boundary_edges(
+            vertices, faces, mates=mates, key_order=key_order
+        )
         n_rows = int(boundary.shape[0])
         if n_rows == 0:
             return None

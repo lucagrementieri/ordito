@@ -98,6 +98,7 @@ def oriented_boundary_edges(
     faces: wp.array[wp.int32],
     *,
     mates: wp.array[wp.int32] | None = None,
+    key_order: wp.array[wp.int32] | None = None,
 ) -> odt.Array2dInt32:
     """
     Directed boundary edges, preserving the orientation from the face winding.
@@ -117,6 +118,11 @@ def oriented_boundary_edges(
         [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
         the halfedges. Not checked against ``faces``.
         [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
+    key_order
+        ``(3 * n_faces,)`` key order the pairing of ``mates`` sorted the halfedges into, from
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates] with ``return_key_order``, to spare the
+        sort that otherwise orders the boundary rows; read only with ``mates``. ``None`` (what a
+        bucketed pairing returns) sorts them.
 
     Returns
     -------
@@ -127,9 +133,7 @@ def oriented_boundary_edges(
     Raises
     ------
     RuntimeError
-        If ``vertices`` and ``faces`` are not on one device.
-    RuntimeError
-        If ``vertices``, ``faces`` and ``mates`` are not all on one device.
+        If ``vertices``, ``faces``, ``mates`` and ``key_order`` are not all on one device.
 
     Examples
     --------
@@ -146,23 +150,29 @@ def oriented_boundary_edges(
     print(sorted(edges.numpy().tolist()))  # [[0, 1], [1, 2], [2, 0]]
     ```
     """
-    require_same_device(vertices=vertices, faces=faces, mates=mates)
-    return _boundary_edges_impl(faces, vertices.size, mates, oriented=True)
+    require_same_device(vertices=vertices, faces=faces, mates=mates, key_order=key_order)
+    return _boundary_edges_impl(faces, vertices.size, mates, oriented=True, key_order=key_order)
 
 
 def _boundary_edges_impl(
-    faces: wp.array[wp.int32], n_vertices: int, mates: wp.array[wp.int32] | None, *, oriented: bool
+    faces: wp.array[wp.int32],
+    n_vertices: int,
+    mates: wp.array[wp.int32] | None,
+    *,
+    oriented: bool,
+    key_order: wp.array[wp.int32] | None = None,
 ) -> odt.Array2dInt32:
     """
     Shared body of [`boundary_edges`][ordito.boundary.boundary_edges] and its oriented form.
 
     The vertex count bounds every index, so the pairing may bucket and the boundary rows' sort
-    orders only the bits a key can occupy.
+    orders only the bits a key can occupy. ``key_order`` is the given ``mates``' own.
     """
     n_faces = faces.size // 3
     if n_faces == 0:
         return odt.empty_2d((0, 2), wp.int32, device=faces.device)
-    return _BoundaryHalfedges(faces, n_vertices or None, mates).edges(sort_pair=not oriented)
+    boundary = _BoundaryHalfedges(faces, n_vertices or None, mates, key_order=key_order)
+    return boundary.edges(sort_pair=not oriented)
 
 
 def boundary_loops(
@@ -1204,15 +1214,19 @@ class _BoundaryHalfedges:
         faces: wp.array[wp.int32],
         n_vertices: int | None = None,
         mates: wp.array[wp.int32] | None = None,
+        *,
+        key_order: wp.array[wp.int32] | None = None,
     ) -> None:
         self.faces = faces
         self.n = faces.size // 3 * 3
         self.n_vertices = n_vertices
-        # Given mates come without a key order, as the bucketed pairing's do: the flags are then
-        # read in halfedge order and ``key_ordered_halfedges`` sorts only the boundary halfedges.
+        # Given mates come without a key order unless the caller passes theirs, as the bucketed
+        # pairing's do: the flags are then read in halfedge order and ``key_ordered_halfedges``
+        # sorts only the boundary halfedges.
         self.key_order: wp.array[wp.int32] | None = None
         if mates is not None:
             self.mates = mates
+            self.key_order = key_order
         else:
             self.mates, self.key_order = od.halfedge.halfedge_mates(
                 faces, n_vertices, return_key_order=True

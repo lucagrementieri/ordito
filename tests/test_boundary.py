@@ -1021,7 +1021,8 @@ def test_boundary_functions_take_precomputed_mates(
 
     The derived results are pinned to the reference libraries above; this pins the ``mates``
     keyword to them. Given mates carry no key order, so the boundary rows are re-sorted from the
-    boundary halfedges alone -- the path the bucketed pairing takes on a large CUDA mesh.
+    boundary halfedges alone -- the path the bucketed pairing takes on a large CUDA mesh -- unless
+    the pairing's ``key_order`` is passed with them, which ``oriented_boundary_edges`` takes.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
@@ -1037,6 +1038,17 @@ def test_boundary_functions_take_precomputed_mates(
         derived_np = function(vertices_wp, faces_wp).numpy()
         supplied_np = function(vertices_wp, faces_wp, mates=mates_wp).numpy()
         assert np.array_equal(supplied_np, derived_np), function.__name__
+    # With the pairing's key order too, the oriented rows are read in it rather than re-sorted.
+    keyed_mates_wp, key_order_wp = od.halfedge.halfedge_mates(
+        faces_wp, vertices_wp.size, return_key_order=True
+    )
+    assert key_order_wp is not None  # the sorted pairing, so the keyword is exercised
+    keyed_np = od.boundary.oriented_boundary_edges(
+        vertices_wp, faces_wp, mates=keyed_mates_wp, key_order=key_order_wp
+    ).numpy()
+    assert np.array_equal(
+        keyed_np, od.boundary.oriented_boundary_edges(vertices_wp, faces_wp).numpy()
+    )
     for derived_wp, supplied_wp in zip(
         od.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp),
         od.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp, mates=mates_wp),
