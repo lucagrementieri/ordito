@@ -46,7 +46,6 @@ from ordito._device import (
 )
 from ordito.constants import INT32_MAX, INT64_MAX, TILE_1D
 from ordito.kernels import array as kernel_array
-from ordito.kernels import edges as kernel_edges
 from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import reduce as kernel_reduce
@@ -359,30 +358,30 @@ def closest_point_on_edges(
             _launch.full(m, -1, dtype=wp.int32, device=device),
         )
 
-    if bvh is None:
-        lower = _launch.empty(n_edges, dtype=wp.vec3, device=device)
-        upper = _launch.empty(n_edges, dtype=wp.vec3, device=device)
-        _launch.launch(
-            kernel_edges.edge_aabb_bounds,
-            dim=n_edges,
-            inputs=[vertices, edges, lower, upper],
-            device=device,
-        )
-        bvh = od.neighbors.bvh_from_bounds(lower, upper)
     # The scene box bounds each query's *complete* search radius, so a query outside the geometry
     # still terminates exactly rather than growing to ``max_dist``. It and, with no ``max_dist``,
     # the default limit (the diagonal of the box enclosing ``vertices`` and ``queries``) are taken
     # in the kernel from one twelve-slot corner buffer (``vertices`` first, ``queries`` second),
-    # so neither is read back. With a limit given, only the vertex box is reduced.
+    # so neither is read back. With a limit given, only the vertex box is reduced. Without a
+    # ``bvh`` the per-edge boxes it is built from are formed in the same launch.
     corners = _launch.full(12, math.inf, dtype=wp.float32, device=device)
     n_query_chunks = kernel_reduce.chunks_1d(m) if max_dist is None else 0
+    n_bounds = n_edges if bvh is None else 0
+    lower = upper = None
+    if bvh is None:
+        lower = _launch.empty(n_edges, dtype=wp.vec3, device=device)
+        upper = _launch.empty(n_edges, dtype=wp.vec3, device=device)
     _launch.launch(
-        kernel_reduce.minmax_vec3_pair_chunked,
-        dim=kernel_reduce.chunks_1d(vertices.size) + n_query_chunks,
-        inputs=[vertices, queries, wp.int32(1)],
-        outputs=[corners],
+        kernel_proximity.edge_bounds_and_scene_box,
+        dim=n_bounds + kernel_reduce.chunks_1d(vertices.size) + n_query_chunks,
+        inputs=[vertices, edges, queries, wp.int32(n_query_chunks)],
+        outputs=[lower, upper, corners],
         device=device,
     )
+    if bvh is None:
+        assert lower is not None
+        assert upper is not None
+        bvh = od.neighbors.bvh_from_bounds(lower, upper)
     caller_max_dist = 0.0 if max_dist is None else max_dist
 
     out_closest = _launch.empty(m, dtype=wp.vec3, device=device)

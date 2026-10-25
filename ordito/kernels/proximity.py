@@ -24,10 +24,18 @@ from ordito.kernels.predicates import (
     closest_point_on_segment,
     is_in_aabb,
     is_strictly_inside_aabb,
+    segment_aabb,
     triangle_aabb,
     triangle_triangle_distance_sq,
 )
-from ordito.kernels.reduce import block_argmin, block_barrier, block_chunk, block_max, block_sum
+from ordito.kernels.reduce import (
+    block_argmin,
+    block_barrier,
+    block_chunk,
+    block_max,
+    block_sum,
+    minmax_vec3_chunk,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -137,6 +145,34 @@ def closest_faces_both_ways(
     _closest, distance, face = closest_point_query(mesh_id, p, wp.float32(wp.inf))
     out_distance[tid] = distance
     out_face[tid] = face
+
+
+@wp.kernel
+def edge_bounds_and_scene_box(
+    vertices: wp.array[wp.vec3],
+    edges: wp.array2d[wp.int32],
+    queries: wp.array[wp.vec3],
+    n_query_chunks: wp.int32,
+    out_lower: wp.array[wp.vec3],
+    out_upper: wp.array[wp.vec3],
+    out_corners: wp.array[wp.float32],
+) -> None:
+    # ``closest_point_on_edges``' two inputs in one launch: ``edges.edge_aabb_bounds`` from the
+    # leading ``len(out_lower)`` threads (no thread when the caller holds the BVH and passes
+    # length-zero bounds), then ``reduce.minmax_vec3_pair_chunked``'s two boxes, ``vertices`` into
+    # box 0 and the first ``n_query_chunks`` chunks of ``queries`` into box 1, of the twelve
+    # ``out_corners`` slots seeded ``inf``.
+    t = wp.int32(wp.tid())
+    n_edges = out_lower.shape[0]
+    vertex_chunks = (vertices.shape[0] + TILE_1D - 1) // TILE_1D
+    if t < n_edges:
+        lower, upper = segment_aabb(vertices[edges[t, 0]], vertices[edges[t, 1]])
+        out_lower[t] = lower
+        out_upper[t] = upper
+    elif t < n_edges + vertex_chunks:
+        minmax_vec3_chunk(vertices, t - n_edges, out_corners, wp.int32(0))
+    elif t < n_edges + vertex_chunks + n_query_chunks:
+        minmax_vec3_chunk(queries, t - n_edges - vertex_chunks, out_corners, wp.int32(1))
 
 
 @wp.kernel
