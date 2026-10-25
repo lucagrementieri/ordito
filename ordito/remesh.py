@@ -1402,8 +1402,10 @@ class _FlipTopology:
             2 * n,
             self._n_faces,
         )
-        self._order, self._starts, self._ranks = _split_buffer(
-            _launch.empty(4 * n, dtype=wp.int32, device=self._device), 2 * n, n, n
+        # The order, the pair starts and their ranks, then the halfedge -> row map an incremental
+        # build adopts (carved here so adopting it allocates nothing).
+        self._order, self._starts, self._ranks, self._halfedge_row_store = _split_buffer(
+            _launch.empty(5 * n, dtype=wp.int32, device=self._device), 2 * n, n, n, n
         )
         self._ranks_tail = odt.as_dense(self._ranks[n - 1 :])
         self.sorted_keys = odt.as_dense(self._keys[:n])
@@ -1463,7 +1465,7 @@ class _FlipTopology:
         self.incremental = self.incremental or incremental
         if self.incremental:
             if self.halfedge_row is None:
-                self.halfedge_row = _launch.empty(n, dtype=wp.int32, device=self._device)
+                self.halfedge_row = self._halfedge_row_store
                 self.edge_set = _launch.zeros(
                     self._edge_set_table, dtype=wp.uint64, device=self._device
                 )
@@ -1498,8 +1500,8 @@ class _FlipTopology:
             # paying for bounds checks: a rebuild whose row count moved would index past the tables.
             if wp.config.mode == "debug" and not wp.get_device(self._device).is_capturing:
                 assert int(read_scalar(self._ranks_tail, 0)) == m, "interior-edge count changed"
-        if self.incremental and (self.row_halfedges is None or self.row_halfedges.shape[0] != m):
-            self.row_halfedges = odt.empty_2d((m, 2), wp.int32, device=self._device)
+        if self.incremental:
+            self.row_halfedges = self._row_halfedges_store
         if m > 0:
             _launch.launch(
                 kernel_remesh.emit_flip_topology,
@@ -1641,10 +1643,17 @@ class _FlipTopology:
     def _allocate_rows(self, m: int) -> None:
         """(Re)allocate the ``m``-row tables and the hashed edge-claim table sized from them."""
         self._rows = m
-        # The four ``int32`` row tables in one allocation.
-        adjacency, adjacency_edges, unshared, quad = _split_buffer(
-            _launch.empty(10 * m, dtype=wp.int32, device=self._device), 2 * m, 2 * m, 2 * m, 4 * m
+        # The four ``int32`` row tables in one allocation, and the row -> halfedges map an
+        # incremental build adopts.
+        adjacency, adjacency_edges, unshared, quad, row_halfedges = _split_buffer(
+            _launch.empty(12 * m, dtype=wp.int32, device=self._device),
+            2 * m,
+            2 * m,
+            2 * m,
+            4 * m,
+            2 * m,
         )
+        self._row_halfedges_store = odt.as_array2d(row_halfedges.reshape((m, 2)), wp.int32)
         self.adjacency = odt.as_array2d(adjacency.reshape((m, 2)), wp.int32)
         self.adjacency_edges = odt.as_array2d(adjacency_edges.reshape((m, 2)), wp.int32)
         self.unshared = odt.as_array2d(unshared.reshape((m, 2)), wp.int32)
