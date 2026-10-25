@@ -2230,7 +2230,27 @@ class _DecimationBuffers:
         v_cap = self.n_vertices + 1
         n = self.n_corners
         # Every unfilled ``int32`` table of the working set in one allocation, cut in the order
-        # they are assigned below.
+        # they are assigned below, followed by the adjacency scan's buffers and the capacity-wide
+        # stores the face- and edge-indexed tables are cut from at every width (``_tighten``), so a
+        # narrower pass allocates nothing.
+        widths = [
+            n,
+            2 * n,
+            n,
+            n,
+            v_cap if self._exact else 0,
+            1 if self._exact else 0,
+            n,
+            v_cap,
+            v_cap,
+            v_cap,
+            2 * v_cap + 1,
+            2 * v_cap + 1,
+            kernel_remesh.COLLAPSE_STATE_SIZE,
+            _ExclusiveScan.size(2 * v_cap + 1),
+            self._face_int_size(self.n_faces),
+            self._edge_int_size(n, n),
+        ]
         (
             self._faces_store,
             self._order_store,
@@ -2245,30 +2265,10 @@ class _DecimationBuffers:
             self._adjacency_counts,
             self._adjacency_offsets,
             self._round_state,
-        ) = _split_buffer(
-            _launch.empty(
-                6 * n
-                + (v_cap + 1 if self._exact else 0)
-                + 7 * v_cap
-                + 2
-                + kernel_remesh.COLLAPSE_STATE_SIZE,
-                dtype=wp.int32,
-                device=device,
-            ),
-            n,
-            2 * n,
-            n,
-            n,
-            v_cap if self._exact else 0,
-            1 if self._exact else 0,
-            n,
-            v_cap,
-            v_cap,
-            v_cap,
-            2 * v_cap + 1,
-            2 * v_cap + 1,
-            kernel_remesh.COLLAPSE_STATE_SIZE,
-        )
+            adjacency_scan_store,
+            self._face_int_store,
+            self._edge_int_store,
+        ) = _split_buffer(_launch.empty(sum(widths), dtype=wp.int32, device=device), *widths)
         self.vertices = _launch.zeros(v_cap, dtype=wp.vec3, device=device)
         _launch.copy(self.vertices, vertices, count=self.n_vertices)
         _launch.copy(self._faces_store, faces, count=self.n_corners)
@@ -2293,19 +2293,36 @@ class _DecimationBuffers:
         self._boundary_quadrics = _launch.zeros(
             v_cap, dtype=kernel_remesh.SymmetricQuadric, device=device
         )
-        self._boundary_flags = _launch.zeros(v_cap, dtype=wp.int32, device=device)
+        # One slot past the flags is the ticket every ``_ExclusiveScan`` of the call shares: each
+        # scan's last block re-arms it, and the scans run one after another.
+        boundary_flags, self._scan_ticket = _split_buffer(
+            _launch.zeros(v_cap + 1, dtype=wp.int32, device=device), v_cap, 1
+        )
+        self._boundary_flags = boundary_flags
         # ``_hubs`` and ``_hub_count`` are the deterministic setting's list of hub vertices, whose
         # rows ``gather_hub_quadrics`` sums exactly, and its count (cleared every pass by
         # ``count_pass_edges_exact``).
         # Per-vertex state the pass accumulates into or starts from (with ``_collapse_remap``,
         # ``_feature_count`` and ``_locked``); ``begin_decimation_pass`` resets all of it.
-        self._positions = _launch.empty(v_cap, dtype=wp.vec3, device=device)
+        # Each followed by the capacity-wide store of an edge-indexed table of its dtype.
+        self._positions, self._target_pos_store = _split_buffer(
+            _launch.empty(v_cap + n, dtype=wp.vec3, device=device), v_cap, n
+        )
         self._quadrics = _launch.empty(v_cap, dtype=kernel_remesh.SymmetricQuadric, device=device)
-        self._min_key = _launch.empty(v_cap, dtype=wp.int64, device=device)
+        self._min_key, self._lock_key_store = _split_buffer(
+            _launch.empty(v_cap + n, dtype=wp.int64, device=device), v_cap, n
+        )
+        self._edge_slots_store = _launch.empty(n, dtype=wp.vec2i, device=device)
+        self._sort_keys_store = _launch.empty(2 * n, dtype=wp.float32, device=device)
+        self._winner_words_store = _launch.empty(
+            self._winner_word_count(n), dtype=wp.uint32, device=device
+        )
         # ``_adjacency_counts``: vertex-vertex then vertex-face incidence counts, one row per vertex
         # each and a closing zero, so one exclusive scan yields both CSRs' offset tables (see
         # ``kernels/remesh.py``).
-        self._adjacency_scan = _ExclusiveScan(2 * v_cap + 1, self._device)
+        self._adjacency_scan = _ExclusiveScan(
+            2 * v_cap + 1, self._device, self._scan_ticket, adjacency_scan_store
+        )
 
         # Provenance, only when a caller asked for it: one entry per *input* vertex composed pass by
         # pass, and a column beside the face buffer compacted with it (both inside
@@ -2355,10 +2372,14 @@ class _DecimationBuffers:
         self._corner_slots = odt.as_dense(self._corner_slots_store[:n])
         self._face_quadrics = odt.as_dense(self._face_quadrics_store[:faces])
         self._remapped = odt.as_dense(self._remapped_store[:n])
-        self._start_scan = _ExclusiveScan(n, device)
-        # The compaction's keep flags, faces first and vertices after, and their one scan.
-        self._compact_flags = _launch.empty(faces + self.n_vertices, dtype=wp.int32, device=device)
-        self._compact_scan = _ExclusiveScan(faces + self.n_vertices, device)
+        # The compaction's keep flags, faces first and vertices after, and their one scan, after
+        # the edge-start scan: every layout of ``_face_int_size`` entries.
+        flagged = faces + self.n_vertices
+        start_store, self._compact_flags, compact_store = _split_buffer(
+            self._face_int_store, _ExclusiveScan.size(n), flagged, _ExclusiveScan.size(flagged)
+        )
+        self._start_scan = _ExclusiveScan(n, device, self._scan_ticket, start_store)
+        self._compact_scan = _ExclusiveScan(flagged, device, self._scan_ticket, compact_store)
         if self._track_index:
             self.face_source = odt.as_dense(self._face_source_store[:faces])
             self._face_source_scratch = odt.as_dense(self._face_source_scratch_store[:faces])
@@ -2372,7 +2393,8 @@ class _DecimationBuffers:
         """
         device = self._device
         self.n_edges = edges
-        # Every ``int32`` table below in one allocation, cut in the order they are listed.
+        # Every ``int32`` table below, cut from one store in the order they are listed; every other
+        # dtype's table is a prefix of its own store.
         (
             unique_edges,
             self._edge_face_count,
@@ -2383,8 +2405,9 @@ class _DecimationBuffers:
             self._removed,
             self._cost_rank,
             self._sort_order,
+            winner_scan_store,
         ) = _split_buffer(
-            _launch.empty(13 * edges + 3 + self.n_corners, dtype=wp.int32, device=device),
+            self._edge_int_store,
             2 * edges,
             edges + 1,
             2 * edges + 2,
@@ -2394,22 +2417,41 @@ class _DecimationBuffers:
             edges,
             edges,
             2 * edges,
+            _ExclusiveScan.size(self._winner_word_count(edges)),
         )
         self._unique_edges = odt.as_array2d(unique_edges.reshape((edges, 2)), wp.int32)
         # One row longer than the edge capacity: the dummy slot an overflowing corner lands in
         # (``_edge_face_count`` likewise).
         self._edge_faces = odt.as_array2d(edge_faces.reshape((edges + 1, 2)), wp.int32)
-        self._edge_slots = _launch.empty(edges, dtype=wp.vec2i, device=device)
+        self._edge_slots = _launch.view(self._edge_slots_store, 0, edges)
         # ``_adjacency``: vertex-vertex entries (two per edge) followed by vertex-face entries (one
         # per corner).
-        self._target_pos = _launch.empty(edges, dtype=wp.vec3, device=device)
-        self._lock_key = _launch.empty(edges, dtype=wp.int64, device=device)
+        self._target_pos = _launch.view(self._target_pos_store, 0, edges)
+        self._lock_key = _launch.view(self._lock_key_store, 0, edges)
         # ``radix_sort_pairs`` wants double-width key and payload buffers (``_sort_order`` too).
-        self._sort_keys = _launch.empty(2 * edges, dtype=wp.float32, device=device)
+        self._sort_keys = _launch.view(self._sort_keys_store, 0, 2 * edges)
         # Two bitmasks of the round's winners in cost order, one word per 32: every winner, and the
         # winners that remove a single face.
-        self._winner_words = _launch.empty(2 * (-(-edges // 32)), dtype=wp.uint32, device=device)
-        self._winner_scan = _ExclusiveScan(self._winner_words.size, device)
+        self._winner_words = _launch.view(
+            self._winner_words_store, 0, self._winner_word_count(edges)
+        )
+        self._winner_scan = _ExclusiveScan(
+            self._winner_words.size, device, self._scan_ticket, winner_scan_store
+        )
+
+    def _face_int_size(self, faces: int) -> int:
+        """Return the ``int32`` entries ``_allocate_face_buffers`` cuts at ``faces``."""
+        flagged = faces + self.n_vertices
+        return _ExclusiveScan.size(3 * faces) + flagged + _ExclusiveScan.size(flagged)
+
+    def _edge_int_size(self, edges: int, corners: int) -> int:
+        """Return the ``int32`` entries ``_allocate_edge_buffers`` cuts at these widths."""
+        return 13 * edges + 3 + corners + _ExclusiveScan.size(self._winner_word_count(edges))
+
+    @staticmethod
+    def _winner_word_count(edges: int) -> int:
+        """Return the words of the two winner bitmasks over ``edges`` candidates."""
+        return 2 * (-(-edges // 32))
 
     def run_pass(self) -> bool:
         """
@@ -2846,28 +2888,47 @@ class _ExclusiveScan:
     ``wp.utils.array_scan`` allocates its scratch on every call, which a ``wp.capture_while`` body
     may not do and which adds a memory node to any other captured graph. This one owns its
     buffers: ``scan_chunks_exclusive`` scans each ``SCAN_CHUNK`` into ``prefix`` and publishes the
-    chunk totals, and ``scan_chunk_totals_exclusive`` scans those into ``chunk_offsets``. The
-    result is split between the two -- a kernel reads entry ``i`` as
+    chunk totals, and its last block to finish scans those into ``chunk_offsets``. The result is
+    split between the two -- a kernel reads entry ``i`` as
     ``kernel_remesh.scanned_prefix(prefix, chunk_offsets, i)``.
+
+    ``ticket`` is a zeroed ``int32`` slot the last block draws on and re-arms, so scans that run
+    one after another may share it; ``storage``, ``size(n)`` entries, holds the scan's buffers.
+    Either is allocated when not given.
     """
 
-    def __init__(self, n: int, device: wp.Device) -> None:
-        """Allocate the scan of an ``n``-element buffer on ``device``."""
-        chunks = max(1, -(-n // int(kernel_remesh.SCAN_CHUNK)))
+    def __init__(
+        self,
+        n: int,
+        device: wp.Device,
+        ticket: wp.array[wp.int32] | None = None,
+        storage: wp.array[wp.int32] | None = None,
+    ) -> None:
+        """Lay out the scan of an ``n``-element buffer on ``device``."""
+        chunks = self._chunks(n)
         self._device = device
-        # A single chunk's offset is zero whatever the input, so its buffer -- at most one chunk
-        # wide -- is allocated holding it and the scan of the chunk totals is never launched.
-        self._single_chunk = chunks == 1
-        allocate = _launch.zeros if self._single_chunk else _launch.empty
+        self._ticket = _launch.zeros(1, dtype=wp.int32, device=device) if ticket is None else ticket
+        if storage is None:
+            storage = _launch.empty(self.size(n), dtype=wp.int32, device=device)
         self.prefix, self.chunk_totals, self.chunk_offsets = _split_buffer(
-            allocate(n + 2 * chunks, dtype=wp.int32, device=device), n, chunks, chunks
+            storage, n, chunks, chunks
         )
+
+    @staticmethod
+    def size(n: int) -> int:
+        """Return the ``int32`` entries the scan of an ``n``-element buffer holds."""
+        return n + 2 * _ExclusiveScan._chunks(n)
+
+    @staticmethod
+    def _chunks(n: int) -> int:
+        """Return the ``SCAN_CHUNK`` chunks an ``n``-element scan is cut into."""
+        return max(1, -(-n // int(kernel_remesh.SCAN_CHUNK)))
 
     def launch(
         self, values: wp.array[wp.int32] | wp.array[wp.uint32], *, words: bool = False
     ) -> None:
         """
-        Scan ``values``, which must have the length this scan was allocated for.
+        Scan ``values``, which must have the length this scan was laid out for.
 
         With ``words`` the input is a ``uint32`` bitmask and the scan is of its words' set-bit
         counts.
@@ -2877,16 +2938,7 @@ class _ExclusiveScan:
             if words
             else kernel_remesh.scan_chunks_exclusive,
             dim=[self.chunk_totals.size],
-            inputs=[values, self.prefix, self.chunk_totals],
-            block_dim=kernel_remesh.SCAN_BLOCK_DIM,
-            device=self._device,
-        )
-        if self._single_chunk:
-            return
-        _launch.launch_tiled(
-            kernel_remesh.scan_chunk_totals_exclusive,
-            dim=[1],
-            inputs=[self.chunk_totals, self.chunk_offsets],
+            inputs=[values, self._ticket, self.prefix, self.chunk_totals, self.chunk_offsets],
             block_dim=kernel_remesh.SCAN_BLOCK_DIM,
             device=self._device,
         )

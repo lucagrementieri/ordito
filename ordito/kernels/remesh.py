@@ -46,11 +46,14 @@ from ordito.kernels.predicates import (
 )
 from ordito.kernels.reduce import (
     GROUP_SUM_NONFINITE,
+    block_last_ticket,
     block_max,
     block_sum,
     group_sum_field,
     group_sum_from_words,
     group_sum_words,
+    last_ticket,
+    thread_fence,
 )
 from ordito.kernels.scatter import (
     accumulate_endpoint_value,
@@ -3836,9 +3839,10 @@ def begin_decimation_pass(
 # The pass's exclusive scans (``remesh._ExclusiveScan``). ``wp.utils.array_scan`` allocates its
 # scratch on every call, which a ``wp.capture_while`` body may not do -- and the round loop ranks
 # its winners with a scan -- and which puts a memory node into any other captured graph. So the
-# pass carries its own two-launch scan over preallocated buffers: each block scans one
-# ``SCAN_CHUNK`` of the input through a loaded tile and publishes the chunk's total, and one block
-# scans those totals. A reader adds the two (``scanned_prefix``). ``wp.tile_load`` and
+# pass carries its own one-launch scan over preallocated buffers: each block scans one
+# ``SCAN_CHUNK`` of the input through a loaded tile and publishes the chunk's total, and the block
+# that finishes last scans those totals (``finish_chunk_scan``), where a second one-block launch
+# used to. A reader adds the two (``scanned_prefix``). ``wp.tile_load`` and
 # ``wp.tile_store`` are lane-independent and bounds-checked, so the chunk kernels are correct on
 # the CPU device, where a tiled launch runs one lane, and on a ragged last chunk.
 #
@@ -3857,38 +3861,13 @@ def popcount32(x: wp.uint32) -> wp.int32:
     return wp.int32((v * wp.uint32(0x01010101)) >> wp.uint32(24))
 
 
-@wp.kernel
-def scan_chunks_exclusive(
-    values: wp.array[wp.int32], out_prefix: wp.array[wp.int32], out_chunk_totals: wp.array[wp.int32]
+@wp.func
+def scan_chunk_totals(
+    lane: wp.int32, chunk_totals: wp.array[wp.int32], out_chunk_offsets: wp.array[wp.int32]
 ) -> None:
-    chunk, _lane = wp.tid()
-    counts = wp.tile_load(values, shape=SCAN_CHUNK, offset=chunk * SCAN_CHUNK)
-    wp.tile_store(out_prefix, wp.tile_scan_exclusive(counts), offset=chunk * SCAN_CHUNK)
-    wp.tile_store(out_chunk_totals, wp.tile_sum(counts), offset=chunk)
-
-
-@wp.kernel
-def scan_word_counts_exclusive(
-    words: wp.array[wp.uint32], out_prefix: wp.array[wp.int32], out_chunk_totals: wp.array[wp.int32]
-) -> None:
-    # ``scan_chunks_exclusive`` over the set-bit counts of a bitmask's words. The two differ only in
-    # the ``popcount32`` applied to the loaded tile.
-    chunk, _lane = wp.tid()
-    counts = wp.tile_map(
-        popcount32, wp.tile_load(words, shape=SCAN_CHUNK, offset=chunk * SCAN_CHUNK)
-    )
-    wp.tile_store(out_prefix, wp.tile_scan_exclusive(counts), offset=chunk * SCAN_CHUNK)
-    wp.tile_store(out_chunk_totals, wp.tile_sum(counts), offset=chunk)
-
-
-@wp.kernel
-def scan_chunk_totals_exclusive(
-    chunk_totals: wp.array[wp.int32], out_chunk_offsets: wp.array[wp.int32]
-) -> None:
-    # One block over every chunk total. Each lane owns a contiguous run sized by
-    # ``wp.block_dim()``, so on the CPU device the one lane walks them all and the tile scan over
+    # Every chunk total's exclusive scan, by the whole block. Each lane owns a contiguous run sized
+    # by ``wp.block_dim()``, so on the CPU device the one lane walks them all and the tile scan over
     # its single element is its own zero.
-    _block, lane = wp.tid()
     lanes = wp.block_dim()
     n = chunk_totals.shape[0]
     per = (n + lanes - 1) // lanes
@@ -3901,6 +3880,64 @@ def scan_chunk_totals_exclusive(
     for i in range(lo, hi):
         out_chunk_offsets[i] = running
         running += chunk_totals[i]
+
+
+@wp.func
+def finish_chunk_scan(
+    chunk: wp.int32,
+    lane: wp.int32,
+    total: wp.int32,
+    out_chunk_totals: wp.array[wp.int32],
+    out_chunk_offsets: wp.array[wp.int32],
+    ticket: wp.array[wp.int32],
+) -> None:
+    # A chunk block's tail: lane 0 publishes the chunk's ``total`` and draws a ticket, and the block
+    # that draws the last one scans every chunk's total (``scan_chunk_totals``) and re-arms the
+    # ticket, so one launch is the whole scan (the ``kernels/reduce`` last-block pattern; on the CPU
+    # device the blocks run in turn and the fences compile to nothing).
+    if lane == 0:
+        out_chunk_totals[chunk] = total
+    if block_last_ticket(lane, ticket, 0, wp.int32(0), out_chunk_totals.shape[0], last_ticket):
+        thread_fence()
+        scan_chunk_totals(lane, out_chunk_totals, out_chunk_offsets)
+        if lane == 0:
+            ticket[0] = 0
+
+
+@wp.kernel
+def scan_chunks_exclusive(
+    values: wp.array[wp.int32],
+    ticket: wp.array[wp.int32],
+    out_prefix: wp.array[wp.int32],
+    out_chunk_totals: wp.array[wp.int32],
+    out_chunk_offsets: wp.array[wp.int32],
+) -> None:
+    chunk, lane = wp.tid()
+    counts = wp.tile_load(values, shape=SCAN_CHUNK, offset=chunk * SCAN_CHUNK)
+    wp.tile_store(out_prefix, wp.tile_scan_exclusive(counts), offset=chunk * SCAN_CHUNK)
+    finish_chunk_scan(
+        chunk, lane, wp.tile_sum(counts)[0], out_chunk_totals, out_chunk_offsets, ticket
+    )
+
+
+@wp.kernel
+def scan_word_counts_exclusive(
+    words: wp.array[wp.uint32],
+    ticket: wp.array[wp.int32],
+    out_prefix: wp.array[wp.int32],
+    out_chunk_totals: wp.array[wp.int32],
+    out_chunk_offsets: wp.array[wp.int32],
+) -> None:
+    # ``scan_chunks_exclusive`` over the set-bit counts of a bitmask's words. The two differ only in
+    # the ``popcount32`` applied to the loaded tile.
+    chunk, lane = wp.tid()
+    counts = wp.tile_map(
+        popcount32, wp.tile_load(words, shape=SCAN_CHUNK, offset=chunk * SCAN_CHUNK)
+    )
+    wp.tile_store(out_prefix, wp.tile_scan_exclusive(counts), offset=chunk * SCAN_CHUNK)
+    finish_chunk_scan(
+        chunk, lane, wp.tile_sum(counts)[0], out_chunk_totals, out_chunk_offsets, ticket
+    )
 
 
 @wp.func
