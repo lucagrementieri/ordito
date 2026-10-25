@@ -20,16 +20,17 @@ Writes, from the cells `results.load` reads:
 library's bar, in muted gray, is its time divided by ordito's, so a bar longer than ordito's is a
 library that took longer. Bars are sorted fastest first, ordito wherever its time puts it. The axis
 is logarithmic, the usual scale for ratios, so 10x slower and 10x faster sit at the same distance
-from 1x. A function's chart shows the input with the most libraries measured on it (then the
-largest); the table below it has the rest.
+from 1x. A function's chart shows its input on ``dragon`` (``REFERENCE_MESH``), a scan of typical
+size, when it was measured there; otherwise the input with the most libraries measured on it, then
+the largest no bigger than ``dragon``. The table below it has the rest.
 
 **Rows that left no time.** ``tools/sweep.py merge`` writes ``incomplete.jsonl`` beside the JSON
 files: one object per row it stopped at its time limit (``timeout``), or that crashed, ran out of
 memory or failed (``crash``, ``oom``, ``error``), each possibly ``predicted`` from a smaller mesh
 rather than run. A timeout is drawn at the limit, paler, labelled ``> 10 min``: the library took
-at least that long, and the averages count it at the limit, so a library with such runs is at
-least as slow as its bar says. A row with no time at all gets no bar: it is listed under the timed
-bars with a red cross and what happened, and the averages leave it out. A predicted row says so in
+at least that long, and the averages leave it out, as they do an input whose ordito row timed out.
+A row with no time at all gets no bar: it is listed under the timed bars with a red cross and what
+happened, and the averages leave it out too. A predicted row says so in
 its label.
 
 **The summary charts.** A library's bar is the geometric mean, over the functions both implement, of
@@ -85,7 +86,10 @@ _LOGO_HEIGHT = 18
 _CROSS = 4  # half the width of a failed row's cross
 
 # Appended to a summary caption: what a run stopped at the time limit contributes.
-_LIMIT_NOTE = " A run stopped at the time limit counts as the limit."
+_LIMIT_NOTE = " Runs stopped at the time limit are left out."
+
+# A chart's preferred input: the scan of typical size, rather than the largest one measured.
+REFERENCE_MESH = "dragon"
 
 _MARKER = re.compile(
     r"(<!-- bench:(?P<name>[^>]+?) -->\n)(?P<body>.*?)(<!-- /bench:(?P=name) -->)", re.S
@@ -299,14 +303,22 @@ def _size(key: CellKey) -> int:
 
 
 def representative(data: Data, keys: list[CellKey]) -> CellKey | None:
-    """Pick the group's widest comparison: most references, then the largest mesh."""
+    """
+    Pick the group's chart input: on ``REFERENCE_MESH`` if measured there, else the widest one.
+
+    Widest is most references, then the largest mesh no bigger than ``REFERENCE_MESH``, then the
+    largest.
+    """
     candidates = [key for key in keys if compared(data, key)]
     if not candidates:
         return None
+    reference_size = int(ALL_MESHES_BY_NAME[REFERENCE_MESH]["n_faces"])
     return max(
         candidates,
         key=lambda key: (
+            key[2] == REFERENCE_MESH,
             sum(map(is_reference, data[key])) + len(data.failures(key)),
+            _size(key) <= reference_size,
             _size(key),
             -keys.index(key),
         ),
@@ -335,13 +347,18 @@ def geomean(values: list[float]) -> float:
     return math.exp(sum(map(math.log, values)) / len(values))
 
 
+def timed(data: Data, key: CellKey) -> dict[str, float]:
+    """Return a cell's measured times, without the rows stopped at the time limit."""
+    return {lib: t for lib, t in data[key].items() if data.timeout(key, lib) is None}
+
+
 def library_ratios(data: Data, groups: list[list[CellKey]]) -> dict[str, list[float]]:
     """Per reference library, its per-function geometric-mean time ratio to ordito-cuda."""
     out: dict[str, list[float]] = collections.defaultdict(list)
     for keys in groups:
         ratios: dict[str, list[float]] = collections.defaultdict(list)
         for key in keys:
-            row = data[key]
+            row = timed(data, key)
             if SUBJECT not in row:
                 continue
             for library, seconds in row.items():
@@ -354,10 +371,11 @@ def library_ratios(data: Data, groups: list[list[CellKey]]) -> dict[str, list[fl
 
 def fastest_ratios(data: Data, keys: list[CellKey]) -> list[float]:
     """Per input of one function, the fastest reference's time over ordito-cuda's."""
+    rows = [timed(data, key) for key in keys]
     return [
-        min(t for lib, t in data[key].items() if is_reference(lib)) / data[key][SUBJECT]
-        for key in keys
-        if SUBJECT in data[key] and any(map(is_reference, data[key]))
+        min(t for lib, t in row.items() if is_reference(lib)) / row[SUBJECT]
+        for row in rows
+        if SUBJECT in row and any(map(is_reference, row))
     ]
 
 

@@ -14,17 +14,17 @@ Benchmarks of [`ordito.transform`](../api/ordito/transform.md) against every lib
 ## Summary
 
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="102" viewBox="0 0 640 102" role="img" aria-label="transform: time relative to ordito"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="84"/><text class="bench-tick" x="196.0" y="97" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="300.0" y1="0" x2="300.0" y2="84"/><text class="bench-tick" x="300.0" y="97" text-anchor="middle">1x</text><line class="bench-grid" x1="404.0" y1="0" x2="404.0" y2="84"/><text class="bench-tick" x="404.0" y="97" text-anchor="middle">10x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="84"/><text class="bench-tick" x="508.0" y="97" text-anchor="middle">100x</text><g><title>ordito (CUDA): the reference, 1x</title><rect class="bench-subject" x="196" y="9.0" width="104.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="305.0" y="18.0">1x</text></g><g><title>trimesh: 4.3x ordito&#x27;s time, geometric mean over 4 functions; slower than ordito in 2</title><rect class="bench-reference" x="196" y="29.0" width="170.2" height="10"/><image class="bench-logo bench-logo-trimesh" href="../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="371.2" y="38.0">4.3x  (4)</text></g><g><title>Open3D: 14x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="49.0" width="224.7" height="10"/><image class="bench-logo bench-logo-open3d" href="../assets/logos/open3d.png" x="172.0" y="46.2" width="18.0" height="15.6"/><text class="bench-label" x="166" y="58.0" text-anchor="end">Open3D</text><text class="bench-value" x="425.7" y="58.0">14x  (1)</text></g><g><title>PyVista: 35x ordito&#x27;s time, geometric mean over 2 functions; slower than ordito in 2</title><rect class="bench-reference" x="196" y="69.0" width="264.6" height="10"/><image class="bench-logo bench-logo-pyvista" href="../assets/logos/pyvista.png" x="172.0" y="71.0" width="18.0" height="6.0"/><text class="bench-label" x="166" y="78.0" text-anchor="end">PyVista</text><text class="bench-value" x="465.6" y="78.0">35x  (2)</text></g></svg>
-<figcaption>Time relative to ordito (CUDA), geometric mean over the transform functions both implement; in parentheses, the number of functions. Log scale. A run stopped at the time limit counts as the limit.</figcaption>
+<svg class="bench-chart" width="640" height="102" viewBox="0 0 640 102" role="img" aria-label="transform: time relative to ordito"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="84"/><text class="bench-tick" x="196.0" y="97" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="274.0" y1="0" x2="274.0" y2="84"/><text class="bench-tick" x="274.0" y="97" text-anchor="middle">1x</text><line class="bench-grid" x1="352.0" y1="0" x2="352.0" y2="84"/><text class="bench-tick" x="352.0" y="97" text-anchor="middle">10x</text><line class="bench-grid" x1="430.0" y1="0" x2="430.0" y2="84"/><text class="bench-tick" x="430.0" y="97" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="84"/><text class="bench-tick" x="508.0" y="97" text-anchor="middle">1000x</text><g><title>ordito (CUDA): the reference, 1x</title><rect class="bench-subject" x="196" y="9.0" width="78.0" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="5.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="279.0" y="18.0">1x</text></g><g><title>trimesh: 7.5x ordito&#x27;s time, geometric mean over 4 functions; slower than ordito in 2</title><rect class="bench-reference" x="196" y="29.0" width="146.4" height="10"/><image class="bench-logo bench-logo-trimesh" href="../assets/logos/trimesh.png" x="172.0" y="30.2" width="18.0" height="7.7"/><text class="bench-label" x="166" y="38.0" text-anchor="end">trimesh</text><text class="bench-value" x="347.4" y="38.0">7.5x  (4)</text></g><g><title>Open3D: 56x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="49.0" width="214.5" height="10"/><image class="bench-logo bench-logo-open3d" href="../assets/logos/open3d.png" x="172.0" y="46.2" width="18.0" height="15.6"/><text class="bench-label" x="166" y="58.0" text-anchor="end">Open3D</text><text class="bench-value" x="415.5" y="58.0">56x  (1)</text></g><g><title>PyVista: 109x ordito&#x27;s time, geometric mean over 2 functions; slower than ordito in 2</title><rect class="bench-reference" x="196" y="69.0" width="236.8" height="10"/><image class="bench-logo bench-logo-pyvista" href="../assets/logos/pyvista.png" x="172.0" y="71.0" width="18.0" height="6.0"/><text class="bench-label" x="166" y="78.0" text-anchor="end">PyVista</text><text class="bench-value" x="437.8" y="78.0">109x  (2)</text></g></svg>
+<figcaption>Time relative to ordito (CUDA), geometric mean over the transform functions both implement; in parentheses, the number of functions. Log scale. Runs stopped at the time limit are left out.</figcaption>
 </figure>
 
 ??? note "Values"
 
     | Library | Time relative to ordito | Functions compared | ordito faster in |
     |---|---|---|---|
-    | trimesh | 4.3x | 4 | 2 |
-    | Open3D | 14x | 1 | 1 |
-    | PyVista | 35x | 2 | 2 |
+    | trimesh | 7.5x | 4 | 2 |
+    | Open3D | 56x | 1 | 1 |
+    | PyVista | 109x | 2 | 2 |
 
 ## `transform_points`
 
@@ -50,8 +50,8 @@ Benchmarks of [`ordito.transform`](../api/ordito/transform.md) against every lib
     | bunny_decimated | 25.2 µs | 49.1 µs | 330.2 µs | 67.1 µs |
     | bunny | 18.1 µs | 198.6 µs | 475.4 µs | 402.8 µs |
     | dragon | 21.0 µs | 2.99 ms | 3.10 ms | 6.07 ms |
-    | happy_buddha | 24.6 µs |  |  |  |
-    | lucy | 244.1 µs |  |  |  |
+    | happy_buddha | 24.6 µs | 3.58 ms | 4.29 ms | 6.48 ms |
+    | lucy | 244.1 µs | 312.60 ms | 461.06 ms | 273.92 ms |
 
 ## `transform_mesh`
 
@@ -75,8 +75,8 @@ Benchmarks of [`ordito.transform`](../api/ordito/transform.md) against every lib
     | bunny_decimated | 33.7 µs | 1.34 ms |
     | bunny | 28.9 µs | 5.54 ms |
     | dragon | 33.1 µs | 119.75 ms |
-    | happy_buddha | 39.7 µs |  |
-    | lucy | 701.5 µs |  |
+    | happy_buddha | 39.7 µs | 115.78 ms |
+    | lucy | 701.5 µs | 3.239 s |
 
 ## `transform_normals`
 
@@ -100,8 +100,8 @@ Benchmarks of [`ordito.transform`](../api/ordito/transform.md) against every lib
     | bunny_decimated | 43.6 µs | 421.3 µs |
     | bunny | 39.4 µs | 825.9 µs |
     | dragon | 40.5 µs | 7.30 ms |
-    | happy_buddha | 53.8 µs |  |
-    | lucy | 291.2 µs |  |
+    | happy_buddha | 53.8 µs | 8.91 ms |
+    | lucy | 291.2 µs | 655.39 ms |
 
 ## `translation_matrix`
 

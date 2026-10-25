@@ -14,8 +14,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
 ## Summary
 
 <figure class="bench-figure">
-<svg class="bench-chart" width="640" height="122" viewBox="0 0 640 122" role="img" aria-label="reduce: time relative to ordito"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="104"/><text class="bench-tick" x="196.0" y="117" text-anchor="middle">0.01x</text><line class="bench-grid" x1="258.4" y1="0" x2="258.4" y2="104"/><text class="bench-tick" x="258.4" y="117" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="320.8" y1="0" x2="320.8" y2="104"/><text class="bench-tick" x="320.8" y="117" text-anchor="middle">1x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="104"/><text class="bench-tick" x="383.2" y="117" text-anchor="middle">10x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="104"/><text class="bench-tick" x="445.6" y="117" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="104"/><text class="bench-tick" x="508.0" y="117" text-anchor="middle">1000x</text><g><title>PyTorch3D (CUDA): 0.88x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 0</title><rect class="bench-reference" x="196" y="9.0" width="121.4" height="10"/><image class="bench-logo bench-logo-pytorch3d" href="../assets/logos/pytorch3d.png" x="173.0" y="5.0" width="15.9" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end">PyTorch3D (CUDA)</text><text class="bench-value" x="322.4" y="18.0">0.88x  (1)</text></g><g><title>ordito (CUDA): the reference, 1x</title><rect class="bench-subject" x="196" y="29.0" width="124.8" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="25.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="38.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="325.8" y="38.0">1x</text></g><g><title>NumPy: 1.3x ordito&#x27;s time, geometric mean over 15 functions; slower than ordito in 7</title><rect class="bench-reference" x="196" y="49.0" width="131.4" height="10"/><image class="bench-logo bench-logo-numpy" href="../assets/logos/numpy.png" x="172.6" y="45.0" width="16.9" height="18.0"/><text class="bench-label" x="166" y="58.0" text-anchor="end">NumPy</text><text class="bench-value" x="332.4" y="58.0">1.3x  (15)</text></g><g><title>MeshLab: 25x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="69.0" width="211.6" height="10"/><image class="bench-logo bench-logo-meshlab" href="../assets/logos/meshlab.png" x="172.0" y="65.0" width="18.0" height="18.0"/><text class="bench-label" x="166" y="78.0" text-anchor="end">MeshLab</text><text class="bench-value" x="412.6" y="78.0">25x  (1)</text></g><g><title>PyVista: 127x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="89.0" width="256.2" height="10"/><image class="bench-logo bench-logo-pyvista" href="../assets/logos/pyvista.png" x="172.0" y="91.0" width="18.0" height="6.0"/><text class="bench-label" x="166" y="98.0" text-anchor="end">PyVista</text><text class="bench-value" x="457.2" y="98.0">127x  (1)</text></g></svg>
-<figcaption>Time relative to ordito (CUDA), geometric mean over the reduce functions both implement; in parentheses, the number of functions. Log scale. A run stopped at the time limit counts as the limit.</figcaption>
+<svg class="bench-chart" width="640" height="122" viewBox="0 0 640 122" role="img" aria-label="reduce: time relative to ordito"><line class="bench-grid" x1="196.0" y1="0" x2="196.0" y2="104"/><text class="bench-tick" x="196.0" y="117" text-anchor="middle">0.01x</text><line class="bench-grid" x1="258.4" y1="0" x2="258.4" y2="104"/><text class="bench-tick" x="258.4" y="117" text-anchor="middle">0.1x</text><line class="bench-baseline" x1="320.8" y1="0" x2="320.8" y2="104"/><text class="bench-tick" x="320.8" y="117" text-anchor="middle">1x</text><line class="bench-grid" x1="383.2" y1="0" x2="383.2" y2="104"/><text class="bench-tick" x="383.2" y="117" text-anchor="middle">10x</text><line class="bench-grid" x1="445.6" y1="0" x2="445.6" y2="104"/><text class="bench-tick" x="445.6" y="117" text-anchor="middle">100x</text><line class="bench-grid" x1="508.0" y1="0" x2="508.0" y2="104"/><text class="bench-tick" x="508.0" y="117" text-anchor="middle">1000x</text><g><title>PyTorch3D (CUDA): 0.88x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 0</title><rect class="bench-reference" x="196" y="9.0" width="121.4" height="10"/><image class="bench-logo bench-logo-pytorch3d" href="../assets/logos/pytorch3d.png" x="173.0" y="5.0" width="15.9" height="18.0"/><text class="bench-label" x="166" y="18.0" text-anchor="end">PyTorch3D (CUDA)</text><text class="bench-value" x="322.4" y="18.0">0.88x  (1)</text></g><g><title>ordito (CUDA): the reference, 1x</title><rect class="bench-subject" x="196" y="29.0" width="124.8" height="10"/><image class="bench-logo bench-logo-ordito" href="../assets/logos/ordito.png" x="172.4" y="25.0" width="17.2" height="18.0"/><text class="bench-label" x="166" y="38.0" text-anchor="end" font-weight="600">ordito (CUDA)</text><text class="bench-value" x="325.8" y="38.0">1x</text></g><g><title>NumPy: 4.1x ordito&#x27;s time, geometric mean over 15 functions; slower than ordito in 11</title><rect class="bench-reference" x="196" y="49.0" width="163.0" height="10"/><image class="bench-logo bench-logo-numpy" href="../assets/logos/numpy.png" x="172.6" y="45.0" width="16.9" height="18.0"/><text class="bench-label" x="166" y="58.0" text-anchor="end">NumPy</text><text class="bench-value" x="364.0" y="58.0">4.1x  (15)</text></g><g><title>MeshLab: 74x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="69.0" width="241.4" height="10"/><image class="bench-logo bench-logo-meshlab" href="../assets/logos/meshlab.png" x="172.0" y="65.0" width="18.0" height="18.0"/><text class="bench-label" x="166" y="78.0" text-anchor="end">MeshLab</text><text class="bench-value" x="442.4" y="78.0">74x  (1)</text></g><g><title>PyVista: 476x ordito&#x27;s time, geometric mean over 1 functions; slower than ordito in 1</title><rect class="bench-reference" x="196" y="89.0" width="291.9" height="10"/><image class="bench-logo bench-logo-pyvista" href="../assets/logos/pyvista.png" x="172.0" y="91.0" width="18.0" height="6.0"/><text class="bench-label" x="166" y="98.0" text-anchor="end">PyVista</text><text class="bench-value" x="492.9" y="98.0">476x  (1)</text></g></svg>
+<figcaption>Time relative to ordito (CUDA), geometric mean over the reduce functions both implement; in parentheses, the number of functions. Log scale. Runs stopped at the time limit are left out.</figcaption>
 </figure>
 
 ??? note "Values"
@@ -23,9 +23,9 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | Library | Time relative to ordito | Functions compared | ordito faster in |
     |---|---|---|---|
     | PyTorch3D (CUDA) | 0.88x | 1 | 0 |
-    | NumPy | 1.3x | 15 | 7 |
-    | MeshLab | 25x | 1 | 1 |
-    | PyVista | 127x | 1 | 1 |
+    | NumPy | 4.1x | 15 | 11 |
+    | MeshLab | 74x | 1 | 1 |
+    | PyVista | 476x | 1 | 1 |
 
 ## `sum_bool`
 
@@ -49,8 +49,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 36.2 µs | 3.3 µs |
     | bunny | 29.7 µs | 10.5 µs |
     | dragon | 32.4 µs | 115.2 µs |
-    | happy_buddha | 41.5 µs |  |
-    | lucy | 44.0 µs |  |
+    | happy_buddha | 41.5 µs | 143.8 µs |
+    | lucy | 44.0 µs | 4.52 ms |
 
 ## `any_bool`
 
@@ -74,8 +74,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 31.8 µs | 1.0 µs |
     | bunny | 28.5 µs | 0.9 µs |
     | dragon | 28.6 µs | 4.2 µs |
-    | happy_buddha | 29.9 µs |  |
-    | lucy | 41.8 µs |  |
+    | happy_buddha | 29.9 µs | 5.3 µs |
+    | lucy | 41.8 µs | 1.0 µs |
 
 ## `all_bool`
 
@@ -99,8 +99,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 36.3 µs | 1.0 µs |
     | bunny | 31.0 µs | 0.9 µs |
     | dragon | 29.6 µs | 0.9 µs |
-    | happy_buddha | 31.7 µs |  |
-    | lucy | 44.4 µs |  |
+    | happy_buddha | 31.7 µs | 1.2 µs |
+    | lucy | 44.4 µs | 23.2 µs |
 
 ## `sum_scalar`
 
@@ -124,8 +124,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 44.7 µs | 2.2 µs |
     | bunny | 40.7 µs | 6.8 µs |
     | dragon | 40.1 µs | 66.2 µs |
-    | happy_buddha | 46.5 µs |  |
-    | lucy | 80.3 µs |  |
+    | happy_buddha | 46.5 µs | 107.3 µs |
+    | lucy | 80.3 µs | 4.82 ms |
 
 ## `sum_vec3`
 
@@ -149,8 +149,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 50.7 µs | 83.5 µs |
     | bunny | 48.7 µs | 390.2 µs |
     | dragon | 50.1 µs | 4.43 ms |
-    | happy_buddha | 50.1 µs |  |
-    | lucy | 160.9 µs |  |
+    | happy_buddha | 50.1 µs | 5.91 ms |
+    | lucy | 160.9 µs | 143.32 ms |
 
 ## `mean_vec3`
 
@@ -174,8 +174,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 63.3 µs | 85.5 µs |
     | bunny | 59.5 µs | 365.5 µs |
     | dragon | 60.5 µs | 4.49 ms |
-    | happy_buddha | 61.2 µs |  |
-    | lucy | 172.1 µs |  |
+    | happy_buddha | 61.2 µs | 5.50 ms |
+    | lucy | 172.1 µs | 143.82 ms |
 
 ## `weighted_sum`
 
@@ -201,8 +201,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 51.6 µs | 7.3 µs | 38.2 µs | 1.09 ms |
     | bunny | 39.9 µs | 20.3 µs | 34.2 µs | 4.08 ms |
     | dragon | 50.4 µs | 455.4 µs | 36.9 µs | 48.45 ms |
-    | happy_buddha | 53.8 µs |  | 36.8 µs |  |
-    | lucy | 193.2 µs |  | 327.8 µs |  |
+    | happy_buddha | 53.8 µs | 556.9 µs | 36.8 µs | 65.81 ms |
+    | lucy | 193.2 µs | 39.21 ms | 327.8 µs | 1.864 s |
 
 ## `scatter_sum`
 
@@ -226,8 +226,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 70.2 µs | 61.1 µs |
     | bunny | 65.0 µs | 366.6 µs |
     | dragon | 80.2 µs | 8.17 ms |
-    | happy_buddha | 103.6 µs |  |
-    | lucy | 1.37 ms |  |
+    | happy_buddha | 103.6 µs | 10.82 ms |
+    | lucy | 1.37 ms | 476.99 ms |
 
 ## `segment_sum`
 
@@ -251,8 +251,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 34.7 µs | 103.0 µs |
     | bunny | 33.0 µs | 369.1 µs |
     | dragon | 63.4 µs | 5.58 ms |
-    | happy_buddha | 72.3 µs |  |
-    | lucy | 1.71 ms |  |
+    | happy_buddha | 72.3 µs | 7.11 ms |
+    | lucy | 1.71 ms | 175.14 ms |
 
 ## `minmax_scalar`
 
@@ -276,8 +276,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 43.5 µs | 3.2 µs |
     | bunny | 41.9 µs | 5.6 µs |
     | dragon | 42.7 µs | 47.4 µs |
-    | happy_buddha | 50.3 µs |  |
-    | lucy | 121.2 µs |  |
+    | happy_buddha | 50.3 µs | 98.0 µs |
+    | lucy | 121.2 µs | 3.87 ms |
 
 ## `min_scalar`
 
@@ -301,8 +301,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 50.1 µs | 1.7 µs |
     | bunny | 44.9 µs | 2.8 µs |
     | dragon | 42.0 µs | 23.7 µs |
-    | happy_buddha | 45.6 µs |  |
-    | lucy | 84.3 µs |  |
+    | happy_buddha | 45.6 µs | 41.9 µs |
+    | lucy | 84.3 µs | 1.91 ms |
 
 ## `minmax_global_2d`
 
@@ -326,8 +326,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 55.0 µs | 4.2 µs |
     | bunny | 55.5 µs | 10.7 µs |
     | dragon | 55.0 µs | 303.8 µs |
-    | happy_buddha | 60.4 µs |  |
-    | lucy | 321.0 µs |  |
+    | happy_buddha | 60.4 µs | 409.9 µs |
+    | lucy | 321.0 µs | 19.04 ms |
 
 ## `sum_axis0`
 
@@ -351,8 +351,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 25.0 µs | 83.0 µs |
     | bunny | 22.3 µs | 383.8 µs |
     | dragon | 45.8 µs | 4.47 ms |
-    | happy_buddha | 55.3 µs |  |
-    | lucy | 850.9 µs |  |
+    | happy_buddha | 55.3 µs | 5.57 ms |
+    | lucy | 850.9 µs | 143.48 ms |
 
 ## `max_axis1`
 
@@ -376,8 +376,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 18.3 µs | 233.7 µs |
     | bunny | 14.7 µs | 1.03 ms |
     | dragon | 14.7 µs | 12.68 ms |
-    | happy_buddha | 18.6 µs |  |
-    | lucy | 150.6 µs |  |
+    | happy_buddha | 18.6 µs | 15.63 ms |
+    | lucy | 150.6 µs | 427.77 ms |
 
 ## `median`
 
@@ -402,8 +402,8 @@ Benchmarks of [`ordito.reduce`](../api/ordito/reduce.md) against every library t
     | bunny_decimated | 92.4 µs | 407.2 µs | 45.8 µs |
     | bunny | 97.4 µs | 1.97 ms | 120.9 µs |
     | dragon | 112.4 µs | 18.68 ms | 673.1 µs |
-    | happy_buddha | 116.9 µs |  |  |
-    | lucy | 1.56 ms |  |  |
+    | happy_buddha | 116.9 µs | 23.93 ms | 802.9 µs |
+    | lucy | 1.56 ms | 1.138 s | 54.15 ms |
 
 ## Without a reference
 
