@@ -2149,17 +2149,24 @@ def fill_orthographic(grid: wp.Volume, *, max_cells: int = 1 << 28) -> wp.Volume
         grid, pad=0, max_cells=max_cells, caller="fill_orthographic"
     )
     dims = (int(occupancy.shape[0]), int(occupancy.shape[1]), int(occupancy.shape[2]))
-    # The first axis writes every cell of ``filled`` and the other two intersect into it in place.
-    filled = odt.empty_3d(dims, wp.bool, device=device)
-    for axis in range(3):
-        other = [dims[a] for a in range(3) if a != axis]
-        _launch.launch(
-            kernel_voxels.fill_axis_span,
-            dim=(other[0], other[1]),
-            inputs=[occupancy, wp.int32(axis), wp.int32(dims[axis]), axis > 0, filled],
-            device=device,
-        )
-    return from_dense(filled, voxel_size, origin, origin_cell=origin_cell)
+    # Every line's occupied interval along each axis in one launch, then one pass over the cells
+    # keeps those inside all three: ``from_dense`` of the intersected lattice, never stored.
+    n_lines = dims[1] * dims[2] + dims[0] * dims[2] + dims[0] * dims[1]
+    spans = _launch.empty(n_lines, dtype=wp.vec2i, device=device)
+    _launch.launch(
+        kernel_voxels.axis_span_bounds, dim=n_lines, inputs=[occupancy, spans], device=device
+    )
+    n_cells = dims[0] * dims[1] * dims[2]
+    candidates = odt.empty_2d((n_cells, 3), wp.int32, device=device)
+    mask = _launch.empty(n_cells, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_voxels.occupied_cells_in_spans,
+        dim=dims,
+        inputs=[spans, wp.vec3i(*dims), wp.vec3i(*(int(c) for c in origin_cell))],
+        outputs=[candidates, mask],
+        device=device,
+    )
+    return _allocate_masked(candidates, mask, voxel_size, origin)
 
 
 def dilate(
