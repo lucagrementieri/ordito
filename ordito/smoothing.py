@@ -187,7 +187,14 @@ def filter_laplacian(
         return _vec3_passes(
             vertices, iterations, lambda _index, src, dst: _diffuse_pass(operator, coeff, src, dst)
         )
-    positions = _as_vec3d(vertices)
+    steps = _implicit_fixed_point_steps(operator, lamb) if implicit_time_integration else None
+    # With nothing to anchor, the fixed-point passes start from the ``float32`` input itself: the
+    # first pass reads it widened as each entry is read, and its last step writes the ``float64``
+    # iterate, so no widening copy is made.
+    widen_on_read = steps is not None and not volume_constraint
+    positions = (
+        _launch.empty(n, dtype=wp.vec3d, device=device) if widen_on_read else _as_vec3d(vertices)
+    )
     # The *initial* volume and centre of mass, captured once here rather than inside the loop --
     # see ``kernel_smoothing.volume_rescale_parameters`` for why the rescale has to stay anchored to
     # this one fixed point rather than the mesh's current (already-moved) centre of mass.
@@ -195,7 +202,6 @@ def filter_laplacian(
         _VolumeConstraint.anchored(positions, vertices, faces) if volume_constraint else None
     )
 
-    steps = _implicit_fixed_point_steps(operator, lamb) if implicit_time_integration else None
     if steps is not None:
         # ``(1 + lamb) I - lamb L`` is strictly diagonally dominant for a row-stochastic ``L``, so
         # the fixed-point iteration converges at a rate known in advance, symmetric or not -- and
@@ -215,7 +221,8 @@ def filter_laplacian(
                 assert graph is not None
                 wp.capture_launch(graph)
             else:
-                _implicit_fixed_point_pass(operator, coeff, steps, positions, scratch)
+                source = vertices if widen_on_read and index == 0 else None
+                _implicit_fixed_point_pass(operator, coeff, steps, positions, scratch, source)
             if constraint is not None:
                 constraint.apply(positions)
     elif implicit_time_integration:
@@ -307,15 +314,22 @@ def _implicit_fixed_point_pass(
     steps: int,
     positions: wp.array[wp.vec3d],
     scratch: list[wp.array[wp.vec3d]],
+    start: wp.array[wp.vec3] | None = None,
 ) -> None:
-    """One backward-Euler pass in place: ``steps`` fixed-point steps from ``positions`` itself."""
+    """
+    One backward-Euler pass in place: ``steps`` fixed-point steps from ``positions`` itself.
+
+    Given ``start``, the pass is from ``start`` instead, which its steps read widened, and the last
+    writes ``positions`` (which they never read).
+    """
+    rhs: _Positions = positions if start is None else start
     for step in range(steps):
-        source = positions if step == 0 else scratch[(step - 1) % 2]
+        source = rhs if step == 0 else scratch[(step - 1) % 2]
         target = positions if step == steps - 1 else scratch[step % 2]
         _launch.launch(
-            kernel_smoothing.implicit_laplacian_step,
+            kernel_smoothing.IMPLICIT_LAPLACIAN_STEP[rhs.dtype, source.dtype],
             dim=positions.size,
-            inputs=[operator.offsets, operator.columns, operator.values, coeff, positions, source],
+            inputs=[operator.offsets, operator.columns, operator.values, coeff, rhs, source],
             outputs=[target],
             device=positions.device,
         )
@@ -479,7 +493,7 @@ def inflate(
     displaced = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     wide = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
     diffused = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
-    constraint = _VolumeConstraint(faces, device)
+    constraint = _VolumeConstraint(faces, device, anchors=iterations + int(pre_smooth))
     coeff = wp.float64(lamb)
 
     def relax(anchor: wp.array[wp.vec3]) -> None:
@@ -1656,7 +1670,11 @@ def filter_mut_dif_laplacian(
         return _launch.clone(vertices)
 
     operator = _resolved_operator(vertices, faces, laplacian_operator)
-    positions = _as_vec3d(vertices)
+    # The ``float64`` iterate. With no volume constraint the first pass reads the ``float32`` input
+    # itself, widened as it is read, and the last writes the ``float32`` answer; the constraint
+    # sums the input's own volume in ``float64``, so it starts from a widened copy, and its last
+    # correction writes the answer.
+    positions: _Positions = _as_vec3d(vertices) if volume_constraint else vertices
 
     # Vertex normals and eps are computed once from the input mesh and reused every pass, matching
     # the trimesh reference (which reads normals off the un-mutated mesh inside its loop).
@@ -1666,7 +1684,9 @@ def filter_mut_dif_laplacian(
 
     lv = _launch.empty(n, dtype=wp.vec3d, device=device)
     sensitivity = _launch.zeros(1, dtype=wp.float64, device=device)
-    nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
+    out = _launch.empty(n, dtype=wp.vec3, device=device)
+    # The other ``float64`` iterate of the ping-pong, allocated by the first pass that writes it.
+    nxt: wp.array[wp.vec3d] | None = None
     # The three volumes the constraint needs, kept on the device for the whole loop: the input's
     # (fixed), this pass's, and the eps-probe's, with the calibrated slope beside them. Reading any
     # of them back cost a full pipeline drain per smoothing pass -- and the pass count is the whole
@@ -1695,24 +1715,28 @@ def filter_mut_dif_laplacian(
         vol_ini, vol_probe, slope = (
             _launch.zeros(1, dtype=wp.float64, device=device) for _ in range(3)
         )
-        scratch.accumulate(positions, faces, vol_ini)
+        scratch.accumulate(cast("wp.array[wp.vec3d]", positions), faces, vol_ini)
         constraint = (probe, scratch, vol_ini, vol_probe, slope)
     inv_n = wp.float64(1.0 / n)
     rows_per_block = kernel_smoothing.MUT_DIF_ROWS_PER_BLOCK
     n_blocks = (n + rows_per_block - 1) // rows_per_block
     # One ``(coefficients, sensitivity)`` row per block, rewritten by every pass and added in a
     # fixed order into the first two slots, so no pass clears it. With determinism off
-    # (``ordito.config``) the buffer is the two slots alone, which the blocks add into by atomics
-    # and every pass then clears first.
-    adil_sum, _ = _launch.block_partials(n_blocks, 2, wp.float64, device)
-    atomic_commit = adil_sum.size == 2
+    # (``ordito.config``) the commit is two slots the blocks add into by atomics, so each pass
+    # takes its own pair of one buffer zeroed once, and no pass clears one.
+    adil_slots = None
+    if is_deterministic():
+        adil_sum, _ = _launch.block_partials(n_blocks, 2, wp.float64, device)
+    else:
+        adil_slots = _launch.zeros(2 * iterations, dtype=wp.float64, device=device)
+        adil_sum = adil_slots
     for index in range(iterations):
-        if atomic_commit and index > 0:
-            _launch.zero_(adil_sum)
+        if adil_slots is not None:
+            adil_sum = _launch.view(adil_slots, 2 * index, 2 * index + 2)
         # The mean diffusion coefficient is summed on device by the pass that applies the operator
         # and consumed by the step kernel directly, so the loop body issues no host synchronisation.
         _launch.launch_tiled(
-            kernel_smoothing.mut_dif_adil_pass,
+            kernel_smoothing.MUT_DIF_ADIL_PASS[positions.dtype],
             dim=[n_blocks],
             inputs=[operator.offsets, operator.columns, operator.values, positions, normals, 2],
             outputs=[lv, adil_sum],
@@ -1721,18 +1745,26 @@ def filter_mut_dif_laplacian(
         )
         # The volume constraint's first pass also writes the eps probe its slope calibrates on.
         probe = constraint[0] if constraint is not None and index == 0 else None
+        last = index == iterations - 1
+        if nxt is None and (constraint is not None or not last):
+            nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
+        dst: _Positions = out if constraint is None and last else cast("wp.array[wp.vec3d]", nxt)
         _launch.launch(
-            kernel_smoothing.mut_dif_step_scaled,
+            kernel_smoothing.MUT_DIF_STEP_SCALED[positions.dtype, dst.dtype],
             dim=n,
             inputs=[positions, lv, adil_sum, inv_n, wp.float64(lamb), normals, area_max],
-            outputs=[nxt, probe, sensitivity],
+            outputs=[dst, probe, sensitivity],
             device=device,
         )
-        positions, nxt = nxt, positions
+        # The input is never written: a pass reading it hands the next one a fresh buffer.
+        nxt = cast("wp.array[wp.vec3d]", positions) if positions.dtype == wp.vec3d else None
+        positions = dst
         if constraint is not None:
+            # Under the constraint every pass writes the ``float64`` ping-pong buffer.
+            iterate = cast("wp.array[wp.vec3d]", dst)
             probe, scratch, vol_ini, vol_probe, slope = constraint
             vol_cur = scratch.volume
-            scratch.accumulate(positions, faces)
+            scratch.accumulate(iterate, faces)
             if index == 0:
                 scratch.accumulate(probe, faces, vol_probe)
             _launch.launch(
@@ -1747,7 +1779,7 @@ def filter_mut_dif_laplacian(
                     wp.int32(index == 0),
                     slope,
                 ],
-                outputs=[positions],
+                outputs=[iterate, out if last else None],
                 device=device,
             )
 
@@ -1761,7 +1793,7 @@ def filter_mut_dif_laplacian(
             "sensitive to rounding-level changes of the input; see Notes.",
             stacklevel=2,
         )
-    return _as_vec3(positions)
+    return out
 
 
 class _VolumeScratch(NamedTuple):
@@ -1826,11 +1858,12 @@ class _VolumeConstraint:
     version's -- the same reductions and the same centre rounding -- so the answer is too.
 
     Both commit buffers are allocated once and re-anchored in place: a reproducible commit
-    overwrites its result slots and resets its own ticket, and only the atomic one (determinism
-    off when the constraint was built) needs its slots cleared before the next anchor.
+    overwrites its result slots and resets its own ticket. The atomic one (determinism off when
+    the constraint was built) adds into its slots, so it holds ``anchors`` sets of them, zeroed
+    once, and each anchor takes the next; only an anchor past those clears its slots first.
     """
 
-    def __init__(self, faces: wp.array[wp.int32], device: wp.DeviceLike) -> None:
+    def __init__(self, faces: wp.array[wp.int32], device: wp.DeviceLike, anchors: int = 1) -> None:
         self._faces = faces
         self._device = device
         self._n_faces = faces.size // 3
@@ -1838,15 +1871,25 @@ class _VolumeConstraint:
         self._volume_blocks = kernel_reduce.blocks_1d(self._n_faces)
         self._moment_blocks = -(-self._n_faces // self._chunk_faces)
         # Zeroed at allocation, so a constraint over no faces reads a zero anchor: no rescale.
-        self._volume, self._volume_stride = _launch.block_partials(
-            self._volume_blocks, 1, wp.float64, device
-        )
-        self._moments, self._moment_stride = _launch.block_partials(
-            self._moment_blocks, 4, wp.float64, device
-        )
+        self._pools = None
+        if is_deterministic():
+            self._volume, self._volume_stride = _launch.block_partials(
+                self._volume_blocks, 1, wp.float64, device
+            )
+            self._moments, self._moment_stride = _launch.block_partials(
+                self._moment_blocks, 4, wp.float64, device
+            )
+        else:
+            self._pools = (
+                _launch.zeros(anchors, dtype=wp.float64, device=device),
+                _launch.zeros(4 * anchors, dtype=wp.float64, device=device),
+            )
+            self._volume = _launch.view(self._pools[0], 0, 1)
+            self._moments = _launch.view(self._pools[1], 0, 4)
+            self._volume_stride, self._moment_stride = 1, 4
         self.state = _launch.empty(4, dtype=wp.float64, device=device)
         self._scratch = _VolumeScratch.for_faces(faces, device)
-        self._anchored = False
+        self._anchors = 0
 
     @classmethod
     def anchored(
@@ -1861,12 +1904,18 @@ class _VolumeConstraint:
         """Capture the volume of ``positions`` and the centre of mass of ``vertices``."""
         if self._n_faces == 0:
             return
-        if self._anchored and self._volume.size == self._volume_stride:
-            # The atomic commit adds into its result slots; the reproducible one overwrites them.
-            _launch.zero_(self._volume)
-        if self._anchored and self._moments.size == self._moment_stride:
-            _launch.zero_(self._moments)
-        self._anchored = True
+        if self._pools is not None and self._anchors > 0:
+            # The atomic commit adds into its result slots (the reproducible one overwrites them):
+            # the next unused set, or the last set cleared once every set has been used.
+            volumes, moments = self._pools
+            k = self._anchors
+            if k < volumes.size:
+                self._volume = _launch.view(volumes, k, k + 1)
+                self._moments = _launch.view(moments, 4 * k, 4 * k + 4)
+            else:
+                _launch.zero_(self._volume)
+                _launch.zero_(self._moments)
+        self._anchors += 1
         # Both sums are fixed-order block partials, so the anchor (and the rescale it sets) repeats
         # bit for bit on CUDA while determinism is on.
         _launch.launch_tiled(

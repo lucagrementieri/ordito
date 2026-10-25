@@ -1262,7 +1262,7 @@ def mut_dif_adil_pass(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float32],
-    positions: wp.array[wp.vec3d],
+    positions: wp.array[Any],
     normals: wp.array[wp.vec3],
     stride: wp.int32,
     out_lv: wp.array[wp.vec3d],
@@ -1277,7 +1277,8 @@ def mut_dif_adil_pass(
     # coefficient is not stored: ``mut_dif_step_scaled`` recomputes it at its own vertex from the
     # ``out_lv`` row written here, which costs it a normal load against an ``(n,)`` buffer's write
     # and read and the separate reduction launch. A narrower fold than the reduce module's because
-    # the kernel also writes per row.
+    # the kernel also writes per row. ``positions`` is ``wp.vec3d`` or, on the first pass of a
+    # filter with no volume constraint, the ``float32`` input widened as it is read.
     chunk, lane = wp.tid()
     offset, remaining = block_chunk(positions.shape[0], chunk, MUT_DIF_ROWS_PER_BLOCK)
     if remaining <= 0:
@@ -1288,9 +1289,10 @@ def mut_dif_adil_pass(
         i = offset + r
         lv = operator_row(offsets, columns, values, positions, i)
         out_lv[i] = lv
-        adil = mut_dif_adil(normals[i], positions[i], lv)
+        position = wp.vec3d(positions[i])
+        adil = mut_dif_adil(normals[i], position, lv)
         total = total + adil
-        rounding = rounding + mut_dif_adil_rounding(positions[i], adil)
+        rounding = rounding + mut_dif_adil_rounding(position, adil)
     store_block_sum(chunk, lane, wp.vec2d(total, rounding), out_adil_sum, 0, stride)
 
 
@@ -1310,14 +1312,14 @@ def mut_dif_probe_step(area_max: wp.array[wp.float32]) -> wp.float64:
 
 @wp.kernel
 def mut_dif_step_scaled(
-    positions: wp.array[wp.vec3d],
+    positions: wp.array[Any],
     lv: wp.array[wp.vec3d],
     adil_sum: wp.array[wp.float64],
     inv_n: wp.float64,
     lamb: wp.float64,
     normals: wp.array[wp.vec3],
     area_max: wp.array[wp.float32],
-    out_next: wp.array[wp.vec3d],
+    out_next: wp.array[Any],
     out_probe: wp.array[wp.vec3d],
     out_sensitivity: wp.array[wp.float64],
 ) -> None:
@@ -1329,15 +1331,19 @@ def mut_dif_step_scaled(
     # vertex offset by ``mut_dif_probe_step`` along its normal: the finite-difference probe
     # ``mut_dif_volume_correct`` calibrates its slope against, formed from the value this thread
     # has just computed rather than read back by a map of its own.
+    #
+    # Either vector type on the read and the write (``_register_overloads``), as the explicit
+    # passes below take them: with no volume constraint the first pass reads the ``float32`` input
+    # widened and the last writes the ``float32`` answer narrowed, as ``array.astype`` would.
     i = wp.int32(wp.tid())
     mean_adil = adil_sum[0] * inv_n
     if i == wp.int32(0):
         # The largest relative rounding uncertainty of the mean over the passes, for the warning.
         wp.atomic_max(out_sensitivity, 0, adil_sum[1] / adil_sum[0])
-    position = positions[i]
+    position = wp.vec3d(positions[i])
     row = lv[i]
     stepped = mut_dif_step(position, row, mut_dif_adil(normals[i], position, row), mean_adil, lamb)
-    out_next[i] = stepped
+    out_next[i] = out_next.dtype(stepped)
     if out_probe.shape[0] > 0:
         out_probe[i] = add_scaled_normal(stepped, normals[i], mut_dif_probe_step(area_max))
 
@@ -1372,6 +1378,7 @@ def mut_dif_volume_correct(
     calibrate: wp.int32,
     slope: wp.array[wp.float64],
     out_positions: wp.array[wp.vec3d],
+    out_narrowed: wp.array[wp.vec3],
 ) -> None:
     # Offset every vertex along its normal by ``slope * (volume_initial - volume_current)``, the
     # first-order correction that walks the smoothed mesh's volume back toward the input's. All
@@ -1395,7 +1402,13 @@ def mut_dif_volume_correct(
     else:
         s = slope[0]
     offset = s * (volume_initial[0] - volume_current[0])
-    out_positions[v] = add_scaled_normal(out_positions[v], normals[v], offset)
+    corrected = add_scaled_normal(out_positions[v], normals[v], offset)
+    # A non-empty ``out_narrowed`` (the last pass) takes the ``float32`` answer, narrowed as
+    # ``array.astype`` narrows it, instead of the ``float64`` iterate no later pass reads.
+    if out_narrowed.shape[0] > 0:
+        out_narrowed[v] = to_vec3(corrected)
+    else:
+        out_positions[v] = corrected
 
 
 @wp.func
@@ -1476,8 +1489,8 @@ def implicit_laplacian_step(
     columns: wp.array[wp.int32],
     values: wp.array[wp.float32],
     lamb: wp.float64,
-    rhs: wp.array[wp.vec3d],
-    x: wp.array[wp.vec3d],
+    rhs: wp.array[Any],
+    x: wp.array[Any],
     out_x: wp.array[wp.vec3d],
 ) -> None:
     # One step of the fixed-point iteration for the backward-Euler system
@@ -1485,9 +1498,11 @@ def implicit_laplacian_step(
     # ``lamb ||L||_inf / (1 + lamb)`` whatever ``L``'s symmetry, which conjugate gradient needs.
     # Each thread reads ``rhs`` at its own row only, so ``out_x`` may alias ``rhs`` -- the last
     # step writes the answer over it -- but never ``x``, which the row sum reads at other rows.
-    # Shares ``operator_row`` with the explicit step, empty-row convention included.
+    # Shares ``operator_row`` with the explicit step, empty-row convention included. ``rhs`` and
+    # ``x`` are ``wp.vec3d``, or on a filter's first pass the ``float32`` input widened as it is
+    # read (``_register_overloads``).
     i = wp.int32(wp.tid())
-    out_x[i] = (rhs[i] + lamb * operator_row(offsets, columns, values, x, i)) / (
+    out_x[i] = (wp.vec3d(rhs[i]) + lamb * operator_row(offsets, columns, values, x, i)) / (
         wp.float64(1.0) + lamb
     )
 
@@ -2417,14 +2432,58 @@ SHARPEN_PASS: OverloadTable
 NEIGHBORHOOD_AVERAGE_PASS: OverloadTable
 HUMPHREY_RESIDUAL_PASS: OverloadTable
 HUMPHREY_UPDATE_PASS: OverloadTable
+MUT_DIF_ADIL_PASS: OverloadTable
+MUT_DIF_STEP_SCALED: OverloadTable
+IMPLICIT_LAPLACIAN_STEP: OverloadTable
 
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global DIFFUSE_VEC3_PASS, NEIGHBORHOOD_AVERAGE_PASS, HUMPHREY_RESIDUAL_PASS
-    global HUMPHREY_UPDATE_PASS, SHARPEN_PASS
+    global HUMPHREY_UPDATE_PASS, SHARPEN_PASS, MUT_DIF_ADIL_PASS, MUT_DIF_STEP_SCALED
+    global IMPLICIT_LAPLACIAN_STEP
     vectors = (wp.vec3, wp.vec3d)
     rows = [wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.float32]]
+    IMPLICIT_LAPLACIAN_STEP = OverloadTable(
+        implicit_laplacian_step,
+        {
+            (rhs, x): [*rows, wp.float64, wp.array[rhs], wp.array[x], wp.array[wp.vec3d]]
+            for rhs, x in ((wp.vec3, wp.vec3), (wp.vec3, wp.vec3d), (wp.vec3d, wp.vec3d))
+        },
+    )
+    MUT_DIF_ADIL_PASS = OverloadTable(
+        mut_dif_adil_pass,
+        {
+            src: [
+                *rows,
+                wp.array[src],
+                wp.array[wp.vec3],
+                wp.int32,
+                wp.array[wp.vec3d],
+                wp.array[wp.float64],
+            ]
+            for src in vectors
+        },
+    )
+    MUT_DIF_STEP_SCALED = OverloadTable(
+        mut_dif_step_scaled,
+        {
+            (src, dst): [
+                wp.array[src],
+                wp.array[wp.vec3d],
+                wp.array[wp.float64],
+                wp.float64,
+                wp.float64,
+                wp.array[wp.vec3],
+                wp.array[wp.float32],
+                wp.array[dst],
+                wp.array[wp.vec3d],
+                wp.array[wp.float64],
+            ]
+            for src in vectors
+            for dst in vectors
+        },
+    )
     DIFFUSE_VEC3_PASS = OverloadTable(
         diffuse_vec3_pass,
         {
