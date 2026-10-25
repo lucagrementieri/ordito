@@ -1092,6 +1092,11 @@ class _LoopSweep:
     def run(self) -> list[int]:
         """Sweep until the device-side state stops the loop; return the state's words."""
         n_state = kernel_geodesic_walk.SHORTEN_STATE_SLOTS
+        if self._device.is_cpu:
+            # The CPU runs a launch's threads one after another, so the whole loop runs as one
+            # thread's sweeps in that same order (``kernels/geodesic_walk.serial_shorten_sweeps``).
+            self._issue_serial()
+            return [int(v) for v in read_values(self._state, 0, n_state)]
         self._issue()
         values = [int(v) for v in read_values(self._state, 0, n_state)]
         if values[kernel_geodesic_walk.SHORTEN_DONE] != 0:
@@ -1110,6 +1115,34 @@ class _LoopSweep:
             wp.capture_launch(graph)
             values = [int(v) for v in read_values(self._state, 0, n_state)]
         return values
+
+    def _issue_serial(self) -> None:
+        """Every sweep until the state stops the loop, in one single-thread launch."""
+        vertices, faces, ring_offsets, ring_halfedges, is_boundary = self._mesh
+        _launch.launch(
+            kernel_geodesic_walk.serial_shorten_sweeps,
+            dim=1,
+            inputs=[
+                vertices,
+                faces,
+                ring_offsets,
+                ring_halfedges,
+                is_boundary,
+                self._tolerance,
+                self.loops,
+                self.loop_offsets,
+                self._rewritten,
+                self._rewritten_offsets,
+                self.positions,
+                self._counts,
+                self._kept,
+                self._kept_counts,
+                self._arc_slot,
+                self._arc_step,
+                self._state,
+            ],
+            device=self._device,
+        )
 
     def _issue(self) -> None:
         """One sweep: counts, rewrite, compaction and the closing state update."""

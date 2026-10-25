@@ -1095,8 +1095,9 @@ def shorten_loop_rewriting(state: wp.array[wp.int32], positions: wp.array[wp.int
     )
 
 
-@wp.kernel
-def shorten_loop_counts(
+@wp.func
+def count_shortened_slot(
+    t: wp.int32,
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     ring_offsets: wp.array[wp.int32],
@@ -1114,7 +1115,6 @@ def shorten_loop_counts(
     # *active* when its parity matches this sweep's, so no two neighbours are ever rewritten at
     # once and each replacement sees an unmodified triple. Each accepted replacement is counted in
     # ``state[SHORTEN_CHANGED]``.
-    t = wp.int32(wp.tid())
     if state[SHORTEN_DONE] != 0:
         return
     out_counts[t] = wp.int32(0)
@@ -1172,7 +1172,42 @@ def shorten_loop_counts(
 
 
 @wp.kernel
-def shorten_loop_write(
+def shorten_loop_counts(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    ring_halfedges: wp.array[wp.int32],
+    is_boundary: wp.array[wp.bool],
+    loop_vertices: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    tolerance: wp.float32,
+    state: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_arc_slot: wp.array[wp.int32],
+    out_arc_step: wp.array[wp.int32],
+) -> None:
+    # One thread per buffer slot: ``count_shortened_slot``.
+    t = wp.int32(wp.tid())
+    count_shortened_slot(
+        t,
+        vertices,
+        faces,
+        ring_offsets,
+        ring_halfedges,
+        is_boundary,
+        loop_vertices,
+        loop_offsets,
+        tolerance,
+        state,
+        out_counts,
+        out_arc_slot,
+        out_arc_step,
+    )
+
+
+@wp.func
+def write_shortened_slot(
+    t: wp.int32,
     faces: wp.array[wp.int32],
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
@@ -1188,7 +1223,6 @@ def shorten_loop_write(
     # ``positions`` is ``shorten_loop_counts``' counts scanned in place behind a leading zero, so a
     # position's count is the step between its offset and the next. Threads up to ``n_loops`` also
     # map each loop's offset through that remap.
-    t = wp.int32(wp.tid())
     if not shorten_loop_rewriting(state, positions):
         return
     remap_loop_offset(loop_offsets, positions, t, out_loop_offsets)
@@ -1209,7 +1243,40 @@ def shorten_loop_write(
 
 
 @wp.kernel
-def distinct_from_predecessor(
+def shorten_loop_write(
+    faces: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    ring_halfedges: wp.array[wp.int32],
+    loop_vertices: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    arc_slot: wp.array[wp.int32],
+    arc_step: wp.array[wp.int32],
+    positions: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    out_loop_vertices: wp.array[wp.int32],
+    out_loop_offsets: wp.array[wp.int32],
+) -> None:
+    # One thread per buffer slot: ``write_shortened_slot``.
+    t = wp.int32(wp.tid())
+    write_shortened_slot(
+        t,
+        faces,
+        ring_offsets,
+        ring_halfedges,
+        loop_vertices,
+        loop_offsets,
+        arc_slot,
+        arc_step,
+        positions,
+        state,
+        out_loop_vertices,
+        out_loop_offsets,
+    )
+
+
+@wp.func
+def mark_distinct_slot(
+    t: wp.int32,
     loop_vertices: wp.array[wp.int32],
     loop_offsets: wp.array[wp.int32],
     positions: wp.array[wp.int32],
@@ -1219,7 +1286,6 @@ def distinct_from_predecessor(
     # Marks the survivors of a run of repeats within each loop: a position is kept unless it
     # repeats its predecessor. The first position of a loop is always kept, so a run that wraps the
     # seam keeps its head. Slots past the rewritten loops keep nothing.
-    t = wp.int32(wp.tid())
     if not shorten_loop_rewriting(state, positions):
         return
     out_counts[t] = wp.int32(0)
@@ -1232,7 +1298,21 @@ def distinct_from_predecessor(
 
 
 @wp.kernel
-def compact_kept(
+def distinct_from_predecessor(
+    loop_vertices: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    positions: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # One thread per buffer slot: ``mark_distinct_slot``.
+    t = wp.int32(wp.tid())
+    mark_distinct_slot(t, loop_vertices, loop_offsets, positions, state, out_counts)
+
+
+@wp.func
+def compact_kept_slot(
+    t: wp.int32,
     values: wp.array[wp.int32],
     loop_offsets: wp.array[wp.int32],
     kept: wp.array[wp.int32],
@@ -1244,7 +1324,6 @@ def compact_kept(
     # Stream compaction against 0/1 counts scanned in place behind a leading zero, so a kept
     # position is a step of the scan: a scatter, so it stays a kernel. Threads up to ``n_loops``
     # map each loop's offset through the same scan.
-    t = wp.int32(wp.tid())
     if not shorten_loop_rewriting(state, positions):
         return
     remap_loop_offset(loop_offsets, kept, t, out_loop_offsets)
@@ -1254,10 +1333,25 @@ def compact_kept(
 
 
 @wp.kernel
-def shorten_loop_advance(
+def compact_kept(
+    values: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    kept: wp.array[wp.int32],
+    positions: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    out_values: wp.array[wp.int32],
+    out_loop_offsets: wp.array[wp.int32],
+) -> None:
+    # One thread per buffer slot: ``compact_kept_slot``.
+    t = wp.int32(wp.tid())
+    compact_kept_slot(t, values, loop_offsets, kept, positions, state, out_values, out_loop_offsets)
+
+
+@wp.func
+def advance_shorten_loop(
     positions: wp.array[wp.int32], kept: wp.array[wp.int32], out_state: wp.array[wp.int32]
 ) -> None:
-    # dim=1, closing a sweep. A sweep whose rewrite would not fit flags the overflow and stops the
+    # Closing a sweep. A sweep whose rewrite would not fit flags the overflow and stops the
     # loop *without* counting itself -- its rewrite and compaction were skipped, so the loops are
     # the ones it started from and the host can grow the buffers and run it again. Otherwise the
     # sweep counts, and the loop stops once two consecutive sweeps (one of each parity) accepted
@@ -1283,6 +1377,93 @@ def shorten_loop_advance(
     out_state[SHORTEN_UNCHANGED] = unchanged
     if unchanged >= 2 or sweeps >= out_state[SHORTEN_MAX_SWEEPS] or out_state[SHORTEN_LENGTH] == 0:
         out_state[SHORTEN_DONE] = 1
+
+
+@wp.kernel
+def shorten_loop_advance(
+    positions: wp.array[wp.int32], kept: wp.array[wp.int32], out_state: wp.array[wp.int32]
+) -> None:
+    # dim=1: ``advance_shorten_loop``.
+    advance_shorten_loop(positions, kept, out_state)
+
+
+@wp.func
+def scan_in_place(values: wp.array[wp.int32]) -> None:
+    # Inclusive prefix sum of ``values`` where it lies, in one thread. Over a buffer whose entry 0
+    # stays zero it is the in-place inclusive scan of the entries behind it, which is how the
+    # launched sweep scans ``positions`` and ``kept``.
+    for i in range(1, values.shape[0]):
+        values[i] = values[i] + values[i - 1]
+
+
+@wp.kernel
+def serial_shorten_sweeps(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    ring_halfedges: wp.array[wp.int32],
+    is_boundary: wp.array[wp.bool],
+    tolerance: wp.float32,
+    loop_vertices: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    rewritten: wp.array[wp.int32],
+    rewritten_offsets: wp.array[wp.int32],
+    positions: wp.array[wp.int32],
+    counts: wp.array[wp.int32],
+    kept: wp.array[wp.int32],
+    kept_counts: wp.array[wp.int32],
+    arc_slot: wp.array[wp.int32],
+    arc_step: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+) -> None:
+    # dim=1, the CPU device's sweep loop: every sweep's five launches and two scans, as one
+    # thread's loops in the order a device running each launch's threads one after another runs
+    # them, until ``advance_shorten_loop`` stops the loop -- so the loops, the state and the
+    # overflow flag come out as the launched loop leaves them, with no read of the state between
+    # sweeps. ``counts`` and ``kept_counts`` are the views of ``positions`` and ``kept`` behind
+    # their leading zero.
+    capacity = positions.shape[0] - 1
+    while state[SHORTEN_DONE] == 0:
+        for t in range(capacity):
+            count_shortened_slot(
+                t,
+                vertices,
+                faces,
+                ring_offsets,
+                ring_halfedges,
+                is_boundary,
+                loop_vertices,
+                loop_offsets,
+                tolerance,
+                state,
+                counts,
+                arc_slot,
+                arc_step,
+            )
+        scan_in_place(positions)
+        for t in range(capacity):
+            write_shortened_slot(
+                t,
+                faces,
+                ring_offsets,
+                ring_halfedges,
+                loop_vertices,
+                loop_offsets,
+                arc_slot,
+                arc_step,
+                positions,
+                state,
+                rewritten,
+                rewritten_offsets,
+            )
+        for t in range(capacity):
+            mark_distinct_slot(t, rewritten, rewritten_offsets, positions, state, kept_counts)
+        scan_in_place(kept)
+        for t in range(capacity):
+            compact_kept_slot(
+                t, rewritten, rewritten_offsets, kept, positions, state, loop_vertices, loop_offsets
+            )
+        advance_shorten_loop(positions, kept, state)
 
 
 @wp.kernel

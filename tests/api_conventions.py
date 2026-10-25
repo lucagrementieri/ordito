@@ -608,10 +608,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # scratch / persistent state
     ("adjacency", "scatter_vertex_faces"): frozenset({"cursor"}),
     ("smoothing", "scatter_incidence_rows"): frozenset({"cursor"}),
-    # ``state`` is ``shorten_loop_with_offsets``' device-side loop word: every sweep kernel reads
-    # its parity and stop flag, and this one counts the sweep's accepted replacements into it for
-    # ``shorten_loop_advance`` to read and clear. The answers are the count and arc tables.
-    ("geodesic_walk", "shorten_loop_counts"): frozenset({"state"}),
     # ``descent_paths``' first counting pass flags the paths that stopped short in ``short_paths``
     # (and counts them in its last slot); the completion pass reads the flags back as its mask.
     ("geodesic_walk", "descent_paths"): frozenset({"short_paths"}),
