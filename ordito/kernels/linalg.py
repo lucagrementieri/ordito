@@ -578,15 +578,18 @@ def refresh_pooled_operator_bound(
 @wp.kernel
 def scaled_rows_and_bound(
     offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
     values: wp.array[wp.float64],
     weight_sums: wp.array[wp.float64],
     out_scaled: wp.array[wp.float64],
+    out_scaled_t: wp.array[wp.float64],
     out_bound: wp.array[wp.float64],
 ) -> None:
-    # In one walk of each row of a CSR ``L``: the values of ``D^-1 L`` (each row scaled by
-    # ``array.inverse_or_one`` of ``D_i``, so a zero weight scales by 1) and the maximum over the
-    # rows of ``sum_j |L_ij| / D_i``, the Gershgorin radius plus centre of row ``i`` of ``D^-1 L``,
-    # which bounds that operator's spectrum from above.
+    # In one walk of each row of a symmetric CSR ``L``: the values of ``D^-1 L`` (each row scaled
+    # by ``array.inverse_or_one`` of ``D_i``, so a zero weight scales by 1), those of its transpose
+    # ``L D^-1`` over the same pattern (each entry scaled by its column's weight: ``L_ij = L_ji``),
+    # and the maximum over the rows of ``sum_j |L_ij| / D_i``, the Gershgorin radius plus centre of
+    # row ``i`` of ``D^-1 L``, which bounds that operator's spectrum from above.
     # ``linalg.SquaredLaplacianPreconditioner`` fits its polynomial to that bound. With ``D`` the
     # diagonal of ``L`` it is ``1 +`` the ``jacobi_dominance_bound`` ratio; with any other positive
     # ``D`` -- ``sqrt(M)`` for the k = 2 harmonic operator ``L M^-1 L`` -- it is the bound that
@@ -607,6 +610,7 @@ def scaled_rows_and_bound(
             value = values[e]
             total += wp.abs(value)
             out_scaled[e] = value * scale
+            out_scaled_t[e] = value * inverse_or_one(weight_sums[columns[e]])
         local = wp.max(local, total / weight)
     bound = block_max(local)
     if lane == 0:

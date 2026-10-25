@@ -442,7 +442,8 @@ def _heat_geodesic(
     # instead, and against exact polyhedral geodesics (``igl.exact_geodesic``) that average is the
     # less accurate of the two: equal on a hemisphere, and 1.15 % against 0.93 % mean error (4.9 %
     # against 3.1 % worst) of the distance range on a half torus.
-    u0 = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    # The indicator, the heat and the divergence's sums: scratch dropped together, one buffer.
+    u0, heat, scratch = _zeroed_fields(device, n_vertices, n_vertices, n_vertices)
     invalid = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_heat.seed_source_indicator,
@@ -453,9 +454,10 @@ def _heat_geodesic(
     )
     _require_indices_in_range(invalid, n_vertices, "heat_geodesic", "sources")
 
-    heat = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     solver.diffuse(u0, heat)
-    distance = _distance_from_heat(mesh, solver, sources, heat, _corner_order(mesh, solver))
+    distance = _distance_from_heat(
+        mesh, solver, sources, heat, _corner_order(mesh, solver), scratch
+    )
     _log_discarded("heat_geodesic", owned, solver)
     return distance
 
@@ -645,7 +647,11 @@ def _heat_signed_distance(
 
     # Stage 1: splat each segment's normal onto its endpoints, one thread per curve entry, each
     # finding its own curve in the offsets on the device.
-    source = _launch.zeros(n_vertices, dtype=wp.vec2d, device=device)
+    # The field, its diffusion and the divergence's sums: scratch dropped together, one buffer.
+    source_rows, diffused_rows, scratch = _zeroed_fields(
+        device, 2 * n_vertices, 2 * n_vertices, n_vertices
+    )
+    source = _pairs(source_rows, n_vertices)
     invalid = _launch.zeros(1, dtype=wp.int32, device=device)
     # The zero set's pinned vertices, marked by the splat's own threads.
     zero_set = level_set_constraint == "zero_set"
@@ -671,7 +677,7 @@ def _heat_signed_distance(
     # Stage 2: diffuse the tangent field; only its direction is kept. No absolute floor may decide
     # which vectors vanished -- this field carries the mesh's scale, and one zeroes most of it on a
     # mesh not near unit scale (confirmed: 111 of 162 vertices at a 1e-6 scale).
-    diffused = _launch.zeros(n_vertices, dtype=wp.vec2d, device=device)
+    diffused = _pairs(diffused_rows, n_vertices)
     solver.diffuse_tangent(source, diffused)
     # The divergence kernel normalizes each corner without underflow, zero only where the field is
     # exactly zero: it is converged per vertex (the settle rule at ``_HEAT_CHECK_ROUNDS``), so its
@@ -681,7 +687,9 @@ def _heat_signed_distance(
     # weights and face normals come from the same bundle, so the Poisson stage and the diffusion
     # cannot drift apart.
     order = _corner_order(mesh, solver)
-    divergence, corner_divergence = _corner_outputs(order, n_vertices, n_faces, wp.float64, device)
+    divergence, corner_divergence = _corner_outputs(
+        order, n_vertices, n_faces, wp.float64, device, sums=scratch
+    )
     _launch.launch(
         kernel_heat.vertex_field_divergence,
         dim=n_faces,
@@ -1102,10 +1110,15 @@ def _heat_operators(
     device = vertices.device
     n_faces = faces.size // 3
     write_cot = cot_entries is None
+    # The per-face tables in one ``float32`` allocation, the bundle holding all of them: the
+    # areas, the normals' coordinates and the half-cotangent table when this pass writes it.
+    face_terms = _launch.empty((7 if write_cot else 4) * n_faces, dtype=wp.float32, device=device)
+    areas = _face_table(face_terms, 0, n_faces, 1)
+    normals = _face_table(face_terms, n_faces, n_faces, 3).reshape((n_faces, 3)).view(wp.vec3)
     if cot_entries is None:
-        cot_entries = odt.empty_2d((n_faces, 3), wp.float32, device=device)
-    normals = _launch.empty(n_faces, dtype=wp.vec3, device=device)
-    areas = _launch.empty(n_faces, dtype=wp.float32, device=device)
+        cot_entries = odt.as_array2d(
+            _face_table(face_terms, 4 * n_faces, n_faces, 3).reshape((n_faces, 3)), wp.float32
+        )
     mass = _launch.zeros(vertices.size, dtype=wp.float64, device=device)
     if n_faces > 0:
         _launch.launch(
@@ -1200,6 +1213,15 @@ def _heat_operators(
     )
     _SCALAR_BUILDS[heat_system] = _ScalarBuild(mass, edge_sums, write_cot and not use_robust)
     return operators, mass
+
+
+def _face_table(
+    buffer: wp.array[wp.float32], start: int, n_faces: int, width: int
+) -> wp.array[wp.float32]:
+    """``width * n_faces`` entries of ``_heat_operators``' face buffer from entry ``start``."""
+    if n_faces == 0:
+        return _launch.empty(0, dtype=wp.float32, device=buffer.device)
+    return _launch.view(buffer, start, start + width * n_faces)
 
 
 @dataclass(frozen=True)
@@ -1405,9 +1427,8 @@ def _extend_scalar(
     # The indicator and the weighted values diffuse through the same operator, so they are one
     # batched two-column solve rather than two independent ones, which shares the launches and
     # converges on the worse-behaved of the two columns.
-    rhs = odt.as_array2d(
-        _launch.zeros((2, n_vertices), dtype=wp.float64, device=device), wp.float64
-    )
+    rhs_rows, diffused_rows = _zeroed_fields(device, 2 * n_vertices, 2 * n_vertices)
+    rhs = odt.as_array2d(rhs_rows.reshape((2, n_vertices)), wp.float64)
     # ``(min, -max, -overshoot)`` of the extension against the source values; see the kernels.
     value_range = _launch.full(3, math.inf, dtype=wp.float64, device=device)
     invalid = _launch.zeros(1, dtype=wp.int32, device=device)
@@ -1415,13 +1436,16 @@ def _extend_scalar(
         kernel_heat.seed_source_scalars,
         dim=n_sources,
         inputs=[sources, values],
-        outputs=[rhs[0], rhs[1], value_range, invalid],
+        outputs=[
+            _launch.view(rhs_rows, 0, n_vertices),
+            _launch.view(rhs_rows, n_vertices, 2 * n_vertices),
+            value_range,
+            invalid,
+        ],
         device=device,
     )
     _require_indices_in_range(invalid, n_vertices, "extend_scalar", "sources")
-    diffused = odt.as_array2d(
-        _launch.zeros((2, n_vertices), dtype=wp.float64, device=device), wp.float64
-    )
+    diffused = odt.as_array2d(diffused_rows.reshape((2, n_vertices)), wp.float64)
     solver.diffuse(rhs, diffused)
     # Converged per vertex, so only an exactly zero indicator -- a component no source reaches --
     # has no value to extend.
@@ -1429,7 +1453,10 @@ def _extend_scalar(
     _launch.launch(
         kernel_heat.extend_from_ratio,
         dim=n_vertices,
-        inputs=[odt.as_dense(diffused[0]), odt.as_dense(diffused[1])],
+        inputs=[
+            _launch.view(diffused_rows, 0, n_vertices),
+            _launch.view(diffused_rows, n_vertices, 2 * n_vertices),
+        ],
         outputs=[extended, value_range],
         device=device,
     )
@@ -1629,20 +1656,26 @@ def _transport_tangent_vectors(
     # loop in the launches of one, where two back to back paid for two. Its Jacobi diagonal and
     # narrowed values are per row, so they are the two systems' own, and its settle test reads the
     # union, which is the later of the two stops.
-    rhs_field, rhs = _stacked_fields(n_vertices, 2, device)
+    rows = 4 * n_vertices
+    rhs, diffused = _zeroed_fields(device, rows, rows)
     invalid = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_heat.seed_transport_sources,
         dim=n_sources,
         inputs=[sources, vectors],
-        outputs=[rhs_field, rhs[2 * n_vertices : 3 * n_vertices], rhs[3 * n_vertices :], invalid],
+        outputs=[
+            _pairs(rhs, n_vertices),
+            _launch.view(rhs, 2 * n_vertices, 3 * n_vertices),
+            _launch.view(rhs, 3 * n_vertices, rows),
+            invalid,
+        ],
         device=device,
     )
     _require_indices_in_range(invalid, n_vertices, "transport_tangent_vectors", "sources")
-    direction, diffused = _stacked_fields(n_vertices, 2, device)
+    direction = _pairs(diffused, n_vertices)
     solver.diffuse_stacked(rhs, diffused, 2)
-    diffused_indicator = diffused[2 * n_vertices : 3 * n_vertices]
-    diffused_magnitudes = diffused[3 * n_vertices :]
+    diffused_indicator = _launch.view(diffused, 2 * n_vertices, 3 * n_vertices)
+    diffused_magnitudes = _launch.view(diffused, 3 * n_vertices, rows)
 
     # One map for the whole tail: the magnitude's extension, the rescale, the narrowing to the
     # field's storage precision and the resolution test all read one vertex's own data, so running
@@ -1783,22 +1816,24 @@ def _log_map(mesh: Trimesh, owned: bool, source: int, t: float | None) -> wp.arr
     # ``direction`` -- and ``heat_geodesic``'s heat, diffused together as one solve over
     # ``[vector system; heat system]`` for the reason ``transport_tangent_vectors`` gives.
     sources = _launch.empty(1, dtype=wp.int32, device=device)
-    rhs_field, rhs = _stacked_fields(n_vertices, 1, device)
+    rows = 3 * n_vertices
+    # The stack's right-hand side and solution, and the divergence's sums: one buffer.
+    rhs, diffused, scratch = _zeroed_fields(device, rows, rows, n_vertices)
     _launch.launch(
         kernel_heat.seed_log_map_source,
         dim=1,
         inputs=[source],
-        outputs=[sources, rhs_field, rhs[2 * n_vertices :]],
+        outputs=[sources, _pairs(rhs, n_vertices), _launch.view(rhs, 2 * n_vertices, rows)],
         device=device,
     )
-    transported_raw, diffused = _stacked_fields(n_vertices, 1, device)
+    transported_raw = _pairs(diffused, n_vertices)
     solver.diffuse_stacked(rhs, diffused, 1)
 
     # Radial direction: the unit gradient of the distance field, averaged onto vertices and
     # expressed in each vertex's frame.
     order = _corner_order(mesh, solver)
     distance = _distance_from_heat(
-        mesh, solver, sources, odt.as_dense(diffused[2 * n_vertices :]), order
+        mesh, solver, sources, _launch.view(diffused, 2 * n_vertices, rows), order, scratch
     )
     normals, areas = scalar[6], scalar[7]
     n_faces = faces.size // 3
@@ -1830,12 +1865,14 @@ def _distance_from_heat(
     sources: wp.array[wp.int32],
     heat: wp.array[wp.float64],
     order: _CornerOrder,
+    scratch: wp.array[wp.float64],
 ) -> wp.array[wp.float64]:
     """
     ``heat_geodesic`` from the diffused heat on: the divergence, the Poisson solve and the shift.
 
     Split out so ``log_map`` can diffuse the heat inside a stacked solve of its own. ``order`` is
-    `_corner_order`'s choice of how per-face terms reach the vertices.
+    `_corner_order`'s choice of how per-face terms reach the vertices; ``scratch`` is a zeroed
+    ``(n_vertices,)`` buffer the divergence is summed into.
     """
     vertices, faces = mesh.vertices, mesh.faces
     device = vertices.device
@@ -1850,7 +1887,7 @@ def _distance_from_heat(
     # The kernel integrates ``-X`` and so accumulates ``-b`` directly: the divergence is linear in
     # the field and negation is exact, so this is the negated sum without a pass to negate it.
     neg_divergence, corner_divergence = _corner_outputs(
-        order, n_vertices, n_faces, wp.float64, device
+        order, n_vertices, n_faces, wp.float64, device, sums=scratch
     )
     _launch.launch(
         kernel_heat.unit_gradient_divergence,
@@ -1910,18 +1947,28 @@ def _corner_order(mesh: Trimesh, solver: HeatSolver) -> _CornerOrder:
 
 
 def _corner_outputs(
-    order: _CornerOrder, n_vertices: int, n_faces: int, dtype: type[_T], device: wp.DeviceLike
+    order: _CornerOrder,
+    n_vertices: int,
+    n_faces: int,
+    dtype: type[_T],
+    device: wp.DeviceLike,
+    *,
+    sums: wp.array[_T] | None = None,
 ) -> tuple[wp.array[_T], odt.ArrayNd | None]:
     """
     Allocate the per-vertex sums a face kernel fills and its corner table, as `_corner_order` chose.
 
     Atomic: a zeroed ``(n_vertices,)`` sum and no table (``None`` launches as an empty array).
     Ordered: an ``(n_faces, 3)`` table for the face kernel to store into and the sum for
-    `_sum_corner_outputs` to write.
+    `_sum_corner_outputs` to write. ``sums``, when given, is a zeroed ``(n_vertices,)`` buffer the
+    caller holds, used as the sum either way.
     """
     if order is None:
-        return _launch.zeros(n_vertices, dtype=dtype, device=device), None
-    sums = _launch.empty(n_vertices, dtype=dtype, device=device)
+        if sums is None:
+            sums = _launch.zeros(n_vertices, dtype=dtype, device=device)
+        return sums, None
+    if sums is None:
+        sums = _launch.empty(n_vertices, dtype=dtype, device=device)
     return sums, odt.empty_2d((n_faces, 3), dtype, device=device)
 
 
@@ -1942,20 +1989,28 @@ def _sum_corner_outputs(
     )
 
 
-def _stacked_fields(
-    n_vertices: int, n_scalars: int, device: wp.DeviceLike
-) -> tuple[wp.array[wp.vec2d], wp.array[wp.float64]]:
+def _zeroed_fields(device: wp.DeviceLike, *sizes: int) -> list[wp.array[wp.float64]]:
     """
-    Allocate a zeroed vector laid out as ``block_diag``'s stack of a vector and scalar systems.
+    One zeroed allocation cut into consecutive ``float64`` fields of ``sizes`` entries, each > 0.
 
-    The ``(n_vertices,)`` ``wp.vec2d`` field comes first, as its interleaved ``float64`` rows, then
-    ``n_scalars`` scalar fields one after another. Returns the field and the whole stack as one
-    flat ``float64`` vector over the same memory.
+    Each field starts on an even entry, so its leading pairs read as ``wp.vec2d`` (`_pairs`): a
+    field of ``(2 + n_scalars) * n_vertices`` entries is laid out as ``block_diag``'s stack of a
+    vector system and ``n_scalars`` scalar systems, the tangent field's interleaved rows first.
+    Every field holds the whole allocation, so only scratch a call drops together shares one.
     """
-    rows = (2 + n_scalars) * n_vertices
-    storage = _launch.zeros((rows + 1) // 2, dtype=wp.vec2d, device=device)
-    flat = storage.view(wp.float64).flatten()
-    return odt.as_dense(storage[:n_vertices]), odt.as_dense(flat[:rows])
+    total = sum(size + size % 2 for size in sizes)
+    flat = _launch.zeros(total // 2, dtype=wp.vec2d, device=device).view(wp.float64).flatten()
+    fields: list[wp.array[wp.float64]] = []
+    start = 0
+    for size in sizes:
+        fields.append(_launch.view(flat, start, start + size))
+        start += size + size % 2
+    return fields
+
+
+def _pairs(field: wp.array[wp.float64], n: int) -> wp.array[wp.vec2d]:
+    """Return the leading ``2 * n`` entries of a `_zeroed_fields` field as ``n`` ``wp.vec2d``."""
+    return _launch.view(field, 0, 2 * n).reshape((n, 2)).view(wp.vec2d)
 
 
 def tangent_to_world(
@@ -2708,7 +2763,7 @@ def _held_factorizations(holder: twl.OperatorFactorization) -> list[SparseCholes
 
 def _stacked_positions(vertices: wp.array[wp.vec3], n_scalars: int) -> wp.array[wp.vec3]:
     """
-    Return the vertex of every row of ``_stacked_fields``' stack.
+    Return the vertex of every row of a stacked field (`_zeroed_fields`).
 
     A vector system's two rows, then each scalar system's one: the ordering of the stack's
     factorization when it is factored whole.

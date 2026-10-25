@@ -846,15 +846,22 @@ def arap(
     # Pre-loop buffers (no allocation inside the loop). ``sol`` (2, n_interior) holds the
     # warm-started CG solution per column; the same launch seeds it from ``uv_init``'s interior
     # values. The loop reads the working UV field off ``sol`` and the constraints, so it is
-    # scattered into ``out_uv`` once, after the last step. Every row of ``sol`` is seeded, so it is
-    # allocated uninitialised.
-    sol = _launch.empty((2, n_interior), dtype=wp.float64, device=device)
+    # scattered into ``out_uv`` once, after the last step. Every row of ``sol`` is seeded. It
+    # shares one allocation with the global step's right-hand side ``b`` and, outside the
+    # deterministic setting, the zeroed rotation right-hand side (the first local step's).
+    deterministic = is_deterministic()
+    n_solve = 2 * n_interior
+    n_rotation = 0 if deterministic else 2 * n_vertices
+    solve_buffers = (_launch.empty if deterministic else _launch.zeros)(
+        2 * n_solve + n_rotation, dtype=wp.float64, device=device
+    )
+    sol = _launch.view(solve_buffers, 0, n_solve).reshape((2, n_interior))
     # Under the deterministic setting each local step stores its six edge terms a face instead of
     # adding them in arrival order, and each vertex's are added over one stable sort of the edge
     # endpoints, in ascending face and edge order. The setup launch writes the endpoints straight
     # into the sort's buffers; the sort is built once, since the faces do not change.
     edge_endpoints = edge_slots = None
-    if is_deterministic():
+    if deterministic:
         edge_endpoints = _launch.empty(12 * n_faces, dtype=wp.int32, device=device)
         edge_slots = _launch.empty(12 * n_faces, dtype=wp.int32, device=device)
     _launch.launch(
@@ -874,10 +881,12 @@ def arap(
         rhs_rot_sorted = _launch.empty(n_vertices, dtype=wp.vec2d, device=device)
     else:
         # Zero for the first local step; ``arap_interior_rhs`` clears them for every later one.
-        # The two rows of one ``(2, n_vertices)`` buffer.
-        rhs_rot = _launch.zeros((2, n_vertices), dtype=wp.float64, device=device)
-        rhs_rot_x, rhs_rot_y = rhs_rot[0], rhs_rot[1]
-    b = _launch.empty((2, n_interior), dtype=wp.float64, device=device)
+        rotation_start = 2 * n_solve
+        rhs_rot_x = _launch.view(solve_buffers, rotation_start, rotation_start + n_vertices)
+        rhs_rot_y = _launch.view(
+            solve_buffers, rotation_start + n_vertices, rotation_start + 2 * n_vertices
+        )
+    b = _launch.view(solve_buffers, n_solve, 2 * n_solve).reshape((2, n_interior))
 
     # One batched CG state for both UV columns, built once outside the loop: its temporaries and
     # batch layout are reused across iterations, and it reads ``b`` / writes ``sol`` in place, so
@@ -1498,9 +1507,7 @@ def _solve_fixed_vertices_once(
     )
     if n_free == 0 or n_rhs == 0:
         return solution, free_map
-    held = twl.OperatorFactorization(
-        q_uu, twl.free_coordinates(vertices, fixed_mask, free_map, n_free)
-    )
+    held = twl.OperatorFactorization(q_uu, vertices, fixed_mask=fixed_mask, free_map=free_map)
     if solver == "direct" or at_once:
         held.factor()
         if at_once and held.factorization is None:
