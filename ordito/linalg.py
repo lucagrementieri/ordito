@@ -1253,29 +1253,6 @@ def partitioned_interior_system(
     return q_uu, odt.as_array2d(rhs, wp.float64), free_map, n_free
 
 
-def _consecutive(
-    dtype: type[odt.DType], sizes: Sequence[int], device: wp.DeviceLike
-) -> list[wp.array[odt.DType]]:
-    """
-    One uninitialized allocation of ``dtype`` cut into consecutive views of ``sizes``.
-
-    A caller holding any view holds the whole allocation, so only arrays used together share one.
-    """
-    total = sum(sizes)
-    buffer = _launch.empty(total, dtype=dtype, device=device)
-    views: list[wp.array[odt.DType]] = []
-    start = 0
-    for size in sizes:
-        # Warp refuses a zero-length view at the buffer's end; an empty array holds nothing.
-        views.append(
-            _launch.view(buffer, start, start + size)
-            if size > 0
-            else _launch.empty(0, dtype=dtype, device=device)
-        )
-        start += size
-    return views
-
-
 def _rhs_rows(fixed_values: odt.ArrayNd, load: odt.ArrayNd | None) -> int:
     """Return an extraction's right-hand-side row count; raise if ``load`` disagrees with it."""
     n_rhs = int(fixed_values.shape[0])
@@ -3244,16 +3221,30 @@ class _BatchedCg:
         # ``r``, ``u = M^-1 r``, ``w = A u``, the search direction ``p`` and ``s = A p``, in one
         # allocation: a view is a third of a ``wp.zeros``.
         dofs = self._dofs
-        vectors = _launch.zeros(5 * dofs, dtype=dtype, device=device)
+        # The ``float64`` partials and scalar head below share one zeroed allocation, the vectors'
+        # own when they are ``float64`` too; the partials' slots are rounded up to an even count.
+        n_partials = 3 * self._n_columns * self._blocks
+        partial_slots = n_partials + n_partials % 2
+        n_head = _INT_WORDS + 10 * self._n_columns
+        if dtype == wp.float64:
+            vectors = _launch.zeros(
+                5 * dofs + partial_slots + n_head, dtype=wp.float64, device=device
+            )
+            scalar_start = 5 * dofs
+            scalar_storage = vectors
+        else:
+            vectors = _launch.zeros(5 * dofs, dtype=dtype, device=device)
+            scalar_start = 0
+            scalar_storage = _launch.zeros(partial_slots + n_head, dtype=wp.float64, device=device)
         self._r, self._u, self._w, self._p, self._s = (
-            odt.as_dense(vectors[k * dofs : (k + 1) * dofs]) for k in range(5)
+            odt.as_dense(_launch.view(vectors, k * dofs, (k + 1) * dofs)) for k in range(5)
         )
         # First-stage partials of the three dots ``cg_matvec_dots`` reduces: ``r.u``, ``w.u``,
-        # ``r.r`` (and of ``||b||^2`` in row 0 at the start of a solve). ``wp.empty``: every entry a
-        # fold reads, ``[0, blocks)`` of each row, is written by the partials launch before it.
-        self._partials = _launch.empty(
-            (3, self._n_columns, self._blocks), dtype=wp.float64, device=device
-        )
+        # ``r.r`` (and of ``||b||^2`` in row 0 at the start of a solve). Every entry a fold reads,
+        # ``[0, blocks)`` of each row, is written by the partials launch before it.
+        self._partials = _launch.view(
+            scalar_storage, scalar_start, scalar_start + n_partials
+        ).reshape((3, self._n_columns, self._blocks))
         # Every per-column ``float64`` scalar in one ``(10, n_columns)`` allocation, rows viewed
         # once (re-taking a slice costs a few microseconds of ``wp.array.__getitem__`` each time):
         #
@@ -3268,7 +3259,8 @@ class _BatchedCg:
         # The loop's integer state leads the same allocation, two ``float64`` words holding the
         # ``int32`` words (``_INT_WORDS``), so the loop condition, the count and rows 0-1 are one
         # contiguous span a host result reads in one readback (``host_result``).
-        head = _launch.zeros(_INT_WORDS + 10 * self._n_columns, dtype=wp.float64, device=device)
+        head_start = scalar_start + partial_slots
+        head = _launch.view(scalar_storage, head_start, head_start + n_head)
         self._head = odt.as_dense(head[: _INT_WORDS + 2 * self._n_columns])
         # The head's host mirror on a CUDA state, allocated by the first host read and rewritten
         # by every later one (``_read_head``).
@@ -4498,21 +4490,22 @@ class SquaredLaplacianPreconditioner:
         """Build ``M_ff`` and its transpose from ``L`` and ``D``, and fix the interval."""
         self._n = int(laplacian.nrow)
         self._device = laplacian.values.device
-        # ``M_ff``'s values and the Gershgorin bound below come from one walk of ``L``'s rows, and
-        # ``M_ff`` takes ``L``'s pattern rather than a copy of it.
-        factor_values = _launch.empty_like(laplacian.values)
+        # ``M_ff``'s and its transpose's values and the Gershgorin bound below come from one walk
+        # of ``L``'s rows, and both take ``L``'s pattern rather than a copy of it: ``L`` is
+        # symmetric, so ``M_ffᵀ = L D⁻¹`` is ``L``'s entries scaled by their columns' weights.
+        scaled, scaled_t = _consecutive(wp.float64, (laplacian.values.size,) * 2, self._device)
         bound = _launch.full(1, -math.inf, dtype=wp.float64, device=self._device)
         if self._n > 0:
             _launch.launch_tiled(
                 kernel_linalg.scaled_rows_and_bound,
                 dim=[kernel_reduce.blocks_1d(self._n)],
-                inputs=[laplacian.offsets, laplacian.values, weight_sums],
-                outputs=[factor_values, bound],
+                inputs=[laplacian.offsets, laplacian.columns, laplacian.values, weight_sums],
+                outputs=[scaled, scaled_t, bound],
                 block_dim=TILE_1D,
                 device=self._device,
             )
-        self._factor = od.array.bsr_with_values(laplacian, factor_values)
-        self._factor_t = od.array.csr_transpose(self._factor)
+        self._factor = od.array.bsr_with_values(laplacian, scaled)
+        self._factor_t = od.array.bsr_with_values(laplacian, scaled_t)
         # The upper end is ``M_ff``'s Gershgorin bound, ``max_i sum_j |L_ij| / D_i``, never below
         # 2. With ``D`` the diagonal of ``L`` it is exactly 2 when every weight is non-negative and
         # exceeds it when a clamped cotangent weight is negative, as on a regular grid's near-right
@@ -5876,3 +5869,26 @@ def _bsr_over(
     matrix.row_counts = row_counts
     matrix.notify_nnz_changed(nnz=nnz)
     return matrix
+
+
+def _consecutive(
+    dtype: type[odt.DType], sizes: Sequence[int], device: wp.DeviceLike
+) -> list[wp.array[odt.DType]]:
+    """
+    One uninitialized allocation of ``dtype`` cut into consecutive views of ``sizes``.
+
+    A caller holding any view holds the whole allocation, so only arrays used together share one.
+    """
+    total = sum(sizes)
+    buffer = _launch.empty(total, dtype=dtype, device=device)
+    views: list[wp.array[odt.DType]] = []
+    start = 0
+    for size in sizes:
+        # Warp refuses a zero-length view at the buffer's end; an empty array holds nothing.
+        views.append(
+            _launch.view(buffer, start, start + size)
+            if size > 0
+            else _launch.empty(0, dtype=dtype, device=device)
+        )
+        start += size
+    return views
