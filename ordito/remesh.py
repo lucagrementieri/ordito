@@ -105,6 +105,8 @@ class _EdgeIncidence(NamedTuple):
     """
     spare: wp.array[wp.int32] | None = None
     """The unfilled ``int32`` entries the topology build was asked to carve for its caller."""
+    spare_zeroed: wp.array[wp.int32] | None = None
+    """The zeroed ``int32`` entries the topology build was asked to carve for its caller."""
 
 
 # Backstop on the independent-set rounds per geometry rebuild in ``quadric_decimate``.
@@ -575,6 +577,7 @@ def _edge_incidence(
     keys: tuple[wp.array[wp.uint64], wp.array[wp.int32], int] | None = None,
     presorted: bool = False,
     spare: tuple[int, int] = (0, 0),
+    spare_zeroed: int = 0,
 ) -> _EdgeIncidence:
     """
     Group a triangulation's edge rows once, into unique edges and their incident faces.
@@ -598,7 +601,8 @@ def _edge_incidence(
     (``_FlipTopology.sorted_corner_keys``).
 
     ``spare``, ``(per_edge, fixed)``, carves ``per_edge * m + fixed`` more unfilled ``int32``
-    entries into the topology's allocation for the caller (``_EdgeIncidence.spare``).
+    entries into the topology's allocation for the caller (``_EdgeIncidence.spare``), and
+    ``spare_zeroed`` that many zeroed ones (``_EdgeIncidence.spare_zeroed``).
     """
     device = faces.device
     n_faces = faces.size // 3
@@ -630,10 +634,16 @@ def _edge_incidence(
         sort_buffers = (key_buffer, order)
     # One zeroed buffer: the two CSRs' counts, the edge face counts and the feature counts.
     n_features = 0 if feature is None else n_vertices
-    zeroed = _launch.zeros(2 * n_vertices + m + n_features, dtype=wp.int32, device=device)
-    counts = odt.as_dense(zeroed[: 2 * n_vertices])
-    face_count = odt.as_dense(zeroed[2 * n_vertices : 2 * n_vertices + m])
-    feature_count = odt.as_dense(zeroed[2 * n_vertices + m :]) if feature is not None else None
+    counts, face_count, feature_view, zeroed_view = _split_buffer(
+        _launch.zeros(
+            2 * n_vertices + m + n_features + spare_zeroed, dtype=wp.int32, device=device
+        ),
+        2 * n_vertices,
+        m,
+        n_features,
+        spare_zeroed,
+    )
+    feature_count = feature_view if feature is not None else None
     # And one unfilled one: the edge face table, the two CSRs' offsets and their columns, then the
     # unique edges and corner map of a grouping built here, then the caller's spare entries.
     n_columns = (2 * m if ring else 0) + n
@@ -696,6 +706,7 @@ def _edge_incidence(
         feature_count,
         sort_buffers,
         spare_view if n_spare > 0 else None,
+        zeroed_view if spare_zeroed > 0 else None,
     )
 
 
@@ -774,8 +785,9 @@ def _collapse_pass(
         # ring locks exit or take a minimum over a whole row, the veto exits on a fold -- so neither
         # CSR needs an order.
         #
-        # The topology's allocation also carves the pass's own ``int32`` tables (``spare``): each
-        # edge's survivor and removed endpoint, the vertex remap and the compacted faces.
+        # The topology's allocations also carve the pass's own ``int32`` tables: each edge's
+        # survivor and removed endpoint, the vertex remap and the compacted faces (``spare``), and
+        # the compaction's zeroed marks (``spare_zeroed``).
         incidence = _edge_incidence(
             faces,
             n_vertices,
@@ -785,6 +797,7 @@ def _collapse_pass(
             ring=True,
             keys=pending_keys,
             spare=(2, n_vertices + 3 * n_faces),
+            spare_zeroed=1 + n_faces + n_vertices,
         )
         grouping = None
         pending_keys = None
@@ -890,6 +903,7 @@ def _collapse_pass(
             compacted,
             kept_positions,
             next_keys,
+            incidence.spare_zeroed,
         )
         total, n_kept, n_surviving = (int(value) for value in read_values(state, 0, 3))
         if total == committed:
@@ -932,8 +946,10 @@ def _valence_flip_pass(
 
     # Valence is the loop's own: seeded by its one build, from the keys that build radix-sorts,
     # and kept current by every committed flip (a flip moves one edge from ``a``, ``c`` to ``b``,
-    # ``d``), rather than recounted from a re-sort each round.
-    valence = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+    # ``d``), rather than recounted from a re-sort each round. The topology carves it.
+    topology = _FlipTopology(faces, n_vertices, valence_slots=True)
+    valence = topology.valence_store
+    assert valence is not None
 
     def launch(
         adjacency: odt.Array2dInt32,
@@ -968,7 +984,6 @@ def _valence_flip_pass(
             device=device,
         )
 
-    topology = _FlipTopology(faces, n_vertices)
     topology.boundary_vertex = boundary_vertex
     flips = _flip_interior_edges(
         faces, n_vertices, launch, max_iter, topology=topology, valence=valence
@@ -1047,7 +1062,9 @@ def _smooth_pass(
             ring_neighbors, ring_offsets = od.graph.edges_to_neighbor_lists(
                 n_vertices, unique_edges, validate=False, sort_rows=True
             )
-        ring_sum = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+        ring_sum, out_positions = _split_buffer(
+            _launch.empty(2 * n_vertices, dtype=wp.vec3, device=device), n_vertices, n_vertices
+        )
         ring_weight = _launch.empty(n_vertices, dtype=wp.float32, device=device)
         _launch.launch(
             kernel_remesh.gather_one_ring,
@@ -1056,7 +1073,11 @@ def _smooth_pass(
             device=device,
         )
     else:
-        ring_sum = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
+        # The zeroed ring sums and the output positions in one allocation (the output's zeros are
+        # overwritten whole).
+        ring_sum, out_positions = _split_buffer(
+            _launch.zeros(2 * n_vertices, dtype=wp.vec3, device=device), n_vertices, n_vertices
+        )
         ring_weight = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
         _launch.launch(
             kernel_remesh.accumulate_one_ring,
@@ -1064,7 +1085,6 @@ def _smooth_pass(
             inputs=[unique_edges, vertices, area_sums, ring_sum, ring_weight],
             device=device,
         )
-    out_positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel_remesh.smooth_free_vertices,
         dim=n_vertices,
@@ -1376,13 +1396,22 @@ class _FlipTopology:
     valence : wp.array[wp.int32] | None
         Per-vertex unique-edge count a build seeds and ``commit_flips`` keeps current, when the
         loop's caller asked for one.
+    valence_store : wp.array[wp.int32] | None
+        ``(n_vertices,)`` unfilled buffer carved for the caller's ``valence`` (``valence_slots``).
     boundary_vertex : wp.array[wp.bool] | None
         Zeroed per-vertex mask in which a build marks every endpoint of a boundary edge, when the
         loop's caller asked for one. No flip changes a boundary edge.
     """
 
-    def __init__(self, faces: wp.array[wp.int32], n_vertices: int) -> None:
-        """Allocate the fixed working set for the ``faces`` buffer the loop will mutate in place."""
+    def __init__(
+        self, faces: wp.array[wp.int32], n_vertices: int, *, valence_slots: bool = False
+    ) -> None:
+        """
+        Allocate the fixed working set for the ``faces`` buffer the loop will mutate in place.
+
+        ``valence_slots`` also carves a per-vertex ``int32`` buffer for the caller's valence
+        (``valence_store``).
+        """
         self._faces = faces
         self._device = faces.device
         self._n_faces = faces.size // 3
@@ -1404,9 +1433,18 @@ class _FlipTopology:
         )
         # The order, the pair starts and their ranks, then the halfedge -> row map an incremental
         # build adopts (carved here so adopting it allocates nothing).
-        self._order, self._starts, self._ranks, self._halfedge_row_store = _split_buffer(
-            _launch.empty(5 * n, dtype=wp.int32, device=self._device), 2 * n, n, n, n
+        n_valence = n_vertices if valence_slots else 0
+        self._order, self._starts, self._ranks, self._halfedge_row_store, valence_store = (
+            _split_buffer(
+                _launch.empty(5 * n + n_valence, dtype=wp.int32, device=self._device),
+                2 * n,
+                n,
+                n,
+                n,
+                n_valence,
+            )
         )
+        self.valence_store = valence_store if valence_slots else None
         self._ranks_tail = odt.as_dense(self._ranks[n - 1 :])
         self.sorted_keys = odt.as_dense(self._keys[:n])
         # Whether both claim tables hold the unclaimed key: a refresh arms them for the next round,
@@ -2016,6 +2054,7 @@ def _compact_remapped_faces(
     out_faces: wp.array[wp.int32],
     out_positions: wp.array[wp.vec3],
     keys: tuple[wp.array[wp.uint64], wp.array[wp.int32], int] | None = None,
+    scan: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.float32] | None, wp.array[wp.float32] | None]:
     """
     Faces pushed through a vertex remap, with the collapsed ones dropped and the targets compacted.
@@ -2030,6 +2069,7 @@ def _compact_remapped_faces(
     position and band outputs hold the kept targets'. ``keys``, ``(keys, order, base)``, are sort
     buffers of at least ``6 * n_faces`` entries that also receive the surviving faces' corner
     keys packed against ``base`` and the identity payload, for ``_edge_incidence(keys=)``.
+    ``scan``, when given, is the zeroed ``1 + n_faces + n_targets`` marks buffer to scan in.
 
     One marking launch, one scan over the face flags and the target marks together, and one
     compaction that moves faces and targets and publishes both counts. Every output is sized for
@@ -2040,7 +2080,8 @@ def _compact_remapped_faces(
     n_targets = positions.size
     # Behind a leading zero: the face flags, then the target marks, so one inclusive scan of the
     # tail makes each half an exclusive scan ending in its running total.
-    scan = _launch.zeros(1 + n_faces + n_targets, dtype=wp.int32, device=device)
+    if scan is None:
+        scan = _launch.zeros(1 + n_faces + n_targets, dtype=wp.int32, device=device)
     marks = scan[1:]
     _launch.launch(
         kernel_remesh.mark_surviving_faces, dim=n_faces, inputs=[faces, remap, marks], device=device
