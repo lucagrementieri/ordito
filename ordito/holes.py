@@ -3425,7 +3425,7 @@ def bridge_edges(
     _require_distinct_edges(edge_a, edge_b)
     if validate:
         joined = _bridge_joined_pairs(edge_a, edge_b)
-        census = _bridge_census(faces, [edge_a, edge_b, *joined])
+        census, _ = _bridge_census(faces, [edge_a, edge_b, *joined])
         _require_rim_edges(edge_a, edge_b, census)
         _require_new_chords(edge_a, edge_b, joined, census[2:])
     return _append_bridge_patch(faces, edge_a, edge_b)
@@ -3583,22 +3583,19 @@ def bridge_edges_smooth(
     a0, a1 = int(edge_a[0]), int(edge_a[1])
     b0, b1 = int(edge_b[0]), int(edge_b[1])
     _require_distinct_edges((a0, a1), (b0, b1))
-    # One scan of the faces answers the whole validation and finds each edge's opposite corner: a
-    # strip with interior samples joins nothing but its own new vertices, so only the one-segment
-    # case -- the flat patch -- reads the chord half, which is asked for up front so that case needs
-    # no second scan. Then one gather of the six positions the spline needs. Both are here so the
-    # host never reads back a buffer that scales with the mesh.
+    # One scan of the faces answers the whole validation, finds each edge's opposite corner and
+    # gathers the six positions the spline needs, all in one readback: a strip with interior
+    # samples joins nothing but its own new vertices, so only the one-segment case -- the flat
+    # patch -- reads the chord half, which is asked for up front so that case needs no second
+    # scan. The host never reads back a buffer that scales with the mesh.
     joined = _bridge_joined_pairs((a0, a1), (b0, b1)) if validate else []
-    census = _bridge_census(faces, [(a0, a1), (b0, b1), *joined])
+    census, positions_np = _bridge_census(faces, [(a0, a1), (b0, b1), *joined], vertices)
     if validate:
         _require_rim_edges((a0, a1), (b0, b1), census)
     opposite_a, opposite_b = int(census[0, 2]) - 1, int(census[1, 2]) - 1
     if opposite_a < 0 or opposite_b < 0:
         raise ValueError("both edges must be directed edges of faces, wound as their face winds")
     corners = np.array([a0, a1, b0, b1, opposite_a, opposite_b], dtype=np.int32)
-    gathered = _launch.empty(6, dtype=wp.vec3, device=device)
-    _launch.copy(gathered, vertices[_launch.array(corners, dtype=wp.int32, device=device)])
-    positions_np = gathered.numpy().astype(np.float64)
 
     n_vertices = vertices.size
     interior_np, strip_np = _bridge_strip(positions_np, corners, n_vertices, sampling_step)
@@ -4037,25 +4034,37 @@ def _require_distinct_edges(edge_a: tuple[int, int], edge_b: tuple[int, int]) ->
         raise ValueError("edge_a and edge_b must be different edges")
 
 
-def _bridge_census(faces: wp.array[wp.int32], pairs: Sequence[tuple[int, int]]) -> np.ndarray:
+def _bridge_census(
+    faces: wp.array[wp.int32],
+    pairs: Sequence[tuple[int, int]],
+    vertices: wp.array[wp.vec3] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """
     ``kernels/holes.bridge_edge_census`` over a handful of vertex pairs, read back as ``(q, 3)``.
 
     One launch over the faces and one readback of the ``3 q`` counts, where the rim table and the
-    mesh's edge table this answers for are each a pass that scales with the mesh.
+    mesh's edge table this answers for are each a pass that scales with the mesh. With
+    ``vertices`` the same readback carries the ``(6, 3)`` ``float64`` positions of the
+    first two pairs' endpoints and of their faces' third corners (``bridge_edges_smooth``'s
+    spline); otherwise the second array is empty.
     """
     device = faces.device
-    census = _launch.zeros((len(pairs), 3), dtype=wp.int32, device=device)
+    n_pairs = len(pairs)
+    n_rows = n_pairs + (0 if vertices is None else 6)
+    census = _launch.zeros((n_rows, 3), dtype=wp.int32, device=device)
     n_faces = faces.size // 3
     if n_faces > 0:
         queries = _launch.array(np.asarray(pairs, dtype=np.int32), dtype=wp.int32, device=device)
         _launch.launch(
             kernel_holes.bridge_edge_census,
-            dim=(n_faces, len(pairs)),
-            inputs=[faces, queries, census],
+            dim=(n_faces, n_pairs),
+            inputs=[faces, queries, vertices, census],
             device=device,
         )
-    return census.numpy()
+    # The counts decide the validation; the position rows are ``float32`` bits.
+    census_np = census.numpy()
+    positions_np = census_np[n_pairs:].view(np.float32).astype(np.float64)
+    return census_np[:n_pairs], positions_np
 
 
 def _require_rim_edges(

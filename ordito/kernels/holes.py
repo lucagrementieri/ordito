@@ -1806,9 +1806,21 @@ def extend_rim_to_ring(
     out_faces[row + wp.int32(1), 2] = projected_b
 
 
+@wp.func
+def store_position_bits(out_rows: wp.array2d[wp.int32], row: wp.int32, p: wp.vec3) -> None:
+    # A position stored as the bits of its three ``float32`` coordinates in an ``int32`` row, so it
+    # rides back in the same readback as the integer counts beside it; the host views the rows as
+    # ``float32``.
+    for k in range(3):
+        out_rows[row, k] = wp.cast(p[k], wp.int32)
+
+
 @wp.kernel
 def bridge_edge_census(
-    faces: wp.array[wp.int32], queries: wp.array2d[wp.int32], out_census: wp.array2d[wp.int32]
+    faces: wp.array[wp.int32],
+    queries: wp.array2d[wp.int32],
+    vertices: wp.array[wp.vec3],
+    out_census: wp.array2d[wp.int32],
 ) -> None:
     # Everything a bridge asks of the mesh about a handful of vertex pairs ``(u, v)``, from one
     # scan of the faces' edges: ``out_census[q, 0]`` counts the face edges joining ``u`` and ``v``
@@ -1822,11 +1834,20 @@ def bridge_edge_census(
     # ``edges.faces_to_edges(sorted=True)``. The third is the corner ``bridge_edges_smooth``'s
     # spline needs, for a boundary edge the one face's, so at most one thread stores it.
     #
+    # With six rows past the queries (``vertices`` given), the spline's six positions come back in
+    # the same readback (``store_position_bits``): the two bridged edges' endpoints, then the
+    # third corner of each one's face, stored by the thread that finds it.
+    #
     # The corners go into a ``wp.vec3i`` rather than staying the tuple ``corner_triple`` returns,
     # because ``k`` is a *runtime* index and a tuple cannot be subscripted by one in kernel scope.
     f, q = wp.tid()
+    n_queries = queries.shape[0]
+    positions = out_census.shape[0] > n_queries
     u = queries[q, 0]
     v = queries[q, 1]
+    if positions and f == 0 and q < 2:
+        store_position_bits(out_census, n_queries + 2 * q, vertices[u])
+        store_position_bits(out_census, n_queries + 2 * q + 1, vertices[v])
     low = wp.min(u, v)
     high = wp.max(u, v)
     c0, c1, c2 = corner_triple(faces, f)
@@ -1838,7 +1859,10 @@ def bridge_edge_census(
             wp.atomic_add(out_census, q, 0, 1)
             if a == u and b == v:
                 wp.atomic_add(out_census, q, 1, 1)
-                out_census[q, 2] = corner[_wrap(k + 2, 3)] + 1
+                opposite = corner[_wrap(k + 2, 3)]
+                out_census[q, 2] = opposite + 1
+                if positions and q < 2:
+                    store_position_bits(out_census, n_queries + 4 + q, vertices[opposite])
 
 
 @wp.kernel
