@@ -9696,7 +9696,31 @@ axis-aligned box:</p>
 <span class="normal">934</span>
 <span class="normal">935</span>
 <span class="normal">936</span>
-<span class="normal">937</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">oriented_bounding_box</span><span class="p">(</span>
+<span class="normal">937</span>
+<span class="normal">938</span>
+<span class="normal">939</span>
+<span class="normal">940</span>
+<span class="normal">941</span>
+<span class="normal">942</span>
+<span class="normal">943</span>
+<span class="normal">944</span>
+<span class="normal">945</span>
+<span class="normal">946</span>
+<span class="normal">947</span>
+<span class="normal">948</span>
+<span class="normal">949</span>
+<span class="normal">950</span>
+<span class="normal">951</span>
+<span class="normal">952</span>
+<span class="normal">953</span>
+<span class="normal">954</span>
+<span class="normal">955</span>
+<span class="normal">956</span>
+<span class="normal">957</span>
+<span class="normal">958</span>
+<span class="normal">959</span>
+<span class="normal">960</span>
+<span class="normal">961</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">oriented_bounding_box</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">rotations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4096</span><span class="p">,</span>
     <span class="n">objective</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"volume"</span><span class="p">,</span> <span class="s2">"surface_area"</span><span class="p">,</span> <span class="s2">"diagonal"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"volume"</span><span class="p">,</span>
@@ -9868,11 +9892,22 @@ axis-aligned box:</p>
     <span class="c1"># One chain when there is nothing to refine: the seeding walk's first pick is the global</span>
     <span class="c1"># argmin, so it stops after a single round and the row it writes is already the answer.</span>
     <span class="n">n_chains</span> <span class="o">=</span> <span class="mi">1</span> <span class="k">if</span> <span class="n">refine_iterations</span> <span class="o">==</span> <span class="mi">0</span> <span class="k">else</span> <span class="n">_REFINE_CHAINS</span>
-    <span class="n">chains</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_chains</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># The refinement's state is ping-ponged: round ``r`` reads half ``r % 2`` of each buffer and</span>
+    <span class="c1"># its selection writes the other, so the frames and rows a launch writes are never ones it</span>
+    <span class="c1"># still reads. The seeding walk writes half 0, including the first round's frames.</span>
+    <span class="n">count</span> <span class="o">=</span> <span class="n">_REFINE_CANDIDATES</span> <span class="k">if</span> <span class="n">refine_iterations</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="k">else</span> <span class="mi">0</span>
+    <span class="n">total</span> <span class="o">=</span> <span class="n">n_chains</span> <span class="o">*</span> <span class="n">count</span>
     <span class="n">chain_state</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">((</span><span class="n">n_chains</span><span class="p">,</span> <span class="n">kernel_bounds</span><span class="o">.</span><span class="n">BOX_STATE_COLUMNS</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>
+            <span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_chains</span><span class="p">,</span> <span class="n">kernel_bounds</span><span class="o">.</span><span class="n">BOX_STATE_COLUMNS</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+        <span class="p">),</span>
         <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
     <span class="p">)</span>
+    <span class="n">refine_axes</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">total</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">refine_corners</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">12</span> <span class="o">*</span> <span class="n">total</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># Start at the covering radius of the global grid: the sampled winner is at most about this</span>
+    <span class="c1"># far from its basin's optimum, and each round shrinks the radius.</span>
+    <span class="n">sigma</span> <span class="o">=</span> <span class="mf">2.0</span> <span class="o">*</span> <span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">pi</span><span class="o">**</span><span class="mi">2</span> <span class="o">/</span> <span class="nb">max</span><span class="p">(</span><span class="n">rotations</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span> <span class="o">**</span> <span class="p">(</span><span class="mf">1.0</span> <span class="o">/</span> <span class="mf">3.0</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
         <span class="n">kernel_bounds</span><span class="o">.</span><span class="n">oriented_box_seed_chains</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="mi">1</span><span class="p">,),</span>
@@ -9882,16 +9917,29 @@ axis-aligned box:</p>
             <span class="n">corners</span><span class="p">,</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="nb">min</span><span class="p">(</span><span class="n">_REFINE_WINDOW</span><span class="p">,</span> <span class="n">rotations</span><span class="p">)),</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_chains</span><span class="p">),</span>
-            <span class="n">chains</span><span class="p">,</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">(</span><span class="n">sigma</span> <span class="o">/</span> <span class="n">math</span><span class="o">.</span><span class="n">pi</span><span class="p">),</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">count</span><span class="p">),</span>
             <span class="n">chain_state</span><span class="p">,</span>
+            <span class="n">refine_axes</span><span class="p">,</span>
+            <span class="n">refine_corners</span><span class="p">,</span>
         <span class="p">],</span>
         <span class="n">block_dim</span><span class="o">=</span><span class="n">_SEED_BLOCK_DIM</span><span class="p">,</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-
-    <span class="k">if</span> <span class="n">refine_iterations</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="n">_refine_box</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">rotations</span><span class="p">,</span> <span class="n">objective</span><span class="p">,</span> <span class="n">refine_iterations</span><span class="p">,</span> <span class="n">n_slices</span><span class="p">,</span> <span class="n">chains</span><span class="p">,</span> <span class="n">chain_state</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">_best_chain</span><span class="p">(</span><span class="n">chain_state</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">refine_iterations</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_best_chain</span><span class="p">(</span><span class="n">chain_state</span><span class="p">,</span> <span class="n">n_chains</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
+    <span class="n">_refine_box</span><span class="p">(</span>
+        <span class="n">points</span><span class="p">,</span>
+        <span class="n">objective</span><span class="p">,</span>
+        <span class="n">refine_iterations</span><span class="p">,</span>
+        <span class="n">n_slices</span><span class="p">,</span>
+        <span class="n">sigma</span><span class="p">,</span>
+        <span class="n">n_chains</span><span class="p">,</span>
+        <span class="n">chain_state</span><span class="p">,</span>
+        <span class="n">refine_axes</span><span class="p">,</span>
+        <span class="n">refine_corners</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">_best_chain</span><span class="p">(</span><span class="n">chain_state</span><span class="p">,</span> <span class="n">n_chains</span><span class="p">,</span> <span class="n">refine_iterations</span> <span class="o">%</span> <span class="mi">2</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

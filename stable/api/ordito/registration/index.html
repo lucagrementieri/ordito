@@ -7082,25 +7082,7 @@ correspondences are given:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/registration.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">284</span>
-<span class="normal">285</span>
-<span class="normal">286</span>
-<span class="normal">287</span>
-<span class="normal">288</span>
-<span class="normal">289</span>
-<span class="normal">290</span>
-<span class="normal">291</span>
-<span class="normal">292</span>
-<span class="normal">293</span>
-<span class="normal">294</span>
-<span class="normal">295</span>
-<span class="normal">296</span>
-<span class="normal">297</span>
-<span class="normal">298</span>
-<span class="normal">299</span>
-<span class="normal">300</span>
-<span class="normal">301</span>
-<span class="normal">302</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">302</span>
 <span class="normal">303</span>
 <span class="normal">304</span>
 <span class="normal">305</span>
@@ -7322,7 +7304,28 @@ correspondences are given:</p>
 <span class="normal">521</span>
 <span class="normal">522</span>
 <span class="normal">523</span>
-<span class="normal">524</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp</span><span class="p">(</span>
+<span class="normal">524</span>
+<span class="normal">525</span>
+<span class="normal">526</span>
+<span class="normal">527</span>
+<span class="normal">528</span>
+<span class="normal">529</span>
+<span class="normal">530</span>
+<span class="normal">531</span>
+<span class="normal">532</span>
+<span class="normal">533</span>
+<span class="normal">534</span>
+<span class="normal">535</span>
+<span class="normal">536</span>
+<span class="normal">537</span>
+<span class="normal">538</span>
+<span class="normal">539</span>
+<span class="normal">540</span>
+<span class="normal">541</span>
+<span class="normal">542</span>
+<span class="normal">543</span>
+<span class="normal">544</span>
+<span class="normal">545</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7470,7 +7473,7 @@ correspondences are given:</p>
     <span class="k">assert</span> <span class="n">search_index</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
 
     <span class="c1"># Every buffer is allocated once and rewritten in place by every round. The fit lands in</span>
-    <span class="c1"># ``fitted`` and is copied into ``total`` only once ``point_to_point_round`` has seen that it</span>
+    <span class="c1"># ``fitted`` and is kept in ``total`` only once ``close_point_to_point_round`` has seen that it</span>
     <span class="c1"># carried weight; ``state`` is the shared round / condition word; ``acc`` is the fit's moments</span>
     <span class="c1"># plus the kept fit's cost, which is also the "previous cost" the convergence test reads.</span>
     <span class="n">closest</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
@@ -7485,7 +7488,12 @@ correspondences are given:</p>
     <span class="n">stride</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">kernel_registration</span><span class="o">.</span><span class="n">ICP_POINT_ACC_SIZE</span><span class="p">)</span>
     <span class="n">acc</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">block_partials</span><span class="p">(</span><span class="n">blocks</span><span class="p">,</span> <span class="n">stride</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="n">fitted</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">state</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_STATE_SIZE</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># The loop state, then the integer ticket that elects the fit's last block to close the round</span>
+    <span class="c1"># under the atomic commit (``kernel_registration.last_atomic_block``): one zeroed allocation.</span>
+    <span class="n">words</span> <span class="o">=</span> <span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_STATE_SIZE</span>
+    <span class="n">state_and_ticket</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">words</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">state</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">state_and_ticket</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">words</span><span class="p">)</span>
+    <span class="n">ticket</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">state_and_ticket</span><span class="p">,</span> <span class="n">words</span><span class="p">,</span> <span class="n">words</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
 
     <span class="n">search_inputs</span> <span class="o">=</span> <span class="p">[</span>
         <span class="n">search_index</span><span class="o">.</span><span class="n">id</span><span class="p">,</span>
@@ -7508,11 +7516,15 @@ correspondences are given:</p>
         <span class="n">translation</span><span class="p">,</span>
         <span class="n">scale</span><span class="p">,</span>
         <span class="n">stride</span><span class="p">,</span>
+        <span class="n">blocks</span><span class="p">,</span>
+        <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">(</span><span class="n">threshold</span><span class="p">),</span>
+        <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">max_iterations</span><span class="p">),</span>
         <span class="n">fitted</span><span class="p">,</span>
         <span class="n">_zero_length</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="p">),</span>
+        <span class="n">total</span><span class="p">,</span>
+        <span class="n">state</span><span class="p">,</span>
+        <span class="n">ticket</span><span class="p">,</span>
     <span class="p">]</span>
-    <span class="n">round_inputs</span> <span class="o">=</span> <span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">(</span><span class="n">threshold</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">max_iterations</span><span class="p">),</span> <span class="n">fitted</span><span class="p">]</span>
-    <span class="n">round_outputs</span> <span class="o">=</span> <span class="p">[</span><span class="n">acc</span><span class="p">,</span> <span class="n">total</span><span class="p">,</span> <span class="n">state</span><span class="p">]</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">iterate</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
@@ -7528,18 +7540,12 @@ correspondences are given:</p>
             <span class="n">block_dim</span><span class="o">=</span><span class="n">TILE_1D</span><span class="p">,</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
+        <span class="c1"># The fit, its cost and the round's close (``close_point_to_point_round``) in one launch.</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
             <span class="n">kernel_registration</span><span class="o">.</span><span class="n">fit_transform_and_accumulate_cost</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">blocks</span><span class="p">,</span>
             <span class="n">inputs</span><span class="o">=</span><span class="n">fit_inputs</span><span class="p">,</span>
             <span class="n">block_dim</span><span class="o">=</span><span class="n">TILE_1D</span><span class="p">,</span>
-            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-        <span class="p">)</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_registration</span><span class="o">.</span><span class="n">point_to_point_round</span><span class="p">,</span>
-            <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="n">round_inputs</span><span class="p">,</span>
-            <span class="n">outputs</span><span class="o">=</span><span class="n">round_outputs</span><span class="p">,</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
 
@@ -7993,28 +7999,7 @@ a mesh target.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/registration.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">546</span>
-<span class="normal">547</span>
-<span class="normal">548</span>
-<span class="normal">549</span>
-<span class="normal">550</span>
-<span class="normal">551</span>
-<span class="normal">552</span>
-<span class="normal">553</span>
-<span class="normal">554</span>
-<span class="normal">555</span>
-<span class="normal">556</span>
-<span class="normal">557</span>
-<span class="normal">558</span>
-<span class="normal">559</span>
-<span class="normal">560</span>
-<span class="normal">561</span>
-<span class="normal">562</span>
-<span class="normal">563</span>
-<span class="normal">564</span>
-<span class="normal">565</span>
-<span class="normal">566</span>
-<span class="normal">567</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">567</span>
 <span class="normal">568</span>
 <span class="normal">569</span>
 <span class="normal">570</span>
@@ -8329,7 +8314,28 @@ a mesh target.</p>
 <span class="normal">879</span>
 <span class="normal">880</span>
 <span class="normal">881</span>
-<span class="normal">882</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
+<span class="normal">882</span>
+<span class="normal">883</span>
+<span class="normal">884</span>
+<span class="normal">885</span>
+<span class="normal">886</span>
+<span class="normal">887</span>
+<span class="normal">888</span>
+<span class="normal">889</span>
+<span class="normal">890</span>
+<span class="normal">891</span>
+<span class="normal">892</span>
+<span class="normal">893</span>
+<span class="normal">894</span>
+<span class="normal">895</span>
+<span class="normal">896</span>
+<span class="normal">897</span>
+<span class="normal">898</span>
+<span class="normal">899</span>
+<span class="normal">900</span>
+<span class="normal">901</span>
+<span class="normal">902</span>
+<span class="normal">903</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8535,15 +8541,20 @@ a mesh target.</p>
     <span class="n">acc</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">block_partials</span><span class="p">(</span><span class="n">blocks</span><span class="p">,</span> <span class="n">stride</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="n">step</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">total</span> <span class="o">=</span> <span class="n">initial_matrix</span>
-    <span class="n">state</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_STATE_SIZE</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># The loop state, then the integer ticket that elects the accumulation's last block to close</span>
+    <span class="c1"># the round under the atomic commit (``kernel_registration.last_atomic_block``).</span>
+    <span class="n">words</span> <span class="o">=</span> <span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_STATE_SIZE</span>
+    <span class="n">state_and_ticket</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">words</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">state</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">state_and_ticket</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">words</span><span class="p">)</span>
+    <span class="n">ticket</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">state_and_ticket</span><span class="p">,</span> <span class="n">words</span><span class="p">,</span> <span class="n">words</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
 
     <span class="c1"># The correspondence step is one launch: the step applied to each point, and its match on the</span>
     <span class="c1"># target -- the closest point on a mesh, or the nearest vertex of a cloud through the hoisted</span>
     <span class="c1"># collapsed-triangle mesh (``kernel_registration.icp_match``). The target normal is read by</span>
     <span class="c1"># the accumulation at the match's index, from the face normals of a mesh or the per-vertex</span>
-    <span class="c1"># normals of a cloud, so an iteration is three launches: search, accumulate, and the ``dim=1``</span>
-    <span class="c1"># round. The first search moves ``a`` by the seed, bit for bit what ``_apply_transform``</span>
-    <span class="c1"># writes.</span>
+    <span class="c1"># normals of a cloud, so an iteration is two launches: search, and the accumulation whose last</span>
+    <span class="c1"># block closes the round. The first search moves ``a`` by the seed, bit for bit what</span>
+    <span class="c1"># ``_apply_transform`` writes.</span>
     <span class="c1">#</span>
     <span class="c1"># Measure this kind of change with ``threshold=-inf``, or the reading is fiction: with the</span>
     <span class="c1"># convergence break live the two arms stop at *different* iterations.</span>
@@ -8565,7 +8576,14 @@ a mesh target.</p>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
 
-    <span class="k">def</span><span class="w"> </span><span class="nf">accumulate</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+    <span class="n">round_inputs</span> <span class="o">=</span> <span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">damping</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">(</span><span class="n">threshold</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">max_iterations</span><span class="p">)]</span>
+    <span class="n">no_matrix</span> <span class="o">=</span> <span class="n">_zero_length</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">no_state</span> <span class="o">=</span> <span class="n">_zero_length</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">accumulate</span><span class="p">(</span><span class="n">close</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="c1"># ``close``: the launch's last block also closes the round</span>
+        <span class="c1"># (``kernel_registration.close_point_to_plane_round``); otherwise it only sums.</span>
+        <span class="n">round_outputs</span> <span class="o">=</span> <span class="p">[</span><span class="n">total</span><span class="p">,</span> <span class="n">step</span><span class="p">,</span> <span class="n">state</span><span class="p">,</span> <span class="n">ticket</span><span class="p">]</span> <span class="k">if</span> <span class="n">close</span> <span class="k">else</span> <span class="p">[</span><span class="n">no_matrix</span><span class="p">]</span> <span class="o">*</span> <span class="mi">2</span> <span class="o">+</span> <span class="p">[</span><span class="n">no_state</span><span class="p">]</span> <span class="o">*</span> <span class="mi">2</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
             <span class="n">kernel_registration</span><span class="o">.</span><span class="n">accumulate_point_to_plane</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">blocks</span><span class="p">,</span>
@@ -8579,8 +8597,10 @@ a mesh target.</p>
                 <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">kind</span><span class="p">),</span>
                 <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">scale_value</span> <span class="k">if</span> <span class="n">scale_value</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mf">0.0</span><span class="p">),</span>
                 <span class="n">stride</span><span class="p">,</span>
-                <span class="n">acc</span><span class="p">,</span>
+                <span class="n">blocks</span><span class="p">,</span>
+                <span class="o">*</span><span class="n">round_inputs</span><span class="p">,</span>
             <span class="p">],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">acc</span><span class="p">,</span> <span class="o">*</span><span class="n">round_outputs</span><span class="p">],</span>
             <span class="n">block_dim</span><span class="o">=</span><span class="n">TILE_1D</span><span class="p">,</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
@@ -8594,22 +8614,9 @@ a mesh target.</p>
             <span class="n">current</span><span class="p">,</span> <span class="n">closest</span><span class="p">,</span> <span class="n">normal_table</span><span class="p">,</span> <span class="n">distance</span><span class="p">,</span> <span class="n">triangle_id</span><span class="p">,</span> <span class="n">max_d</span><span class="p">,</span> <span class="n">kind</span>
         <span class="p">)</span>
 
-    <span class="n">round_inputs</span> <span class="o">=</span> <span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">damping</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">(</span><span class="n">threshold</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">max_iterations</span><span class="p">)]</span>
-    <span class="n">round_outputs</span> <span class="o">=</span> <span class="p">[</span><span class="n">acc</span><span class="p">,</span> <span class="n">total</span><span class="p">,</span> <span class="n">step</span><span class="p">,</span> <span class="n">state</span><span class="p">]</span>
-
-    <span class="k">def</span><span class="w"> </span><span class="nf">close_round</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_registration</span><span class="o">.</span><span class="n">point_to_plane_round</span><span class="p">,</span>
-            <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="n">round_inputs</span><span class="p">,</span>
-            <span class="n">outputs</span><span class="o">=</span><span class="n">round_outputs</span><span class="p">,</span>
-            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-        <span class="p">)</span>
-
     <span class="k">def</span><span class="w"> </span><span class="nf">iterate</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">search</span><span class="p">(</span><span class="kc">True</span><span class="p">)</span>
-        <span class="n">accumulate</span><span class="p">()</span>
-        <span class="n">close_round</span><span class="p">()</span>
+        <span class="n">accumulate</span><span class="p">(</span><span class="n">close</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 
     <span class="c1"># --- iteration 0, issued from the host: it may need the robust scale, a host reduction ---</span>
     <span class="c1"># The weight sum it tests is over the correspondences that survive the ``max_distance`` gate,</span>
@@ -8627,10 +8634,9 @@ a mesh target.</p>
     <span class="k">if</span> <span class="n">max_iterations</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">search</span><span class="p">(</span><span class="kc">False</span><span class="p">)</span>
         <span class="n">resolve_scale</span><span class="p">()</span>
-        <span class="n">accumulate</span><span class="p">()</span>
-        <span class="n">close_round</span><span class="p">()</span>
+        <span class="n">accumulate</span><span class="p">(</span><span class="n">close</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
         <span class="c1"># --- iterations 1.., one recorded body replayed on the device with no readback ---</span>
-        <span class="c1"># ``close_round`` seeded the condition; the body is a fixed three-launch sequence over</span>
+        <span class="c1"># Round 0's close seeded the condition; the body is a fixed two-launch sequence over</span>
         <span class="c1"># buffers it rewrites in place, so it records once per call. Recording costs about what</span>
         <span class="c1"># issuing a round does even when the condition is already clear, so a one-iteration call,</span>
         <span class="c1"># which the host knows cannot run a second, skips it.</span>
@@ -8657,11 +8663,11 @@ a mesh target.</p>
     <span class="c1"># from: one more correspondence pass at the returned pose -- which is also where the last step</span>
     <span class="c1"># is applied -- and one more accumulation over it, into the accumulators the last round zeroed.</span>
     <span class="c1"># With no iteration run it scores the seed. After a weightless stop the step is the identity</span>
-    <span class="c1"># (``point_to_plane_round``), so this pass finds the same correspondences, sums zero weight</span>
-    <span class="c1"># again and reports ``inf`` -- the stop costs no readback of its own.</span>
+    <span class="c1"># (``close_point_to_plane_round``), so this pass finds the same correspondences, sums zero</span>
+    <span class="c1"># weight again and reports ``inf`` -- the stop costs no readback of its own.</span>
     <span class="n">search</span><span class="p">(</span><span class="n">stepped</span><span class="p">)</span>
     <span class="n">resolve_scale</span><span class="p">()</span>
-    <span class="n">accumulate</span><span class="p">()</span>
+    <span class="n">accumulate</span><span class="p">(</span><span class="n">close</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
     <span class="n">cost</span><span class="p">,</span> <span class="n">weight_sum</span> <span class="o">=</span> <span class="n">read_values</span><span class="p">(</span><span class="n">acc</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">kernel_registration</span><span class="o">.</span><span class="n">ICP_COST</span><span class="p">),</span> <span class="mi">2</span><span class="p">)</span>
     <span class="k">if</span> <span class="nb">float</span><span class="p">(</span><span class="n">weight_sum</span><span class="p">)</span> <span class="o">&lt;=</span> <span class="mf">0.0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">total</span><span class="p">,</span> <span class="n">current</span><span class="p">,</span> <span class="n">math</span><span class="o">.</span><span class="n">inf</span>

@@ -6447,8 +6447,7 @@ synchronizes once.</p>
 <span class="normal">126</span>
 <span class="normal">127</span>
 <span class="normal">128</span>
-<span class="normal">129</span>
-<span class="normal">130</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_twins</span><span class="p">(</span>
+<span class="normal">129</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_twins</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">validate</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6532,8 +6531,7 @@ synchronizes once.</p>
 <span class="sd">    print(int((twins.numpy() == -1).sum()))  # 0</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">defect_counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">faces</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">twins</span> <span class="o">=</span> <span class="n">_pair_halfedges</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">defect_counts</span><span class="p">)</span>
+    <span class="n">twins</span><span class="p">,</span> <span class="n">defect_counts</span> <span class="o">=</span> <span class="n">_pair_halfedges</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">validate</span> <span class="ow">and</span> <span class="n">twins</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">_raise_twin_defects</span><span class="p">(</span><span class="n">read_values</span><span class="p">(</span><span class="n">defect_counts</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
     <span class="k">return</span> <span class="n">twins</span>
@@ -6694,7 +6692,8 @@ halfedge 0 (<code>0 -&gt; 1</code>) with halfedge 1 (<code>1 -&gt; 2</code>) is 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/halfedge.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">133</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">132</span>
+<span class="normal">133</span>
 <span class="normal">134</span>
 <span class="normal">135</span>
 <span class="normal">136</span>
@@ -6777,8 +6776,7 @@ halfedge 0 (<code>0 -&gt; 1</code>) with halfedge 1 (<code>1 -&gt; 2</code>) is 
 <span class="normal">213</span>
 <span class="normal">214</span>
 <span class="normal">215</span>
-<span class="normal">216</span>
-<span class="normal">217</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">require_matching_twins</span><span class="p">(</span><span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">twins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">216</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">require_matching_twins</span><span class="p">(</span><span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">twins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Raise unless a precomputed twin table really is one for ``faces``.</span>
 
@@ -7172,7 +7170,8 @@ vertex 0 lists its four outgoing halfedges, whose far ends circle it counter-clo
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/halfedge.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">242</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">241</span>
+<span class="normal">242</span>
 <span class="normal">243</span>
 <span class="normal">244</span>
 <span class="normal">245</span>
@@ -7317,7 +7316,20 @@ vertex 0 lists its four outgoing halfedges, whose far ends circle it counter-clo
 <span class="normal">384</span>
 <span class="normal">385</span>
 <span class="normal">386</span>
-<span class="normal">387</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_one_rings</span><span class="p">(</span>
+<span class="normal">387</span>
+<span class="normal">388</span>
+<span class="normal">389</span>
+<span class="normal">390</span>
+<span class="normal">391</span>
+<span class="normal">392</span>
+<span class="normal">393</span>
+<span class="normal">394</span>
+<span class="normal">395</span>
+<span class="normal">396</span>
+<span class="normal">397</span>
+<span class="normal">398</span>
+<span class="normal">399</span>
+<span class="normal">400</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_one_rings</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">twins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7429,26 +7441,40 @@ vertex 0 lists its four outgoing halfedges, whose far ends circle it counter-clo
     <span class="c1"># Slots 0-1 are the twin table's two rejections when this call derives it, slot 2 the pinch</span>
     <span class="c1"># count below, slot 3 the mispaired entries of a supplied table: one buffer, so every check</span>
     <span class="c1"># reads back once rather than once per table and again for the rings. The rejections are</span>
-    <span class="c1"># raised in the order the contract lists them.</span>
-    <span class="n">defect_counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">4</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># raised in the order the contract lists them. The CSR offsets start zeroed too, so they follow</span>
+    <span class="c1"># the counts in the same allocation (and the bucketed pairing's zeroed counters after them).</span>
+    <span class="n">n_zeroed</span> <span class="o">=</span> <span class="mi">4</span> <span class="o">+</span> <span class="n">n_vertices</span> <span class="o">+</span> <span class="mi">1</span>
     <span class="n">check_twins</span> <span class="o">=</span> <span class="ow">not</span> <span class="n">twins_given</span> <span class="ow">and</span> <span class="n">validate</span>
-    <span class="n">incomplete</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">defect_counts</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">twins</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">n_halfedges</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">n_vertices</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">_buckets_on</span><span class="p">(</span><span class="n">faces</span><span class="p">):</span>
         <span class="c1"># The bucketed pairing bids every halfedge for its ring's walk start as it writes the twin,</span>
         <span class="c1"># and its vertex degrees are the ring sizes: no pass of the walk's own over the twins. It</span>
         <span class="c1"># writes only the first two slots of the buffer, so it takes it whole.</span>
         <span class="n">starts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="mi">2</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">),</span> <span class="n">INT32_MAX</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-        <span class="n">twins</span><span class="p">,</span> <span class="n">degrees</span> <span class="o">=</span> <span class="n">_pair_bucketed_halfedges</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">defect_counts</span><span class="p">,</span> <span class="n">starts</span><span class="p">)</span>
-        <span class="n">rings</span> <span class="o">=</span> <span class="n">_walk_one_rings</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">incomplete</span><span class="p">,</span> <span class="p">(</span><span class="n">degrees</span><span class="p">,</span> <span class="n">starts</span><span class="p">))</span>
+        <span class="n">twins</span><span class="p">,</span> <span class="n">degrees</span><span class="p">,</span> <span class="n">zeroed</span> <span class="o">=</span> <span class="n">_pair_bucketed_halfedges</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_zeroed</span><span class="p">,</span> <span class="n">starts</span><span class="p">)</span>
+        <span class="n">defect_counts</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">_defects_and_offsets</span><span class="p">(</span><span class="n">zeroed</span><span class="p">)</span>
+        <span class="n">rings</span> <span class="o">=</span> <span class="n">_walk_one_rings</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">defect_counts</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="p">(</span><span class="n">degrees</span><span class="p">,</span> <span class="n">starts</span><span class="p">))</span>
+    <span class="k">elif</span> <span class="n">twins</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">n_halfedges</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">n_vertices</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="c1"># The sort path's pairing takes the ring degrees and walk-start bids in the same pass, the</span>
+        <span class="c1"># degrees counted straight into the CSR offsets' zeroed tail.</span>
+        <span class="n">starts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="mi">2</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">),</span> <span class="n">INT32_MAX</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">defect_counts</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">_defects_and_offsets</span><span class="p">(</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_zeroed</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="p">)</span>
+        <span class="n">degrees</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">offsets</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">n_vertices</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
+        <span class="n">twins</span> <span class="o">=</span> <span class="n">_pair_sorted_halfedges</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">defect_counts</span><span class="p">,</span> <span class="p">(</span><span class="n">degrees</span><span class="p">,</span> <span class="n">starts</span><span class="p">))</span>
+        <span class="n">rings</span> <span class="o">=</span> <span class="n">_walk_one_rings</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">defect_counts</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="p">(</span><span class="n">degrees</span><span class="p">,</span> <span class="n">starts</span><span class="p">))</span>
     <span class="k">else</span><span class="p">:</span>
         <span class="k">if</span> <span class="n">twins</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">twins</span> <span class="o">=</span> <span class="n">_pair_halfedges</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">defect_counts</span><span class="p">)</span>
-        <span class="k">elif</span> <span class="n">n_halfedges</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">twins</span><span class="p">,</span> <span class="n">zeroed</span> <span class="o">=</span> <span class="n">_pair_halfedges</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_zeroed</span><span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">zeroed</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_zeroed</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">defect_counts</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">_defects_and_offsets</span><span class="p">(</span><span class="n">zeroed</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">twins_given</span> <span class="ow">and</span> <span class="n">n_halfedges</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
             <span class="c1"># ``require_matching_twins``' structural half, read back with the rings' own counts.</span>
             <span class="c1"># The walk below reads a table that fails it only within bounds (``write_one_rings``),</span>
             <span class="c1"># and nothing it wrote is returned before the raise.</span>
             <span class="n">_count_mispaired_twins</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="p">,</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">defect_counts</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="mi">4</span><span class="p">))</span>
-        <span class="n">rings</span> <span class="o">=</span> <span class="n">_walk_one_rings</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">incomplete</span><span class="p">)</span>
+        <span class="n">rings</span> <span class="o">=</span> <span class="n">_walk_one_rings</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">defect_counts</span><span class="p">,</span> <span class="n">offsets</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_halfedges</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="p">(</span><span class="n">twins_given</span> <span class="ow">or</span> <span class="n">validate</span><span class="p">):</span>
         <span class="n">counts_np</span> <span class="o">=</span> <span class="n">read_values</span><span class="p">(</span><span class="n">defect_counts</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">4</span><span class="p">)</span>
         <span class="n">_raise_mispaired_twins</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">counts_np</span><span class="p">[</span><span class="mi">3</span><span class="p">]))</span>
@@ -7654,29 +7680,7 @@ Adding a third face on that edge makes it non-manifold, and all three halfedges 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/halfedge.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">465</span>
-<span class="normal">466</span>
-<span class="normal">467</span>
-<span class="normal">468</span>
-<span class="normal">469</span>
-<span class="normal">470</span>
-<span class="normal">471</span>
-<span class="normal">472</span>
-<span class="normal">473</span>
-<span class="normal">474</span>
-<span class="normal">475</span>
-<span class="normal">476</span>
-<span class="normal">477</span>
-<span class="normal">478</span>
-<span class="normal">479</span>
-<span class="normal">480</span>
-<span class="normal">481</span>
-<span class="normal">482</span>
-<span class="normal">483</span>
-<span class="normal">484</span>
-<span class="normal">485</span>
-<span class="normal">486</span>
-<span class="normal">487</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">487</span>
 <span class="normal">488</span>
 <span class="normal">489</span>
 <span class="normal">490</span>
@@ -7748,7 +7752,27 @@ Adding a third face on that edge makes it non-manifold, and all three halfedges 
 <span class="normal">556</span>
 <span class="normal">557</span>
 <span class="normal">558</span>
-<span class="normal">559</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_mates</span><span class="p">(</span>
+<span class="normal">559</span>
+<span class="normal">560</span>
+<span class="normal">561</span>
+<span class="normal">562</span>
+<span class="normal">563</span>
+<span class="normal">564</span>
+<span class="normal">565</span>
+<span class="normal">566</span>
+<span class="normal">567</span>
+<span class="normal">568</span>
+<span class="normal">569</span>
+<span class="normal">570</span>
+<span class="normal">571</span>
+<span class="normal">572</span>
+<span class="normal">573</span>
+<span class="normal">574</span>
+<span class="normal">575</span>
+<span class="normal">576</span>
+<span class="normal">577</span>
+<span class="normal">578</span>
+<span class="normal">579</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_mates</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">return_key_order</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7818,14 +7842,12 @@ Adding a third face on that edge makes it non-manifold, and all three halfedges 
     <span class="n">n_halfedges</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span> <span class="o">*</span> <span class="mi">3</span>
     <span class="n">mates</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_halfedges</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">key_order</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="n">sorted_pairing</span> <span class="o">=</span> <span class="n">_sorted_pairing</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_halfedges</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">key_order</span> <span class="o">=</span> <span class="n">mates</span>
-    <span class="k">elif</span> <span class="p">(</span>
-        <span class="n">n_vertices</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
-        <span class="ow">and</span> <span class="n">n_halfedges</span> <span class="o">&gt;=</span> <span class="n">_BUCKETED_MATES_FROM_HALFEDGES</span>
-        <span class="ow">and</span> <span class="n">_buckets_on</span><span class="p">(</span><span class="n">faces</span><span class="p">)</span>
-    <span class="p">):</span>
-        <span class="n">degrees</span><span class="p">,</span> <span class="n">ends</span><span class="p">,</span> <span class="n">buckets</span> <span class="o">=</span> <span class="n">_edge_buckets</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">)</span>
+    <span class="k">elif</span> <span class="n">sorted_pairing</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">assert</span> <span class="n">n_vertices</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>  <span class="c1"># the pairing buckets only with the bound</span>
+        <span class="n">degrees</span><span class="p">,</span> <span class="n">ends</span><span class="p">,</span> <span class="n">buckets</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">_edge_buckets</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_halfedge</span><span class="o">.</span><span class="n">bucketed_halfedge_mates</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">n_halfedges</span><span class="p">,</span>
@@ -7833,7 +7855,7 @@ Adding a third face on that edge makes it non-manifold, and all three halfedges 
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
     <span class="k">else</span><span class="p">:</span>
-        <span class="n">sorted_keys</span><span class="p">,</span> <span class="n">key_order</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">sorted_face_edge_keys</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">)</span>
+        <span class="n">sorted_keys</span><span class="p">,</span> <span class="n">key_order</span> <span class="o">=</span> <span class="n">sorted_pairing</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_halfedge</span><span class="o">.</span><span class="n">sorted_halfedge_mates</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">n_halfedges</span><span class="p">,</span>
@@ -8064,48 +8086,7 @@ back in the row order of <a class="autorefs autorefs-internal" title="edges_uniq
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/halfedge.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">562</span>
-<span class="normal">563</span>
-<span class="normal">564</span>
-<span class="normal">565</span>
-<span class="normal">566</span>
-<span class="normal">567</span>
-<span class="normal">568</span>
-<span class="normal">569</span>
-<span class="normal">570</span>
-<span class="normal">571</span>
-<span class="normal">572</span>
-<span class="normal">573</span>
-<span class="normal">574</span>
-<span class="normal">575</span>
-<span class="normal">576</span>
-<span class="normal">577</span>
-<span class="normal">578</span>
-<span class="normal">579</span>
-<span class="normal">580</span>
-<span class="normal">581</span>
-<span class="normal">582</span>
-<span class="normal">583</span>
-<span class="normal">584</span>
-<span class="normal">585</span>
-<span class="normal">586</span>
-<span class="normal">587</span>
-<span class="normal">588</span>
-<span class="normal">589</span>
-<span class="normal">590</span>
-<span class="normal">591</span>
-<span class="normal">592</span>
-<span class="normal">593</span>
-<span class="normal">594</span>
-<span class="normal">595</span>
-<span class="normal">596</span>
-<span class="normal">597</span>
-<span class="normal">598</span>
-<span class="normal">599</span>
-<span class="normal">600</span>
-<span class="normal">601</span>
-<span class="normal">602</span>
-<span class="normal">603</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">603</span>
 <span class="normal">604</span>
 <span class="normal">605</span>
 <span class="normal">606</span>
@@ -8174,7 +8155,48 @@ back in the row order of <a class="autorefs autorefs-internal" title="edges_uniq
 <span class="normal">669</span>
 <span class="normal">670</span>
 <span class="normal">671</span>
-<span class="normal">672</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">key_ordered_halfedges</span><span class="p">(</span>
+<span class="normal">672</span>
+<span class="normal">673</span>
+<span class="normal">674</span>
+<span class="normal">675</span>
+<span class="normal">676</span>
+<span class="normal">677</span>
+<span class="normal">678</span>
+<span class="normal">679</span>
+<span class="normal">680</span>
+<span class="normal">681</span>
+<span class="normal">682</span>
+<span class="normal">683</span>
+<span class="normal">684</span>
+<span class="normal">685</span>
+<span class="normal">686</span>
+<span class="normal">687</span>
+<span class="normal">688</span>
+<span class="normal">689</span>
+<span class="normal">690</span>
+<span class="normal">691</span>
+<span class="normal">692</span>
+<span class="normal">693</span>
+<span class="normal">694</span>
+<span class="normal">695</span>
+<span class="normal">696</span>
+<span class="normal">697</span>
+<span class="normal">698</span>
+<span class="normal">699</span>
+<span class="normal">700</span>
+<span class="normal">701</span>
+<span class="normal">702</span>
+<span class="normal">703</span>
+<span class="normal">704</span>
+<span class="normal">705</span>
+<span class="normal">706</span>
+<span class="normal">707</span>
+<span class="normal">708</span>
+<span class="normal">709</span>
+<span class="normal">710</span>
+<span class="normal">711</span>
+<span class="normal">712</span>
+<span class="normal">713</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">key_ordered_halfedges</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">inclusive</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdInt32</span><span class="p">,</span>
     <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
