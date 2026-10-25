@@ -616,32 +616,7 @@ def _edge_incidence(
     if grouping is not None:
         m = int(grouping[0].shape[0])
     else:
-        if keys is None:
-            key_buffer = _launch.empty(2 * n, dtype=wp.uint64, device=device)
-            order = _launch.empty(2 * n, dtype=wp.int32, device=device)
-            base = n_vertices
-            _launch.launch(
-                kernel_adjacency.face_edge_keys_and_order,
-                dim=n_faces,
-                inputs=[faces, wp.uint64(base), key_buffer, order],
-                device=device,
-            )
-        else:
-            key_buffer, order, base = keys
-        _launch.radix_sort_pairs(
-            key_buffer, order, count=n, end_bit=min(64, max(1, (base * base - 1).bit_length()))
-        )
-        # The run marks and their scan live in the payload's upper half, free once the sort ran.
-        ranks = _launch.view(order, n, 2 * n)
-        _launch.launch(
-            kernel_grouping.MARK_SORTED_RUN_STARTS[wp.uint64],
-            dim=n,
-            inputs=[key_buffer, ranks],
-            device=device,
-        )
-        _launch.array_scan(ranks, ranks, inclusive=True)
-        # The edge count sizes the tables.
-        m = int(read_scalar(ranks, n - 1))
+        key_buffer, order, _ranks, m = _sorted_corner_edges(faces, n_vertices, keys)
         sort_buffers = (key_buffer, order)
     # One zeroed buffer: the two CSRs' counts, the edge face counts and the feature counts.
     n_features = 0 if feature is None else n_vertices
@@ -673,6 +648,7 @@ def _edge_incidence(
         assert sort_buffers is not None
         key_buffer, order = sort_buffers
         unique_edges = odt.as_array2d(unique_rows.reshape((m, 2)), wp.int32)
+        # The run ranks ``_sorted_corner_edges`` scanned in the payload's upper half.
         inverse = inverse_view
         _launch.launch(
             kernel_remesh.emit_edge_topology,
@@ -4141,32 +4117,55 @@ def _subdivide_to_size(
 
     for i in range(max_iter + 1):
         n_vertices = current_vertices.size
+        use_sizing = wp.bool(sizing is not None)
 
-        unique_edges, inverse = (
-            grouping
-            if grouping is not None
-            else od.edges.edges_unique(current_faces, n_vertices=n_vertices, validate=False)
-        )
+        # Flag the edges that are longer than the target length, measuring each where it is tested:
+        # over a grouping in hand, or in the emit of the grouping built here (``edges_unique``'s
+        # sort), with its tables in one allocation.
+        if grouping is not None:
+            unique_edges, inverse = grouping
+            m = int(unique_edges.shape[0])
+            long_mask = _launch.empty(m, dtype=wp.bool, device=device)
+            rank_buffer = _launch.empty(m + 1, dtype=wp.int32, device=device)
+            _launch.launch(
+                kernel_remesh.mark_long_edges,
+                dim=m,
+                inputs=[
+                    current_vertices,
+                    unique_edges,
+                    max_edge_f,
+                    sizing,
+                    use_sizing,
+                    long_mask,
+                    rank_buffer,
+                ],
+                device=device,
+            )
+        else:
+            n = current_faces.size
+            key_buffer, order, ranks, m = _sorted_corner_edges(current_faces, n_vertices)
+            unique_rows, inverse, rank_buffer = _split_buffer(
+                _launch.empty(3 * m + n + 1, dtype=wp.int32, device=device), 2 * m, n, m + 1
+            )
+            unique_edges = odt.as_array2d(unique_rows.reshape((m, 2)), wp.int32)
+            long_mask = _launch.empty(m, dtype=wp.bool, device=device)
+            _launch.launch(
+                kernel_remesh.emit_long_edges,
+                dim=n,
+                inputs=[
+                    current_faces,
+                    key_buffer,
+                    order,
+                    ranks,
+                    current_vertices,
+                    max_edge_f,
+                    sizing,
+                    use_sizing,
+                ],
+                outputs=[unique_edges, inverse, long_mask, rank_buffer],
+                device=device,
+            )
         grouping = None
-        m = int(unique_edges.shape[0])
-
-        # Flag the edges that are longer than the target length, measuring each where it is tested.
-        long_mask = _launch.empty(m, dtype=wp.bool, device=device)
-        rank_buffer = _launch.empty(m + 1, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_remesh.mark_long_edges,
-            dim=m,
-            inputs=[
-                current_vertices,
-                unique_edges,
-                max_edge_f,
-                sizing,
-                wp.bool(sizing is not None),
-                long_mask,
-                rank_buffer,
-            ],
-            device=device,
-        )
 
         # A sizing field must grow with the vertex buffer, and it is *extended* rather than
         # re-sampled: a midpoint's target is the mean of the endpoints it splits, which is the same
@@ -4217,6 +4216,51 @@ def _subdivide_to_size(
     if copy and current_vertices is vertices:
         current_vertices, current_faces = _launch.clone(vertices), _launch.clone(faces)
     return current_vertices, current_faces, face_index, grouping
+
+
+def _sorted_corner_edges(
+    faces: wp.array[wp.int32],
+    n_vertices: int,
+    keys: tuple[wp.array[wp.uint64], wp.array[wp.int32], int] | None = None,
+) -> tuple[wp.array[wp.uint64], wp.array[wp.int32], wp.array[wp.int32], int]:
+    """
+    ``(keys, order, ranks, m)``: the radix sort of every corner's edge key and its run ranks.
+
+    The sort [`edges_unique`][ordito.edges.edges_unique] runs for a non-empty ``faces`` with a
+    known ``n_vertices``: ``keys`` and ``order`` are the double-width sort buffers, ``ranks`` the
+    inclusive scan of the run starts in the payload's upper half (``ranks[i] - 1`` is the unique
+    edge at sorted position ``i``) and ``m`` the unique-edge count, read back. ``keys``, ``(keys,
+    order, base)``, are such buffers already holding every corner's key packed against ``base``
+    (at least ``n_vertices``) and the identity payload, so the key launch is skipped; any such base
+    sorts the corners as ``n_vertices`` does.
+    """
+    device = faces.device
+    n = faces.size
+    if keys is None:
+        key_buffer = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+        order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+        base = n_vertices
+        _launch.launch(
+            kernel_adjacency.face_edge_keys_and_order,
+            dim=n // 3,
+            inputs=[faces, wp.uint64(base), key_buffer, order],
+            device=device,
+        )
+    else:
+        key_buffer, order, base = keys
+    _launch.radix_sort_pairs(
+        key_buffer, order, count=n, end_bit=min(64, max(1, (base * base - 1).bit_length()))
+    )
+    ranks = _launch.view(order, n, 2 * n)
+    _launch.launch(
+        kernel_grouping.MARK_SORTED_RUN_STARTS[wp.uint64],
+        dim=n,
+        inputs=[key_buffer, ranks],
+        device=device,
+    )
+    _launch.array_scan(ranks, ranks, inclusive=True)
+    # The edge count sizes the caller's tables.
+    return key_buffer, order, ranks, int(read_scalar(ranks, n - 1))
 
 
 def _extend_sizing_field(

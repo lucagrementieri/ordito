@@ -527,6 +527,29 @@ def unique_edge_length(
     return wp.length(vertices[unique_edges[e, 1]] - vertices[unique_edges[e, 0]])
 
 
+@wp.func
+def mark_long_edge(
+    vertices: wp.array[wp.vec3],
+    unique_edges: wp.array2d[wp.int32],
+    e: wp.int32,
+    max_edge: wp.float32,
+    sizing: wp.array[wp.float32],
+    use_sizing: wp.bool,
+    out_long: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # Unique edge ``e``'s verdict, written as ``mark_long_edges`` describes; edge 0 writes the rank
+    # buffer's leading zero.
+    target = max_edge
+    if use_sizing:
+        target = edge_mean_sizing(sizing, unique_edges, e)
+    is_long = unique_edge_length(vertices, unique_edges, e) > target
+    out_long[e] = is_long
+    out_flags[e + 1] = wp.where(is_long, wp.int32(1), wp.int32(0))
+    if e == 0:
+        out_flags[0] = wp.int32(0)
+
+
 @wp.kernel
 def mark_long_edges(
     vertices: wp.array[wp.vec3],
@@ -552,15 +575,44 @@ def mark_long_edges(
     # mark (three gathered edges, scattered duplicate flag stores) plus an emit that also writes
     # the vertices took the whole pass 1.24x (``subdivide_to_size``) and 1.19x (``split_edges``)
     # of this per-edge form, and the zeroed counter adds a memset to the pass that splits nothing.
-    e = wp.int32(wp.tid())
-    target = max_edge
-    if use_sizing:
-        target = edge_mean_sizing(sizing, unique_edges, e)
-    is_long = unique_edge_length(vertices, unique_edges, e) > target
-    out_long[e] = is_long
-    out_flags[e + 1] = wp.where(is_long, wp.int32(1), wp.int32(0))
-    if e == 0:
-        out_flags[0] = wp.int32(0)
+    mark_long_edge(
+        vertices,
+        unique_edges,
+        wp.int32(wp.tid()),
+        max_edge,
+        sizing,
+        use_sizing,
+        out_long,
+        out_flags,
+    )
+
+
+@wp.kernel
+def emit_long_edges(
+    faces: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    max_edge: wp.float32,
+    sizing: wp.array[wp.float32],
+    use_sizing: wp.bool,
+    out_unique_edges: wp.array2d[wp.int32],
+    out_inverse: wp.array[wp.int32],
+    out_long: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``edges.emit_sorted_unique_edges`` and ``mark_long_edges`` in one pass over the sorted
+    # corners: the position starting an edge's run writes its row and tests it, reading back the
+    # row it wrote, so the verdict is ``mark_long_edges``' over the same table bit for bit.
+    i = wp.int32(wp.tid())
+    _corner, e, start = emit_sorted_unique_edge(
+        faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse
+    )
+    if start:
+        mark_long_edge(
+            vertices, out_unique_edges, e, max_edge, sizing, use_sizing, out_long, out_flags
+        )
 
 
 @wp.func
@@ -669,6 +721,12 @@ def emit_size_faces(
     # into rows ``face_offsets[f] ..`` of the compact output (the scanned counts of
     # ``split_child_counts_and_midpoints``). An empty ``index_in`` / ``out_index`` (``None`` at
     # launch) carries no provenance.
+    #
+    # **Declined: writing the children's corner keys for the next pass's sort here**, as a collapse
+    # pass's compaction does (``compact_surviving_faces``), to drop that pass's key launch. The
+    # variable-length child rows scatter the key stores: this launch went from 0.15 to 0.55 ms
+    # against 0.20 ms for the key launch it removed, ``subdivide_to_size`` on a 1.3 M-face sphere
+    # 1.06x slower.
     f = wp.int32(wp.tid())
     src = wp.int32(-1)
     if index_in.shape[0] > 0:
