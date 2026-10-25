@@ -743,6 +743,16 @@ def emit_size_faces(
 # ---------------------------------------------------------------------------
 
 
+@wp.func
+def mark_long_region_edge(
+    e: wp.int32, out_long: wp.array[wp.bool], out_flags: wp.array[wp.int32]
+) -> None:
+    # Mark unique edge ``e`` long, in the mask and the zeroed ``int32`` flags; every racing write
+    # is the same value.
+    out_long[e] = wp.bool(True)
+    out_flags[e] = wp.int32(1)
+
+
 @wp.kernel
 def mark_long_region_edges(
     vertices: wp.array[wp.vec3],
@@ -764,8 +774,35 @@ def mark_long_region_edges(
     if region_flags[i // 3] != 0:
         e = inverse[i]
         if unique_edge_length(vertices, unique_edges, e) > max_edge:
-            out_long[e] = wp.bool(True)
-            out_flags[e] = wp.int32(1)
+            mark_long_region_edge(e, out_long, out_flags)
+
+
+@wp.kernel
+def emit_long_region_edges(
+    faces: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    region_flags: wp.array[wp.int32],
+    max_edge: wp.float32,
+    out_unique_edges: wp.array2d[wp.int32],
+    out_inverse: wp.array[wp.int32],
+    out_long: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``edges.emit_sorted_unique_edges`` and ``mark_long_region_edges`` in one pass over the sorted
+    # corners. A corner measures its edge from its own endpoints, the row the run's first position
+    # writes (``adjacency.edge_endpoints``), in ``unique_edge_length``'s subtraction order, so the
+    # test is ``mark_long_region_edges``' bit for bit without waiting on that row.
+    i = wp.int32(wp.tid())
+    corner, e, _start = emit_sorted_unique_edge(
+        faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse
+    )
+    if region_flags[corner // 3] != 0:
+        a, b = edge_endpoints(faces, corner)
+        if wp.length(vertices[b] - vertices[a]) > max_edge:
+            mark_long_region_edge(e, out_long, out_flags)
 
 
 @wp.kernel

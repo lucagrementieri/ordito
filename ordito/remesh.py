@@ -4492,21 +4492,38 @@ def subdivide_region_to_size(
         n_faces = current_faces.size // 3
         n_vertices = current_vertices.size
 
-        if topology is not None and topology.built:
-            unique_edges, inverse = topology.edges_unique()
-        else:
-            unique_edges, inverse = od.edges.edges_unique(
-                current_faces, n_vertices=n_vertices, validate=False
-            )
-        m = int(unique_edges.shape[0])
-
+        # The pass's edge grouping, from the flip loop's sort when one is held (it is of these
+        # faces), and the region's long edges marked in its emit; the zeroed rank buffer, the
+        # unique edges and the corner map in one allocation.
+        held = (
+            (*topology.sorted_corner_keys(), n_vertices)
+            if topology is not None and topology.built
+            else None
+        )
+        key_buffer, order, ranks, m = _sorted_corner_edges(
+            current_faces, n_vertices, held, presorted=held is not None
+        )
+        rank_buffer, unique_rows, inverse = _split_buffer(
+            _launch.zeros(3 * m + 1 + 3 * n_faces, dtype=wp.int32, device=device),
+            m + 1,
+            2 * m,
+            3 * n_faces,
+        )
+        unique_edges = odt.as_array2d(unique_rows.reshape((m, 2)), wp.int32)
         long_mask = _launch.zeros(m, dtype=wp.bool, device=device)
-        rank_buffer = _launch.zeros(m + 1, dtype=wp.int32, device=device)
         _launch.launch(
-            kernel_remesh.mark_long_region_edges,
+            kernel_remesh.emit_long_region_edges,
             dim=3 * n_faces,
-            inputs=[current_vertices, unique_edges, region_flags, inverse, max_edge_f],
-            outputs=[long_mask, rank_buffer[1:]],
+            inputs=[
+                current_faces,
+                key_buffer,
+                order,
+                ranks,
+                current_vertices,
+                region_flags,
+                max_edge_f,
+            ],
+            outputs=[unique_edges, inverse, long_mask, rank_buffer[1:]],
             device=device,
         )
 
