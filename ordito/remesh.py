@@ -608,9 +608,7 @@ def _edge_incidence(
     n_faces = faces.size // 3
     if vertices is None or n_faces == 0:
         unique_edges, inverse = (
-            grouping
-            if grouping is not None
-            else od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
+            grouping if grouping is not None else _edges_unique(faces, n_vertices)
         )
         m = int(unique_edges.shape[0])
         edge_faces = odt.as_array2d(odt.empty_2d((m, 2), wp.int32, device=device), wp.int32)
@@ -1025,7 +1023,7 @@ def _smooth_pass(
     device = vertices.device
     n_vertices = vertices.size
     if unique_edges is None:
-        unique_edges, _ = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
+        unique_edges, _ = _edges_unique(faces, n_vertices)
     # ``vertices.vertex_normals`` and ``laplacian.mass_matrix_entries`` from one pass over the
     # faces, into one zeroed ``float64`` buffer: the normals' rows, then the exact area sums. Each
     # reader finishes them where it reads them, so neither table is narrowed by a launch of its own.
@@ -3711,7 +3709,7 @@ def subdivide(
         return _launch.clone(vertices), _launch.clone(faces)
 
     if unique_edges is None or inverse is None:
-        unique_edges, inverse = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
+        unique_edges, inverse = _edges_unique(faces, n_vertices)
     n_unique = int(unique_edges.shape[0])
 
     # One buffer sized for its final use: the originals copied into the prefix and one midpoint per
@@ -3887,7 +3885,7 @@ def subdivide_loop(
         return _launch.clone(vertices), _launch.clone(faces)
 
     if unique_edges is None or inverse is None:
-        unique_edges, inverse = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
+        unique_edges, inverse = _edges_unique(faces, n_vertices)
     n_unique = int(unique_edges.shape[0])
 
     # Two zeroed buffers, one per dtype, split into the six accumulators: per unique edge, how many
@@ -4338,6 +4336,33 @@ def _sorted_corner_edges(
     return key_buffer, order, ranks, int(read_scalar(ranks, n - 1))
 
 
+def _edges_unique(
+    faces: wp.array[wp.int32], n_vertices: int
+) -> tuple[odt.Array2dInt32, wp.array[wp.int32]]:
+    """
+    ``edges.edges_unique(faces, n_vertices=n_vertices, validate=False)``, both tables in one buffer.
+
+    The same sort, rows and corner map (``_sorted_corner_edges`` and its emit), for this module's
+    trusted faces.
+    """
+    device = faces.device
+    n = faces.size
+    if n == 0:
+        return od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
+    key_buffer, order, ranks, m = _sorted_corner_edges(faces, n_vertices)
+    unique_rows, inverse = _split_buffer(
+        _launch.empty(2 * m + n, dtype=wp.int32, device=device), 2 * m, n
+    )
+    unique_edges = odt.as_array2d(unique_rows.reshape((m, 2)), wp.int32)
+    _launch.launch(
+        kernel_edges.emit_sorted_unique_edges,
+        dim=n,
+        inputs=[faces, key_buffer, order, ranks, unique_edges, inverse],
+        device=device,
+    )
+    return unique_edges, inverse
+
+
 def _extend_sizing_field(
     sizing: wp.array[wp.float32],
     unique_edges: odt.Array2dInt32,
@@ -4658,17 +4683,13 @@ def subdivide_region_to_size(
         if return_edges and topology is not None and topology.built:
             unique_edges, inverse = topology.edges_unique()
         elif return_edges:
-            unique_edges, inverse = od.edges.edges_unique(
-                current_faces, n_vertices=current_vertices.size, validate=False
-            )
+            unique_edges, inverse = _edges_unique(current_faces, current_vertices.size)
     new_region = od.array.astype(region_flags, wp.bool)
     if return_edges:
         # Without the flip pass, the grouping the loop's last pass took is of the faces it left:
         # every pass that splits loops back to group again before it can stop.
         if unique_edges is None or inverse is None:
-            unique_edges, inverse = od.edges.edges_unique(
-                current_faces, n_vertices=current_vertices.size, validate=False
-            )
+            unique_edges, inverse = _edges_unique(current_faces, current_vertices.size)
         return current_vertices, current_faces, new_region, unique_edges, inverse
     return current_vertices, current_faces, new_region
 
@@ -5168,7 +5189,7 @@ def split_edges(
     edges, corner_edge = (
         (unique_edges, inverse)
         if unique_edges is not None and inverse is not None
-        else od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
+        else _edges_unique(faces, n_vertices)
     )
     n_edges = int(edges.shape[0])
     if split_mask.size != n_edges:
