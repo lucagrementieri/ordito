@@ -2109,13 +2109,15 @@ class OperatorFactorization:
     coordinates
         ``(n,)`` positions of ``matrix``'s (block) rows -- a mesh's vertices for a vertex operator
         -- for the factorization's ordering. ``None`` orders by the pattern alone.
-    fixed_mask, free_map
-        Given together when ``matrix`` is the free block of an operator over ``n_dofs`` degrees of
-        freedom, as [`partitioned_interior_system`][ordito.linalg.partitioned_interior_system]
-        extracts it: that partition's ``(n_dofs,)`` mask and map. ``coordinates`` then places the
-        ``n_dofs`` degrees of freedom, as
-        [`free_coordinates`][ordito.linalg.free_coordinates] reads it, and the free rows' positions
-        are formed only when a factorization is built.
+    fixed_mask
+        ``(n_dofs,)`` mask of the partition ``matrix`` is the free block over, as
+        [`partitioned_interior_system`][ordito.linalg.partitioned_interior_system] extracts it;
+        given with ``free_map``. ``coordinates`` then places the ``n_dofs`` degrees of freedom, as
+        [`free_coordinates`][ordito.linalg.free_coordinates] reads it, and the free rows'
+        positions are formed only when a factorization is built.
+    free_map
+        ``(n_dofs,)`` that partition's compact map, as
+        [`free_partition`][ordito.linalg.free_partition] returns it; given with ``fixed_mask``.
 
     Raises
     ------
