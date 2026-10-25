@@ -272,16 +272,21 @@ def face_normals_and_areas(
     out_areas[f] = area
 
 
+@wp.func
+def face_area(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], f: wp.int32) -> wp.float32:
+    # ``face_normals_and_areas``' area alone -- ``0.5 * |triangle_cross|``, the same expression
+    # ``face_normals_and_area`` forms, so the two agree bit for bit.
+    return 0.5 * wp.length(triangle_cross(vertices, faces, f))
+
+
 @wp.kernel
 def face_areas(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_areas: wp.array[wp.float32]
 ) -> None:
-    # ``face_normals_and_areas``' area alone -- ``0.5 * |triangle_cross|``, the same expression
-    # ``face_normals_and_area`` forms, so the two agree bit for bit -- for a consumer that never
-    # reads the normal: ``sample.sample_surface`` writes it straight into its CDF buffer and scans
-    # in place.
+    # ``face_area`` per face, for a consumer that never reads the normal: ``sample.sample_surface``
+    # writes it straight into its CDF buffer and scans in place.
     f = wp.int32(wp.tid())
-    out_areas[f] = 0.5 * wp.length(triangle_cross(vertices, faces, f))
+    out_areas[f] = face_area(vertices, faces, f)
 
 
 @wp.func

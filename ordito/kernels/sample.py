@@ -9,10 +9,16 @@ from ordito.kernels.reduce import (
     block_sum,
     fold_block_totals,
     last_ticket_vector,
+    minmax_vec3_chunk,
     stage_block_total,
     write_block_value,
 )
-from ordito.kernels.triangles import face_area_weighted_centroid, face_signed_volume, face_vertices
+from ordito.kernels.triangles import (
+    face_area,
+    face_area_weighted_centroid,
+    face_signed_volume,
+    face_vertices,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -53,6 +59,25 @@ def fibonacci_lattice(
     # The whole lattice, one direction a thread (``fibonacci_direction``).
     i = wp.int32(wp.tid())
     out_directions[i] = fibonacci_direction(i, count, z_span)
+
+
+@wp.kernel
+def face_areas_and_vertex_box(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    box: wp.int32,
+    out_cdf: wp.array[wp.float32],
+) -> None:
+    # ``triangles.face_areas`` into the leading ``n_faces`` slots of ``out_cdf`` and, from the
+    # trailing ``chunks_1d(n_vertices)`` threads, the vertices' box folded into packed box ``box``
+    # of the same buffer (``reduce.minmax_vec3_chunked``'s layout, seeded ``inf``), so the CDF's
+    # total and the box come back in one readback.
+    t = wp.int32(wp.tid())
+    n_faces = faces.shape[0] // 3
+    if t < n_faces:
+        out_cdf[t] = face_area(vertices, faces, t)
+    else:
+        minmax_vec3_chunk(vertices, t - n_faces, out_cdf, box)
 
 
 @wp.kernel

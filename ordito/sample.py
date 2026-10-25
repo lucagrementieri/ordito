@@ -638,8 +638,9 @@ def sample_surface_blue_noise(
             _launch.empty(0, dtype=wp.int32, device=device),
         )
 
-    # The surface area is the total of the area CDF the pool is drawn from below.
-    cdf, surface_area = _face_cdf(vertices, faces, None)
+    # The surface area is the total of the area CDF the pool is drawn from below; the vertices' box,
+    # read back with it, encloses the pool and anchors the dart loop's grid.
+    cdf, surface_area, box = _face_cdf_and_vertex_box(vertices, faces)
     expected = surface_area * (math.pi * math.sqrt(3.0) / 6.0) / (math.pi * radius * radius / 4.0)
     nx = max(1, int(30.0 * expected))
 
@@ -655,14 +656,56 @@ def sample_surface_blue_noise(
     init_points, init_face_indices = _draw_surface_samples(
         vertices, faces, cdf, surface_area, nx, pool_seed
     )
-    return _dart_throw_blue_noise(init_points, init_face_indices, radius, priority_seed)
+    return _dart_throw_blue_noise(init_points, init_face_indices, radius, priority_seed, box)
+
+
+def _face_cdf_and_vertex_box(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+) -> tuple[wp.array[wp.float32], float, tuple[wp.vec3, wp.vec3]]:
+    """
+    [`_face_cdf`][ordito.sample._face_cdf] of the areas, and the box of ``vertices``, in one sync.
+
+    The areas and the box are formed in one launch into one buffer (the CDF, then the packed box
+    ``reduce.minmax_vec3_chunked`` writes, at the next multiple of six), so the scan's total and
+    the box come back in one readback. ``faces`` must be non-empty.
+    """
+    device = vertices.device
+    n_faces = faces.size // 3
+    box = (n_faces + 5) // 6
+    buffer = _launch.full(6 * box + 6, math.inf, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_sample.face_areas_and_vertex_box,
+        dim=n_faces + kernel_reduce.chunks_1d(vertices.size),
+        inputs=[vertices, faces, box],
+        outputs=[buffer],
+        device=device,
+    )
+    cdf = _launch.view(buffer, 0, n_faces)
+    _launch.array_scan(cdf, out_array=cdf)
+    # Host readback: the total sizes the pool and decides whether to raise, and the box sizes the
+    # dart loop's grid.
+    values = read_values(buffer, n_faces - 1, 6 * box + 7 - n_faces)
+    total = float(values[0])
+    if total <= 0.0:
+        raise ValueError("total face weight must be positive")
+    lower = wp.vec3(*values[-6:-3])
+    upper = wp.vec3(-values[-3], -values[-2], -values[-1])
+    return cdf, total, (lower, upper)
 
 
 def _dart_throw_blue_noise(
-    pool_points: wp.array[wp.vec3], pool_faces: wp.array[wp.int32], radius: float, seed: int
+    pool_points: wp.array[wp.vec3],
+    pool_faces: wp.array[wp.int32],
+    radius: float,
+    seed: int,
+    box: tuple[wp.vec3, wp.vec3],
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Maximal Poisson-disk subset of ``pool_points`` by randomized-priority parallel dart throwing.
+
+    ``box`` encloses the pool (the mesh vertices' box) and anchors the background grid; the
+    grid's cells are ``radius`` wide wherever it is anchored, so the selection does not depend on
+    it.
 
     See ``kernels/algorithms/blue_noise.py`` for why the result has the same distribution as one
     pass of the serial algorithm. The loop is a handful of rounds over a shrinking work list;
@@ -688,13 +731,14 @@ def _dart_throw_blue_noise(
         return empty
 
     # Background grid at cell size ``radius``, so a 3x3x3 neighbourhood covers the disk exactly.
-    bbox_min, bbox_max = od.bounds.aabb(pool_points)
+    bbox_min, bbox_max = box
     inv_cell_size = np.float32(1.0 / radius)
-    # The grid's side, one past the largest cell coordinate: ``kernels/algorithms/blue_noise.
-    # grid_coord`` is monotone in the point, so that coordinate is the bounding box's upper
-    # corner's, evaluated here in the kernel's float32 arithmetic.
+    # The grid's side, two past the largest cell coordinate of the box's upper corner:
+    # ``kernels/algorithms/blue_noise.grid_coord`` is monotone in the point and evaluated here in
+    # the kernel's float32 arithmetic, and the extra cell holds a pool point that rounding placed a
+    # hair past the vertices' box (one below the lower corner truncates to cell 0).
     span = np.asarray(bbox_max, dtype=np.float32) - np.asarray(bbox_min, dtype=np.float32)
-    grid_w = int((span * inv_cell_size).astype(np.int32).max()) + 1
+    grid_w = int((span * inv_cell_size).astype(np.int32).max()) + 2
 
     # Bucket the pool by cell: one radix sort of the cell keys gives both the per-cell membership
     # lists and, through the run starts of the sorted keys, the distinct cells and the
