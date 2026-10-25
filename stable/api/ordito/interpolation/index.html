@@ -7263,6 +7263,7 @@ touches, and the unreferenced vertex 3 stays <code>0</code>:</p>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">max_dist</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">mesh</span><span class="p">:</span> <span class="n">Mesh</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]</span>
 </code></pre></div>
 
@@ -7387,6 +7388,25 @@ hits.</p>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>mesh</code>
+            </td>
+            <td>
+                  <code><span title="warp.Mesh">Mesh</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>A <code>wp.Mesh</code> already built over <code>source_vertices</code> and <code>source_faces</code>, to spare the BVH
+build this otherwise pays on every call. Not checked against them: a mesh over other
+geometry silently answers for that geometry.
+<a class="autorefs autorefs-internal" title="warp_mesh" href="../mesh/#ordito.mesh.Trimesh.warp_mesh"><code>Trimesh.warp_mesh</code></a> is what to pass.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -7456,8 +7476,8 @@ own confidence measure, and <code>inf</code> for a miss.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>source_vertices</code>, <code>source_faces</code>, <code>source_values</code> and <code>target_vertices</code> are not
-all on one device.</p>
+                <p>If <code>source_vertices</code>, <code>source_faces</code>, <code>source_values</code>, <code>target_vertices</code> and
+<code>mesh</code> are not all on one device.</p>
               </div>
             </td>
           </tr>
@@ -7623,13 +7643,22 @@ all on one device.</p>
 <span class="normal">398</span>
 <span class="normal">399</span>
 <span class="normal">400</span>
-<span class="normal">401</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transfer_onto_vertices</span><span class="p">(</span>
+<span class="normal">401</span>
+<span class="normal">402</span>
+<span class="normal">403</span>
+<span class="normal">404</span>
+<span class="normal">405</span>
+<span class="normal">406</span>
+<span class="normal">407</span>
+<span class="normal">408</span>
+<span class="normal">409</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transfer_onto_vertices</span><span class="p">(</span>
     <span class="n">source_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">source_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">source_values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">max_dist</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Resample a source mesh's per-vertex field onto another mesh's vertices.</span>
@@ -7663,6 +7692,11 @@ all on one device.</p>
 <span class="sd">        zero-filled output and report ``inf`` in the returned distance, which is how a caller</span>
 <span class="sd">        detects them. When ``None``, derived from the box enclosing both meshes, so every target</span>
 <span class="sd">        hits.</span>
+<span class="sd">    mesh</span>
+<span class="sd">        A ``wp.Mesh`` already built over ``source_vertices`` and ``source_faces``, to spare the BVH</span>
+<span class="sd">        build this otherwise pays on every call. Not checked against them: a mesh over other</span>
+<span class="sd">        geometry silently answers for that geometry.</span>
+<span class="sd">        [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is what to pass.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -7678,8 +7712,8 @@ all on one device.</p>
 <span class="sd">    ValueError</span>
 <span class="sd">        If ``source_values`` does not have one entry per source vertex.</span>
 <span class="sd">    RuntimeError</span>
-<span class="sd">        If ``source_vertices``, ``source_faces``, ``source_values`` and ``target_vertices`` are not</span>
-<span class="sd">        all on one device.</span>
+<span class="sd">        If ``source_vertices``, ``source_faces``, ``source_values``, ``target_vertices`` and</span>
+<span class="sd">        ``mesh`` are not all on one device.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -7713,6 +7747,7 @@ all on one device.</p>
         <span class="n">source_faces</span><span class="o">=</span><span class="n">source_faces</span><span class="p">,</span>
         <span class="n">source_values</span><span class="o">=</span><span class="n">source_values</span><span class="p">,</span>
         <span class="n">target_vertices</span><span class="o">=</span><span class="n">target_vertices</span><span class="p">,</span>
+        <span class="n">mesh</span><span class="o">=</span><span class="n">mesh</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">target_vertices</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n_target</span> <span class="o">=</span> <span class="n">target_vertices</span><span class="o">.</span><span class="n">size</span>
@@ -7727,9 +7762,10 @@ all on one device.</p>
     <span class="k">if</span> <span class="n">n_target</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">source_faces</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">out_values</span><span class="p">,</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">n_target</span><span class="p">,</span> <span class="nb">float</span><span class="p">(</span><span class="s2">"inf"</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
 
-    <span class="n">require_nonempty_mesh</span><span class="p">(</span><span class="n">source_faces</span><span class="p">,</span> <span class="s2">"transfer_onto_vertices"</span><span class="p">)</span>
-    <span class="c1"># The mesh aliases the caller's buffers and is discarded here, so it needs no copy.</span>
-    <span class="n">mesh</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">source_vertices</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">source_faces</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">mesh</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">require_nonempty_mesh</span><span class="p">(</span><span class="n">source_faces</span><span class="p">,</span> <span class="s2">"transfer_onto_vertices"</span><span class="p">)</span>
+        <span class="c1"># The mesh aliases the caller's buffers and is discarded here, so it needs no copy.</span>
+        <span class="n">mesh</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">source_vertices</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">source_faces</span><span class="p">)</span>
     <span class="n">distance</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_target</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_interpolation</span><span class="o">.</span><span class="n">TRANSFER_ONTO_VERTICES</span><span class="p">[</span><span class="n">source_values</span><span class="o">.</span><span class="n">dtype</span><span class="p">],</span>
@@ -7949,15 +7985,7 @@ vertices:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/interpolation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">404</span>
-<span class="normal">405</span>
-<span class="normal">406</span>
-<span class="normal">407</span>
-<span class="normal">408</span>
-<span class="normal">409</span>
-<span class="normal">410</span>
-<span class="normal">411</span>
-<span class="normal">412</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">412</span>
 <span class="normal">413</span>
 <span class="normal">414</span>
 <span class="normal">415</span>
@@ -8052,7 +8080,15 @@ vertices:</p>
 <span class="normal">504</span>
 <span class="normal">505</span>
 <span class="normal">506</span>
-<span class="normal">507</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transfer_through_operator</span><span class="p">(</span>
+<span class="normal">507</span>
+<span class="normal">508</span>
+<span class="normal">509</span>
+<span class="normal">510</span>
+<span class="normal">511</span>
+<span class="normal">512</span>
+<span class="normal">513</span>
+<span class="normal">514</span>
+<span class="normal">515</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transfer_through_operator</span><span class="p">(</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">],</span> <span class="n">operator</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8455,15 +8491,7 @@ closest-point fallback is this function at <code>k=1</code>, so neither needs a 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/interpolation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">510</span>
-<span class="normal">511</span>
-<span class="normal">512</span>
-<span class="normal">513</span>
-<span class="normal">514</span>
-<span class="normal">515</span>
-<span class="normal">516</span>
-<span class="normal">517</span>
-<span class="normal">518</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">518</span>
 <span class="normal">519</span>
 <span class="normal">520</span>
 <span class="normal">521</span>
@@ -8616,7 +8644,15 @@ closest-point fallback is this function at <code>k=1</code>, so neither needs a 
 <span class="normal">668</span>
 <span class="normal">669</span>
 <span class="normal">670</span>
-<span class="normal">671</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">interpolate_from_points</span><span class="p">(</span>
+<span class="normal">671</span>
+<span class="normal">672</span>
+<span class="normal">673</span>
+<span class="normal">674</span>
+<span class="normal">675</span>
+<span class="normal">676</span>
+<span class="normal">677</span>
+<span class="normal">678</span>
+<span class="normal">679</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">interpolate_from_points</span><span class="p">(</span>
     <span class="n">source_points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">source_values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">],</span>
     <span class="n">query_points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>

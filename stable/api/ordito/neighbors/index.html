@@ -4775,17 +4775,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#ordito.neighbors.mesh_from_points" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        mesh_from_points
-      </span>
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#ordito.neighbors.hashgrid_from_points" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -6128,17 +6117,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#ordito.neighbors.mesh_from_points" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        mesh_from_points
-      </span>
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#ordito.neighbors.hashgrid_from_points" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -6377,14 +6355,6 @@ cloud's scale is normally estimated from.</p>
               </td>
             </tr>
             <tr class="doc-section-item">
-              <td><code><a class="autorefs autorefs-internal" title="mesh_from_points (ordito.neighbors.mesh_from_points)" href="./#ordito.neighbors.mesh_from_points">mesh_from_points</a></code></td>
-              <td>
-                <div class="doc-md-description">
-                  <p>Build a <code>warp.Mesh</code> over <code>points</code> whose triangles each collapse onto one point.</p>
-                </div>
-              </td>
-            </tr>
-            <tr class="doc-section-item">
               <td><code><a class="autorefs autorefs-internal" title="hashgrid_from_points (ordito.neighbors.hashgrid_from_points)" href="./#ordito.neighbors.hashgrid_from_points">hashgrid_from_points</a></code></td>
               <td>
                 <div class="doc-md-description">
@@ -6555,8 +6525,9 @@ cloud's scale is normally estimated from.</p>
     <div class="doc doc-contents ">
 
         <p>Build a bounding-volume hierarchy over <code>points</code> for radius queries.</p>
-<p>Each leaf stores the same geometry as <code>points</code> (degenerate bounds via a clone),
-matching the broad-phase pattern used by
+<p>Each point is its own degenerate box (<code>points</code> serves as both bounds, aliased rather than
+copied, so do not mutate it while the tree is in use), matching the broad-phase pattern used
+by
 <a class="autorefs autorefs-internal" title="query_ball" href="./#ordito.neighbors.query_ball"><code>query_ball</code></a> and
 <a class="autorefs autorefs-internal" title="query_nearest" href="./#ordito.neighbors.query_nearest"><code>query_nearest</code></a>.</p>
 
@@ -6597,11 +6568,11 @@ matching the broad-phase pattern used by
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Maximum primitives per leaf; forwarded to <code>warp.Bvh</code>. The two query families want
-opposite leaves: the ball queries are fastest at one point a leaf, the nearest queries at
-larger leaves the larger the cloud (what <a class="autorefs autorefs-internal" title="query_nearest" href="./#ordito.neighbors.query_nearest"><code>query_nearest</code></a>
-picks when it builds its own tree). The default sits between them, for a tree shared by
-both.</p>
+                <p>Maximum primitives per leaf; forwarded to <code>warp.Bvh</code>. The query families want different
+leaves: the ball queries and the <code>k = 1</code> nearest query are fastest at one to four points
+a leaf, the <code>k &gt; 1</code> nearest queries at larger leaves the larger the cloud (what
+<a class="autorefs autorefs-internal" title="query_nearest" href="./#ordito.neighbors.query_nearest"><code>query_nearest</code></a> picks when it builds its own tree). The
+default sits between them, for a tree shared by all of them.</p>
               </div>
             </td>
             <td>
@@ -6660,9 +6631,9 @@ centre has four neighbours at distance 1, a corner two:</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 7 places</summary>
+      <summary>Referenced by 8 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.mesh_from_points">mesh_from_points</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_ball">query_ball</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_ball_count">query_ball_count</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_ball_with_offsets">query_ball_with_offsets</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_bvh_ball">query_bvh_ball</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_bvh_box">query_bvh_box</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_nearest">query_nearest</a></span></p>
+<span class="ordito-backlink"><a href="../registration/#ordito.registration">registration</a> › <a href="../registration/#ordito.registration.icp">icp</a></span> · <span class="ordito-backlink"><a href="../registration/#ordito.registration">registration</a> › <a href="../registration/#ordito.registration.icp_point_to_plane">icp_point_to_plane</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_ball">query_ball</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_ball_count">query_ball_count</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_ball_with_offsets">query_ball_with_offsets</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_bvh_ball">query_bvh_ball</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_bvh_box">query_bvh_box</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_nearest">query_nearest</a></span></p>
     </details>
 
 
@@ -6718,12 +6689,14 @@ centre has four neighbours at distance 1, a corner two:</p>
 <span class="normal">159</span>
 <span class="normal">160</span>
 <span class="normal">161</span>
-<span class="normal">162</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bvh_from_points</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">leaf_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">:</span>
+<span class="normal">162</span>
+<span class="normal">163</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bvh_from_points</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">leaf_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Build a bounding-volume hierarchy over ``points`` for radius queries.</span>
 
-<span class="sd">    Each leaf stores the same geometry as ``points`` (degenerate bounds via a clone),</span>
-<span class="sd">    matching the broad-phase pattern used by</span>
+<span class="sd">    Each point is its own degenerate box (``points`` serves as both bounds, aliased rather than</span>
+<span class="sd">    copied, so do not mutate it while the tree is in use), matching the broad-phase pattern used</span>
+<span class="sd">    by</span>
 <span class="sd">    [`query_ball`][ordito.neighbors.query_ball] and</span>
 <span class="sd">    [`query_nearest`][ordito.neighbors.query_nearest].</span>
 
@@ -6732,11 +6705,11 @@ centre has four neighbours at distance 1, a corner two:</p>
 <span class="sd">    points</span>
 <span class="sd">        ``(n,)`` positions.</span>
 <span class="sd">    leaf_size</span>
-<span class="sd">        Maximum primitives per leaf; forwarded to ``warp.Bvh``. The two query families want</span>
-<span class="sd">        opposite leaves: the ball queries are fastest at one point a leaf, the nearest queries at</span>
-<span class="sd">        larger leaves the larger the cloud (what [`query_nearest`][ordito.neighbors.query_nearest]</span>
-<span class="sd">        picks when it builds its own tree). The default sits between them, for a tree shared by</span>
-<span class="sd">        both.</span>
+<span class="sd">        Maximum primitives per leaf; forwarded to ``warp.Bvh``. The query families want different</span>
+<span class="sd">        leaves: the ball queries and the ``k = 1`` nearest query are fastest at one to four points</span>
+<span class="sd">        a leaf, the ``k &gt; 1`` nearest queries at larger leaves the larger the cloud (what</span>
+<span class="sd">        [`query_nearest`][ordito.neighbors.query_nearest] picks when it builds its own tree). The</span>
+<span class="sd">        default sits between them, for a tree shared by all of them.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -6769,278 +6742,6 @@ centre has four neighbours at distance 1, a corner two:</p>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="k">return</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">leaf_size</span><span class="o">=</span><span class="n">leaf_size</span><span class="p">)</span>
-</code></pre></div></td></tr></table></div>
-            </details>
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h2 id="ordito.neighbors.mesh_from_points" class="doc doc-heading">
-            <span class="doc doc-object-name doc-function-name">mesh_from_points</span>
-
-
-</h2>
-<div class="doc-signature highlight"><pre><span></span><code><span class="nf">mesh_from_points</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span>
-</code></pre></div>
-
-    <div class="doc doc-contents ">
-
-        <p>Build a <code>warp.Mesh</code> over <code>points</code> whose triangles each collapse onto one point.</p>
-<p>Its closest-face query is then a nearest-point query: the closest point of a triangle whose
-three corners coincide is that corner, so <code>wp.mesh_query_point_no_sign</code> returns the nearest
-point's index as its face. (Only this point-shaped degeneracy is found: a triangle collapsed
-onto a segment, <code>(a, b, b)</code>, is never returned by that query, which is why
-<a class="autorefs autorefs-internal" title="closest_point_on_edges" href="../proximity/#ordito.proximity.closest_point_on_edges"><code>closest_point_on_edges</code></a> builds its own tree.)
-This is the tree
-<a class="autorefs autorefs-internal" title="query_nearest" href="./#ordito.neighbors.query_nearest"><code>query_nearest</code></a> answers <code>k = 1</code> with under
-<code>backend="bvh"</code>, and its cost follows the tree's depth rather than how far a query sits from
-the cloud.</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>points</code>
-            </td>
-            <td>
-                  <code><span title="warp.array">array</span>[<span title="warp.vec3">vec3</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p><code>(n,)</code> positions, <code>n &gt;= 1</code>. The mesh aliases them rather than copying, so do not
-mutate them while it is in use.</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><span title="warp.Mesh">Mesh</span></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Mesh of <code>n</code> degenerate triangles, triangle <code>i</code> on <code>points[i]</code>.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-<p><span class="doc-section-title">Raises:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>If <code>points</code> is empty: a <code>warp.Mesh</code> with no triangles corrupts the CUDA allocator.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-<details class="see-also" open>
-  <summary>See Also</summary>
-  <p><a class="autorefs autorefs-internal" title="bvh_from_points" href="./#ordito.neighbors.bvh_from_points"><code>bvh_from_points</code></a></p>
-</details>
-
-<p><span class="doc-section-title">Examples:</span></p>
-    <p>The closest face of the collapsed mesh is the nearest point, here the grid's centre (index 12):</p>
-<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
-
-<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
-
-<span class="n">points</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="n">count</span><span class="o">=</span><span class="p">(</span><span class="mi">5</span><span class="p">,</span> <span class="mi">5</span><span class="p">),</span> <span class="n">extents</span><span class="o">=</span><span class="p">(</span><span class="mf">4.0</span><span class="p">,</span> <span class="mf">4.0</span><span class="p">))</span>  <span class="c1"># unit spacing, 25 points</span>
-<span class="n">mesh</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">mesh_from_points</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">mesh</span><span class="o">.</span><span class="n">indices</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># (75,)</span>
-<span class="n">queries</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mf">0.1</span><span class="p">,</span> <span class="mf">0.2</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">]],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">)</span>
-<span class="n">_</span><span class="p">,</span> <span class="n">distances</span><span class="p">,</span> <span class="n">nearest</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">proximity</span><span class="o">.</span><span class="n">closest_point_on_mesh</span><span class="p">(</span>
-    <span class="n">points</span><span class="p">,</span> <span class="n">mesh</span><span class="o">.</span><span class="n">indices</span><span class="p">,</span> <span class="n">queries</span><span class="p">,</span> <span class="n">mesh</span><span class="o">=</span><span class="n">mesh</span>
-<span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="n">nearest</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>  <span class="c1"># [12]</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">distances</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>  <span class="c1"># 0.2236</span>
-</code></pre></div>
-
-          
-    <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 4 places</summary>
-        <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../registration/#ordito.registration">registration</a> › <a href="../registration/#ordito.registration.icp">icp</a></span> · <span class="ordito-backlink"><a href="../registration/#ordito.registration">registration</a> › <a href="../registration/#ordito.registration.icp_point_to_plane">icp_point_to_plane</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_nearest">query_nearest</a></span> · <span class="ordito-backlink"><a href="../proximity/#ordito.proximity">proximity</a> › <a href="../proximity/#ordito.proximity.closest_point_on_edges">closest_point_on_edges</a></span></p>
-    </details>
-
-
-            <details class="mkdocstrings-source">
-              <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">165</span>
-<span class="normal">166</span>
-<span class="normal">167</span>
-<span class="normal">168</span>
-<span class="normal">169</span>
-<span class="normal">170</span>
-<span class="normal">171</span>
-<span class="normal">172</span>
-<span class="normal">173</span>
-<span class="normal">174</span>
-<span class="normal">175</span>
-<span class="normal">176</span>
-<span class="normal">177</span>
-<span class="normal">178</span>
-<span class="normal">179</span>
-<span class="normal">180</span>
-<span class="normal">181</span>
-<span class="normal">182</span>
-<span class="normal">183</span>
-<span class="normal">184</span>
-<span class="normal">185</span>
-<span class="normal">186</span>
-<span class="normal">187</span>
-<span class="normal">188</span>
-<span class="normal">189</span>
-<span class="normal">190</span>
-<span class="normal">191</span>
-<span class="normal">192</span>
-<span class="normal">193</span>
-<span class="normal">194</span>
-<span class="normal">195</span>
-<span class="normal">196</span>
-<span class="normal">197</span>
-<span class="normal">198</span>
-<span class="normal">199</span>
-<span class="normal">200</span>
-<span class="normal">201</span>
-<span class="normal">202</span>
-<span class="normal">203</span>
-<span class="normal">204</span>
-<span class="normal">205</span>
-<span class="normal">206</span>
-<span class="normal">207</span>
-<span class="normal">208</span>
-<span class="normal">209</span>
-<span class="normal">210</span>
-<span class="normal">211</span>
-<span class="normal">212</span>
-<span class="normal">213</span>
-<span class="normal">214</span>
-<span class="normal">215</span>
-<span class="normal">216</span>
-<span class="normal">217</span>
-<span class="normal">218</span>
-<span class="normal">219</span>
-<span class="normal">220</span>
-<span class="normal">221</span>
-<span class="normal">222</span>
-<span class="normal">223</span>
-<span class="normal">224</span>
-<span class="normal">225</span>
-<span class="normal">226</span>
-<span class="normal">227</span>
-<span class="normal">228</span>
-<span class="normal">229</span>
-<span class="normal">230</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mesh_from_points</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">"""</span>
-<span class="sd">    Build a ``warp.Mesh`` over ``points`` whose triangles each collapse onto one point.</span>
-
-<span class="sd">    Its closest-face query is then a nearest-point query: the closest point of a triangle whose</span>
-<span class="sd">    three corners coincide is that corner, so ``wp.mesh_query_point_no_sign`` returns the nearest</span>
-<span class="sd">    point's index as its face. (Only this point-shaped degeneracy is found: a triangle collapsed</span>
-<span class="sd">    onto a segment, ``(a, b, b)``, is never returned by that query, which is why</span>
-<span class="sd">    [`closest_point_on_edges`][ordito.proximity.closest_point_on_edges] builds its own tree.)</span>
-<span class="sd">    This is the tree</span>
-<span class="sd">    [`query_nearest`][ordito.neighbors.query_nearest] answers ``k = 1`` with under</span>
-<span class="sd">    ``backend="bvh"``, and its cost follows the tree's depth rather than how far a query sits from</span>
-<span class="sd">    the cloud.</span>
-
-<span class="sd">    Parameters</span>
-<span class="sd">    ----------</span>
-<span class="sd">    points</span>
-<span class="sd">        ``(n,)`` positions, ``n &gt;= 1``. The mesh aliases them rather than copying, so do not</span>
-<span class="sd">        mutate them while it is in use.</span>
-
-<span class="sd">    Returns</span>
-<span class="sd">    -------</span>
-<span class="sd">    warp.Mesh</span>
-<span class="sd">        Mesh of ``n`` degenerate triangles, triangle ``i`` on ``points[i]``.</span>
-
-<span class="sd">    Raises</span>
-<span class="sd">    ------</span>
-<span class="sd">    ValueError</span>
-<span class="sd">        If ``points`` is empty: a ``warp.Mesh`` with no triangles corrupts the CUDA allocator.</span>
-
-<span class="sd">    See Also</span>
-<span class="sd">    --------</span>
-<span class="sd">    [`bvh_from_points`][ordito.neighbors.bvh_from_points]</span>
-
-<span class="sd">    Examples</span>
-<span class="sd">    --------</span>
-<span class="sd">    The closest face of the collapsed mesh is the nearest point, here the grid's centre (index 12):</span>
-
-<span class="sd">    ```python</span>
-<span class="sd">    import warp as wp</span>
-
-<span class="sd">    import ordito as od</span>
-
-<span class="sd">    points, _ = od.creation.grid(count=(5, 5), extents=(4.0, 4.0))  # unit spacing, 25 points</span>
-<span class="sd">    mesh = od.neighbors.mesh_from_points(points)</span>
-<span class="sd">    print(mesh.indices.shape)  # (75,)</span>
-<span class="sd">    queries = wp.array([[0.1, 0.2, 0.0]], dtype=wp.vec3)</span>
-<span class="sd">    _, distances, nearest = od.proximity.closest_point_on_mesh(</span>
-<span class="sd">        points, mesh.indices, queries, mesh=mesh</span>
-<span class="sd">    )</span>
-<span class="sd">    print(nearest.numpy().tolist())  # [12]</span>
-<span class="sd">    print(f"{distances.numpy()[0]:.4f}")  # 0.2236</span>
-<span class="sd">    ```</span>
-<span class="sd">    """</span>
-    <span class="n">n</span> <span class="o">=</span> <span class="n">points</span><span class="o">.</span><span class="n">size</span>
-    <span class="k">if</span> <span class="n">n</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"mesh_from_points needs at least one point"</span><span class="p">)</span>
-    <span class="n">corners</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">points</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">point_triangle_indices</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">corners</span><span class="p">],</span> <span class="n">device</span><span class="o">=</span><span class="n">points</span><span class="o">.</span><span class="n">device</span>
-    <span class="p">)</span>
-    <span class="c1"># ``lbvh``: the other constructors build this tree several times slower, for no faster query.</span>
-    <span class="c1"># One triangle per leaf: a leaf test here is Warp's full closest-point-on-triangle routine on a</span>
-    <span class="c1"># triangle that is one point, so every extra primitive in a leaf is wasted arithmetic: one per</span>
-    <span class="c1"># leaf is the fastest query, for a build no slower and the same distances.</span>
-    <span class="k">return</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">points</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">corners</span><span class="p">,</span> <span class="n">bvh_constructor</span><span class="o">=</span><span class="s2">"lbvh"</span><span class="p">,</span> <span class="n">bvh_leaf_size</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -7192,64 +6893,64 @@ search (<code>warp.HashGrid</code> itself does not keep it).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">233</span>
-<span class="normal">234</span>
-<span class="normal">235</span>
-<span class="normal">236</span>
-<span class="normal">237</span>
-<span class="normal">238</span>
-<span class="normal">239</span>
-<span class="normal">240</span>
-<span class="normal">241</span>
-<span class="normal">242</span>
-<span class="normal">243</span>
-<span class="normal">244</span>
-<span class="normal">245</span>
-<span class="normal">246</span>
-<span class="normal">247</span>
-<span class="normal">248</span>
-<span class="normal">249</span>
-<span class="normal">250</span>
-<span class="normal">251</span>
-<span class="normal">252</span>
-<span class="normal">253</span>
-<span class="normal">254</span>
-<span class="normal">255</span>
-<span class="normal">256</span>
-<span class="normal">257</span>
-<span class="normal">258</span>
-<span class="normal">259</span>
-<span class="normal">260</span>
-<span class="normal">261</span>
-<span class="normal">262</span>
-<span class="normal">263</span>
-<span class="normal">264</span>
-<span class="normal">265</span>
-<span class="normal">266</span>
-<span class="normal">267</span>
-<span class="normal">268</span>
-<span class="normal">269</span>
-<span class="normal">270</span>
-<span class="normal">271</span>
-<span class="normal">272</span>
-<span class="normal">273</span>
-<span class="normal">274</span>
-<span class="normal">275</span>
-<span class="normal">276</span>
-<span class="normal">277</span>
-<span class="normal">278</span>
-<span class="normal">279</span>
-<span class="normal">280</span>
-<span class="normal">281</span>
-<span class="normal">282</span>
-<span class="normal">283</span>
-<span class="normal">284</span>
-<span class="normal">285</span>
-<span class="normal">286</span>
-<span class="normal">287</span>
-<span class="normal">288</span>
-<span class="normal">289</span>
-<span class="normal">290</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hashgrid_from_points</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">166</span>
+<span class="normal">167</span>
+<span class="normal">168</span>
+<span class="normal">169</span>
+<span class="normal">170</span>
+<span class="normal">171</span>
+<span class="normal">172</span>
+<span class="normal">173</span>
+<span class="normal">174</span>
+<span class="normal">175</span>
+<span class="normal">176</span>
+<span class="normal">177</span>
+<span class="normal">178</span>
+<span class="normal">179</span>
+<span class="normal">180</span>
+<span class="normal">181</span>
+<span class="normal">182</span>
+<span class="normal">183</span>
+<span class="normal">184</span>
+<span class="normal">185</span>
+<span class="normal">186</span>
+<span class="normal">187</span>
+<span class="normal">188</span>
+<span class="normal">189</span>
+<span class="normal">190</span>
+<span class="normal">191</span>
+<span class="normal">192</span>
+<span class="normal">193</span>
+<span class="normal">194</span>
+<span class="normal">195</span>
+<span class="normal">196</span>
+<span class="normal">197</span>
+<span class="normal">198</span>
+<span class="normal">199</span>
+<span class="normal">200</span>
+<span class="normal">201</span>
+<span class="normal">202</span>
+<span class="normal">203</span>
+<span class="normal">204</span>
+<span class="normal">205</span>
+<span class="normal">206</span>
+<span class="normal">207</span>
+<span class="normal">208</span>
+<span class="normal">209</span>
+<span class="normal">210</span>
+<span class="normal">211</span>
+<span class="normal">212</span>
+<span class="normal">213</span>
+<span class="normal">214</span>
+<span class="normal">215</span>
+<span class="normal">216</span>
+<span class="normal">217</span>
+<span class="normal">218</span>
+<span class="normal">219</span>
+<span class="normal">220</span>
+<span class="normal">221</span>
+<span class="normal">222</span>
+<span class="normal">223</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hashgrid_from_points</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">grid_bins</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">HashGrid</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7471,56 +7172,56 @@ broad-phase intersection tests.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">293</span>
-<span class="normal">294</span>
-<span class="normal">295</span>
-<span class="normal">296</span>
-<span class="normal">297</span>
-<span class="normal">298</span>
-<span class="normal">299</span>
-<span class="normal">300</span>
-<span class="normal">301</span>
-<span class="normal">302</span>
-<span class="normal">303</span>
-<span class="normal">304</span>
-<span class="normal">305</span>
-<span class="normal">306</span>
-<span class="normal">307</span>
-<span class="normal">308</span>
-<span class="normal">309</span>
-<span class="normal">310</span>
-<span class="normal">311</span>
-<span class="normal">312</span>
-<span class="normal">313</span>
-<span class="normal">314</span>
-<span class="normal">315</span>
-<span class="normal">316</span>
-<span class="normal">317</span>
-<span class="normal">318</span>
-<span class="normal">319</span>
-<span class="normal">320</span>
-<span class="normal">321</span>
-<span class="normal">322</span>
-<span class="normal">323</span>
-<span class="normal">324</span>
-<span class="normal">325</span>
-<span class="normal">326</span>
-<span class="normal">327</span>
-<span class="normal">328</span>
-<span class="normal">329</span>
-<span class="normal">330</span>
-<span class="normal">331</span>
-<span class="normal">332</span>
-<span class="normal">333</span>
-<span class="normal">334</span>
-<span class="normal">335</span>
-<span class="normal">336</span>
-<span class="normal">337</span>
-<span class="normal">338</span>
-<span class="normal">339</span>
-<span class="normal">340</span>
-<span class="normal">341</span>
-<span class="normal">342</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bvh_from_bounds</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">226</span>
+<span class="normal">227</span>
+<span class="normal">228</span>
+<span class="normal">229</span>
+<span class="normal">230</span>
+<span class="normal">231</span>
+<span class="normal">232</span>
+<span class="normal">233</span>
+<span class="normal">234</span>
+<span class="normal">235</span>
+<span class="normal">236</span>
+<span class="normal">237</span>
+<span class="normal">238</span>
+<span class="normal">239</span>
+<span class="normal">240</span>
+<span class="normal">241</span>
+<span class="normal">242</span>
+<span class="normal">243</span>
+<span class="normal">244</span>
+<span class="normal">245</span>
+<span class="normal">246</span>
+<span class="normal">247</span>
+<span class="normal">248</span>
+<span class="normal">249</span>
+<span class="normal">250</span>
+<span class="normal">251</span>
+<span class="normal">252</span>
+<span class="normal">253</span>
+<span class="normal">254</span>
+<span class="normal">255</span>
+<span class="normal">256</span>
+<span class="normal">257</span>
+<span class="normal">258</span>
+<span class="normal">259</span>
+<span class="normal">260</span>
+<span class="normal">261</span>
+<span class="normal">262</span>
+<span class="normal">263</span>
+<span class="normal">264</span>
+<span class="normal">265</span>
+<span class="normal">266</span>
+<span class="normal">267</span>
+<span class="normal">268</span>
+<span class="normal">269</span>
+<span class="normal">270</span>
+<span class="normal">271</span>
+<span class="normal">272</span>
+<span class="normal">273</span>
+<span class="normal">274</span>
+<span class="normal">275</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bvh_from_bounds</span><span class="p">(</span>
     <span class="n">lower</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">upper</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">leaf_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7758,7 +7459,74 @@ hurts most.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">345</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">278</span>
+<span class="normal">279</span>
+<span class="normal">280</span>
+<span class="normal">281</span>
+<span class="normal">282</span>
+<span class="normal">283</span>
+<span class="normal">284</span>
+<span class="normal">285</span>
+<span class="normal">286</span>
+<span class="normal">287</span>
+<span class="normal">288</span>
+<span class="normal">289</span>
+<span class="normal">290</span>
+<span class="normal">291</span>
+<span class="normal">292</span>
+<span class="normal">293</span>
+<span class="normal">294</span>
+<span class="normal">295</span>
+<span class="normal">296</span>
+<span class="normal">297</span>
+<span class="normal">298</span>
+<span class="normal">299</span>
+<span class="normal">300</span>
+<span class="normal">301</span>
+<span class="normal">302</span>
+<span class="normal">303</span>
+<span class="normal">304</span>
+<span class="normal">305</span>
+<span class="normal">306</span>
+<span class="normal">307</span>
+<span class="normal">308</span>
+<span class="normal">309</span>
+<span class="normal">310</span>
+<span class="normal">311</span>
+<span class="normal">312</span>
+<span class="normal">313</span>
+<span class="normal">314</span>
+<span class="normal">315</span>
+<span class="normal">316</span>
+<span class="normal">317</span>
+<span class="normal">318</span>
+<span class="normal">319</span>
+<span class="normal">320</span>
+<span class="normal">321</span>
+<span class="normal">322</span>
+<span class="normal">323</span>
+<span class="normal">324</span>
+<span class="normal">325</span>
+<span class="normal">326</span>
+<span class="normal">327</span>
+<span class="normal">328</span>
+<span class="normal">329</span>
+<span class="normal">330</span>
+<span class="normal">331</span>
+<span class="normal">332</span>
+<span class="normal">333</span>
+<span class="normal">334</span>
+<span class="normal">335</span>
+<span class="normal">336</span>
+<span class="normal">337</span>
+<span class="normal">338</span>
+<span class="normal">339</span>
+<span class="normal">340</span>
+<span class="normal">341</span>
+<span class="normal">342</span>
+<span class="normal">343</span>
+<span class="normal">344</span>
+<span class="normal">345</span>
 <span class="normal">346</span>
 <span class="normal">347</span>
 <span class="normal">348</span>
@@ -7798,74 +7566,7 @@ hurts most.</p>
 <span class="normal">382</span>
 <span class="normal">383</span>
 <span class="normal">384</span>
-<span class="normal">385</span>
-<span class="normal">386</span>
-<span class="normal">387</span>
-<span class="normal">388</span>
-<span class="normal">389</span>
-<span class="normal">390</span>
-<span class="normal">391</span>
-<span class="normal">392</span>
-<span class="normal">393</span>
-<span class="normal">394</span>
-<span class="normal">395</span>
-<span class="normal">396</span>
-<span class="normal">397</span>
-<span class="normal">398</span>
-<span class="normal">399</span>
-<span class="normal">400</span>
-<span class="normal">401</span>
-<span class="normal">402</span>
-<span class="normal">403</span>
-<span class="normal">404</span>
-<span class="normal">405</span>
-<span class="normal">406</span>
-<span class="normal">407</span>
-<span class="normal">408</span>
-<span class="normal">409</span>
-<span class="normal">410</span>
-<span class="normal">411</span>
-<span class="normal">412</span>
-<span class="normal">413</span>
-<span class="normal">414</span>
-<span class="normal">415</span>
-<span class="normal">416</span>
-<span class="normal">417</span>
-<span class="normal">418</span>
-<span class="normal">419</span>
-<span class="normal">420</span>
-<span class="normal">421</span>
-<span class="normal">422</span>
-<span class="normal">423</span>
-<span class="normal">424</span>
-<span class="normal">425</span>
-<span class="normal">426</span>
-<span class="normal">427</span>
-<span class="normal">428</span>
-<span class="normal">429</span>
-<span class="normal">430</span>
-<span class="normal">431</span>
-<span class="normal">432</span>
-<span class="normal">433</span>
-<span class="normal">434</span>
-<span class="normal">435</span>
-<span class="normal">436</span>
-<span class="normal">437</span>
-<span class="normal">438</span>
-<span class="normal">439</span>
-<span class="normal">440</span>
-<span class="normal">441</span>
-<span class="normal">442</span>
-<span class="normal">443</span>
-<span class="normal">444</span>
-<span class="normal">445</span>
-<span class="normal">446</span>
-<span class="normal">447</span>
-<span class="normal">448</span>
-<span class="normal">449</span>
-<span class="normal">450</span>
-<span class="normal">451</span>
-<span class="normal">452</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_bvh_ball</span><span class="p">(</span>
+<span class="normal">385</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_bvh_ball</span><span class="p">(</span>
     <span class="n">bvh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">,</span> <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8177,7 +7878,74 @@ the four grid points <code>(-2..-1, -2..-1)</code> on its corners:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">455</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">388</span>
+<span class="normal">389</span>
+<span class="normal">390</span>
+<span class="normal">391</span>
+<span class="normal">392</span>
+<span class="normal">393</span>
+<span class="normal">394</span>
+<span class="normal">395</span>
+<span class="normal">396</span>
+<span class="normal">397</span>
+<span class="normal">398</span>
+<span class="normal">399</span>
+<span class="normal">400</span>
+<span class="normal">401</span>
+<span class="normal">402</span>
+<span class="normal">403</span>
+<span class="normal">404</span>
+<span class="normal">405</span>
+<span class="normal">406</span>
+<span class="normal">407</span>
+<span class="normal">408</span>
+<span class="normal">409</span>
+<span class="normal">410</span>
+<span class="normal">411</span>
+<span class="normal">412</span>
+<span class="normal">413</span>
+<span class="normal">414</span>
+<span class="normal">415</span>
+<span class="normal">416</span>
+<span class="normal">417</span>
+<span class="normal">418</span>
+<span class="normal">419</span>
+<span class="normal">420</span>
+<span class="normal">421</span>
+<span class="normal">422</span>
+<span class="normal">423</span>
+<span class="normal">424</span>
+<span class="normal">425</span>
+<span class="normal">426</span>
+<span class="normal">427</span>
+<span class="normal">428</span>
+<span class="normal">429</span>
+<span class="normal">430</span>
+<span class="normal">431</span>
+<span class="normal">432</span>
+<span class="normal">433</span>
+<span class="normal">434</span>
+<span class="normal">435</span>
+<span class="normal">436</span>
+<span class="normal">437</span>
+<span class="normal">438</span>
+<span class="normal">439</span>
+<span class="normal">440</span>
+<span class="normal">441</span>
+<span class="normal">442</span>
+<span class="normal">443</span>
+<span class="normal">444</span>
+<span class="normal">445</span>
+<span class="normal">446</span>
+<span class="normal">447</span>
+<span class="normal">448</span>
+<span class="normal">449</span>
+<span class="normal">450</span>
+<span class="normal">451</span>
+<span class="normal">452</span>
+<span class="normal">453</span>
+<span class="normal">454</span>
+<span class="normal">455</span>
 <span class="normal">456</span>
 <span class="normal">457</span>
 <span class="normal">458</span>
@@ -8221,74 +7989,7 @@ the four grid points <code>(-2..-1, -2..-1)</code> on its corners:</p>
 <span class="normal">496</span>
 <span class="normal">497</span>
 <span class="normal">498</span>
-<span class="normal">499</span>
-<span class="normal">500</span>
-<span class="normal">501</span>
-<span class="normal">502</span>
-<span class="normal">503</span>
-<span class="normal">504</span>
-<span class="normal">505</span>
-<span class="normal">506</span>
-<span class="normal">507</span>
-<span class="normal">508</span>
-<span class="normal">509</span>
-<span class="normal">510</span>
-<span class="normal">511</span>
-<span class="normal">512</span>
-<span class="normal">513</span>
-<span class="normal">514</span>
-<span class="normal">515</span>
-<span class="normal">516</span>
-<span class="normal">517</span>
-<span class="normal">518</span>
-<span class="normal">519</span>
-<span class="normal">520</span>
-<span class="normal">521</span>
-<span class="normal">522</span>
-<span class="normal">523</span>
-<span class="normal">524</span>
-<span class="normal">525</span>
-<span class="normal">526</span>
-<span class="normal">527</span>
-<span class="normal">528</span>
-<span class="normal">529</span>
-<span class="normal">530</span>
-<span class="normal">531</span>
-<span class="normal">532</span>
-<span class="normal">533</span>
-<span class="normal">534</span>
-<span class="normal">535</span>
-<span class="normal">536</span>
-<span class="normal">537</span>
-<span class="normal">538</span>
-<span class="normal">539</span>
-<span class="normal">540</span>
-<span class="normal">541</span>
-<span class="normal">542</span>
-<span class="normal">543</span>
-<span class="normal">544</span>
-<span class="normal">545</span>
-<span class="normal">546</span>
-<span class="normal">547</span>
-<span class="normal">548</span>
-<span class="normal">549</span>
-<span class="normal">550</span>
-<span class="normal">551</span>
-<span class="normal">552</span>
-<span class="normal">553</span>
-<span class="normal">554</span>
-<span class="normal">555</span>
-<span class="normal">556</span>
-<span class="normal">557</span>
-<span class="normal">558</span>
-<span class="normal">559</span>
-<span class="normal">560</span>
-<span class="normal">561</span>
-<span class="normal">562</span>
-<span class="normal">563</span>
-<span class="normal">564</span>
-<span class="normal">565</span>
-<span class="normal">566</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_bvh_box</span><span class="p">(</span>
+<span class="normal">499</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_bvh_box</span><span class="p">(</span>
     <span class="n">bvh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">,</span> <span class="n">query_lower</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">query_upper</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8777,7 +8478,74 @@ holds it and its four axis neighbours; about a corner, three points:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">601</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">534</span>
+<span class="normal">535</span>
+<span class="normal">536</span>
+<span class="normal">537</span>
+<span class="normal">538</span>
+<span class="normal">539</span>
+<span class="normal">540</span>
+<span class="normal">541</span>
+<span class="normal">542</span>
+<span class="normal">543</span>
+<span class="normal">544</span>
+<span class="normal">545</span>
+<span class="normal">546</span>
+<span class="normal">547</span>
+<span class="normal">548</span>
+<span class="normal">549</span>
+<span class="normal">550</span>
+<span class="normal">551</span>
+<span class="normal">552</span>
+<span class="normal">553</span>
+<span class="normal">554</span>
+<span class="normal">555</span>
+<span class="normal">556</span>
+<span class="normal">557</span>
+<span class="normal">558</span>
+<span class="normal">559</span>
+<span class="normal">560</span>
+<span class="normal">561</span>
+<span class="normal">562</span>
+<span class="normal">563</span>
+<span class="normal">564</span>
+<span class="normal">565</span>
+<span class="normal">566</span>
+<span class="normal">567</span>
+<span class="normal">568</span>
+<span class="normal">569</span>
+<span class="normal">570</span>
+<span class="normal">571</span>
+<span class="normal">572</span>
+<span class="normal">573</span>
+<span class="normal">574</span>
+<span class="normal">575</span>
+<span class="normal">576</span>
+<span class="normal">577</span>
+<span class="normal">578</span>
+<span class="normal">579</span>
+<span class="normal">580</span>
+<span class="normal">581</span>
+<span class="normal">582</span>
+<span class="normal">583</span>
+<span class="normal">584</span>
+<span class="normal">585</span>
+<span class="normal">586</span>
+<span class="normal">587</span>
+<span class="normal">588</span>
+<span class="normal">589</span>
+<span class="normal">590</span>
+<span class="normal">591</span>
+<span class="normal">592</span>
+<span class="normal">593</span>
+<span class="normal">594</span>
+<span class="normal">595</span>
+<span class="normal">596</span>
+<span class="normal">597</span>
+<span class="normal">598</span>
+<span class="normal">599</span>
+<span class="normal">600</span>
+<span class="normal">601</span>
 <span class="normal">602</span>
 <span class="normal">603</span>
 <span class="normal">604</span>
@@ -8869,74 +8637,7 @@ holds it and its four axis neighbours; about a corner, three points:</p>
 <span class="normal">690</span>
 <span class="normal">691</span>
 <span class="normal">692</span>
-<span class="normal">693</span>
-<span class="normal">694</span>
-<span class="normal">695</span>
-<span class="normal">696</span>
-<span class="normal">697</span>
-<span class="normal">698</span>
-<span class="normal">699</span>
-<span class="normal">700</span>
-<span class="normal">701</span>
-<span class="normal">702</span>
-<span class="normal">703</span>
-<span class="normal">704</span>
-<span class="normal">705</span>
-<span class="normal">706</span>
-<span class="normal">707</span>
-<span class="normal">708</span>
-<span class="normal">709</span>
-<span class="normal">710</span>
-<span class="normal">711</span>
-<span class="normal">712</span>
-<span class="normal">713</span>
-<span class="normal">714</span>
-<span class="normal">715</span>
-<span class="normal">716</span>
-<span class="normal">717</span>
-<span class="normal">718</span>
-<span class="normal">719</span>
-<span class="normal">720</span>
-<span class="normal">721</span>
-<span class="normal">722</span>
-<span class="normal">723</span>
-<span class="normal">724</span>
-<span class="normal">725</span>
-<span class="normal">726</span>
-<span class="normal">727</span>
-<span class="normal">728</span>
-<span class="normal">729</span>
-<span class="normal">730</span>
-<span class="normal">731</span>
-<span class="normal">732</span>
-<span class="normal">733</span>
-<span class="normal">734</span>
-<span class="normal">735</span>
-<span class="normal">736</span>
-<span class="normal">737</span>
-<span class="normal">738</span>
-<span class="normal">739</span>
-<span class="normal">740</span>
-<span class="normal">741</span>
-<span class="normal">742</span>
-<span class="normal">743</span>
-<span class="normal">744</span>
-<span class="normal">745</span>
-<span class="normal">746</span>
-<span class="normal">747</span>
-<span class="normal">748</span>
-<span class="normal">749</span>
-<span class="normal">750</span>
-<span class="normal">751</span>
-<span class="normal">752</span>
-<span class="normal">753</span>
-<span class="normal">754</span>
-<span class="normal">755</span>
-<span class="normal">756</span>
-<span class="normal">757</span>
-<span class="normal">758</span>
-<span class="normal">759</span>
-<span class="normal">760</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball</span><span class="p">(</span>
+<span class="normal">693</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
     <span class="n">r</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -9347,7 +9048,74 @@ broad phase ran, so the count does not depend on <code>backend</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">763</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">696</span>
+<span class="normal">697</span>
+<span class="normal">698</span>
+<span class="normal">699</span>
+<span class="normal">700</span>
+<span class="normal">701</span>
+<span class="normal">702</span>
+<span class="normal">703</span>
+<span class="normal">704</span>
+<span class="normal">705</span>
+<span class="normal">706</span>
+<span class="normal">707</span>
+<span class="normal">708</span>
+<span class="normal">709</span>
+<span class="normal">710</span>
+<span class="normal">711</span>
+<span class="normal">712</span>
+<span class="normal">713</span>
+<span class="normal">714</span>
+<span class="normal">715</span>
+<span class="normal">716</span>
+<span class="normal">717</span>
+<span class="normal">718</span>
+<span class="normal">719</span>
+<span class="normal">720</span>
+<span class="normal">721</span>
+<span class="normal">722</span>
+<span class="normal">723</span>
+<span class="normal">724</span>
+<span class="normal">725</span>
+<span class="normal">726</span>
+<span class="normal">727</span>
+<span class="normal">728</span>
+<span class="normal">729</span>
+<span class="normal">730</span>
+<span class="normal">731</span>
+<span class="normal">732</span>
+<span class="normal">733</span>
+<span class="normal">734</span>
+<span class="normal">735</span>
+<span class="normal">736</span>
+<span class="normal">737</span>
+<span class="normal">738</span>
+<span class="normal">739</span>
+<span class="normal">740</span>
+<span class="normal">741</span>
+<span class="normal">742</span>
+<span class="normal">743</span>
+<span class="normal">744</span>
+<span class="normal">745</span>
+<span class="normal">746</span>
+<span class="normal">747</span>
+<span class="normal">748</span>
+<span class="normal">749</span>
+<span class="normal">750</span>
+<span class="normal">751</span>
+<span class="normal">752</span>
+<span class="normal">753</span>
+<span class="normal">754</span>
+<span class="normal">755</span>
+<span class="normal">756</span>
+<span class="normal">757</span>
+<span class="normal">758</span>
+<span class="normal">759</span>
+<span class="normal">760</span>
+<span class="normal">761</span>
+<span class="normal">762</span>
+<span class="normal">763</span>
 <span class="normal">764</span>
 <span class="normal">765</span>
 <span class="normal">766</span>
@@ -9371,74 +9139,7 @@ broad phase ran, so the count does not depend on <code>backend</code>.</p>
 <span class="normal">784</span>
 <span class="normal">785</span>
 <span class="normal">786</span>
-<span class="normal">787</span>
-<span class="normal">788</span>
-<span class="normal">789</span>
-<span class="normal">790</span>
-<span class="normal">791</span>
-<span class="normal">792</span>
-<span class="normal">793</span>
-<span class="normal">794</span>
-<span class="normal">795</span>
-<span class="normal">796</span>
-<span class="normal">797</span>
-<span class="normal">798</span>
-<span class="normal">799</span>
-<span class="normal">800</span>
-<span class="normal">801</span>
-<span class="normal">802</span>
-<span class="normal">803</span>
-<span class="normal">804</span>
-<span class="normal">805</span>
-<span class="normal">806</span>
-<span class="normal">807</span>
-<span class="normal">808</span>
-<span class="normal">809</span>
-<span class="normal">810</span>
-<span class="normal">811</span>
-<span class="normal">812</span>
-<span class="normal">813</span>
-<span class="normal">814</span>
-<span class="normal">815</span>
-<span class="normal">816</span>
-<span class="normal">817</span>
-<span class="normal">818</span>
-<span class="normal">819</span>
-<span class="normal">820</span>
-<span class="normal">821</span>
-<span class="normal">822</span>
-<span class="normal">823</span>
-<span class="normal">824</span>
-<span class="normal">825</span>
-<span class="normal">826</span>
-<span class="normal">827</span>
-<span class="normal">828</span>
-<span class="normal">829</span>
-<span class="normal">830</span>
-<span class="normal">831</span>
-<span class="normal">832</span>
-<span class="normal">833</span>
-<span class="normal">834</span>
-<span class="normal">835</span>
-<span class="normal">836</span>
-<span class="normal">837</span>
-<span class="normal">838</span>
-<span class="normal">839</span>
-<span class="normal">840</span>
-<span class="normal">841</span>
-<span class="normal">842</span>
-<span class="normal">843</span>
-<span class="normal">844</span>
-<span class="normal">845</span>
-<span class="normal">846</span>
-<span class="normal">847</span>
-<span class="normal">848</span>
-<span class="normal">849</span>
-<span class="normal">850</span>
-<span class="normal">851</span>
-<span class="normal">852</span>
-<span class="normal">853</span>
-<span class="normal">854</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball_count</span><span class="p">(</span>
+<span class="normal">787</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball_count</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">r</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -9824,7 +9525,74 @@ disagree slightly with pure <code>float64</code> SciPy runs.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">857</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">790</span>
+<span class="normal">791</span>
+<span class="normal">792</span>
+<span class="normal">793</span>
+<span class="normal">794</span>
+<span class="normal">795</span>
+<span class="normal">796</span>
+<span class="normal">797</span>
+<span class="normal">798</span>
+<span class="normal">799</span>
+<span class="normal">800</span>
+<span class="normal">801</span>
+<span class="normal">802</span>
+<span class="normal">803</span>
+<span class="normal">804</span>
+<span class="normal">805</span>
+<span class="normal">806</span>
+<span class="normal">807</span>
+<span class="normal">808</span>
+<span class="normal">809</span>
+<span class="normal">810</span>
+<span class="normal">811</span>
+<span class="normal">812</span>
+<span class="normal">813</span>
+<span class="normal">814</span>
+<span class="normal">815</span>
+<span class="normal">816</span>
+<span class="normal">817</span>
+<span class="normal">818</span>
+<span class="normal">819</span>
+<span class="normal">820</span>
+<span class="normal">821</span>
+<span class="normal">822</span>
+<span class="normal">823</span>
+<span class="normal">824</span>
+<span class="normal">825</span>
+<span class="normal">826</span>
+<span class="normal">827</span>
+<span class="normal">828</span>
+<span class="normal">829</span>
+<span class="normal">830</span>
+<span class="normal">831</span>
+<span class="normal">832</span>
+<span class="normal">833</span>
+<span class="normal">834</span>
+<span class="normal">835</span>
+<span class="normal">836</span>
+<span class="normal">837</span>
+<span class="normal">838</span>
+<span class="normal">839</span>
+<span class="normal">840</span>
+<span class="normal">841</span>
+<span class="normal">842</span>
+<span class="normal">843</span>
+<span class="normal">844</span>
+<span class="normal">845</span>
+<span class="normal">846</span>
+<span class="normal">847</span>
+<span class="normal">848</span>
+<span class="normal">849</span>
+<span class="normal">850</span>
+<span class="normal">851</span>
+<span class="normal">852</span>
+<span class="normal">853</span>
+<span class="normal">854</span>
+<span class="normal">855</span>
+<span class="normal">856</span>
+<span class="normal">857</span>
 <span class="normal">858</span>
 <span class="normal">859</span>
 <span class="normal">860</span>
@@ -9870,74 +9638,7 @@ disagree slightly with pure <code>float64</code> SciPy runs.</p>
 <span class="normal">900</span>
 <span class="normal">901</span>
 <span class="normal">902</span>
-<span class="normal">903</span>
-<span class="normal">904</span>
-<span class="normal">905</span>
-<span class="normal">906</span>
-<span class="normal">907</span>
-<span class="normal">908</span>
-<span class="normal">909</span>
-<span class="normal">910</span>
-<span class="normal">911</span>
-<span class="normal">912</span>
-<span class="normal">913</span>
-<span class="normal">914</span>
-<span class="normal">915</span>
-<span class="normal">916</span>
-<span class="normal">917</span>
-<span class="normal">918</span>
-<span class="normal">919</span>
-<span class="normal">920</span>
-<span class="normal">921</span>
-<span class="normal">922</span>
-<span class="normal">923</span>
-<span class="normal">924</span>
-<span class="normal">925</span>
-<span class="normal">926</span>
-<span class="normal">927</span>
-<span class="normal">928</span>
-<span class="normal">929</span>
-<span class="normal">930</span>
-<span class="normal">931</span>
-<span class="normal">932</span>
-<span class="normal">933</span>
-<span class="normal">934</span>
-<span class="normal">935</span>
-<span class="normal">936</span>
-<span class="normal">937</span>
-<span class="normal">938</span>
-<span class="normal">939</span>
-<span class="normal">940</span>
-<span class="normal">941</span>
-<span class="normal">942</span>
-<span class="normal">943</span>
-<span class="normal">944</span>
-<span class="normal">945</span>
-<span class="normal">946</span>
-<span class="normal">947</span>
-<span class="normal">948</span>
-<span class="normal">949</span>
-<span class="normal">950</span>
-<span class="normal">951</span>
-<span class="normal">952</span>
-<span class="normal">953</span>
-<span class="normal">954</span>
-<span class="normal">955</span>
-<span class="normal">956</span>
-<span class="normal">957</span>
-<span class="normal">958</span>
-<span class="normal">959</span>
-<span class="normal">960</span>
-<span class="normal">961</span>
-<span class="normal">962</span>
-<span class="normal">963</span>
-<span class="normal">964</span>
-<span class="normal">965</span>
-<span class="normal">966</span>
-<span class="normal">967</span>
-<span class="normal">968</span>
-<span class="normal">969</span>
-<span class="normal">970</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball_with_offsets</span><span class="p">(</span>
+<span class="normal">903</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball_with_offsets</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
     <span class="n">r</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -10207,7 +9908,74 @@ point gives <code>inf</code>, one complete scan:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1059</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 992</span>
+<span class="normal"> 993</span>
+<span class="normal"> 994</span>
+<span class="normal"> 995</span>
+<span class="normal"> 996</span>
+<span class="normal"> 997</span>
+<span class="normal"> 998</span>
+<span class="normal"> 999</span>
+<span class="normal">1000</span>
+<span class="normal">1001</span>
+<span class="normal">1002</span>
+<span class="normal">1003</span>
+<span class="normal">1004</span>
+<span class="normal">1005</span>
+<span class="normal">1006</span>
+<span class="normal">1007</span>
+<span class="normal">1008</span>
+<span class="normal">1009</span>
+<span class="normal">1010</span>
+<span class="normal">1011</span>
+<span class="normal">1012</span>
+<span class="normal">1013</span>
+<span class="normal">1014</span>
+<span class="normal">1015</span>
+<span class="normal">1016</span>
+<span class="normal">1017</span>
+<span class="normal">1018</span>
+<span class="normal">1019</span>
+<span class="normal">1020</span>
+<span class="normal">1021</span>
+<span class="normal">1022</span>
+<span class="normal">1023</span>
+<span class="normal">1024</span>
+<span class="normal">1025</span>
+<span class="normal">1026</span>
+<span class="normal">1027</span>
+<span class="normal">1028</span>
+<span class="normal">1029</span>
+<span class="normal">1030</span>
+<span class="normal">1031</span>
+<span class="normal">1032</span>
+<span class="normal">1033</span>
+<span class="normal">1034</span>
+<span class="normal">1035</span>
+<span class="normal">1036</span>
+<span class="normal">1037</span>
+<span class="normal">1038</span>
+<span class="normal">1039</span>
+<span class="normal">1040</span>
+<span class="normal">1041</span>
+<span class="normal">1042</span>
+<span class="normal">1043</span>
+<span class="normal">1044</span>
+<span class="normal">1045</span>
+<span class="normal">1046</span>
+<span class="normal">1047</span>
+<span class="normal">1048</span>
+<span class="normal">1049</span>
+<span class="normal">1050</span>
+<span class="normal">1051</span>
+<span class="normal">1052</span>
+<span class="normal">1053</span>
+<span class="normal">1054</span>
+<span class="normal">1055</span>
+<span class="normal">1056</span>
+<span class="normal">1057</span>
+<span class="normal">1058</span>
+<span class="normal">1059</span>
 <span class="normal">1060</span>
 <span class="normal">1061</span>
 <span class="normal">1062</span>
@@ -10215,74 +9983,7 @@ point gives <code>inf</code>, one complete scan:</p>
 <span class="normal">1064</span>
 <span class="normal">1065</span>
 <span class="normal">1066</span>
-<span class="normal">1067</span>
-<span class="normal">1068</span>
-<span class="normal">1069</span>
-<span class="normal">1070</span>
-<span class="normal">1071</span>
-<span class="normal">1072</span>
-<span class="normal">1073</span>
-<span class="normal">1074</span>
-<span class="normal">1075</span>
-<span class="normal">1076</span>
-<span class="normal">1077</span>
-<span class="normal">1078</span>
-<span class="normal">1079</span>
-<span class="normal">1080</span>
-<span class="normal">1081</span>
-<span class="normal">1082</span>
-<span class="normal">1083</span>
-<span class="normal">1084</span>
-<span class="normal">1085</span>
-<span class="normal">1086</span>
-<span class="normal">1087</span>
-<span class="normal">1088</span>
-<span class="normal">1089</span>
-<span class="normal">1090</span>
-<span class="normal">1091</span>
-<span class="normal">1092</span>
-<span class="normal">1093</span>
-<span class="normal">1094</span>
-<span class="normal">1095</span>
-<span class="normal">1096</span>
-<span class="normal">1097</span>
-<span class="normal">1098</span>
-<span class="normal">1099</span>
-<span class="normal">1100</span>
-<span class="normal">1101</span>
-<span class="normal">1102</span>
-<span class="normal">1103</span>
-<span class="normal">1104</span>
-<span class="normal">1105</span>
-<span class="normal">1106</span>
-<span class="normal">1107</span>
-<span class="normal">1108</span>
-<span class="normal">1109</span>
-<span class="normal">1110</span>
-<span class="normal">1111</span>
-<span class="normal">1112</span>
-<span class="normal">1113</span>
-<span class="normal">1114</span>
-<span class="normal">1115</span>
-<span class="normal">1116</span>
-<span class="normal">1117</span>
-<span class="normal">1118</span>
-<span class="normal">1119</span>
-<span class="normal">1120</span>
-<span class="normal">1121</span>
-<span class="normal">1122</span>
-<span class="normal">1123</span>
-<span class="normal">1124</span>
-<span class="normal">1125</span>
-<span class="normal">1126</span>
-<span class="normal">1127</span>
-<span class="normal">1128</span>
-<span class="normal">1129</span>
-<span class="normal">1130</span>
-<span class="normal">1131</span>
-<span class="normal">1132</span>
-<span class="normal">1133</span>
-<span class="normal">1134</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">knn_initial_radius</span><span class="p">(</span>
+<span class="normal">1067</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">knn_initial_radius</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">bounds</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -10445,17 +10146,16 @@ cloud's density, because <code>initial_radius</code> sets the cell width: the wa
 A row the walk cannot certify within a few cells is finished by a tree over the cloud
 rather than by a scan of every point. A row whose walk found points goes to the BVH's
 radius search, started where the walk stopped; a row whose first walks found nothing goes
-to a closest-point query over <a class="autorefs autorefs-internal" title="mesh_from_points" href="./#ordito.neighbors.mesh_from_points"><code>mesh_from_points</code></a>,
-whose cost does not grow with how far the query is from the cloud -- the answer itself at
-<code>k == 1</code>, and the radius search's starting distance above it. So a query beside a sparse
+to a nearest-point descent of a point tree, whose cost does not grow with how far the query
+is from the cloud -- the answer itself at <code>k == 1</code>, and the radius search's starting
+distance above it. So a query beside a sparse
 patch of the cloud, or far from it, costs a tree search. Clouds under 8192 points, and
 <code>k</code> above 64, finish such rows with an exact linear scan of the cloud instead.</p>
 <p><code>"bvh"</code> has no cell width to get wrong, so it is the one to reach for when the query scale
 is far from the cloud's own density and no <code>initial_radius</code> can say it. Its own cost
-grows with <code>k</code> faster than the grid's. At <code>k == 1</code> with no <code>accelerator</code> it is not a
-radius search at all but a closest-point query over
-<a class="autorefs autorefs-internal" title="mesh_from_points" href="./#ordito.neighbors.mesh_from_points"><code>mesh_from_points</code></a>, whose cost does not grow with the
-queries' distance from the cloud.</p>
+grows with <code>k</code> faster than the grid's. At <code>k == 1</code> it is not a radius search at all but
+a nearest-point descent of the tree, whose cost does not grow with the queries' distance
+from the cloud.</p>
 <p>Both are exact; this is a cost choice only. Reuse the structure across calls by passing it
 as <code>accelerator</code> when several queries share one cloud.</p>
 </div>
@@ -10607,9 +10307,9 @@ distance <code>inf</code>). Defaults to unbounded.</p>
               <div class="doc-md-description">
                 <p>Maximum primitives per leaf when building a BVH; <code>None</code> picks it from the point count
 (larger leaves for larger clouds, where the walk is faster with them). Ignored whenever
-<code>accelerator</code> is given and at <code>k == 1</code> under <code>backend="bvh"</code>, where the tree is a
-<a class="autorefs autorefs-internal" title="mesh_from_points" href="./#ordito.neighbors.mesh_from_points"><code>mesh_from_points</code></a>. The default <code>"hashgrid"</code>
-backend builds a BVH only to finish the rows its cell walk cannot certify.</p>
+<code>accelerator</code> is given and at <code>k == 1</code> under <code>backend="bvh"</code>, where the tree has one
+point a leaf. The default <code>"hashgrid"</code> backend builds a BVH only to finish the rows its
+cell walk cannot certify.</p>
               </div>
             </td>
             <td>
@@ -10653,7 +10353,7 @@ not only a shortcut</strong>: it also fixes the per-query radius at which a scan
 complete, so a box that does not contain <code>points</code> can end the search early and leave
 slots unfilled (<code>-1</code> and <code>inf</code>) rather than merely running slower. Pass the real
 bounding box, or leave it <code>None</code>. Neither this nor <code>initial_radius</code> is read by the
-<code>k == 1</code> BVH-backend query without an <code>accelerator</code>, which has no radius to deepen.</p>
+<code>k == 1</code> BVH-backend query, which has no radius to deepen.</p>
               </div>
             </td>
             <td>
@@ -10768,9 +10468,9 @@ contradicts the type of <code>accelerator</code>.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 22 places</summary>
+      <summary>Referenced by 21 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.bounds">bounds</a></span> · <span class="ordito-backlink"><a href="../interpolation/#ordito.interpolation">interpolation</a> › <a href="../interpolation/#ordito.interpolation.interpolate_from_points">interpolate_from_points</a></span> · <span class="ordito-backlink"><a href="../points/#ordito.points">points</a> › <a href="../points/#ordito.points.estimate_normals">estimate_normals</a></span> · <span class="ordito-backlink"><a href="../points/#ordito.points">points</a> › <a href="../points/#ordito.points.outlier_probability">outlier_probability</a></span> · <span class="ordito-backlink"><a href="../points/#ordito.points">points</a> › <a href="../points/#ordito.points.statistical_outlier_mask">statistical_outlier_mask</a></span> · <span class="ordito-backlink"><a href="../registration/#ordito.registration">registration</a> › <a href="../registration/#ordito.registration.icp">icp</a></span> · <span class="ordito-backlink"><a href="../metrics/#ordito.metrics">metrics</a></span> · <span class="ordito-backlink"><a href="../metrics/#ordito.metrics">metrics</a> › <a href="../metrics/#ordito.metrics.chamfer_points_to_points">chamfer_points_to_points</a></span> · <span class="ordito-backlink"><a href="../metrics/#ordito.metrics">metrics</a> › <a href="../metrics/#ordito.metrics.chamfer_points_to_points_loss">chamfer_points_to_points_loss</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.bvh_from_points">bvh_from_points</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.hashgrid_from_points">hashgrid_from_points</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.knn_initial_radius">knn_initial_radius</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.mesh_from_points">mesh_from_points</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.nearest_neighbor_distance">nearest_neighbor_distance</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_weighted_nearest">query_weighted_nearest</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.bounds">bounds</a></span> · <span class="ordito-backlink"><a href="../interpolation/#ordito.interpolation">interpolation</a> › <a href="../interpolation/#ordito.interpolation.interpolate_from_points">interpolate_from_points</a></span> · <span class="ordito-backlink"><a href="../points/#ordito.points">points</a> › <a href="../points/#ordito.points.estimate_normals">estimate_normals</a></span> · <span class="ordito-backlink"><a href="../points/#ordito.points">points</a> › <a href="../points/#ordito.points.outlier_probability">outlier_probability</a></span> · <span class="ordito-backlink"><a href="../points/#ordito.points">points</a> › <a href="../points/#ordito.points.statistical_outlier_mask">statistical_outlier_mask</a></span> · <span class="ordito-backlink"><a href="../registration/#ordito.registration">registration</a> › <a href="../registration/#ordito.registration.icp">icp</a></span> · <span class="ordito-backlink"><a href="../metrics/#ordito.metrics">metrics</a></span> · <span class="ordito-backlink"><a href="../metrics/#ordito.metrics">metrics</a> › <a href="../metrics/#ordito.metrics.chamfer_points_to_points">chamfer_points_to_points</a></span> · <span class="ordito-backlink"><a href="../metrics/#ordito.metrics">metrics</a> › <a href="../metrics/#ordito.metrics.chamfer_points_to_points_loss">chamfer_points_to_points_loss</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.bvh_from_points">bvh_from_points</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.hashgrid_from_points">hashgrid_from_points</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.knn_initial_radius">knn_initial_radius</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.nearest_neighbor_distance">nearest_neighbor_distance</a></span> · <span class="ordito-backlink"><a href="./#ordito.neighbors">neighbors</a> › <a href="./#ordito.neighbors.query_weighted_nearest">query_weighted_nearest</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/points/#point-clouds">Point clouds</a> › <a href="../../../examples/points/#pc5">Cloud-to-cloud distance</a></span> · <span class="ordito-backlink"><a href="../../../examples/points/#point-clouds">Point clouds</a> › <a href="../../../examples/points/#pc3">Normal estimation</a></span> · <span class="ordito-backlink"><a href="../../../examples/queries/#spatial-queries">Spatial queries</a> › <a href="../../../examples/queries/#q6">Nearest neighbours and ball queries</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -10780,7 +10480,74 @@ contradicts the type of <code>accelerator</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1181</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1114</span>
+<span class="normal">1115</span>
+<span class="normal">1116</span>
+<span class="normal">1117</span>
+<span class="normal">1118</span>
+<span class="normal">1119</span>
+<span class="normal">1120</span>
+<span class="normal">1121</span>
+<span class="normal">1122</span>
+<span class="normal">1123</span>
+<span class="normal">1124</span>
+<span class="normal">1125</span>
+<span class="normal">1126</span>
+<span class="normal">1127</span>
+<span class="normal">1128</span>
+<span class="normal">1129</span>
+<span class="normal">1130</span>
+<span class="normal">1131</span>
+<span class="normal">1132</span>
+<span class="normal">1133</span>
+<span class="normal">1134</span>
+<span class="normal">1135</span>
+<span class="normal">1136</span>
+<span class="normal">1137</span>
+<span class="normal">1138</span>
+<span class="normal">1139</span>
+<span class="normal">1140</span>
+<span class="normal">1141</span>
+<span class="normal">1142</span>
+<span class="normal">1143</span>
+<span class="normal">1144</span>
+<span class="normal">1145</span>
+<span class="normal">1146</span>
+<span class="normal">1147</span>
+<span class="normal">1148</span>
+<span class="normal">1149</span>
+<span class="normal">1150</span>
+<span class="normal">1151</span>
+<span class="normal">1152</span>
+<span class="normal">1153</span>
+<span class="normal">1154</span>
+<span class="normal">1155</span>
+<span class="normal">1156</span>
+<span class="normal">1157</span>
+<span class="normal">1158</span>
+<span class="normal">1159</span>
+<span class="normal">1160</span>
+<span class="normal">1161</span>
+<span class="normal">1162</span>
+<span class="normal">1163</span>
+<span class="normal">1164</span>
+<span class="normal">1165</span>
+<span class="normal">1166</span>
+<span class="normal">1167</span>
+<span class="normal">1168</span>
+<span class="normal">1169</span>
+<span class="normal">1170</span>
+<span class="normal">1171</span>
+<span class="normal">1172</span>
+<span class="normal">1173</span>
+<span class="normal">1174</span>
+<span class="normal">1175</span>
+<span class="normal">1176</span>
+<span class="normal">1177</span>
+<span class="normal">1178</span>
+<span class="normal">1179</span>
+<span class="normal">1180</span>
+<span class="normal">1181</span>
 <span class="normal">1182</span>
 <span class="normal">1183</span>
 <span class="normal">1184</span>
@@ -11023,74 +10790,7 @@ contradicts the type of <code>accelerator</code>.</p>
 <span class="normal">1421</span>
 <span class="normal">1422</span>
 <span class="normal">1423</span>
-<span class="normal">1424</span>
-<span class="normal">1425</span>
-<span class="normal">1426</span>
-<span class="normal">1427</span>
-<span class="normal">1428</span>
-<span class="normal">1429</span>
-<span class="normal">1430</span>
-<span class="normal">1431</span>
-<span class="normal">1432</span>
-<span class="normal">1433</span>
-<span class="normal">1434</span>
-<span class="normal">1435</span>
-<span class="normal">1436</span>
-<span class="normal">1437</span>
-<span class="normal">1438</span>
-<span class="normal">1439</span>
-<span class="normal">1440</span>
-<span class="normal">1441</span>
-<span class="normal">1442</span>
-<span class="normal">1443</span>
-<span class="normal">1444</span>
-<span class="normal">1445</span>
-<span class="normal">1446</span>
-<span class="normal">1447</span>
-<span class="normal">1448</span>
-<span class="normal">1449</span>
-<span class="normal">1450</span>
-<span class="normal">1451</span>
-<span class="normal">1452</span>
-<span class="normal">1453</span>
-<span class="normal">1454</span>
-<span class="normal">1455</span>
-<span class="normal">1456</span>
-<span class="normal">1457</span>
-<span class="normal">1458</span>
-<span class="normal">1459</span>
-<span class="normal">1460</span>
-<span class="normal">1461</span>
-<span class="normal">1462</span>
-<span class="normal">1463</span>
-<span class="normal">1464</span>
-<span class="normal">1465</span>
-<span class="normal">1466</span>
-<span class="normal">1467</span>
-<span class="normal">1468</span>
-<span class="normal">1469</span>
-<span class="normal">1470</span>
-<span class="normal">1471</span>
-<span class="normal">1472</span>
-<span class="normal">1473</span>
-<span class="normal">1474</span>
-<span class="normal">1475</span>
-<span class="normal">1476</span>
-<span class="normal">1477</span>
-<span class="normal">1478</span>
-<span class="normal">1479</span>
-<span class="normal">1480</span>
-<span class="normal">1481</span>
-<span class="normal">1482</span>
-<span class="normal">1483</span>
-<span class="normal">1484</span>
-<span class="normal">1485</span>
-<span class="normal">1486</span>
-<span class="normal">1487</span>
-<span class="normal">1488</span>
-<span class="normal">1489</span>
-<span class="normal">1490</span>
-<span class="normal">1491</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_nearest</span><span class="p">(</span>
+<span class="normal">1424</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_nearest</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
     <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
@@ -11117,18 +10817,17 @@ contradicts the type of <code>accelerator</code>.</p>
 <span class="sd">        A row the walk cannot certify within a few cells is finished by a tree over the cloud</span>
 <span class="sd">        rather than by a scan of every point. A row whose walk found points goes to the BVH's</span>
 <span class="sd">        radius search, started where the walk stopped; a row whose first walks found nothing goes</span>
-<span class="sd">        to a closest-point query over [`mesh_from_points`][ordito.neighbors.mesh_from_points],</span>
-<span class="sd">        whose cost does not grow with how far the query is from the cloud -- the answer itself at</span>
-<span class="sd">        ``k == 1``, and the radius search's starting distance above it. So a query beside a sparse</span>
+<span class="sd">        to a nearest-point descent of a point tree, whose cost does not grow with how far the query</span>
+<span class="sd">        is from the cloud -- the answer itself at ``k == 1``, and the radius search's starting</span>
+<span class="sd">        distance above it. So a query beside a sparse</span>
 <span class="sd">        patch of the cloud, or far from it, costs a tree search. Clouds under 8192 points, and</span>
 <span class="sd">        ``k`` above 64, finish such rows with an exact linear scan of the cloud instead.</span>
 
 <span class="sd">        ``"bvh"`` has no cell width to get wrong, so it is the one to reach for when the query scale</span>
 <span class="sd">        is far from the cloud's own density and no ``initial_radius`` can say it. Its own cost</span>
-<span class="sd">        grows with ``k`` faster than the grid's. At ``k == 1`` with no ``accelerator`` it is not a</span>
-<span class="sd">        radius search at all but a closest-point query over</span>
-<span class="sd">        [`mesh_from_points`][ordito.neighbors.mesh_from_points], whose cost does not grow with the</span>
-<span class="sd">        queries' distance from the cloud.</span>
+<span class="sd">        grows with ``k`` faster than the grid's. At ``k == 1`` it is not a radius search at all but</span>
+<span class="sd">        a nearest-point descent of the tree, whose cost does not grow with the queries' distance</span>
+<span class="sd">        from the cloud.</span>
 
 <span class="sd">        Both are exact; this is a cost choice only. Reuse the structure across calls by passing it</span>
 <span class="sd">        as ``accelerator`` when several queries share one cloud.</span>
@@ -11159,9 +10858,9 @@ contradicts the type of <code>accelerator</code>.</p>
 <span class="sd">    leaf_size</span>
 <span class="sd">        Maximum primitives per leaf when building a BVH; ``None`` picks it from the point count</span>
 <span class="sd">        (larger leaves for larger clouds, where the walk is faster with them). Ignored whenever</span>
-<span class="sd">        ``accelerator`` is given and at ``k == 1`` under ``backend="bvh"``, where the tree is a</span>
-<span class="sd">        [`mesh_from_points`][ordito.neighbors.mesh_from_points]. The default ``"hashgrid"``</span>
-<span class="sd">        backend builds a BVH only to finish the rows its cell walk cannot certify.</span>
+<span class="sd">        ``accelerator`` is given and at ``k == 1`` under ``backend="bvh"``, where the tree has one</span>
+<span class="sd">        point a leaf. The default ``"hashgrid"`` backend builds a BVH only to finish the rows its</span>
+<span class="sd">        cell walk cannot certify.</span>
 <span class="sd">    initial_radius</span>
 <span class="sd">        First search radius. Defaults to</span>
 <span class="sd">        [`knn_initial_radius`][ordito.neighbors.knn_initial_radius], which estimates it from the</span>
@@ -11177,7 +10876,7 @@ contradicts the type of <code>accelerator</code>.</p>
 <span class="sd">        complete, so a box that does not contain ``points`` can end the search early and leave</span>
 <span class="sd">        slots unfilled (``-1`` and ``inf``) rather than merely running slower. Pass the real</span>
 <span class="sd">        bounding box, or leave it ``None``. Neither this nor ``initial_radius`` is read by the</span>
-<span class="sd">        ``k == 1`` BVH-backend query without an ``accelerator``, which has no radius to deepen.</span>
+<span class="sd">        ``k == 1`` BVH-backend query, which has no radius to deepen.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -11265,19 +10964,20 @@ contradicts the type of <code>accelerator</code>.</p>
     <span class="c1"># here would be two wasted launches.</span>
     <span class="n">neighbor_indices</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">m</span><span class="p">,</span> <span class="n">k</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">neighbor_distances</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">m</span><span class="p">,</span> <span class="n">k</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">kind</span> <span class="o">==</span> <span class="s2">"bvh"</span> <span class="ow">and</span> <span class="n">k</span> <span class="o">==</span> <span class="mi">1</span> <span class="ow">and</span> <span class="n">resolved</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="c1"># One nearest point is a closest-point query over the collapsed-triangle mesh: its descent</span>
-        <span class="c1"># needs no radius to deepen, so neither the bounding box nor the density estimate (two</span>
-        <span class="c1"># reductions and their readbacks) is computed, and a query far off the cloud costs what an</span>
-        <span class="c1"># on-surface one does. The distances are the radius search's to the bit. A caller's</span>
-        <span class="c1"># ``wp.Bvh`` cannot take this path, since the query needs a ``wp.Mesh``.</span>
-        <span class="n">mesh</span> <span class="o">=</span> <span class="n">mesh_from_points</span><span class="p">(</span><span class="n">points</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">kind</span> <span class="o">==</span> <span class="s2">"bvh"</span> <span class="ow">and</span> <span class="n">k</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="c1"># One nearest point is a nearest-point descent of the tree: it needs no radius to deepen,</span>
+        <span class="c1"># so neither the bounding box nor the density estimate (two reductions and their</span>
+        <span class="c1"># readbacks) is computed, and a query far off the cloud costs what an on-surface one does.</span>
+        <span class="c1"># The distances are the radius search's to the bit. One point a leaf when the call builds</span>
+        <span class="c1"># the tree; a caller's tree is searched with whatever leaves it has.</span>
+        <span class="n">tree</span> <span class="o">=</span> <span class="n">resolved</span> <span class="k">if</span> <span class="n">resolved</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">bvh_from_points</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">leaf_size</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">query_nearest_via_mesh</span><span class="p">,</span>
+            <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">query_nearest_via_bvh</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">mesh</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">queries</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">max_radius</span><span class="p">)],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">tree</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">queries</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">max_radius</span><span class="p">)],</span>
             <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">neighbor_indices</span><span class="p">,</span> <span class="n">neighbor_distances</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+            <span class="n">block_dim</span><span class="o">=</span><span class="n">_descent_block_dim</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">device</span><span class="p">),</span>
         <span class="p">)</span>
         <span class="k">return</span> <span class="n">_shape_nearest</span><span class="p">(</span><span class="n">neighbor_indices</span><span class="p">,</span> <span class="n">neighbor_distances</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="n">single_query</span><span class="p">)</span>
 
@@ -11653,7 +11353,59 @@ beats the unweighted site at distance 1; from <code>x = -1</code> it does not:</
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1761</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1709</span>
+<span class="normal">1710</span>
+<span class="normal">1711</span>
+<span class="normal">1712</span>
+<span class="normal">1713</span>
+<span class="normal">1714</span>
+<span class="normal">1715</span>
+<span class="normal">1716</span>
+<span class="normal">1717</span>
+<span class="normal">1718</span>
+<span class="normal">1719</span>
+<span class="normal">1720</span>
+<span class="normal">1721</span>
+<span class="normal">1722</span>
+<span class="normal">1723</span>
+<span class="normal">1724</span>
+<span class="normal">1725</span>
+<span class="normal">1726</span>
+<span class="normal">1727</span>
+<span class="normal">1728</span>
+<span class="normal">1729</span>
+<span class="normal">1730</span>
+<span class="normal">1731</span>
+<span class="normal">1732</span>
+<span class="normal">1733</span>
+<span class="normal">1734</span>
+<span class="normal">1735</span>
+<span class="normal">1736</span>
+<span class="normal">1737</span>
+<span class="normal">1738</span>
+<span class="normal">1739</span>
+<span class="normal">1740</span>
+<span class="normal">1741</span>
+<span class="normal">1742</span>
+<span class="normal">1743</span>
+<span class="normal">1744</span>
+<span class="normal">1745</span>
+<span class="normal">1746</span>
+<span class="normal">1747</span>
+<span class="normal">1748</span>
+<span class="normal">1749</span>
+<span class="normal">1750</span>
+<span class="normal">1751</span>
+<span class="normal">1752</span>
+<span class="normal">1753</span>
+<span class="normal">1754</span>
+<span class="normal">1755</span>
+<span class="normal">1756</span>
+<span class="normal">1757</span>
+<span class="normal">1758</span>
+<span class="normal">1759</span>
+<span class="normal">1760</span>
+<span class="normal">1761</span>
 <span class="normal">1762</span>
 <span class="normal">1763</span>
 <span class="normal">1764</span>
@@ -11742,59 +11494,7 @@ beats the unweighted site at distance 1; from <code>x = -1</code> it does not:</
 <span class="normal">1847</span>
 <span class="normal">1848</span>
 <span class="normal">1849</span>
-<span class="normal">1850</span>
-<span class="normal">1851</span>
-<span class="normal">1852</span>
-<span class="normal">1853</span>
-<span class="normal">1854</span>
-<span class="normal">1855</span>
-<span class="normal">1856</span>
-<span class="normal">1857</span>
-<span class="normal">1858</span>
-<span class="normal">1859</span>
-<span class="normal">1860</span>
-<span class="normal">1861</span>
-<span class="normal">1862</span>
-<span class="normal">1863</span>
-<span class="normal">1864</span>
-<span class="normal">1865</span>
-<span class="normal">1866</span>
-<span class="normal">1867</span>
-<span class="normal">1868</span>
-<span class="normal">1869</span>
-<span class="normal">1870</span>
-<span class="normal">1871</span>
-<span class="normal">1872</span>
-<span class="normal">1873</span>
-<span class="normal">1874</span>
-<span class="normal">1875</span>
-<span class="normal">1876</span>
-<span class="normal">1877</span>
-<span class="normal">1878</span>
-<span class="normal">1879</span>
-<span class="normal">1880</span>
-<span class="normal">1881</span>
-<span class="normal">1882</span>
-<span class="normal">1883</span>
-<span class="normal">1884</span>
-<span class="normal">1885</span>
-<span class="normal">1886</span>
-<span class="normal">1887</span>
-<span class="normal">1888</span>
-<span class="normal">1889</span>
-<span class="normal">1890</span>
-<span class="normal">1891</span>
-<span class="normal">1892</span>
-<span class="normal">1893</span>
-<span class="normal">1894</span>
-<span class="normal">1895</span>
-<span class="normal">1896</span>
-<span class="normal">1897</span>
-<span class="normal">1898</span>
-<span class="normal">1899</span>
-<span class="normal">1900</span>
-<span class="normal">1901</span>
-<span class="normal">1902</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_weighted_nearest</span><span class="p">(</span>
+<span class="normal">1850</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_weighted_nearest</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">weights</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -12061,7 +11761,59 @@ neighbour. The distances are <code>float32</code> (<code>wp.length</code>), so t
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1915</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1863</span>
+<span class="normal">1864</span>
+<span class="normal">1865</span>
+<span class="normal">1866</span>
+<span class="normal">1867</span>
+<span class="normal">1868</span>
+<span class="normal">1869</span>
+<span class="normal">1870</span>
+<span class="normal">1871</span>
+<span class="normal">1872</span>
+<span class="normal">1873</span>
+<span class="normal">1874</span>
+<span class="normal">1875</span>
+<span class="normal">1876</span>
+<span class="normal">1877</span>
+<span class="normal">1878</span>
+<span class="normal">1879</span>
+<span class="normal">1880</span>
+<span class="normal">1881</span>
+<span class="normal">1882</span>
+<span class="normal">1883</span>
+<span class="normal">1884</span>
+<span class="normal">1885</span>
+<span class="normal">1886</span>
+<span class="normal">1887</span>
+<span class="normal">1888</span>
+<span class="normal">1889</span>
+<span class="normal">1890</span>
+<span class="normal">1891</span>
+<span class="normal">1892</span>
+<span class="normal">1893</span>
+<span class="normal">1894</span>
+<span class="normal">1895</span>
+<span class="normal">1896</span>
+<span class="normal">1897</span>
+<span class="normal">1898</span>
+<span class="normal">1899</span>
+<span class="normal">1900</span>
+<span class="normal">1901</span>
+<span class="normal">1902</span>
+<span class="normal">1903</span>
+<span class="normal">1904</span>
+<span class="normal">1905</span>
+<span class="normal">1906</span>
+<span class="normal">1907</span>
+<span class="normal">1908</span>
+<span class="normal">1909</span>
+<span class="normal">1910</span>
+<span class="normal">1911</span>
+<span class="normal">1912</span>
+<span class="normal">1913</span>
+<span class="normal">1914</span>
+<span class="normal">1915</span>
 <span class="normal">1916</span>
 <span class="normal">1917</span>
 <span class="normal">1918</span>
@@ -12071,59 +11823,7 @@ neighbour. The distances are <code>float32</code> (<code>wp.length</code>), so t
 <span class="normal">1922</span>
 <span class="normal">1923</span>
 <span class="normal">1924</span>
-<span class="normal">1925</span>
-<span class="normal">1926</span>
-<span class="normal">1927</span>
-<span class="normal">1928</span>
-<span class="normal">1929</span>
-<span class="normal">1930</span>
-<span class="normal">1931</span>
-<span class="normal">1932</span>
-<span class="normal">1933</span>
-<span class="normal">1934</span>
-<span class="normal">1935</span>
-<span class="normal">1936</span>
-<span class="normal">1937</span>
-<span class="normal">1938</span>
-<span class="normal">1939</span>
-<span class="normal">1940</span>
-<span class="normal">1941</span>
-<span class="normal">1942</span>
-<span class="normal">1943</span>
-<span class="normal">1944</span>
-<span class="normal">1945</span>
-<span class="normal">1946</span>
-<span class="normal">1947</span>
-<span class="normal">1948</span>
-<span class="normal">1949</span>
-<span class="normal">1950</span>
-<span class="normal">1951</span>
-<span class="normal">1952</span>
-<span class="normal">1953</span>
-<span class="normal">1954</span>
-<span class="normal">1955</span>
-<span class="normal">1956</span>
-<span class="normal">1957</span>
-<span class="normal">1958</span>
-<span class="normal">1959</span>
-<span class="normal">1960</span>
-<span class="normal">1961</span>
-<span class="normal">1962</span>
-<span class="normal">1963</span>
-<span class="normal">1964</span>
-<span class="normal">1965</span>
-<span class="normal">1966</span>
-<span class="normal">1967</span>
-<span class="normal">1968</span>
-<span class="normal">1969</span>
-<span class="normal">1970</span>
-<span class="normal">1971</span>
-<span class="normal">1972</span>
-<span class="normal">1973</span>
-<span class="normal">1974</span>
-<span class="normal">1975</span>
-<span class="normal">1976</span>
-<span class="normal">1977</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">nearest_neighbor_distance</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
+<span class="normal">1925</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">nearest_neighbor_distance</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Distance from each point to the closest *other* point of the same cloud.</span>
 
@@ -12327,7 +12027,59 @@ across the bus.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1980</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1928</span>
+<span class="normal">1929</span>
+<span class="normal">1930</span>
+<span class="normal">1931</span>
+<span class="normal">1932</span>
+<span class="normal">1933</span>
+<span class="normal">1934</span>
+<span class="normal">1935</span>
+<span class="normal">1936</span>
+<span class="normal">1937</span>
+<span class="normal">1938</span>
+<span class="normal">1939</span>
+<span class="normal">1940</span>
+<span class="normal">1941</span>
+<span class="normal">1942</span>
+<span class="normal">1943</span>
+<span class="normal">1944</span>
+<span class="normal">1945</span>
+<span class="normal">1946</span>
+<span class="normal">1947</span>
+<span class="normal">1948</span>
+<span class="normal">1949</span>
+<span class="normal">1950</span>
+<span class="normal">1951</span>
+<span class="normal">1952</span>
+<span class="normal">1953</span>
+<span class="normal">1954</span>
+<span class="normal">1955</span>
+<span class="normal">1956</span>
+<span class="normal">1957</span>
+<span class="normal">1958</span>
+<span class="normal">1959</span>
+<span class="normal">1960</span>
+<span class="normal">1961</span>
+<span class="normal">1962</span>
+<span class="normal">1963</span>
+<span class="normal">1964</span>
+<span class="normal">1965</span>
+<span class="normal">1966</span>
+<span class="normal">1967</span>
+<span class="normal">1968</span>
+<span class="normal">1969</span>
+<span class="normal">1970</span>
+<span class="normal">1971</span>
+<span class="normal">1972</span>
+<span class="normal">1973</span>
+<span class="normal">1974</span>
+<span class="normal">1975</span>
+<span class="normal">1976</span>
+<span class="normal">1977</span>
+<span class="normal">1978</span>
+<span class="normal">1979</span>
+<span class="normal">1980</span>
 <span class="normal">1981</span>
 <span class="normal">1982</span>
 <span class="normal">1983</span>
@@ -12354,59 +12106,7 @@ across the bus.</p>
 <span class="normal">2004</span>
 <span class="normal">2005</span>
 <span class="normal">2006</span>
-<span class="normal">2007</span>
-<span class="normal">2008</span>
-<span class="normal">2009</span>
-<span class="normal">2010</span>
-<span class="normal">2011</span>
-<span class="normal">2012</span>
-<span class="normal">2013</span>
-<span class="normal">2014</span>
-<span class="normal">2015</span>
-<span class="normal">2016</span>
-<span class="normal">2017</span>
-<span class="normal">2018</span>
-<span class="normal">2019</span>
-<span class="normal">2020</span>
-<span class="normal">2021</span>
-<span class="normal">2022</span>
-<span class="normal">2023</span>
-<span class="normal">2024</span>
-<span class="normal">2025</span>
-<span class="normal">2026</span>
-<span class="normal">2027</span>
-<span class="normal">2028</span>
-<span class="normal">2029</span>
-<span class="normal">2030</span>
-<span class="normal">2031</span>
-<span class="normal">2032</span>
-<span class="normal">2033</span>
-<span class="normal">2034</span>
-<span class="normal">2035</span>
-<span class="normal">2036</span>
-<span class="normal">2037</span>
-<span class="normal">2038</span>
-<span class="normal">2039</span>
-<span class="normal">2040</span>
-<span class="normal">2041</span>
-<span class="normal">2042</span>
-<span class="normal">2043</span>
-<span class="normal">2044</span>
-<span class="normal">2045</span>
-<span class="normal">2046</span>
-<span class="normal">2047</span>
-<span class="normal">2048</span>
-<span class="normal">2049</span>
-<span class="normal">2050</span>
-<span class="normal">2051</span>
-<span class="normal">2052</span>
-<span class="normal">2053</span>
-<span class="normal">2054</span>
-<span class="normal">2055</span>
-<span class="normal">2056</span>
-<span class="normal">2057</span>
-<span class="normal">2058</span>
-<span class="normal">2059</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closest_pair</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="normal">2007</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closest_pair</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Find the two closest points of a cloud, and the distance between them.</span>
 
@@ -12698,7 +12398,59 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2062</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2010</span>
+<span class="normal">2011</span>
+<span class="normal">2012</span>
+<span class="normal">2013</span>
+<span class="normal">2014</span>
+<span class="normal">2015</span>
+<span class="normal">2016</span>
+<span class="normal">2017</span>
+<span class="normal">2018</span>
+<span class="normal">2019</span>
+<span class="normal">2020</span>
+<span class="normal">2021</span>
+<span class="normal">2022</span>
+<span class="normal">2023</span>
+<span class="normal">2024</span>
+<span class="normal">2025</span>
+<span class="normal">2026</span>
+<span class="normal">2027</span>
+<span class="normal">2028</span>
+<span class="normal">2029</span>
+<span class="normal">2030</span>
+<span class="normal">2031</span>
+<span class="normal">2032</span>
+<span class="normal">2033</span>
+<span class="normal">2034</span>
+<span class="normal">2035</span>
+<span class="normal">2036</span>
+<span class="normal">2037</span>
+<span class="normal">2038</span>
+<span class="normal">2039</span>
+<span class="normal">2040</span>
+<span class="normal">2041</span>
+<span class="normal">2042</span>
+<span class="normal">2043</span>
+<span class="normal">2044</span>
+<span class="normal">2045</span>
+<span class="normal">2046</span>
+<span class="normal">2047</span>
+<span class="normal">2048</span>
+<span class="normal">2049</span>
+<span class="normal">2050</span>
+<span class="normal">2051</span>
+<span class="normal">2052</span>
+<span class="normal">2053</span>
+<span class="normal">2054</span>
+<span class="normal">2055</span>
+<span class="normal">2056</span>
+<span class="normal">2057</span>
+<span class="normal">2058</span>
+<span class="normal">2059</span>
+<span class="normal">2060</span>
+<span class="normal">2061</span>
+<span class="normal">2062</span>
 <span class="normal">2063</span>
 <span class="normal">2064</span>
 <span class="normal">2065</span>
@@ -12845,59 +12597,7 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
 <span class="normal">2206</span>
 <span class="normal">2207</span>
 <span class="normal">2208</span>
-<span class="normal">2209</span>
-<span class="normal">2210</span>
-<span class="normal">2211</span>
-<span class="normal">2212</span>
-<span class="normal">2213</span>
-<span class="normal">2214</span>
-<span class="normal">2215</span>
-<span class="normal">2216</span>
-<span class="normal">2217</span>
-<span class="normal">2218</span>
-<span class="normal">2219</span>
-<span class="normal">2220</span>
-<span class="normal">2221</span>
-<span class="normal">2222</span>
-<span class="normal">2223</span>
-<span class="normal">2224</span>
-<span class="normal">2225</span>
-<span class="normal">2226</span>
-<span class="normal">2227</span>
-<span class="normal">2228</span>
-<span class="normal">2229</span>
-<span class="normal">2230</span>
-<span class="normal">2231</span>
-<span class="normal">2232</span>
-<span class="normal">2233</span>
-<span class="normal">2234</span>
-<span class="normal">2235</span>
-<span class="normal">2236</span>
-<span class="normal">2237</span>
-<span class="normal">2238</span>
-<span class="normal">2239</span>
-<span class="normal">2240</span>
-<span class="normal">2241</span>
-<span class="normal">2242</span>
-<span class="normal">2243</span>
-<span class="normal">2244</span>
-<span class="normal">2245</span>
-<span class="normal">2246</span>
-<span class="normal">2247</span>
-<span class="normal">2248</span>
-<span class="normal">2249</span>
-<span class="normal">2250</span>
-<span class="normal">2251</span>
-<span class="normal">2252</span>
-<span class="normal">2253</span>
-<span class="normal">2254</span>
-<span class="normal">2255</span>
-<span class="normal">2256</span>
-<span class="normal">2257</span>
-<span class="normal">2258</span>
-<span class="normal">2259</span>
-<span class="normal">2260</span>
-<span class="normal">2261</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_ball</span><span class="p">(</span>
+<span class="normal">2209</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_ball</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">min_count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">6</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>

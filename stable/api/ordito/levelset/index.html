@@ -7920,6 +7920,7 @@ sphere):</p>
     <span class="n">thickness</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">outside</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
+    <span class="n">mates</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
 </code></pre></div>
 
@@ -8015,6 +8016,24 @@ the outer face. Zero (the default) leaves the input surface as the outer face ex
                   <code>0.0</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>mates</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> <a class="autorefs autorefs-internal" title="halfedge_mates" href="../halfedge/#ordito.halfedge.halfedge_mates"><code>halfedge_mates</code></a> of <code>faces</code> when the
+caller holds them (<a class="autorefs autorefs-internal" title="halfedge_mates" href="../mesh/#ordito.mesh.Trimesh.halfedge_mates"><code>Trimesh.halfedge_mates</code></a>), which
+the rim search reads rather than pairing the halfedges again. Trusted, not checked.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -8069,7 +8088,7 @@ first, then the inward one, so input vertex <code>v</code> is at <code>v</code> 
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>vertices</code> and <code>faces</code> are not all on one device.</p>
+                <p>If <code>vertices</code>, <code>faces</code> and <code>mates</code> are not all on one device.</p>
               </div>
             </td>
           </tr>
@@ -8128,8 +8147,7 @@ triangles over each of its 16 boundary edges:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/levelset.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 900</span>
-<span class="normal"> 901</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 901</span>
 <span class="normal"> 902</span>
 <span class="normal"> 903</span>
 <span class="normal"> 904</span>
@@ -8251,12 +8269,19 @@ triangles over each of its 16 boundary edges:</p>
 <span class="normal">1020</span>
 <span class="normal">1021</span>
 <span class="normal">1022</span>
-<span class="normal">1023</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">thicken_mesh</span><span class="p">(</span>
+<span class="normal">1023</span>
+<span class="normal">1024</span>
+<span class="normal">1025</span>
+<span class="normal">1026</span>
+<span class="normal">1027</span>
+<span class="normal">1028</span>
+<span class="normal">1029</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">thicken_mesh</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">thickness</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">outside</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
+    <span class="n">mates</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Turn a surface into a solid shell of given thickness, keeping the input's triangulation.</span>
@@ -8285,6 +8310,10 @@ triangles over each of its 16 boundary edges:</p>
 <span class="sd">    outside</span>
 <span class="sd">        Distance the shell also extends outward, so the input surface ends up ``outside`` in from</span>
 <span class="sd">        the outer face. Zero (the default) leaves the input surface as the outer face exactly.</span>
+<span class="sd">    mates</span>
+<span class="sd">        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the</span>
+<span class="sd">        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which</span>
+<span class="sd">        the rim search reads rather than pairing the halfedges again. Trusted, not checked.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -8298,7 +8327,7 @@ triangles over each of its 16 boundary edges:</p>
 <span class="sd">    ValueError</span>
 <span class="sd">        If ``thickness`` is not positive, ``outside`` is negative, or ``faces`` is empty.</span>
 <span class="sd">    RuntimeError</span>
-<span class="sd">        If ``vertices`` and ``faces`` are not all on one device.</span>
+<span class="sd">        If ``vertices``, ``faces`` and ``mates`` are not all on one device.</span>
 
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
@@ -8341,7 +8370,7 @@ triangles over each of its 16 boundary edges:</p>
 <span class="sd">    print(od.validation.is_watertight(shell_vertices, shell_faces))  # True</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
+    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">mates</span><span class="o">=</span><span class="n">mates</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">thickness</span> <span class="o">&lt;=</span> <span class="mf">0.0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"thickness must be positive"</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">outside</span> <span class="o">&lt;</span> <span class="mf">0.0</span><span class="p">:</span>
@@ -8362,7 +8391,7 @@ triangles over each of its 16 boundary edges:</p>
         <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">normal_sums</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="n">rim</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">boundary</span><span class="o">.</span><span class="n">oriented_boundary_edges</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+    <span class="n">rim</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">boundary</span><span class="o">.</span><span class="n">oriented_boundary_edges</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">mates</span><span class="o">=</span><span class="n">mates</span><span class="p">)</span>
     <span class="n">n_rim</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">rim</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
 
     <span class="n">out_vertices</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>

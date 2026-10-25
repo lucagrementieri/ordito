@@ -6424,6 +6424,7 @@ device to share, so the empty result is allocated on Warp's <strong>current</str
     <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">copy</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">labels</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]]</span>
 </code></pre></div>
 
@@ -6507,6 +6508,23 @@ buffer of each component, so the returned list no longer pins the batched buffer
                   <code>False</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>labels</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_faces,)</code> face component labels, as
+<a class="autorefs autorefs-internal" title="split_with_offsets" href="./#ordito.combine.split_with_offsets"><code>split_with_offsets</code></a> takes them.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -6550,7 +6568,7 @@ buffer of each component, so the returned list no longer pins the batched buffer
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>vertices</code> and <code>faces</code> are not all on one device.</p>
+                <p>If <code>vertices</code>, <code>faces</code> and <code>labels</code> are not all on one device.</p>
               </div>
             </td>
           </tr>
@@ -6676,8 +6694,21 @@ buffer of each component, so the returned list no longer pins the batched buffer
 <span class="normal">196</span>
 <span class="normal">197</span>
 <span class="normal">198</span>
-<span class="normal">199</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split</span><span class="p">(</span>
-    <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">copy</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+<span class="normal">199</span>
+<span class="normal">200</span>
+<span class="normal">201</span>
+<span class="normal">202</span>
+<span class="normal">203</span>
+<span class="normal">204</span>
+<span class="normal">205</span>
+<span class="normal">206</span>
+<span class="normal">207</span>
+<span class="normal">208</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">copy</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">labels</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">list</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Split a mesh into connected components by face adjacency.</span>
@@ -6707,6 +6738,9 @@ buffer of each component, so the returned list no longer pins the batched buffer
 <span class="sd">    copy</span>
 <span class="sd">        Return independent buffers instead of views into the batched result. One allocation per</span>
 <span class="sd">        buffer of each component, so the returned list no longer pins the batched buffers.</span>
+<span class="sd">    labels</span>
+<span class="sd">        ``(n_faces,)`` face component labels, as</span>
+<span class="sd">        [`split_with_offsets`][ordito.combine.split_with_offsets] takes them.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -6717,7 +6751,7 @@ buffer of each component, so the returned list no longer pins the batched buffer
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    RuntimeError</span>
-<span class="sd">        If ``vertices`` and ``faces`` are not all on one device.</span>
+<span class="sd">        If ``vertices``, ``faces`` and ``labels`` are not all on one device.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -6746,8 +6780,10 @@ buffer of each component, so the returned list no longer pins the batched buffer
 <span class="sd">    print(part_vertices.size, part_faces.size // 3)  # 8 12</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
-    <span class="n">vertices_all</span><span class="p">,</span> <span class="n">vertex_offsets</span><span class="p">,</span> <span class="n">faces_all</span><span class="p">,</span> <span class="n">face_offsets</span> <span class="o">=</span> <span class="n">split_with_offsets</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">labels</span><span class="o">=</span><span class="n">labels</span><span class="p">)</span>
+    <span class="n">vertices_all</span><span class="p">,</span> <span class="n">vertex_offsets</span><span class="p">,</span> <span class="n">faces_all</span><span class="p">,</span> <span class="n">face_offsets</span> <span class="o">=</span> <span class="n">split_with_offsets</span><span class="p">(</span>
+        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">labels</span><span class="o">=</span><span class="n">labels</span>
+    <span class="p">)</span>
     <span class="k">if</span> <span class="n">vertex_offsets</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">2</span><span class="p">:</span>
         <span class="c1"># One component is the whole of both buffers, so its offsets need no readback.</span>
         <span class="k">if</span> <span class="n">copy</span><span class="p">:</span>
@@ -6771,7 +6807,10 @@ buffer of each component, so the returned list no longer pins the batched buffer
 
 </h2>
 <div class="doc-signature highlight"><pre><span></span><code><span class="nf">split_with_offsets</span><span class="p">(</span>
-    <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">labels</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span>
     <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -6830,6 +6869,27 @@ into another batched kernel.</p>
             </td>
             <td>
                 <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>labels</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_faces,)</code> face component labels of <code>faces</code>, each component's smallest face id, as
+<a class="autorefs autorefs-internal" title="face_connected_component_labels" href="../adjacency/#ordito.adjacency.face_connected_component_labels"><code>face_connected_component_labels</code></a>
+returns them
+(<a class="autorefs autorefs-internal" title="face_connected_component_labels" href="../mesh/#ordito.mesh.Trimesh.face_connected_component_labels"><code>Trimesh.face_connected_component_labels</code></a>),
+to spare the labelling. Trusted, not checked: the components come out in the order of these
+labels.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
             </td>
           </tr>
       </tbody>
@@ -6916,7 +6976,7 @@ into another batched kernel.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>vertices</code> and <code>faces</code> are not all on one device.</p>
+                <p>If <code>vertices</code>, <code>faces</code> and <code>labels</code> are not all on one device.</p>
               </div>
             </td>
           </tr>
@@ -6953,16 +7013,7 @@ into another batched kernel.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/combine.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">202</span>
-<span class="normal">203</span>
-<span class="normal">204</span>
-<span class="normal">205</span>
-<span class="normal">206</span>
-<span class="normal">207</span>
-<span class="normal">208</span>
-<span class="normal">209</span>
-<span class="normal">210</span>
-<span class="normal">211</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">211</span>
 <span class="normal">212</span>
 <span class="normal">213</span>
 <span class="normal">214</span>
@@ -7046,8 +7097,34 @@ into another batched kernel.</p>
 <span class="normal">292</span>
 <span class="normal">293</span>
 <span class="normal">294</span>
-<span class="normal">295</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_with_offsets</span><span class="p">(</span>
-    <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
+<span class="normal">295</span>
+<span class="normal">296</span>
+<span class="normal">297</span>
+<span class="normal">298</span>
+<span class="normal">299</span>
+<span class="normal">300</span>
+<span class="normal">301</span>
+<span class="normal">302</span>
+<span class="normal">303</span>
+<span class="normal">304</span>
+<span class="normal">305</span>
+<span class="normal">306</span>
+<span class="normal">307</span>
+<span class="normal">308</span>
+<span class="normal">309</span>
+<span class="normal">310</span>
+<span class="normal">311</span>
+<span class="normal">312</span>
+<span class="normal">313</span>
+<span class="normal">314</span>
+<span class="normal">315</span>
+<span class="normal">316</span>
+<span class="normal">317</span>
+<span class="normal">318</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_with_offsets</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">labels</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Split a mesh into connected components, returned as two CSR buffers.</span>
@@ -7063,6 +7140,13 @@ into another batched kernel.</p>
 <span class="sd">        ``(n_vertices,)`` mesh vertex positions on the target device.</span>
 <span class="sd">    faces</span>
 <span class="sd">        ``(3 * n_faces,)`` flat triangle index buffer.</span>
+<span class="sd">    labels</span>
+<span class="sd">        ``(n_faces,)`` face component labels of ``faces``, each component's smallest face id, as</span>
+<span class="sd">        [`face_connected_component_labels`][ordito.adjacency.face_connected_component_labels]</span>
+<span class="sd">        returns them</span>
+<span class="sd">        ([`Trimesh.face_connected_component_labels`][ordito.mesh.Trimesh.face_connected_component_labels]),</span>
+<span class="sd">        to spare the labelling. Trusted, not checked: the components come out in the order of these</span>
+<span class="sd">        labels.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -7082,7 +7166,7 @@ into another batched kernel.</p>
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    RuntimeError</span>
-<span class="sd">        If ``vertices`` and ``faces`` are not all on one device.</span>
+<span class="sd">        If ``vertices``, ``faces`` and ``labels`` are not all on one device.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -7105,13 +7189,17 @@ into another batched kernel.</p>
 <span class="sd">    print(face_offsets.numpy())  # [ 0 12 16]</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
+    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">labels</span><span class="o">=</span><span class="n">labels</span><span class="p">)</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n_faces</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span>
     <span class="k">if</span> <span class="n">n_faces</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="p">(</span><span class="o">*</span><span class="n">_launch</span><span class="o">.</span><span class="n">empty_packed</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="p">),</span> <span class="o">*</span><span class="n">_launch</span><span class="o">.</span><span class="n">empty_packed</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="p">))</span>
 
-    <span class="n">face_labels</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">face_connected_component_labels</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">size</span><span class="p">)</span>
+    <span class="n">face_labels</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">od</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">face_connected_component_labels</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">size</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">labels</span> <span class="ow">is</span> <span class="kc">None</span>
+        <span class="k">else</span> <span class="n">labels</span>
+    <span class="p">)</span>
 
     <span class="c1"># Every label is a face id, below ``n_faces``, so the radix sort stops at that bit width instead</span>
     <span class="c1"># of running all 32 bits.</span>

@@ -7231,6 +7231,8 @@ it back:</p>
     <span class="n">pre_smooth</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">gradual</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">lamb</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.5</span><span class="p">,</span>
+    <span class="n">vertex_faces</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]]</span>
+    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span>
 </code></pre></div>
 
@@ -7388,6 +7390,26 @@ the normals are what the noise corrupts and displacing along them amplifies it.<
                   <code>0.5</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>vertex_faces</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple">tuple</a>[<span title="warp.array">array</span>[<span title="warp.int32">int32</span>], <span title="warp.array">array</span>[<span title="warp.int32">int32</span>]] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> and <code>(n_vertices + 1,)</code> optional precomputed
+<a class="autorefs autorefs-internal" title="vertex_face_adjacency" href="../adjacency/#ordito.adjacency.vertex_face_adjacency"><code>vertex_face_adjacency</code></a> as
+<code>(vertex_faces, offsets)</code>. Depends on the connectivity alone -- which this flow never
+changes -- so one CSR serves every call over the same mesh, and
+<a class="autorefs autorefs-internal" title="vertex_face_adjacency" href="../mesh/#ordito.mesh.Trimesh.vertex_face_adjacency"><code>Trimesh.vertex_face_adjacency</code></a> has it cached.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -7441,7 +7463,7 @@ so <code>faces</code> remains valid.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>vertices</code> and <code>faces</code> are not all on one device.</p>
+                <p>If <code>vertices</code>, <code>faces</code> and <code>vertex_faces</code> are not all on one device.</p>
               </div>
             </td>
           </tr>
@@ -7615,7 +7637,18 @@ so <code>faces</code> remains valid.</p>
 <span class="normal">495</span>
 <span class="normal">496</span>
 <span class="normal">497</span>
-<span class="normal">498</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">inflate</span><span class="p">(</span>
+<span class="normal">498</span>
+<span class="normal">499</span>
+<span class="normal">500</span>
+<span class="normal">501</span>
+<span class="normal">502</span>
+<span class="normal">503</span>
+<span class="normal">504</span>
+<span class="normal">505</span>
+<span class="normal">506</span>
+<span class="normal">507</span>
+<span class="normal">508</span>
+<span class="normal">509</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">inflate</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">pressure</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -7624,6 +7657,7 @@ so <code>faces</code> remains valid.</p>
     <span class="n">pre_smooth</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">gradual</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">lamb</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.5</span><span class="p">,</span>
+    <span class="n">vertex_faces</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Inflate a surface under uniform pressure: normal displacement alternating with smoothing.</span>
@@ -7672,6 +7706,12 @@ so <code>faces</code> remains valid.</p>
 <span class="sd">    lamb</span>
 <span class="sd">        Relaxation strength of each Laplacian pass, as</span>
 <span class="sd">        [`filter_laplacian`][ordito.smoothing.filter_laplacian] takes it.</span>
+<span class="sd">    vertex_faces</span>
+<span class="sd">        ``(3 * n_faces,)`` and ``(n_vertices + 1,)`` optional precomputed</span>
+<span class="sd">        [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency] as</span>
+<span class="sd">        ``(vertex_faces, offsets)``. Depends on the connectivity alone -- which this flow never</span>
+<span class="sd">        changes -- so one CSR serves every call over the same mesh, and</span>
+<span class="sd">        [`Trimesh.vertex_face_adjacency`][ordito.mesh.Trimesh.vertex_face_adjacency] has it cached.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -7684,7 +7724,7 @@ so <code>faces</code> remains valid.</p>
 <span class="sd">    ValueError</span>
 <span class="sd">        If ``iterations`` is negative.</span>
 <span class="sd">    RuntimeError</span>
-<span class="sd">        If ``vertices`` and ``faces`` are not all on one device.</span>
+<span class="sd">        If ``vertices``, ``faces`` and ``vertex_faces`` are not all on one device.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -7708,7 +7748,7 @@ so <code>faces</code> remains valid.</p>
 <span class="sd">    print(od.measures.volume(inflated, faces) &gt; od.measures.volume(vertices, faces))  # True</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
+    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">vertex_faces</span><span class="o">=</span><span class="n">vertex_faces</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">iterations</span> <span class="o">&lt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"iterations must be non-negative, got </span><span class="si">{</span><span class="n">iterations</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
@@ -7725,7 +7765,11 @@ so <code>faces</code> remains valid.</p>
     <span class="c1"># vertex's normal over the vertex-face table built once here, and every buffer and the</span>
     <span class="c1"># constraint's device state are reused. Same arithmetic as the composed calls, up to the</span>
     <span class="c1"># normal sums' order.</span>
-    <span class="n">vf_indices</span><span class="p">,</span> <span class="n">vf_offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">vertex_face_adjacency</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">)</span>
+    <span class="n">vf_indices</span><span class="p">,</span> <span class="n">vf_offsets</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">vertex_faces</span>
+        <span class="k">if</span> <span class="n">vertex_faces</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+        <span class="k">else</span> <span class="n">od</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">vertex_face_adjacency</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">)</span>
+    <span class="p">)</span>
     <span class="n">positions</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">displaced</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">wide</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3d</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
@@ -7979,18 +8023,7 @@ smoothing.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">501</span>
-<span class="normal">502</span>
-<span class="normal">503</span>
-<span class="normal">504</span>
-<span class="normal">505</span>
-<span class="normal">506</span>
-<span class="normal">507</span>
-<span class="normal">508</span>
-<span class="normal">509</span>
-<span class="normal">510</span>
-<span class="normal">511</span>
-<span class="normal">512</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">512</span>
 <span class="normal">513</span>
 <span class="normal">514</span>
 <span class="normal">515</span>
@@ -8072,7 +8105,18 @@ smoothing.</p>
 <span class="normal">591</span>
 <span class="normal">592</span>
 <span class="normal">593</span>
-<span class="normal">594</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_humphrey</span><span class="p">(</span>
+<span class="normal">594</span>
+<span class="normal">595</span>
+<span class="normal">596</span>
+<span class="normal">597</span>
+<span class="normal">598</span>
+<span class="normal">599</span>
+<span class="normal">600</span>
+<span class="normal">601</span>
+<span class="normal">602</span>
+<span class="normal">603</span>
+<span class="normal">604</span>
+<span class="normal">605</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_humphrey</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">alpha</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.1</span><span class="p">,</span>
@@ -8433,18 +8477,7 @@ average of its closed 1-ring, and no other vertex moves:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">615</span>
-<span class="normal">616</span>
-<span class="normal">617</span>
-<span class="normal">618</span>
-<span class="normal">619</span>
-<span class="normal">620</span>
-<span class="normal">621</span>
-<span class="normal">622</span>
-<span class="normal">623</span>
-<span class="normal">624</span>
-<span class="normal">625</span>
-<span class="normal">626</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">626</span>
 <span class="normal">627</span>
 <span class="normal">628</span>
 <span class="normal">629</span>
@@ -8587,7 +8620,18 @@ average of its closed 1-ring, and no other vertex moves:</p>
 <span class="normal">766</span>
 <span class="normal">767</span>
 <span class="normal">768</span>
-<span class="normal">769</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_spikes</span><span class="p">(</span>
+<span class="normal">769</span>
+<span class="normal">770</span>
+<span class="normal">771</span>
+<span class="normal">772</span>
+<span class="normal">773</span>
+<span class="normal">774</span>
+<span class="normal">775</span>
+<span class="normal">776</span>
+<span class="normal">777</span>
+<span class="normal">778</span>
+<span class="normal">779</span>
+<span class="normal">780</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_spikes</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">min_angle_sum</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -9052,18 +9096,7 @@ equalizing moves it back to the centre, where all eight have the same area:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">840</span>
-<span class="normal">841</span>
-<span class="normal">842</span>
-<span class="normal">843</span>
-<span class="normal">844</span>
-<span class="normal">845</span>
-<span class="normal">846</span>
-<span class="normal">847</span>
-<span class="normal">848</span>
-<span class="normal">849</span>
-<span class="normal">850</span>
-<span class="normal">851</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">851</span>
 <span class="normal">852</span>
 <span class="normal">853</span>
 <span class="normal">854</span>
@@ -9198,7 +9231,18 @@ equalizing moves it back to the centre, where all eight have the same area:</p>
 <span class="normal">983</span>
 <span class="normal">984</span>
 <span class="normal">985</span>
-<span class="normal">986</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">equalize_triangle_areas</span><span class="p">(</span>
+<span class="normal">986</span>
+<span class="normal">987</span>
+<span class="normal">988</span>
+<span class="normal">989</span>
+<span class="normal">990</span>
+<span class="normal">991</span>
+<span class="normal">992</span>
+<span class="normal">993</span>
+<span class="normal">994</span>
+<span class="normal">995</span>
+<span class="normal">996</span>
+<span class="normal">997</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">equalize_triangle_areas</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
@@ -9366,6 +9410,8 @@ equalizing moves it back to the centre, where all eight have the same area:</p>
     <span class="n">force</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.5</span><span class="p">,</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">max_displacement</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">unique_edges</span><span class="p">:</span> <span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span>
 </code></pre></div>
 
@@ -9496,6 +9542,29 @@ each pass. <code>None</code> leaves the relaxation unbounded.</p>
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>unique_edges</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="Array2dInt32
+
+
+  
+      module-attribute
+   (ordito.typing.Array2dInt32)" href="../typing/#ordito.typing.Array2dInt32">Array2dInt32</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_edges, 2)</code> <a class="autorefs autorefs-internal" title="edges_unique" href="../edges/#ordito.edges.edges_unique"><code>edges_unique</code></a> of <code>faces</code>
+(<a class="autorefs autorefs-internal" title="edges_unique" href="../mesh/#ordito.mesh.Trimesh.edges_unique"><code>Trimesh.edges_unique</code></a>), the edges the neighbour
+rows are built from, to spare the edge sort. Trusted, not checked.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -9549,7 +9618,7 @@ a length-<code>n_vertices</code> <code>wp.bool</code> array.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>vertices</code>, <code>faces</code> and <code>region</code> are not all on one device.</p>
+                <p>If <code>vertices</code>, <code>faces</code>, <code>region</code> and <code>unique_edges</code> are not all on one device.</p>
               </div>
             </td>
           </tr>
@@ -9595,18 +9664,7 @@ unlike a plain relaxation it keeps the volume:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1021</span>
-<span class="normal">1022</span>
-<span class="normal">1023</span>
-<span class="normal">1024</span>
-<span class="normal">1025</span>
-<span class="normal">1026</span>
-<span class="normal">1027</span>
-<span class="normal">1028</span>
-<span class="normal">1029</span>
-<span class="normal">1030</span>
-<span class="normal">1031</span>
-<span class="normal">1032</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1032</span>
 <span class="normal">1033</span>
 <span class="normal">1034</span>
 <span class="normal">1035</span>
@@ -9708,13 +9766,33 @@ unlike a plain relaxation it keeps the volume:</p>
 <span class="normal">1131</span>
 <span class="normal">1132</span>
 <span class="normal">1133</span>
-<span class="normal">1134</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">relax_keep_volume</span><span class="p">(</span>
+<span class="normal">1134</span>
+<span class="normal">1135</span>
+<span class="normal">1136</span>
+<span class="normal">1137</span>
+<span class="normal">1138</span>
+<span class="normal">1139</span>
+<span class="normal">1140</span>
+<span class="normal">1141</span>
+<span class="normal">1142</span>
+<span class="normal">1143</span>
+<span class="normal">1144</span>
+<span class="normal">1145</span>
+<span class="normal">1146</span>
+<span class="normal">1147</span>
+<span class="normal">1148</span>
+<span class="normal">1149</span>
+<span class="normal">1150</span>
+<span class="normal">1151</span>
+<span class="normal">1152</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">relax_keep_volume</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
     <span class="n">force</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.5</span><span class="p">,</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">max_displacement</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">unique_edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Uniform relaxation with the shrinkage taken out **locally**, rather than rescaled away.</span>
@@ -9750,6 +9828,10 @@ unlike a plain relaxation it keeps the volume:</p>
 <span class="sd">    max_displacement</span>
 <span class="sd">        Clamp every vertex into a ball of this radius around its **input** position, applied after</span>
 <span class="sd">        each pass. ``None`` leaves the relaxation unbounded.</span>
+<span class="sd">    unique_edges</span>
+<span class="sd">        ``(n_edges, 2)`` [`edges_unique`][ordito.edges.edges_unique] of ``faces``</span>
+<span class="sd">        ([`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique]), the edges the neighbour</span>
+<span class="sd">        rows are built from, to spare the edge sort. Trusted, not checked.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -9762,7 +9844,7 @@ unlike a plain relaxation it keeps the volume:</p>
 <span class="sd">        If ``iterations`` is negative, if ``max_displacement`` is negative, or if ``region`` is not</span>
 <span class="sd">        a length-``n_vertices`` ``wp.bool`` array.</span>
 <span class="sd">    RuntimeError</span>
-<span class="sd">        If ``vertices``, ``faces`` and ``region`` are not all on one device.</span>
+<span class="sd">        If ``vertices``, ``faces``, ``region`` and ``unique_edges`` are not all on one device.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -9792,7 +9874,7 @@ unlike a plain relaxation it keeps the volume:</p>
 <span class="sd">    print(abs(ratio - 1.0) &lt; 0.01)  # True</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="n">region</span><span class="p">)</span>
+    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="n">region</span><span class="p">,</span> <span class="n">unique_edges</span><span class="o">=</span><span class="n">unique_edges</span><span class="p">)</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
     <span class="n">active</span><span class="p">,</span> <span class="n">limit</span> <span class="o">=</span> <span class="n">_relaxation_state</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">iterations</span><span class="p">,</span> <span class="n">region</span><span class="p">,</span> <span class="n">max_displacement</span><span class="p">)</span>
@@ -9801,7 +9883,8 @@ unlike a plain relaxation it keeps the volume:</p>
 
     <span class="c1"># Sorted rows: the ring sums below run in row order, and sorted rows are exactly the CSR</span>
     <span class="c1"># structure a triplet build would give, with no sort of every edge twice.</span>
-    <span class="n">unique_edges</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">edges</span><span class="o">.</span><span class="n">edges_unique</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">unique_edges</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">unique_edges</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">edges</span><span class="o">.</span><span class="n">edges_unique</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
     <span class="n">columns</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">graph</span><span class="o">.</span><span class="n">edges_to_neighbor_lists</span><span class="p">(</span>
         <span class="n">n_vertices</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">sort_rows</span><span class="o">=</span><span class="kc">True</span>
     <span class="p">)</span>
@@ -10122,25 +10205,7 @@ returns the input -- check the result moved before concluding the parameters wer
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1137</span>
-<span class="normal">1138</span>
-<span class="normal">1139</span>
-<span class="normal">1140</span>
-<span class="normal">1141</span>
-<span class="normal">1142</span>
-<span class="normal">1143</span>
-<span class="normal">1144</span>
-<span class="normal">1145</span>
-<span class="normal">1146</span>
-<span class="normal">1147</span>
-<span class="normal">1148</span>
-<span class="normal">1149</span>
-<span class="normal">1150</span>
-<span class="normal">1151</span>
-<span class="normal">1152</span>
-<span class="normal">1153</span>
-<span class="normal">1154</span>
-<span class="normal">1155</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1155</span>
 <span class="normal">1156</span>
 <span class="normal">1157</span>
 <span class="normal">1158</span>
@@ -10263,7 +10328,25 @@ returns the input -- check the result moved before concluding the parameters wer
 <span class="normal">1275</span>
 <span class="normal">1276</span>
 <span class="normal">1277</span>
-<span class="normal">1278</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">relax_approx</span><span class="p">(</span>
+<span class="normal">1278</span>
+<span class="normal">1279</span>
+<span class="normal">1280</span>
+<span class="normal">1281</span>
+<span class="normal">1282</span>
+<span class="normal">1283</span>
+<span class="normal">1284</span>
+<span class="normal">1285</span>
+<span class="normal">1286</span>
+<span class="normal">1287</span>
+<span class="normal">1288</span>
+<span class="normal">1289</span>
+<span class="normal">1290</span>
+<span class="normal">1291</span>
+<span class="normal">1292</span>
+<span class="normal">1293</span>
+<span class="normal">1294</span>
+<span class="normal">1295</span>
+<span class="normal">1296</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">relax_approx</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">dilate_radius</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -10679,25 +10762,7 @@ smoothing:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1315</span>
-<span class="normal">1316</span>
-<span class="normal">1317</span>
-<span class="normal">1318</span>
-<span class="normal">1319</span>
-<span class="normal">1320</span>
-<span class="normal">1321</span>
-<span class="normal">1322</span>
-<span class="normal">1323</span>
-<span class="normal">1324</span>
-<span class="normal">1325</span>
-<span class="normal">1326</span>
-<span class="normal">1327</span>
-<span class="normal">1328</span>
-<span class="normal">1329</span>
-<span class="normal">1330</span>
-<span class="normal">1331</span>
-<span class="normal">1332</span>
-<span class="normal">1333</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1333</span>
 <span class="normal">1334</span>
 <span class="normal">1335</span>
 <span class="normal">1336</span>
@@ -10803,7 +10868,25 @@ smoothing:</p>
 <span class="normal">1436</span>
 <span class="normal">1437</span>
 <span class="normal">1438</span>
-<span class="normal">1439</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_taubin</span><span class="p">(</span>
+<span class="normal">1439</span>
+<span class="normal">1440</span>
+<span class="normal">1441</span>
+<span class="normal">1442</span>
+<span class="normal">1443</span>
+<span class="normal">1444</span>
+<span class="normal">1445</span>
+<span class="normal">1446</span>
+<span class="normal">1447</span>
+<span class="normal">1448</span>
+<span class="normal">1449</span>
+<span class="normal">1450</span>
+<span class="normal">1451</span>
+<span class="normal">1452</span>
+<span class="normal">1453</span>
+<span class="normal">1454</span>
+<span class="normal">1455</span>
+<span class="normal">1456</span>
+<span class="normal">1457</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_taubin</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">lamb</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.5</span><span class="p">,</span>
@@ -11118,25 +11201,7 @@ smoother, with no diffusion coefficient. It is the CPU/GPU-portable analogue of 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1442</span>
-<span class="normal">1443</span>
-<span class="normal">1444</span>
-<span class="normal">1445</span>
-<span class="normal">1446</span>
-<span class="normal">1447</span>
-<span class="normal">1448</span>
-<span class="normal">1449</span>
-<span class="normal">1450</span>
-<span class="normal">1451</span>
-<span class="normal">1452</span>
-<span class="normal">1453</span>
-<span class="normal">1454</span>
-<span class="normal">1455</span>
-<span class="normal">1456</span>
-<span class="normal">1457</span>
-<span class="normal">1458</span>
-<span class="normal">1459</span>
-<span class="normal">1460</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1460</span>
 <span class="normal">1461</span>
 <span class="normal">1462</span>
 <span class="normal">1463</span>
@@ -11201,7 +11266,25 @@ smoother, with no diffusion coefficient. It is the CPU/GPU-portable analogue of 
 <span class="normal">1522</span>
 <span class="normal">1523</span>
 <span class="normal">1524</span>
-<span class="normal">1525</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_neighborhood_average</span><span class="p">(</span>
+<span class="normal">1525</span>
+<span class="normal">1526</span>
+<span class="normal">1527</span>
+<span class="normal">1528</span>
+<span class="normal">1529</span>
+<span class="normal">1530</span>
+<span class="normal">1531</span>
+<span class="normal">1532</span>
+<span class="normal">1533</span>
+<span class="normal">1534</span>
+<span class="normal">1535</span>
+<span class="normal">1536</span>
+<span class="normal">1537</span>
+<span class="normal">1538</span>
+<span class="normal">1539</span>
+<span class="normal">1540</span>
+<span class="normal">1541</span>
+<span class="normal">1542</span>
+<span class="normal">1543</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_neighborhood_average</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">10</span><span class="p">,</span>
@@ -11587,25 +11670,7 @@ volume instead of shrinking:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1535</span>
-<span class="normal">1536</span>
-<span class="normal">1537</span>
-<span class="normal">1538</span>
-<span class="normal">1539</span>
-<span class="normal">1540</span>
-<span class="normal">1541</span>
-<span class="normal">1542</span>
-<span class="normal">1543</span>
-<span class="normal">1544</span>
-<span class="normal">1545</span>
-<span class="normal">1546</span>
-<span class="normal">1547</span>
-<span class="normal">1548</span>
-<span class="normal">1549</span>
-<span class="normal">1550</span>
-<span class="normal">1551</span>
-<span class="normal">1552</span>
-<span class="normal">1553</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1553</span>
 <span class="normal">1554</span>
 <span class="normal">1555</span>
 <span class="normal">1556</span>
@@ -11798,7 +11863,25 @@ volume instead of shrinking:</p>
 <span class="normal">1743</span>
 <span class="normal">1744</span>
 <span class="normal">1745</span>
-<span class="normal">1746</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_mut_dif_laplacian</span><span class="p">(</span>
+<span class="normal">1746</span>
+<span class="normal">1747</span>
+<span class="normal">1748</span>
+<span class="normal">1749</span>
+<span class="normal">1750</span>
+<span class="normal">1751</span>
+<span class="normal">1752</span>
+<span class="normal">1753</span>
+<span class="normal">1754</span>
+<span class="normal">1755</span>
+<span class="normal">1756</span>
+<span class="normal">1757</span>
+<span class="normal">1758</span>
+<span class="normal">1759</span>
+<span class="normal">1760</span>
+<span class="normal">1761</span>
+<span class="normal">1762</span>
+<span class="normal">1763</span>
+<span class="normal">1764</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_mut_dif_laplacian</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">lamb</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.5</span><span class="p">,</span>
@@ -12261,25 +12344,7 @@ place:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1894</span>
-<span class="normal">1895</span>
-<span class="normal">1896</span>
-<span class="normal">1897</span>
-<span class="normal">1898</span>
-<span class="normal">1899</span>
-<span class="normal">1900</span>
-<span class="normal">1901</span>
-<span class="normal">1902</span>
-<span class="normal">1903</span>
-<span class="normal">1904</span>
-<span class="normal">1905</span>
-<span class="normal">1906</span>
-<span class="normal">1907</span>
-<span class="normal">1908</span>
-<span class="normal">1909</span>
-<span class="normal">1910</span>
-<span class="normal">1911</span>
-<span class="normal">1912</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1912</span>
 <span class="normal">1913</span>
 <span class="normal">1914</span>
 <span class="normal">1915</span>
@@ -12492,7 +12557,25 @@ place:</p>
 <span class="normal">2122</span>
 <span class="normal">2123</span>
 <span class="normal">2124</span>
-<span class="normal">2125</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_implicit_fairing</span><span class="p">(</span>
+<span class="normal">2125</span>
+<span class="normal">2126</span>
+<span class="normal">2127</span>
+<span class="normal">2128</span>
+<span class="normal">2129</span>
+<span class="normal">2130</span>
+<span class="normal">2131</span>
+<span class="normal">2132</span>
+<span class="normal">2133</span>
+<span class="normal">2134</span>
+<span class="normal">2135</span>
+<span class="normal">2136</span>
+<span class="normal">2137</span>
+<span class="normal">2138</span>
+<span class="normal">2139</span>
+<span class="normal">2140</span>
+<span class="normal">2141</span>
+<span class="normal">2142</span>
+<span class="normal">2143</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_implicit_fairing</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">lamb</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.1</span><span class="p">,</span>
@@ -12743,6 +12826,9 @@ place:</p>
     <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">free_mask</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="nb">bool</span><span class="p">],</span>
     <span class="n">stabilizer</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">unique_edges</span><span class="p">:</span> <span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">inverse</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span>
 </code></pre></div>
 
@@ -12831,6 +12917,58 @@ system solvable for a fully-free component. Defaults to <code>0</code>.</p>
                   <code>0.0</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>unique_edges</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="Array2dInt32
+
+
+  
+      module-attribute
+   (ordito.typing.Array2dInt32)" href="../typing/#ordito.typing.Array2dInt32">Array2dInt32</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_edges, 2)</code> and <code>(3 * n_faces,)</code> <a class="autorefs autorefs-internal" title="edges_unique" href="../edges/#ordito.edges.edges_unique"><code>edges_unique</code></a> pair
+for <code>faces</code> when the caller holds it --
+<a class="autorefs autorefs-internal" title="edges_unique" href="../mesh/#ordito.mesh.Trimesh.edges_unique"><code>Trimesh.edges_unique</code></a> and
+<a class="autorefs autorefs-internal" title="edges_unique_inverse" href="../mesh/#ordito.mesh.Trimesh.edges_unique_inverse"><code>Trimesh.edges_unique_inverse</code></a> -- to spare the
+edge sort the region's topology starts from. Trusted, not checked. Both must be given
+together; either being <code>None</code> rebuilds them.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>inverse</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="Array2dInt32
+
+
+  
+      module-attribute
+   (ordito.typing.Array2dInt32)" href="../typing/#ordito.typing.Array2dInt32">Array2dInt32</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_edges, 2)</code> and <code>(3 * n_faces,)</code> <a class="autorefs autorefs-internal" title="edges_unique" href="../edges/#ordito.edges.edges_unique"><code>edges_unique</code></a> pair
+for <code>faces</code> when the caller holds it --
+<a class="autorefs autorefs-internal" title="edges_unique" href="../mesh/#ordito.mesh.Trimesh.edges_unique"><code>Trimesh.edges_unique</code></a> and
+<a class="autorefs autorefs-internal" title="edges_unique_inverse" href="../mesh/#ordito.mesh.Trimesh.edges_unique_inverse"><code>Trimesh.edges_unique_inverse</code></a> -- to spare the
+edge sort the region's topology starts from. Trusted, not checked. Both must be given
+together; either being <code>None</code> rebuilds them.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -12874,7 +13012,8 @@ unchanged).</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>vertices</code>, <code>faces</code> and <code>free_mask</code> are not all on one device.</p>
+                <p>If <code>vertices</code>, <code>faces</code>, <code>free_mask</code>, <code>unique_edges</code> and <code>inverse</code> are not all on
+one device.</p>
               </div>
             </td>
           </tr>
@@ -12927,25 +13066,7 @@ smooth solution is the plane again:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2276</span>
-<span class="normal">2277</span>
-<span class="normal">2278</span>
-<span class="normal">2279</span>
-<span class="normal">2280</span>
-<span class="normal">2281</span>
-<span class="normal">2282</span>
-<span class="normal">2283</span>
-<span class="normal">2284</span>
-<span class="normal">2285</span>
-<span class="normal">2286</span>
-<span class="normal">2287</span>
-<span class="normal">2288</span>
-<span class="normal">2289</span>
-<span class="normal">2290</span>
-<span class="normal">2291</span>
-<span class="normal">2292</span>
-<span class="normal">2293</span>
-<span class="normal">2294</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2294</span>
 <span class="normal">2295</span>
 <span class="normal">2296</span>
 <span class="normal">2297</span>
@@ -13005,11 +13126,50 @@ smooth solution is the plane again:</p>
 <span class="normal">2351</span>
 <span class="normal">2352</span>
 <span class="normal">2353</span>
-<span class="normal">2354</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">smooth_region_fixed_rim</span><span class="p">(</span>
+<span class="normal">2354</span>
+<span class="normal">2355</span>
+<span class="normal">2356</span>
+<span class="normal">2357</span>
+<span class="normal">2358</span>
+<span class="normal">2359</span>
+<span class="normal">2360</span>
+<span class="normal">2361</span>
+<span class="normal">2362</span>
+<span class="normal">2363</span>
+<span class="normal">2364</span>
+<span class="normal">2365</span>
+<span class="normal">2366</span>
+<span class="normal">2367</span>
+<span class="normal">2368</span>
+<span class="normal">2369</span>
+<span class="normal">2370</span>
+<span class="normal">2371</span>
+<span class="normal">2372</span>
+<span class="normal">2373</span>
+<span class="normal">2374</span>
+<span class="normal">2375</span>
+<span class="normal">2376</span>
+<span class="normal">2377</span>
+<span class="normal">2378</span>
+<span class="normal">2379</span>
+<span class="normal">2380</span>
+<span class="normal">2381</span>
+<span class="normal">2382</span>
+<span class="normal">2383</span>
+<span class="normal">2384</span>
+<span class="normal">2385</span>
+<span class="normal">2386</span>
+<span class="normal">2387</span>
+<span class="normal">2388</span>
+<span class="normal">2389</span>
+<span class="normal">2390</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">smooth_region_fixed_rim</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">free_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
     <span class="n">stabilizer</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">unique_edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">inverse</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Reposition a free vertex region as the umbrella-Laplacian solution with a sharp fixed boundary.</span>
@@ -13030,6 +13190,13 @@ smooth solution is the plane again:</p>
 <span class="sd">    stabilizer</span>
 <span class="sd">        Optional attraction to the original position (adds to the diagonal), which also makes the</span>
 <span class="sd">        system solvable for a fully-free component. Defaults to ``0``.</span>
+<span class="sd">    unique_edges, inverse</span>
+<span class="sd">        ``(n_edges, 2)`` and ``(3 * n_faces,)`` [`edges_unique`][ordito.edges.edges_unique] pair</span>
+<span class="sd">        for ``faces`` when the caller holds it --</span>
+<span class="sd">        [`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique] and</span>
+<span class="sd">        [`Trimesh.edges_unique_inverse`][ordito.mesh.Trimesh.edges_unique_inverse] -- to spare the</span>
+<span class="sd">        edge sort the region's topology starts from. Trusted, not checked. Both must be given</span>
+<span class="sd">        together; either being ``None`` rebuilds them.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -13040,7 +13207,8 @@ smooth solution is the plane again:</p>
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    RuntimeError</span>
-<span class="sd">        If ``vertices``, ``faces`` and ``free_mask`` are not all on one device.</span>
+<span class="sd">        If ``vertices``, ``faces``, ``free_mask``, ``unique_edges`` and ``inverse`` are not all on</span>
+<span class="sd">        one device.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -13079,8 +13247,15 @@ smooth solution is the plane again:</p>
 <span class="sd">    print(np.abs(smoothed.numpy()[:, 2]).max() &lt; 1e-5)  # True</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">free_mask</span><span class="o">=</span><span class="n">free_mask</span><span class="p">)</span>
-    <span class="n">region</span> <span class="o">=</span> <span class="n">_region_topology</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">free_mask</span><span class="p">)</span>
+    <span class="n">require_same_device</span><span class="p">(</span>
+        <span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span>
+        <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span>
+        <span class="n">free_mask</span><span class="o">=</span><span class="n">free_mask</span><span class="p">,</span>
+        <span class="n">unique_edges</span><span class="o">=</span><span class="n">unique_edges</span><span class="p">,</span>
+        <span class="n">inverse</span><span class="o">=</span><span class="n">inverse</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">edges</span> <span class="o">=</span> <span class="kc">None</span> <span class="k">if</span> <span class="n">unique_edges</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">inverse</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="p">(</span><span class="n">unique_edges</span><span class="p">,</span> <span class="n">inverse</span><span class="p">)</span>
+    <span class="n">region</span> <span class="o">=</span> <span class="n">_region_topology</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">free_mask</span><span class="p">,</span> <span class="n">edges</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">region</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">clone</span><span class="p">(</span><span class="n">vertices</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">_solve_region_fixed_rim</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">free_mask</span><span class="p">,</span> <span class="n">region</span><span class="p">,</span> <span class="n">stabilizer</span><span class="p">)</span>
@@ -13103,6 +13278,9 @@ smooth solution is the plane again:</p>
     <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">free_mask</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="nb">bool</span><span class="p">],</span>
     <span class="n">edge_weights</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"cotan"</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">unique_edges</span><span class="p">:</span> <span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">inverse</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span>
 </code></pre></div>
 
@@ -13191,6 +13369,58 @@ coordinate, giving a patch that is smooth (C¹) <em>across</em> the region rim, 
                   <code>&#39;cotan&#39;</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>unique_edges</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="Array2dInt32
+
+
+  
+      module-attribute
+   (ordito.typing.Array2dInt32)" href="../typing/#ordito.typing.Array2dInt32">Array2dInt32</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_edges, 2)</code> and <code>(3 * n_faces,)</code> <a class="autorefs autorefs-internal" title="edges_unique" href="../edges/#ordito.edges.edges_unique"><code>edges_unique</code></a> pair
+for <code>faces</code> when the caller holds it --
+<a class="autorefs autorefs-internal" title="edges_unique" href="../mesh/#ordito.mesh.Trimesh.edges_unique"><code>Trimesh.edges_unique</code></a> and
+<a class="autorefs autorefs-internal" title="edges_unique_inverse" href="../mesh/#ordito.mesh.Trimesh.edges_unique_inverse"><code>Trimesh.edges_unique_inverse</code></a> -- to spare the
+edge sort the region's topology starts from. Trusted, not checked. Both must be given
+together; either being <code>None</code> rebuilds them.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>inverse</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="Array2dInt32
+
+
+  
+      module-attribute
+   (ordito.typing.Array2dInt32)" href="../typing/#ordito.typing.Array2dInt32">Array2dInt32</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_edges, 2)</code> and <code>(3 * n_faces,)</code> <a class="autorefs autorefs-internal" title="edges_unique" href="../edges/#ordito.edges.edges_unique"><code>edges_unique</code></a> pair
+for <code>faces</code> when the caller holds it --
+<a class="autorefs autorefs-internal" title="edges_unique" href="../mesh/#ordito.mesh.Trimesh.edges_unique"><code>Trimesh.edges_unique</code></a> and
+<a class="autorefs autorefs-internal" title="edges_unique_inverse" href="../mesh/#ordito.mesh.Trimesh.edges_unique_inverse"><code>Trimesh.edges_unique_inverse</code></a> -- to spare the
+edge sort the region's topology starts from. Trusted, not checked. Both must be given
+together; either being <code>None</code> rebuilds them.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -13244,7 +13474,8 @@ unchanged).</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>vertices</code>, <code>faces</code> and <code>free_mask</code> are not all on one device.</p>
+                <p>If <code>vertices</code>, <code>faces</code>, <code>free_mask</code>, <code>unique_edges</code> and <code>inverse</code> are not all on
+one device.</p>
               </div>
             </td>
           </tr>
@@ -13297,43 +13528,7 @@ smooth solution is the plane again:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2357</span>
-<span class="normal">2358</span>
-<span class="normal">2359</span>
-<span class="normal">2360</span>
-<span class="normal">2361</span>
-<span class="normal">2362</span>
-<span class="normal">2363</span>
-<span class="normal">2364</span>
-<span class="normal">2365</span>
-<span class="normal">2366</span>
-<span class="normal">2367</span>
-<span class="normal">2368</span>
-<span class="normal">2369</span>
-<span class="normal">2370</span>
-<span class="normal">2371</span>
-<span class="normal">2372</span>
-<span class="normal">2373</span>
-<span class="normal">2374</span>
-<span class="normal">2375</span>
-<span class="normal">2376</span>
-<span class="normal">2377</span>
-<span class="normal">2378</span>
-<span class="normal">2379</span>
-<span class="normal">2380</span>
-<span class="normal">2381</span>
-<span class="normal">2382</span>
-<span class="normal">2383</span>
-<span class="normal">2384</span>
-<span class="normal">2385</span>
-<span class="normal">2386</span>
-<span class="normal">2387</span>
-<span class="normal">2388</span>
-<span class="normal">2389</span>
-<span class="normal">2390</span>
-<span class="normal">2391</span>
-<span class="normal">2392</span>
-<span class="normal">2393</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2393</span>
 <span class="normal">2394</span>
 <span class="normal">2395</span>
 <span class="normal">2396</span>
@@ -13374,11 +13569,68 @@ smooth solution is the plane again:</p>
 <span class="normal">2431</span>
 <span class="normal">2432</span>
 <span class="normal">2433</span>
-<span class="normal">2434</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">smooth_region</span><span class="p">(</span>
+<span class="normal">2434</span>
+<span class="normal">2435</span>
+<span class="normal">2436</span>
+<span class="normal">2437</span>
+<span class="normal">2438</span>
+<span class="normal">2439</span>
+<span class="normal">2440</span>
+<span class="normal">2441</span>
+<span class="normal">2442</span>
+<span class="normal">2443</span>
+<span class="normal">2444</span>
+<span class="normal">2445</span>
+<span class="normal">2446</span>
+<span class="normal">2447</span>
+<span class="normal">2448</span>
+<span class="normal">2449</span>
+<span class="normal">2450</span>
+<span class="normal">2451</span>
+<span class="normal">2452</span>
+<span class="normal">2453</span>
+<span class="normal">2454</span>
+<span class="normal">2455</span>
+<span class="normal">2456</span>
+<span class="normal">2457</span>
+<span class="normal">2458</span>
+<span class="normal">2459</span>
+<span class="normal">2460</span>
+<span class="normal">2461</span>
+<span class="normal">2462</span>
+<span class="normal">2463</span>
+<span class="normal">2464</span>
+<span class="normal">2465</span>
+<span class="normal">2466</span>
+<span class="normal">2467</span>
+<span class="normal">2468</span>
+<span class="normal">2469</span>
+<span class="normal">2470</span>
+<span class="normal">2471</span>
+<span class="normal">2472</span>
+<span class="normal">2473</span>
+<span class="normal">2474</span>
+<span class="normal">2475</span>
+<span class="normal">2476</span>
+<span class="normal">2477</span>
+<span class="normal">2478</span>
+<span class="normal">2479</span>
+<span class="normal">2480</span>
+<span class="normal">2481</span>
+<span class="normal">2482</span>
+<span class="normal">2483</span>
+<span class="normal">2484</span>
+<span class="normal">2485</span>
+<span class="normal">2486</span>
+<span class="normal">2487</span>
+<span class="normal">2488</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">smooth_region</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">free_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
     <span class="n">edge_weights</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">"cotan"</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">unique_edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">inverse</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Reposition a free vertex region so the surface is smooth across the region boundary too.</span>
@@ -13399,6 +13651,13 @@ smooth solution is the plane again:</p>
 <span class="sd">        ``(n_vertices,)`` mask of the vertices to reposition.</span>
 <span class="sd">    edge_weights</span>
 <span class="sd">        ``"cotan"`` (default, clamped cotangent weights) or ``"unit"`` (uniform).</span>
+<span class="sd">    unique_edges, inverse</span>
+<span class="sd">        ``(n_edges, 2)`` and ``(3 * n_faces,)`` [`edges_unique`][ordito.edges.edges_unique] pair</span>
+<span class="sd">        for ``faces`` when the caller holds it --</span>
+<span class="sd">        [`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique] and</span>
+<span class="sd">        [`Trimesh.edges_unique_inverse`][ordito.mesh.Trimesh.edges_unique_inverse] -- to spare the</span>
+<span class="sd">        edge sort the region's topology starts from. Trusted, not checked. Both must be given</span>
+<span class="sd">        together; either being ``None`` rebuilds them.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -13411,7 +13670,8 @@ smooth solution is the plane again:</p>
 <span class="sd">    ValueError</span>
 <span class="sd">        If ``edge_weights`` is not ``"cotan"`` or ``"unit"``.</span>
 <span class="sd">    RuntimeError</span>
-<span class="sd">        If ``vertices``, ``faces`` and ``free_mask`` are not all on one device.</span>
+<span class="sd">        If ``vertices``, ``faces``, ``free_mask``, ``unique_edges`` and ``inverse`` are not all on</span>
+<span class="sd">        one device.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -13447,8 +13707,15 @@ smooth solution is the plane again:</p>
 <span class="sd">    print(np.abs(smoothed.numpy()[:, 2]).max() &lt; 1e-5)  # True</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">free_mask</span><span class="o">=</span><span class="n">free_mask</span><span class="p">)</span>
-    <span class="n">region</span> <span class="o">=</span> <span class="n">_region_topology</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">free_mask</span><span class="p">)</span>
+    <span class="n">require_same_device</span><span class="p">(</span>
+        <span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span>
+        <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span>
+        <span class="n">free_mask</span><span class="o">=</span><span class="n">free_mask</span><span class="p">,</span>
+        <span class="n">unique_edges</span><span class="o">=</span><span class="n">unique_edges</span><span class="p">,</span>
+        <span class="n">inverse</span><span class="o">=</span><span class="n">inverse</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">edges</span> <span class="o">=</span> <span class="kc">None</span> <span class="k">if</span> <span class="n">unique_edges</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">inverse</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="p">(</span><span class="n">unique_edges</span><span class="p">,</span> <span class="n">inverse</span><span class="p">)</span>
+    <span class="n">region</span> <span class="o">=</span> <span class="n">_region_topology</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">free_mask</span><span class="p">,</span> <span class="n">edges</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">region</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">clone</span><span class="p">(</span><span class="n">vertices</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">_solve_region_smooth</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">free_mask</span><span class="p">,</span> <span class="n">region</span><span class="p">,</span> <span class="n">edge_weights</span><span class="p">)</span>
@@ -13828,61 +14095,7 @@ vertices; a flat patch stays flat:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2437</span>
-<span class="normal">2438</span>
-<span class="normal">2439</span>
-<span class="normal">2440</span>
-<span class="normal">2441</span>
-<span class="normal">2442</span>
-<span class="normal">2443</span>
-<span class="normal">2444</span>
-<span class="normal">2445</span>
-<span class="normal">2446</span>
-<span class="normal">2447</span>
-<span class="normal">2448</span>
-<span class="normal">2449</span>
-<span class="normal">2450</span>
-<span class="normal">2451</span>
-<span class="normal">2452</span>
-<span class="normal">2453</span>
-<span class="normal">2454</span>
-<span class="normal">2455</span>
-<span class="normal">2456</span>
-<span class="normal">2457</span>
-<span class="normal">2458</span>
-<span class="normal">2459</span>
-<span class="normal">2460</span>
-<span class="normal">2461</span>
-<span class="normal">2462</span>
-<span class="normal">2463</span>
-<span class="normal">2464</span>
-<span class="normal">2465</span>
-<span class="normal">2466</span>
-<span class="normal">2467</span>
-<span class="normal">2468</span>
-<span class="normal">2469</span>
-<span class="normal">2470</span>
-<span class="normal">2471</span>
-<span class="normal">2472</span>
-<span class="normal">2473</span>
-<span class="normal">2474</span>
-<span class="normal">2475</span>
-<span class="normal">2476</span>
-<span class="normal">2477</span>
-<span class="normal">2478</span>
-<span class="normal">2479</span>
-<span class="normal">2480</span>
-<span class="normal">2481</span>
-<span class="normal">2482</span>
-<span class="normal">2483</span>
-<span class="normal">2484</span>
-<span class="normal">2485</span>
-<span class="normal">2486</span>
-<span class="normal">2487</span>
-<span class="normal">2488</span>
-<span class="normal">2489</span>
-<span class="normal">2490</span>
-<span class="normal">2491</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2491</span>
 <span class="normal">2492</span>
 <span class="normal">2493</span>
 <span class="normal">2494</span>
@@ -14005,7 +14218,77 @@ vertices; a flat patch stays flat:</p>
 <span class="normal">2611</span>
 <span class="normal">2612</span>
 <span class="normal">2613</span>
-<span class="normal">2614</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_and_smooth_region</span><span class="p">(</span>
+<span class="normal">2614</span>
+<span class="normal">2615</span>
+<span class="normal">2616</span>
+<span class="normal">2617</span>
+<span class="normal">2618</span>
+<span class="normal">2619</span>
+<span class="normal">2620</span>
+<span class="normal">2621</span>
+<span class="normal">2622</span>
+<span class="normal">2623</span>
+<span class="normal">2624</span>
+<span class="normal">2625</span>
+<span class="normal">2626</span>
+<span class="normal">2627</span>
+<span class="normal">2628</span>
+<span class="normal">2629</span>
+<span class="normal">2630</span>
+<span class="normal">2631</span>
+<span class="normal">2632</span>
+<span class="normal">2633</span>
+<span class="normal">2634</span>
+<span class="normal">2635</span>
+<span class="normal">2636</span>
+<span class="normal">2637</span>
+<span class="normal">2638</span>
+<span class="normal">2639</span>
+<span class="normal">2640</span>
+<span class="normal">2641</span>
+<span class="normal">2642</span>
+<span class="normal">2643</span>
+<span class="normal">2644</span>
+<span class="normal">2645</span>
+<span class="normal">2646</span>
+<span class="normal">2647</span>
+<span class="normal">2648</span>
+<span class="normal">2649</span>
+<span class="normal">2650</span>
+<span class="normal">2651</span>
+<span class="normal">2652</span>
+<span class="normal">2653</span>
+<span class="normal">2654</span>
+<span class="normal">2655</span>
+<span class="normal">2656</span>
+<span class="normal">2657</span>
+<span class="normal">2658</span>
+<span class="normal">2659</span>
+<span class="normal">2660</span>
+<span class="normal">2661</span>
+<span class="normal">2662</span>
+<span class="normal">2663</span>
+<span class="normal">2664</span>
+<span class="normal">2665</span>
+<span class="normal">2666</span>
+<span class="normal">2667</span>
+<span class="normal">2668</span>
+<span class="normal">2669</span>
+<span class="normal">2670</span>
+<span class="normal">2671</span>
+<span class="normal">2672</span>
+<span class="normal">2673</span>
+<span class="normal">2674</span>
+<span class="normal">2675</span>
+<span class="normal">2676</span>
+<span class="normal">2677</span>
+<span class="normal">2678</span>
+<span class="normal">2679</span>
+<span class="normal">2680</span>
+<span class="normal">2681</span>
+<span class="normal">2682</span>
+<span class="normal">2683</span>
+<span class="normal">2684</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_and_smooth_region</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">n_vertices_before</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
@@ -14118,10 +14401,25 @@ vertices; a flat patch stays flat:</p>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">patch_face_mask</span><span class="o">=</span><span class="n">patch_face_mask</span><span class="p">)</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">edges</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="k">if</span> <span class="n">refine</span> <span class="o">==</span> <span class="s2">"density"</span><span class="p">:</span>
         <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">patch_face_mask</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">remesh</span><span class="o">.</span><span class="n">refine_region_to_density</span><span class="p">(</span>
             <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">patch_face_mask</span><span class="p">,</span> <span class="n">max_angle_change</span><span class="o">=</span><span class="n">max_angle_change_after_flip</span>
         <span class="p">)</span>
+    <span class="k">elif</span> <span class="n">refine</span> <span class="o">==</span> <span class="s2">"max_edge"</span> <span class="ow">and</span> <span class="n">smooth_curvature</span><span class="p">:</span>
+        <span class="c1"># The refinement already holds the sort of its result's edges, which the smoothing below</span>
+        <span class="c1"># groups.</span>
+        <span class="n">refined</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">remesh</span><span class="o">.</span><span class="n">subdivide_region_to_size</span><span class="p">(</span>
+            <span class="n">vertices</span><span class="p">,</span>
+            <span class="n">faces</span><span class="p">,</span>
+            <span class="n">patch_face_mask</span><span class="p">,</span>
+            <span class="n">max_edge</span><span class="o">=</span><span class="n">max_edge</span><span class="p">,</span>
+            <span class="n">max_splits</span><span class="o">=</span><span class="n">max_edge_splits</span><span class="p">,</span>
+            <span class="n">max_angle_change</span><span class="o">=</span><span class="n">max_angle_change_after_flip</span><span class="p">,</span>
+            <span class="n">return_edges</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">patch_face_mask</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">inverse</span> <span class="o">=</span> <span class="n">refined</span>
+        <span class="n">edges</span> <span class="o">=</span> <span class="p">(</span><span class="n">unique_edges</span><span class="p">,</span> <span class="n">inverse</span><span class="p">)</span>
     <span class="k">elif</span> <span class="n">refine</span> <span class="o">==</span> <span class="s2">"max_edge"</span><span class="p">:</span>
         <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">patch_face_mask</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">remesh</span><span class="o">.</span><span class="n">subdivide_region_to_size</span><span class="p">(</span>
             <span class="n">vertices</span><span class="p">,</span>
@@ -14139,7 +14437,8 @@ vertices; a flat patch stays flat:</p>
     <span class="n">n</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
     <span class="c1"># One edge grouping serves the boundary mask and both regions' topology: the solves move</span>
     <span class="c1"># vertices, never connectivity.</span>
-    <span class="n">edges</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">edges</span><span class="o">.</span><span class="n">edges_unique</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">edges</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">edges</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">edges</span><span class="o">.</span><span class="n">edges_unique</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
     <span class="n">bd_mask</span> <span class="o">=</span> <span class="n">_boundary_verts_mask</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">edges</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="c1"># New (interior patch) vertices are the tail appended by subdivision, minus mesh-boundary verts.</span>
     <span class="n">free</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
@@ -14437,77 +14736,7 @@ slides its vertices within the plane:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3028</span>
-<span class="normal">3029</span>
-<span class="normal">3030</span>
-<span class="normal">3031</span>
-<span class="normal">3032</span>
-<span class="normal">3033</span>
-<span class="normal">3034</span>
-<span class="normal">3035</span>
-<span class="normal">3036</span>
-<span class="normal">3037</span>
-<span class="normal">3038</span>
-<span class="normal">3039</span>
-<span class="normal">3040</span>
-<span class="normal">3041</span>
-<span class="normal">3042</span>
-<span class="normal">3043</span>
-<span class="normal">3044</span>
-<span class="normal">3045</span>
-<span class="normal">3046</span>
-<span class="normal">3047</span>
-<span class="normal">3048</span>
-<span class="normal">3049</span>
-<span class="normal">3050</span>
-<span class="normal">3051</span>
-<span class="normal">3052</span>
-<span class="normal">3053</span>
-<span class="normal">3054</span>
-<span class="normal">3055</span>
-<span class="normal">3056</span>
-<span class="normal">3057</span>
-<span class="normal">3058</span>
-<span class="normal">3059</span>
-<span class="normal">3060</span>
-<span class="normal">3061</span>
-<span class="normal">3062</span>
-<span class="normal">3063</span>
-<span class="normal">3064</span>
-<span class="normal">3065</span>
-<span class="normal">3066</span>
-<span class="normal">3067</span>
-<span class="normal">3068</span>
-<span class="normal">3069</span>
-<span class="normal">3070</span>
-<span class="normal">3071</span>
-<span class="normal">3072</span>
-<span class="normal">3073</span>
-<span class="normal">3074</span>
-<span class="normal">3075</span>
-<span class="normal">3076</span>
-<span class="normal">3077</span>
-<span class="normal">3078</span>
-<span class="normal">3079</span>
-<span class="normal">3080</span>
-<span class="normal">3081</span>
-<span class="normal">3082</span>
-<span class="normal">3083</span>
-<span class="normal">3084</span>
-<span class="normal">3085</span>
-<span class="normal">3086</span>
-<span class="normal">3087</span>
-<span class="normal">3088</span>
-<span class="normal">3089</span>
-<span class="normal">3090</span>
-<span class="normal">3091</span>
-<span class="normal">3092</span>
-<span class="normal">3093</span>
-<span class="normal">3094</span>
-<span class="normal">3095</span>
-<span class="normal">3096</span>
-<span class="normal">3097</span>
-<span class="normal">3098</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3098</span>
 <span class="normal">3099</span>
 <span class="normal">3100</span>
 <span class="normal">3101</span>
@@ -14612,7 +14841,77 @@ slides its vertices within the plane:</p>
 <span class="normal">3200</span>
 <span class="normal">3201</span>
 <span class="normal">3202</span>
-<span class="normal">3203</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">smooth_region_boundary</span><span class="p">(</span>
+<span class="normal">3203</span>
+<span class="normal">3204</span>
+<span class="normal">3205</span>
+<span class="normal">3206</span>
+<span class="normal">3207</span>
+<span class="normal">3208</span>
+<span class="normal">3209</span>
+<span class="normal">3210</span>
+<span class="normal">3211</span>
+<span class="normal">3212</span>
+<span class="normal">3213</span>
+<span class="normal">3214</span>
+<span class="normal">3215</span>
+<span class="normal">3216</span>
+<span class="normal">3217</span>
+<span class="normal">3218</span>
+<span class="normal">3219</span>
+<span class="normal">3220</span>
+<span class="normal">3221</span>
+<span class="normal">3222</span>
+<span class="normal">3223</span>
+<span class="normal">3224</span>
+<span class="normal">3225</span>
+<span class="normal">3226</span>
+<span class="normal">3227</span>
+<span class="normal">3228</span>
+<span class="normal">3229</span>
+<span class="normal">3230</span>
+<span class="normal">3231</span>
+<span class="normal">3232</span>
+<span class="normal">3233</span>
+<span class="normal">3234</span>
+<span class="normal">3235</span>
+<span class="normal">3236</span>
+<span class="normal">3237</span>
+<span class="normal">3238</span>
+<span class="normal">3239</span>
+<span class="normal">3240</span>
+<span class="normal">3241</span>
+<span class="normal">3242</span>
+<span class="normal">3243</span>
+<span class="normal">3244</span>
+<span class="normal">3245</span>
+<span class="normal">3246</span>
+<span class="normal">3247</span>
+<span class="normal">3248</span>
+<span class="normal">3249</span>
+<span class="normal">3250</span>
+<span class="normal">3251</span>
+<span class="normal">3252</span>
+<span class="normal">3253</span>
+<span class="normal">3254</span>
+<span class="normal">3255</span>
+<span class="normal">3256</span>
+<span class="normal">3257</span>
+<span class="normal">3258</span>
+<span class="normal">3259</span>
+<span class="normal">3260</span>
+<span class="normal">3261</span>
+<span class="normal">3262</span>
+<span class="normal">3263</span>
+<span class="normal">3264</span>
+<span class="normal">3265</span>
+<span class="normal">3266</span>
+<span class="normal">3267</span>
+<span class="normal">3268</span>
+<span class="normal">3269</span>
+<span class="normal">3270</span>
+<span class="normal">3271</span>
+<span class="normal">3272</span>
+<span class="normal">3273</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">smooth_region_boundary</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -15047,77 +15346,7 @@ spreads it evenly over that vertex's five neighbours:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3281</span>
-<span class="normal">3282</span>
-<span class="normal">3283</span>
-<span class="normal">3284</span>
-<span class="normal">3285</span>
-<span class="normal">3286</span>
-<span class="normal">3287</span>
-<span class="normal">3288</span>
-<span class="normal">3289</span>
-<span class="normal">3290</span>
-<span class="normal">3291</span>
-<span class="normal">3292</span>
-<span class="normal">3293</span>
-<span class="normal">3294</span>
-<span class="normal">3295</span>
-<span class="normal">3296</span>
-<span class="normal">3297</span>
-<span class="normal">3298</span>
-<span class="normal">3299</span>
-<span class="normal">3300</span>
-<span class="normal">3301</span>
-<span class="normal">3302</span>
-<span class="normal">3303</span>
-<span class="normal">3304</span>
-<span class="normal">3305</span>
-<span class="normal">3306</span>
-<span class="normal">3307</span>
-<span class="normal">3308</span>
-<span class="normal">3309</span>
-<span class="normal">3310</span>
-<span class="normal">3311</span>
-<span class="normal">3312</span>
-<span class="normal">3313</span>
-<span class="normal">3314</span>
-<span class="normal">3315</span>
-<span class="normal">3316</span>
-<span class="normal">3317</span>
-<span class="normal">3318</span>
-<span class="normal">3319</span>
-<span class="normal">3320</span>
-<span class="normal">3321</span>
-<span class="normal">3322</span>
-<span class="normal">3323</span>
-<span class="normal">3324</span>
-<span class="normal">3325</span>
-<span class="normal">3326</span>
-<span class="normal">3327</span>
-<span class="normal">3328</span>
-<span class="normal">3329</span>
-<span class="normal">3330</span>
-<span class="normal">3331</span>
-<span class="normal">3332</span>
-<span class="normal">3333</span>
-<span class="normal">3334</span>
-<span class="normal">3335</span>
-<span class="normal">3336</span>
-<span class="normal">3337</span>
-<span class="normal">3338</span>
-<span class="normal">3339</span>
-<span class="normal">3340</span>
-<span class="normal">3341</span>
-<span class="normal">3342</span>
-<span class="normal">3343</span>
-<span class="normal">3344</span>
-<span class="normal">3345</span>
-<span class="normal">3346</span>
-<span class="normal">3347</span>
-<span class="normal">3348</span>
-<span class="normal">3349</span>
-<span class="normal">3350</span>
-<span class="normal">3351</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3351</span>
 <span class="normal">3352</span>
 <span class="normal">3353</span>
 <span class="normal">3354</span>
@@ -15167,7 +15396,77 @@ spreads it evenly over that vertex's five neighbours:</p>
 <span class="normal">3398</span>
 <span class="normal">3399</span>
 <span class="normal">3400</span>
-<span class="normal">3401</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_scalar_laplacian</span><span class="p">(</span>
+<span class="normal">3401</span>
+<span class="normal">3402</span>
+<span class="normal">3403</span>
+<span class="normal">3404</span>
+<span class="normal">3405</span>
+<span class="normal">3406</span>
+<span class="normal">3407</span>
+<span class="normal">3408</span>
+<span class="normal">3409</span>
+<span class="normal">3410</span>
+<span class="normal">3411</span>
+<span class="normal">3412</span>
+<span class="normal">3413</span>
+<span class="normal">3414</span>
+<span class="normal">3415</span>
+<span class="normal">3416</span>
+<span class="normal">3417</span>
+<span class="normal">3418</span>
+<span class="normal">3419</span>
+<span class="normal">3420</span>
+<span class="normal">3421</span>
+<span class="normal">3422</span>
+<span class="normal">3423</span>
+<span class="normal">3424</span>
+<span class="normal">3425</span>
+<span class="normal">3426</span>
+<span class="normal">3427</span>
+<span class="normal">3428</span>
+<span class="normal">3429</span>
+<span class="normal">3430</span>
+<span class="normal">3431</span>
+<span class="normal">3432</span>
+<span class="normal">3433</span>
+<span class="normal">3434</span>
+<span class="normal">3435</span>
+<span class="normal">3436</span>
+<span class="normal">3437</span>
+<span class="normal">3438</span>
+<span class="normal">3439</span>
+<span class="normal">3440</span>
+<span class="normal">3441</span>
+<span class="normal">3442</span>
+<span class="normal">3443</span>
+<span class="normal">3444</span>
+<span class="normal">3445</span>
+<span class="normal">3446</span>
+<span class="normal">3447</span>
+<span class="normal">3448</span>
+<span class="normal">3449</span>
+<span class="normal">3450</span>
+<span class="normal">3451</span>
+<span class="normal">3452</span>
+<span class="normal">3453</span>
+<span class="normal">3454</span>
+<span class="normal">3455</span>
+<span class="normal">3456</span>
+<span class="normal">3457</span>
+<span class="normal">3458</span>
+<span class="normal">3459</span>
+<span class="normal">3460</span>
+<span class="normal">3461</span>
+<span class="normal">3462</span>
+<span class="normal">3463</span>
+<span class="normal">3464</span>
+<span class="normal">3465</span>
+<span class="normal">3466</span>
+<span class="normal">3467</span>
+<span class="normal">3468</span>
+<span class="normal">3469</span>
+<span class="normal">3470</span>
+<span class="normal">3471</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_scalar_laplacian</span><span class="p">(</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -15558,77 +15857,7 @@ survive unchanged; at 180 degrees every normal averages with its neighbours:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3404</span>
-<span class="normal">3405</span>
-<span class="normal">3406</span>
-<span class="normal">3407</span>
-<span class="normal">3408</span>
-<span class="normal">3409</span>
-<span class="normal">3410</span>
-<span class="normal">3411</span>
-<span class="normal">3412</span>
-<span class="normal">3413</span>
-<span class="normal">3414</span>
-<span class="normal">3415</span>
-<span class="normal">3416</span>
-<span class="normal">3417</span>
-<span class="normal">3418</span>
-<span class="normal">3419</span>
-<span class="normal">3420</span>
-<span class="normal">3421</span>
-<span class="normal">3422</span>
-<span class="normal">3423</span>
-<span class="normal">3424</span>
-<span class="normal">3425</span>
-<span class="normal">3426</span>
-<span class="normal">3427</span>
-<span class="normal">3428</span>
-<span class="normal">3429</span>
-<span class="normal">3430</span>
-<span class="normal">3431</span>
-<span class="normal">3432</span>
-<span class="normal">3433</span>
-<span class="normal">3434</span>
-<span class="normal">3435</span>
-<span class="normal">3436</span>
-<span class="normal">3437</span>
-<span class="normal">3438</span>
-<span class="normal">3439</span>
-<span class="normal">3440</span>
-<span class="normal">3441</span>
-<span class="normal">3442</span>
-<span class="normal">3443</span>
-<span class="normal">3444</span>
-<span class="normal">3445</span>
-<span class="normal">3446</span>
-<span class="normal">3447</span>
-<span class="normal">3448</span>
-<span class="normal">3449</span>
-<span class="normal">3450</span>
-<span class="normal">3451</span>
-<span class="normal">3452</span>
-<span class="normal">3453</span>
-<span class="normal">3454</span>
-<span class="normal">3455</span>
-<span class="normal">3456</span>
-<span class="normal">3457</span>
-<span class="normal">3458</span>
-<span class="normal">3459</span>
-<span class="normal">3460</span>
-<span class="normal">3461</span>
-<span class="normal">3462</span>
-<span class="normal">3463</span>
-<span class="normal">3464</span>
-<span class="normal">3465</span>
-<span class="normal">3466</span>
-<span class="normal">3467</span>
-<span class="normal">3468</span>
-<span class="normal">3469</span>
-<span class="normal">3470</span>
-<span class="normal">3471</span>
-<span class="normal">3472</span>
-<span class="normal">3473</span>
-<span class="normal">3474</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3474</span>
 <span class="normal">3475</span>
 <span class="normal">3476</span>
 <span class="normal">3477</span>
@@ -15674,7 +15903,77 @@ survive unchanged; at 180 degrees every normal averages with its neighbours:</p>
 <span class="normal">3517</span>
 <span class="normal">3518</span>
 <span class="normal">3519</span>
-<span class="normal">3520</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_normals</span><span class="p">(</span>
+<span class="normal">3520</span>
+<span class="normal">3521</span>
+<span class="normal">3522</span>
+<span class="normal">3523</span>
+<span class="normal">3524</span>
+<span class="normal">3525</span>
+<span class="normal">3526</span>
+<span class="normal">3527</span>
+<span class="normal">3528</span>
+<span class="normal">3529</span>
+<span class="normal">3530</span>
+<span class="normal">3531</span>
+<span class="normal">3532</span>
+<span class="normal">3533</span>
+<span class="normal">3534</span>
+<span class="normal">3535</span>
+<span class="normal">3536</span>
+<span class="normal">3537</span>
+<span class="normal">3538</span>
+<span class="normal">3539</span>
+<span class="normal">3540</span>
+<span class="normal">3541</span>
+<span class="normal">3542</span>
+<span class="normal">3543</span>
+<span class="normal">3544</span>
+<span class="normal">3545</span>
+<span class="normal">3546</span>
+<span class="normal">3547</span>
+<span class="normal">3548</span>
+<span class="normal">3549</span>
+<span class="normal">3550</span>
+<span class="normal">3551</span>
+<span class="normal">3552</span>
+<span class="normal">3553</span>
+<span class="normal">3554</span>
+<span class="normal">3555</span>
+<span class="normal">3556</span>
+<span class="normal">3557</span>
+<span class="normal">3558</span>
+<span class="normal">3559</span>
+<span class="normal">3560</span>
+<span class="normal">3561</span>
+<span class="normal">3562</span>
+<span class="normal">3563</span>
+<span class="normal">3564</span>
+<span class="normal">3565</span>
+<span class="normal">3566</span>
+<span class="normal">3567</span>
+<span class="normal">3568</span>
+<span class="normal">3569</span>
+<span class="normal">3570</span>
+<span class="normal">3571</span>
+<span class="normal">3572</span>
+<span class="normal">3573</span>
+<span class="normal">3574</span>
+<span class="normal">3575</span>
+<span class="normal">3576</span>
+<span class="normal">3577</span>
+<span class="normal">3578</span>
+<span class="normal">3579</span>
+<span class="normal">3580</span>
+<span class="normal">3581</span>
+<span class="normal">3582</span>
+<span class="normal">3583</span>
+<span class="normal">3584</span>
+<span class="normal">3585</span>
+<span class="normal">3586</span>
+<span class="normal">3587</span>
+<span class="normal">3588</span>
+<span class="normal">3589</span>
+<span class="normal">3590</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_normals</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -15813,6 +16112,7 @@ survive unchanged; at 180 degrees every normal averages with its neighbours:</p>
     <span class="n">threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">60.0</span><span class="p">,</span>
     <span class="n">normal_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">20</span><span class="p">,</span>
     <span class="n">fit_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">20</span><span class="p">,</span>
+    <span class="n">mates</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span>
 </code></pre></div>
 
@@ -15944,6 +16244,25 @@ refits. MeshLab's <code>stepsmoothnum</code>, default <code>3</code>.</p>
                   <code>20</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>mates</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> <a class="autorefs autorefs-internal" title="halfedge_mates" href="../halfedge/#ordito.halfedge.halfedge_mates"><code>halfedge_mates</code></a> of <code>faces</code> when the
+caller holds them (<a class="autorefs autorefs-internal" title="halfedge_mates" href="../mesh/#ordito.mesh.Trimesh.halfedge_mates"><code>Trimesh.halfedge_mates</code></a>), which
+the normal filter reads for its neighbours rather than pairing the halfedges again.
+Trusted, not checked.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -15996,7 +16315,7 @@ refits. MeshLab's <code>stepsmoothnum</code>, default <code>3</code>.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>vertices</code> and <code>faces</code> are not all on one device.</p>
+                <p>If <code>vertices</code>, <code>faces</code> and <code>mates</code> are not all on one device.</p>
               </div>
             </td>
           </tr>
@@ -16050,77 +16369,7 @@ close to 1:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3523</span>
-<span class="normal">3524</span>
-<span class="normal">3525</span>
-<span class="normal">3526</span>
-<span class="normal">3527</span>
-<span class="normal">3528</span>
-<span class="normal">3529</span>
-<span class="normal">3530</span>
-<span class="normal">3531</span>
-<span class="normal">3532</span>
-<span class="normal">3533</span>
-<span class="normal">3534</span>
-<span class="normal">3535</span>
-<span class="normal">3536</span>
-<span class="normal">3537</span>
-<span class="normal">3538</span>
-<span class="normal">3539</span>
-<span class="normal">3540</span>
-<span class="normal">3541</span>
-<span class="normal">3542</span>
-<span class="normal">3543</span>
-<span class="normal">3544</span>
-<span class="normal">3545</span>
-<span class="normal">3546</span>
-<span class="normal">3547</span>
-<span class="normal">3548</span>
-<span class="normal">3549</span>
-<span class="normal">3550</span>
-<span class="normal">3551</span>
-<span class="normal">3552</span>
-<span class="normal">3553</span>
-<span class="normal">3554</span>
-<span class="normal">3555</span>
-<span class="normal">3556</span>
-<span class="normal">3557</span>
-<span class="normal">3558</span>
-<span class="normal">3559</span>
-<span class="normal">3560</span>
-<span class="normal">3561</span>
-<span class="normal">3562</span>
-<span class="normal">3563</span>
-<span class="normal">3564</span>
-<span class="normal">3565</span>
-<span class="normal">3566</span>
-<span class="normal">3567</span>
-<span class="normal">3568</span>
-<span class="normal">3569</span>
-<span class="normal">3570</span>
-<span class="normal">3571</span>
-<span class="normal">3572</span>
-<span class="normal">3573</span>
-<span class="normal">3574</span>
-<span class="normal">3575</span>
-<span class="normal">3576</span>
-<span class="normal">3577</span>
-<span class="normal">3578</span>
-<span class="normal">3579</span>
-<span class="normal">3580</span>
-<span class="normal">3581</span>
-<span class="normal">3582</span>
-<span class="normal">3583</span>
-<span class="normal">3584</span>
-<span class="normal">3585</span>
-<span class="normal">3586</span>
-<span class="normal">3587</span>
-<span class="normal">3588</span>
-<span class="normal">3589</span>
-<span class="normal">3590</span>
-<span class="normal">3591</span>
-<span class="normal">3592</span>
-<span class="normal">3593</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3593</span>
 <span class="normal">3594</span>
 <span class="normal">3595</span>
 <span class="normal">3596</span>
@@ -16201,7 +16450,84 @@ close to 1:</p>
 <span class="normal">3671</span>
 <span class="normal">3672</span>
 <span class="normal">3673</span>
-<span class="normal">3674</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_two_step</span><span class="p">(</span>
+<span class="normal">3674</span>
+<span class="normal">3675</span>
+<span class="normal">3676</span>
+<span class="normal">3677</span>
+<span class="normal">3678</span>
+<span class="normal">3679</span>
+<span class="normal">3680</span>
+<span class="normal">3681</span>
+<span class="normal">3682</span>
+<span class="normal">3683</span>
+<span class="normal">3684</span>
+<span class="normal">3685</span>
+<span class="normal">3686</span>
+<span class="normal">3687</span>
+<span class="normal">3688</span>
+<span class="normal">3689</span>
+<span class="normal">3690</span>
+<span class="normal">3691</span>
+<span class="normal">3692</span>
+<span class="normal">3693</span>
+<span class="normal">3694</span>
+<span class="normal">3695</span>
+<span class="normal">3696</span>
+<span class="normal">3697</span>
+<span class="normal">3698</span>
+<span class="normal">3699</span>
+<span class="normal">3700</span>
+<span class="normal">3701</span>
+<span class="normal">3702</span>
+<span class="normal">3703</span>
+<span class="normal">3704</span>
+<span class="normal">3705</span>
+<span class="normal">3706</span>
+<span class="normal">3707</span>
+<span class="normal">3708</span>
+<span class="normal">3709</span>
+<span class="normal">3710</span>
+<span class="normal">3711</span>
+<span class="normal">3712</span>
+<span class="normal">3713</span>
+<span class="normal">3714</span>
+<span class="normal">3715</span>
+<span class="normal">3716</span>
+<span class="normal">3717</span>
+<span class="normal">3718</span>
+<span class="normal">3719</span>
+<span class="normal">3720</span>
+<span class="normal">3721</span>
+<span class="normal">3722</span>
+<span class="normal">3723</span>
+<span class="normal">3724</span>
+<span class="normal">3725</span>
+<span class="normal">3726</span>
+<span class="normal">3727</span>
+<span class="normal">3728</span>
+<span class="normal">3729</span>
+<span class="normal">3730</span>
+<span class="normal">3731</span>
+<span class="normal">3732</span>
+<span class="normal">3733</span>
+<span class="normal">3734</span>
+<span class="normal">3735</span>
+<span class="normal">3736</span>
+<span class="normal">3737</span>
+<span class="normal">3738</span>
+<span class="normal">3739</span>
+<span class="normal">3740</span>
+<span class="normal">3741</span>
+<span class="normal">3742</span>
+<span class="normal">3743</span>
+<span class="normal">3744</span>
+<span class="normal">3745</span>
+<span class="normal">3746</span>
+<span class="normal">3747</span>
+<span class="normal">3748</span>
+<span class="normal">3749</span>
+<span class="normal">3750</span>
+<span class="normal">3751</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_two_step</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -16209,6 +16535,7 @@ close to 1:</p>
     <span class="n">threshold</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">60.0</span><span class="p">,</span>
     <span class="n">normal_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">20</span><span class="p">,</span>
     <span class="n">fit_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">20</span><span class="p">,</span>
+    <span class="n">mates</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Feature-preserving smoothing: filter the face normals, then fit the vertices to them.</span>
@@ -16243,6 +16570,11 @@ close to 1:</p>
 <span class="sd">        Normal-diffusion passes per outer pass. MeshLab's ``stepnormalnum``, default ``20``.</span>
 <span class="sd">    fit_iterations</span>
 <span class="sd">        Vertex-fitting gradient steps per outer pass. MeshLab's ``stepfitnum``, default ``20``.</span>
+<span class="sd">    mates</span>
+<span class="sd">        ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the</span>
+<span class="sd">        caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which</span>
+<span class="sd">        the normal filter reads for its neighbours rather than pairing the halfedges again.</span>
+<span class="sd">        Trusted, not checked.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -16254,7 +16586,7 @@ close to 1:</p>
 <span class="sd">    ValueError</span>
 <span class="sd">        If ``threshold`` is outside ``[0, 180]``.</span>
 <span class="sd">    RuntimeError</span>
-<span class="sd">        If ``vertices`` and ``faces`` are not all on one device.</span>
+<span class="sd">        If ``vertices``, ``faces`` and ``mates`` are not all on one device.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -16291,7 +16623,7 @@ close to 1:</p>
 <span class="sd">    print(off_surface.mean() &lt; np.abs(np.abs(noisy.numpy()) - 0.5).min(axis=1).mean())  # True</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
+    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">mates</span><span class="o">=</span><span class="n">mates</span><span class="p">)</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
     <span class="n">n_faces</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span>
@@ -16303,7 +16635,8 @@ close to 1:</p>
     <span class="c1"># The topology is fixed, so both incidence tables are built once for every pass of both halves:</span>
     <span class="c1"># the halfedge mates the normal passes read their neighbours off, and the vertex -&gt; face rows</span>
     <span class="c1"># the fit steps gather over, whose lengths are the incident-face counts that set the step.</span>
-    <span class="n">mates</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">halfedge</span><span class="o">.</span><span class="n">halfedge_mates</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">mates</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">mates</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">halfedge</span><span class="o">.</span><span class="n">halfedge_mates</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span>
     <span class="n">vf_offsets</span><span class="p">,</span> <span class="n">vertex_faces</span> <span class="o">=</span> <span class="n">_incidence_rows</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="mi">3</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span>
     <span class="c1"># The fit steps ping-pong between two buffers of this call; the input is only ever read.</span>
     <span class="n">positions</span> <span class="o">=</span> <span class="n">vertices</span>
@@ -16580,84 +16913,7 @@ sphere grows:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3756</span>
-<span class="normal">3757</span>
-<span class="normal">3758</span>
-<span class="normal">3759</span>
-<span class="normal">3760</span>
-<span class="normal">3761</span>
-<span class="normal">3762</span>
-<span class="normal">3763</span>
-<span class="normal">3764</span>
-<span class="normal">3765</span>
-<span class="normal">3766</span>
-<span class="normal">3767</span>
-<span class="normal">3768</span>
-<span class="normal">3769</span>
-<span class="normal">3770</span>
-<span class="normal">3771</span>
-<span class="normal">3772</span>
-<span class="normal">3773</span>
-<span class="normal">3774</span>
-<span class="normal">3775</span>
-<span class="normal">3776</span>
-<span class="normal">3777</span>
-<span class="normal">3778</span>
-<span class="normal">3779</span>
-<span class="normal">3780</span>
-<span class="normal">3781</span>
-<span class="normal">3782</span>
-<span class="normal">3783</span>
-<span class="normal">3784</span>
-<span class="normal">3785</span>
-<span class="normal">3786</span>
-<span class="normal">3787</span>
-<span class="normal">3788</span>
-<span class="normal">3789</span>
-<span class="normal">3790</span>
-<span class="normal">3791</span>
-<span class="normal">3792</span>
-<span class="normal">3793</span>
-<span class="normal">3794</span>
-<span class="normal">3795</span>
-<span class="normal">3796</span>
-<span class="normal">3797</span>
-<span class="normal">3798</span>
-<span class="normal">3799</span>
-<span class="normal">3800</span>
-<span class="normal">3801</span>
-<span class="normal">3802</span>
-<span class="normal">3803</span>
-<span class="normal">3804</span>
-<span class="normal">3805</span>
-<span class="normal">3806</span>
-<span class="normal">3807</span>
-<span class="normal">3808</span>
-<span class="normal">3809</span>
-<span class="normal">3810</span>
-<span class="normal">3811</span>
-<span class="normal">3812</span>
-<span class="normal">3813</span>
-<span class="normal">3814</span>
-<span class="normal">3815</span>
-<span class="normal">3816</span>
-<span class="normal">3817</span>
-<span class="normal">3818</span>
-<span class="normal">3819</span>
-<span class="normal">3820</span>
-<span class="normal">3821</span>
-<span class="normal">3822</span>
-<span class="normal">3823</span>
-<span class="normal">3824</span>
-<span class="normal">3825</span>
-<span class="normal">3826</span>
-<span class="normal">3827</span>
-<span class="normal">3828</span>
-<span class="normal">3829</span>
-<span class="normal">3830</span>
-<span class="normal">3831</span>
-<span class="normal">3832</span>
-<span class="normal">3833</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3833</span>
 <span class="normal">3834</span>
 <span class="normal">3835</span>
 <span class="normal">3836</span>
@@ -16695,7 +16951,84 @@ sphere grows:</p>
 <span class="normal">3868</span>
 <span class="normal">3869</span>
 <span class="normal">3870</span>
-<span class="normal">3871</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_sharpen</span><span class="p">(</span>
+<span class="normal">3871</span>
+<span class="normal">3872</span>
+<span class="normal">3873</span>
+<span class="normal">3874</span>
+<span class="normal">3875</span>
+<span class="normal">3876</span>
+<span class="normal">3877</span>
+<span class="normal">3878</span>
+<span class="normal">3879</span>
+<span class="normal">3880</span>
+<span class="normal">3881</span>
+<span class="normal">3882</span>
+<span class="normal">3883</span>
+<span class="normal">3884</span>
+<span class="normal">3885</span>
+<span class="normal">3886</span>
+<span class="normal">3887</span>
+<span class="normal">3888</span>
+<span class="normal">3889</span>
+<span class="normal">3890</span>
+<span class="normal">3891</span>
+<span class="normal">3892</span>
+<span class="normal">3893</span>
+<span class="normal">3894</span>
+<span class="normal">3895</span>
+<span class="normal">3896</span>
+<span class="normal">3897</span>
+<span class="normal">3898</span>
+<span class="normal">3899</span>
+<span class="normal">3900</span>
+<span class="normal">3901</span>
+<span class="normal">3902</span>
+<span class="normal">3903</span>
+<span class="normal">3904</span>
+<span class="normal">3905</span>
+<span class="normal">3906</span>
+<span class="normal">3907</span>
+<span class="normal">3908</span>
+<span class="normal">3909</span>
+<span class="normal">3910</span>
+<span class="normal">3911</span>
+<span class="normal">3912</span>
+<span class="normal">3913</span>
+<span class="normal">3914</span>
+<span class="normal">3915</span>
+<span class="normal">3916</span>
+<span class="normal">3917</span>
+<span class="normal">3918</span>
+<span class="normal">3919</span>
+<span class="normal">3920</span>
+<span class="normal">3921</span>
+<span class="normal">3922</span>
+<span class="normal">3923</span>
+<span class="normal">3924</span>
+<span class="normal">3925</span>
+<span class="normal">3926</span>
+<span class="normal">3927</span>
+<span class="normal">3928</span>
+<span class="normal">3929</span>
+<span class="normal">3930</span>
+<span class="normal">3931</span>
+<span class="normal">3932</span>
+<span class="normal">3933</span>
+<span class="normal">3934</span>
+<span class="normal">3935</span>
+<span class="normal">3936</span>
+<span class="normal">3937</span>
+<span class="normal">3938</span>
+<span class="normal">3939</span>
+<span class="normal">3940</span>
+<span class="normal">3941</span>
+<span class="normal">3942</span>
+<span class="normal">3943</span>
+<span class="normal">3944</span>
+<span class="normal">3945</span>
+<span class="normal">3946</span>
+<span class="normal">3947</span>
+<span class="normal">3948</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_sharpen</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
