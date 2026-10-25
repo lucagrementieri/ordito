@@ -209,6 +209,10 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "face's fate in the submesh extraction's own marking pass; submesh_from_face_mask would "
         "need the keep mask built by a pass of its own first"
     ),
+    ("boundary", "halfedge._sorted_pairing"): (
+        "the boundary flags form each mate from the edge-key sort in their own launch; the public "
+        "halfedge_mates would store the table in a launch of its own first"
+    ),
     ("combine", "adjacency._face_component_forest"): (
         "split_with_offsets sorts the component labels, so its flatten writes them straight into "
         "the radix sort's double-width buffers; face_connected_component_labels would store them "

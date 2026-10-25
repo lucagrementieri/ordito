@@ -7,6 +7,7 @@ from ordito.kernels.halfedge import (
     halfedge_endpoints,
     key_ordered_halfedge,
     next_boundary_halfedge,
+    sorted_run_mate,
 )
 from ordito.kernels.predicates import newell_term
 from ordito.kernels.reduce import block_sum
@@ -42,14 +43,16 @@ def is_boundary_mate(mate: wp.int32) -> wp.bool:
     return mate == HALFEDGE_MATE_BOUNDARY
 
 
-@wp.kernel
-def mark_boundary_halfedges(
-    mates: wp.array[wp.int32],
-    key_order: wp.array[wp.int32],
+@wp.func
+def flag_boundary_halfedge(
+    boundary: wp.bool,
+    h: wp.int32,
+    i: wp.int32,
+    n: wp.int32,
     faces: wp.array[wp.int32],
     out_degrees: wp.array2d[wp.int32],
     out_flags: wp.array[wp.int32],
-) -> None:
+):
     # 1 where a halfedge spans its edge alone -- a boundary edge -- as the ``int32`` flag, entry
     # ``i`` standing for halfedge ``key_ordered_halfedge(key_order, i)``
     # ``wp.utils.array_scan`` then scans in place, over ``out_flags``' first ``n`` entries. With
@@ -69,10 +72,6 @@ def mark_boundary_halfedges(
     # ``wp.atomic_add`` returns the value the slot held *before* the increment, so the thread that
     # pushes a vertex past the threshold is the one that knows it. Boundary vertices are the only
     # ones whose degrees are ever non-zero, so no pass over the vertices is needed.
-    i = wp.int32(wp.tid())
-    n = mates.shape[0]
-    h = key_ordered_halfedge(key_order, i)
-    boundary = is_boundary_mate(mates[h])
     out_flags[i] = wp.where(boundary, wp.int32(1), wp.int32(0))
     if boundary and out_degrees.shape[0] > 0:
         tail, head = halfedge_endpoints(faces, h)
@@ -82,6 +81,44 @@ def mark_boundary_halfedges(
             out_flags[n + 1] = 1
         if wp.atomic_add(out_degrees, head, 1, 1) >= 2:
             out_flags[n + 1] = 1
+
+
+@wp.kernel
+def mark_boundary_halfedges(
+    mates: wp.array[wp.int32],
+    key_order: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    out_degrees: wp.array2d[wp.int32],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``flag_boundary_halfedge`` over a mate table the caller holds.
+    i = wp.int32(wp.tid())
+    h = key_ordered_halfedge(key_order, i)
+    flag_boundary_halfedge(
+        is_boundary_mate(mates[h]), h, i, mates.shape[0], faces, out_degrees, out_flags
+    )
+
+
+@wp.kernel
+def mark_sorted_boundary_halfedges(
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    out_degrees: wp.array2d[wp.int32],
+    out_mates: wp.array[wp.int32],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``mark_boundary_halfedges`` straight from the edge-key sort, one thread per sorted position:
+    # the mate ``halfedge.sorted_halfedge_mates`` would store is formed here (``sorted_run_mate``),
+    # stored for the module's later reads, and flagged in the same thread, so the pairing and the
+    # flagging are one launch. The two kernels differ only in where the mate code comes from.
+    i = wp.int32(wp.tid())
+    h = order[i]
+    mate = sorted_run_mate(sorted_keys, order, i)
+    out_mates[h] = mate
+    flag_boundary_halfedge(
+        is_boundary_mate(mate), h, i, order.shape[0], faces, out_degrees, out_flags
+    )
 
 
 @wp.func
@@ -151,6 +188,22 @@ def mark_boundary_vertices(
     h = wp.int32(wp.tid())
     a, b = boundary_halfedge_endpoints(mates, faces, h)
     if a >= 0:
+        out_flags[a] = 1
+        out_flags[b] = 1
+
+
+@wp.kernel
+def mark_sorted_boundary_vertices(
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``mark_boundary_vertices`` straight from the edge-key sort, one thread per sorted position: a
+    # run of one key is a boundary halfedge (``sorted_run_mate``), so no mate table is stored.
+    i = wp.int32(wp.tid())
+    if is_boundary_mate(sorted_run_mate(sorted_keys, order, i)):
+        a, b = halfedge_endpoints(faces, order[i])
         out_flags[a] = 1
         out_flags[b] = 1
 

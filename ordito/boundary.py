@@ -34,6 +34,7 @@ from ordito._device import read_scalar, read_values, require_same_device
 from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX
 from ordito.graph import successor_cycles_from_table
+from ordito.halfedge import _sorted_pairing  # pyright: ignore[reportPrivateUsage]
 from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import halfedge as kernel_halfedge
 
@@ -1224,13 +1225,22 @@ class _BoundaryHalfedges:
         # pairing's do: the flags are then read in halfedge order and ``key_ordered_halfedges``
         # sorts only the boundary halfedges.
         self.key_order: wp.array[wp.int32] | None = None
+        # Where the pairing sorts, the mates are formed from the sorted keys by the first kernel
+        # that reads them (the flags, or the vertex flags without any table), not by a launch of
+        # their own; ``mates`` stores them on a later read.
+        self._mates: wp.array[wp.int32] | None = None
+        self._sorted_keys: wp.array[wp.uint64] | None = None
         if mates is not None:
-            self.mates = mates
+            self._mates = mates
             self.key_order = key_order
         else:
-            self.mates, self.key_order = od.halfedge.halfedge_mates(
-                faces, n_vertices, return_key_order=True
-            )
+            sorted_pairing = _sorted_pairing(faces, n_vertices)
+            if sorted_pairing is None:
+                self._mates, self.key_order = od.halfedge.halfedge_mates(
+                    faces, n_vertices, return_key_order=True
+                )
+            else:
+                self._sorted_keys, self.key_order = sorted_pairing
         self._inclusive: wp.array[wp.int32] | None = None
         self._count = 0
         self.defects = (False, False)
@@ -1258,12 +1268,29 @@ class _BoundaryHalfedges:
                 degrees = odt.as_array2d(
                     odt.as_dense(flags[n + 2 :]).reshape((n_vertices, 2)), wp.int32
                 )
-            _launch.launch(
-                kernel_boundary.mark_boundary_halfedges,
-                dim=n,
-                inputs=[self.mates, self.key_order, self.faces, degrees, flags],
-                device=device,
-            )
+            if self._mates is None:
+                assert self._sorted_keys is not None
+                self._mates = _launch.empty(n, dtype=wp.int32, device=device)
+                _launch.launch(
+                    kernel_boundary.mark_sorted_boundary_halfedges,
+                    dim=n,
+                    inputs=[
+                        self._sorted_keys,
+                        self.key_order,
+                        self.faces,
+                        degrees,
+                        self._mates,
+                        flags,
+                    ],
+                    device=device,
+                )
+            else:
+                _launch.launch(
+                    kernel_boundary.mark_boundary_halfedges,
+                    dim=n,
+                    inputs=[self._mates, self.key_order, self.faces, degrees, flags],
+                    device=device,
+                )
             inclusive = flags if census is None else odt.as_dense(flags[:n])
             _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
             self._inclusive = inclusive
@@ -1338,7 +1365,14 @@ class _BoundaryHalfedges:
     def _vertex_flags(self, n_vertices: int) -> wp.array[wp.int32]:
         """``(n_vertices,)`` ``int32`` flags: ``1`` on every vertex of a boundary halfedge."""
         flags = _launch.zeros(n_vertices, dtype=wp.int32, device=self.faces.device)
-        if n_vertices > 0:
+        if n_vertices > 0 and self._mates is None and self._sorted_keys is not None:
+            _launch.launch(
+                kernel_boundary.mark_sorted_boundary_vertices,
+                dim=self.n,
+                inputs=[self._sorted_keys, self.key_order, self.faces, flags],
+                device=self.faces.device,
+            )
+        elif n_vertices > 0:
             _launch.launch(
                 kernel_boundary.mark_boundary_vertices,
                 dim=self.n,
@@ -1346,3 +1380,18 @@ class _BoundaryHalfedges:
                 device=self.faces.device,
             )
         return flags
+
+    @property
+    def mates(self) -> wp.array[wp.int32]:
+        """``(3 * n_faces,)`` mate codes, stored from the sorted keys on the first read."""
+        if self._mates is None:
+            assert self._sorted_keys is not None
+            assert self.key_order is not None
+            self._mates = _launch.empty(self.n, dtype=wp.int32, device=self.faces.device)
+            _launch.launch(
+                kernel_halfedge.sorted_halfedge_mates,
+                dim=self.n,
+                inputs=[self._sorted_keys, self.key_order, self._mates],
+                device=self.faces.device,
+            )
+        return self._mates

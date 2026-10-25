@@ -554,13 +554,11 @@ def halfedge_mates(
     n_halfedges = faces.size // 3 * 3
     mates = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
     key_order: wp.array[wp.int32] | None = None
+    sorted_pairing = _sorted_pairing(faces, n_vertices)
     if n_halfedges == 0:
         key_order = mates
-    elif (
-        n_vertices is not None
-        and n_halfedges >= _BUCKETED_MATES_FROM_HALFEDGES
-        and _buckets_on(faces)
-    ):
+    elif sorted_pairing is None:
+        assert n_vertices is not None  # the pairing buckets only with the bound
         degrees, ends, buckets, _ = _edge_buckets(faces, n_vertices)
         _launch.launch(
             kernel_halfedge.bucketed_halfedge_mates,
@@ -569,7 +567,7 @@ def halfedge_mates(
             device=device,
         )
     else:
-        sorted_keys, key_order = od.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
+        sorted_keys, key_order = sorted_pairing
         _launch.launch(
             kernel_halfedge.sorted_halfedge_mates,
             dim=n_halfedges,
@@ -579,6 +577,27 @@ def halfedge_mates(
     if return_key_order:
         return mates, key_order
     return mates
+
+
+def _sorted_pairing(
+    faces: wp.array[wp.int32], n_vertices: int | None
+) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]] | None:
+    """
+    Sort the edge keys when [`halfedge_mates`][ordito.halfedge.halfedge_mates] would pair by them.
+
+    Returns the sorted keys and their halfedge permutation, or ``None`` where the pairing buckets
+    instead (a large CUDA mesh with ``n_vertices`` given) or there are no halfedges, so a consumer
+    reading the mates once in sorted order can form each in its own thread (``sorted_run_mate``)
+    rather than through a stored table.
+    """
+    n_halfedges = faces.size // 3 * 3
+    if n_halfedges == 0 or (
+        n_vertices is not None
+        and n_halfedges >= _BUCKETED_MATES_FROM_HALFEDGES
+        and _buckets_on(faces)
+    ):
+        return None
+    return od.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
 
 
 def key_ordered_halfedges(
