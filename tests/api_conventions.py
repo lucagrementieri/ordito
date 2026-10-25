@@ -528,6 +528,12 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # launches and both read and written every level, which is the ``forest_link`` case one kernel
     # down.
     ("graph", "scatter_neighbor_lists"): frozenset({"cursor"}),
+    # The validated union-find kernels work on the forest in place, as their unchecked siblings in
+    # ``algorithms.connected_components`` do through their shared ``@wp.func``s: the pre-hook
+    # rewrites the identity ``parents`` and the parity hook the packed ``words``, each with the
+    # range flag in the one entry past the forest.
+    ("graph", "ecl_init_parent_edges_checked"): frozenset({"parents"}),
+    ("graph", "ecl_hook_parity_checked"): frozenset({"words"}),
     # ``signed_distance_level_set``'s winding lattice: ``column_suffix_sums`` turns each column's
     # per-node crossing deltas into suffix sums where they lie; ``take_exact_winding`` and
     # ``warp_winding_sign`` overwrite the lattice winding number of the nodes in doubt, and the

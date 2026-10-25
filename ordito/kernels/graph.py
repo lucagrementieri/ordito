@@ -2,6 +2,11 @@ import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT
 from ordito.kernels import array as kernel_array
+from ordito.kernels.algorithms.connected_components import (
+    ecl_hook_pair_parity,
+    ecl_prehook_pair,
+    parity_root_word,
+)
 from ordito.kernels.reduce import block_chunk_1d, block_min
 
 wp.set_module_options({"enable_backward": False})
@@ -56,6 +61,36 @@ def edges_to_adjacency_keys_weighted(
     out_values[e * 2 + 1] = weights[e]
 
 
+@wp.func
+def edge_in_range(edges: wp.array2d[wp.int32], e: wp.int32, n: wp.int32) -> wp.int32:
+    # ``1`` when both endpoints of edge row ``e`` lie in ``[0, n)``, else ``0``: the range check
+    # the validated edge-list entry points of ``graph`` fold into the first kernel that indexes a
+    # node table by the endpoints, which then skips the row and raises a flag the wrapper reads
+    # back -- where a separate ``minmax`` of the edges was a launch, an allocation and a readback
+    # of its own. One unsigned compare per endpoint covers both ends of the range.
+    a = wp.uint32(edges[e, 0])
+    b = wp.uint32(edges[e, 1])
+    bound = wp.uint32(n)
+    return wp.where(a < bound and b < bound, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def count_edge_endpoints_checked(
+    edges: wp.array2d[wp.int32], out_counts_and_flag: wp.array[wp.int32]
+) -> None:
+    # ``graph.edges_to_neighbor_lists``' degree count under ``validate``: each row in range adds
+    # one to both endpoints' counts (``scatter.count_occurrences`` over the flattened edges, the
+    # unchecked form), and a row outside sets the flag in the last slot instead of writing past the
+    # ``n``-entry count table in front of it. Launch over the edge rows.
+    e = wp.int32(wp.tid())
+    n = out_counts_and_flag.shape[0] - 1
+    if edge_in_range(edges, e, n) == 0:
+        out_counts_and_flag[n] = 1
+        return
+    wp.atomic_add(out_counts_and_flag, edges[e, 0], 1)
+    wp.atomic_add(out_counts_and_flag, edges[e, 1], 1)
+
+
 @wp.kernel
 def scatter_neighbor_lists(
     edges: wp.array2d[wp.int32],
@@ -83,6 +118,47 @@ def scatter_neighbor_lists(
     b = edges[e, 1]
     out_neighbors[offsets[a + 1] - wp.atomic_sub(cursor, a, 1)] = b
     out_neighbors[offsets[b + 1] - wp.atomic_sub(cursor, b, 1)] = a
+
+
+@wp.kernel
+def ecl_init_parent_edges_checked(edges: wp.array2d[wp.int32], parents: wp.array[wp.int32]) -> None:
+    # ``connected_components.ecl_init_parent_edges`` under ``validate``, over an identity
+    # ``parents`` one entry longer than the node count: a row in range pre-hooks as there
+    # (``ecl_prehook_pair``), and a row outside sets that last entry to ``-1`` -- the identity put
+    # the node count there -- instead of writing past the forest. The wrapper reads the entry back
+    # before the hook, which indexes by the raw endpoints.
+    e = wp.int32(wp.tid())
+    n = parents.shape[0] - 1
+    if edge_in_range(edges, e, n) == 0:
+        parents[n] = -1
+        return
+    ecl_prehook_pair(parents, edges[e, 0], edges[e, 1])
+
+
+@wp.kernel
+def ecl_init_parent_parity_checked(out_words: wp.array[wp.int32]) -> None:
+    # ``connected_components.ecl_init_parent_parity`` over one more word than the node count: the
+    # flag ``ecl_hook_parity_checked`` raises, laid down clear (``0``) in the same launch.
+    v = wp.int32(wp.tid())
+    n = out_words.shape[0] - 1
+    out_words[v] = wp.where(v < n, parity_root_word(v), wp.int32(0))
+
+
+@wp.kernel
+def ecl_hook_parity_checked(
+    edges: wp.array2d[wp.int32], signs: wp.array[wp.int32], words: wp.array[wp.int32]
+) -> None:
+    # ``connected_components.ecl_hook_parity`` under ``validate``: a row whose endpoints lie in the
+    # forest and whose sign is ``0`` or ``1`` hooks as there (``ecl_hook_pair_parity``), and any
+    # other row is skipped and sets the flag word past the forest, read back after the flatten. The
+    # skip is what keeps the forest in range; the flag is what makes the wrapper raise.
+    e = wp.int32(wp.tid())
+    n = words.shape[0] - 1
+    sign = signs[e]
+    if edge_in_range(edges, e, n) == 0 or wp.uint32(sign) > wp.uint32(1):
+        words[n] = 1
+        return
+    ecl_hook_pair_parity(words, edges[e, 0], edges[e, 1], sign)
 
 
 @wp.kernel
@@ -192,15 +268,21 @@ def scatter_successor_tails(
     directed_edges: wp.array2d[wp.int32],
     out_next: wp.array[wp.int32],
     out_tails: wp.array[wp.int32],
+    out_flag: wp.array[wp.vec2i],
 ) -> None:
     # ``successor_cycles``' successor table and its tails in one pass over the edges, both
     # node-sized and seeded ``-1``. The tails are listed in node space -- entry ``a`` is ``a`` when
     # ``a`` has an edge out, ``-1`` (skipped by the ranking) otherwise -- so the ranking's threads
     # walk the nodes in ascending order, which keeps a mesh-ordered graph's reads and writes local
     # (listed in edge order, a shuffled edge list made the ranking 4x slower at 3 M nodes), and a
-    # node with several edges out (malformed input) is listed once. Indexed by the raw endpoint
-    # unguarded: the wrapper's range check before this launch is what this relies on.
+    # node with several edges out (malformed input) is listed once. A row with an endpoint outside
+    # the table is skipped and raises ``out_flag[0]`` (the zeroed entry just past the ranking's
+    # cycle counts, read back with their totals), so the ranking runs on an in-range table and the
+    # range check costs neither a launch nor a readback of its own.
     e = wp.int32(wp.tid())
+    if edge_in_range(directed_edges, e, out_next.shape[0]) == 0:
+        out_flag[0] = wp.vec2i(1, 0)
+        return
     a = directed_edges[e, 0]
     out_next[a] = directed_edges[e, 1]
     out_tails[a] = a

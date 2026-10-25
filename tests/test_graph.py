@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import itertools
-from collections.abc import Callable
 
 import igl
 import numpy as np
@@ -17,7 +16,6 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
-from ordito import _launch
 from tests.comparisons import same_partition
 from tests.conftest import MESHES
 from tests.conversions import (
@@ -703,38 +701,26 @@ def test_successor_cycles_ranks_across_jump_round_boundaries(device: str, length
     assert np.array_equal(offsets_wp.numpy(), np.array([0, length], dtype=np.int32))
 
 
-def test_successor_cycles_validates_before_launching(
-    device: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_successor_cycles_skips_out_of_range_rows(device: str) -> None:
     """
-    The range check runs before any kernel that indexes by an endpoint.
+    Not a library comparison: the scatter never writes an out-of-range endpoint, checked or not.
 
-    ``scatter_successor`` indexes a ``node_count``-element buffer by the raw edge endpoint, so a
-    check that runs after it has already let an out-of-range endpoint write past the end — on the
-    CPU device that is a host-heap overwrite which aborts the process much later, somewhere
-    unrelated. Asserting only that ``ValueError`` is raised does not catch that: the exception is
-    raised either way. Recording what launched pins the ordering: the only kernels allowed before
-    the raise are the read-only range reduction's, from ``ordito.kernels.reduce`` (none on the CPU
-    device, which reads the bounds back on the host).
+    The range check is the scatter's own (``kernels/graph.scatter_successor_tails``): it indexes a
+    ``node_count``-element table by the raw edge endpoint, so it skips a row with an endpoint
+    outside ``[0, node_count)`` and raises a flag that comes back with the ranking's totals. On
+    the CPU device a write past the table is a host-heap overwrite that aborts the process much
+    later, so the guard is what both arms rest on: under ``validate`` the flag raises, and without
+    it the row is absent while every in-range cycle is exact. The negative tail would land in the
+    successor slot of node ``3`` if it were written, breaking the ``2 -> 3 -> 2`` cycle.
     """
-    launched: list[str] = []
-    real_launches: dict[str, Callable[..., object]] = {"wp": wp.launch, "_launch": _launch.launch}
-
-    def recording(owner: str) -> Callable[..., object]:
-        def recording_launch(kernel: wp.Kernel, *args: object, **kwargs: object) -> object:
-            launched.append(kernel.module.name)
-            return real_launches[owner](kernel, *args, **kwargs)
-
-        return recording_launch
-
-    # The wrapper layer launches through ``ordito._launch``, which falls back to ``wp.launch``
-    # and routes ``launch_tiled`` through its own ``launch``; record every path.
-    monkeypatch.setattr(wp, "launch", recording("wp"))
-    monkeypatch.setattr(_launch, "launch", recording("_launch"))
-    edges_wp = _edges_wp(np.array([[0, 9], [9, 0]], dtype=np.int32), device)
+    edges_wp = _edges_wp(
+        np.array([[0, 1], [1, 0], [2, 3], [3, 2], [-1, 2]], dtype=np.int32), device
+    )
     with pytest.raises(ValueError, match="edge indices must lie in"):
         od.graph.successor_cycles(edges_wp, 4)
-    assert set(launched) <= {"ordito.kernels.reduce"}, launched
+    flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 4, validate=False)
+    assert np.array_equal(flat_wp.numpy(), np.array([0, 1, 2, 3], dtype=np.int32))
+    assert np.array_equal(offsets_wp.numpy(), np.array([0, 2, 4], dtype=np.int32))
 
 
 def test_successor_cycles_malformed_input_stays_in_range(device: str) -> None:
