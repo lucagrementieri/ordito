@@ -124,6 +124,9 @@ def _face_angles(bench_case: BenchCase) -> odt.Array2dFloat32:
 )
 @pytest.mark.benchmark(group="principal_curvature")
 @pytest.mark.benchaxis("scale")
+@pytest.mark.censuskeep(
+    "sphere_large", reason="the geodesic ball walks in several chunks only at this size"
+)
 @pytest.mark.benchlibs("ordito", "igl", "pymeshlab", "pyvista")
 @pytest.mark.parametrize("radius", _QUADRIC_RADII)
 def test_principal_curvature(bench_case: BenchCase, radius: int) -> None:

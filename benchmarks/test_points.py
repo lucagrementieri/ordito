@@ -613,6 +613,10 @@ def _cloud_meshset_pml(bench_case: BenchCase) -> ml.MeshSet:
 
 @pytest.mark.benchmark(group="estimate_normals_knn")
 @pytest.mark.benchaxis("scale")
+@pytest.mark.censuskeep(
+    "sphere_med",
+    reason="a k > 1 search defers rows from _KNN_DEFER_MIN_POINTS points; sphere_small is below",
+)
 @pytest.mark.benchlibs("ordito", "open3d", "pymeshlab", "meshlib", "pytorch3d")
 def test_estimate_normals_knn(bench_case: BenchCase) -> None:
     """
@@ -673,6 +677,10 @@ def test_estimate_normals_knn(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="outlier_probability")
 @pytest.mark.benchaxis("scale")
+@pytest.mark.censuskeep(
+    "sphere_med",
+    reason="a k > 1 search defers rows from _KNN_DEFER_MIN_POINTS points; sphere_small is below",
+)
 @pytest.mark.benchlibs("ordito", "pymeshlab")
 def test_outlier_probability(bench_case: BenchCase) -> None:
     """LoOP scores: the k-NN table plus four passes over it, against the filter they came from."""
@@ -698,6 +706,10 @@ def test_outlier_probability(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="statistical_outlier_mask")
 @pytest.mark.benchaxis("scale")
+@pytest.mark.censuskeep(
+    "sphere_med",
+    reason="a k > 1 search defers rows from _KNN_DEFER_MIN_POINTS points; sphere_small is below",
+)
 @pytest.mark.benchlibs("ordito", "open3d")
 def test_statistical_outlier_mask(bench_case: BenchCase) -> None:
     """One global threshold on the mean neighbour distance — open3d's own outlier criterion."""

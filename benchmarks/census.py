@@ -19,12 +19,20 @@ Modes:
 * default: compare every counted row with the budget file and fail the session on any count that
   rose, on a row the budget does not know, and (with ``--census-strict``) on a budget row that no
   longer exists. A count that fell is printed so the budget can be tightened in the same change.
-* ``--census-update``: rewrite the budget from this run, keeping each row's ``exempt`` reason.
+* ``--census-update``: rewrite the budget from this run, keeping each row's ``exempt`` reason. The
+  run's rows are merged into the budget; with ``--census-strict`` too, the run is the whole budget
+  and a row it did not count is dropped.
 * ``--census-report=PATH``: also write every row's counts and launch sequence (kernel, dim, the
   ``ordito`` line that issued it) as JSON lines -- an exploration aid, not part of the gate.
 
 A budget row may carry ``"exempt": "<reason>"`` when its counts depend on convergence (an iterative
 solver's round count), which keeps it out of the comparison while still listing it.
+
+Runs under ``pytest-xdist`` (``-n 4 --dist loadfile``, as CI does): every worker counts its own rows
+and hands them to the controller in ``workeroutput``, and only the controller compares, reports or
+rewrites the budget. ``loadfile`` keeps each file whole and in order inside one process, the same
+history a serial run gives it; the counts must not depend on that history anyway (a gate passing
+under both is the check that they do not).
 
 The plugin patches Warp's private native table. A Warp upgrade that renames one of the patched
 symbols fails the session at startup rather than silently counting zero.
@@ -204,6 +212,88 @@ def pytest_configure() -> None:
     _record_launches(wp, "launch_tiled")
 
 
+# The ``meshes.AXES`` that grow one kind of input, smallest first. Their larger meshes take the
+# smallest one's branches and only run more rounds of them (CG iterations, Cholesky panels,
+# pointer-doubling steps), and a regression adds host work per round, which the smallest shows
+# too; so the census runs a test on the smallest mesh of each such axis it has, and keeps a larger
+# one only where ``censuskeep`` names it because the test branches on size there. The feature axes
+# (``loops``, ``quality``, ``components``, ...) are untouched: their meshes are different inputs,
+# except a row ``censusskip`` names, whose counts equal a cheaper row's by construction.
+_SIZE_AXES = ("scale", "polyline", "tangle", "loops_dense")
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Deselect a size axis's larger meshes no ``censuskeep`` keeps, and ``censusskip``'s rows."""
+    from benchmarks.meshes import AXES
+
+    ladders = [AXES[name] for name in _SIZE_AXES]
+    meshes: collections.defaultdict[tuple[object, ...], set[str]] = collections.defaultdict(set)
+    for item in items:
+        key = _row_key(item)
+        if key is not None:
+            meshes[key[0]].add(key[1])
+    kept: set[tuple[object, str]] = set()
+    for item in items:
+        marker = item.get_closest_marker("censuskeep")
+        key = _row_key(item)
+        if marker is None or key is None:
+            continue
+        name = marker.args[0] if len(marker.args) == 1 else None
+        if name is None or not marker.kwargs.get("reason"):
+            raise pytest.UsageError(f"{item.nodeid}: censuskeep takes one mesh and a reason=")
+        smaller = [ladder[: ladder.index(name)] for ladder in ladders if name in ladder]
+        if name not in meshes[key[0]] or not any(set(s) & meshes[key[0]] for s in smaller):
+            # The staleness half: a keep that deselects nothing is a stale one.
+            raise pytest.UsageError(
+                f"{item.nodeid}: censuskeep({name!r}) names no larger size-axis mesh of this test"
+            )
+        kept.add((key[0][0], name))
+    selected, deselected = [], []
+    skips_used: set[str] = set()
+    for item in items:
+        key = _row_key(item)
+        drop = False
+        if key is not None and (key[0][0], key[1]) not in kept:
+            for ladder in ladders:
+                if key[1] in ladder and set(ladder[: ladder.index(key[1])]) & meshes[key[0]]:
+                    drop = True
+        if key is not None and _census_skips(item, key[1]):
+            drop = True
+            skips_used.add(str(key[0][0]))
+        (deselected if drop else selected).append(item)
+    for item in items:
+        # The staleness half: a skip that matches no row of its test is a stale one.
+        if item.get_closest_marker("censusskip") is not None and (key := _row_key(item)):
+            if str(key[0][0]) not in skips_used:
+                raise pytest.UsageError(f"{item.nodeid}: censusskip matches no row of this test")
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = selected
+
+
+def _census_skips(item: pytest.Item, mesh: str) -> bool:
+    """Return whether a ``censusskip`` marker names this row's mesh and its other parameters."""
+    params = item.callspec.params  # pyright: ignore[reportAttributeAccessIssue]
+    for marker in item.iter_markers("censusskip"):
+        reason = marker.kwargs.get("reason")
+        if len(marker.args) != 1 or not reason:
+            raise pytest.UsageError(f"{item.nodeid}: censusskip takes one mesh and a reason=")
+        match = {name: value for name, value in marker.kwargs.items() if name != "reason"}
+        if marker.args[0] == mesh and all(params.get(k) == v for k, v in match.items()):
+            return True
+    return False
+
+
+def _row_key(item: pytest.Item) -> tuple[tuple[object, ...], str] | None:
+    """Return ``((test, other parameters), mesh)`` for a row with a mesh, else ``None``."""
+    callspec = getattr(item, "callspec", None)
+    if callspec is None or "mesh_name" not in callspec.params:
+        return None
+    test = (str(item.path), getattr(item, "originalname", item.name))
+    others = tuple(sorted((k, repr(v)) for k, v in callspec.params.items() if k != "mesh_name"))
+    return (test, *others), str(callspec.params["mesh_name"])
+
+
 def pytest_collection_finish(session: pytest.Session) -> None:
     """Replace ``BenchLibrary.run`` once the benchmark conftest is loaded."""
     for plugin in session.config.pluginmanager.get_plugins():
@@ -223,6 +313,12 @@ def _install(conftest: Any) -> None:
         def call() -> Any:
             return fn(setup()) if setup is not None else fn()
 
+        # ``linalg._cached_solver`` pools a state for an operator whose shape an earlier solve in
+        # the process has already seen, and a pooled state pays a ``refresh`` launch per call. Left
+        # alone, an earlier row of the same shape decided the count (``solve_spd_settled`` on
+        # ``saddle``: 650 launches after ``test_heat.py``, 649 alone), so every row starts with the
+        # shapes forgotten, as in a fresh process.
+        _forget_solver_shapes()
         # Two warm calls, not one: the first compiles, and some state only reaches its steady form
         # on a later call (``linalg._cached_solver`` gives the first operator of a shape its own
         # state and pools from the second, which records; the third replays). With one warm call
@@ -257,6 +353,14 @@ def _install(conftest: Any) -> None:
     conftest.BenchLibrary.run = run
 
 
+def _forget_solver_shapes() -> None:
+    """Empty ``linalg``'s shape-keyed solver pool, the one cache that outlives its row."""
+    from ordito import linalg
+
+    linalg._SOLVER_POOL.clear()  # pyright: ignore[reportPrivateUsage]
+    linalg._SHAPES_SEEN.clear()  # pyright: ignore[reportPrivateUsage]
+
+
 def _budget_path(config: pytest.Config) -> Path:
     explicit = config.getoption("--census-budget")
     if explicit:
@@ -266,9 +370,24 @@ def _budget_path(config: pytest.Config) -> Path:
     return Path(__file__).with_name(f"census_budget_{name}.json")
 
 
+@pytest.hookimpl(optionalhook=True)
+def pytest_testnodedown(node: Any, error: object) -> None:
+    """Under xdist, merge a finished worker's rows into the controller's."""
+    del error  # a crashed worker fails the session on its own; its rows are simply missing
+    output = getattr(node, "workeroutput", {})
+    if "census" in output:
+        rows, report = json.loads(output["census"])
+        _ROWS.update(rows)
+        _REPORT.extend(report)
+
+
 def pytest_sessionfinish(session: pytest.Session) -> None:
-    """Compare against, or rewrite, the budget."""
+    """Compare against, or rewrite, the budget (a worker only hands its rows over)."""
     config = session.config
+    workeroutput = getattr(config, "workeroutput", None)
+    if workeroutput is not None:
+        workeroutput["census"] = json.dumps([_ROWS, _REPORT])
+        return
     if not _ROWS:
         return
     report = config.getoption("--census-report")
@@ -279,7 +398,8 @@ def pytest_sessionfinish(session: pytest.Session) -> None:
     path = _budget_path(config)
     budget: dict[str, Any] = json.loads(path.read_text()) if path.exists() else {}
     if config.getoption("--census-update"):
-        merged = dict(budget)
+        strict = config.getoption("--census-strict")
+        merged = {node: entry for node, entry in budget.items() if not strict or node in _ROWS}
         for node, counts in _ROWS.items():
             entry: dict[str, Any] = {"counts": counts}
             if "exempt" in budget.get(node, {}):

@@ -395,6 +395,7 @@ def test_polyline_normal(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="polyline_radius")
 @pytest.mark.benchaxis("polyline")
+@pytest.mark.censuskeep("rim_long", reason="a loop more than one block long reduces in partials")
 @pytest.mark.benchlibs("ordito")
 def test_polyline_radius(bench_case: BenchCase) -> None:
     """

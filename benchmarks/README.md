@@ -370,15 +370,15 @@ is timed. For a fixed input and code path the counts then never vary, whatever r
 ```bash
 # the CI gate (CPU device, smallest size): fails on a rise, an unbudgeted row or a stale one
 uv run python -m pytest benchmarks -p benchmarks.census --device=cpu --size small -k ordito-cpu \
-    -q -p no:warnings --census-strict
+    -q -p no:warnings --census-strict -n 4 --dist loadfile
 
 # after a change that moves host traffic: re-record the budget and commit it with the change
 uv run python -m pytest benchmarks -p benchmarks.census --device=cpu --size small -k ordito-cpu \
-    -q -p no:warnings --census-update
+    -q -p no:warnings --census-update --census-strict -n 4 --dist loadfile
 
 # the CUDA budget, on the GPU box (CUDA counts differ by design: tiled reductions, captured loops)
 uv run python -m pytest benchmarks -p benchmarks.census --device=cuda --size small \
-    -k ordito-cuda -q -p no:warnings --census-update
+    -k ordito-cuda -q -p no:warnings --census-update --census-strict
 
 # exploration: every row's counts and launch sequence (kernel, dim, issuing ordito line)
 uv run python -m pytest benchmarks/test_heat.py -p benchmarks.census -k ordito-cuda -q \
@@ -390,6 +390,23 @@ of a buffer nothing mutates. A fall is printed so the budget is tightened in the
 whose counts follow an iteration count can carry `"exempt": "<reason>"` in the budget file, which
 `--census-update` preserves. The plugin patches Warp's private native table, so a Warp upgrade
 re-records both budgets (the `upgrade-warp` skill's step 3).
+
+The census runs under `pytest-xdist`: each worker counts its rows and hands them to the controller,
+which alone compares or rewrites the budget. `--dist loadfile` keeps every file whole, in its serial
+order, inside one worker. A CPU row runs on one thread, so the run scales with the workers (`-n 4`
+matches CI's 4-vCPU runner). Drop `-n` for a serial run; the counts are the same either way.
+
+The census runs each test on the smallest mesh of every size axis it sweeps (`scale`, `polyline`,
+`tangle`, `loops_dense`): the larger meshes take the same branches for more rounds, and a
+regression adds host work per round, which the smallest mesh shows too. A test that branches on size
+keeps the mesh past its threshold with `@pytest.mark.censuskeep(name, reason=...)` (the k-NN
+deferral from `_KNN_DEFER_MIN_POINTS`, the chunked geodesic ball, a multi-block polyline reduction);
+a keep that deselects nothing fails collection. Feature axes (`loops`, `quality`, `components`, ...)
+keep every mesh, since each is a different input, except a row
+`@pytest.mark.censusskip(name, reason=..., **params)` names because a cheaper row of the test counts
+the same by construction (`thickness_interior`'s `max_sphere` on `sphere_med`: its iterations run
+inside the kernel, so its counts are `shells_8`'s at a fraction of the time). `--census-update --census-strict` rewrites the
+budget as exactly this run's rows, dropping the ones the run no longer counts.
 
 No scan mesh is `small`, so every scan-sweep test also runs its ordito rows on the feature mesh
 `sphere_small` (`CENSUS_MESH` in `conftest.py`), filtered by `--size` like the sweep: every group

@@ -994,6 +994,10 @@ def test_query_geodesic_ball(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="closest_pair")
 @pytest.mark.benchaxis("scale")
+@pytest.mark.censuskeep(
+    "sphere_med",
+    reason="a k > 1 search defers rows from _KNN_DEFER_MIN_POINTS points; sphere_small is below",
+)
 @pytest.mark.benchlibs("ordito", "meshlib", "scipy")
 def test_closest_pair(bench_case: BenchCase) -> None:
     """
@@ -1050,6 +1054,10 @@ def test_closest_pair(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="nearest_neighbor_distance")
 @pytest.mark.benchaxis("scale")
+@pytest.mark.censuskeep(
+    "sphere_med",
+    reason="a k > 1 search defers rows from _KNN_DEFER_MIN_POINTS points; sphere_small is below",
+)
 @pytest.mark.benchlibs("ordito", "open3d", "meshlib")
 def test_nearest_neighbor_distance(bench_case: BenchCase) -> None:
     """

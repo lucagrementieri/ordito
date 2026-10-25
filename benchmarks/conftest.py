@@ -874,6 +874,16 @@ def pytest_configure(config: pytest.Config) -> None:
         "censusmesh(name): the small feature mesh a scan-sweep benchmark's census row runs on, in "
         "place of sphere_small.",
     )
+    config.addinivalue_line(
+        "markers",
+        "censuskeep(mesh, reason=...): a size-axis mesh the census keeps beside the axis's "
+        "smallest, because the test takes a branch only from that size (benchmarks/census.py).",
+    )
+    config.addinivalue_line(
+        "markers",
+        "censusskip(mesh, reason=..., **params): a row the census does not count, matched by mesh "
+        "and any other parameters given, because a cheaper row of the test counts the same.",
+    )
     # Declared here but enforced from tests/: the parity gate is a static scan so that it runs in
     # the default ``pytest`` invocation, which does not collect this directory at all. Validating
     # here as well would put the same rule in two places, and the weaker of the two would be the

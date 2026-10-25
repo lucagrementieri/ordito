@@ -222,6 +222,11 @@ def test_shape_diameter(bench_case: BenchCase, n_rays: int) -> None:
 @pytest.mark.benchaxis("depth")
 @pytest.mark.benchlibs("ordito", "trimesh")
 @pytest.mark.parametrize("method", ["ray", "max_sphere"])
+@pytest.mark.censusskip(
+    "sphere_med",
+    method="max_sphere",
+    reason="the iterations run inside the kernel, so its host counts are shells_8's",
+)
 def test_thickness_interior(bench_case: BenchCase, method: Literal["ray", "max_sphere"]) -> None:
     """
     Interior thickness by one ray cast against up to 100 shrinking-sphere iterations.

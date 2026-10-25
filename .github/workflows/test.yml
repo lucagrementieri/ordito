@@ -328,7 +328,13 @@ jobs:
           path: benchmarks/data
           key: benchmark-meshes-${{ hashFiles('benchmarks/meshes.py') }}
 
+      # Four xdist workers, one per vCPU of the runner: every CPU row runs on one thread, so a
+      # single process left three cores idle for the step's whole length. `loadfile` keeps each
+      # file whole and in order inside one worker; the workers hand their counts to the
+      # controller, which alone compares them with the budget (`benchmarks/census.py`). A test
+      # sweeping a size axis is counted on its smallest mesh only, unless it branches on size.
       - name: Host-traffic census (CPU budget)
         run: >
           uv run python -m pytest benchmarks -p benchmarks.census
           --device=cpu --size small -k ordito-cpu -q -p no:warnings --census-strict
+          -n 4 --dist loadfile

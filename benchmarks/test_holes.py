@@ -411,6 +411,9 @@ def test_refill_region(bench_case: BenchCase, triangulate_only: bool) -> None:
 
 @pytest.mark.benchmark(group="fill_smooth_target_edge")
 @pytest.mark.benchaxis("loops_dense")
+@pytest.mark.censuskeep(
+    "holes_dense", reason="past the split budget the longest edges are chosen by a sort"
+)
 @pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("derive_target", [True, False], ids=["derived", "explicit"])
 def test_fill_smooth_target_edge(bench_case: BenchCase, derive_target: bool) -> None:

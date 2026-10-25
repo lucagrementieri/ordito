@@ -129,6 +129,7 @@ test = [
     "py-cpuinfo>=9.0.0",
     "torch==2.11.0",
     "trimesh>=5.0.0",
+    "pytest-xdist>=3.8.0",
 ]
 
 
