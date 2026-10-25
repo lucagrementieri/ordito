@@ -310,10 +310,8 @@ def closest_point_on_edges(
     closest point lies within ``r``, so a best distance under ``r`` certifies the answer. The
     tempting shortcut -- one degenerate ``(a, b, b)`` triangle per edge, queried with
     ``wp.mesh_query_point_no_sign`` -- does **not** work: Warp's closest-point query never returns
-    a triangle collapsed onto a segment, on either device. A triangle collapsed onto a single
-    point ``(a, a, a)`` *is* returned, which is the case
-    [`neighbors.mesh_from_points`][ordito.neighbors.mesh_from_points] builds on; only the segment
-    shape is lost.
+    a triangle collapsed onto a segment, on either device (a triangle collapsed onto a single
+    point ``(a, a, a)`` *is* returned; only the segment shape is lost).
 
     See Also
     --------

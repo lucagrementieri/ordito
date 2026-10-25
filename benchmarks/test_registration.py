@@ -66,12 +66,11 @@ delta on a *fixed* mesh, not the absolute time. Two things the two targets do sa
 
 * The **mesh** target is the faster of the two, because it rides Warp's built-in
   ``wp.mesh_query_point_no_sign`` and never touches the k-NN path at all.
-* The **point-cloud** target searches the target's
-  [`mesh_from_points`][ordito.neighbors.mesh_from_points] -- a ``wp.Mesh`` whose triangles each
-  collapse onto one target point -- with the same closest-point descent, built once per call and
-  hoisted out of the loop. Its cost does not grow with how far the source sits off the target,
-  which the radius-deepening BVH walk it replaced did: that walk was most of every iteration at
-  these misalignments, and the swap alone is worth 1.1-4.4x on the point-to-point rows.
+* The **point-cloud** target searches a point ``wp.Bvh`` over the target with a nearest-point
+  descent of the same shape, built once per call and hoisted out of the loop. Its cost does not
+  grow with how far the source sits off the target, which the radius-deepening BVH walk it
+  replaced did: that walk was most of every iteration at these misalignments, and the swap alone
+  is worth 1.1-4.4x on the point-to-point rows.
 * Both ICPs run their iterations after the first as one recorded device loop (a conditional
   CUDA graph), so no row carries a per-iteration readback: a pinned ``icp`` call reads back once,
   for its cost.

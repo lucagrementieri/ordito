@@ -2,7 +2,7 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT
 from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, binary_search_index_left
-from ordito.kernels.neighbors import mesh_nearest_point
+from ordito.kernels.neighbors import bvh_nearest_point
 from ordito.kernels.predicates import normalize_or_zero
 from ordito.kernels.proximity import closest_point_query
 from ordito.kernels.reduce import (
@@ -406,26 +406,27 @@ def distance_threshold_weight(
 
 @wp.func
 def icp_match(
-    mesh_id: wp.uint64,
+    index_id: wp.uint64,
     target_points: wp.array[wp.vec3],
     cloud: wp.bool,
     q: wp.vec3,
     query_max: wp.float32,
 ) -> tuple[wp.vec3, wp.float32, wp.int32]:
     # One moved source point's match on an ICP target: the matched point, its distance and its
-    # index (``-1`` for a miss). ``cloud`` selects the target, warp-uniformly: a point-cloud
-    # target's ``neighbors.mesh_from_points`` answers the nearest vertex (unbounded, so it always
-    # hits), whose position is the match; a mesh target's closest point on the surface within
-    # ``query_max``, whose index is the face. The one target dispatch both ICP loops share.
+    # index (``-1`` for a miss). ``cloud`` selects the target, warp-uniformly, and with it what
+    # ``index_id`` is: a point-cloud target's point ``wp.Bvh`` answers the nearest vertex
+    # (unbounded, so it always hits), whose position is the match; a mesh target's ``wp.Mesh`` the
+    # closest point on the surface within ``query_max``, whose index is the face. The one target
+    # dispatch both ICP loops share.
     if cloud:
-        index, distance = mesh_nearest_point(mesh_id, target_points, q, FLOAT32_INF_CONSTANT)
+        index, distance = bvh_nearest_point(index_id, target_points, q, FLOAT32_INF_CONSTANT)
         return target_points[wp.max(index, wp.int32(0))], distance, index
-    return closest_point_query(mesh_id, q, query_max)
+    return closest_point_query(index_id, q, query_max)
 
 
 @wp.kernel
 def point_to_plane_correspondence_pass(
-    mesh_id: wp.uint64,
+    index_id: wp.uint64,
     target_points: wp.array[wp.vec3],
     points: wp.array[wp.vec3],
     step: wp.array[wp.mat44],
@@ -451,7 +452,7 @@ def point_to_plane_correspondence_pass(
     tid = wp.int32(wp.tid())
     q = transform_point_mat44(points[tid], step[0])
     out_points[tid] = q
-    closest, distance, index = icp_match(mesh_id, target_points, cloud, q, query_max)
+    closest, distance, index = icp_match(index_id, target_points, cloud, q, query_max)
     out_closest[tid] = closest
     out_distance[tid] = distance
     out_index[tid] = index
@@ -459,7 +460,7 @@ def point_to_plane_correspondence_pass(
 
 @wp.kernel
 def point_to_point_correspondence_pass(
-    mesh_id: wp.uint64,
+    index_id: wp.uint64,
     target_points: wp.array[wp.vec3],
     source: wp.array[wp.vec3],
     total: wp.array[wp.mat44],
@@ -478,7 +479,7 @@ def point_to_point_correspondence_pass(
     # published the points this search then read, so the query sees the same bits.
     tid = wp.int32(wp.tid())
     q = transform_point_mat44(source[tid], total[0])
-    closest, distance, index = icp_match(mesh_id, target_points, cloud, q, query_max)
+    closest, distance, index = icp_match(index_id, target_points, cloud, q, query_max)
     out_closest[tid] = closest
     if out_weights.shape[0] > 0:
         out_weights[tid] = distance_threshold_weight(distance, index, max_distance)

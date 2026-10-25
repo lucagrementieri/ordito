@@ -113,8 +113,9 @@ def bvh_from_points(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
     """
     Build a bounding-volume hierarchy over ``points`` for radius queries.
 
-    Each leaf stores the same geometry as ``points`` (degenerate bounds via a clone),
-    matching the broad-phase pattern used by
+    Each point is its own degenerate box (``points`` serves as both bounds, aliased rather than
+    copied, so do not mutate it while the tree is in use), matching the broad-phase pattern used
+    by
     [`query_ball`][ordito.neighbors.query_ball] and
     [`query_nearest`][ordito.neighbors.query_nearest].
 
@@ -123,11 +124,11 @@ def bvh_from_points(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
     points
         ``(n,)`` positions.
     leaf_size
-        Maximum primitives per leaf; forwarded to ``warp.Bvh``. The two query families want
-        opposite leaves: the ball queries are fastest at one point a leaf, the nearest queries at
-        larger leaves the larger the cloud (what [`query_nearest`][ordito.neighbors.query_nearest]
-        picks when it builds its own tree). The default sits between them, for a tree shared by
-        both.
+        Maximum primitives per leaf; forwarded to ``warp.Bvh``. The query families want different
+        leaves: the ball queries and the ``k = 1`` nearest query are fastest at one to four points
+        a leaf, the ``k > 1`` nearest queries at larger leaves the larger the cloud (what
+        [`query_nearest`][ordito.neighbors.query_nearest] picks when it builds its own tree). The
+        default sits between them, for a tree shared by all of them.
 
     Returns
     -------
@@ -160,74 +161,6 @@ def bvh_from_points(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
     ```
     """
     return wp.Bvh(points, points, leaf_size=leaf_size)
-
-
-def mesh_from_points(points: wp.array[wp.vec3]) -> wp.Mesh:
-    """
-    Build a ``warp.Mesh`` over ``points`` whose triangles each collapse onto one point.
-
-    Its closest-face query is then a nearest-point query: the closest point of a triangle whose
-    three corners coincide is that corner, so ``wp.mesh_query_point_no_sign`` returns the nearest
-    point's index as its face. (Only this point-shaped degeneracy is found: a triangle collapsed
-    onto a segment, ``(a, b, b)``, is never returned by that query, which is why
-    [`closest_point_on_edges`][ordito.proximity.closest_point_on_edges] builds its own tree.)
-    This is the tree
-    [`query_nearest`][ordito.neighbors.query_nearest] answers ``k = 1`` with under
-    ``backend="bvh"``, and its cost follows the tree's depth rather than how far a query sits from
-    the cloud.
-
-    Parameters
-    ----------
-    points
-        ``(n,)`` positions, ``n >= 1``. The mesh aliases them rather than copying, so do not
-        mutate them while it is in use.
-
-    Returns
-    -------
-    warp.Mesh
-        Mesh of ``n`` degenerate triangles, triangle ``i`` on ``points[i]``.
-
-    Raises
-    ------
-    ValueError
-        If ``points`` is empty: a ``warp.Mesh`` with no triangles corrupts the CUDA allocator.
-
-    See Also
-    --------
-    [`bvh_from_points`][ordito.neighbors.bvh_from_points]
-
-    Examples
-    --------
-    The closest face of the collapsed mesh is the nearest point, here the grid's centre (index 12):
-
-    ```python
-    import warp as wp
-
-    import ordito as od
-
-    points, _ = od.creation.grid(count=(5, 5), extents=(4.0, 4.0))  # unit spacing, 25 points
-    mesh = od.neighbors.mesh_from_points(points)
-    print(mesh.indices.shape)  # (75,)
-    queries = wp.array([[0.1, 0.2, 0.0]], dtype=wp.vec3)
-    _, distances, nearest = od.proximity.closest_point_on_mesh(
-        points, mesh.indices, queries, mesh=mesh
-    )
-    print(nearest.numpy().tolist())  # [12]
-    print(f"{distances.numpy()[0]:.4f}")  # 0.2236
-    ```
-    """
-    n = points.size
-    if n == 0:
-        raise ValueError("mesh_from_points needs at least one point")
-    corners = _launch.empty(3 * n, dtype=wp.int32, device=points.device)
-    _launch.launch(
-        kernel_neighbors.point_triangle_indices, dim=3 * n, inputs=[corners], device=points.device
-    )
-    # ``lbvh``: the other constructors build this tree several times slower, for no faster query.
-    # One triangle per leaf: a leaf test here is Warp's full closest-point-on-triangle routine on a
-    # triangle that is one point, so every extra primitive in a leaf is wasted arithmetic: one per
-    # leaf is the fastest query, for a build no slower and the same distances.
-    return wp.Mesh(points=points, indices=corners, bvh_constructor="lbvh", bvh_leaf_size=1)
 
 
 def hashgrid_from_points(
@@ -1205,18 +1138,17 @@ def query_nearest(
         A row the walk cannot certify within a few cells is finished by a tree over the cloud
         rather than by a scan of every point. A row whose walk found points goes to the BVH's
         radius search, started where the walk stopped; a row whose first walks found nothing goes
-        to a closest-point query over [`mesh_from_points`][ordito.neighbors.mesh_from_points],
-        whose cost does not grow with how far the query is from the cloud -- the answer itself at
-        ``k == 1``, and the radius search's starting distance above it. So a query beside a sparse
+        to a nearest-point descent of a point tree, whose cost does not grow with how far the query
+        is from the cloud -- the answer itself at ``k == 1``, and the radius search's starting
+        distance above it. So a query beside a sparse
         patch of the cloud, or far from it, costs a tree search. Clouds under 8192 points, and
         ``k`` above 64, finish such rows with an exact linear scan of the cloud instead.
 
         ``"bvh"`` has no cell width to get wrong, so it is the one to reach for when the query scale
         is far from the cloud's own density and no ``initial_radius`` can say it. Its own cost
-        grows with ``k`` faster than the grid's. At ``k == 1`` with no ``accelerator`` it is not a
-        radius search at all but a closest-point query over
-        [`mesh_from_points`][ordito.neighbors.mesh_from_points], whose cost does not grow with the
-        queries' distance from the cloud.
+        grows with ``k`` faster than the grid's. At ``k == 1`` it is not a radius search at all but
+        a nearest-point descent of the tree, whose cost does not grow with the queries' distance
+        from the cloud.
 
         Both are exact; this is a cost choice only. Reuse the structure across calls by passing it
         as ``accelerator`` when several queries share one cloud.
@@ -1247,9 +1179,9 @@ def query_nearest(
     leaf_size
         Maximum primitives per leaf when building a BVH; ``None`` picks it from the point count
         (larger leaves for larger clouds, where the walk is faster with them). Ignored whenever
-        ``accelerator`` is given and at ``k == 1`` under ``backend="bvh"``, where the tree is a
-        [`mesh_from_points`][ordito.neighbors.mesh_from_points]. The default ``"hashgrid"``
-        backend builds a BVH only to finish the rows its cell walk cannot certify.
+        ``accelerator`` is given and at ``k == 1`` under ``backend="bvh"``, where the tree has one
+        point a leaf. The default ``"hashgrid"`` backend builds a BVH only to finish the rows its
+        cell walk cannot certify.
     initial_radius
         First search radius. Defaults to
         [`knn_initial_radius`][ordito.neighbors.knn_initial_radius], which estimates it from the
@@ -1265,7 +1197,7 @@ def query_nearest(
         complete, so a box that does not contain ``points`` can end the search early and leave
         slots unfilled (``-1`` and ``inf``) rather than merely running slower. Pass the real
         bounding box, or leave it ``None``. Neither this nor ``initial_radius`` is read by the
-        ``k == 1`` BVH-backend query without an ``accelerator``, which has no radius to deepen.
+        ``k == 1`` BVH-backend query, which has no radius to deepen.
 
     Returns
     -------
@@ -1353,19 +1285,20 @@ def query_nearest(
     # here would be two wasted launches.
     neighbor_indices = odt.empty_2d((m, k), wp.int32, device=device)
     neighbor_distances = odt.empty_2d((m, k), wp.float32, device=device)
-    if kind == "bvh" and k == 1 and resolved is None:
-        # One nearest point is a closest-point query over the collapsed-triangle mesh: its descent
-        # needs no radius to deepen, so neither the bounding box nor the density estimate (two
-        # reductions and their readbacks) is computed, and a query far off the cloud costs what an
-        # on-surface one does. The distances are the radius search's to the bit. A caller's
-        # ``wp.Bvh`` cannot take this path, since the query needs a ``wp.Mesh``.
-        mesh = mesh_from_points(points)
+    if kind == "bvh" and k == 1:
+        # One nearest point is a nearest-point descent of the tree: it needs no radius to deepen,
+        # so neither the bounding box nor the density estimate (two reductions and their
+        # readbacks) is computed, and a query far off the cloud costs what an on-surface one does.
+        # The distances are the radius search's to the bit. One point a leaf when the call builds
+        # the tree; a caller's tree is searched with whatever leaves it has.
+        tree = resolved if resolved is not None else bvh_from_points(points, leaf_size=1)
         _launch.launch(
-            kernel_neighbors.query_nearest_via_mesh,
+            kernel_neighbors.query_nearest_via_bvh,
             dim=m,
-            inputs=[mesh.id, points, queries, wp.float32(max_radius)],
+            inputs=[tree.id, points, queries, wp.float32(max_radius)],
             outputs=[neighbor_indices, neighbor_distances],
             device=device,
+            block_dim=_descent_block_dim(m, device),
         )
         return _shape_nearest(neighbor_indices, neighbor_distances, k, single_query)
 
@@ -1491,6 +1424,22 @@ def query_nearest(
     return _shape_nearest(neighbor_indices, neighbor_distances, k, single_query)
 
 
+def _descent_block_dim(m: int, device: wp.Device | None) -> int:
+    """
+    Block width of the ``k = 1`` descent over ``m`` queries: wide once the launch fills the device.
+
+    See ``kernel_neighbors.DESCENT_WIDE_BLOCK_DIM``; the CPU device takes the default.
+    """
+    wide = int(kernel_neighbors.DESCENT_WIDE_BLOCK_DIM)
+    if (
+        device is not None
+        and device.is_cuda
+        and m >= int(kernel_neighbors.DESCENT_WIDE_BLOCKS_PER_SM) * device.sm_count * wide
+    ):
+        return wide
+    return 256
+
+
 def _finish_deferred_nearest(
     points: wp.array[wp.vec3],
     queries: wp.array[wp.vec3],
@@ -1509,9 +1458,8 @@ def _finish_deferred_nearest(
     One readback of the counters decides which trees to build, since each is a build over the
     whole cloud: a query set the grid certified in full pays only that read. A row
     whose walk held a point goes to the BVH's ball search seeded from the walk; a row with no point
-    inside the walk goes through a ``wp.Mesh`` whose triangles each collapse onto one point, whose
-    closest-face query is a nearest-point query with the mesh BVH's pruned descent -- the whole
-    answer at ``k = 1``, the ball's seed above it, walked over the mesh's own BVH.
+    inside the walk goes to a nearest-point descent of a point tree with one point a leaf -- the
+    whole answer at ``k = 1``, the ball's seed above it, walked over the same tree.
     """
     # The one sync deferral adds, and it decides whether a whole-cloud build is needed.
     if k == 1:
@@ -1524,23 +1472,23 @@ def _finish_deferred_nearest(
     m = queries.size
     if k == 1:
         # Every ``k = 1`` deferral is far: a nearest point inside the walk certifies the row.
-        mesh = mesh_from_points(points)
+        tree = bvh_from_points(points, leaf_size=1)
         _launch.launch(
-            kernel_neighbors.nearest_point_via_mesh,
+            kernel_neighbors.nearest_point_via_bvh,
             dim=m,
-            inputs=[mesh.id, points, queries, wp.float32(max_radius)],
+            inputs=[tree.id, points, queries, wp.float32(max_radius)],
             outputs=[neighbor_indices, neighbor_distances],
             device=device,
         )
         return
     kernel = kernel_neighbors.bvh_deferred_kernel(k)
-    # The tree objects, not their ids: a ``wp.Bvh`` / ``wp.Mesh`` frees its device tree when it is
-    # collected, which would be before the launch that reads it.
-    finishes: list[tuple[wp.Bvh | wp.Mesh, object]] = []
+    # The tree objects, not their ids: a ``wp.Bvh`` frees its device tree when it is collected,
+    # which would be before the launch that reads it.
+    finishes: list[tuple[wp.Bvh, object]] = []
     if seeded:
         finishes.append((_nearest_bvh(points, leaf_size), kernel_neighbors.DEFERRED_ROW))
     if far:
-        finishes.append((mesh_from_points(points), kernel_neighbors.DEFERRED_FAR_ROW))
+        finishes.append((bvh_from_points(points, leaf_size=1), kernel_neighbors.DEFERRED_FAR_ROW))
     for tree, finish in finishes:
         _launch.launch(
             kernel,

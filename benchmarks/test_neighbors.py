@@ -336,10 +336,9 @@ def test_query_nearest_bvh_k1(bench_case: BenchCase) -> None:
     """
     ``k=1`` BVH k-NN — the exact call ICP and the Chamfer family make.
 
-    At ``k = 1`` with no prebuilt ``accelerator`` this is not a radius search but one
-    closest-point descent over [`mesh_from_points`][ordito.neighbors.mesh_from_points], so the
-    row times that tree's build plus the query, and needs neither the bounding box nor the density
-    estimate the deepening search reads back.
+    At ``k = 1`` this is not a radius search but one nearest-point descent of a point tree with one
+    point a leaf, so the row times that tree's build plus the query, and needs neither the bounding
+    box nor the density estimate the deepening search reads back.
 
     meshlib's ``PointsProjector`` is the only batched form it has that takes a *query* cloud, and
     it answers ``k=1`` only -- which is why meshlib appears in this group and not in the ``k7`` or
@@ -352,10 +351,10 @@ def test_query_nearest_bvh_k1(bench_case: BenchCase) -> None:
     pytorch3d wins at a small point count and loses by nearly two orders of magnitude at a large
     one. The ``LIBRARIES`` block in [`conftest.py`](conftest.py) carries a sweep of the radius
     walk, half of whose swing is its search-radius heuristic; this row answers through a pruned
-    closest-point descent over [`mesh_from_points`][ordito.neighbors.mesh_from_points] instead,
-    which has no radius, so that split does not describe it. Its ``dists`` are **squared**, which
-    is the named transform ``tests/test_neighbors.py::test_query_nearest_matches_pytorch3d``
-    applies; its indices are exactly ordito's. Absent from ``k64`` for the same reason meshlib is
+    nearest-point descent instead, which has no radius, so that split does not describe it. Its
+    ``dists`` are **squared**, which is the named transform
+    ``tests/test_neighbors.py::test_query_nearest_matches_pytorch3d`` applies; its indices are
+    exactly ordito's. Absent from ``k64`` for the same reason meshlib is
     absent from ``k7``: there is no ``query_nearest_hashgrid_k64`` group to pair with, so two
     BVH-only markers would read as a different claim than the four here.
     """
@@ -645,27 +644,6 @@ def test_bvh_from_points(bench_case: BenchCase, leaf_size: int) -> None:
     else:
         points_np = bench_case.vertices_np
         assert bench_case.run(lambda: KDTree(points_np)) is not None
-
-
-@pytest.mark.benchmark(group="mesh_from_points")
-@pytest.mark.benchlibs("ordito", "scipy")
-def test_mesh_from_points(bench_case: BenchCase) -> None:
-    """
-    The collapsed-triangle ``wp.Mesh`` that ``query_nearest`` descends at ``k = 1`` on a BVH.
-
-    Read against ``bvh_from_points``: both build a tree over the same cloud, this one through
-    ``wp.Mesh`` with one degenerate triangle a point, so the gap is what the mesh form costs over a
-    bare BVH. scipy's ``KDTree`` build is the structure its oracle in ``tests/test_neighbors.py``
-    queries, timed as ``bvh_from_points`` times it.
-    """
-    skip_larger_than(bench_case, "dragon", "the scipy reference builds single-threaded")
-    if bench_case.kind == "scipy":
-        points_np = bench_case.vertices_np
-        assert bench_case.run(lambda: KDTree(points_np)) is not None
-        return
-    points = bench_case.vertices_wp
-    mesh = bench_case.run(lambda: od.neighbors.mesh_from_points(points))
-    assert mesh.indices.shape == (3 * points.size,)
 
 
 @pytest.mark.benchmark(group="hashgrid_from_points")

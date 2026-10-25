@@ -1315,9 +1315,8 @@ def _nearest(
     Every query's nearest point: the ``k = 1`` search each direction of a cloud pair runs.
 
     Under ``backend="bvh"`` [`query_nearest`][ordito.neighbors.query_nearest] answers ``k = 1``
-    with a closest-point descent over
-    [`mesh_from_points`][ordito.neighbors.mesh_from_points], whose cost does not depend on how
-    far the two clouds sit apart and which needs no search radius -- so neither the cloud's
+    with a nearest-point descent of a point tree, whose cost does not depend on how far the two
+    clouds sit apart and which needs no search radius -- so neither the cloud's
     bounding box and density estimate nor the forward answer's largest distance (the hash grid's
     seed for the backward half) is reduced and read back. The distances are the hash grid's to the
     bit. It is the faster of the two from coincident clouds to clouds several spacings apart, with

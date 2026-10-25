@@ -4963,8 +4963,8 @@
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_mesh[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 7,
-   "alloc": 8,
+   "launch": 6,
+   "alloc": 7,
    "d2h": 1
   }
  },
@@ -4977,43 +4977,43 @@
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_mesh_loss[sphere_small-ordito-cuda-symmetric]": {
   "counts": {
-   "launch": 7,
-   "alloc": 7,
+   "launch": 6,
+   "alloc": 6,
    "memset": 6
   }
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_points[sphere_small-ordito-cuda-oneway]": {
   "counts": {
-   "launch": 4,
-   "alloc": 5,
+   "launch": 3,
+   "alloc": 4,
    "d2h": 1
   }
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_points[sphere_small-ordito-cuda-symmetric]": {
   "counts": {
-   "launch": 8,
-   "alloc": 9,
+   "launch": 6,
+   "alloc": 7,
    "d2h": 1
   }
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_points_coincident[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 8,
-   "alloc": 9,
+   "launch": 6,
+   "alloc": 7,
    "d2h": 1
   }
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_points_loss[sphere_small-ordito-cuda-oneway]": {
   "counts": {
-   "launch": 4,
-   "alloc": 5,
+   "launch": 3,
+   "alloc": 4,
    "memset": 6
   }
  },
  "benchmarks/test_metrics.py::test_chamfer_points_to_points_loss[sphere_small-ordito-cuda-symmetric]": {
   "counts": {
-   "launch": 8,
-   "alloc": 8,
+   "launch": 6,
+   "alloc": 6,
    "memset": 6
   }
  },
@@ -5027,16 +5027,16 @@
  },
  "benchmarks/test_metrics.py::test_hausdorff_points_to_mesh[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 4,
-   "alloc": 7,
+   "launch": 3,
+   "alloc": 6,
    "memset": 1,
    "d2h": 1
   }
  },
  "benchmarks/test_metrics.py::test_hausdorff_points_to_points[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 5,
-   "alloc": 8,
+   "launch": 3,
+   "alloc": 6,
    "memset": 1,
    "d2h": 1
   }
@@ -5102,12 +5102,6 @@
    "alloc": 1,
    "memset": 1,
    "d2h": 1
-  }
- },
- "benchmarks/test_neighbors.py::test_mesh_from_points[sphere_small-ordito-cuda]": {
-  "counts": {
-   "launch": 1,
-   "alloc": 1
   }
  },
  "benchmarks/test_neighbors.py::test_nearest_neighbor_distance[sphere_large-ordito-cuda]": {
@@ -5239,8 +5233,8 @@
  },
  "benchmarks/test_neighbors.py::test_query_nearest_bvh_k1[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 2,
-   "alloc": 3
+   "launch": 1,
+   "alloc": 2
   }
  },
  "benchmarks/test_neighbors.py::test_query_nearest_bvh_k64[sphere_small-ordito-cuda]": {
@@ -6790,8 +6784,8 @@
  },
  "benchmarks/test_registration.py::test_icp_convergence[sphere_large-ordito-cuda-far45deg]": {
   "counts": {
-   "launch": 10,
-   "alloc": 7,
+   "launch": 9,
+   "alloc": 6,
    "memset": 2,
    "h2d": 1,
    "d2h": 1
@@ -6799,8 +6793,8 @@
  },
  "benchmarks/test_registration.py::test_icp_convergence[sphere_large-ordito-cuda-near5deg]": {
   "counts": {
-   "launch": 10,
-   "alloc": 7,
+   "launch": 9,
+   "alloc": 6,
    "memset": 2,
    "h2d": 1,
    "d2h": 1
@@ -6808,8 +6802,8 @@
  },
  "benchmarks/test_registration.py::test_icp_convergence[sphere_med-ordito-cuda-far45deg]": {
   "counts": {
-   "launch": 10,
-   "alloc": 7,
+   "launch": 9,
+   "alloc": 6,
    "memset": 2,
    "h2d": 1,
    "d2h": 1
@@ -6817,8 +6811,8 @@
  },
  "benchmarks/test_registration.py::test_icp_convergence[sphere_med-ordito-cuda-near5deg]": {
   "counts": {
-   "launch": 10,
-   "alloc": 7,
+   "launch": 9,
+   "alloc": 6,
    "memset": 2,
    "h2d": 1,
    "d2h": 1
@@ -6826,8 +6820,8 @@
  },
  "benchmarks/test_registration.py::test_icp_convergence[sphere_small-ordito-cuda-far45deg]": {
   "counts": {
-   "launch": 10,
-   "alloc": 7,
+   "launch": 9,
+   "alloc": 6,
    "memset": 2,
    "h2d": 1,
    "d2h": 1
@@ -6835,8 +6829,8 @@
  },
  "benchmarks/test_registration.py::test_icp_convergence[sphere_small-ordito-cuda-near5deg]": {
   "counts": {
-   "launch": 10,
-   "alloc": 7,
+   "launch": 9,
+   "alloc": 6,
    "memset": 2,
    "h2d": 1,
    "d2h": 1
@@ -6871,8 +6865,8 @@
  },
  "benchmarks/test_registration.py::test_icp_point_cloud[sphere_large-ordito-cuda]": {
   "counts": {
-   "launch": 10,
-   "alloc": 7,
+   "launch": 9,
+   "alloc": 6,
    "memset": 2,
    "h2d": 1,
    "d2h": 1
@@ -6880,8 +6874,8 @@
  },
  "benchmarks/test_registration.py::test_icp_point_cloud[sphere_med-ordito-cuda]": {
   "counts": {
-   "launch": 10,
-   "alloc": 7,
+   "launch": 9,
+   "alloc": 6,
    "memset": 2,
    "h2d": 1,
    "d2h": 1
@@ -6889,8 +6883,8 @@
  },
  "benchmarks/test_registration.py::test_icp_point_cloud[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 10,
-   "alloc": 7,
+   "launch": 9,
+   "alloc": 6,
    "memset": 2,
    "h2d": 1,
    "d2h": 1
@@ -6898,8 +6892,8 @@
  },
  "benchmarks/test_registration.py::test_icp_point_to_plane_cloud[sphere_large-ordito-cuda]": {
   "counts": {
-   "launch": 9,
-   "alloc": 9,
+   "launch": 8,
+   "alloc": 8,
    "memset": 2,
    "h2d": 1,
    "d2h": 1
@@ -6907,8 +6901,8 @@
  },
  "benchmarks/test_registration.py::test_icp_point_to_plane_cloud[sphere_med-ordito-cuda]": {
   "counts": {
-   "launch": 9,
-   "alloc": 9,
+   "launch": 8,
+   "alloc": 8,
    "memset": 2,
    "h2d": 1,
    "d2h": 1
@@ -6916,8 +6910,8 @@
  },
  "benchmarks/test_registration.py::test_icp_point_to_plane_cloud[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 9,
-   "alloc": 9,
+   "launch": 8,
+   "alloc": 8,
    "memset": 2,
    "h2d": 1,
    "d2h": 1
@@ -6955,8 +6949,8 @@
  },
  "benchmarks/test_registration.py::test_icp_point_to_plane_tukey[sphere_large-ordito-cuda]": {
   "counts": {
-   "launch": 9,
-   "alloc": 9,
+   "launch": 8,
+   "alloc": 8,
    "memset": 2,
    "h2d": 1,
    "d2h": 2
@@ -6964,8 +6958,8 @@
  },
  "benchmarks/test_registration.py::test_icp_point_to_plane_tukey[sphere_med-ordito-cuda]": {
   "counts": {
-   "launch": 9,
-   "alloc": 9,
+   "launch": 8,
+   "alloc": 8,
    "memset": 2,
    "h2d": 1,
    "d2h": 2
@@ -6973,8 +6967,8 @@
  },
  "benchmarks/test_registration.py::test_icp_point_to_plane_tukey[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 9,
-   "alloc": 9,
+   "launch": 8,
+   "alloc": 8,
    "memset": 2,
    "h2d": 1,
    "d2h": 2

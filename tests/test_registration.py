@@ -440,7 +440,7 @@ def test_icp_point_cloud_matches_pytorch3d(device: str) -> None:
     ``estimate_scale=False`` matches ordito's ``scale=False`` default, and the pair is
     correspondence-free on both sides -- each iteration re-runs its own nearest-neighbour search,
     which is the formulation ``ordito/registration.py``'s docstring credits to pytorch3d. A
-    prebuilt ``target_mesh`` (``mesh_from_points`` of the target) converges to the same transform.
+    prebuilt ``target_index`` (``bvh_from_points`` of the target) converges to the same transform.
     """
     rng = np.random.default_rng(11)
     a_np = rng.normal(size=(300, 3)).astype(np.float32)
@@ -475,7 +475,7 @@ def test_icp_point_cloud_matches_pytorch3d(device: str) -> None:
     matrix_prebuilt_wp, _, _ = od.registration.icp(
         points_to_warp(a_np, device),
         target_wp,
-        target_mesh=od.neighbors.mesh_from_points(target_wp),
+        target_index=od.neighbors.bvh_from_points(target_wp, leaf_size=1),
     )
     assert np.allclose(matrix_prebuilt_wp.numpy()[0], matrix_np, rtol=1e-5, atol=1e-6)
 
@@ -799,14 +799,20 @@ def test_icp_point_to_point_mesh(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> N
     assert cost_od < 1e-3
     assert _rms(transformed_wp.numpy(), vertices_np) < 5e-2
 
-    # A prebuilt ``target_mesh`` gives both variants the transform their own build does.
-    target_mesh = wp.Mesh(vertices_wp, faces_wp)
+    # A prebuilt ``target_index`` gives both variants the transform their own build does, and a
+    # structure of the other target kind is refused rather than read as the wrong one.
+    target_index = wp.Mesh(vertices_wp, faces_wp)
+    point_tree = od.neighbors.bvh_from_points(vertices_wp)
     for icp in (od.registration.icp, od.registration.icp_point_to_plane):
         matrix_wp, _, _ = icp(source_wp, vertices_wp, faces_wp, max_iterations=10)
         matrix_prebuilt_wp, _, _ = icp(
-            source_wp, vertices_wp, faces_wp, max_iterations=10, target_mesh=target_mesh
+            source_wp, vertices_wp, faces_wp, max_iterations=10, target_index=target_index
         )
         assert np.allclose(matrix_prebuilt_wp.numpy(), matrix_wp.numpy(), rtol=1e-5, atol=1e-6)
+        with pytest.raises(TypeError, match=r"must be a wp\.Mesh"):
+            icp(source_wp, vertices_wp, faces_wp, max_iterations=10, target_index=point_tree)
+    with pytest.raises(TypeError, match=r"must be a wp\.Bvh"):
+        od.registration.icp(source_wp, vertices_wp, target_index=target_index)
 
 
 def _p2p_convergence_call(
@@ -1377,8 +1383,8 @@ def test_correspondence_pass_matches_query_nearest(device: str) -> None:
     Ordito against ordito: the ICP loops' cloud correspondence search against ``query_nearest``.
 
     Both ICP loops search a point-cloud target inside their own correspondence pass
-    (``kernel_registration.icp_match``), over the collapsed-triangle mesh ``query_nearest``'s
-    ``k = 1`` BVH-backend search builds, so the two must agree exactly; ``query_nearest`` carries
+    (``kernel_registration.icp_match``), over the point tree ``query_nearest``'s ``k = 1``
+    BVH-backend search builds, so the two must agree exactly; ``query_nearest`` carries
     the oracle in ``tests/test_neighbors.py``. The distances must also equal a radius-deepening
     walk over a caller's ``wp.Bvh`` to the bit. The queries sit both on and well off the cloud so
     that walk takes more than its first radius on some rows, and the point-to-plane pass moves
@@ -1391,7 +1397,7 @@ def test_correspondence_pass_matches_query_nearest(device: str) -> None:
     ).astype(np.float32)
     target_wp = points_to_warp(target_np, device)
     queries_wp = points_to_warp(queries_np, device)
-    target_index = od.registration._target_index(target_wp)  # pyright: ignore[reportPrivateUsage]
+    target_tree = od.registration._target_tree(target_wp)  # pyright: ignore[reportPrivateUsage]
 
     def search(
         step_np: np.ndarray,
@@ -1406,7 +1412,7 @@ def test_correspondence_pass_matches_query_nearest(device: str) -> None:
         wp.launch(
             kernel_registration.point_to_plane_correspondence_pass,
             dim=200,
-            inputs=[target_index.id, target_wp, queries_wp, step_wp, True, 0.0],
+            inputs=[target_tree.id, target_wp, queries_wp, step_wp, True, 0.0],
             outputs=list(outputs),
             device=device,
         )

@@ -293,7 +293,7 @@ def icp(
     reflection: bool = False,
     translation: bool = True,
     scale: bool = False,
-    target_mesh: wp.Mesh | None = None,
+    target_index: wp.Mesh | wp.Bvh | None = None,
 ) -> tuple[wp.array[wp.mat44], wp.array[wp.vec3], float]:
     """
     Point-to-point iterative closest point registration.
@@ -344,13 +344,14 @@ def icp(
         Forwarded to [`procrustes`][ordito.registration.procrustes]. Defaults are
         rigid (`reflection=False, scale=False`); set ``scale=True`` for a
         similarity transform.
-    target_mesh
-        The ``wp.Mesh`` the correspondence search queries, already built, to spare the build each
-        call otherwise pays (worth it when one target is registered against repeatedly): over
-        ``target_vertices`` and ``target_faces`` for a mesh target
-        ([`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one), or
-        [`mesh_from_points`][ordito.neighbors.mesh_from_points] of ``target_vertices`` for a
-        point-cloud target. Not checked against them: the search answers for the geometry it holds.
+    target_index
+        The structure the correspondence search queries, already built, to spare the build each
+        call otherwise pays (worth it when one target is registered against repeatedly): a
+        ``wp.Mesh`` over ``target_vertices`` and ``target_faces`` for a mesh target
+        ([`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one), or a ``wp.Bvh``
+        over ``target_vertices`` for a point-cloud target
+        ([`bvh_from_points`][ordito.neighbors.bvh_from_points]; ``leaf_size=1`` is what the call
+        builds itself). Not checked against them: the search answers for the geometry it holds.
 
     Returns
     -------
@@ -363,8 +364,11 @@ def icp(
 
     Raises
     ------
+    TypeError
+        If ``target_index`` is not a ``wp.Bvh`` for a point-cloud target, or not a ``wp.Mesh`` for
+        a mesh target.
     RuntimeError
-        If ``a``, ``target_vertices``, ``target_faces``, ``initial`` and ``target_mesh`` are not
+        If ``a``, ``target_vertices``, ``target_faces``, ``initial`` and ``target_index`` are not
         all on one device.
 
     See Also
@@ -400,7 +404,7 @@ def icp(
         target_vertices=target_vertices,
         target_faces=target_faces,
         initial=initial,
-        target_mesh=target_mesh,
+        target_index=target_index,
     )
     device = a.device
     n = a.size
@@ -418,11 +422,11 @@ def icp(
     if max_iterations <= 0:
         _apply_transform(a, total, transformed)
         return total, transformed, math.inf
-    mesh, query_max, target_index = _resolve_icp_target(
-        target_vertices, target_faces, "icp", target_mesh
+    mesh, query_max, cloud_tree = _resolve_icp_target(
+        target_vertices, target_faces, "icp", target_index
     )
-    search_mesh = mesh if mesh is not None else target_index
-    assert search_mesh is not None
+    search_index = mesh if mesh is not None else cloud_tree
+    assert search_index is not None
 
     # Every buffer is allocated once and rewritten in place by every round. The fit lands in
     # ``fitted`` and is copied into ``total`` only once ``point_to_point_round`` has seen that it
@@ -443,7 +447,7 @@ def icp(
     state = _launch.zeros(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
 
     search_inputs = [
-        search_mesh.id,
+        search_index.id,
         target_vertices,
         a,
         total,
@@ -552,7 +556,7 @@ def icp_point_to_plane(
     robust_kernel: Literal["none", "huber", "tukey"] = "none",
     robust_scale: float | None = None,
     damping: float = 1e-6,
-    target_mesh: wp.Mesh | None = None,
+    target_index: wp.Mesh | wp.Bvh | None = None,
     target_face_normals: wp.array[wp.vec3] | None = None,
 ) -> tuple[wp.array[wp.mat44], wp.array[wp.vec3], float]:
     """
@@ -607,13 +611,14 @@ def icp_point_to_plane(
     damping
         Relative Levenberg damping added to the normal-equations diagonal (scaled
         by its mean magnitude) for conditioning on planar/degenerate targets.
-    target_mesh
-        The ``wp.Mesh`` the correspondence search queries, already built, to spare the build each
-        call otherwise pays (worth it when one target is registered against repeatedly): over
-        ``target_vertices`` and ``target_faces`` for a mesh target
-        ([`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one), or
-        [`mesh_from_points`][ordito.neighbors.mesh_from_points] of ``target_vertices`` for a
-        point-cloud target. Not checked against them: the search answers for the geometry it holds.
+    target_index
+        The structure the correspondence search queries, already built, to spare the build each
+        call otherwise pays (worth it when one target is registered against repeatedly): a
+        ``wp.Mesh`` over ``target_vertices`` and ``target_faces`` for a mesh target
+        ([`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is the cached one), or a ``wp.Bvh``
+        over ``target_vertices`` for a point-cloud target
+        ([`bvh_from_points`][ordito.neighbors.bvh_from_points]; ``leaf_size=1`` is what the call
+        builds itself). Not checked against them: the search answers for the geometry it holds.
     target_face_normals
         ``(n_faces,)`` unit face normals of a mesh target, as
         [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas] gives them
@@ -644,9 +649,12 @@ def icp_point_to_plane(
         If ``robust_kernel`` is not one of the three names, or if the target is a point cloud
         (``target_faces is None``) and ``target_normals`` is not provided, or does not have the
         same length as ``target_vertices``.
+    TypeError
+        If ``target_index`` is not a ``wp.Bvh`` for a point-cloud target, or not a ``wp.Mesh`` for
+        a mesh target.
     RuntimeError
         If ``a``, ``target_vertices``, ``target_faces``, ``target_normals``, ``initial``,
-        ``target_mesh`` and ``target_face_normals`` are not all on one device.
+        ``target_index`` and ``target_face_normals`` are not all on one device.
 
     See Also
     --------
@@ -679,7 +687,7 @@ def icp_point_to_plane(
         target_faces=target_faces,
         target_normals=target_normals,
         initial=initial,
-        target_mesh=target_mesh,
+        target_index=target_index,
         target_face_normals=target_face_normals,
     )
     device = a.device
@@ -712,8 +720,8 @@ def icp_point_to_plane(
     initial_matrix = _resolve_initial(initial, device)
     current = _launch.empty(n, dtype=wp.vec3, device=device)
 
-    mesh, query_max, target_index = _resolve_icp_target(
-        target_vertices, target_faces, "icp_point_to_plane", target_mesh
+    mesh, query_max, cloud_tree = _resolve_icp_target(
+        target_vertices, target_faces, "icp_point_to_plane", target_index
     )
     face_normals: wp.array[wp.vec3] | None = None
     if is_mesh and target_face_normals is not None:
@@ -755,9 +763,9 @@ def icp_point_to_plane(
     # convergence break live the two arms stop at *different* iterations.
     normal_table = face_normals if mesh is not None else target_normals
     assert normal_table is not None
-    search_mesh = mesh if mesh is not None else target_index
-    assert search_mesh is not None
-    search_target = [search_mesh.id, target_vertices]
+    search_index = mesh if mesh is not None else cloud_tree
+    assert search_index is not None
+    search_target = [search_index.id, target_vertices]
     search_options = [mesh is None, wp.float32(query_max)]
     search_outputs = [current, closest, distance, triangle_id]
 
@@ -1023,14 +1031,13 @@ def _resolve_icp_target(
     target_vertices: wp.array[wp.vec3],
     target_faces: wp.array[wp.int32] | None,
     caller: str,
-    target_mesh: wp.Mesh | None,
-) -> tuple[wp.Mesh | None, float, wp.Mesh | None]:
+    target_index: wp.Mesh | wp.Bvh | None,
+) -> tuple[wp.Mesh | None, float, wp.Bvh | None]:
     """
     Build the loop-invariant search state for whichever target kind was supplied.
 
-    A mesh target gets a ``wp.Mesh`` and a query radius; a point-cloud target gets the
-    collapsed-triangle mesh of [`_target_index`][ordito.registration._target_index].
-    Exactly one of the two is non-``None``.
+    A mesh target gets a ``wp.Mesh`` and a query radius; a point-cloud target gets the point tree
+    of [`_target_tree`][ordito.registration._target_tree]. Exactly one of the two is non-``None``.
 
     Parameters
     ----------
@@ -1040,39 +1047,56 @@ def _resolve_icp_target(
         Flat triangle index buffer, or ``None`` / empty for a point-cloud target.
     caller
         Calling function's name, for ``require_nonempty_mesh``'s error message.
-    target_mesh
+    target_index
         The caller's prebuilt search structure, returned in place of a new one when given.
 
     Returns
     -------
-    tuple[wp.Mesh | None, float, wp.Mesh | None]
-        ``(mesh, query_max, target_index)``.
+    tuple[wp.Mesh | None, float, wp.Bvh | None]
+        ``(mesh, query_max, cloud_tree)``.
+
+    Raises
+    ------
+    TypeError
+        If ``target_index`` is not the structure the target kind needs: the kernels read its id as
+        that structure, so a wrong one would be read as garbage rather than fail.
     """
     if not _is_mesh_target(target_faces):
-        index = target_mesh if target_mesh is not None else _target_index(target_vertices)
-        return None, 0.0, index
+        if target_index is not None and not isinstance(target_index, wp.Bvh):
+            raise TypeError(
+                f"{caller}: target_index must be a wp.Bvh over target_vertices for a point-cloud "
+                f"target, got {type(target_index).__name__}"
+            )
+        tree = target_index if target_index is not None else _target_tree(target_vertices)
+        return None, 0.0, tree
 
     assert target_faces is not None
     require_nonempty_mesh(target_faces, caller)
+    if target_index is not None and not isinstance(target_index, wp.Mesh):
+        raise TypeError(
+            f"{caller}: target_index must be a wp.Mesh over the target for a mesh target, got "
+            f"{type(target_index).__name__}"
+        )
     # The mesh aliases the caller's buffers and is discarded here, so it needs no copy.
-    mesh = target_mesh if target_mesh is not None else wp.Mesh(target_vertices, target_faces)
+    mesh = target_index if target_index is not None else wp.Mesh(target_vertices, target_faces)
     # An unbounded closest-point query: the correspondence gate is ``max_distance``, applied to
     # the distance the query returns, so the query itself needs no radius.
     return mesh, math.inf, None
 
 
-def _target_index(target_vertices: wp.array[wp.vec3]) -> wp.Mesh:
+def _target_tree(target_vertices: wp.array[wp.vec3]) -> wp.Bvh:
     """
     Precompute the nearest-vertex search structure for a point-cloud target.
 
     Only the *source* moves between ICP iterations, so the target's tree is loop-invariant, and
     hoisting it turns each iteration's correspondence step into a single launch with no host
-    synchronisation at all. It is a closest-point mesh rather than a ``wp.Bvh``: the source sits
-    off the target until the fit converges, and a radius-deepening walk pays for that distance
-    where the mesh descent does not -- and it needs neither the bounding box nor the density
-    estimate the walk seeds from.
+    synchronisation at all. The search is a nearest-point descent rather than a radius-deepening
+    walk: the source sits off the target until the fit converges, and a walk pays for that
+    distance where the descent does not -- and it needs neither the bounding box nor the density
+    estimate the walk seeds from. One point a leaf, as ``query_nearest`` builds for the same
+    search.
     """
-    return od.neighbors.mesh_from_points(target_vertices)
+    return od.neighbors.bvh_from_points(target_vertices, leaf_size=1)
 
 
 def _is_mesh_target(target_faces: wp.array[wp.int32] | None) -> bool:

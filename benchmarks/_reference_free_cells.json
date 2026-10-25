@@ -5286,11 +5286,6 @@
    ]
   },
   {
-   "group": "mesh_from_points",
-   "mesh_name": "sphere_small",
-   "rest": []
-  },
-  {
    "group": "mesh_from_warp_mesh",
    "mesh_name": "sphere_small",
    "rest": []

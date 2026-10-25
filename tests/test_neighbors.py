@@ -42,32 +42,6 @@ from tests.conversions import (
 )
 
 
-@pytest.mark.parity("mesh_from_points", "scipy")
-def test_mesh_from_points_answers_the_nearest_point(device: str) -> None:
-    """
-    Class A against ``KDTree``: the collapsed-triangle mesh's closest face is the nearest point.
-
-    Reached through ``query_nearest(k=1, backend="bvh")``, whose search the mesh is. Queries sit
-    up to a cloud diameter off the cloud, which is the regime the mesh descent exists for; the face
-    index is the point index, so indices are compared as well as distances. The empty cloud
-    raises rather than building a triangle-free ``wp.Mesh``.
-    """
-    rng = np.random.default_rng(3)
-    points = rng.random((500, 3), dtype=np.float32)
-    queries = np.ascontiguousarray(rng.random((80, 3), dtype=np.float32) * 3.0 - 1.0)
-    points_wp = points_to_warp(points, device)
-    mesh = od.neighbors.mesh_from_points(points_wp)
-    assert np.array_equal(mesh.indices.numpy(), np.arange(3 * points.shape[0]) // 3)
-    distances_kd, indices_kd = KDTree(points).query(queries)
-    indices_wp, distances_wp = od.neighbors.query_nearest(
-        points_wp, points_to_warp(queries, device), k=1, backend="bvh"
-    )
-    assert np.array_equal(indices_wp.numpy(), indices_kd)
-    assert np.allclose(distances_wp.numpy(), distances_kd, rtol=1e-5, atol=1e-5)
-    with pytest.raises(ValueError, match="at least one point"):
-        od.neighbors.mesh_from_points(points_to_warp(np.zeros((0, 3), np.float32), device))
-
-
 def test_hashgrid_from_points_sizes_its_default_grid_from_the_point_count(device: str) -> None:
     """
     Not a library comparison for the resolution, which no reference has; Class A for the answer.
@@ -608,6 +582,66 @@ def test_query_nearest_single(
 
     assert np.array_equal(query_indices_wp.numpy(), query_indices_np)
     assert np.allclose(query_distances_wp.numpy(), query_distances_np, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("tree", ["built", "leaf_4", "padded"])
+@pytest.mark.parametrize("wide", [False, True])
+@pytest.mark.parity("query_nearest_bvh_k1", "scipy")
+@pytest.mark.parity("bvh_from_points", "scipy")
+def test_query_nearest_k1_descends_any_point_tree(
+    device: str, tree: str, wide: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A against ``KDTree``: the ``k = 1`` BVH search is a nearest-point descent of any tree.
+
+    ``query_nearest(k=1, backend="bvh")`` descends the tree it builds (one point a leaf), a
+    caller's [`bvh_from_points`][ordito.neighbors.bvh_from_points] tree with four points a leaf,
+    and a caller's tree over boxes padded around each point, which the descent must not mistake
+    for the points: it prunes by the boxes and tests the points themselves. Queries sit up to a
+    cloud diameter off the cloud, the regime the descent exists for; indices and distances are
+    both compared, and a ``max_radius`` row with nothing in range is left unfilled. ``wide``
+    drops the query count that switches the launch to its wide block (a separate build of the
+    kernel) to zero, so the small input here takes it on CUDA too.
+    """
+    if wide:
+        monkeypatch.setattr(kernel_neighbors, "DESCENT_WIDE_BLOCKS_PER_SM", 0)
+    block_dim = od.neighbors._descent_block_dim(80, wp.get_device(device))  # pyright: ignore[reportPrivateUsage]
+    assert block_dim == (
+        kernel_neighbors.DESCENT_WIDE_BLOCK_DIM if wide and "cuda" in device else 256
+    )
+    rng = np.random.default_rng(3)
+    points = rng.random((500, 3), dtype=np.float32)
+    queries = np.ascontiguousarray(rng.random((80, 3), dtype=np.float32) * 3.0 - 1.0)
+    points_wp = points_to_warp(points, device)
+    accelerator = None
+    if tree == "leaf_4":
+        accelerator = od.neighbors.bvh_from_points(points_wp, leaf_size=4)
+    elif tree == "padded":
+        pad = np.float32(0.05)
+        accelerator = wp.Bvh(
+            points_to_warp(points - pad, device), points_to_warp(points + pad, device)
+        )
+    distances_kd, indices_kd = KDTree(points).query(queries)
+    assert np.ptp(distances_kd) > 0.5  # queries both on and well off the cloud
+    indices_wp, distances_wp = od.neighbors.query_nearest(
+        points_wp, points_to_warp(queries, device), k=1, backend="bvh", accelerator=accelerator
+    )
+    assert np.array_equal(indices_wp.numpy(), indices_kd)
+    assert np.allclose(distances_wp.numpy(), distances_kd, rtol=1e-5, atol=1e-5)
+
+    max_radius = float(np.median(distances_kd))
+    indices_wp, distances_wp = od.neighbors.query_nearest(
+        points_wp,
+        points_to_warp(queries, device),
+        k=1,
+        backend="bvh",
+        accelerator=accelerator,
+        max_radius=max_radius,
+    )
+    within = np.asarray(distances_kd <= max_radius)
+    assert 0 < np.count_nonzero(within) < within.size
+    assert np.array_equal(indices_wp.numpy(), np.where(within, indices_kd, -1))
+    assert np.all(np.isinf(distances_wp.numpy()[~within]))
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
@@ -1184,8 +1218,8 @@ def test_query_nearest_defers_far_rows_to_a_closest_point_query(device: str) -> 
     """
     Class A, against ``scipy.spatial.KDTree``: a ``k = 1`` row the grid gives up on is still exact.
 
-    The hash-grid backend hands a row it cannot certify within its widest walk to a closest-point
-    query over the cloud, which builds a ``wp.Mesh``. Counting those builds is what makes the
+    The hash-grid backend hands a row it cannot certify within its widest walk to a nearest-point
+    descent of a point tree, which builds a ``wp.Bvh``. Counting those builds is what makes the
     comparison non-vacuous: the displaced queries must reach the second pass and the on-cloud ones
     must not, or the test is checking the grid twice. ``max_radius`` is honoured on the deferred
     rows too -- a row whose nearest point is out of range comes back unfilled.
@@ -1196,13 +1230,13 @@ def test_query_nearest_defers_far_rows_to_a_closest_point_query(device: str) -> 
     near_np = np.ascontiguousarray(points_np[:500] + 1e-4, dtype=np.float32)
     points_wp = points_to_warp(points_np, device)
     builds = []
-    original = cast("Callable[..., None]", wp.Mesh.__init__)
+    original = cast("Callable[..., None]", wp.Bvh.__init__)
 
-    def counting_init(self: wp.Mesh, *args: object, **kwargs: object) -> None:
+    def counting_init(self: wp.Bvh, *args: object, **kwargs: object) -> None:
         builds.append(1)
         original(self, *args, **kwargs)
 
-    wp.Mesh.__init__ = counting_init
+    wp.Bvh.__init__ = counting_init
     try:
         for queries_np, expect_deferral in ((far_np, True), (near_np, False)):
             builds.clear()
@@ -1220,7 +1254,7 @@ def test_query_nearest_defers_far_rows_to_a_closest_point_query(device: str) -> 
         )
         assert builds
     finally:
-        wp.Mesh.__init__ = original
+        wp.Bvh.__init__ = original
     distances_np, indices_np = KDTree(points_np).query(far_np, k=1, distance_upper_bound=cap)
     in_range = np.isfinite(distances_np)
     assert 0 < in_range.sum() < len(far_np)  # non-vacuity: both kinds of row occur
@@ -1237,16 +1271,16 @@ def test_query_nearest_defers_unfinished_rows_to_a_tree(
 
     The hash grid hands every row its widest walk cannot certify to a tree, by what the walk saw:
     a row with a point inside the walk goes to the BVH's ball search seeded with its nearest
-    distance (``DEFERRED_ROW``), a row whose walks came back empty to a closest-point query over the
-    collapsed-point mesh that seeds the ball instead (``DEFERRED_FAR_ROW``). Counting the two
-    builds is what keeps each case non-vacuous, since a skipped pass would leave its rows marked
-    and fail the comparison:
+    distance (``DEFERRED_ROW``), a row whose walks came back empty to a nearest-point descent of a
+    one-point-a-leaf tree that seeds the ball instead (``DEFERRED_FAR_ROW``). Counting the two
+    builds, told apart by their leaf size, is what keeps each case non-vacuous, since a skipped
+    pass would leave its rows marked and fail the comparison:
 
     * a self-query on a cloud whose density falls by two decades along one axis: the sparse end
       outgrows the walk with its nearest point at distance zero -- the BVH only;
     * the same cloud queried a little off itself: the sparse-end rows still find their nearest
       point, at a positive distance, which is the seed -- the BVH only;
-    * a uniform cloud queried from a box beside it: every walk is empty -- the mesh only;
+    * a uniform cloud queried from a box beside it: every walk is empty -- the far tree only;
     * the same far queries on a cloud under ``_KNN_DEFER_MIN_POINTS``: nothing deferred, the rows
       take the linear scan.
 
@@ -1265,22 +1299,16 @@ def test_query_nearest_defers_unfinished_rows_to_a_tree(
     small_np = np.ascontiguousarray(uniform_np[:4000], dtype=np.float32)
     builds: list[str] = []
     bvh_from_points = od.neighbors.bvh_from_points
-    mesh_from_points = od.neighbors.mesh_from_points
 
     def counting_bvh(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
-        builds.append("bvh")
+        builds.append("far" if leaf_size == 1 else "bvh")
         return bvh_from_points(points, leaf_size)
 
-    def counting_mesh(points: wp.array[wp.vec3]) -> wp.Mesh:
-        builds.append("mesh")
-        return mesh_from_points(points)
-
     monkeypatch.setattr(od.neighbors, "bvh_from_points", counting_bvh)
-    monkeypatch.setattr(od.neighbors, "mesh_from_points", counting_mesh)
     for points_np, queries_np, expected in (
         (graded_np, graded_np, {"bvh"}),
         (graded_np, lifted_np, {"bvh"}),
-        (uniform_np, far_np, {"mesh"}),
+        (uniform_np, far_np, {"far"}),
         (small_np, far_np, set()),
     ):
         points_wp = points_to_warp(points_np, device)
@@ -1299,7 +1327,7 @@ def test_query_nearest_defers_unfinished_rows_to_a_tree(
 
     for points_np, queries_np, expected, quantile in (
         (graded_np, graded_np, {"bvh"}, 0.99),
-        (uniform_np, far_np, {"mesh"}, 0.5),
+        (uniform_np, far_np, {"far"}, 0.5),
     ):
         distances_np = np.asarray(KDTree(points_np).query(queries_np, k=8)[0])
         cap = float(np.quantile(distances_np[:, -1 if quantile > 0.9 else 0], quantile))
