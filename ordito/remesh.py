@@ -784,8 +784,8 @@ def _collapse_pass(
         # CSR needs an order.
         #
         # The topology's allocations also carve the pass's own ``int32`` tables: each edge's
-        # survivor and removed endpoint, the vertex remap and the compacted faces (``spare``), and
-        # the compaction's zeroed marks (``spare_zeroed``).
+        # survivor and removed endpoint and the vertex remap (``spare``), and the compaction's
+        # zeroed marks (``spare_zeroed``).
         incidence = _edge_incidence(
             faces,
             n_vertices,
@@ -794,7 +794,7 @@ def _collapse_pass(
             feature=feature,
             ring=True,
             keys=pending_keys,
-            spare=(2, n_vertices + 3 * n_faces),
+            spare=(2, n_vertices),
             spare_zeroed=1 + n_faces + n_vertices,
         )
         grouping = None
@@ -811,16 +811,15 @@ def _collapse_pass(
         feature_count = incidence.feature_count
 
         assert incidence.spare is not None
-        survivor, removed, remap, compacted = _split_buffer(
-            incidence.spare, m, m, n_vertices, 3 * n_faces
+        survivor, removed, remap = _split_buffer(incidence.spare, m, m, n_vertices)
+        # Each edge's target position, then the working positions. The compacted faces and
+        # positions are allocations of their own: they are the next pass's mesh, and the last
+        # pass's become the caller's.
+        target_pos, positions = _split_buffer(
+            _launch.empty(m + n_vertices, dtype=wp.vec3, device=device), m, n_vertices
         )
-        # One allocation of positions: each edge's target, the working positions and the kept ones.
-        target_pos, positions, kept_positions = _split_buffer(
-            _launch.empty(m + 2 * n_vertices, dtype=wp.vec3, device=device),
-            m,
-            n_vertices,
-            n_vertices,
-        )
+        compacted = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+        kept_positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
         # Seeded by ``collapse_candidates``: unclaimed keys (64-bit, because the lock key is -- see
         # ``kernel_remesh.scramble_index`` for why it has to be injective), the identity map and the
         # working positions.
@@ -1060,9 +1059,7 @@ def _smooth_pass(
             ring_neighbors, ring_offsets = od.graph.edges_to_neighbor_lists(
                 n_vertices, unique_edges, validate=False, sort_rows=True
             )
-        ring_sum, out_positions = _split_buffer(
-            _launch.empty(2 * n_vertices, dtype=wp.vec3, device=device), n_vertices, n_vertices
-        )
+        ring_sum = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
         ring_weight = _launch.empty(n_vertices, dtype=wp.float32, device=device)
         _launch.launch(
             kernel_remesh.gather_one_ring,
@@ -1071,11 +1068,7 @@ def _smooth_pass(
             device=device,
         )
     else:
-        # The zeroed ring sums and the output positions in one allocation (the output's zeros are
-        # overwritten whole).
-        ring_sum, out_positions = _split_buffer(
-            _launch.zeros(2 * n_vertices, dtype=wp.vec3, device=device), n_vertices, n_vertices
-        )
+        ring_sum = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
         ring_weight = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
         _launch.launch(
             kernel_remesh.accumulate_one_ring,
@@ -1083,6 +1076,7 @@ def _smooth_pass(
             inputs=[unique_edges, vertices, area_sums, ring_sum, ring_weight],
             device=device,
         )
+    out_positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel_remesh.smooth_free_vertices,
         dim=n_vertices,
@@ -3578,12 +3572,13 @@ def intrinsic_delaunay(
     # into the buffer the loop flips in place and arms the claim table for the first round;
     # ``fixup_twin_remap`` re-arms it for every later one.
     twin = _launch.full(n_half, -1, dtype=wp.int32, device=device)
-    # Every unfilled ``int32`` table of the loop in one allocation, and both masks in another.
+    # Every other unfilled ``int32`` table of the loop in one allocation, and both masks in another.
     # The remap, masks and count are cleared by every round's candidate pass before anything
     # reads them.
-    intrinsic_faces, face_claim, quad_rows, neighbor_rows, remap, count = _split_buffer(
-        _launch.empty(10 * n_half + n_faces + 1, dtype=wp.int32, device=device),
-        n_half,
+    # The flipped faces are the caller's, so they are an allocation of their own.
+    intrinsic_faces = _launch.empty(n_half, dtype=wp.int32, device=device)
+    face_claim, quad_rows, neighbor_rows, remap, count = _split_buffer(
+        _launch.empty(9 * n_half + n_faces + 1, dtype=wp.int32, device=device),
         n_faces,
         4 * n_half,
         4 * n_half,
