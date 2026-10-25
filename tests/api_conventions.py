@@ -531,6 +531,12 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # the level loop's persistent word -- the level to claim and the claim flag -- carried across
     # launches and both read and written every level.
     ("graph", "scatter_neighbor_lists"): frozenset({"cursor"}),
+    # The validated union-find kernels work on the forest in place, as their unchecked siblings in
+    # ``algorithms.connected_components`` do through their shared ``@wp.func``s: the pre-hook
+    # rewrites the identity ``parents`` and the parity hook the packed ``words``, each with the
+    # range flag in the one entry past the forest.
+    ("graph", "ecl_init_parent_edges_checked"): frozenset({"parents"}),
+    ("graph", "ecl_hook_parity_checked"): frozenset({"words"}),
     # ``signed_distance_level_set``'s winding lattice: ``column_suffix_sums`` turns each column's
     # per-node crossing deltas into suffix sums where they lie; ``take_exact_winding`` and
     # ``warp_winding_sign`` overwrite the lattice winding number of the nodes in doubt, and the
@@ -714,13 +720,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("validation", "signed_forest_candidates"): frozenset({"best"}),
     ("validation", "signed_forest_hook"): frozenset({"parents", "in_forest", "hooked"}),
     ("validation", "forest_flatten"): frozenset({"parents"}),
-    # ``state`` is the ``wp.capture_while`` loop's own [rounds run, condition] pair, read and
-    # incremented across launches -- the ``rdp_begin_round`` / ``rdp_split_spans`` case below,
-    # under the same name.
-    ("polyline", "ear_loop_continue"): frozenset({"state"}),
-    # ``compute_ears`` raises the round's "some ear is good" flag in the same carried ``state``
-    # (``select_independent`` reads it, ``ear_loop_continue`` lowers it); the answer is
-    # ``out_is_ear``.
+    # ``compute_ears`` raises the round's "some ear is good" flag in the ear loop's carried
+    # ``state`` (``select_independent`` reads it, ``clip_selected`` lowers it with the round's
+    # loop control); the answer is ``out_is_ear``.
     ("polyline", "compute_ears"): frozenset({"state"}),
     # The packed round loop's carried scratch, the one-ring loop's under other names: ``ring`` is
     # the ``(RING_SCRATCH_ROWS, n_points)`` links / ear grades / selections and each point's loop
@@ -734,13 +736,13 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("polyline", "ring_ear_loop_continue"): frozenset({"rounds"}),
     # Round, pass 1 of 4 of the level-synchronous Ramer-Douglas-Peucker split: only arms the
     # per-span accumulators (``out_span_max`` / ``out_span_argmax``) and advances the loop's own
-    # [rounds run, condition] pair -- the same ``state`` buffer ``rdp_split_spans`` and
-    # ``ear_loop_continue`` carry under this name.
+    # [rounds run, condition] pair -- the same ``state`` buffer ``rdp_split_spans`` carries under
+    # this name.
     ("polyline", "rdp_begin_round"): frozenset({"state"}),
     # The level-synchronous Ramer-Douglas-Peucker round. ``span_lo`` / ``span_hi`` are each point's
     # current span, rewritten in place to the child span it belongs to at the next level;
-    # ``state`` is the ``wp.capture_while`` loop's own [levels run, condition] pair, which is the
-    # ``ear_loop_continue`` case in the same module. Neither is an input and neither is the answer
+    # ``state`` is the ``wp.capture_while`` loop's own [levels run, condition] pair, read and
+    # advanced across launches. Neither is an input and neither is the answer
     # -- that is ``out_keep``.
     ("polyline", "rdp_split_spans"): frozenset({"state"}),
     # The Poisson-disk elimination round's carried state: the deletions clear ``alive`` and take

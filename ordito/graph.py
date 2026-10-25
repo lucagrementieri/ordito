@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import warp as wp
 
 import ordito as od
@@ -159,15 +161,15 @@ def edges_to_neighbor_lists(
     Warning
     -------
     !!! warning "``validate=False`` trades a guard for a synchronization"
-        The range check reduces the whole ``(m, 2)`` edge buffer, so it costs a device
-        synchronization on a path that otherwise has none. Pass ``validate=False`` **only** when
-        the caller produced ``edges`` itself and knows the bound holds. With an out-of-range index
-        the unchecked path writes out of bounds rather than raising: the degree count and the fill
-        both index a ``node_count``-element buffer by the raw endpoint. On a CUDA device that lands
-        in device memory; on the **CPU** device a Warp array is host heap, so it overwrites glibc's
-        allocator metadata and aborts the process later, somewhere unrelated. This is a sharper
-        edge than [`edges_to_csr`][ordito.graph.edges_to_csr] has, where an out-of-range triplet
-        is dropped silently by ``warp.sparse``.
+        The range check reads a flag the degree count raises back to the host, so it costs a
+        device synchronization on a path that otherwise has none. Pass ``validate=False``
+        **only** when the caller produced ``edges`` itself and knows the bound holds. With an
+        out-of-range index the unchecked path writes out of bounds rather than raising: the
+        degree count and the fill both index a ``node_count``-element buffer by the raw endpoint.
+        On a CUDA device that lands in device memory; on the **CPU** device a Warp array is host
+        heap, so it overwrites glibc's allocator metadata and aborts the process later, somewhere
+        unrelated. This is a sharper edge than [`edges_to_csr`][ordito.graph.edges_to_csr] has,
+        where an out-of-range triplet is dropped silently by ``warp.sparse``.
 
     Warning
     -------
@@ -217,21 +219,42 @@ def edges_to_neighbor_lists(
     print(offsets.numpy().tolist())  # [0, 1, 3, 4, 5, 6, 6]
     ```
     """
-    node_count = _validate_edge_list(edges, node_count, validate=validate)
+    # The range check rides in the degree count below rather than in a reduction of its own.
+    node_count = _validate_edge_list(edges, node_count)
     device = edges.device
     m = int(edges.shape[0])
     if m == 0 or node_count == 0:
+        if validate and m > 0:
+            _raise_edge_range(edges, node_count)
         return (
             _launch.empty(2 * m, dtype=wp.int32, device=device),
             _launch.zeros(node_count + 1, dtype=wp.int32, device=device),
         )
 
-    # An ``(m, 2)`` edge buffer flattened *is* the entry -> node map, so one histogram over it is
-    # every node's degree. ``count_occurrences``' own docstring names this as what it is for.
-    degree = _launch.zeros(node_count, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_scatter.count_occurrences, dim=2 * m, inputs=[edges.flatten(), degree], device=device
-    )
+    if validate:
+        # The count skips an out-of-range row and flags it in one slot past the degrees, so the
+        # check is this launch's and one 4-byte read, and the fill below never sees such a row.
+        counts_and_flag = _launch.zeros(node_count + 1, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_graph.count_edge_endpoints_checked,
+            dim=m,
+            inputs=[edges, counts_and_flag],
+            device=device,
+        )
+        # Decides whether to raise before the fill indexes by the raw endpoints.
+        if read_scalar(counts_and_flag, node_count) != 0:
+            _raise_edge_range(edges, node_count)
+        degree = _launch.view(counts_and_flag, 0, node_count)
+    else:
+        # An ``(m, 2)`` edge buffer flattened *is* the entry -> node map, so one histogram over it
+        # is every node's degree. ``count_occurrences``' own docstring names this as what it is for.
+        degree = _launch.zeros(node_count, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_scatter.count_occurrences,
+            dim=2 * m,
+            inputs=[edges.flatten(), degree],
+            device=device,
+        )
     return edges_to_neighbor_lists_from_counts(edges, degree, sort_rows=sort_rows)
 
 
@@ -444,7 +467,7 @@ def connected_component_labels_from_edges(
     Warning
     -------
     !!! warning "``validate=False`` trades a guard for a synchronization"
-        The range check copies the whole ``(m, 2)`` edge buffer to the host, so it costs a device
+        The range check reads a flag the pre-hook raises back to the host, so it costs a device
         synchronization on a path that otherwise has none. Pass ``validate=False`` **only** when
         the caller produced ``edges`` itself and knows the bound holds — an adjacency list from
         [`face_adjacency`][ordito.adjacency.face_adjacency], say. With an out-of-range index the
@@ -472,7 +495,9 @@ def connected_component_labels_from_edges(
     print(labels.numpy().tolist())  # [0, 0, 0, 3, 3, 5]
     ```
     """
-    node_count = _validate_edge_list(edges, node_count, validate=validate)
+    # The range check rides in the pre-hook below rather than in a reduction of its own.
+    validate = validate and node_count is not None
+    node_count = _validate_edge_list(edges, node_count)
 
     # With no edges every node is its own component, which ``arange`` gives directly -- the
     # hook and flatten below would reach the same answer the long way.
@@ -482,13 +507,29 @@ def connected_component_labels_from_edges(
     # A pre-hook and a hook, one thread per edge each, then the flatten. No adjacency matrix is
     # built: the unions are per edge either way, so a CSR would only be walked back into the edges.
     device = edges.device
-    parents = arange(node_count, device=device)
-    _launch.launch(
-        kernel_connected_components.ecl_init_parent_edges,
-        dim=int(edges.shape[0]),
-        inputs=[edges, parents],
-        device=device,
-    )
+    if validate:
+        # One identity entry past the forest is the range flag: the checked pre-hook skips an
+        # out-of-range row and overwrites the entry, so the check is that launch's and one 4-byte
+        # read, made before the hook indexes by the raw endpoints.
+        parents_and_flag = arange(node_count + 1, device=device)
+        _launch.launch(
+            kernel_graph.ecl_init_parent_edges_checked,
+            dim=int(edges.shape[0]),
+            inputs=[edges, parents_and_flag],
+            device=device,
+        )
+        # Decides whether to raise.
+        if read_scalar(parents_and_flag, node_count) != node_count:
+            _raise_edge_range(edges, node_count)
+        parents = _launch.view(parents_and_flag, 0, node_count)
+    else:
+        parents = arange(node_count, device=device)
+        _launch.launch(
+            kernel_connected_components.ecl_init_parent_edges,
+            dim=int(edges.shape[0]),
+            inputs=[edges, parents],
+            device=device,
+        )
     if node_count >= kernel_connected_components.ECL_COMPRESS_FROM:
         _launch.launch(
             kernel_connected_components.ecl_compress,
@@ -612,28 +653,14 @@ def connected_component_parity_from_edges(
         raise ValueError(f"signs must have length {m} to match edges, got {signs.size}")
     if node_count < 0:
         raise ValueError(f"node_count must be non-negative, got {node_count}")
-    if validate and m > 0:
-        # Both range checks -- endpoints and signs -- fold in one launch and come back in one
-        # 16-byte read. ``signs`` needs the check for the same reason ``edges`` does: the hook
-        # packs the parity bit into the low bit of a word whose upper bits are a node id, so a sign
-        # outside {0, 1} is not a tolerable approximation of one -- it addresses a different node.
-        bounds = _launch.full(4, INT32_MAX, dtype=wp.int32, device=edges.device)
-        _launch.launch_tiled(
-            kernel_graph.signed_edge_bounds,
-            dim=[kernel_reduce.blocks_1d(m)],
-            inputs=[edges, signs, bounds],
-            block_dim=TILE_1D,
-            device=edges.device,
-        )
-        # The bounds decide whether to raise.
-        lowest, highest_flip, lowest_sign, highest_sign_flip = read_values(bounds, 0, 4)
-        highest, highest_sign = ~highest_flip, ~highest_sign_flip
-        if lowest < 0 or highest >= node_count:
-            raise ValueError(
-                f"edge indices must lie in [0, {node_count}), got min={lowest} max={highest}"
-            )
-        if lowest_sign < 0 or highest_sign > 1:
-            raise ValueError(f"signs must be 0 or 1, got min={lowest_sign} max={highest_sign}")
+    # Both range checks -- endpoints and signs -- ride in the hook: it skips a row that fails
+    # either and sets a flag word past the forest, read back once after the flatten. ``signs``
+    # needs the check for the same reason ``edges`` does: the hook packs the parity bit into the
+    # low bit of a word whose upper bits are a node id, so a sign outside {0, 1} is not a tolerable
+    # approximation of one -- it addresses a different node.
+    checked = validate and m > 0
+    if checked and node_count == 0:
+        _raise_signed_edge_range(edges, signs, node_count)
 
     device = edges.device
     # ``ecl_flatten_parity`` writes both for every node, so neither needs an initial value.
@@ -642,27 +669,70 @@ def connected_component_parity_from_edges(
     if node_count == 0:
         return labels, parity
 
-    words = _launch.empty(node_count, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_connected_components.ecl_init_parent_parity,
-        dim=node_count,
-        inputs=[words],
-        device=device,
-    )
-    if m > 0:
+    if checked:
+        words = _launch.empty(node_count + 1, dtype=wp.int32, device=device)
         _launch.launch(
-            kernel_connected_components.ecl_hook_parity,
-            dim=m,
-            inputs=[edges, signs, words],
+            kernel_graph.ecl_init_parent_parity_checked,
+            dim=node_count + 1,
+            inputs=[words],
             device=device,
         )
+        _launch.launch(
+            kernel_graph.ecl_hook_parity_checked, dim=m, inputs=[edges, signs, words], device=device
+        )
+    else:
+        words = _launch.empty(node_count, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_connected_components.ecl_init_parent_parity,
+            dim=node_count,
+            inputs=[words],
+            device=device,
+        )
+        if m > 0:
+            _launch.launch(
+                kernel_connected_components.ecl_hook_parity,
+                dim=m,
+                inputs=[edges, signs, words],
+                device=device,
+            )
     _launch.launch(
         kernel_connected_components.ecl_flatten_parity,
         dim=node_count,
         inputs=[words, labels, parity],
         device=device,
     )
+    # The flag decides whether to raise; the forest stayed in range either way.
+    if checked and read_scalar(words, node_count) != 0:
+        _raise_signed_edge_range(edges, signs, node_count)
     return labels, parity
+
+
+def _raise_signed_edge_range(
+    edges: odt.Array2dInt32, signs: wp.array[wp.int32], node_count: int
+) -> None:
+    """
+    Raise the error for a signed edge list ``ecl_hook_parity_checked`` flagged, naming its bounds.
+
+    One launch folds both ranges (``kernels/graph.signed_edge_bounds``) and one read brings them
+    back, on the error path only.
+    """
+    m = int(edges.shape[0])
+    bounds = _launch.full(4, INT32_MAX, dtype=wp.int32, device=edges.device)
+    _launch.launch_tiled(
+        kernel_graph.signed_edge_bounds,
+        dim=[kernel_reduce.blocks_1d(m)],
+        inputs=[edges, signs, bounds],
+        block_dim=TILE_1D,
+        device=edges.device,
+    )
+    # The bounds name the offending range in the message.
+    lowest, highest_flip, lowest_sign, highest_sign_flip = read_values(bounds, 0, 4)
+    highest, highest_sign = ~highest_flip, ~highest_sign_flip
+    if lowest < 0 or highest >= node_count:
+        raise ValueError(
+            f"edge indices must lie in [0, {node_count}), got min={lowest} max={highest}"
+        )
+    raise ValueError(f"signs must be 0 or 1, got min={lowest_sign} max={highest_sign}")
 
 
 def successor_cycles(
@@ -688,10 +758,9 @@ def successor_cycles(
     node_count
         Number of nodes ``0 .. node_count - 1``.
     validate
-        When ``False``, skip the range check on ``edges`` and the device synchronization it
-        costs. An out-of-range endpoint then writes past a ``node_count``-element buffer, as in
-        [`connected_component_labels_from_edges`]
-        [ordito.graph.connected_component_labels_from_edges] — see the warning there.
+        When ``False``, do not raise on an endpoint outside ``[0, node_count)``: the edge is
+        dropped and the cycles of the others are returned. The check costs no launch or
+        synchronization of its own either way.
 
     Returns
     -------
@@ -740,15 +809,17 @@ def successor_cycles(
     print(offsets.numpy().tolist())  # [0, 3, 5]
     ```
     """
-    # The range check must run BEFORE ``scatter_successor_tails`` below: that kernel indexes
-    # ``next_node`` by the raw edge endpoints, so an out-of-range endpoint writes past a
-    # ``node_count``-element buffer. On the CPU device that is a host-heap overwrite, silent at the
-    # point of the write and surfacing later as a glibc abort somewhere unrelated.
-    node_count = _validate_edge_list(edges, node_count, validate=validate)
+    # The range check is ``scatter_successor_tails``' own: that kernel indexes ``next_node`` by the
+    # raw edge endpoints, so it skips a row with an endpoint out of range rather than writing past
+    # a ``node_count``-element buffer (on the CPU device a host-heap overwrite, surfacing later as a
+    # glibc abort somewhere unrelated), and flags it for the readback of the ranking's totals.
+    node_count = _validate_edge_list(edges, node_count)
 
     device = edges.device
     m = int(edges.shape[0])
     if m == 0 or node_count == 0:
+        if validate and m > 0:
+            _raise_edge_range(edges, node_count)
         return _launch.empty_packed(wp.int32, device)
 
     # The successor table and its tails in one pass over the edges, the tails in node space so the
@@ -758,14 +829,27 @@ def successor_cycles(
     table = _launch.full(2 * node_count, -1, dtype=wp.int32, device=device)
     next_node = _launch.view(table, 0, node_count)
     tails = _launch.view(table, node_count, 2 * node_count)
+    # The ranking's cycle counts with one zeroed entry past them, where the scatter flags an edge
+    # it skipped for an endpoint out of range; the flag comes back with the counts' totals.
+    cycle_counts = _launch.zeros(node_count + 1, dtype=wp.vec2i, device=device)
     _launch.launch(
-        kernel_graph.scatter_successor_tails, dim=m, inputs=[edges, next_node, tails], device=device
+        kernel_graph.scatter_successor_tails,
+        dim=m,
+        inputs=[edges, next_node, tails, _launch.view(cycle_counts, node_count, node_count + 1)],
+        device=device,
     )
     # Zero-initialised: colliding ranks on malformed input (see Notes) can leave slots unwritten,
     # and zero is a valid node index.
     # A cycle has at most ``m`` nodes, which bounds the pointer-jumping rounds.
     return _ranked_successor_cycles(
-        tails, next_node, kernel_graph.CYCLE_NODES, None, min(m, node_count), zero_unwritten=True
+        tails,
+        next_node,
+        kernel_graph.CYCLE_NODES,
+        None,
+        min(m, node_count),
+        zero_unwritten=True,
+        cycle_counts=cycle_counts,
+        on_flag=(lambda: _raise_edge_range(edges, node_count)) if validate else None,
     )
 
 
@@ -854,6 +938,8 @@ def _ranked_successor_cycles(
     max_length: int,
     *,
     zero_unwritten: bool,
+    cycle_counts: wp.array[wp.vec2i] | None = None,
+    on_flag: Callable[[], None] | None = None,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Rank the cycles through ``tails``, the one implementation behind both successor-cycle forms.
@@ -864,6 +950,9 @@ def _ranked_successor_cycles(
     counts. ``mode`` (``kernels/graph.CYCLE_*``) says which cycles are kept and what each ranked
     node is written out as; ``max_length`` bounds the longest cycle, which sets the round count;
     ``zero_unwritten`` zeroes the packed buffer for input on which ranks can collide.
+    ``cycle_counts`` is the zeroed ``(node_count + 1,)`` count buffer when the caller holds it,
+    its last entry a flag the caller's scatter raised; ``on_flag`` is called when that flag is set,
+    read in the same readback as the totals.
     """
     device = tails.device
     m = tails.size
@@ -875,7 +964,11 @@ def _ranked_successor_cycles(
     )
     windows = _launch.view(pair, 0, node_count)
     # Per cycle start, ``(1, length)``, accumulated by the last round and scanned in place.
-    cycle_counts = _launch.zeros(node_count, dtype=wp.vec2i, device=device)
+    flagged = cycle_counts
+    if cycle_counts is None:
+        cycle_counts = _launch.zeros(node_count, dtype=wp.vec2i, device=device)
+    else:
+        cycle_counts = _launch.view(cycle_counts, 0, node_count)
     _launch.launch(
         kernel_graph.closed_cycle_windows,
         dim=m,
@@ -903,8 +996,14 @@ def _ranked_successor_cycles(
             windows, spare = spare, windows
             window *= hops
     _launch.array_scan(cycle_counts, out_array=cycle_counts, inclusive=True)
-    # Sizes both outputs: the cycle count and the ranked node count, in one read.
-    total = read_scalar(cycle_counts)
+    # Sizes both outputs: the cycle count and the ranked node count, in one read, with the
+    # caller's flag beside them when it has one.
+    if flagged is None:
+        total = read_scalar(cycle_counts)
+    else:
+        total, flag = read_values(flagged, node_count - 1, 2)
+        if on_flag is not None and int(flag[0]) != 0:
+            on_flag()
     n_cycles, n_ranked = int(total[0]), int(total[1])
     if n_cycles == 0:
         return _launch.empty_packed(wp.int32, device)
@@ -1158,17 +1257,16 @@ def _validate_square_csr(
     return int(node_count), offsets, columns
 
 
-def _validate_edge_list(edges: odt.Array2dInt32, node_count: int | None, *, validate: bool) -> int:
+def _validate_edge_list(edges: odt.Array2dInt32, node_count: int | None) -> int:
     """
-    Check an ``(m, 2)`` edge list and resolve its node count.
+    Check an ``(m, 2)`` edge list's shape and resolve its node count.
 
     The shared entry check of every function here that takes an edge list instead of a prebuilt
     adjacency. When ``node_count`` is ``None`` it is inferred from the edges; when it is supplied
-    it is checked for sign and, under ``validate``, the edge indices are checked to fall inside it.
-
-    ``validate=False`` skips only the range check, which is one
-    [`minmax`][ordito.reduce.minmax] plus a host synchronization -- pass it from a caller that
-    forwards the same edges to another checked entry point, so the reduction is not paid twice.
+    it is checked for sign. The range of the edge indices is checked by each caller's first kernel
+    that indexes by them, which skips an out-of-range row and flags it
+    (``_raise_edge_range`` names the bounds), so no reduction of the edges runs on the path that
+    does not raise.
     """
     odt.ensure_edge_pairs(edges, "edges")
 
@@ -1176,11 +1274,16 @@ def _validate_edge_list(edges: odt.Array2dInt32, node_count: int | None, *, vali
         return int(od.array.index_bound(edges))
     if node_count < 0:
         raise ValueError(f"node_count must be non-negative, got {node_count}")
-    if validate and int(edges.shape[0]) > 0:
-        # One 8-byte read of both bounds, not a copy of the whole edge buffer.
-        lowest, highest = od.reduce.minmax(edges)
-        if lowest < 0 or highest >= node_count:
-            raise ValueError(
-                f"edge indices must lie in [0, {node_count}), got min={lowest} max={highest}"
-            )
     return node_count
+
+
+def _raise_edge_range(edges: odt.Array2dInt32, node_count: int) -> None:
+    """
+    Raise the range error for an edge list a checked kernel flagged, naming its bounds.
+
+    Only the error path reduces the edges: the flag a checked kernel raised says that some
+    endpoint lies outside ``[0, node_count)``, and this measures which.
+    """
+    # The bounds name the offending range in the message.
+    lowest, highest = od.reduce.minmax(edges)
+    raise ValueError(f"edge indices must lie in [0, {node_count}), got min={lowest} max={highest}")

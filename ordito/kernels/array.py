@@ -203,6 +203,19 @@ def scanned_slot(offsets: wp.array[wp.int32], i: wp.int32) -> tuple[wp.int32, wp
 
 
 @wp.func
+def loop_owner(
+    loop_id: wp.array[wp.int32], offsets: wp.array[wp.int32], slot: wp.int32
+) -> wp.int32:
+    # The loop owning flat slot ``slot`` of a packed array: ``loop_id[slot]`` where the caller holds
+    # the per-slot table, else a search of the total-terminated ``offsets`` (``loop_id`` empty) --
+    # the last loop starting at or before the slot, which skips the empty ones. ``slot + 1`` is at
+    # most the total, so ``wp.lower_bound`` never clamps here (see ``binary_search_index_left``).
+    if loop_id.shape[0] > 0:
+        return loop_id[slot]
+    return wp.lower_bound(offsets, slot + 1) - 1
+
+
+@wp.func
 def loop_next_slot(
     loop_id: wp.array[wp.int32], offsets: wp.array[wp.int32], slot: wp.int32
 ) -> wp.int32:
@@ -213,7 +226,7 @@ def loop_next_slot(
     # Named because five kernels across ``boundary`` and ``holes`` had written this arithmetic out,
     # in three spellings a duplicate scan keying on statement text cannot connect. Every one of them
     # is one edge of a rim, and getting the wrap wrong silently joins two different holes.
-    ell = loop_id[slot]
+    ell = loop_owner(loop_id, offsets, slot)
     begin = offsets[ell]
     return begin + loop_point(slot - begin + 1, offsets[ell + 1] - begin)
 
@@ -248,7 +261,7 @@ def loop_rim_edge(
     # over the value dtype the way ``triangles.face_vertices`` is, so a float64 rim reduction needs
     # no second spelling.
     u, v = loop_rim_edge_vertices(flat_loops, loop_id, offsets, slot)
-    return loop_id[slot], values[u], values[v]
+    return loop_owner(loop_id, offsets, slot), values[u], values[v]
 
 
 @wp.func

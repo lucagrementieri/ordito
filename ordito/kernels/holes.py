@@ -363,10 +363,16 @@ def init_dp_base(
 # Slots of the min-weight fill's one ``wp.int32`` state buffer, which the host reads twice: whether
 # any loop needs the ``min_area`` retry (``flag_bad_triangulations``), and how many triangles the
 # traceback fell short of the padded ``B - 2`` per loop (``traceback_fill_triangles``). One
-# allocation serves both, since the second read is after the first.
+# allocation serves both, since the second read is after the first. The rim-edge passes' face
+# range flag (``probe_rim_edges``, ``mark_forbidden_chords``) sits beside the shortfall and comes
+# back in its read. The last two slots are the two DP sweeps' ``HoleFillTables.span_base``, laid
+# down zeroed with the rest. Python-scope only: kernels reach these slots through views.
 FILL_STATE_RETRY = wp.constant(0)
 FILL_STATE_SHORTFALL = wp.constant(1)
-FILL_STATE_SLOTS = 2
+FILL_STATE_BAD_INDEX = 2
+FILL_STATE_SPAN_BASE = 3
+FILL_STATE_RETRY_SPAN_BASE = 4
+FILL_STATE_SLOTS = 5
 
 
 # Lanes per block of ``fill_dp_span_tiled``: one block owns one interval and its lanes stride the
@@ -493,7 +499,8 @@ class HoleFillTables:
     The per-span launches differ in exactly one thing -- which span they are -- so moving that one
     value onto the device makes consecutive launches *identical*, and an identical sequence is the
     one thing CUDA graph capture pays for. The launch argument is then the offset within the
-    recorded group and ``span_base[0]`` is the group's first span, stepped on the device by
+    recorded group plus the span it starts at, and ``span_base[0]`` (``0`` for the first group)
+    how far the replays have moved the group on, stepped on the device by
     [`advance_span_base`][ordito.kernels.holes.advance_span_base]. See ``holes._run_hole_dp``.
 
     Build it ONCE in the wrapper and reuse it: construction is not free, and doing it per launch
@@ -676,8 +683,9 @@ def fill_dp_span(tables: HoleFillTables, span_offset: wp.int32) -> None:
     # arithmetic already moved: ``apex_cost`` went from 19 parameters to 14 when the tables became
     # ``HoleFillTables``.
     ell, i = wp.tid()
-    # The span is the group's base plus this launch's offset within it, so that every launch of a
-    # recorded group is byte-identical bar one integer -- see ``HoleFillTables.span_base``.
+    # The span is the base the replays have stepped plus this launch's span in the first group, so
+    # that every launch of a recorded group is byte-identical bar one integer -- see
+    # ``HoleFillTables.span_base``.
     span = tables.span_base[0] + span_offset
     if tables.active[ell] == 0:
         return
@@ -760,7 +768,7 @@ def fill_dp_span_tiled(tables: HoleFillTables, span_offset: wp.int32) -> None:
     # strict ``<`` scan returns. Lanes with no apex, and an all-non-finite interval, both leave
     # ``(inf, -1)`` and agree with the serial kernel there too.
     ell, i, t = wp.tid()
-    # As in ``fill_dp_span``: the group's base span plus this launch's offset within the group.
+    # As in ``fill_dp_span``: the stepped base plus this launch's span in the first group.
     span = tables.span_base[0] + span_offset
     # Every guard below is warp-uniform (it reads only ``ell``, ``i`` and ``span``), so the whole
     # block returns together and the tile reductions never run in divergent control flow.
@@ -844,8 +852,8 @@ def fill_dp_span_tiled(tables: HoleFillTables, span_offset: wp.int32) -> None:
 
 @wp.kernel(enable_backward=False)
 def advance_span_base(step: wp.int32, out_span_base: wp.array[wp.int32]) -> None:
-    # dim=1. Close a recorded group of span launches by moving the base on to the next group's
-    # first span. It is the last node of the graph ``holes._run_hole_dp`` records, so every span
+    # dim=1. Close a recorded group of span launches by moving the base on by one group's spans.
+    # It is the last node of the graph ``holes._run_hole_dp`` records, so every span
     # kernel of the group has already read the old base by the time it runs, and consecutive
     # replays serialize on the stream -- which is the whole reason the step cannot instead be
     # folded into the last span kernel, whose blocks read the base at their own start and would
@@ -965,6 +973,15 @@ RIM_NO_FACE = wp.constant(-1)
 RIM_MANY_FACES = wp.constant(-2)
 
 
+@wp.func
+def corner_in_range(v: wp.int32, n: wp.int32) -> wp.int32:
+    # ``1`` when vertex index ``v`` lies in ``[0, n)``: one unsigned compare covers both ends. The
+    # rim-edge passes test every corner they index a vertex-sized table by, skip one outside and
+    # raise the caller's flag, so a malformed face buffer raises on the host instead of reading
+    # out of bounds -- the check a separate ``minmax`` of the faces used to make.
+    return wp.where(wp.uint32(v) < wp.uint32(n), wp.int32(1), wp.int32(0))
+
+
 @wp.kernel
 def probe_rim_edges(
     faces: wp.array[wp.int32],
@@ -972,6 +989,7 @@ def probe_rim_edges(
     rim_slots: wp.array[wp.int32],
     base: wp.uint64,
     out_third: wp.array[wp.int32],
+    out_flag: wp.array[wp.int32],
 ) -> None:
     # One thread per face: find, for every rim edge, the vertex opposite it in the faces containing
     # it. The rim is the small side of the question, so the rim's keys are the sorted table and
@@ -986,8 +1004,20 @@ def probe_rim_edges(
     #
     # A key can occur at more than one rim slot (a loop that walks one edge twice), so every
     # matching slot is visited rather than the first.
+    #
+    # A face with a corner outside ``[0, base)`` is skipped and raises ``out_flag[0]``: its third
+    # corner would index the vertices out of bounds in ``rim_opposite_positions``.
     f = wp.int32(wp.tid())
     n = sorted_rim_keys.shape[0]
+    n_vertices = wp.int32(base)
+    if (
+        corner_in_range(faces[3 * f], n_vertices)
+        + corner_in_range(faces[3 * f + 1], n_vertices)
+        + corner_in_range(faces[3 * f + 2], n_vertices)
+        < 3
+    ):
+        out_flag[0] = 1
+        return
     for k in range(3):
         # Halfedge ``h = 3f + k`` runs ``v_k -> v_{k+1}``; the third corner is the origin of the
         # previous halfedge, which is ``halfedge_prev`` rather than a second spelling of the cycle.
@@ -1029,14 +1059,20 @@ def mark_forbidden_chords(
     loop_offsets: wp.array[wp.int32],
     dp_offsets: wp.array[wp.int32],
     out_mask: wp.array[wp.int32],
+    out_flag: wp.array[wp.int32],
 ) -> None:
     # Chords (non-adjacent loop positions) that already exist as mesh edges are forbidden
     # outright, rather than re-routed. Idempotent writes: no atomics needed. One pass
     # over the whole mesh marks the masks of *all* loops, because ``flat_slot`` distinguishes them:
     # an edge whose endpoints land in two different loops is not a chord of either. One thread per
     # halfedge, its endpoints read off ``faces``: an interior edge is visited from both sides, and
-    # the second visit writes what the first did.
+    # the second visit writes what the first did. An endpoint outside the ``(n_vertices,)``
+    # ``flat_slot`` is skipped and raises ``out_flag[0]`` (``corner_in_range``).
     u, v = halfedge_endpoints(faces, wp.int32(wp.tid()))
+    n_vertices = flat_slot.shape[0]
+    if corner_in_range(u, n_vertices) + corner_in_range(v, n_vertices) < 2:
+        out_flag[0] = 1
+        return
     tu = flat_slot[u]
     tv = flat_slot[v]
     if tu < 0 or tv < 0:
@@ -1224,7 +1260,7 @@ def global_argmin(
     n_a: wp.int32,
     out_shift: wp.array[wp.int32],
 ) -> None:
-    # Single-thread reduction: out_shift = (shift_a, shift_b).
+    # Single-thread reduction: out_shift = (shift_a, shift_b, 0, ...).
     #
     # One lane walking ``n_a`` elements looks like the antipattern it usually is, and folding it
     # into ``row_argmin`` -- which would reduce each row's winner into a packed
@@ -1238,6 +1274,10 @@ def global_argmin(
         update_argmin(best_val, best_row, val_min[i], i)
     out_shift[0] = best_row
     out_shift[1] = col_min[best_row]
+    # Any slot past the pair is a flag a later launch may raise, laid down clear here
+    # (``stitch_loops_min_weight``'s face range flag).
+    for k in range(2, out_shift.shape[0]):
+        out_shift[k] = 0
 
 
 @wp.kernel(enable_backward=False)
@@ -1622,6 +1662,7 @@ def trace_stitch_band(
 def count_loop_vertices(
     flat_loops: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     n_vertices: wp.int32,
     out_counts: wp.array[wp.int32],
     out_fillable: wp.array[wp.bool],
@@ -1631,10 +1672,12 @@ def count_loop_vertices(
     # the value read here: a loop naming a vertex the mesh does not have would otherwise scatter
     # outside the histogram, which on the CPU device is host-heap corruption rather than a wrong
     # answer. Such a loop cannot be triangulated over mesh vertices either, so it is cleared.
+    # ``loop_id`` may be empty, the loop then found by a search of ``loop_offsets``
+    # (``array.loop_owner``), as in every rim kernel below that takes both.
     t = wp.int32(wp.tid())
     v = flat_loops[t]
     if v < 0 or v >= n_vertices:
-        out_fillable[loop_id[t]] = False
+        out_fillable[kernel_array.loop_owner(loop_id, loop_offsets, t)] = False
         return
     wp.atomic_add(out_counts, v, 1)
 
@@ -1664,7 +1707,7 @@ def scatter_fillable_loop_slots(
     v = flat_loops[t]
     if v < 0 or v >= vertex_counts.shape[0]:
         return
-    ell = loop_id[t]
+    ell = kernel_array.loop_owner(loop_id, loop_offsets, t)
     if vertex_counts[v] > 1:
         out_fillable[ell] = False
         return
@@ -1726,13 +1769,15 @@ def loop_extreme_projection(
     vertices: wp.array[wp.vec3],
     loop_vertices: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     direction: wp.vec3,
     out_extremes: wp.array[wp.float32],
 ) -> None:
     # The smallest ``dot(position, direction)`` over each rim, which is where that rim's bottom
     # plane sits. ``out_extremes`` arrives pre-filled with +infinity.
     i = wp.int32(wp.tid())
-    wp.atomic_min(out_extremes, loop_id[i], wp.dot(vertices[loop_vertices[i]], direction))
+    loop = kernel_array.loop_owner(loop_id, loop_offsets, i)
+    wp.atomic_min(out_extremes, loop, wp.dot(vertices[loop_vertices[i]], direction))
 
 
 @wp.func
@@ -1752,7 +1797,7 @@ def extend_rim_to_ring(
     loop_id: wp.array[wp.int32],
     loop_offsets: wp.array[wp.int32],
     plane_normal: wp.vec3,
-    plane_origins: wp.array[wp.vec3],
+    plane_origin: wp.vec3,
     extremes: wp.array[wp.float32],
     extension: wp.float32,
     ring_base: wp.int32,
@@ -1776,17 +1821,16 @@ def extend_rim_to_ring(
     # from the origin, rather than growing. Face buffers are unchanged, so nothing topological turns
     # on it, and the off-plane residual is a wash between the two forms.
     #
-    # The origin is the caller's (``plane_origins``) or, when ``extremes`` is non-empty, formed here
-    # from the loop's extreme projection (``plane_origin_from_extreme``, ``build_bottom``'s plane),
-    # so no per-loop origin table is mapped first.
+    # The origin is the caller's ``plane_origin`` for every loop (``extend_hole``'s plane) or, when
+    # ``extremes`` is non-empty, formed here from the loop's extreme projection
+    # (``plane_origin_from_extreme``, ``build_bottom``'s plane), so no per-loop origin table is
+    # mapped first. ``loop_id`` may be empty (``array.loop_owner``).
     a = loop_vertices[t]
     point = vertices[a]
-    loop = loop_id[t]
-    origin = wp.vec3()
+    origin = plane_origin
     if extremes.shape[0] > 0:
+        loop = kernel_array.loop_owner(loop_id, loop_offsets, t)
         origin = plane_origin_from_extreme(extremes[loop], plane_normal, extension)
-    else:
-        origin = plane_origins[loop]
     out_positions[t] = origin + project_out_normal(point - origin, plane_normal)
 
     # Two triangles per rim edge, joining it to the corresponding edge of the projected ring. The
@@ -1806,9 +1850,21 @@ def extend_rim_to_ring(
     out_faces[row + wp.int32(1), 2] = projected_b
 
 
+@wp.func
+def store_position_bits(out_rows: wp.array2d[wp.int32], row: wp.int32, p: wp.vec3) -> None:
+    # A position stored as the bits of its three ``float32`` coordinates in an ``int32`` row, so it
+    # rides back in the same readback as the integer counts beside it; the host views the rows as
+    # ``float32``.
+    for k in range(3):
+        out_rows[row, k] = wp.cast(p[k], wp.int32)
+
+
 @wp.kernel
 def bridge_edge_census(
-    faces: wp.array[wp.int32], queries: wp.array2d[wp.int32], out_census: wp.array2d[wp.int32]
+    faces: wp.array[wp.int32],
+    queries: wp.array2d[wp.int32],
+    vertices: wp.array[wp.vec3],
+    out_census: wp.array2d[wp.int32],
 ) -> None:
     # Everything a bridge asks of the mesh about a handful of vertex pairs ``(u, v)``, from one
     # scan of the faces' edges: ``out_census[q, 0]`` counts the face edges joining ``u`` and ``v``
@@ -1822,11 +1878,20 @@ def bridge_edge_census(
     # ``edges.faces_to_edges(sorted=True)``. The third is the corner ``bridge_edges_smooth``'s
     # spline needs, for a boundary edge the one face's, so at most one thread stores it.
     #
+    # With six rows past the queries (``vertices`` given), the spline's six positions come back in
+    # the same readback (``store_position_bits``): the two bridged edges' endpoints, then the
+    # third corner of each one's face, stored by the thread that finds it.
+    #
     # The corners go into a ``wp.vec3i`` rather than staying the tuple ``corner_triple`` returns,
     # because ``k`` is a *runtime* index and a tuple cannot be subscripted by one in kernel scope.
     f, q = wp.tid()
+    n_queries = queries.shape[0]
+    positions = out_census.shape[0] > n_queries
     u = queries[q, 0]
     v = queries[q, 1]
+    if positions and f == 0 and q < 2:
+        store_position_bits(out_census, n_queries + 2 * q, vertices[u])
+        store_position_bits(out_census, n_queries + 2 * q + 1, vertices[v])
     low = wp.min(u, v)
     high = wp.max(u, v)
     c0, c1, c2 = corner_triple(faces, f)
@@ -1838,7 +1903,10 @@ def bridge_edge_census(
             wp.atomic_add(out_census, q, 0, 1)
             if a == u and b == v:
                 wp.atomic_add(out_census, q, 1, 1)
-                out_census[q, 2] = corner[_wrap(k + 2, 3)] + 1
+                opposite = corner[_wrap(k + 2, 3)]
+                out_census[q, 2] = opposite + 1
+                if positions and q < 2:
+                    store_position_bits(out_census, n_queries + 4 + q, vertices[opposite])
 
 
 @wp.kernel
