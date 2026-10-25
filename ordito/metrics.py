@@ -1234,27 +1234,22 @@ def _totals_of_both(
     Totals of two non-empty distance arrays (of their squares under ``squared``) in one readback.
 
     The symmetric ``"sum"`` / ``"mean"`` counterpart of
-    [`_max_of_both`][ordito.metrics._max_of_both]: each total is
-    [`sum_of_terms`][ordito.reduce.sum_of_terms] over ``reduce.sum``'s own kernels (the weighted
-    sum's, of the distances by themselves, under ``squared``), so it is formed exactly as
-    [`reduce.sum`][ordito.reduce.sum] (respectively ``reduce.weighted_sum``) forms it, in either
-    determinism setting. Each writes its own slot of one two-slot buffer, so both come back in one
-    copy.
+    [`_max_of_both`][ordito.metrics._max_of_both]: both arrays fold in one launch into the two
+    result slots of one block-partials buffer, in a fixed order under
+    [`is_deterministic`][ordito.config.is_deterministic], so both come back in one copy.
     """
     device = forward.device
-    kernels = kernel_reduce.WEIGHTED_SUM if squared else kernel_reduce.ARRAY_SUM
-    # The atomic form adds into its slot, so the buffer starts at zero exactly when it runs.
-    atomic = kernels.atomic is not None and not is_deterministic()
-    totals = (_launch.zeros if atomic else _launch.empty)(2, dtype=wp.float32, device=device)
-    for slot, distances in enumerate((forward, backward)):
-        inputs = [distances, distances] if squared else [distances]
-        od.reduce.sum_of_terms(
-            kernels,
-            inputs,
-            distances.size,
-            out=odt.as_dense(totals[slot : slot + 1]),
-            device=device,
-        )
+    forward_blocks = kernel_reduce.blocks_1d(forward.size)
+    blocks = forward_blocks + kernel_reduce.blocks_1d(backward.size)
+    totals, stride = _launch.block_partials(blocks, 2, wp.float32, device)
+    _launch.launch_tiled(
+        kernel_metrics.totals_of_pair,
+        dim=[blocks],
+        inputs=[forward, backward, forward_blocks, int(squared), stride],
+        outputs=[totals],
+        block_dim=TILE_1D,
+        device=device,
+    )
     # The two totals are the function's answer.
     total_forward, total_backward = read_values(totals, 0, 2)
     return float(total_forward), float(total_backward)
