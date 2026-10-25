@@ -504,16 +504,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("array", "sort_rows_insertion"): frozenset({"data"}),
     # ``neighbors`` is sorted in place: this kernel only orders the two slots each vertex already
     # holds, so it is both the input and the result and ``out_`` would read as write-only.
-    # The refinement carries its chains across rounds: ``chains`` holds each chain's current frame
-    # and ``chain_state`` its running loss and best box, so both are read, compared against and
-    # conditionally overwritten by every round. They are the loop's state, not its answer -- the
-    # answer is one row read back after the last round -- and ``out_`` would read as write-only.
-    #
-    # ``chain_state`` is deliberately absent: this scan resolves store targets syntactically, and
-    # that buffer is now written only by ``write_chain_state``, a ``@wp.func`` the kernel hands it
-    # to. So the check cannot see it as an output at all and an entry for it would be reported
-    # stale. The convention still binds it -- it is in-place loop state, same as ``chains``.
-    ("bounds", "oriented_box_select_chains"): frozenset({"chains"}),
     ("combine", "offset_packed_faces"): frozenset({"faces"}),
     # ``holes``' two DP tables are in place, and they ride inside ``HoleFillTables`` rather than in
     # the signature because their pointers are invariant across the whole span sweep and a launch

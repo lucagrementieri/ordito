@@ -911,11 +911,22 @@ def oriented_bounding_box(
     # One chain when there is nothing to refine: the seeding walk's first pick is the global
     # argmin, so it stops after a single round and the row it writes is already the answer.
     n_chains = 1 if refine_iterations == 0 else _REFINE_CHAINS
-    chains = _launch.empty(n_chains, dtype=wp.mat33, device=device)
+    # The refinement's state is ping-ponged: round ``r`` reads half ``r % 2`` of each buffer and
+    # its selection writes the other, so the frames and rows a launch writes are never ones it
+    # still reads. The seeding walk writes half 0, including the first round's frames.
+    count = _REFINE_CANDIDATES if refine_iterations > 0 else 0
+    total = n_chains * count
     chain_state = odt.as_array2d(
-        _launch.empty((n_chains, kernel_bounds.BOX_STATE_COLUMNS), dtype=wp.float32, device=device),
+        _launch.empty(
+            (2 * n_chains, kernel_bounds.BOX_STATE_COLUMNS), dtype=wp.float32, device=device
+        ),
         wp.float32,
     )
+    refine_axes = _launch.empty(2 * total, dtype=wp.mat33, device=device)
+    refine_corners = _launch.empty(12 * total, dtype=wp.float32, device=device)
+    # Start at the covering radius of the global grid: the sampled winner is at most about this
+    # far from its basin's optimum, and each round shrinks the radius.
+    sigma = 2.0 * (math.pi**2 / max(rotations, 2)) ** (1.0 / 3.0)
     _launch.launch_tiled(
         kernel_bounds.oriented_box_seed_chains,
         dim=(1,),
@@ -925,16 +936,29 @@ def oriented_bounding_box(
             corners,
             wp.int32(min(_REFINE_WINDOW, rotations)),
             wp.int32(n_chains),
-            chains,
+            wp.float64(sigma / math.pi),
+            wp.int32(count),
             chain_state,
+            refine_axes,
+            refine_corners,
         ],
         block_dim=_SEED_BLOCK_DIM,
         device=device,
     )
-
-    if refine_iterations > 0:
-        _refine_box(points, rotations, objective, refine_iterations, n_slices, chains, chain_state)
-    return _best_chain(chain_state)
+    if refine_iterations == 0:
+        return _best_chain(chain_state, n_chains, 0)
+    _refine_box(
+        points,
+        objective,
+        refine_iterations,
+        n_slices,
+        sigma,
+        n_chains,
+        chain_state,
+        refine_axes,
+        refine_corners,
+    )
+    return _best_chain(chain_state, n_chains, refine_iterations % 2)
 
 
 # Refinement geometry: up to four chains cover distinct basins of the sampled landscape (a
@@ -989,72 +1013,73 @@ def _compact_masked_points(points: wp.array[wp.vec3], mask: wp.array[wp.bool]) -
 
 def _refine_box(
     points: wp.array[wp.vec3],
-    rotations: int,
     objective: str,
     refine_iterations: int,
     n_slices: int,
-    chains: wp.array[wp.mat33],
+    sigma: float,
+    n_chains: int,
     chain_state: odt.Array2dFloat32,
+    axes: wp.array[wp.mat33],
+    corners: wp.array[wp.float32],
 ) -> None:
     """
     Trust-region refinement of the seeded chains: shrink a low-discrepancy ball per round.
 
-    The chains live on the device throughout. Each round generates a ball of perturbed frames
-    around every chain, scores them with the same extent kernel as the global phase, and keeps each
-    chain's best in place; the last delta of every ball is the identity, which re-scores the base
-    and is what makes a chain monotone. Nothing is read back until the caller unpacks the winning
-    row.
+    The chains live on the device throughout. Each round scores the ball of perturbed frames around
+    every chain with the same extent kernel as the global phase, keeps each chain's best, and writes
+    the next round's ball around it; the last delta of every ball is the identity, which re-scores
+    the base and is what makes a chain monotone. Each buffer holds two halves, read and written in
+    turn. Nothing is read back until the caller unpacks the winning row.
     """
     device = points.device
-    n_chains = chains.size
     total = n_chains * _REFINE_CANDIDATES
-    axes = _launch.empty(total, dtype=wp.mat33, device=device)
-    corners = _launch.empty(6 * total, dtype=wp.float32, device=device)
     objective_code = _BOX_OBJECTIVES[objective]
-
-    # Start at the covering radius of the global grid: the sampled winner is at most about this
-    # far from its basin's optimum, and each round shrinks the radius.
-    sigma = 2.0 * (math.pi**2 / max(rotations, 2)) ** (1.0 / 3.0)
-    extents_kernel, extents_dim = kernel_bounds.OBB_EXTENTS.launch_shape(total, n_slices)
-    for _ in range(refine_iterations):
-        _launch.launch(
-            kernel_bounds.oriented_box_refine_axes,
-            dim=total,
-            inputs=[
-                chains,
-                wp.float64(sigma / math.pi),
-                wp.int32(_REFINE_CANDIDATES),
-                axes,
-                corners,
-            ],
-            device=device,
+    halves = [
+        (
+            odt.as_array2d(
+                odt.as_dense(chain_state[half * n_chains : (half + 1) * n_chains]), wp.float32
+            ),
+            _launch.view(axes, half * total, (half + 1) * total),
+            _launch.view(corners, half * 6 * total, (half + 1) * 6 * total),
         )
+        for half in (0, 1)
+    ]
+    extents_kernel, extents_dim = kernel_bounds.OBB_EXTENTS.launch_shape(total, n_slices)
+    for round_index in range(refine_iterations):
+        state_in, axes_in, corners_in = halves[round_index % 2]
+        state_out, axes_out, corners_out = halves[1 - round_index % 2]
         _launch.launch(
             extents_kernel,
             dim=extents_dim,
-            inputs=[points, axes, n_slices, corners],
-            device=points.device,
-        )
-        _launch.launch(
-            kernel_bounds.oriented_box_select_chains,
-            dim=n_chains,
-            inputs=[
-                corners,
-                axes,
-                wp.int32(_REFINE_CANDIDATES),
-                objective_code,
-                chains,
-                chain_state,
-            ],
+            inputs=[points, axes_in, n_slices, corners_in],
             device=device,
         )
         # 0.4 rather than 0.5: a flat-flush optimum is a *kink*, so the volume error is linear in
         # the final angular resolution, and the 127-frame ball resolves ~sigma/5 per round, so
-        # shrinking by 0.4 never outruns what a round can see.
+        # shrinking by 0.4 never outruns what a round can see. The last round's next ball is
+        # written and never scored.
         sigma *= 0.4
+        _launch.launch(
+            kernel_bounds.oriented_box_select_chains,
+            dim=total,
+            inputs=[
+                corners_in,
+                axes_in,
+                state_in,
+                wp.int32(_REFINE_CANDIDATES),
+                objective_code,
+                wp.float64(sigma / math.pi),
+                state_out,
+                axes_out,
+                corners_out,
+            ],
+            device=device,
+        )
 
 
-def _best_chain(chain_state: odt.Array2dFloat32) -> tuple[wp.mat33, wp.vec3, wp.vec3]:
+def _best_chain(
+    chain_state: odt.Array2dFloat32, n_chains: int, half: int
+) -> tuple[wp.mat33, wp.vec3, wp.vec3]:
     """
     Unpack the best chain's row -- the search's one host readback.
 
@@ -1062,6 +1087,6 @@ def _best_chain(chain_state: odt.Array2dFloat32) -> tuple[wp.mat33, wp.vec3, wp.
     this picks the single seeded row and with refinement the chain that descended furthest. The
     column layout is ``kernels/bounds.write_chain_state``'s.
     """
-    state_np = chain_state.numpy()
+    state_np = chain_state.numpy()[half * n_chains : (half + 1) * n_chains]
     row = state_np[int(state_np[:, 0].argmin())]
     return (wp.mat33(*row[7:16]), wp.vec3(*row[1:4]), wp.vec3(*row[4:7]))
