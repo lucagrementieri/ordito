@@ -31,7 +31,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_nonempty_mesh, require_same_device
+from ordito._device import read_scalar, require_nonempty_mesh, require_same_device
 from ordito.constants import TILE_1D, TOLERANCE_MERGE
 from ordito.kernels import graph as kernel_graph
 from ordito.kernels import grouping as kernel_grouping
@@ -2394,13 +2394,13 @@ def _clip_with_sources(
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
-    blocks = kernel_intersections.CLIP_FLAG_BLOCKS
     plane_normal, plane_origin = (wp.vec3(), wp.vec3()) if plane is None else plane
-    # The vertex block's flags are marks into zeros; the face blocks are written whole.
+    # The vertex flags are marks into zeros; without them every entry is written whole.
+    rank_type = kernel_intersections.ClipRanks
     if merge_crossings:
-        ranks = _launch.empty(blocks * n_faces, dtype=wp.int32, device=device)
+        ranks = _launch.empty(n_faces, dtype=rank_type, device=device)
     else:
-        ranks = _launch.zeros(blocks * n_faces + n_vertices, dtype=wp.int32, device=device)
+        ranks = _launch.zeros(max(n_faces, n_vertices), dtype=rank_type, device=device)
     _launch.launch(
         kernel_intersections.classify_clip_faces,
         dim=n_faces,
@@ -2417,12 +2417,9 @@ def _clip_with_sources(
         device=device,
     )
     _launch.array_scan(ranks, out_array=ranks, inclusive=True)
-    counts = _launch.empty(blocks + 1, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_intersections.clip_counts, dim=1, inputs=[ranks, n_faces, counts], device=device
-    )
-    # The one host synchronization in the clip: these counts size every buffer.
-    n_in, n_quad, n_tri, n_tri_crossings, n_kept = read_values(counts, 0, blocks + 1)
+    # The one host synchronization in the clip: the scan's last entry holds every count, and these
+    # counts size every buffer.
+    n_in, n_quad, n_tri, n_tri_crossings, n_kept = (int(c) for c in read_scalar(ranks))
     n_rows = n_in + 2 * n_quad + n_tri
     if n_rows == 0:
         return (

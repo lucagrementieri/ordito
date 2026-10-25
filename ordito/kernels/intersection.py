@@ -751,28 +751,6 @@ def level_set_signs(
 
 
 @wp.func
-def write_class_flags(
-    face_class: wp.int32,
-    f: wp.int32,
-    n_faces: wp.int32,
-    n_classes: wp.int32,
-    out_flags: wp.array[wp.int32],
-) -> None:
-    # Selection flags for every kept class at once, as ``n_classes`` blocks of ``n_faces`` in one
-    # buffer. Scanning that buffer once compacts all the classes into one index array with the
-    # blocks contiguous, so the whole partition costs one scan and one host readback rather than one
-    # of each per class. Class ``c`` maps to block ``c - 1``; class 0 is "not selected". Every face
-    # writes all of its slots, which is what keeps the buffer from needing a memset first.
-    #
-    # Called from the classifiers themselves rather than from a pass of its own, so a class and
-    # its flags come out of one launch -- the flags read nothing but the class the same thread just
-    # decided. ``n_classes`` is an argument so the clip's three kept classes and the split's four
-    # share it.
-    for block in range(n_classes):
-        out_flags[block * n_faces + f] = wp.where(face_class == block + 1, wp.int32(1), wp.int32(0))
-
-
-@wp.func
 def on_plane_face_side(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], plane_normal: wp.vec3, f: wp.int32
 ) -> tuple[wp.bool, wp.bool]:
@@ -787,12 +765,16 @@ def on_plane_face_side(
     return is_below, area <= TOLERANCE_ZERO_CONSTANT
 
 
-# The clip's flag buffer: the three kept classes' blocks (``write_class_flags``), then a block of
-# each cut-to-triangle face's crossing-point count, then -- when the input vertices are compacted
-# -- one referenced flag per input vertex. One inclusive scan of it ranks every kept face within
-# its class, every crossing point among its class's and every kept vertex, so a single readback
-# (``clip_counts``) sizes the output and one launch (``emit_clip_faces``) writes it.
-CLIP_FLAG_BLOCKS = 4
+# The clip's flags, one ``ClipRanks`` vector per entry: entry ``f`` holds face ``f``'s one-hot
+# kept class (components 0 to 2, class ``c`` at ``c - 1``) and its crossing-point count when it is
+# cut to a triangle (component 3), and -- when the input vertices are compacted -- entry ``v``
+# holds input vertex ``v``'s referenced flag (component 4). One inclusive scan of it ranks every
+# kept face within its class, every crossing point among its class's and every kept vertex, and
+# its last entry holds all five totals, so a single readback sizes the output and one launch
+# (``emit_clip_faces``) writes it.
+CLIP_CROSSINGS = 3
+CLIP_KEPT_VERTEX = 4
+ClipRanks = wp.types.vector(length=5, dtype=wp.int32)
 
 
 @wp.func
@@ -844,19 +826,21 @@ def classify_clip_faces(
     plane_origin: wp.vec3,
     resolve_on_plane: wp.bool,
     keep_all_crossings: wp.bool,
-    out_flags: wp.array[wp.int32],
+    out_flags: wp.array[ClipRanks],
 ) -> None:
-    # One thread per face writes every flag the clip's single scan reads (``CLIP_FLAG_BLOCKS``):
-    # its class's, its crossing-point count when it is cut to a triangle -- two, or one when a
-    # corner on the level set stands in for the other (``tri_cut_level_corner``), unless
-    # ``keep_all_crossings`` keeps both for the cap's exact merge -- and, when ``out_flags`` carries
-    # the vertex block (zeroed by the caller), a 1 at every input vertex the kept face references:
-    # its corners on the kept side or on the level set, which is all three for a kept face and
-    # exactly the corners the cut triangles reuse. ``resolve_on_plane`` is the plane clip's
-    # tie-break for a face lying in the plane, kept when its own normal opposes ``plane_normal``;
-    # a field has no orientation to compare, so without it such a face is dropped.
+    # One thread per face writes every flag the clip's single scan reads (``ClipRanks``): its
+    # class's, its crossing-point count when it is cut to a triangle -- two, or one when a corner
+    # on the level set stands in for the other (``tri_cut_level_corner``), unless
+    # ``keep_all_crossings`` keeps both for the cap's exact merge -- and, without
+    # ``keep_all_crossings`` (the vertices compacted, ``out_flags`` zeroed by the caller), a 1 at
+    # every input vertex the kept face references: its corners on the kept side or on the level
+    # set, which is all three for a kept face and exactly the corners the cut triangles reuse.
+    # The face's own components are stored one by one there, since other threads mark the vertex
+    # component of the same entries; with ``keep_all_crossings`` the entry is written whole.
+    # ``resolve_on_plane`` is the plane clip's tie-break for a face lying in the plane, kept when
+    # its own normal opposes ``plane_normal``; a field has no orientation to compare, so without it
+    # such a face is dropped.
     f = wp.int32(wp.tid())
-    n_faces = faces.shape[0] // 3
     s0, s1, s2 = level_set_signs_at(vertices, faces, vertex_dots, plane_normal, plane_origin, f)
     face_class = slice_face_class(s0, s1, s2)
     if face_class == SLICE_CLASS_ON_PLANE:
@@ -865,22 +849,28 @@ def classify_clip_faces(
             is_below, degenerate = on_plane_face_side(vertices, faces, plane_normal, f)
             if is_below and not degenerate:
                 face_class = SLICE_CLASS_INSIDE
-    write_class_flags(face_class, f, n_faces, SLICE_CLASSES, out_flags)
     crossings = wp.int32(0)
     if face_class == SLICE_CLASS_CUT_TRI:
         crossings = wp.int32(2)
         if not keep_all_crossings and tri_cut_level_corner(s0, s1, s2) >= wp.int32(0):
             crossings = wp.int32(1)
-    out_flags[SLICE_CLASSES * n_faces + f] = crossings
-    vertex_block = CLIP_FLAG_BLOCKS * n_faces
-    if face_class != SLICE_CLASS_DROP and out_flags.shape[0] > vertex_block:
+    flags = ClipRanks()
+    for c in range(SLICE_CLASSES):
+        flags[c] = wp.where(face_class == c + 1, wp.int32(1), wp.int32(0))
+    flags[CLIP_CROSSINGS] = crossings
+    if keep_all_crossings:
+        out_flags[f] = flags
+        return
+    for c in range(CLIP_KEPT_VERTEX):
+        out_flags[f][c] = flags[c]
+    if face_class != SLICE_CLASS_DROP:
         i0, i1, i2 = kernel_triangles.corner_triple(faces, f)
         if s0 <= SLICE_SIGN_ON_PLANE:
-            out_flags[vertex_block + i0] = wp.int32(1)
+            out_flags[i0][CLIP_KEPT_VERTEX] = wp.int32(1)
         if s1 <= SLICE_SIGN_ON_PLANE:
-            out_flags[vertex_block + i1] = wp.int32(1)
+            out_flags[i1][CLIP_KEPT_VERTEX] = wp.int32(1)
         if s2 <= SLICE_SIGN_ON_PLANE:
-            out_flags[vertex_block + i2] = wp.int32(1)
+            out_flags[i2][CLIP_KEPT_VERTEX] = wp.int32(1)
 
 
 @wp.func
@@ -950,29 +940,12 @@ def face_edge_crossing(
     )
 
 
-@wp.kernel
-def clip_counts(
-    ranks: wp.array[wp.int32], n_faces: wp.int32, out_counts: wp.array[wp.int32]
-) -> None:
-    # The clip's sizes from its one scan, side by side for a single readback: the inside, quad-cut
-    # and triangle-cut face counts, the triangle cuts' crossing points, and the kept input vertices
-    # (0 when the scan carries no vertex block).
-    previous = wp.int32(0)
-    for block in range(CLIP_FLAG_BLOCKS):
-        total = ranks[(block + 1) * n_faces - 1]
-        out_counts[block] = total - previous
-        previous = total
-    out_counts[CLIP_FLAG_BLOCKS] = ranks[ranks.shape[0] - 1] - previous
-
-
 @wp.func
-def clip_vertex_index(
-    ranks: wp.array[wp.int32], vertex_block: wp.int32, compact: wp.bool, v: wp.int32
-) -> wp.int32:
+def clip_vertex_index(ranks: wp.array[ClipRanks], compact: wp.bool, v: wp.int32) -> wp.int32:
     # Input vertex ``v``'s index in the clip's output: its rank among the referenced vertices when
     # they are compacted, else ``v`` itself (the cap keeps every input vertex addressable).
     if compact:
-        return ranks[vertex_block + v] - ranks[vertex_block - 1] - wp.int32(1)
+        return ranks[v][CLIP_KEPT_VERTEX] - wp.int32(1)
     return v
 
 
@@ -1004,7 +977,7 @@ def emit_clip_faces(
     vertex_dots: wp.array[wp.float32],
     plane_normal: wp.vec3,
     plane_origin: wp.vec3,
-    ranks: wp.array[wp.int32],
+    ranks: wp.array[ClipRanks],
     n_inside: wp.int32,
     n_quad: wp.int32,
     crossing_base: wp.int32,
@@ -1023,33 +996,37 @@ def emit_clip_faces(
     # nothing crossed).
     t = wp.int32(wp.tid())
     n_faces = faces.shape[0] // 3
-    vertex_block = CLIP_FLAG_BLOCKS * n_faces
+    # Entry ``t``'s exclusive ranks (``start``) and own flags, for vertex ``t`` and face ``t`` both.
+    start = ClipRanks()
+    if t > 0 and t < ranks.shape[0]:
+        start = ranks[t - 1]
+    own = ClipRanks()
+    if t < ranks.shape[0]:
+        own = ranks[t] - start
     if t < vertices.shape[0] and out_vertices.shape[0] > 0:
         if compact:
-            slot, kept = kernel_array.scanned_count(ranks, vertex_block + t)
-            if kept != 0:
-                out_vertices[slot - ranks[vertex_block - 1]] = vertices[t]
+            if own[CLIP_KEPT_VERTEX] != 0:
+                out_vertices[start[CLIP_KEPT_VERTEX]] = vertices[t]
         else:
             out_vertices[t] = vertices[t]
     if t >= n_faces:
         return
     i0, i1, i2 = kernel_triangles.corner_triple(faces, t)
-    row, inside = kernel_array.scanned_count(ranks, t)
-    if inside != 0:
-        out_faces[row, 0] = clip_vertex_index(ranks, vertex_block, compact, i0)
-        out_faces[row, 1] = clip_vertex_index(ranks, vertex_block, compact, i1)
-        out_faces[row, 2] = clip_vertex_index(ranks, vertex_block, compact, i2)
+    if own[SLICE_CLASS_INSIDE - 1] != 0:
+        row = start[SLICE_CLASS_INSIDE - 1]
+        out_faces[row, 0] = clip_vertex_index(ranks, compact, i0)
+        out_faces[row, 1] = clip_vertex_index(ranks, compact, i1)
+        out_faces[row, 2] = clip_vertex_index(ranks, compact, i2)
         return
     base = t * wp.int32(3)
     s0, s1, s2 = level_set_signs_at(vertices, faces, vertex_dots, plane_normal, plane_origin, t)
-    rank, quad = kernel_array.scanned_count(ranks, n_faces + t)
-    if quad != 0:
-        q = rank - ranks[n_faces - 1]
+    if own[SLICE_CLASS_CUT_QUAD - 1] != 0:
+        q = start[SLICE_CLASS_CUT_QUAD - 1]
         outside = find_corner_with_sign(s0, s1, s2, SLICE_SIGN_OUTSIDE)
         corner_a = (outside + wp.int32(1)) % wp.int32(3)
         corner_b = (outside + wp.int32(2)) % wp.int32(3)
-        v_a = clip_vertex_index(ranks, vertex_block, compact, faces[base + corner_a])
-        v_b = clip_vertex_index(ranks, vertex_block, compact, faces[base + corner_b])
+        v_a = clip_vertex_index(ranks, compact, faces[base + corner_a])
+        v_b = clip_vertex_index(ranks, compact, faces[base + corner_b])
         slot = crossing_base + wp.int32(2) * q
         new_0 = write_clip_crossing(
             vertices,
@@ -1082,21 +1059,17 @@ def emit_clip_faces(
         out_faces[out_row + wp.int32(1), 1] = new_1
         out_faces[out_row + wp.int32(1), 2] = v_a
         return
-    rank, tri = kernel_array.scanned_count(ranks, 2 * n_faces + t)
-    if tri == 0:
+    if own[SLICE_CLASS_CUT_TRI - 1] == 0:
         return
-    k = rank - ranks[2 * n_faces - 1]
-    start, _count = kernel_array.scanned_count(ranks, SLICE_CLASSES * n_faces + t)
-    slot = crossing_base + wp.int32(2) * n_quad + start - ranks[SLICE_CLASSES * n_faces - 1]
+    k = start[SLICE_CLASS_CUT_TRI - 1]
+    slot = crossing_base + wp.int32(2) * n_quad + start[CLIP_CROSSINGS]
     inside_corner = find_corner_with_sign(s0, s1, s2, SLICE_SIGN_INSIDE)
     corner_b = (inside_corner + wp.int32(2)) % wp.int32(3)
     level_corner = tri_cut_level_corner(s0, s1, s2)
     # The corner stays one triangle, so a triangle cut writes one row. A corner on the level set is
     # reused as it is, and the crossing on its edge is written only when every crossing is kept.
     out_row = n_inside + wp.int32(2) * n_quad + k
-    out_faces[out_row, 0] = clip_vertex_index(
-        ranks, vertex_block, compact, faces[base + inside_corner]
-    )
+    out_faces[out_row, 0] = clip_vertex_index(ranks, compact, faces[base + inside_corner])
     if level_corner < wp.int32(0) or not compact:
         new_0 = write_clip_crossing(
             vertices,
@@ -1138,13 +1111,9 @@ def emit_clip_faces(
             slot,
             out_vertices,
         )
-        out_faces[out_row, 2] = clip_vertex_index(
-            ranks, vertex_block, compact, faces[base + corner_b]
-        )
+        out_faces[out_row, 2] = clip_vertex_index(ranks, compact, faces[base + corner_b])
     else:
-        out_faces[out_row, 1] = clip_vertex_index(
-            ranks, vertex_block, compact, faces[base + level_corner]
-        )
+        out_faces[out_row, 1] = clip_vertex_index(ranks, compact, faces[base + level_corner])
         out_faces[out_row, 2] = write_clip_crossing(
             vertices,
             faces,
