@@ -46,6 +46,22 @@ def face_edge_keys(
     write_face_edge_keys(faces, f, 3 * f, base, out_keys)
 
 
+@wp.func
+def write_face_edge_keys_and_order(
+    faces: wp.array[wp.int32],
+    f: wp.int32,
+    base: wp.uint64,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # Face ``f``'s three edge keys at ``3f .. 3f + 2`` and the identity payload beside them
+    # (``face_edge_keys_and_order``; ``remesh.compact_surviving_faces`` writes the compacted faces'
+    # keys for the next pass's sort as it moves them).
+    write_face_edge_keys(faces, f, 3 * f, base, out_keys)
+    for k in range(3):
+        out_order[3 * f + k] = 3 * f + k
+
+
 @wp.kernel
 def face_edge_keys_and_order(
     faces: wp.array[wp.int32],
@@ -57,9 +73,7 @@ def face_edge_keys_and_order(
     # straight into the first half of the sort's double-width buffers: no key copy, and no
     # separate identity fill. The upper halves are sort scratch and are never initialized.
     f = wp.int32(wp.tid())
-    write_face_edge_keys(faces, f, 3 * f, base, out_keys)
-    for k in range(3):
-        out_order[3 * f + k] = 3 * f + k
+    write_face_edge_keys_and_order(faces, f, base, out_keys, out_order)
 
 
 @wp.func

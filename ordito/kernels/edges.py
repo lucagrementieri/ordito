@@ -103,6 +103,28 @@ def face_edge_keys_checked(
         wp.atomic_max(out_order, flag_slot, code)
 
 
+@wp.func
+def emit_sorted_unique_edge(
+    faces: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    i: wp.int32,
+    out_unique_edges: wp.array2d[wp.int32],
+    out_inverse: wp.array[wp.int32],
+) -> tuple[wp.int32, wp.int32, wp.bool]:
+    # Sorted position ``i``'s share of ``emit_sorted_unique_edges``, returning ``(corner, e,
+    # run_start)``: the corner sorted there, its unique edge, and whether it wrote the edge's row
+    # (``kernels/remesh.emit_edge_topology`` counts the edge's incidences in the same thread).
+    corner = order[i]
+    e = ranks[i] - 1
+    out_inverse[corner] = e
+    start = sorted_run_start(sorted_keys, i)
+    if start:
+        write_edge_row(faces, corner, e, out_unique_edges)
+    return corner, e, start
+
+
 @wp.kernel
 def emit_sorted_unique_edges(
     faces: wp.array[wp.int32],
@@ -123,11 +145,7 @@ def emit_sorted_unique_edges(
     # bound, a chunked exclusive scan in place of the inclusive one, and the incidence and
     # adjacency slots in the same launch.
     i = wp.int32(wp.tid())
-    corner = order[i]
-    e = ranks[i] - 1
-    out_inverse[corner] = e
-    if sorted_run_start(sorted_keys, i):
-        write_edge_row(faces, corner, e, out_unique_edges)
+    emit_sorted_unique_edge(faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse)
 
 
 @wp.func

@@ -3,7 +3,13 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT, TOLERANCE_ZERO_CONSTANT, UINT64_MAX_CONSTANT
-from ordito.kernels.adjacency import edge_pair_topology, write_edge_row, write_face_edge_keys
+from ordito.kernels.adjacency import (
+    edge_endpoints,
+    edge_pair_topology,
+    write_edge_row,
+    write_face_edge_keys,
+    write_face_edge_keys_and_order,
+)
 from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_ROUND,
@@ -23,6 +29,7 @@ from ordito.kernels.array import (
     to_vec3d,
     unpack_edge_key,
 )
+from ordito.kernels.edges import emit_sorted_unique_edge
 from ordito.kernels.grouping import (
     hash_find,
     hash_find_or_insert,
@@ -46,11 +53,14 @@ from ordito.kernels.predicates import (
 )
 from ordito.kernels.reduce import (
     GROUP_SUM_NONFINITE,
+    block_last_ticket,
     block_max,
     block_sum,
     group_sum_field,
     group_sum_from_words,
     group_sum_words,
+    last_ticket,
+    thread_fence,
 )
 from ordito.kernels.scatter import (
     accumulate_endpoint_value,
@@ -517,6 +527,29 @@ def unique_edge_length(
     return wp.length(vertices[unique_edges[e, 1]] - vertices[unique_edges[e, 0]])
 
 
+@wp.func
+def mark_long_edge(
+    vertices: wp.array[wp.vec3],
+    unique_edges: wp.array2d[wp.int32],
+    e: wp.int32,
+    max_edge: wp.float32,
+    sizing: wp.array[wp.float32],
+    use_sizing: wp.bool,
+    out_long: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # Unique edge ``e``'s verdict, written as ``mark_long_edges`` describes; edge 0 writes the rank
+    # buffer's leading zero.
+    target = max_edge
+    if use_sizing:
+        target = edge_mean_sizing(sizing, unique_edges, e)
+    is_long = unique_edge_length(vertices, unique_edges, e) > target
+    out_long[e] = is_long
+    out_flags[e + 1] = wp.where(is_long, wp.int32(1), wp.int32(0))
+    if e == 0:
+        out_flags[0] = wp.int32(0)
+
+
 @wp.kernel
 def mark_long_edges(
     vertices: wp.array[wp.vec3],
@@ -542,15 +575,44 @@ def mark_long_edges(
     # mark (three gathered edges, scattered duplicate flag stores) plus an emit that also writes
     # the vertices took the whole pass 1.24x (``subdivide_to_size``) and 1.19x (``split_edges``)
     # of this per-edge form, and the zeroed counter adds a memset to the pass that splits nothing.
-    e = wp.int32(wp.tid())
-    target = max_edge
-    if use_sizing:
-        target = edge_mean_sizing(sizing, unique_edges, e)
-    is_long = unique_edge_length(vertices, unique_edges, e) > target
-    out_long[e] = is_long
-    out_flags[e + 1] = wp.where(is_long, wp.int32(1), wp.int32(0))
-    if e == 0:
-        out_flags[0] = wp.int32(0)
+    mark_long_edge(
+        vertices,
+        unique_edges,
+        wp.int32(wp.tid()),
+        max_edge,
+        sizing,
+        use_sizing,
+        out_long,
+        out_flags,
+    )
+
+
+@wp.kernel
+def emit_long_edges(
+    faces: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    max_edge: wp.float32,
+    sizing: wp.array[wp.float32],
+    use_sizing: wp.bool,
+    out_unique_edges: wp.array2d[wp.int32],
+    out_inverse: wp.array[wp.int32],
+    out_long: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``edges.emit_sorted_unique_edges`` and ``mark_long_edges`` in one pass over the sorted
+    # corners: the position starting an edge's run writes its row and tests it, reading back the
+    # row it wrote, so the verdict is ``mark_long_edges``' over the same table bit for bit.
+    i = wp.int32(wp.tid())
+    _corner, e, start = emit_sorted_unique_edge(
+        faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse
+    )
+    if start:
+        mark_long_edge(
+            vertices, out_unique_edges, e, max_edge, sizing, use_sizing, out_long, out_flags
+        )
 
 
 @wp.func
@@ -659,6 +721,12 @@ def emit_size_faces(
     # into rows ``face_offsets[f] ..`` of the compact output (the scanned counts of
     # ``split_child_counts_and_midpoints``). An empty ``index_in`` / ``out_index`` (``None`` at
     # launch) carries no provenance.
+    #
+    # **Declined: writing the children's corner keys for the next pass's sort here**, as a collapse
+    # pass's compaction does (``compact_surviving_faces``), to drop that pass's key launch. The
+    # variable-length child rows scatter the key stores: this launch went from 0.15 to 0.55 ms
+    # against 0.20 ms for the key launch it removed, ``subdivide_to_size`` on a 1.3 M-face sphere
+    # 1.06x slower.
     f = wp.int32(wp.tid())
     src = wp.int32(-1)
     if index_in.shape[0] > 0:
@@ -673,6 +741,16 @@ def emit_size_faces(
 # ---------------------------------------------------------------------------
 # Region-restricted subdivision helpers
 # ---------------------------------------------------------------------------
+
+
+@wp.func
+def mark_long_region_edge(
+    e: wp.int32, out_long: wp.array[wp.bool], out_flags: wp.array[wp.int32]
+) -> None:
+    # Mark unique edge ``e`` long, in the mask and the zeroed ``int32`` flags; every racing write
+    # is the same value.
+    out_long[e] = wp.bool(True)
+    out_flags[e] = wp.int32(1)
 
 
 @wp.kernel
@@ -696,8 +774,35 @@ def mark_long_region_edges(
     if region_flags[i // 3] != 0:
         e = inverse[i]
         if unique_edge_length(vertices, unique_edges, e) > max_edge:
-            out_long[e] = wp.bool(True)
-            out_flags[e] = wp.int32(1)
+            mark_long_region_edge(e, out_long, out_flags)
+
+
+@wp.kernel
+def emit_long_region_edges(
+    faces: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    region_flags: wp.array[wp.int32],
+    max_edge: wp.float32,
+    out_unique_edges: wp.array2d[wp.int32],
+    out_inverse: wp.array[wp.int32],
+    out_long: wp.array[wp.bool],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``edges.emit_sorted_unique_edges`` and ``mark_long_region_edges`` in one pass over the sorted
+    # corners. A corner measures its edge from its own endpoints, the row the run's first position
+    # writes (``adjacency.edge_endpoints``), in ``unique_edge_length``'s subtraction order, so the
+    # test is ``mark_long_region_edges``' bit for bit without waiting on that row.
+    i = wp.int32(wp.tid())
+    corner, e, _start = emit_sorted_unique_edge(
+        faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse
+    )
+    if region_flags[corner // 3] != 0:
+        a, b = edge_endpoints(faces, corner)
+        if wp.length(vertices[b] - vertices[a]) > max_edge:
+            mark_long_region_edge(e, out_long, out_flags)
 
 
 @wp.kernel
@@ -1733,6 +1838,34 @@ def is_feature_edge(
 # walks, the ring locks, both fold vetoes), and the deterministic smoothing ring sorts its rows.
 
 
+@wp.func
+def count_corner_topology(
+    c: wp.int32,
+    e: wp.int32,
+    faces: wp.array[wp.int32],
+    out_edge_face_count: wp.array[wp.int32],
+    out_edge_faces: wp.array2d[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+) -> wp.int32:
+    # Corner ``c`` of unique edge ``e``, over zeroed counts: its face onto the edge
+    # (``scatter.append_to_pair_slot``, whose arrival slot it returns) and the corner onto its
+    # vertex's face count. Corner 0 writes the scan's leading zero.
+    n_vertices = out_counts.shape[0] // 2
+    slot = append_to_pair_slot(e, c // 3, out_edge_face_count, out_edge_faces)
+    wp.atomic_add(out_counts, n_vertices + faces[c], 1)
+    if c == 0:
+        out_offsets[0] = 0
+    return slot
+
+
+@wp.func
+def count_edge_degrees(out_counts: wp.array[wp.int32], u: wp.int32, v: wp.int32) -> None:
+    # A unique edge onto both endpoints' ring degrees, once per edge.
+    wp.atomic_add(out_counts, u, 1)
+    wp.atomic_add(out_counts, v, 1)
+
+
 @wp.kernel
 def count_edge_topology(
     inverse: wp.array[wp.int32],
@@ -1744,20 +1877,49 @@ def count_edge_topology(
     out_counts: wp.array[wp.int32],
     out_offsets: wp.array[wp.int32],
 ) -> None:
-    # One thread per corner, over zeroed counts: the corner's face onto its unique edge
-    # (``scatter.append_to_pair_slot``), the corner onto its vertex's face count, and -- with
-    # ``ring`` (warp-uniform) -- the edge onto both endpoints' degrees, by the one corner that drew
-    # the edge's first slot. Thread 0 writes the scan's leading zero.
+    # One thread per corner of a grouping the caller holds (``count_corner_topology``), and --
+    # with ``ring`` (warp-uniform) -- the edge onto both endpoints' degrees, by the one corner that
+    # drew the edge's first slot. ``emit_edge_topology`` is the same count fused into the emit of a
+    # grouping it builds: the two differ only in where the edge comes from and which corner counts
+    # its degrees.
     c = wp.int32(wp.tid())
-    n_vertices = out_counts.shape[0] // 2
     e = inverse[c]
-    slot = append_to_pair_slot(e, c // 3, out_edge_face_count, out_edge_faces)
+    slot = count_corner_topology(
+        c, e, faces, out_edge_face_count, out_edge_faces, out_counts, out_offsets
+    )
     if ring != 0 and slot == 0:
-        wp.atomic_add(out_counts, unique_edges[e, 0], 1)
-        wp.atomic_add(out_counts, unique_edges[e, 1], 1)
-    wp.atomic_add(out_counts, n_vertices + faces[c], 1)
-    if c == 0:
-        out_offsets[0] = 0
+        count_edge_degrees(out_counts, unique_edges[e, 0], unique_edges[e, 1])
+
+
+@wp.kernel
+def emit_edge_topology(
+    faces: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    ring: wp.int32,
+    out_unique_edges: wp.array2d[wp.int32],
+    out_inverse: wp.array[wp.int32],
+    out_edge_face_count: wp.array[wp.int32],
+    out_edge_faces: wp.array2d[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+) -> None:
+    # ``edges.emit_sorted_unique_edges`` and ``count_edge_topology`` in one pass over the sorted
+    # corners: each position emits its corner's inverse entry (and the run start its edge's row),
+    # then counts the corner as ``count_edge_topology`` does, the run start counting the degrees.
+    # Within a run the stable sort keeps the corners ascending, so the CPU device fills each edge's
+    # face slots in the corner order ``count_edge_topology`` does.
+    i = wp.int32(wp.tid())
+    corner, e, start = emit_sorted_unique_edge(
+        faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse
+    )
+    count_corner_topology(
+        corner, e, faces, out_edge_face_count, out_edge_faces, out_counts, out_offsets
+    )
+    if ring != 0 and start:
+        u, v = edge_endpoints(faces, corner)
+        count_edge_degrees(out_counts, u, v)
 
 
 @wp.kernel
@@ -3424,11 +3586,14 @@ def compact_surviving_faces(
     positions: wp.array[wp.vec3],
     low: wp.array[wp.float32],
     high: wp.array[wp.float32],
+    key_base: wp.uint64,
     out_faces: wp.array[wp.int32],
     out_totals: wp.array[wp.int32],
     out_positions: wp.array[wp.vec3],
     out_low: wp.array[wp.float32],
     out_high: wp.array[wp.float32],
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
 ) -> None:
     # A collapse pass's whole compaction, over ``max(n_faces, n_targets)`` threads. ``face_offsets``
     # and ``ranks`` are the two halves of one inclusive scan over ``mark_surviving_faces``' face
@@ -3445,6 +3610,9 @@ def compact_surviving_faces(
     #   bands by its inverse reproduces. Empty bands (a uniform target, ``None`` at launch) are not
     #   written. The outputs are sized for every target, so this runs before the host knows the
     #   count; the caller keeps their live prefix.
+    # - With ``out_keys`` (empty skips it), a surviving face also writes its edge keys packed
+    #   against ``key_base`` and their identity payload into the next pass's sort buffers
+    #   (``adjacency.write_face_edge_keys_and_order``), the launch that pass would open with.
     t = wp.int32(wp.tid())
     n_faces = face_offsets.shape[0] - 1
     if t < ranks.shape[0] - 1:
@@ -3468,6 +3636,8 @@ def compact_surviving_faces(
     s1, _k1 = scanned_slot(ranks, i1)
     s2, _k2 = scanned_slot(ranks, i2)
     write_corner_triple(out_faces, row, s0, s1, s2)
+    if out_keys.shape[0] > 0:
+        write_face_edge_keys_and_order(out_faces, row, key_base, out_keys, out_order)
 
 
 # Objective for ``objective_flip_candidates``. A warp-uniform kernel argument rather than a
@@ -3836,9 +4006,10 @@ def begin_decimation_pass(
 # The pass's exclusive scans (``remesh._ExclusiveScan``). ``wp.utils.array_scan`` allocates its
 # scratch on every call, which a ``wp.capture_while`` body may not do -- and the round loop ranks
 # its winners with a scan -- and which puts a memory node into any other captured graph. So the
-# pass carries its own two-launch scan over preallocated buffers: each block scans one
-# ``SCAN_CHUNK`` of the input through a loaded tile and publishes the chunk's total, and one block
-# scans those totals. A reader adds the two (``scanned_prefix``). ``wp.tile_load`` and
+# pass carries its own one-launch scan over preallocated buffers: each block scans one
+# ``SCAN_CHUNK`` of the input through a loaded tile and publishes the chunk's total, and the block
+# that finishes last scans those totals (``finish_chunk_scan``), where a second one-block launch
+# used to. A reader adds the two (``scanned_prefix``). ``wp.tile_load`` and
 # ``wp.tile_store`` are lane-independent and bounds-checked, so the chunk kernels are correct on
 # the CPU device, where a tiled launch runs one lane, and on a ragged last chunk.
 #
@@ -3857,38 +4028,13 @@ def popcount32(x: wp.uint32) -> wp.int32:
     return wp.int32((v * wp.uint32(0x01010101)) >> wp.uint32(24))
 
 
-@wp.kernel
-def scan_chunks_exclusive(
-    values: wp.array[wp.int32], out_prefix: wp.array[wp.int32], out_chunk_totals: wp.array[wp.int32]
+@wp.func
+def scan_chunk_totals(
+    lane: wp.int32, chunk_totals: wp.array[wp.int32], out_chunk_offsets: wp.array[wp.int32]
 ) -> None:
-    chunk, _lane = wp.tid()
-    counts = wp.tile_load(values, shape=SCAN_CHUNK, offset=chunk * SCAN_CHUNK)
-    wp.tile_store(out_prefix, wp.tile_scan_exclusive(counts), offset=chunk * SCAN_CHUNK)
-    wp.tile_store(out_chunk_totals, wp.tile_sum(counts), offset=chunk)
-
-
-@wp.kernel
-def scan_word_counts_exclusive(
-    words: wp.array[wp.uint32], out_prefix: wp.array[wp.int32], out_chunk_totals: wp.array[wp.int32]
-) -> None:
-    # ``scan_chunks_exclusive`` over the set-bit counts of a bitmask's words. The two differ only in
-    # the ``popcount32`` applied to the loaded tile.
-    chunk, _lane = wp.tid()
-    counts = wp.tile_map(
-        popcount32, wp.tile_load(words, shape=SCAN_CHUNK, offset=chunk * SCAN_CHUNK)
-    )
-    wp.tile_store(out_prefix, wp.tile_scan_exclusive(counts), offset=chunk * SCAN_CHUNK)
-    wp.tile_store(out_chunk_totals, wp.tile_sum(counts), offset=chunk)
-
-
-@wp.kernel
-def scan_chunk_totals_exclusive(
-    chunk_totals: wp.array[wp.int32], out_chunk_offsets: wp.array[wp.int32]
-) -> None:
-    # One block over every chunk total. Each lane owns a contiguous run sized by
-    # ``wp.block_dim()``, so on the CPU device the one lane walks them all and the tile scan over
+    # Every chunk total's exclusive scan, by the whole block. Each lane owns a contiguous run sized
+    # by ``wp.block_dim()``, so on the CPU device the one lane walks them all and the tile scan over
     # its single element is its own zero.
-    _block, lane = wp.tid()
     lanes = wp.block_dim()
     n = chunk_totals.shape[0]
     per = (n + lanes - 1) // lanes
@@ -3901,6 +4047,64 @@ def scan_chunk_totals_exclusive(
     for i in range(lo, hi):
         out_chunk_offsets[i] = running
         running += chunk_totals[i]
+
+
+@wp.func
+def finish_chunk_scan(
+    chunk: wp.int32,
+    lane: wp.int32,
+    total: wp.int32,
+    out_chunk_totals: wp.array[wp.int32],
+    out_chunk_offsets: wp.array[wp.int32],
+    ticket: wp.array[wp.int32],
+) -> None:
+    # A chunk block's tail: lane 0 publishes the chunk's ``total`` and draws a ticket, and the block
+    # that draws the last one scans every chunk's total (``scan_chunk_totals``) and re-arms the
+    # ticket, so one launch is the whole scan (the ``kernels/reduce`` last-block pattern; on the CPU
+    # device the blocks run in turn and the fences compile to nothing).
+    if lane == 0:
+        out_chunk_totals[chunk] = total
+    if block_last_ticket(lane, ticket, 0, wp.int32(0), out_chunk_totals.shape[0], last_ticket):
+        thread_fence()
+        scan_chunk_totals(lane, out_chunk_totals, out_chunk_offsets)
+        if lane == 0:
+            ticket[0] = 0
+
+
+@wp.kernel
+def scan_chunks_exclusive(
+    values: wp.array[wp.int32],
+    ticket: wp.array[wp.int32],
+    out_prefix: wp.array[wp.int32],
+    out_chunk_totals: wp.array[wp.int32],
+    out_chunk_offsets: wp.array[wp.int32],
+) -> None:
+    chunk, lane = wp.tid()
+    counts = wp.tile_load(values, shape=SCAN_CHUNK, offset=chunk * SCAN_CHUNK)
+    wp.tile_store(out_prefix, wp.tile_scan_exclusive(counts), offset=chunk * SCAN_CHUNK)
+    finish_chunk_scan(
+        chunk, lane, wp.tile_sum(counts)[0], out_chunk_totals, out_chunk_offsets, ticket
+    )
+
+
+@wp.kernel
+def scan_word_counts_exclusive(
+    words: wp.array[wp.uint32],
+    ticket: wp.array[wp.int32],
+    out_prefix: wp.array[wp.int32],
+    out_chunk_totals: wp.array[wp.int32],
+    out_chunk_offsets: wp.array[wp.int32],
+) -> None:
+    # ``scan_chunks_exclusive`` over the set-bit counts of a bitmask's words. The two differ only in
+    # the ``popcount32`` applied to the loaded tile.
+    chunk, lane = wp.tid()
+    counts = wp.tile_map(
+        popcount32, wp.tile_load(words, shape=SCAN_CHUNK, offset=chunk * SCAN_CHUNK)
+    )
+    wp.tile_store(out_prefix, wp.tile_scan_exclusive(counts), offset=chunk * SCAN_CHUNK)
+    finish_chunk_scan(
+        chunk, lane, wp.tile_sum(counts)[0], out_chunk_totals, out_chunk_offsets, ticket
+    )
 
 
 @wp.func
