@@ -958,8 +958,7 @@ The full per-component detail is in `reference/component-status.md`; read the co
 ### Open items from the 2026-10-23 uncapped sweep: ordito on large meshes
 
 The sweep (`.benchmarks/merged-2026-10-23-final/incomplete.jsonl`, ordito-cuda rows) left ordito
-with no time on three large-mesh rows, and one more scales worse than it should. None is attributed
-yet.
+with no time on three large-mesh rows. None is attributed yet.
 
 - **`ball_pivoting` raises on happy_buddha**: `resolve_duplicated_faces` (`ordito/repair.py:745`)
   finds a non-orientable duplicate face group (group 431165, signed count 2), so the pivoting emits
@@ -970,13 +969,6 @@ yet.
 - **`smooth_region` runs past the 600 s limit on lucy** (the dragon and happy_buddha rows take
   26 s and 11 s of wall time, rounds included). `smooth_region_fixed_rim` and
   `smooth_region_boundary` finish on lucy.
-- **`query_nearest(k=1)`'s time beyond the tree build grows with the point count.** The sweep's
-  5x loss to MeshLib on lucy was the harness: MeshLib's tree was built outside its timing. It is
-  inside since 2026-10-25, as for every reference, and ordito wins 15-29x on the scans. Building
-  `mesh_from_points` is 69 % of ordito's row at every size, but the rest still grows (0.21 ms on
-  dragon, 6.1 ms on lucy, about 30x for 32x the points at a fixed 20 000 queries), so something
-  beyond the descent is O(n); lucy's depth-32 overfull leaves (§12.2) are one suspect. Probe:
-  `.benchmarks/retest-2026-10-25/probe_k1_split.py`.
 
 ### Open items from the 2026-10-22 parity audit
 
