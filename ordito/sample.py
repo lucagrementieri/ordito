@@ -436,7 +436,8 @@ def sample_surface_poisson_disk(
     # 6. Parallel round-based elimination
     alive_count = init_count
     is_max = _launch.zeros(init_count, dtype=wp.int32, device=device)
-    # The round's maxima count, accumulated by the flagging pass itself and re-zeroed once read.
+    # The round's maxima count, accumulated by the flagging pass itself and re-zeroed once read (by
+    # the deletion pass).
     max_count = _launch.zeros(1, dtype=wp.int32, device=device)
     # The radix sort's double-width buffers, reused every round: each round rewrites the keys and
     # the identity payload in their leading halves, and the upper halves are sort scratch.
@@ -466,7 +467,6 @@ def sample_surface_poisson_disk(
 
         # The one readback per round: every branch below depends on the count.
         n_max = int(read_scalar(max_count, 0))
-        _launch.zero_(max_count)
         if n_max == 0:
             # Nothing is flagged only when no alive point has an alive neighbour inside ``r_max``
             # -- otherwise the heaviest alive point with a neighbour is flagged, the test being a
@@ -485,6 +485,7 @@ def sample_surface_poisson_disk(
             kernel_sample.apply_deletions,
             dim=init_count,
             inputs=[deleted_mask, nbr_idx, nbr_dists, offsets, r_max, r_min, alpha, alive, weights],
+            outputs=[max_count],
             device=device,
         )
         alive_count -= n_max

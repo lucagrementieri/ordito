@@ -346,9 +346,12 @@ def apply_deletions(
     alpha: wp.float32,
     alive: wp.array[wp.int32],
     weights: wp.array[wp.float32],
+    out_max_count: wp.array[wp.int32],
 ) -> None:
     # Delete this round's flagged points and take their contributions off the survivors' weights,
-    # in one pass. ``alive`` and ``weights`` are in-place state carried across rounds.
+    # in one pass. ``alive`` and ``weights`` are in-place state carried across rounds. Thread 0
+    # also re-zeroes the maxima count the host has read this round, for the next round's
+    # ``find_local_maxima`` to accumulate into, so no memset runs between rounds.
     #
     # A deleted thread clears its own ``alive`` slot while its neighbours may be reading it. That
     # is benign because the skip below tests ``deleted_mask[j]`` as well: a neighbour this round
@@ -356,6 +359,8 @@ def apply_deletions(
     # not written this round at all. So the predicate -- and the set of contributions subtracted --
     # is exactly that of clearing every deleted slot first and subtracting after.
     i = wp.int32(wp.tid())
+    if i == 0:
+        out_max_count[0] = 0
     if deleted_mask[i] == 0:
         return
     alive[i] = 0
