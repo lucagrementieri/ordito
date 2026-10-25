@@ -1872,8 +1872,7 @@ def extend_hole(
     packed = _packed_rims(vertices, faces, loops)
     if packed is None:
         return _launch.clone(vertices), _launch.clone(faces)
-    origins = _launch.full(packed.n_loops, plane_origin, dtype=wp.vec3, device=faces.device)
-    return _extend_packed_rims(vertices, faces, packed, plane_normal, origins=origins)
+    return _extend_packed_rims(vertices, faces, packed, plane_normal, origin=plane_origin)
 
 
 def build_bottom(
@@ -1966,7 +1965,7 @@ def build_bottom(
     _launch.launch(
         kernel_holes.loop_extreme_projection,
         dim=packed.total,
-        inputs=[vertices, packed.flat_loops, packed.loop_id, direction, extremes],
+        inputs=[vertices, packed.flat_loops, None, packed.offsets, direction, extremes],
         device=device,
     )
     # Each rim's plane origin is formed from its extreme as the extension reads it.
@@ -1984,9 +1983,9 @@ def _packed_rims(
     Pack the rims to extend, or ``None`` when there is nothing to extend.
 
     The packed form is ``_PackedLoops`` -- the same one the fill engine consumes -- rather than a
-    second bookkeeping type of its own. The extension kernels read exactly its ``flat_loops`` /
-    ``loop_id`` / ``starts`` / ``sizes``, and the two were building all four the same way. Its DP
-    fields go unused here, which costs one host cumsum and one ``n_loops``-long upload.
+    second bookkeeping type of its own. The extension kernels read only its ``flat_loops`` and
+    ``offsets``, finding each slot's loop by a search of the offsets, so its device tables are
+    never uploaded here.
 
     A rim set that is present but entirely empty is "nothing to extend" and answers ``None``, which
     is why this does not simply return
@@ -2003,15 +2002,16 @@ def _extend_packed_rims(
     rims: _PackedLoops,
     plane_normal: wp.vec3,
     *,
-    origins: wp.array[wp.vec3] | None = None,
+    origin: wp.vec3 | None = None,
     extremes: wp.array[wp.float32] | None = None,
     extension: float = 0.0,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Project every packed rim vertex onto its loop's plane and bridge the two rings.
 
-    Each loop's plane passes through ``origins[loop]``, or -- given ``extremes`` instead -- through
-    ``plane_normal * (extremes[loop] - extension)``.
+    Every loop's plane passes through ``origin``, or -- given ``extremes`` instead -- loop
+    ``loop``'s through ``plane_normal * (extremes[loop] - extension)``. Each rim slot finds its
+    loop from the offsets (``kernels/array.loop_owner``), so no per-slot table is uploaded.
     """
     device = faces.device
     total = rims.total
@@ -2027,10 +2027,10 @@ def _extend_packed_rims(
         inputs=[
             vertices,
             rims.flat_loops,
-            rims.loop_id,
+            None,
             rims.offsets,
             plane_normal,
-            origins,
+            wp.vec3() if origin is None else origin,
             extremes,
             wp.float32(extension),
             wp.int32(n_vertices),
@@ -2162,7 +2162,14 @@ def fillable_loop_mask(
         _launch.launch(
             kernel_holes.count_loop_vertices,
             dim=packed.total,
-            inputs=[packed.flat_loops, packed.loop_id, wp.int32(n_vertices), counts, fillable],
+            inputs=[
+                packed.flat_loops,
+                None,
+                packed.offsets,
+                wp.int32(n_vertices),
+                counts,
+                fillable,
+            ],
             device=device,
         )
         # Each vertex's ``(loop, position along it)``, uninitialized: an entry is written exactly
@@ -2171,7 +2178,7 @@ def fillable_loop_mask(
         _launch.launch(
             kernel_holes.scatter_fillable_loop_slots,
             dim=packed.total,
-            inputs=[packed.flat_loops, packed.loop_id, packed.offsets, counts],
+            inputs=[packed.flat_loops, None, packed.offsets, counts],
             outputs=[fillable, loop_slots],
             device=device,
         )

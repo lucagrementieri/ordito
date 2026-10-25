@@ -1657,6 +1657,7 @@ def trace_stitch_band(
 def count_loop_vertices(
     flat_loops: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     n_vertices: wp.int32,
     out_counts: wp.array[wp.int32],
     out_fillable: wp.array[wp.bool],
@@ -1666,10 +1667,12 @@ def count_loop_vertices(
     # the value read here: a loop naming a vertex the mesh does not have would otherwise scatter
     # outside the histogram, which on the CPU device is host-heap corruption rather than a wrong
     # answer. Such a loop cannot be triangulated over mesh vertices either, so it is cleared.
+    # ``loop_id`` may be empty, the loop then found by a search of ``loop_offsets``
+    # (``array.loop_owner``), as in every rim kernel below that takes both.
     t = wp.int32(wp.tid())
     v = flat_loops[t]
     if v < 0 or v >= n_vertices:
-        out_fillable[loop_id[t]] = False
+        out_fillable[kernel_array.loop_owner(loop_id, loop_offsets, t)] = False
         return
     wp.atomic_add(out_counts, v, 1)
 
@@ -1699,7 +1702,7 @@ def scatter_fillable_loop_slots(
     v = flat_loops[t]
     if v < 0 or v >= vertex_counts.shape[0]:
         return
-    ell = loop_id[t]
+    ell = kernel_array.loop_owner(loop_id, loop_offsets, t)
     if vertex_counts[v] > 1:
         out_fillable[ell] = False
         return
@@ -1761,13 +1764,15 @@ def loop_extreme_projection(
     vertices: wp.array[wp.vec3],
     loop_vertices: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     direction: wp.vec3,
     out_extremes: wp.array[wp.float32],
 ) -> None:
     # The smallest ``dot(position, direction)`` over each rim, which is where that rim's bottom
     # plane sits. ``out_extremes`` arrives pre-filled with +infinity.
     i = wp.int32(wp.tid())
-    wp.atomic_min(out_extremes, loop_id[i], wp.dot(vertices[loop_vertices[i]], direction))
+    loop = kernel_array.loop_owner(loop_id, loop_offsets, i)
+    wp.atomic_min(out_extremes, loop, wp.dot(vertices[loop_vertices[i]], direction))
 
 
 @wp.func
@@ -1787,7 +1792,7 @@ def extend_rim_to_ring(
     loop_id: wp.array[wp.int32],
     loop_offsets: wp.array[wp.int32],
     plane_normal: wp.vec3,
-    plane_origins: wp.array[wp.vec3],
+    plane_origin: wp.vec3,
     extremes: wp.array[wp.float32],
     extension: wp.float32,
     ring_base: wp.int32,
@@ -1811,17 +1816,16 @@ def extend_rim_to_ring(
     # from the origin, rather than growing. Face buffers are unchanged, so nothing topological turns
     # on it, and the off-plane residual is a wash between the two forms.
     #
-    # The origin is the caller's (``plane_origins``) or, when ``extremes`` is non-empty, formed here
-    # from the loop's extreme projection (``plane_origin_from_extreme``, ``build_bottom``'s plane),
-    # so no per-loop origin table is mapped first.
+    # The origin is the caller's ``plane_origin`` for every loop (``extend_hole``'s plane) or, when
+    # ``extremes`` is non-empty, formed here from the loop's extreme projection
+    # (``plane_origin_from_extreme``, ``build_bottom``'s plane), so no per-loop origin table is
+    # mapped first. ``loop_id`` may be empty (``array.loop_owner``).
     a = loop_vertices[t]
     point = vertices[a]
-    loop = loop_id[t]
-    origin = wp.vec3()
+    origin = plane_origin
     if extremes.shape[0] > 0:
+        loop = kernel_array.loop_owner(loop_id, loop_offsets, t)
         origin = plane_origin_from_extreme(extremes[loop], plane_normal, extension)
-    else:
-        origin = plane_origins[loop]
     out_positions[t] = origin + project_out_normal(point - origin, plane_normal)
 
     # Two triangles per rim edge, joining it to the corresponding edge of the projected ring. The
