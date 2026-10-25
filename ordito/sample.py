@@ -44,7 +44,6 @@ from ordito.array import flatnonzero
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
-from ordito.kernels import measures as kernel_measures
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import sample as kernel_sample
 from ordito.kernels import triangles as kernel_triangles
@@ -1038,11 +1037,14 @@ def sample_volume(
     # readback brings back the total (the scan's last element) and the flag together, so the
     # star-shaped test needs no separate ``min`` reduction. The empty mesh, where "no negative
     # volumes" holds vacuously, launches nothing.
-    cdf = _launch.zeros(n_faces + 1, dtype=wp.float32, device=vertices.device)
     total_vol = 0.0
     center = None
+    cdf = None
     if n_faces > 0:
-        center = _surface_centroid_on_device(vertices, faces, n_faces)
+        # Every face slot is written by the volume pass and the flag slot is cleared by the
+        # centroid pass before it, so the buffer starts uninitialized.
+        cdf = _launch.empty(n_faces + 1, dtype=wp.float32, device=vertices.device)
+        center = _surface_centroid_on_device(vertices, faces, cdf)
         _launch.launch(
             kernel_sample.tetrahedron_volumes_flag_negative,
             dim=n_faces,
@@ -1068,8 +1070,10 @@ def sample_volume(
 
     if total_vol == 0.0:
         raise ValueError("mesh has zero volume")
+    # n_faces > 0 here, so the volume pass computed both.
+    assert center is not None
+    assert cdf is not None
     cdf = odt.as_dense(cdf[:n_faces])
-    assert center is not None  # n_faces > 0 here, so the volume pass computed it
 
     out_points = _launch.empty(count, dtype=wp.vec3, device=vertices.device)
     _launch.launch(
@@ -1090,36 +1094,32 @@ def sample_volume(
 
 
 def _surface_centroid_on_device(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], n_faces: int
-) -> wp.array[wp.vec3]:
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_volumes: wp.array[wp.float32]
+) -> wp.array[wp.vec4]:
     """
-    [`surface_centroid`][ordito.measures.surface_centroid] as a one-element device buffer.
+    [`surface_centroid`][ordito.measures.surface_centroid] in slot 0 of a device buffer.
 
-    The same block partials, folded by one block on the device so the centroid feeds the volume
-    kernels without a sync. It agrees with ``surface_centroid`` to rounding, not bit for bit (a
-    parallel ``float32`` fold rather than a sequential ``float64`` one), and repeats exactly from
-    call to call. Requires ``n_faces > 0``.
+    Folded on the device in one launch (``kernel_sample.surface_centroid_apex``), so the centroid
+    feeds the volume kernels without a sync; component 3 holds the area. It agrees with
+    ``surface_centroid`` to rounding, not bit for bit (a parallel ``float32`` fold rather than a
+    sequential ``float64`` one), and repeats exactly from call to call. The same launch clears
+    the last slot of ``out_volumes``, the negative-volume flag of the volume pass after it.
+    Requires a non-empty ``faces``.
     """
     device = vertices.device
-    blocks = kernel_reduce.blocks_1d(n_faces)
-    partials = _launch.empty(blocks, dtype=wp.vec4, device=device)
+    blocks = kernel_reduce.blocks_1d(faces.size // 3)
+    # The ``_launch.block_partials`` layout at width 1, in the fixed-order form whatever the
+    # setting: the result slot, the ticket counter, then one row per block.
+    out_apex = _launch.zeros(blocks + 2, dtype=wp.vec4, device=device)
     _launch.launch_tiled(
-        kernel_measures.centroid_partials,
+        kernel_sample.surface_centroid_apex,
         dim=[blocks],
-        inputs=[vertices, faces, wp.int32(n_faces), partials],
+        inputs=[vertices, faces],
+        outputs=[out_apex, out_volumes],
         block_dim=TILE_1D,
         device=device,
     )
-    out_center = _launch.empty(1, dtype=wp.vec3, device=device)
-    _launch.launch_tiled(
-        kernel_measures.fold_centroid_partials,
-        dim=[1],
-        inputs=[partials],
-        outputs=[out_center],
-        block_dim=TILE_1D,
-        device=device,
-    )
-    return out_center
+    return out_apex
 
 
 def resolve_seed(seed: int | None) -> int:

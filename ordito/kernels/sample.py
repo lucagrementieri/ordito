@@ -4,7 +4,15 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT
 from ordito.kernels.array import scanned_count
-from ordito.kernels.triangles import face_signed_volume, face_vertices
+from ordito.kernels.reduce import (
+    block_chunk_1d,
+    block_sum,
+    fold_block_totals,
+    last_ticket_vector,
+    stage_block_total,
+    write_block_value,
+)
+from ordito.kernels.triangles import face_area_weighted_centroid, face_signed_volume, face_vertices
 
 wp.set_module_options({"enable_backward": False})
 
@@ -69,22 +77,68 @@ def sample_surface(
     out_points[tid] = v0 * w + v1 * uv.x + v2 * uv.y
 
 
+@wp.kernel(module="unique")
+def surface_centroid_apex(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    out_apex: wp.array[wp.vec4],
+    out_volumes: wp.array[wp.float32],
+) -> None:
+    # The area-weighted surface centroid ``sample.sample_volume`` fans its tetrahedra from, in one
+    # launch: each block folds the ``triangles.face_area_weighted_centroid`` sums (components 0-2)
+    # and areas (component 3) of the faces ``block_chunk_1d`` gives it, lanes striding them by
+    # ``wp.block_dim()`` (so the one CPU lane walks them all), into its row of a
+    # ``_launch.block_partials``-layout buffer of width 1; the block drawing the last ticket adds
+    # the rows in a fixed order and writes the centroid (all-NaN for zero area, as
+    # ``measures.surface_centroid`` returns) and the area into slot 0. Always the fixed-order
+    # commit, so a seeded draw repeats on CUDA: the apex moves every sample. Its own module
+    # (``module="unique"``): the only tiled launch here, at ``TILE_1D``, so the module launched at
+    # the default width is not built a second time. Block 0 also clears the negative-volume flag
+    # in the last slot of ``tetrahedron_volumes_flag_negative``'s buffer, which runs next and
+    # writes every other slot, so that buffer needs no zeroing of its own.
+    block, lane = wp.tid()
+    if block == 0 and lane == 0:
+        out_volumes[out_volumes.shape[0] - 1] = wp.float32(0.0)
+    n_blocks = out_apex.shape[0] - 2
+    offset, count = block_chunk_1d(faces.shape[0] // 3, block)
+    total = wp.vec4(0.0, 0.0, 0.0, 0.0)
+    for k in range(lane, count, wp.block_dim()):
+        contrib, area = face_area_weighted_centroid(vertices, faces, offset + k)
+        total += wp.vec4(contrib[0], contrib[1], contrib[2], area)
+    folded = block_sum(total)
+    if stage_block_total(block, lane, folded, out_apex, 0, 1, n_blocks, last_ticket_vector) != 0:
+        summed = fold_block_totals(lane, out_apex, 0, 1, n_blocks, wp.vec4(0.0, 0.0, 0.0, 0.0))
+        area = summed[3]
+        apex = wp.vec4(wp.nan, wp.nan, wp.nan, area)
+        if area != wp.float32(0.0):
+            apex = wp.vec4(summed[0] / area, summed[1] / area, summed[2] / area, area)
+        write_block_value(lane, out_apex, 0, 1, apex)
+
+
+@wp.func
+def apex_point(center: wp.array[wp.vec4]) -> wp.vec3:
+    # The fan apex ``surface_centroid_apex`` leaves in slot 0.
+    apex = center[0]
+    return wp.vec3(apex[0], apex[1], apex[2])
+
+
 @wp.kernel
 def tetrahedron_volumes_flag_negative(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    center: wp.array[wp.vec3],
+    center: wp.array[wp.vec4],
     out_volumes: wp.array[wp.float32],
 ) -> None:
     # ``triangles.face_signed_volumes`` (the same ``face_signed_volume`` helper) with the
-    # star-shaped test folded in: the buffer carries one slot past the faces, zero-seeded, that any
+    # star-shaped test folded in: the buffer carries one slot past the faces, zero-seeded (by
+    # ``surface_centroid_apex``), that any
     # negative tetrahedron sets to ``1``. The wrapper scans the face slots in place into the CDF
     # and reads its total and this flag in one readback, rather than reducing a ``min``
     # separately. Every writer stores the same value, so the unordered stores need no atomic.
-    # ``center`` is the one-element buffer ``measures.fold_centroid_partials`` writes, so the
-    # centroid never crosses to the host.
+    # ``center`` is the buffer ``surface_centroid_apex`` writes, so the centroid never crosses to
+    # the host.
     fi = wp.int32(wp.tid())
-    volume = face_signed_volume(vertices, faces, fi, center[0])
+    volume = face_signed_volume(vertices, faces, fi, apex_point(center))
     out_volumes[fi] = volume
     if volume < wp.float32(0.0):
         out_volumes[out_volumes.shape[0] - 1] = wp.float32(1.0)
@@ -94,7 +148,7 @@ def tetrahedron_volumes_flag_negative(
 def sample_volume_tetrahedra(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    center: wp.array[wp.vec3],
+    center: wp.array[wp.vec4],
     cdf: wp.array[wp.float32],
     total: wp.float32,
     seed: wp.int32,
@@ -121,7 +175,7 @@ def sample_volume_tetrahedra(
     s3 = wp.max(abc)
     s2 = a + b + c - s1 - s3
 
-    apex = center[0]
+    apex = apex_point(center)
     out_points[tid] = apex * (1.0 - s3) + v0 * s1 + v1 * (s2 - s1) + v2 * (s3 - s2)
 
 
