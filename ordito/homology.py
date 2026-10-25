@@ -325,7 +325,8 @@ def _primal_spanning_tree(
     Rooted spanning tree of the vertex graph as ``(parents, distances)``.
 
     A breadth-first level loop, pushed from the frontier, two launches per level and no host
-    synchronization at all. ``parents`` holds
+    synchronization at all; on the CPU, one first-in first-out traversal in a single launch that
+    writes the same tree. ``parents`` holds
     [`NO_PARENT`][ordito.kernels.homology.NO_PARENT] at the root and at every unreferenced vertex,
     which the tree never reaches; ``distances`` holds the depth, or ``-1`` for the same vertices.
 
@@ -346,11 +347,31 @@ def _primal_spanning_tree(
     [`_trace_generator_loops`][ordito.homology._trace_generator_loops] size a loop without walking
     it, and the level loop writes it either way.
     """
-    device = offsets.device
+    device = wp.get_device(offsets.device)
     n_vertices = offsets.size - 1
-    parents = _launch.empty(n_vertices, dtype=wp.int32, device=device)
-    distances = _launch.empty(n_vertices, dtype=wp.int32, device=device)
     n_faces = dual_labels.size
+    # One allocation holds both tables, and on the CPU the traversal's queue behind them.
+    serial = device.is_cpu
+    tree = _launch.empty((3 if serial else 2) * n_vertices, dtype=wp.int32, device=device)
+    parents = _launch.view(tree, 0, n_vertices)
+    distances = _launch.view(tree, n_vertices, 2 * n_vertices)
+    if serial:
+        # A device running a launch's threads one after another pays the level loop's
+        # ``O(n_vertices * depth)`` sweep and two launches a level; one queue-driven traversal
+        # writes the same tree (``kernels/homology.serial_spanning_tree``).
+        _launch.launch(
+            kernel_homology.serial_spanning_tree,
+            dim=1,
+            inputs=[seed, offsets, columns],
+            outputs=[
+                _launch.view(tree, 2 * n_vertices, 3 * n_vertices),
+                parents,
+                distances,
+                dual_labels,
+            ],
+            device=device,
+        )
+        return parents, distances
     _launch.launch(
         kernel_homology.seed_root_and_identity_labels,
         dim=max(n_vertices, n_faces),
@@ -394,8 +415,9 @@ def _remove_dual_spanning_forest(
     root is longest (``kernels/homology.forest_edge_key``, lowest index on a tie), accepts
     those edges and unions the components, so the component count at least halves per round and the
     loop finishes in ``O(log n_faces)`` of them. Four launches per round and no host
-    synchronization; the round cap in the state word only bounds a loop the halving argument
-    already bounds, since a captured loop that runs away hangs the device.
+    synchronization, or on the CPU one launch running the whole loop; the round cap in the state
+    word only bounds a loop the halving argument already bounds, since a captured loop that runs
+    away hangs the device.
 
     A **forest** is all the decomposition needs — the cotree is read as a set, and the loop tracing
     walks the *primal* parents — so the dual side has no root and no parent pointers, and its shape
@@ -415,6 +437,17 @@ def _remove_dual_spanning_forest(
     # The component count at least halves per round, so ``bit_length`` -- ``ceil(log2)`` plus one --
     # caps a loop the halving argument already bounds; it can only be reached by a logic error.
     max_rounds = wp.int32(max(1, n_faces.bit_length()) + 1)
+    if wp.get_device(device).is_cpu:
+        # The CPU runs a launch's threads one after another, so the rounds' four launches run as
+        # one thread's loops in that same order (``kernels/homology.serial_dual_forest``).
+        _launch.launch(
+            kernel_homology.serial_dual_forest,
+            dim=1,
+            inputs=[candidate, edge_faces, unique_edges, distances, max_rounds],
+            outputs=[roots, proposal, labels],
+            device=device,
+        )
+        return
 
     def round_of_boruvka() -> None:
         _launch.launch(

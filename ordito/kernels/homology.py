@@ -96,6 +96,26 @@ COUNT_REFERENCED = 2
 COUNT_SIZE = 3
 
 
+@wp.func
+def seed_root_and_identity_label(
+    seed: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    n_faces: wp.int32,
+    i: wp.int32,
+    out_parents: wp.array[wp.int32],
+    out_distances: wp.array[wp.int32],
+    out_labels: wp.array[wp.int32],
+) -> None:
+    # Entry ``i`` of the two loops' starting state: vertex ``i`` unparented (``NO_PARENT``) and
+    # unreached (``-1``) unless it is the level loop's root ``seed[0]``, at depth 0; and face ``i``
+    # its own dual forest component.
+    if i < n_vertices:
+        out_parents[i] = NO_PARENT
+        out_distances[i] = wp.where(i == seed[0], 0, -1)
+    if i < n_faces:
+        out_labels[i] = i
+
+
 @wp.kernel
 def seed_root_and_identity_labels(
     seed: wp.array[wp.int32],
@@ -106,15 +126,38 @@ def seed_root_and_identity_labels(
     out_labels: wp.array[wp.int32],
 ) -> None:
     # The two loops' starting state in one launch at ``dim=max(n_vertices, n_faces)``, before
-    # either runs: every vertex unparented (``NO_PARENT``) and unreached (``-1``) but the level
-    # loop's root ``seed[0]``, at depth 0; and the dual forest's identity labels, every face its own
-    # component. Each entry is written once, by its own thread, so nothing is filled first.
+    # either runs. Each entry is written once, by its own thread, so nothing is filled first.
     i = wp.int32(wp.tid())
-    if i < n_vertices:
-        out_parents[i] = NO_PARENT
-        out_distances[i] = wp.where(i == seed[0], 0, -1)
-    if i < n_faces:
-        out_labels[i] = i
+    seed_root_and_identity_label(
+        seed, n_vertices, n_faces, i, out_parents, out_distances, out_labels
+    )
+
+
+@wp.func
+def claim_bfs_vertex(
+    w: wp.int32,
+    v: wp.int32,
+    level: wp.int32,
+    out_parents: wp.array[wp.int32],
+    out_distances: wp.array[wp.int32],
+) -> wp.int32:
+    # Frontier vertex ``v`` claims neighbour ``w`` for ``level``: ``w`` takes the level and the
+    # lowest claiming vertex as its parent. Returns ``1`` when ``w`` was unreached, ``0`` when it
+    # was already claimed at this level (the claim still narrows its parent), ``-1`` when it was
+    # reached earlier and is left alone.
+    #
+    # The visit test admits ``seen == level`` as well as an unvisited vertex, and that arm is
+    # load-bearing rather than defensive. Two frontier vertices may reach the same neighbour in one
+    # level; whichever gets there first stores ``level``, and without this arm the other would read
+    # a visited vertex and skip the ``wp.atomic_min`` -- leaving ``parents`` dependent on which
+    # thread ran first. Both stores write the same value, so the race on ``out_distances`` itself is
+    # idempotent.
+    seen = out_distances[w]
+    if seen >= 0 and seen != level:
+        return wp.int32(-1)
+    out_distances[w] = level
+    wp.atomic_min(out_parents, w, v)
+    return wp.where(seen < 0, wp.int32(1), wp.int32(0))
 
 
 @wp.kernel
@@ -133,24 +176,53 @@ def bfs_push_level(
     # ``state`` is the shared round-loop word of ``kernels/array.py``: this reads the level to claim
     # from ``LOOP_ROUND`` and raises ``LOOP_PROGRESS``, which the closing ``array.loop_advance``
     # turns into the next round's condition. A plain store, not an atomic -- one address, one value.
-    #
-    # The visit test admits ``seen == level`` as well as an unvisited vertex, and that arm is
-    # load-bearing rather than defensive. Two frontier vertices may reach the same neighbour in one
-    # level; whichever gets there first stores ``level``, and without this arm the other would read
-    # a visited vertex and skip the ``wp.atomic_min`` -- leaving ``parents`` dependent on which
-    # thread ran first. Both stores write the same value, so the race on ``out_distances`` itself is
-    # idempotent.
+    # The claim rule is ``claim_bfs_vertex``, shared with ``serial_spanning_tree``.
     v = wp.int32(wp.tid())
     level = state[LOOP_ROUND]
     if out_distances[v] != level - 1:
         return
     for k in range(offsets[v], offsets[v + 1]):
-        w = columns[k]
-        seen = out_distances[w]
-        if seen < 0 or seen == level:
-            out_distances[w] = level
-            wp.atomic_min(out_parents, w, v)
+        if claim_bfs_vertex(columns[k], v, level, out_parents, out_distances) >= 0:
             state[LOOP_PROGRESS] = 1
+
+
+@wp.kernel
+def serial_spanning_tree(
+    seed: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    out_queue: wp.array[wp.int32],
+    out_parents: wp.array[wp.int32],
+    out_distances: wp.array[wp.int32],
+    out_labels: wp.array[wp.int32],
+) -> None:
+    # dim=1, the CPU device's primal tree: ``seed_root_and_identity_labels`` and the whole
+    # ``bfs_push_level`` loop as one first-in first-out traversal, writing the same ``parents``,
+    # ``distances`` and identity ``labels``. The level loop reads every vertex once per level, so
+    # on a device that runs a launch's threads one after another it does ``O(n_vertices * depth)``
+    # work and two launches a level, where the queue does ``O(n_vertices + n_edges)`` in one. The
+    # queue dequeues every vertex of a level before any of the next, and every frontier vertex
+    # claims all its neighbours under ``claim_bfs_vertex``, so each parent is still the lowest
+    # adjacent vertex one level up. ``out_queue`` is ``(n_vertices,)`` scratch: each vertex is
+    # enqueued once, when first reached.
+    n_vertices = out_parents.shape[0]
+    n_faces = out_labels.shape[0]
+    for i in range(wp.max(n_vertices, n_faces)):
+        seed_root_and_identity_label(
+            seed, n_vertices, n_faces, i, out_parents, out_distances, out_labels
+        )
+    out_queue[0] = seed[0]
+    head = wp.int32(0)
+    tail = wp.int32(1)
+    while head < tail:
+        v = out_queue[head]
+        head += 1
+        level = out_distances[v] + 1
+        for k in range(offsets[v], offsets[v + 1]):
+            w = columns[k]
+            if claim_bfs_vertex(w, v, level, out_parents, out_distances) == 1:
+                out_queue[tail] = w
+                tail += 1
 
 
 @wp.func
@@ -269,6 +341,18 @@ def guards_and_dual_candidates(
         )
 
 
+@wp.func
+def open_forest_round(
+    labels: wp.array[wp.int32],
+    f: wp.int32,
+    out_roots: wp.array[wp.int32],
+    out_proposal: wp.array[wp.uint64],
+) -> None:
+    # Node ``f``'s share of a round's opening (``forest_round_setup``).
+    out_roots[f] = find_representative(labels, f)
+    out_proposal[f] = FOREST_NO_PROPOSAL
+
+
 @wp.kernel
 def forest_round_setup(
     labels: wp.array[wp.int32], out_roots: wp.array[wp.int32], out_proposal: wp.array[wp.uint64]
@@ -285,8 +369,7 @@ def forest_round_setup(
     # clears it when it closes the round, which is the only point at which the round's claim has
     # already been tested.
     f = wp.int32(wp.tid())
-    out_roots[f] = find_representative(labels, f)
-    out_proposal[f] = FOREST_NO_PROPOSAL
+    open_forest_round(labels, f, out_roots, out_proposal)
 
 
 @wp.func
@@ -331,6 +414,25 @@ def forest_edge_key(
     return (wp.uint64(INT32_MAX - weight) << wp.uint64(32)) | wp.uint64(e)
 
 
+@wp.func
+def propose_forest_edge(
+    candidate: wp.array[wp.bool],
+    edge_faces: wp.array2d[wp.int32],
+    roots: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    distances: wp.array[wp.int32],
+    e: wp.int32,
+    out_proposal: wp.array[wp.uint64],
+) -> None:
+    # Edge ``e``'s bid for the components on both its sides (``forest_propose``).
+    root_a, root_b = boruvka_cross_edge(candidate, edge_faces, roots, e)
+    if root_a < 0:
+        return
+    key = forest_edge_key(unique_edges, distances, e)
+    wp.atomic_min(out_proposal, root_a, key)
+    wp.atomic_min(out_proposal, root_b, key)
+
+
 @wp.kernel
 def forest_propose(
     candidate: wp.array[wp.bool],
@@ -342,12 +444,31 @@ def forest_propose(
 ) -> None:
     # Offer each candidate edge to the components on both sides; the smallest key wins.
     e = wp.int32(wp.tid())
+    propose_forest_edge(candidate, edge_faces, roots, unique_edges, distances, e, out_proposal)
+
+
+@wp.func
+def link_forest_edge(
+    candidate: wp.array[wp.bool],
+    edge_faces: wp.array2d[wp.int32],
+    roots: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    distances: wp.array[wp.int32],
+    proposal: wp.array[wp.uint64],
+    labels: wp.array[wp.int32],
+    e: wp.int32,
+) -> wp.int32:
+    # Accept edge ``e`` when either side chose it, clearing it from ``candidate`` and unioning its
+    # two components (``forest_link``); returns ``1`` when it was accepted, ``0`` otherwise.
     root_a, root_b = boruvka_cross_edge(candidate, edge_faces, roots, e)
     if root_a < 0:
-        return
+        return wp.int32(0)
     key = forest_edge_key(unique_edges, distances, e)
-    wp.atomic_min(out_proposal, root_a, key)
-    wp.atomic_min(out_proposal, root_b, key)
+    if proposal[root_a] != key and proposal[root_b] != key:
+        return wp.int32(0)
+    candidate[e] = False
+    ecl_hook_edge(labels, root_a, root_b)
+    return wp.int32(1)
 
 
 @wp.kernel
@@ -379,15 +500,56 @@ def forest_link(
     # already-compressed find. Its termination argument (parents monotonically non-increasing, so
     # ``max(root_a, root_b)`` strictly decreases) therefore applies unchanged.
     e = wp.int32(wp.tid())
-    root_a, root_b = boruvka_cross_edge(candidate, edge_faces, roots, e)
-    if root_a < 0:
-        return
-    key = forest_edge_key(unique_edges, distances, e)
-    if proposal[root_a] != key and proposal[root_b] != key:
-        return
-    candidate[e] = False
-    out_state[LOOP_PROGRESS] = 1
-    ecl_hook_edge(labels, root_a, root_b)
+    accepted = link_forest_edge(
+        candidate, edge_faces, roots, unique_edges, distances, proposal, labels, e
+    )
+    if accepted != 0:
+        out_state[LOOP_PROGRESS] = 1
+
+
+@wp.kernel
+def serial_dual_forest(
+    candidate: wp.array[wp.bool],
+    edge_faces: wp.array2d[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    distances: wp.array[wp.int32],
+    max_rounds: wp.int32,
+    out_roots: wp.array[wp.int32],
+    out_proposal: wp.array[wp.uint64],
+    out_labels: wp.array[wp.int32],
+) -> None:
+    # dim=1, the CPU device's Boruvka loop: every round's ``forest_round_setup``,
+    # ``forest_propose``, ``forest_link`` and ``array.loop_advance`` as loops of one thread, in the
+    # order a device running each launch's threads one after another runs them, so the forest is
+    # the launched loop's own. The same round cap, and the same stop on a round that merged nothing.
+    n_faces = out_labels.shape[0]
+    n_candidates = candidate.shape[0]
+    rounds = wp.int32(0)
+    keep_going = wp.int32(1)
+    while keep_going != 0:
+        for f in range(n_faces):
+            open_forest_round(out_labels, f, out_roots, out_proposal)
+        for e in range(n_candidates):
+            propose_forest_edge(
+                candidate, edge_faces, out_roots, unique_edges, distances, e, out_proposal
+            )
+        merged = wp.int32(0)
+        for e in range(n_candidates):
+            merged = wp.max(
+                merged,
+                link_forest_edge(
+                    candidate,
+                    edge_faces,
+                    out_roots,
+                    unique_edges,
+                    distances,
+                    out_proposal,
+                    out_labels,
+                    e,
+                ),
+            )
+        rounds += 1
+        keep_going = wp.where(merged != 0 and rounds < max_rounds, wp.int32(1), wp.int32(0))
 
 
 @wp.func
