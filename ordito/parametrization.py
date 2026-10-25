@@ -1498,9 +1498,7 @@ def _solve_fixed_vertices_once(
     )
     if n_free == 0 or n_rhs == 0:
         return solution, free_map
-    held = twl.OperatorFactorization(
-        q_uu, twl.free_coordinates(vertices, fixed_mask, free_map, n_free)
-    )
+    held = twl.OperatorFactorization(q_uu, vertices, fixed_mask=fixed_mask, free_map=free_map)
     if solver == "direct" or at_once:
         held.factor()
         if at_once and held.factorization is None:

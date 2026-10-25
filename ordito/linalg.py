@@ -655,7 +655,7 @@ class MinQuadWithFixedData:
         if self.n_free == 0:
             return None
         self.factorization = OperatorFactorization(
-            q_uu, free_coordinates(coordinates, fixed_mask, self.free_map, self.n_free)
+            q_uu, coordinates, fixed_mask=fixed_mask, free_map=self.free_map
         )
         if factor:
             self.factorization.factor()
@@ -1236,11 +1236,11 @@ def partitioned_interior_system(
     _launch.array_scan(ranks, ranks, inclusive=True)
     # One read for both totals: the free count and the reduced entry count size everything after.
     n_free, nnz_uu = (int(v) for v in read_values(ranks, n_dofs, 1)[0])
-    free_map = _launch.empty(n_dofs, dtype=wp.int32, device=device)
-    row_offsets = _launch.empty(n_free + 1, dtype=wp.int32, device=device)
-    columns = _launch.empty(nnz_uu, dtype=wp.int32, device=device)
-    values = _launch.empty(nnz_uu, dtype=wp.float64, device=device)
-    rhs = _launch.empty((n_rhs, n_free), dtype=wp.float64, device=device)
+    # Every output is written whole by the pass below, and the reduced system, its map and its
+    # right-hand side are used together: one allocation per dtype.
+    free_map, row_offsets, columns = _consecutive(wp.int32, (n_dofs, n_free + 1, nnz_uu), device)
+    values, rhs_entries = _consecutive(wp.float64, (nnz_uu, n_rhs * n_free), device)
+    rhs = rhs_entries.reshape((n_rhs, n_free))
     _launch.launch(
         kernel_linalg.interior_partition_system,
         dim=n_dofs,
@@ -1251,6 +1251,29 @@ def partitioned_interior_system(
     )  # fmt: skip
     q_uu = _bsr_over(n_free, n_free, row_offsets, columns, values, nnz_uu)
     return q_uu, odt.as_array2d(rhs, wp.float64), free_map, n_free
+
+
+def _consecutive(
+    dtype: type[odt.DType], sizes: Sequence[int], device: wp.DeviceLike
+) -> list[wp.array[odt.DType]]:
+    """
+    One uninitialized allocation of ``dtype`` cut into consecutive views of ``sizes``.
+
+    A caller holding any view holds the whole allocation, so only arrays used together share one.
+    """
+    total = sum(sizes)
+    buffer = _launch.empty(total, dtype=dtype, device=device)
+    views: list[wp.array[odt.DType]] = []
+    start = 0
+    for size in sizes:
+        # Warp refuses a zero-length view at the buffer's end; an empty array holds nothing.
+        views.append(
+            _launch.view(buffer, start, start + size)
+            if size > 0
+            else _launch.empty(0, dtype=dtype, device=device)
+        )
+        start += size
+    return views
 
 
 def _rhs_rows(fixed_values: odt.ArrayNd, load: odt.ArrayNd | None) -> int:
@@ -2109,13 +2132,21 @@ class OperatorFactorization:
     coordinates
         ``(n,)`` positions of ``matrix``'s (block) rows -- a mesh's vertices for a vertex operator
         -- for the factorization's ordering. ``None`` orders by the pattern alone.
+    fixed_mask, free_map
+        Given together when ``matrix`` is the free block of an operator over ``n_dofs`` degrees of
+        freedom, as [`partitioned_interior_system`][ordito.linalg.partitioned_interior_system]
+        extracts it: that partition's ``(n_dofs,)`` mask and map. ``coordinates`` then places the
+        ``n_dofs`` degrees of freedom, as
+        [`free_coordinates`][ordito.linalg.free_coordinates] reads it, and the free rows' positions
+        are formed only when a factorization is built.
 
     Raises
     ------
     ValueError
-        If ``matrix`` is neither ``float64`` nor ``wp.mat22d``-block.
+        If ``matrix`` is neither ``float64`` nor ``wp.mat22d``-block, or only one of
+        ``fixed_mask`` and ``free_map`` is given.
     RuntimeError
-        If ``matrix`` and ``coordinates`` are not on one device.
+        If ``matrix``, ``coordinates``, ``fixed_mask`` and ``free_map`` are not on one device.
 
     Notes
     -----
@@ -2150,17 +2181,29 @@ class OperatorFactorization:
     """
 
     def __init__(
-        self, matrix: odt.SparseMatrix, coordinates: wp.array[wp.vec3] | None = None
+        self,
+        matrix: odt.SparseMatrix,
+        coordinates: wp.array[wp.vec3] | None = None,
+        *,
+        fixed_mask: wp.array[wp.bool] | None = None,
+        free_map: wp.array[wp.int32] | None = None,
     ) -> None:
         """Hold ``matrix`` (and the ordering's ``coordinates``) with nothing factored yet."""
-        require_same_device(matrix=matrix, coordinates=coordinates)
+        require_same_device(
+            matrix=matrix, coordinates=coordinates, fixed_mask=fixed_mask, free_map=free_map
+        )
         if matrix.values.dtype not in (wp.float64, wp.mat22d):
             raise ValueError(
                 "OperatorFactorization factors a float64 or wp.mat22d operator, got "
                 f"{matrix.values.dtype}"
             )
+        if (fixed_mask is None) != (free_map is None):
+            raise ValueError("OperatorFactorization: give fixed_mask and free_map together")
         self._matrix = matrix
         self._coordinates = coordinates
+        # The partition ``coordinates`` are taken over until a factorization needs the free rows'
+        # positions (``_ordering_points``): an iterated solve never builds them.
+        self._partition = None if fixed_mask is None or free_map is None else (fixed_mask, free_map)
         self._factorization: SparseCholesky | None = None
         self._refused = False
         # Whether the refusal was the operator's definiteness, not its size.
@@ -2227,7 +2270,7 @@ class OperatorFactorization:
             if shared is not None:
                 self._factorization = shared.with_operator(_storage_alias(scalar))
             else:
-                points = _expanded_coordinates(self._coordinates, 2 if blocks else 1)
+                points = _expanded_coordinates(self._ordering_points(), 2 if blocks else 1)
                 self._factorization = sparse_cholesky(_storage_alias(scalar), points, negated=None)
         except NotPositiveDefiniteError:
             self._indefinite = True
@@ -2238,6 +2281,16 @@ class OperatorFactorization:
             return True
         self._refused = True
         return False
+
+    def _ordering_points(self) -> wp.array[wp.vec3] | None:
+        """Return the rows' positions, formed from the partition the first time they are needed."""
+        if self._partition is not None:
+            fixed_mask, free_map = self._partition
+            self._coordinates = free_coordinates(
+                self._coordinates, fixed_mask, free_map, int(self._matrix.nrow)
+            )
+            self._partition = None
+        return self._coordinates
 
     def solve(
         self, rhs: odt.ArrayNd, solution: odt.ArrayNd, *, tol: float, componentwise: bool = False
@@ -4615,7 +4668,15 @@ class _ChebyshevApply:
         # Zeroed: every step writes the ``n`` live rows of a column and nothing in the pad, which
         # the conjugate-gradient state reduces over.
         self._dofs = n_columns * stride
-        self._spare = [_launch.zeros(self._dofs, dtype=wp.float64, device=device) for _ in range(3)]
+        # The three rotating iterates and the subclass's own vector (``_work``), in one allocation.
+        dofs = self._dofs
+        if dofs > 0:
+            vectors = _launch.zeros(4 * dofs, dtype=wp.float64, device=device)
+            views = [_launch.view(vectors, k * dofs, (k + 1) * dofs) for k in range(4)]
+        else:
+            views = [_launch.zeros(0, dtype=wp.float64, device=device) for _ in range(4)]
+        self._spare = views[:3]
+        self._work = views[3]
 
     def _polynomial(
         self,
@@ -4671,7 +4732,7 @@ class _SquaredLaplacianApply(_ChebyshevApply):
     def __init__(self, owner: SquaredLaplacianPreconditioner, n_columns: int, stride: int) -> None:
         super().__init__(owner._n, n_columns, stride, owner._steps, owner._device)  # pyright: ignore[reportPrivateUsage]
         self._owner = owner
-        self._middle = _launch.zeros(self._dofs, dtype=wp.float64, device=self._device)
+        self._middle = self._work
 
     @property
     def owner(self) -> SquaredLaplacianPreconditioner:
@@ -4763,7 +4824,7 @@ class _JacobiChebyshevApply(_ChebyshevApply):
     def __init__(self, owner: _JacobiChebyshev, n_columns: int, stride: int) -> None:
         super().__init__(owner.n, n_columns, stride, owner.steps, owner.device)
         self._owner = owner
-        self._scaled = _launch.zeros(self._dofs, dtype=wp.float64, device=self._device)
+        self._scaled = self._work
 
     @property
     def owner(self) -> _JacobiChebyshev:
