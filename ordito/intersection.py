@@ -31,13 +31,12 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_nonempty_mesh, require_same_device
+from ordito._device import read_scalar, require_nonempty_mesh, require_same_device
 from ordito.constants import TILE_1D, TOLERANCE_MERGE
 from ordito.kernels import graph as kernel_graph
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import intersection as kernel_intersections
 from ordito.kernels import points as kernel_points
-from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import triangles as kernel_triangles
 
 if TYPE_CHECKING:
@@ -1715,8 +1714,7 @@ def split_mesh_with_plane(
             _launch.empty(n_faces, dtype=wp.bool, device=device),
         )
 
-    vertex_dots = _plane_dots(vertices, plane_normal, plane_origin)
-
+    # Each kernel forms the plane dots of the corners it reads, so no per-vertex table is written.
     # Each face's child count, scanned, is its first output row; ``row - f`` is then its first slot
     # among the crossed halfedges, which are written densely and sorted alone. That numbers the
     # crossed edges in the order ``edges.edges_unique`` lists them -- what ``remesh.split_edges``
@@ -1726,7 +1724,7 @@ def split_mesh_with_plane(
     _launch.launch(
         kernel_intersections.plane_split_child_counts,
         dim=n_faces,
-        inputs=[faces, vertex_dots, tol, child_counts],
+        inputs=[vertices, faces, plane_normal, plane_origin, tol, child_counts],
         device=device,
     )
     face_offsets, n_out = od.array.counts_to_offsets(child_counts)
@@ -1740,7 +1738,17 @@ def split_mesh_with_plane(
         _launch.launch(
             kernel_intersections.plane_crossed_halfedge_keys,
             dim=n_faces,
-            inputs=[faces, vertex_dots, tol, face_offsets, key_base, keys, halfedges],
+            inputs=[
+                vertices,
+                faces,
+                plane_normal,
+                plane_origin,
+                tol,
+                face_offsets,
+                key_base,
+                keys,
+                halfedges,
+            ],
             device=device,
         )
         _launch.radix_sort_pairs(
@@ -1762,7 +1770,9 @@ def split_mesh_with_plane(
             dim=max(n_halfedges, n_vertices),
             inputs=[
                 vertices,
-                vertex_dots,
+                None,
+                plane_normal,
+                plane_origin,
                 keys,
                 halfedges,
                 rank,
@@ -1781,7 +1791,6 @@ def split_mesh_with_plane(
             dim=n_faces,
             inputs=[
                 faces,
-                vertex_dots,
                 tol,
                 cut_vertices,
                 face_offsets,
@@ -2225,15 +2234,6 @@ def _shifted_field(
     return shifted
 
 
-def _plane_dots(
-    vertices: wp.array[wp.vec3], plane_normal: wp.vec3, plane_origin: wp.vec3
-) -> wp.array[wp.float32]:
-    """Signed plane distance of every vertex, the field all three plane entry points classify on."""
-    dots = _launch.empty(vertices.size, dtype=wp.float32, device=vertices.device)
-    _launch.map(kernel_predicates.point_plane_dot, vertices, plane_normal, plane_origin, out=dots)
-    return dots
-
-
 def _split_with_vertex_field(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], vertex_dots: wp.array[wp.float32]
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]:
@@ -2317,6 +2317,8 @@ def _split_with_vertex_field(
         inputs=[
             vertices,
             vertex_dots,
+            wp.vec3(),
+            wp.vec3(),
             keys,
             halfedges,
             rank,
@@ -2394,13 +2396,13 @@ def _clip_with_sources(
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
-    blocks = kernel_intersections.CLIP_FLAG_BLOCKS
     plane_normal, plane_origin = (wp.vec3(), wp.vec3()) if plane is None else plane
-    # The vertex block's flags are marks into zeros; the face blocks are written whole.
+    # The vertex flags are marks into zeros; without them every entry is written whole.
+    rank_type = kernel_intersections.ClipRanks
     if merge_crossings:
-        ranks = _launch.empty(blocks * n_faces, dtype=wp.int32, device=device)
+        ranks = _launch.empty(n_faces, dtype=rank_type, device=device)
     else:
-        ranks = _launch.zeros(blocks * n_faces + n_vertices, dtype=wp.int32, device=device)
+        ranks = _launch.zeros(max(n_faces, n_vertices), dtype=rank_type, device=device)
     _launch.launch(
         kernel_intersections.classify_clip_faces,
         dim=n_faces,
@@ -2417,12 +2419,9 @@ def _clip_with_sources(
         device=device,
     )
     _launch.array_scan(ranks, out_array=ranks, inclusive=True)
-    counts = _launch.empty(blocks + 1, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_intersections.clip_counts, dim=1, inputs=[ranks, n_faces, counts], device=device
-    )
-    # The one host synchronization in the clip: these counts size every buffer.
-    n_in, n_quad, n_tri, n_tri_crossings, n_kept = read_values(counts, 0, blocks + 1)
+    # The one host synchronization in the clip: the scan's last entry holds every count, and these
+    # counts size every buffer.
+    n_in, n_quad, n_tri, n_tri_crossings, n_kept = (int(c) for c in read_scalar(ranks))
     n_rows = n_in + 2 * n_quad + n_tri
     if n_rows == 0:
         return (

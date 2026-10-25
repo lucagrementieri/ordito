@@ -259,16 +259,17 @@ def rasterize_crossings(
     lower: wp.vec3,
     inv_step: wp.vec3,
     axis: wp.int32,
-    crossings: wp.array3d[wp.int32],
+    crossings: wp.array4d[wp.int32],
     ambiguous: wp.array3d[wp.int32],
 ) -> None:
     # Every column through the triangle's projection gets its signed crossing at the highest node
     # below it, so a suffix sum along the column (``column_suffix_sums``) is, at each node, the
     # signed count of crossings above it. The sign is the projected orientation, so a closed,
-    # outward-wound surface counts 1 inside and 0 outside.
-    n_u = wp.where(axis == 0, crossings.shape[0], crossings.shape[1])
-    n_v = wp.where(axis == 0, crossings.shape[1], crossings.shape[2])
-    n_w = wp.where(axis == 0, crossings.shape[2], crossings.shape[0])
+    # outward-wound surface counts 1 inside and 0 outside. ``crossings[axis]`` holds the counts of
+    # the columns along ``axis``.
+    n_u = wp.where(axis == 0, crossings.shape[1], crossings.shape[2])
+    n_v = wp.where(axis == 0, crossings.shape[2], crossings.shape[3])
+    n_w = wp.where(axis == 0, crossings.shape[3], crossings.shape[1])
     a = lattice_coordinates(pa, lower, inv_step, axis)
     b = lattice_coordinates(pb, lower, inv_step, axis)
     c = lattice_coordinates(pc, lower, inv_step, axis)
@@ -321,7 +322,7 @@ def rasterize_crossings(
                 below = wp.min(wp.int32(wp.ceil(height)), n_w) - 1
                 if below >= 0:
                     node = lattice_node(u, v, below, axis)
-                    wp.atomic_add(crossings, node[0], node[1], node[2], orientation * weight)
+                    wp.atomic_add(crossings, axis, node[0], node[1], node[2], orientation * weight)
 
 
 @wp.kernel
@@ -330,11 +331,11 @@ def rasterize_face_crossings(
     faces: wp.array[wp.int32],
     lower: wp.vec3,
     inv_step: wp.vec3,
-    axis: wp.int32,
-    out_crossings: wp.array3d[wp.int32],
+    out_crossings: wp.array4d[wp.int32],
     out_ambiguous: wp.array3d[wp.int32],
 ) -> None:
-    f = wp.int32(wp.tid())
+    # Thread ``(axis, f)``: face ``f`` into the columns along ``axis``, both directions at once.
+    axis, f = wp.tid()
     ia = faces[3 * f]
     ib = faces[3 * f + 1]
     ic = faces[3 * f + 2]
@@ -361,13 +362,13 @@ def rasterize_cone_crossings(
     labels: wp.array[wp.int32],
     lower: wp.vec3,
     inv_step: wp.vec3,
-    axis: wp.int32,
-    out_crossings: wp.array3d[wp.int32],
+    out_crossings: wp.array4d[wp.int32],
     out_ambiguous: wp.array3d[wp.int32],
 ) -> None:
     # The cone K, subtracted: triangle ``(apex, a, b)`` for each boundary edge ``a -> b``, the apex
     # being the component's smallest vertex (a real vertex, so its index orders it canonically).
-    e = wp.int32(wp.tid())
+    # Thread ``(axis, e)``, both column directions in one launch.
+    axis, e = wp.tid()
     a = chain[e, 0]
     b = chain[e, 1]
     apex = labels[a]
@@ -388,16 +389,22 @@ def rasterize_cone_crossings(
 
 
 @wp.kernel
-def column_suffix_sums(axis: wp.int32, crossings: wp.array3d[wp.int32]) -> None:
-    # In place: each node's signed count of the crossings above it along its column.
-    u, v = wp.tid()
-    n_w = wp.where(axis == 0, crossings.shape[2], crossings.shape[0])
+def column_suffix_sums(crossings: wp.array4d[wp.int32]) -> None:
+    # In place: each node's signed count of the crossings above it along its column. Thread
+    # ``(axis, u, v)`` over both directions' columns at once, launched over the larger of the two
+    # column grids in each dimension.
+    axis, u, v = wp.tid()
+    n_u = wp.where(axis == 0, crossings.shape[1], crossings.shape[2])
+    n_v = wp.where(axis == 0, crossings.shape[2], crossings.shape[3])
+    if u >= n_u or v >= n_v:
+        return
+    n_w = wp.where(axis == 0, crossings.shape[3], crossings.shape[1])
     total = wp.int32(0)
     for t in range(n_w):
         w = n_w - 1 - t
         node = lattice_node(u, v, w, axis)
-        total = total + crossings[node[0], node[1], node[2]]
-        crossings[node[0], node[1], node[2]] = total
+        total = total + crossings[axis, node[0], node[1], node[2]]
+        crossings[axis, node[0], node[1], node[2]] = total
 
 
 @wp.func
