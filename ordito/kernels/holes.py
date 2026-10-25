@@ -363,10 +363,13 @@ def init_dp_base(
 # Slots of the min-weight fill's one ``wp.int32`` state buffer, which the host reads twice: whether
 # any loop needs the ``min_area`` retry (``flag_bad_triangulations``), and how many triangles the
 # traceback fell short of the padded ``B - 2`` per loop (``traceback_fill_triangles``). One
-# allocation serves both, since the second read is after the first.
+# allocation serves both, since the second read is after the first. The rim-edge passes' face
+# range flag (``probe_rim_edges``, ``mark_forbidden_chords``) sits beside the shortfall and comes
+# back in its read. Python-scope only: kernels write the flag through a view of its slot.
 FILL_STATE_RETRY = wp.constant(0)
 FILL_STATE_SHORTFALL = wp.constant(1)
-FILL_STATE_SLOTS = 2
+FILL_STATE_BAD_INDEX = 2
+FILL_STATE_SLOTS = 3
 
 
 # Lanes per block of ``fill_dp_span_tiled``: one block owns one interval and its lanes stride the
@@ -965,6 +968,15 @@ RIM_NO_FACE = wp.constant(-1)
 RIM_MANY_FACES = wp.constant(-2)
 
 
+@wp.func
+def corner_in_range(v: wp.int32, n: wp.int32) -> wp.int32:
+    # ``1`` when vertex index ``v`` lies in ``[0, n)``: one unsigned compare covers both ends. The
+    # rim-edge passes test every corner they index a vertex-sized table by, skip one outside and
+    # raise the caller's flag, so a malformed face buffer raises on the host instead of reading
+    # out of bounds -- the check a separate ``minmax`` of the faces used to make.
+    return wp.where(wp.uint32(v) < wp.uint32(n), wp.int32(1), wp.int32(0))
+
+
 @wp.kernel
 def probe_rim_edges(
     faces: wp.array[wp.int32],
@@ -972,6 +984,7 @@ def probe_rim_edges(
     rim_slots: wp.array[wp.int32],
     base: wp.uint64,
     out_third: wp.array[wp.int32],
+    out_flag: wp.array[wp.int32],
 ) -> None:
     # One thread per face: find, for every rim edge, the vertex opposite it in the faces containing
     # it. The rim is the small side of the question, so the rim's keys are the sorted table and
@@ -986,8 +999,20 @@ def probe_rim_edges(
     #
     # A key can occur at more than one rim slot (a loop that walks one edge twice), so every
     # matching slot is visited rather than the first.
+    #
+    # A face with a corner outside ``[0, base)`` is skipped and raises ``out_flag[0]``: its third
+    # corner would index the vertices out of bounds in ``rim_opposite_positions``.
     f = wp.int32(wp.tid())
     n = sorted_rim_keys.shape[0]
+    n_vertices = wp.int32(base)
+    if (
+        corner_in_range(faces[3 * f], n_vertices)
+        + corner_in_range(faces[3 * f + 1], n_vertices)
+        + corner_in_range(faces[3 * f + 2], n_vertices)
+        < 3
+    ):
+        out_flag[0] = 1
+        return
     for k in range(3):
         # Halfedge ``h = 3f + k`` runs ``v_k -> v_{k+1}``; the third corner is the origin of the
         # previous halfedge, which is ``halfedge_prev`` rather than a second spelling of the cycle.
@@ -1029,14 +1054,20 @@ def mark_forbidden_chords(
     loop_offsets: wp.array[wp.int32],
     dp_offsets: wp.array[wp.int32],
     out_mask: wp.array[wp.int32],
+    out_flag: wp.array[wp.int32],
 ) -> None:
     # Chords (non-adjacent loop positions) that already exist as mesh edges are forbidden
     # outright, rather than re-routed. Idempotent writes: no atomics needed. One pass
     # over the whole mesh marks the masks of *all* loops, because ``flat_slot`` distinguishes them:
     # an edge whose endpoints land in two different loops is not a chord of either. One thread per
     # halfedge, its endpoints read off ``faces``: an interior edge is visited from both sides, and
-    # the second visit writes what the first did.
+    # the second visit writes what the first did. An endpoint outside the ``(n_vertices,)``
+    # ``flat_slot`` is skipped and raises ``out_flag[0]`` (``corner_in_range``).
     u, v = halfedge_endpoints(faces, wp.int32(wp.tid()))
+    n_vertices = flat_slot.shape[0]
+    if corner_in_range(u, n_vertices) + corner_in_range(v, n_vertices) < 2:
+        out_flag[0] = 1
+        return
     tu = flat_slot[u]
     tv = flat_slot[v]
     if tu < 0 or tv < 0:
@@ -1224,7 +1255,7 @@ def global_argmin(
     n_a: wp.int32,
     out_shift: wp.array[wp.int32],
 ) -> None:
-    # Single-thread reduction: out_shift = (shift_a, shift_b).
+    # Single-thread reduction: out_shift = (shift_a, shift_b, 0, ...).
     #
     # One lane walking ``n_a`` elements looks like the antipattern it usually is, and folding it
     # into ``row_argmin`` -- which would reduce each row's winner into a packed
@@ -1238,6 +1269,10 @@ def global_argmin(
         update_argmin(best_val, best_row, val_min[i], i)
     out_shift[0] = best_row
     out_shift[1] = col_min[best_row]
+    # Any slot past the pair is a flag a later launch may raise, laid down clear here
+    # (``stitch_loops_min_weight``'s face range flag).
+    for k in range(2, out_shift.shape[0]):
+        out_shift[k] = 0
 
 
 @wp.kernel(enable_backward=False)

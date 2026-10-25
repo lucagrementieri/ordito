@@ -462,19 +462,25 @@ class _EdgeTable:
     that it has exactly one); a ``(n_vertices,)`` slot scratch
     supports the forbidden-chord mask of every loop at once. Both answers are rim-sized, so neither
     builds a table of the mesh's edges: the one sort is of the rim's own keys. ``n_vertices`` is
-    given by a caller whose face indices are known to lie below it, and measured otherwise.
+    given by a caller whose face indices are known to lie below it, and ``len(vertices)``
+    otherwise. ``flag`` is a zeroed one-entry view the two face passes raise when a corner lies
+    outside ``[0, n_vertices)``, skipping it rather than reading out of bounds; the caller reads it
+    back with its own last readback and raises (``_raise_face_range``).
     """
 
     def __init__(
-        self, vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], n_vertices: int | None = None
+        self,
+        vertices: wp.array[wp.vec3],
+        faces: wp.array[wp.int32],
+        n_vertices: int | None,
+        flag: wp.array[wp.int32],
     ) -> None:
         device = faces.device
-        # Derived from the face indices rather than taken from ``len(vertices)``, deliberately: the
-        # ``min`` half of this reduction is the only negative-index guard between a malformed face
-        # buffer and the gathers below, which would otherwise read out of bounds instead of raising.
-        # Any bound above every index orders the rim keys alike, so a given one changes no answer.
+        # Any bound above every index orders the rim keys alike, so the choice changes no answer;
+        # the range check is the face passes' own (``kernels/holes.corner_in_range``).
         if n_vertices is None:
-            n_vertices = od.array.index_bound(faces, require_non_negative=True)
+            n_vertices = vertices.size
+        self.flag = flag
         self.vertices = vertices
         self.faces = faces
         self.n_halfedges = faces.size // 3 * 3
@@ -516,7 +522,7 @@ class _EdgeTable:
         _launch.launch(
             kernel_holes.probe_rim_edges,
             dim=self.faces.size // 3,
-            inputs=[self.faces, sorted_keys, slots, self.base, third],
+            inputs=[self.faces, sorted_keys, slots, self.base, third, self.flag],
             device=self.device,
         )
         positions = _launch.empty(total, dtype=wp.vec3, device=self.device)
@@ -545,7 +551,15 @@ class _EdgeTable:
         _launch.launch(
             kernel_holes.mark_forbidden_chords,
             dim=self.n_halfedges,
-            inputs=[self.faces, flat_slot, loops.loop_id, loops.offsets, loops.dp_offsets, mask],
+            inputs=[
+                self.faces,
+                flat_slot,
+                loops.loop_id,
+                loops.offsets,
+                loops.dp_offsets,
+                mask,
+                self.flag,
+            ],
             device=self.device,
         )
         return mask
@@ -639,9 +653,9 @@ def fill_min_weight(
         rim edges against the existing adjacent faces, so the patch blends smoothly into the surface
         instead of turning sharply at the boundary. No effect on the triangle-only metrics.
     n_vertices
-        Optional exclusive bound on the vertex indices, typically ``vertices.size``. Trusted, not
-        checked: it spares the reduction that otherwise range-checks ``faces`` and infers the
-        bound, and its host readback, whenever a loop is filled.
+        Optional exclusive bound on the vertex indices, ``vertices.size`` when ``None``. The
+        passes that read ``faces`` check every index against it as they go, with no pass or
+        readback of their own.
     mates
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
         caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
@@ -658,8 +672,8 @@ def fill_min_weight(
     Raises
     ------
     ValueError
-        If ``metric`` is not one of the supported metric names, or if ``n_vertices`` is ``None``, a
-        loop is filled and ``faces`` holds a negative index.
+        If ``metric`` is not one of the supported metric names, or if a loop is filled and
+        ``faces`` holds an index outside ``[0, n_vertices)``.
     RuntimeError
         If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
@@ -749,9 +763,9 @@ def fill_loops_min_weight(
     smooth_boundary
         See [`fill_min_weight`][ordito.holes.fill_min_weight].
     n_vertices
-        Optional exclusive bound on the vertex indices, typically ``vertices.size``. Trusted, not
-        checked: it spares the reduction that otherwise range-checks ``faces`` and infers the
-        bound, and its host readback, whenever a loop is filled.
+        Optional exclusive bound on the vertex indices, ``vertices.size`` when ``None``. The
+        passes that read ``faces`` check every index against it as they go, with no pass or
+        readback of their own.
 
     Returns
     -------
@@ -763,8 +777,8 @@ def fill_loops_min_weight(
     ------
     ValueError
         If ``metric`` is not one of the names
-        [`fill_min_weight`][ordito.holes.fill_min_weight] lists, or if ``n_vertices`` is ``None``, a
-        loop is filled and ``faces`` holds a negative index.
+        [`fill_min_weight`][ordito.holes.fill_min_weight] lists, or if a loop is filled and
+        ``faces`` holds an index outside ``[0, n_vertices)``.
     RuntimeError
         If ``vertices``, ``faces`` and ``loops`` are not all on one device.
 
@@ -832,7 +846,13 @@ def _fill_packed_loops(
     is [`_EdgeTable`][ordito.holes._EdgeTable]'s.
     """
     device = faces.device
-    edge_table = _EdgeTable(vertices, faces, n_vertices)
+    # The retry flag, the traceback's shortfall and the face range flag, read back at two different
+    # points; see ``kernels/holes.py::FILL_STATE_SLOTS``.
+    state = _launch.zeros(kernel_holes.FILL_STATE_SLOTS, dtype=wp.int32, device=device)
+    bad_index = kernel_holes.FILL_STATE_BAD_INDEX
+    edge_table = _EdgeTable(
+        vertices, faces, n_vertices, _launch.view(state, bad_index, bad_index + 1)
+    )
     primary_id = _METRIC_IDS[metric]
     combine_id = _METRIC_COMBINE.get(metric, 0)
     min_area_id = _METRIC_IDS["min_area"]
@@ -905,9 +925,6 @@ def _fill_packed_loops(
 
     dp = _launch.empty(loops.dp_total, dtype=wp.float32, device=device)
     prev = _launch.empty(loops.dp_total, dtype=wp.int32, device=device)
-    # The retry flag and the traceback's shortfall, read back at two different points; see
-    # ``kernels/holes.py::FILL_STATE_SLOTS``.
-    state = _launch.zeros(kernel_holes.FILL_STATE_SLOTS, dtype=wp.int32, device=device)
     active = _launch.ones(loops.n_loops, dtype=wp.int32, device=device)
     _run_hole_dp(
         loops,
@@ -960,7 +977,7 @@ def _fill_packed_loops(
                 prev,
             )
 
-    return _traceback_fill_faces(faces, loops, prev, state)
+    return _traceback_fill_faces(faces, loops, prev, state, edge_table.n_vertices)
 
 
 def _traceback_fill_faces(
@@ -968,6 +985,7 @@ def _traceback_fill_faces(
     loops: _PackedLoops,
     prev: wp.array[wp.int32],
     state: wp.array[wp.int32],
+    n_vertices: int,
 ) -> wp.array[wp.int32]:
     """
     Walk every loop's DP predecessor table into fill faces, returned appended to ``faces``.
@@ -981,7 +999,9 @@ def _traceback_fill_faces(
     the tail of the returned buffer itself, with ``faces`` copied in front of it, so when no loop
     falls short -- the usual case -- the walk has written the answer in place. The single readback
     is the total shortfall the walk accumulated into ``state``; only where it is non-zero does a
-    scan place the compacted blocks and a second buffer receive them.
+    scan place the compacted blocks and a second buffer receive them. The same read carries the
+    rim-edge passes' face range flag, which raises for ``faces`` indexing outside
+    ``[0, n_vertices)``.
     """
     device = loops.device
     triangle_sizes_np = np.maximum(loops.sizes_np - 2, 0)
@@ -1014,7 +1034,10 @@ def _traceback_fill_faces(
         ],
         device=device,
     )
-    shortfall = int(read_scalar(state, kernel_holes.FILL_STATE_SHORTFALL))
+    # The shortfall sizes the output; the face range flag beside it decides whether to raise.
+    shortfall, bad_index = read_values(state, kernel_holes.FILL_STATE_SHORTFALL, 2)
+    if bad_index != 0:
+        _raise_face_range(faces, n_vertices, "faces")
     if shortfall == 0:
         return filled
     n_triangles = n_padded - shortfall
@@ -1239,9 +1262,9 @@ def fill_small(
         edges as vertices, so this is also its vertex count. Mutually exclusive with
         ``max_perimeter``.
     n_vertices
-        Optional exclusive bound on the vertex indices, typically ``vertices.size``. Trusted, not
-        checked: it spares the reduction that otherwise range-checks ``faces`` and infers the
-        bound, and its host readback, whenever a loop is filled.
+        Optional exclusive bound on the vertex indices, ``vertices.size`` when ``None``. The
+        passes that read ``faces`` check every index against it as they go, with no pass or
+        readback of their own.
     mates
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
         caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
@@ -1257,8 +1280,8 @@ def fill_small(
     Raises
     ------
     ValueError
-        If neither ``max_perimeter`` nor ``max_edges`` is given, or if both are; or if
-        ``n_vertices`` is ``None``, a loop is filled and ``faces`` holds a negative index.
+        If neither ``max_perimeter`` nor ``max_edges`` is given, or if both are; or if a loop is
+        filled and ``faces`` holds an index outside ``[0, n_vertices)``.
     RuntimeError
         If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
@@ -1469,9 +1492,9 @@ def fill_smooth(
     return_patch
         When ``True``, also return a length-``n_out_faces`` ``wp.bool`` mask of the patch faces.
     n_vertices
-        Optional exclusive bound on the vertex indices, typically ``vertices.size``. Trusted, not
-        checked: it spares the reduction that otherwise range-checks ``faces`` and infers the
-        bound, and its host readback, whenever a loop is filled.
+        Optional exclusive bound on the vertex indices, ``vertices.size`` when ``None``. The
+        passes that read ``faces`` check every index against it as they go, with no pass or
+        readback of their own.
     mates
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
         caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
@@ -1491,8 +1514,8 @@ def fill_smooth(
     Raises
     ------
     ValueError
-        If ``metric``, ``edge_weights`` or ``refine`` is unknown, or if ``n_vertices`` is ``None``,
-        a loop is filled and ``faces`` holds a negative index.
+        If ``metric``, ``edge_weights`` or ``refine`` is unknown, or if a loop is filled and
+        ``faces`` holds an index outside ``[0, n_vertices)``.
     RuntimeError
         If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
@@ -2282,9 +2305,9 @@ def stitch_min_weight(
     up_dir
         Up direction for the ``"vertical"`` metric.
     n_vertices_a, n_vertices_b
-        Optional exclusive bounds on each mesh's vertex indices, typically ``vertices_a.size`` and
-        ``vertices_b.size``. Trusted, not checked: each spares the reduction that otherwise
-        range-checks that mesh's faces and infers its bound, and its host readback.
+        Optional exclusive bounds on each mesh's vertex indices, ``vertices_a.size`` and
+        ``vertices_b.size`` when ``None``. The passes that read each mesh's faces check every index
+        against its bound as they go, with no pass or readback of their own.
     mates_a, mates_b
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of each mesh's faces
         when the caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]),
@@ -2301,7 +2324,7 @@ def stitch_min_weight(
     ------
     ValueError
         If either mesh does not have exactly one boundary loop of at least 3 vertices, or ``metric``
-        is unknown, or if a bound is ``None`` and that mesh's faces hold a negative index.
+        is unknown, or if a mesh's faces hold an index outside ``[0, n_vertices)`` for its bound.
     RuntimeError
         If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b``, ``mates_a`` and ``mates_b`` are
         not all on one device.
@@ -2478,9 +2501,9 @@ def stitch_smooth(
     return_patch
         See [`fill_smooth`][ordito.holes.fill_smooth].
     n_vertices_a, n_vertices_b
-        Optional exclusive bounds on each mesh's vertex indices, typically ``vertices_a.size`` and
-        ``vertices_b.size``. Trusted, not checked: each spares the reduction that otherwise
-        range-checks that mesh's faces and infers its bound, and its host readback.
+        Optional exclusive bounds on each mesh's vertex indices, ``vertices_a.size`` and
+        ``vertices_b.size`` when ``None``. The passes that read each mesh's faces check every index
+        against its bound as they go, with no pass or readback of their own.
     mates_a, mates_b
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of each mesh's faces
         when the caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]),
@@ -2500,8 +2523,8 @@ def stitch_smooth(
     ------
     ValueError
         If either mesh lacks exactly one boundary loop, or ``metric`` / ``edge_weights`` /
-        ``refine`` is unknown, or if a bound is ``None`` and that mesh's faces hold a negative
-        index.
+        ``refine`` is unknown, or if a mesh's faces hold an index outside ``[0, n_vertices)``
+        for its bound.
     RuntimeError
         If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b``, ``mates_a`` and ``mates_b`` are
         not all on one device.
@@ -3085,9 +3108,9 @@ def stitch_loops_min_weight(
     up_dir
         Up direction for the ``"vertical"`` metric (defaults to ``(0, 0, 1)``); ignored otherwise.
     n_vertices_a, n_vertices_b
-        Optional exclusive bounds on each mesh's vertex indices, typically ``vertices_a.size`` and
-        ``vertices_b.size``. Trusted, not checked: each spares the reduction that otherwise
-        range-checks that mesh's faces and infers its bound, and its host readback.
+        Optional exclusive bounds on each mesh's vertex indices, ``vertices_a.size`` and
+        ``vertices_b.size`` when ``None``. The passes that read each mesh's faces check every index
+        against its bound as they go, with no pass or readback of their own.
 
     Returns
     -------
@@ -3101,8 +3124,8 @@ def stitch_loops_min_weight(
     Raises
     ------
     ValueError
-        If either loop has fewer than 3 vertices, or ``metric`` is unknown, or if a bound is
-        ``None`` and that mesh's faces hold a negative index.
+        If either loop has fewer than 3 vertices, or ``metric`` is unknown, or if a mesh's faces
+        hold an index outside ``[0, n_vertices)`` for its bound.
     RuntimeError
         If ``vertices_a``, ``faces_a``, ``loop_a``, ``vertices_b``, ``faces_b`` and ``loop_b`` are
         not all on one device.
@@ -3153,8 +3176,12 @@ def stitch_loops_min_weight(
     device = faces_a.device
     metric_id = _STITCH_METRIC_IDS[metric]
     offset = vertices_a.size
-    table_a = _EdgeTable(vertices_a, faces_a, n_vertices_a)
-    table_b = _EdgeTable(vertices_b, faces_b, n_vertices_b)
+    # ``[start_a, start_b, face range flag, band triangle count]``; the closest-pair launch clears
+    # the flag both rim-opposite probes may raise.
+    pair_and_count = _launch.empty(4, dtype=wp.int32, device=device)
+    flag = _launch.view(pair_and_count, 2, 3)
+    table_a = _EdgeTable(vertices_a, faces_a, n_vertices_a, flag)
+    table_b = _EdgeTable(vertices_b, faces_b, n_vertices_b, flag)
 
     # Reverse loop A so the two rims wind oppositely (facing), then align both at the closest pair.
     # Everything runs on the device, the band's traceback included, so the one thing read back is
@@ -3169,9 +3196,7 @@ def stitch_loops_min_weight(
         outputs=[a_rim, b_rim, None, None],
         device=device,
     )
-    # ``[start_a, start_b, band triangle count]``.
-    pair_and_count = _launch.empty(3, dtype=wp.int32, device=device)
-    _closest_loop_pair(a_rim, b_rim, odt.as_dense(pair_and_count[:2]))
+    _closest_loop_pair(a_rim, b_rim, _launch.view(pair_and_count, 0, 3))
     # The rolled rims: their positions, their vertex ids (the traceback's loops) and each rim's
     # edge keys for its rim-opposite probe, written by the pass that already holds both ends.
     la_wp = _launch.empty(n_a, dtype=wp.int32, device=device)
@@ -3223,16 +3248,36 @@ def stitch_loops_min_weight(
         kernel_holes.trace_stitch_band,
         dim=1,
         inputs=[came, la_wp, lb_wp, wp.int32(offset)],
-        outputs=[band_faces, odt.as_dense(pair_and_count[2:])],
+        outputs=[band_faces, _launch.view(pair_and_count, 3, 4)],
         device=device,
     )
-    n_band = int(read_scalar(pair_and_count, 2))
+    # The band size, with the face range flag beside it deciding whether to raise.
+    bad_index, n_band = read_values(pair_and_count, 2, 2)
+    if bad_index != 0:
+        _raise_face_range(faces_a, table_a.n_vertices, "faces_a")
+        _raise_face_range(faces_b, table_b.n_vertices, "faces_b")
     if n_band == n_steps:
         return combined_vertices, combined_faces
     # A short band is the buffer's prefix, a contiguous view: nothing is copied.
     return combined_vertices, odt.as_dense(
         combined_faces[: combined_faces.size - 3 * (n_steps - n_band)]
     )
+
+
+def _raise_face_range(faces: wp.array[wp.int32], n_vertices: int, name: str) -> None:
+    """
+    Raise for a face buffer the rim-edge passes flagged, naming its index range.
+
+    The passes (``kernels/holes.corner_in_range``) say that some corner lies outside
+    ``[0, n_vertices)``; this measures the faces, on the error path only, and raises when they do
+    -- returning when they do not, so a caller holding two face buffers asks of each in turn.
+    """
+    # The bounds name the offending range in the message.
+    lowest, highest = od.reduce.minmax(faces)
+    if lowest < 0 or highest >= n_vertices:
+        raise ValueError(
+            f"{name} must index vertices in [0, {n_vertices}), got min={lowest} max={highest}"
+        )
 
 
 def _run_stitch_dp(
@@ -3292,6 +3337,8 @@ def _closest_loop_pair(
 ) -> None:
     """
     Write the closest vertex pair ``(i, j)`` between the two rims (the band start) to ``out_pair``.
+
+    Any slot of ``out_pair`` past the pair is cleared (``kernels/holes.global_argmin``).
 
     Each rim-A vertex's nearest rim-B vertex and the argmin over those run in Warp kernels (the
     same ``row_argmin`` / ``global_argmin`` reduction the greedy zippering uses, at the squared

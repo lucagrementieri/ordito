@@ -1307,6 +1307,41 @@ def test_fill_min_weight_hints_change_no_answer(
     assert np.array_equal(loops_given_wp.numpy(), loops_inferred_wp.numpy())
 
 
+def test_fill_min_weight_rejects_a_face_index_past_the_bound(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: the documented ``ValueError`` for a face index outside the bound.
+
+    The rim-edge passes check every face corner against ``n_vertices`` as they read it
+    (``kernels/holes.corner_in_range``) and skip one outside rather than index the vertex-sized
+    chord scratch or the vertices by it, so the fill raises instead of reading out of bounds. The
+    mesh is renumbered rim first and the bound set just past the rim, so the rim itself is in range
+    and only interior corners cross it; the same call at the true bound fills. Both stitch entry
+    points share the passes (``_EdgeTable``); this pins the fill's flag, read with the traceback's
+    shortfall.
+    """
+    mesh_tm, mesh_wp = saddle_graded
+    rim_np = np.unique(mesh_tm.outline().entities[0].points)
+    order_np = np.concatenate([rim_np, np.setdiff1d(np.arange(len(mesh_tm.vertices)), rim_np)])
+    rank_np = np.empty_like(order_np)
+    rank_np[order_np] = np.arange(order_np.size)
+    vertices_wp, faces_wp = numpy_to_warp(
+        mesh_tm.vertices[order_np], rank_np[mesh_tm.faces], str(mesh_wp.device)
+    )
+    loops = _fillable_loops(vertices_wp, faces_wp)
+    bound = rim_np.size
+    assert max(int(loop.numpy().max()) for loop in loops) < bound < vertices_wp.size
+    with pytest.raises(ValueError, match="must index vertices in"):
+        od.holes.fill_loops_min_weight(
+            vertices_wp, faces_wp, loops, "plane_normalized", True, n_vertices=bound
+        )
+    filled_wp = od.holes.fill_loops_min_weight(
+        vertices_wp, faces_wp, loops, "plane_normalized", True, n_vertices=vertices_wp.size
+    )
+    assert filled_wp.size > faces_wp.size
+
+
 # ---------------------------------------------------------------------------
 # fill_small
 # ---------------------------------------------------------------------------
