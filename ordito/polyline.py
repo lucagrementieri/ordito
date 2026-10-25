@@ -771,20 +771,20 @@ def polyline_downsample(
     # ``closed`` walks an ``n + 1``-entry table whose last entry is the closing segment's end, or,
     # when the input already repeats its first point, a stand-in the walks stop short of
     # (``kernels/polyline.seam_repeats_first``) -- the closure is decided on the device.
-    cumulative = _arc_length_table(polyline, closed=closed)
-    n_table = cumulative.size
+    n_table = polyline.size + 1 if closed else polyline.size
     if wp.get_device(device).is_cuda and n_table >= _DOWNSAMPLE_DOUBLING_FROM:
+        cumulative = _arc_length_table(polyline, closed=closed)
         keep = _launch.zeros(n_table, dtype=wp.int32, device=device)
         _greedy_downsample_doubling(cumulative, step_size, polyline, closed, keep)
         out_points, _ = _gather_kept(keep, polyline, return_indices=False)
         return out_points
-    # The serial walk writes the kept points' indices compacted as it goes, behind their count, so
-    # the gather reads them as they are.
+    # The serial walk forms the arc-length table as it goes (no table is passed), and writes the
+    # kept points' indices compacted behind their count, so the gather reads them as they are.
     indices = _launch.empty(n_table + 1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_polyline.greedy_downsample_indices,
         dim=1,
-        inputs=[cumulative, wp.float32(step_size), polyline, wp.int32(closed), indices],
+        inputs=[None, wp.float32(step_size), polyline, wp.int32(closed), indices],
         device=device,
     )
     # Sizes the output: the one host readback.

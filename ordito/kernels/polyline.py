@@ -419,6 +419,20 @@ def seam_repeats_first(polyline: wp.array[wp.vec3], wrap_open: wp.int32) -> wp.i
     return wrap_open - closing_segment_flag(polyline, wrap_open)
 
 
+@wp.func
+def arc_table_segment(polyline: wp.array[wp.vec3], wrap_open: wp.int32, i: wp.int32) -> wp.float32:
+    # Segment ``i`` of an arc-length table, the entry ``arc_segment_lengths`` writes at slot
+    # ``i + 1``: ``polyline[i] -> polyline[i + 1]``, or for ``i == n - 1`` the closing segment back
+    # to the first point when ``closing_segment_flag`` adds one and an exact ``0`` otherwise.
+    n = polyline.shape[0]
+    length = wp.float32(0.0)
+    if i < n - 1:
+        length = segment_length(polyline[i], polyline[i + 1])
+    elif closing_segment_flag(polyline, wrap_open) != 0:
+        length = segment_length(polyline[n - 1], polyline[0])
+    return length
+
+
 @wp.kernel
 def arc_segment_lengths(
     polyline: wp.array[wp.vec3], wrap_open: wp.int32, out_cumulative: wp.array[wp.float32]
@@ -435,15 +449,9 @@ def arc_segment_lengths(
     # caller then scans ``out_cumulative[1:]`` in place, the same values at the same positions a
     # separate lengths buffer held, so neither that buffer nor a zero-fill of the table is needed.
     i = wp.int32(wp.tid())
-    n = polyline.shape[0]
     if i == 0:
         out_cumulative[0] = wp.float32(0.0)
-    length = wp.float32(0.0)
-    if i < n - 1:
-        length = segment_length(polyline[i], polyline[i + 1])
-    elif closing_segment_flag(polyline, wrap_open) != 0:
-        length = segment_length(polyline[n - 1], polyline[0])
-    out_cumulative[i + 1] = length
+    out_cumulative[i + 1] = arc_table_segment(polyline, wrap_open, i)
 
 
 @wp.kernel
@@ -469,16 +477,31 @@ def greedy_downsample_indices(
     # (``gather_walked_points``) reads the indices directly. Indices rather than the points
     # themselves: a point copy is a load the single thread would wait on per kept point, which
     # measured 1.5-3x slower in device time than the flag stores it replaced. ``polyline`` is read
-    # only for the closure (``seam_repeats_first``).
-    n = cumulative_lengths.shape[0] - seam_repeats_first(polyline, wrap_open)
+    # for the closure (``seam_repeats_first``).
+    #
+    # With ``cumulative_lengths`` empty the walk forms the table itself, as a running sum of the
+    # segments ``arc_segment_lengths`` would write (``arc_table_segment``) -- the one thread visits
+    # every entry in order anyway, so the table's launch, buffer and scan buy it nothing. That is
+    # the CPU device's scan bit for bit (a sequential sum in the same order); on CUDA it differs
+    # from the tree scan the pointer-doubling branch reads by rounding only.
+    from_table = cumulative_lengths.shape[0] > 0
+    n_table = wp.where(from_table, cumulative_lengths.shape[0], polyline.shape[0] + wrap_open)
+    n = n_table - seam_repeats_first(polyline, wrap_open)
     out_indices[1] = 0
     count = wp.int32(1)
-    last = cumulative_lengths[0]
+    running = wp.float32(0.0)
+    if from_table:
+        running = cumulative_lengths[0]
+    last = running
     for i in range(1, n):
-        if cumulative_lengths[i] - last >= step_size:
+        if from_table:
+            running = cumulative_lengths[i]
+        else:
+            running = running + arc_table_segment(polyline, wrap_open, i - 1)
+        if running - last >= step_size:
             count += 1
             out_indices[count] = i
-            last = cumulative_lengths[i]
+            last = running
     out_indices[0] = count
 
 
