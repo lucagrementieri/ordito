@@ -1771,8 +1771,8 @@ def fan_triangulate(out_faces: wp.array2d[wp.int32]) -> None:
 
 # The ear loop's state buffer: ``array.LOOP_ROUND`` / ``LOOP_CONDITION``, then the running face
 # count ``clip_selected`` appends through, then the round's "some ear is good" flag
-# (``compute_ears`` raises it, ``select_independent`` reads it, ``ear_loop_continue`` lowers it for
-# the next round), then whether the next round walks thin corners (set by ``ear_loop_continue``
+# (``compute_ears`` raises it, ``select_independent`` reads it, ``clip_selected`` lowers it for
+# the next round), then whether the next round walks thin corners (set by ``clip_selected``
 # after a round with no good ear; see ``ear_grade``). One buffer, seeded by ``init_ear_clip``, so
 # the loop needs no host upload and no zero-fill of its own and the final count is a read of one
 # slot.
@@ -2135,11 +2135,11 @@ def clip_ear(
     count: wp.array[wp.int32],
     count_slot: wp.int32,
     faces: wp.array2d[wp.int32],
-) -> None:
+) -> wp.int32:
     # Clip the selected ear at corner ``i``: append its triangle at the slot ``count[count_slot]``
-    # hands out, retire the corner and link its neighbours past it. Selected ears are >= 3 apart
-    # (``ear_selected``), so concurrent clips touch disjoint slots. Shared by ``clip_selected`` and
-    # ``ear_clip_block``.
+    # hands out, retire the corner and link its neighbours past it, and return the slot. Selected
+    # ears are >= 3 apart (``ear_selected``), so concurrent clips touch disjoint slots. Shared by
+    # ``clip_selected`` and ``ear_clip_block``.
     a = left[i]
     b = right[i]
     slot = wp.atomic_add(count, count_slot, 1)
@@ -2149,6 +2149,7 @@ def clip_ear(
     active[i] = wp.int32(0)
     right[a] = b
     left[b] = a
+    return slot
 
 
 @wp.kernel
@@ -2157,41 +2158,46 @@ def clip_selected(
     left: wp.array[wp.int32],
     right: wp.array[wp.int32],
     active: wp.array[wp.int32],
+    target: wp.int32,
+    max_rounds: wp.int32,
     out_faces: wp.array2d[wp.int32],
     out_state: wp.array[wp.int32],
 ) -> None:
+    # The round's clips, and the ear loop's control, kept on device so ``wp.capture_while`` can
+    # drive the rounds without a readback each time (the slot table is ``array.LOOP_ROUND`` /
+    # ``LOOP_CONDITION``). The control needs no launch of its own: thread 0 advances the round and
+    # the thin flag (nothing a clip reads), and the condition, seeded ``1`` by ``init_ear_clip``,
+    # is only ever lowered -- by thread 0 at the round cap, and by the clip whose slot reaches the
+    # ``target`` face count, which the atomic's return names -- so the loop stops after the round
+    # in which ``count < target and round < max_rounds`` first fails, as a separate pass reading
+    # both after the clips would. The round cap is what stops a degenerate or self-intersecting
+    # loop that never retires an ear -- the same bound the host-driven form got from iterating
+    # ``range(n)``.
     i = wp.int32(wp.tid())
+    if i == 0:
+        round_next = out_state[LOOP_ROUND] + 1
+        out_state[LOOP_ROUND] = round_next
+        out_state[EAR_CHECK_THIN] = wp.where(out_state[EAR_ANY_GOOD] == 0, wp.int32(1), wp.int32(0))
+        out_state[EAR_ANY_GOOD] = wp.int32(0)
+        if round_next >= max_rounds:
+            out_state[LOOP_CONDITION] = wp.int32(0)
     if selected[i] != 0:
-        clip_ear(left, right, active, i, out_state, EAR_COUNT, out_faces)
-
-
-@wp.kernel
-def ear_loop_continue(target: wp.int32, max_rounds: wp.int32, state: wp.array[wp.int32]) -> None:
-    # Ear-clipping loop control, kept on device so ``wp.capture_while`` can drive the rounds without
-    # a readback each time; the slot table is ``array.LOOP_ROUND`` / ``LOOP_CONDITION``.
-    # The round cap is what stops a degenerate or self-intersecting loop that never retires an ear
-    # -- the same bound the host-driven form got from iterating ``range(n)``.
-    #
-    # ``state`` is read-and-incremented round-index/loop-condition scratch carried across launches,
-    # not a fresh per-call answer -- see ``rdp_begin_round``'s identical naming.
-    state[LOOP_ROUND] = state[LOOP_ROUND] + 1
-    state[EAR_CHECK_THIN] = wp.where(state[EAR_ANY_GOOD] == 0, wp.int32(1), wp.int32(0))
-    state[EAR_ANY_GOOD] = wp.int32(0)
-    if state[EAR_COUNT] < target and state[LOOP_ROUND] < max_rounds:
-        state[LOOP_CONDITION] = wp.int32(1)
-    else:
-        state[LOOP_CONDITION] = wp.int32(0)
+        slot = clip_ear(left, right, active, i, out_state, EAR_COUNT, out_faces)
+        if slot + 1 >= target:
+            out_state[LOOP_CONDITION] = wp.int32(0)
 
 
 # Rings up to this length are clipped by ``ear_clip_block`` -- the whole round loop as one block --
-# rather than by the captured four-launch round loop, on both devices. At this size a round is too
-# little work to fill the device, so what the multi-launch form pays is recording and replaying its
-# conditional graph, flat in ``n``; one block of ``EAR_BLOCK_DIM`` lanes trades that for three block
-# barriers a round. But the block walks the ring for every corner's containment test (O(n) each),
-# where the round loop walks the ear grid (``ear_grade_grid``), so the block loses from a few
-# hundred corners: on CUDA it is 2.5x the round loop's speed at 64 corners, level at 512, 0.6x at
-# 1 024 and 0.3x at 1 500 (random stars and wavy rings); on the CPU device, where a block is one
-# lane and a launch grid a serial loop, level at ~640 corners and 0.5x at 1 024, 0.1x at 4 096.
+# rather than by the captured round loop (three launches a round; four when the crossover below was
+# measured, the loop control since folded into ``clip_selected``), on both devices. At this size a
+# round is too little work to fill the device, so what the multi-launch form pays is recording and
+# replaying its conditional graph, flat in ``n``; one block of ``EAR_BLOCK_DIM`` lanes trades that
+# for three block barriers a round. But the block walks the ring for every corner's containment
+# test (O(n) each), where the round loop walks the ear grid (``ear_grade_grid``), so the block
+# loses from a few hundred corners: on CUDA it is 2.5x the round loop's speed at 64 corners, level
+# at 512, 0.6x at 1 024 and 0.3x at 1 500 (random stars and wavy rings); on the CPU device, where a
+# block is one lane and a launch grid a serial loop, level at ~640 corners and 0.5x at 1 024, 0.1x
+# at 4 096.
 EAR_ONE_BLOCK_MAX = 512
 EAR_BLOCK_DIM = 1024
 
@@ -2209,13 +2215,13 @@ def ear_clip_ring(
     count_slot: wp.int32,
 ) -> wp.int32:
     # ``init_ear_clip`` plus every round of ``compute_ears`` -> ``select_independent`` ->
-    # ``clip_selected`` -> ``ear_loop_continue`` on the ring ``points2d[start : start + n]``, by
+    # ``clip_selected`` (and its loop control) on the ring ``points2d[start : start + n]``, by
     # one block whose lanes stride the ring by ``wp.block_dim()`` -- so on the CPU device, where a
-    # block is one lane, it is the same serial walk the four launches make, corner by corner in
+    # block is one lane, it is the same serial walk the three launches make, corner by corner in
     # index order. The block barriers are ``block_sum`` calls (Warp exposes no other): one after
     # each step, the last of which also totals the round's clips, so the loop condition is
     # block-uniform. The ear rule, the selection rule, the ring's initial links and the clip are
-    # the ``ear_flag`` / ``ear_selected`` / ``init_ring_slot`` / ``clip_ear`` the four launches
+    # the ``ear_flag`` / ``ear_selected`` / ``init_ring_slot`` / ``clip_ear`` the three launches
     # call too; the containment test is the ring walk (``ear_grade``), not the grid.
     #
     # ``ring`` is ``(5, *)`` scratch indexed like ``points2d``: rows ``left``, ``right``,
@@ -2265,7 +2271,7 @@ def ear_clip_block(
     out_count: wp.array[wp.int32],
 ) -> None:
     # ``ear_clip_ring`` over the whole ring, as one block: the faces come out byte-identical to the
-    # four launches'. ``out_ring`` is its ``(5, n_ring)`` scratch, whose width is the ring length
+    # round loop's. ``out_ring`` is its ``(5, n_ring)`` scratch, whose width is the ring length
     # (``points2d`` may exceed it by a repeated closing point). ``out_count`` is zeroed here and
     # ends holding the face count.
     _block, lane = wp.tid()
@@ -2277,7 +2283,7 @@ def ear_clip_block(
 # The packed round loop (``ring_compute_ears`` and its siblings below), which clips every loop of a
 # ``polyline_triangulate_from_offsets`` call longer than ``EAR_ONE_BLOCK_MAX`` together: one
 # captured loop whose round runs each such loop's round of ``compute_ears`` ->
-# ``select_independent`` -> ``clip_selected`` -> ``ear_loop_continue`` side by side, so the call
+# ``select_independent`` -> ``clip_selected`` -> its loop control side by side, so the call
 # waits for the most rounds any loop needs rather than for their sum. The two loops differ only in
 # where a ring's parameters live: the one-ring kernels take them as launch arguments from the
 # host's readback, the packed ones read each loop's from ``rounds`` (an int row per loop after the
@@ -2711,8 +2717,8 @@ def ring_clip_selected(
 def ring_ear_loop_continue(
     rounds: wp.array[wp.int32], out_ends: wp.array[wp.int32], out_face_counts: wp.array[wp.int32]
 ) -> None:
-    # ``ear_loop_continue`` per live round-loop loop, dim == n_loops: its round count and thin
-    # flag advance, its face end and face count go to ``out_ends[r]`` and
+    # ``clip_selected``'s loop control per live round-loop loop, dim == n_loops: its round count
+    # and thin flag advance, its face end and face count go to ``out_ends[r]`` and
     # ``out_face_counts[r + 1]`` (``triangulate_rings``' outputs for every other loop), and it
     # stays live on its own loop's test (fewer faces than ``n_ring - 2`` and fewer rounds than
     # ``n_ring``), raising the loop condition while it does. Its state is one row, loaded whole

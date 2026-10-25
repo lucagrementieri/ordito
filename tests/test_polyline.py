@@ -2116,7 +2116,7 @@ def test_triangulate_polygon_single_block_matches_round_loop(
     Ordito against ordito: the single-block ear loop against the captured round loop.
 
     A ring up to ``EAR_ONE_BLOCK_MAX`` corners is clipped by one block that runs every round
-    itself, walking the ring for each ear test, a longer one by the four-launch round loop, whose
+    itself, walking the ring for each ear test, a longer one by the three-launch round loop, whose
     ear test walks the ear grid; the trimesh cover test carries the oracle for the first at its
     sizes. Forcing the cap both ways must give the same triangle set (row order is atomic-append
     order on CUDA) on a random star, which has ears at every scale and, in a clockwise ring, reads

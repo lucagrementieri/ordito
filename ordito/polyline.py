@@ -2019,13 +2019,8 @@ def _triangulate_ring(
         _launch.launch(
             kernel_polyline.clip_selected,
             dim=n_ring,
-            inputs=[selected, left, right, active, out_faces, state],
-            device=device,
-        )
-        _launch.launch(
-            kernel_polyline.ear_loop_continue,
-            dim=1,
-            inputs=[wp.int32(n_ring - 2), wp.int32(n_ring), state],
+            inputs=[selected, left, right, active, wp.int32(n_ring - 2), wp.int32(n_ring)],
+            outputs=[out_faces, state],
             device=device,
         )
 
