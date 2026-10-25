@@ -2580,12 +2580,14 @@ class _BpaState:
                 device=self.device,
             )
         _launch.fill_(self.counters[kernel_bpa.CNT_SEEDING : kernel_bpa.CNT_SEEDING + 1], 1)
-        self.point_used = _launch.zeros(self.n, dtype=wp.bool, device=self.device)
-        # Persists across every seeding wave for the run's whole lifetime -- see
+        # ``seed_failed`` persists across every seeding wave for the run's whole lifetime -- see
         # ``kernel_bpa.seed_triangles`` for why a point that once exhausted its candidates without
         # seeding can never succeed later (its candidate set only shrinks), which is what makes
         # never resetting this safe.
-        self.seed_failed = _launch.zeros(self.n, dtype=wp.bool, device=self.device)
+        self.point_used, self.seed_failed = _carve(
+            _launch.zeros(_carved_size([self.n] * 2), dtype=wp.bool, device=self.device),
+            [self.n] * 2,
+        )
         # The orphan each point last deferred to, or whether it can ever seed; see the same kernel.
         self.seed_blocker = _launch.full(
             self.n, int(kernel_bpa.SEED_UNKNOWN), dtype=wp.int32, device=self.device
@@ -2600,27 +2602,35 @@ class _BpaState:
     def _allocate_budget(self, max_faces: int) -> None:
         """(Re)size everything that scales with the triangle budget."""
         self.max_faces = max_faces
-        self.all_faces = _launch.empty(max_faces * 3, dtype=wp.int32, device=self.device)
         # A triangle soup of ``max_faces`` faces has at most ``3 * max_faces`` distinct edges, and
         # the insert probe does not terminate on a full table, so the hash is sized for a load
         # factor of at most 1/2. The front and the proposal list share the same bound.
         capacity = 1 << (6 * max_faces - 1).bit_length()
+        front_capacity = 3 * max_faces + self.n
         self.edge_mask = wp.int32(capacity - 1)
         self.edge_key = _launch.zeros(capacity, dtype=wp.uint64, device=self.device)
-        self.edge_count = _launch.zeros(capacity, dtype=wp.int32, device=self.device)
-        self.edge_src = _launch.empty(capacity, dtype=wp.int32, device=self.device)
-        self.edge_tgt = _launch.empty(capacity, dtype=wp.int32, device=self.device)
-        self.edge_opp = _launch.empty(capacity, dtype=wp.int32, device=self.device)
-        self.edge_state = _launch.zeros(capacity, dtype=wp.int32, device=self.device)
-        self.edge_cand = _launch.empty(capacity, dtype=wp.int32, device=self.device)
+        # The zeroed ``int32`` tables in one allocation, and the unfilled ones in another.
+        self.edge_count, self.edge_state = _carve(
+            _launch.zeros(_carved_size([capacity] * 2), dtype=wp.int32, device=self.device),
+            [capacity] * 2,
+        )
+        unfilled = [max_faces * 3] + [capacity] * 4 + [front_capacity] * 5
+        (
+            self.all_faces,
+            self.edge_src,
+            self.edge_tgt,
+            self.edge_opp,
+            self.edge_cand,
+            self.front_in,
+            self.front_out,
+            self.tri_a,
+            self.tri_b,
+            self.tri_c,
+        ) = _carve(
+            _launch.empty(_carved_size(unfilled), dtype=wp.int32, device=self.device), unfilled
+        )
         self._bind_edge_table()
 
-        front_capacity = 3 * max_faces + self.n
-        self.front_in = _launch.empty(front_capacity, dtype=wp.int32, device=self.device)
-        self.front_out = _launch.empty(front_capacity, dtype=wp.int32, device=self.device)
-        self.tri_a = _launch.empty(front_capacity, dtype=wp.int32, device=self.device)
-        self.tri_b = _launch.empty(front_capacity, dtype=wp.int32, device=self.device)
-        self.tri_c = _launch.empty(front_capacity, dtype=wp.int32, device=self.device)
         # Grid-stride bounds: fixed launch dimensions, which a captured graph requires. Sized from
         # the cloud, not from the budget — the live front peaks well below the point count, and a
         # fixed 64k-wide launch spent most of a small mesh's wave scheduling no-op threads.
@@ -2799,10 +2809,15 @@ def _bpa_run(state: _BpaState, max_waves: int) -> None:
     """
     _launch.fill_(state.counters[kernel_bpa.CNT_CONTINUE : kernel_bpa.CNT_CONTINUE + 1], 1)
     waves_run = 0
+    # A batch that follows one the device kept going through starts from the reset its last
+    # ``end_wave`` did, so only the first batch and one resuming a loop the host stopped open with
+    # ``begin_wave``.
+    resumed = True
     for _ in range(_BPA_MAX_BATCHES):
         for wave in range(_BPA_WAVES_PER_BATCH):
-            _bpa_wave(state, max_waves, begin=wave == 0)
+            _bpa_wave(state, max_waves, begin=resumed and wave == 0)
             state.front_in, state.front_out = state.front_out, state.front_in
+        resumed = False
         counters = state.counters.numpy()
         no_op_waves = _BPA_WAVES_PER_BATCH - (int(counters[kernel_bpa.CNT_WAVE]) - waves_run)
         waves_run = int(counters[kernel_bpa.CNT_WAVE])
@@ -2817,14 +2832,15 @@ def _bpa_run(state: _BpaState, max_waves: int) -> None:
         else:
             state.compact()
         _launch.fill_(state.counters[kernel_bpa.CNT_CONTINUE : kernel_bpa.CNT_CONTINUE + 1], 1)
+        resumed = True
 
 
 def _bpa_wave(state: _BpaState, max_waves: int, *, begin: bool) -> None:
     """
     Queue one wave: seed or pivot, claim, commit, advance. No allocations, no readbacks.
 
-    ``begin`` opens a batch with the counter reset; within a batch the previous wave's
-    ``end_wave`` has done it already.
+    ``begin`` opens a batch with the counter reset; otherwise the previous wave's ``end_wave``
+    has done it already.
     """
     device = state.device
     if begin:
