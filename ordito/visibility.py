@@ -39,7 +39,6 @@ from typing import Literal
 
 import warp as wp
 
-import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
@@ -291,20 +290,13 @@ def _occlusion_bundle(
     if m == 0:
         return out_occlusion
 
-    directions = od.sample.sample_fibonacci_hemisphere(n_rays, device=device)
+    # The hemisphere lattice (``sample_fibonacci_hemisphere``'s, a band of height 1).
+    directions, *limits = _bundle_inputs(mesh, points, max_t, n_rays, 1.0)
     # One block per point, lanes over the bundle -- see ``kernel_visibility.BUNDLE_BLOCK`` for why
     # this wins over a thread per point, and why the width is 64.
     # Binary occlusion asks only whether each ray is blocked (an any-hit trace); obscurance needs
     # the nearest hit's distance.
-    trace = [
-        mesh.id,
-        points,
-        normals,
-        directions,
-        _WEIGHT_MODES[weight],
-        *_bundle_limits(mesh, points, max_t),
-        out_occlusion,
-    ]
+    trace = [mesh.id, points, normals, directions, _WEIGHT_MODES[weight], *limits, out_occlusion]
     if tau > 0.0:
         kernel, inputs = kernel_visibility.obscurance, [*trace[:4], wp.float32(tau), *trace[4:]]
     elif m >= _OCCLUSION_POINT_MAJOR_FROM and wp.get_device(device).is_cuda:
@@ -480,7 +472,8 @@ def shape_diameter(
     if m == 0:
         return _launch.empty(0, dtype=wp.float32, device=device)
 
-    directions = od.sample.sample_fibonacci_cone(n_rays, cone_angle, device=device)
+    # ``sample_fibonacci_cone``'s lattice.
+    directions, *limits = _bundle_inputs(mesh, points, max_t, n_rays, 1.0 - math.cos(cone_angle))
     # Distances are kept so the trimming pass can revisit them against a mean the first pass had not
     # finished computing; re-tracing instead would double the only expensive part of the kernel.
     scratch = odt.empty_2d((m, n_rays), wp.float32, device=device)
@@ -493,7 +486,7 @@ def shape_diameter(
             points,
             normals,
             directions,
-            *_bundle_limits(mesh, points, max_t),
+            *limits,
             wp.float32(trim),
             scratch,
             out_diameter,
@@ -837,25 +830,30 @@ def _resolve_normals(
     return normals
 
 
-def _bundle_limits(
-    mesh: wp.Mesh, points: wp.array[wp.vec3], max_t: float | None
-) -> tuple[wp.array[wp.float32], wp.float32, wp.float64]:
+def _bundle_inputs(
+    mesh: wp.Mesh, points: wp.array[wp.vec3], max_t: float | None, n_rays: int, z_span: float
+) -> tuple[wp.array[wp.vec3], wp.array[wp.float32], wp.float32, wp.float64]:
     """
-    Form the ray-bundle kernels' ``(corners, caller_max_t, offset_scale)`` arguments.
+    Form the ray-bundle kernels' ``(directions, corners, caller_max_t, offset_scale)`` arguments.
 
-    ``corners`` is the box enclosing the mesh and the non-empty ``points`` (one packed box,
-    reduced in one launch); the kernels form its diagonal -- the default ray length and the scale
-    of the ray-origin offset (``_SURFACE_OFFSET`` of it) -- in the thread, so no search radius is
-    read back. ``caller_max_t`` is NaN when ``max_t`` is ``None``.
+    ``directions`` is the ``n_rays``-point Fibonacci lattice over a band of height ``z_span``, the
+    [`ordito.sample`][ordito.sample] generators' own. ``corners`` is the box enclosing the mesh
+    and the non-empty ``points`` (one packed box); both are formed in one launch. The kernels form
+    the box's diagonal -- the default ray length and the scale of the ray-origin offset
+    (``_SURFACE_OFFSET`` of it) -- in the thread, so no search radius is read back.
+    ``caller_max_t`` is NaN when ``max_t`` is ``None``.
     """
     device = points.device
     corners = _launch.full(6, math.inf, dtype=wp.float32, device=device)
+    directions = _launch.empty(n_rays, dtype=wp.vec3, device=device)
     _launch.launch(
-        kernel_reduce.minmax_vec3_pair_chunked,
-        dim=kernel_reduce.chunks_1d(mesh.points.size) + kernel_reduce.chunks_1d(points.size),
-        inputs=[mesh.points, points, wp.int32(0)],
-        outputs=[corners],
+        kernel_visibility.bundle_setup,
+        dim=kernel_reduce.chunks_1d(mesh.points.size)
+        + kernel_reduce.chunks_1d(points.size)
+        + n_rays,
+        inputs=[mesh.points, points, wp.float32(z_span)],
+        outputs=[corners, directions],
         device=device,
     )
     caller_max_t = math.nan if max_t is None else max_t
-    return corners, wp.float32(caller_max_t), wp.float64(_SURFACE_OFFSET)
+    return directions, corners, wp.float32(caller_max_t), wp.float64(_SURFACE_OFFSET)

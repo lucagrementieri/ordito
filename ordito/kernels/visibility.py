@@ -2,12 +2,13 @@ from typing import Any
 
 import warp as wp
 
-from ordito.constants import TOLERANCE_PLANAR_CONSTANT
+from ordito.constants import TILE_1D, TOLERANCE_PLANAR_CONSTANT
 from ordito.kernels.array import RegisterBlockedTable, morton_code_30, morton_frame, to_vec3d
 from ordito.kernels.predicates import point_triangle_offset
 from ordito.kernels.proximity import box_diagonal_d, closest_point_query
 from ordito.kernels.ray import longest_ray_distance
-from ordito.kernels.reduce import block_sum
+from ordito.kernels.reduce import block_sum, minmax_vec3_chunk
+from ordito.kernels.sample import fibonacci_direction
 from ordito.kernels.tangent_space import any_perpendicular
 
 wp.set_module_options({"enable_backward": False})
@@ -56,6 +57,31 @@ def bundle_direction(
     # what lets every point share a single direction array while staying low-discrepancy -- folding
     # a whole-sphere lattice onto the normal's side (libigl's approach) would not.
     return basis_x * local[0] + basis_y * local[1] + normal * local[2]
+
+
+@wp.kernel
+def bundle_setup(
+    mesh_points: wp.array[wp.vec3],
+    points: wp.array[wp.vec3],
+    z_span: wp.float32,
+    out_corners: wp.array[wp.float32],
+    out_directions: wp.array[wp.vec3],
+) -> None:
+    # The two inputs every ray-bundle kernel takes, in one launch: the box of the mesh and the
+    # query points (``reduce.minmax_vec3_pair_chunked``'s union form: its leading
+    # ``chunks_1d(n_mesh) + chunks_1d(n_points)`` threads, folding into ``out_corners`` seeded
+    # ``inf``), and the bundle's Fibonacci lattice over a band of height ``z_span``
+    # (``sample.fibonacci_lattice``'s directions, bit for bit), one direction a trailing thread.
+    t = wp.int32(wp.tid())
+    chunks_a = (mesh_points.shape[0] + TILE_1D - 1) // TILE_1D
+    chunks = chunks_a + (points.shape[0] + TILE_1D - 1) // TILE_1D
+    if t < chunks_a:
+        minmax_vec3_chunk(mesh_points, t, out_corners, wp.int32(0))
+    elif t < chunks:
+        minmax_vec3_chunk(points, t - chunks_a, out_corners, wp.int32(0))
+    else:
+        r = t - chunks
+        out_directions[r] = fibonacci_direction(r, out_directions.shape[0], z_span)
 
 
 @wp.func

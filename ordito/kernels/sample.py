@@ -27,10 +27,9 @@ wp.set_module_options({"enable_backward": False})
 GOLDEN_ANGLE = wp.constant(wp.float64(math.pi * (3.0 - math.sqrt(5.0))))
 
 
-@wp.kernel
-def fibonacci_lattice(
-    count: wp.int32, z_span: wp.float32, out_directions: wp.array[wp.vec3]
-) -> None:
+@wp.func
+def fibonacci_direction(i: wp.int32, count: wp.int32, z_span: wp.float32) -> wp.vec3:
+    # Direction ``i`` of the ``count``-point Fibonacci lattice over a band of height ``z_span``.
     # z descends uniformly through (1 - z_span, 1); the offset 0.5 centers the samples.
     # z_span = 2 covers the full sphere, z_span = 1 the positive-z hemisphere.
     #
@@ -40,14 +39,20 @@ def fibonacci_lattice(
     # nothing to ~4 096 directions, 11 % of the minimum neighbour spacing at 100 000, and 0.21 rad
     # of azimuth at 1e6 -- the uniformity this lattice exists for. It costs nothing: the whole
     # call is launch- and allocation-bound, flat from 64 to 200 000 directions on both devices.
-    i = wp.int32(wp.tid())
     count_f = wp.float32(count)
     z = 1.0 - z_span * (wp.float32(i) + 0.5) / count_f
     radius = wp.sqrt(wp.max(0.0, 1.0 - z * z))
     theta = GOLDEN_ANGLE * wp.float64(i)
-    out_directions[i] = wp.vec3(
-        radius * wp.float32(wp.cos(theta)), radius * wp.float32(wp.sin(theta)), z
-    )
+    return wp.vec3(radius * wp.float32(wp.cos(theta)), radius * wp.float32(wp.sin(theta)), z)
+
+
+@wp.kernel
+def fibonacci_lattice(
+    count: wp.int32, z_span: wp.float32, out_directions: wp.array[wp.vec3]
+) -> None:
+    # The whole lattice, one direction a thread (``fibonacci_direction``).
+    i = wp.int32(wp.tid())
+    out_directions[i] = fibonacci_direction(i, count, z_span)
 
 
 @wp.kernel
