@@ -179,7 +179,8 @@ def _cloud_ml(bench_case: BenchCase) -> mm.PointCloud:
     ``PointsProjector.setPointCloud`` stores a **raw pointer**: handing it a temporary cloud leaves
     it reading freed memory and segfaults on a cloud this size rather than raising, which is the
     same rule ``PointsToMeshProjector`` follows in ``test_proximity.py``. The cache is that
-    reference, and it keeps the lazily built tree warm as well.
+    reference. The cloud also caches its tree, which a timed row that prices the build must drop
+    with ``invalidateCaches``.
     """
     if bench_case.mesh_name not in _cloud_ml_cache:
         from meshlib import mrmeshnumpy as mn
@@ -303,28 +304,29 @@ def _run_pytorch3d_ball(bench_case: BenchCase, radius: float) -> None:
 
 def _run_meshlib_projector(bench_case: BenchCase) -> None:
     """
-    ``PointsProjector`` over the query cloud: meshlib's only batched ``k=1``, tree pre-warmed.
+    ``PointsProjector`` over the query cloud: meshlib's only batched ``k=1``, tree build timed.
 
     Shared by both ``k=1`` groups because meshlib has no spatial-index choice to make -- the
     reference call is identical whichever structure ordito uses on its side, which is the whole
     reason the BVH and hash-grid groups are comparable at all.
 
     The point cloud is held in a name because ``setPointCloud`` stores a raw pointer and a temporary
-    segfaults; the projector and its lazily built tree are outside the timed callable, so the row
-    prices the queries rather than the build.
+    segfaults. The cloud caches its AABB tree across calls, so each timed call drops it first: the
+    row prices the build plus the queries, as ordito's rows and every other reference's do (a
+    reused tree took a twentieth of the time on dragon).
     """
     cloud_ml = _cloud_ml(bench_case)  # cached: the projector does not own it
     queries_ml = _queries_ml(bench_case)
-    projector_ml = mm.PointsProjector()
-    projector_ml.setPointCloud(cloud_ml)
     settings_ml = mm.FindProjectionOnPointsSettings()
 
     def nearest_ml() -> mm.std_vector_PointsProjectionResult:
+        cloud_ml.invalidateCaches()  # rebuild the tree in every call
+        projector_ml = mm.PointsProjector()
+        projector_ml.setPointCloud(cloud_ml)
         results_ml = mm.std_vector_PointsProjectionResult()
         projector_ml.findProjections(results_ml, queries_ml, settings_ml)
         return results_ml
 
-    nearest_ml()  # pre-warm the lazily built tree
     assert len(bench_case.run(nearest_ml)) == _queries_np(bench_case).shape[0]
 
 
