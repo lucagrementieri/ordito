@@ -27,7 +27,7 @@ from ordito.kernels.reduce import (
     block_chunk_1d,
     block_max,
     block_sum,
-    store_block_sum,
+    sum_strided_rows,
     tile_chunk,
 )
 from ordito.kernels.triangles import face_vertices
@@ -503,23 +503,39 @@ def lane_sum_of_chunk(
 
 
 @wp.kernel(enable_backward=False)
-def totals_of_pair(
+def block_totals_of_pair(
     first: wp.array[wp.float32],
     second: wp.array[wp.float32],
     first_blocks: wp.int32,
     squared: wp.int32,
-    stride: wp.int32,
-    out_totals: wp.array[wp.float32],
+    out_partials: wp.array[wp.float32],
 ) -> None:
-    # The totals of two arrays (of their squares under ``squared``) into slots 0 and 1 of a
-    # ``_launch.block_partials`` buffer of width 2: ``max_of_pair``'s block split, the leading
-    # ``first_blocks`` blocks summing ``first`` and the rest ``second``, committed by
-    # ``store_block_sum`` (a fixed-order fold under ``ordito.config``'s deterministic setting,
-    # one ``atomic_add`` per slot and block otherwise).
+    # The first stage of the totals of two arrays (of their squares under ``squared``):
+    # ``max_of_pair``'s block split, the leading ``first_blocks`` blocks summing ``first`` and the
+    # rest ``second``, each block's sum stored at ``out_partials[2 + block]`` for
+    # ``fold_totals_of_pair``. Stored rather than added, so no slot need start at zero.
     chunk, lane = wp.tid()
-    total = wp.vec2(0.0, 0.0)
+    local = wp.float32(0.0)
     if chunk < first_blocks:
-        total = wp.vec2(lane_sum_of_chunk(first, chunk, lane, squared), 0.0)
+        local = lane_sum_of_chunk(first, chunk, lane, squared)
     else:
-        total = wp.vec2(0.0, lane_sum_of_chunk(second, chunk - first_blocks, lane, squared))
-    store_block_sum(chunk, lane, total, out_totals, 0, stride)
+        local = lane_sum_of_chunk(second, chunk - first_blocks, lane, squared)
+    folded = block_sum(local)
+    if lane == 0:
+        out_partials[2 + chunk] = folded
+
+
+@wp.kernel(enable_backward=False)
+def fold_totals_of_pair(first_blocks: wp.int32, out_totals: wp.array[wp.float32]) -> None:
+    # One block adds ``block_totals_of_pair``'s rows in a fixed order, the first ``first_blocks``
+    # into ``out_totals[0]`` and the rest into ``out_totals[1]``: lanes stride the rows by
+    # ``wp.block_dim()`` (the one CPU lane walks them all) and one ``block_sum`` combines both.
+    _block, lane = wp.tid()
+    n_rows = out_totals.shape[0] - 2
+    zero = wp.float32(0.0)
+    head = sum_strided_rows(lane, out_totals, 2, 1, first_blocks, zero)
+    tail = sum_strided_rows(lane, out_totals, 2 + first_blocks, 1, n_rows - first_blocks, zero)
+    totals = block_sum(wp.vec2(head, tail))
+    if lane == 0:
+        out_totals[0] = totals[0]
+        out_totals[1] = totals[1]

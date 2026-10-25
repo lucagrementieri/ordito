@@ -1131,9 +1131,14 @@ def _chamfer(
         return sq_forward, _square(backward)
 
     if point_reduction != "max":
-        total_forward, total_backward = _totals_of_both(
-            distances.forward, None if single_directional else backward, squared
-        )
+        if single_directional and not squared:
+            # One array as it is: ``reduce.sum``, whose arrival-order form is one launch.
+            total_forward = od.reduce.sum(cast(odt.Array1dFloat32, distances.forward))
+            total_backward = 0.0
+        else:
+            total_forward, total_backward = _totals_of_both(
+                distances.forward, None if single_directional else backward, squared
+            )
         if point_reduction == "mean":
             total_forward /= distances.forward.size
             if not single_directional:
@@ -1206,27 +1211,30 @@ def _totals_of_both(
     Totals of non-empty distance arrays (of their squares under ``squared``) in one readback.
 
     The ``"sum"`` / ``"mean"`` counterpart of [`_max_of_both`][ordito.metrics._max_of_both]: both
-    arrays fold in one launch into the two result slots of one block-partials buffer, in a fixed
-    order under [`is_deterministic`][ordito.config.is_deterministic], so both come back in one
-    copy. ``backward=None`` (a directed Chamfer value) totals ``forward`` alone, with ``0.0``
-    for the second total.
+    arrays' block sums in one launch and one block folding them in a fixed order into the two
+    leading slots of the same buffer, so both come back in one copy, repeating bit for bit
+    whatever [`is_deterministic`][ordito.config.is_deterministic] says. ``backward=None`` (a
+    directed Chamfer value) totals ``forward`` alone, with ``0.0`` for the second total.
     """
     device = forward.device
     forward_blocks = kernel_reduce.blocks_1d(forward.size)
     blocks = forward_blocks
     if backward is not None:
         blocks += kernel_reduce.blocks_1d(backward.size)
-    totals, stride = _launch.block_partials(blocks, 2, wp.float32, device)
+    # Two result slots, then one row per block; every slot is written before it is read.
+    totals = _launch.empty(2 + blocks, dtype=wp.float32, device=device)
     _launch.launch_tiled(
-        kernel_metrics.totals_of_pair,
+        kernel_metrics.block_totals_of_pair,
         dim=[blocks],
-        inputs=[
-            forward,
-            forward if backward is None else backward,
-            forward_blocks,
-            int(squared),
-            stride,
-        ],
+        inputs=[forward, forward if backward is None else backward, forward_blocks, int(squared)],
+        outputs=[totals],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    _launch.launch_tiled(
+        kernel_metrics.fold_totals_of_pair,
+        dim=[1],
+        inputs=[forward_blocks],
         outputs=[totals],
         block_dim=TILE_1D,
         device=device,
