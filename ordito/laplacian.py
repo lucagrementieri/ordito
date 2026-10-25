@@ -51,7 +51,6 @@ from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import triangles as kernel_triangles
 from ordito.tangent_space import halfedge_transport_angles
-from ordito.triangles import face_normals_and_areas
 
 # Face count from which a mesh operator's pattern is built from undirected keys plus a 32-bit
 # second sort rather than one sort of directed keys (``_mesh_operator_pattern``). Both give the
@@ -153,7 +152,14 @@ def face_gradients(
         return gradients
 
     if face_normals is None or face_areas is None:
-        face_normals, face_areas = face_normals_and_areas(vertices, faces)
+        # The normals and areas are formed in the gradient's own thread, so no table is written.
+        _launch.launch(
+            kernel_triangles.face_gradients_from_positions,
+            dim=n_faces,
+            inputs=[vertices, faces, values, gradients],
+            device=device,
+        )
+        return gradients
     _launch.launch(
         kernel_triangles.face_gradients,
         dim=n_faces,

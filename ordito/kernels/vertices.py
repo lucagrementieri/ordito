@@ -155,6 +155,19 @@ def scatter_area_weighted_normals(
 
 
 @wp.kernel
+def scatter_unit_normals(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_sums: wp.array2d[wp.Float]
+) -> None:
+    # ``vertices.mean_vertex_normals`` of the derived face normals: the unit normal
+    # ``face_normals_and_areas`` writes, scattered onto the corners as ``scatter_sum_vec`` adds it,
+    # with no ``(n_faces,)`` normal or area table in between. Differs from
+    # ``scatter_area_weighted_normals`` only in not scaling by the area.
+    f = wp.int32(wp.tid())
+    normal, _area = face_normals_and_area(vertices, faces, f)
+    add_to_face_corners(out_sums, faces, f, normal, normal, normal)
+
+
+@wp.kernel
 def scatter_scaled_normals(
     face_normals: wp.array[wp.vec3],
     face_areas: wp.array[wp.float32],
@@ -255,6 +268,7 @@ _ACCUMULATOR_DTYPES = (wp.float64,)
 
 NORMALIZE_ACCUMULATED_ROWS: OverloadTable
 SCATTER_AREA_WEIGHTED_NORMALS: OverloadTable
+SCATTER_UNIT_NORMALS: OverloadTable
 SCATTER_SCALED_NORMALS: OverloadTable
 SCATTER_ANGLE_WEIGHTED_NORMALS: OverloadTable
 SCATTER_MAX_WEIGHTED_NORMALS: OverloadTable
@@ -263,7 +277,7 @@ SCATTER_MAX_WEIGHTED_UNIT_NORMALS: OverloadTable
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
-    global NORMALIZE_ACCUMULATED_ROWS, SCATTER_AREA_WEIGHTED_NORMALS
+    global NORMALIZE_ACCUMULATED_ROWS, SCATTER_AREA_WEIGHTED_NORMALS, SCATTER_UNIT_NORMALS
     global SCATTER_SCALED_NORMALS, SCATTER_ANGLE_WEIGHTED_NORMALS
     global SCATTER_MAX_WEIGHTED_NORMALS, SCATTER_MAX_WEIGHTED_UNIT_NORMALS
     NORMALIZE_ACCUMULATED_ROWS = OverloadTable(
@@ -273,6 +287,9 @@ def _register_overloads() -> None:
     geometry = [wp.array[wp.vec3], wp.array[wp.int32]]
     SCATTER_AREA_WEIGHTED_NORMALS = OverloadTable(
         scatter_area_weighted_normals, {d: [*geometry, wp.array2d[d]] for d in _ACCUMULATOR_DTYPES}
+    )
+    SCATTER_UNIT_NORMALS = OverloadTable(
+        scatter_unit_normals, {d: [*geometry, wp.array2d[d]] for d in _ACCUMULATOR_DTYPES}
     )
     SCATTER_ANGLE_WEIGHTED_NORMALS = OverloadTable(
         scatter_angle_weighted_normals, {d: [*geometry, wp.array2d[d]] for d in _ACCUMULATOR_DTYPES}
