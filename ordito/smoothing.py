@@ -1679,8 +1679,34 @@ def filter_mut_dif_laplacian(
     # Vertex normals and eps are computed once from the input mesh and reused every pass, matching
     # the trimesh reference (which reads normals off the un-mutated mesh inside its loop).
     if face_normals is None or face_areas is None:
-        face_normals, face_areas = face_normals_and_areas(vertices, faces)
-    normals = mean_vertex_normals(n, faces, face_normals)
+        # ``mean_vertex_normals`` of the derived face normals, which the scatter forms in its own
+        # thread, so no normal table is written; the areas only for the constraint's probe step.
+        normal_sums = _launch.zeros((n, 3), dtype=wp.float64, device=device)
+        n_faces = faces.size // 3
+        _launch.launch(
+            kernel_vertices.SCATTER_UNIT_NORMALS[wp.float64],
+            dim=n_faces,
+            inputs=[vertices, faces, normal_sums],
+            device=device,
+        )
+        normals = _launch.empty(n, dtype=wp.vec3, device=device)
+        _launch.launch(
+            kernel_vertices.NORMALIZE_ACCUMULATED_ROWS[wp.float64],
+            dim=n,
+            inputs=[normal_sums, normals],
+            device=device,
+        )
+        face_areas = None
+        if volume_constraint:
+            face_areas = _launch.empty(n_faces, dtype=wp.float32, device=device)
+            _launch.launch(
+                kernel_triangles.face_areas,
+                dim=n_faces,
+                inputs=[vertices, faces, face_areas],
+                device=device,
+            )
+    else:
+        normals = mean_vertex_normals(n, faces, face_normals)
 
     lv = _launch.empty(n, dtype=wp.vec3d, device=device)
     sensitivity = _launch.zeros(1, dtype=wp.float64, device=device)
@@ -1702,6 +1728,7 @@ def filter_mut_dif_laplacian(
         # The largest face area, which sets the probe step ``0.01 * sqrt(max area)`` in the two
         # kernels that use it; areas are non-negative, so a zero seed is the maximum's identity.
         area_max = _launch.zeros(1, dtype=wp.float32, device=device)
+        assert face_areas is not None
         if face_areas.size > 0:
             _launch.launch_tiled(
                 kernel_reduce.MAX1D_TILED[wp.float32],
