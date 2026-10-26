@@ -391,6 +391,16 @@ def emit_boundary_successors(
         out_next[a] = b
 
 
+@wp.func
+def add_rim_edge_length(
+    out_perimeter: wp.array[wp.float32], ell: wp.int32, a: wp.vec3, c: wp.vec3
+) -> None:
+    # One rim edge's arc length into its loop's perimeter, in arrival order: the atomic perimeter
+    # of ``loop_perimeters`` and of ``holes.loop_rim_metrics``, whose fixed-order form is
+    # ``loop_perimeter_lanes``.
+    wp.atomic_add(out_perimeter, ell, wp.length(c - a))
+
+
 @wp.kernel
 def loop_perimeters(
     flat_loops: wp.array[wp.int32],
@@ -403,7 +413,7 @@ def loop_perimeters(
     # ``preserve_largest_hole`` costs one readback instead of two per loop.
     t = wp.int32(wp.tid())
     ell, a, c = loop_rim_edge(flat_loops, loop_id, loop_offsets, vertices, t)
-    wp.atomic_add(out_perimeter, ell, wp.length(c - a))
+    add_rim_edge_length(out_perimeter, ell, a, c)
 
 
 @wp.func
