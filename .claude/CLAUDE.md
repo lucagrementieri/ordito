@@ -974,13 +974,19 @@ The full per-component detail is in `reference/component-status.md`; read the co
 ### Open items from the 2026-10-23 uncapped sweep: ordito on large meshes
 
 The sweep (`.benchmarks/merged-2026-10-23-final/incomplete.jsonl`, ordito-cuda rows) left ordito
-with no time on three large-mesh rows. `ball_pivoting` on happy_buddha is fixed (component notes,
-the claim key) and `relax_approx` on lucy too (streamed geodesic balls,
-`reference/component-status.md`, "k-NN and ball queries"); the third is not attributed yet.
+with no time on three large-mesh rows; all three are fixed. `ball_pivoting` on happy_buddha (component
+notes, the claim key), `relax_approx` on lucy (streamed geodesic balls,
+`reference/component-status.md`, "k-NN and ball queries") and `smooth_region` on lucy (a V-cycle
+form for large unit-weight regions, `reference/component-status.md`, smoothing). One residue:
 
-- **`smooth_region` runs past the 600 s limit on lucy** (the dragon and happy_buddha rows take
-  26 s and 11 s of wall time, rounds included). `smooth_region_fixed_rim` and
-  `smooth_region_boundary` finish on lucy.
+- **`smooth_region` with cotangent weights still scales linearly with the region** (dragon 10 948
+  CG iterations, 6.5 s; lucy not finishing). The clamped cotangent weights set the polynomial's
+  Gershgorin bound to 10.5 against a true `λmax(D⁻¹L)` of 2.60 (one near-cancelling row) and leave
+  `L_ff` probably indefinite, so the V-cycle form does not converge on them (dragon: 5 000
+  iterations, residual² 2e-11 against ~1e-20). The exact `L⁻¹D²L⁻¹` preconditioner takes 114-128
+  iterations, so a definite surrogate keeping the true `D` is the lead; `max(w, 0)` is refuted
+  (2 354 at its exact floor), and forcing the bound to 2 or 3 diverged. Raising the polynomial's
+  degree is a cheap 2.6-3x on dragon (degree 96: 494 iterations, 2.2 s) but still linear in `n`.
 
 ### Open items from the 2026-10-22 parity audit
 
