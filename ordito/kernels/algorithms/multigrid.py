@@ -655,6 +655,35 @@ def chebyshev_step(
     out_x[slot] = chebyshev_update(steps[index], x[slot], x_previous[slot], source[slot], ax)
 
 
+@wp.kernel
+def cycle_chebyshev_update(
+    n_rows: wp.int32,
+    stride: wp.int32,
+    momentum: wp.float64,
+    step: wp.float64,
+    first: wp.int32,
+    cycled: wp.array[wp.float64],
+    direction: wp.array[wp.float64],
+    iterate: wp.array[wp.float64],
+) -> None:
+    # One step of the Chebyshev iteration for ``L z = r`` preconditioned by a V-cycle ``V``,
+    # every column at once: ``direction = momentum * direction + step * cycled`` with
+    # ``cycled = V res``, then ``iterate += direction`` -- or, on the ``first`` step (warp
+    # uniform), ``direction = step * cycled`` and ``iterate = direction``, since the iteration
+    # starts from zero and no launch clears it. ``linalg._SquaredMultigridApply`` forms the
+    # residual between steps with ``csr_matvec``. Both arrays are updated in place.
+    t = wp.int32(wp.tid())
+    slot = (t // n_rows) * stride + t % n_rows
+    if first != wp.int32(0):
+        value = step * cycled[slot]
+        direction[slot] = value
+        iterate[slot] = value
+    else:
+        value = momentum * direction[slot] + step * cycled[slot]
+        direction[slot] = value
+        iterate[slot] += value
+
+
 # Rows a block of ``power_step_partials`` / ``damped_inverse_diagonal`` owns, its ``TILE_1D``
 # lanes striding them. Four rows a lane rather than the ``reduce`` fold width
 # (``ITEMS_PER_BLOCK_1D``, sixteen): a level of 40 k rows then launches 160 blocks rather than 40

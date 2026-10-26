@@ -4361,6 +4361,7 @@ def squared_laplacian_preconditioner(
     weight_sums: wp.array[wp.float64],
     *,
     method: Literal["polynomial", "multigrid"] = "polynomial",
+    degree: int = 1,
 ) -> SquaredLaplacianPreconditioner:
     """
     Preconditioner for normal equations ``(MᵀM) x = Mᵀ b`` whose square block is ``D⁻¹ L``.
@@ -4403,6 +4404,13 @@ def squared_laplacian_preconditioner(
         polynomial's, which grows in proportion -- the choice for a system of many thousands of
         unknowns. ``L`` must then be symmetric positive-definite. When the coarsening stalls the
         polynomial is returned instead.
+    degree
+        For ``method="multigrid"``, the degree of the Chebyshev iteration each V-cycle is wrapped
+        in: ``C D² C`` with ``C = p(V L) V ≈ L⁻¹``, ``p`` of this degree. ``1`` is the bare
+        ``V D² V``. Squaring a V-cycle squares its error on the smooth modes, so the bare form's
+        iteration count still grows with ``n``; a higher degree cuts the iterations by more than
+        it multiplies their cost only on large systems (hundreds of thousands of unknowns and
+        more). Ignored by ``"polynomial"``. Must be positive.
 
     Returns
     -------
@@ -4414,7 +4422,7 @@ def squared_laplacian_preconditioner(
     RuntimeError
         If ``laplacian`` and ``weight_sums`` are not all on one device.
     ValueError
-        If ``method`` is not ``"polynomial"`` or ``"multigrid"``.
+        If ``method`` is not ``"polynomial"`` or ``"multigrid"``, or ``degree`` is not positive.
 
     See Also
     --------
@@ -4452,8 +4460,10 @@ def squared_laplacian_preconditioner(
     ```
     """
     require_same_device(laplacian=laplacian.values, weight_sums=weight_sums)
+    if degree < 1:
+        raise ValueError(f"degree must be positive, got {degree}")
     if method == "multigrid":
-        multigrid = SquaredLaplacianPreconditioner._from_multigrid(laplacian, weight_sums)  # pyright: ignore[reportPrivateUsage]
+        multigrid = SquaredLaplacianPreconditioner._from_multigrid(laplacian, weight_sums, degree)  # pyright: ignore[reportPrivateUsage]
         if multigrid is not None:
             return multigrid
     elif method != "polynomial":
@@ -4556,10 +4566,10 @@ class SquaredLaplacianPreconditioner:
 
     @classmethod
     def _from_multigrid(
-        cls, laplacian: odt.BsrMatrix[wp.float64], weight_sums: wp.array[wp.float64]
+        cls, laplacian: odt.BsrMatrix[wp.float64], weight_sums: wp.array[wp.float64], degree: int
     ) -> SquaredLaplacianPreconditioner | None:
         """
-        Build the ``V D² V`` form: a V-cycle hierarchy on ``L`` and ``D²``.
+        Build the ``C D² C`` form: a V-cycle hierarchy on ``L``, ``D²`` and the Chebyshev degree.
 
         ``M_ff⁻¹ M_ff⁻ᵀ = L⁻¹ D² L⁻¹``, so with ``V ≈ L⁻¹`` one symmetric V-cycle -- its pre- and
         post-smoothing are the same l1-Jacobi sweeps -- the apply ``V D² V`` is symmetric
@@ -4591,7 +4601,7 @@ class SquaredLaplacianPreconditioner:
                 outputs=[squares],
                 device=self._device,
             )
-        self._multigrid = _SquaredMultigrid(hierarchy, squares)
+        self._multigrid = _SquaredMultigrid(hierarchy, squares, degree)
         self._narrowed = None
         return self
 
@@ -4829,41 +4839,66 @@ class _SquaredLaplacianApply(_ChebyshevApply):
 
 _SQUARED_MULTIGRID_SWEEPS = 8
 
+# The lower end of the interval ``[_SQUARED_MULTIGRID_LOWER, 1]`` of ``V L``'s spectrum that the
+# Chebyshev iteration ``C = p(V L) V`` is built for (``squared_laplacian_preconditioner``'s
+# ``degree``; a symmetric V-cycle with contracting smoothers keeps the spectrum in ``(0, 1]``).
+# ``p`` is positive on all of ``(0, 1]`` whatever the lower end, so a misjudged one costs
+# iterations, never definiteness. Measured on dragon at degree 8: 0.05 -> 117 iterations, 0.1 ->
+# 98, 0.2 -> 96.
+_SQUARED_MULTIGRID_LOWER = 0.1
+
 
 class _SquaredMultigrid(NamedTuple):
-    """The ``V D² V`` form's operator side: ``L``'s V-cycle hierarchy and ``D²``."""
+    """The ``C D² C`` form's operator side: ``L``'s V-cycle hierarchy and ``D²``."""
 
     hierarchy: tuple[list[_MultigridLevel], odt.ArrayNd]
     squares: wp.array[wp.float64]
+    degree: int
 
 
 class _SquaredMultigridApply:
-    """``z = V D² V r`` over the padded column blocks of one conjugate-gradient state."""
+    """``z = C D² C r`` over the padded column blocks of one conjugate-gradient state."""
 
     def __init__(self, owner: _SquaredMultigrid, n: int, n_columns: int, stride: int) -> None:
         self._n = n
         self._stride = stride
         self._squares = owner.squares
+        levels = owner.hierarchy[0]
+        self._operator = levels[0].operator
         self._cycle = _MultigridCycle(
             *owner.hierarchy, n_columns=n_columns, stride=stride, sweeps=_SQUARED_MULTIGRID_SWEEPS
         )
         dofs = n_columns * stride
         self._dofs = dofs
+        self._dim = n_columns * n
         device = owner.squares.device
         self._device = device
-        # The two intermediate vectors, zeroed once: the pad between a column's ``n`` live rows and
-        # ``stride`` is never written by the cycle or the scaling, and the cycle's top level reads
-        # its right-hand side's pad as zero (``scaled_diagonal_apply``).
+        # The intermediate vectors, zeroed once: the pad between a column's ``n`` live rows and
+        # ``stride`` is never written by the cycle, the scaling or the Chebyshev steps, and the
+        # cycle's top level reads its right-hand side's pad as zero (``scaled_diagonal_apply``).
+        count = 5
         if dofs > 0:
-            vectors = _launch.zeros(2 * dofs, dtype=wp.float64, device=device)
-            self._middle = _launch.view(vectors, 0, dofs)
-            self._scaled = _launch.view(vectors, dofs, 2 * dofs)
+            vectors = _launch.zeros(count * dofs, dtype=wp.float64, device=device)
+            views = [_launch.view(vectors, k * dofs, (k + 1) * dofs) for k in range(count)]
         else:
-            self._middle = self._scaled = _launch.zeros(0, dtype=wp.float64, device=device)
+            views = [_launch.zeros(0, dtype=wp.float64, device=device) for _ in range(count)]
+        self._middle, self._scaled, self._residual, self._cycled, self._direction = views
+        # The iteration's coefficients, fixed by the interval and the degree: ``(momentum, step)``
+        # per step, the first step's momentum unused.
+        lower = _SQUARED_MULTIGRID_LOWER
+        theta = (1.0 + lower) / 2.0
+        delta = (1.0 - lower) / 2.0
+        sigma = theta / delta
+        rho = 1.0 / sigma
+        self._coefficients = [(0.0, 1.0 / theta)]
+        for _ in range(1, owner.degree):
+            rho_next = 1.0 / (2.0 * sigma - rho)
+            self._coefficients.append((rho_next * rho, 2.0 * rho_next / delta))
+            rho = rho_next
 
     def apply(self, source: wp.array[wp.float64], destination: wp.array[wp.float64]) -> None:
-        """``destination = V D² V source``: a V-cycle, the diagonal scaling, a V-cycle."""
-        self._cycle.apply(source, self._middle)
+        """``destination = C D² C source``: the iteration, the diagonal scaling, the iteration."""
+        self._iterate(source, self._middle)
         _launch.launch(
             kernel_cg.scaled_diagonal_apply,
             dim=self._dofs,
@@ -4877,7 +4912,56 @@ class _SquaredMultigridApply:
             outputs=[self._scaled],
             device=self._device,
         )
-        self._cycle.apply(self._scaled, destination)
+        self._iterate(self._scaled, destination)
+
+    def _iterate(self, source: wp.array[wp.float64], destination: wp.array[wp.float64]) -> None:
+        """``destination = p(V L) V source``: the Chebyshev iteration for ``L z = source``."""
+        if len(self._coefficients) == 1:
+            # Degree one is the bare V-cycle, unscaled: ``p``'s constant only rescales the
+            # preconditioner, which conjugate gradient does not see but its rounding would.
+            self._cycle.apply(source, destination)
+            return
+        operator = self._operator
+        residual = source
+        for index, (momentum, step) in enumerate(self._coefficients):
+            if index > 0:
+                if index == 1:
+                    wp.copy(self._residual, source)
+                    residual = self._residual
+                # ``residual -= L direction``.
+                _launch.launch(
+                    kernel_mg.csr_matvec,
+                    dim=self._dim,
+                    inputs=[
+                        wp.int32(self._n),
+                        wp.int32(self._stride),
+                        wp.int32(self._stride),
+                        wp.int32(1),
+                        wp.float64(-1.0),
+                        operator.offsets,
+                        operator.columns,
+                        operator.values,
+                        self._direction,
+                    ],
+                    outputs=[residual],
+                    device=self._device,
+                )
+            self._cycle.apply(residual, self._cycled)
+            _launch.launch(
+                kernel_mg.cycle_chebyshev_update,
+                dim=self._dim,
+                inputs=[
+                    wp.int32(self._n),
+                    wp.int32(self._stride),
+                    wp.float64(momentum),
+                    wp.float64(step),
+                    wp.int32(1 if index == 0 else 0),
+                    self._cycled,
+                    self._direction,
+                    destination,
+                ],
+                device=self._device,
+            )
 
 
 class _JacobiChebyshev:

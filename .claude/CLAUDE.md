@@ -979,9 +979,17 @@ notes, the claim key), `relax_approx` on lucy (streamed geodesic balls,
 `reference/component-status.md`, "k-NN and ball queries") and `smooth_region` on lucy (a V-cycle
 form for large regions, `reference/component-status.md`, smoothing). Cotangent weights, which the
 benchmark row does not time, take that form too: dragon 10 948 -> 339 CG iterations (6.4 -> 0.58 s),
-lucy 153 s where the polynomial did not finish. Its iterations still grow with the region (lucy
-3 367; the V-cycle alone stays flat, 127-140 on the `L_ff` solve), probably from the rim rows the
-`L⁻¹D²L⁻¹` model leaves out; unverified.
+lucy 153 s where the polynomial did not finish. **The bare `V D² V` count grew with the region
+because squaring a V-cycle squares its error on the smooth modes, not because of the rim rows**
+(measured, SciPy/pyamg on icospheres: with exact `L⁻¹` the rim rows cost 26 -> 52 iterations over
+16x the size, against 7-9 without them; a V-cycle squared grew 137 -> 1 095 with or without them,
+while the same V-cycle alone held 17-21 on `L`). Wrapping each V-cycle in a Chebyshev iteration,
+`C = p(V L) V`, keeps `C D² C` near `L⁻¹ D² L⁻¹`, but costs `degree` V-cycles a side: it pays only
+on the largest regions (degree 3 from 500 k free vertices cotangent, 2.5 M unit; lucy 153 -> 99 s
+and 48 -> 42 s; dragon 2x slower at any degree above 1, since ordito's l1 V-cycle at 8 sweeps
+leaves little error to remove -- 338 iterations where pyamg's stand-in needed 5 606). Lucy's
+cotangent count is still 730; the exact preconditioner's floor grows too (26 -> 52), so some growth
+is inherent to the least-squares rows.
 
 ### Open items from the 2026-10-22 parity audit
 
