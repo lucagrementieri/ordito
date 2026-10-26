@@ -646,7 +646,18 @@ def _winding_band_field(
     # rather than its positions: every kernel below forms a node's position in-thread.
     step = wp.vec3(*steps)
     mesh = wp.Mesh(points=vertices, indices=faces)
-    distance = odt.empty_3d(shape, wp.float32, device=device)
+    # The capped distances and the winding numbers in one allocation (the field, which outlives
+    # them, has its own), and the zeroed crossing counts, ambiguity marks and the two undecided
+    # counters in another.
+    n_nodes = math.prod(shape)
+    lattices = _launch.empty(2 * n_nodes, dtype=wp.float32, device=device)
+    distance, winding = (
+        odt.as_array3d(
+            _launch.view(lattices, t * n_nodes, (t + 1) * n_nodes).reshape(shape), wp.float32
+        )
+        for t in range(2)
+    )
+    zeroed = _launch.zeros(3 * n_nodes + 2, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_levelset.capped_distance,
         dim=shape,
@@ -657,8 +668,8 @@ def _winding_band_field(
     # The column counts along z and, as their cross-check, along x: ``crossings[0]`` and
     # ``crossings[1]``, each kernel below covering both directions in one launch.
     inv_step = wp.vec3(*(1.0 / step for step in steps))
-    crossings = _launch.zeros((2, *shape), dtype=wp.int32, device=device)
-    ambiguous = _launch.zeros(shape, dtype=wp.int32, device=device)
+    crossings = _launch.view(zeroed, 0, 2 * n_nodes).reshape((2, *shape))
+    ambiguous = _launch.view(zeroed, 2 * n_nodes, 3 * n_nodes).reshape(shape)
     _launch.launch(
         kernel_levelset.rasterize_face_crossings,
         dim=(2, n_faces),
@@ -679,10 +690,9 @@ def _winding_band_field(
         device=device,
     )
 
-    winding = odt.empty_3d(shape, wp.float32, device=device)
     slots = odt.empty_3d(shape, wp.int32, device=device)
     undecided = _launch.empty(_EXACT_WINDING_CAPACITY, dtype=wp.vec3, device=device)
-    counts = _launch.zeros(2, dtype=wp.int32, device=device)
+    counts = _launch.view(zeroed, 3 * n_nodes, 3 * n_nodes + 2)
     _launch.launch(
         kernel_levelset.lattice_winding_numbers,
         dim=shape,
