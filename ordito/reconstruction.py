@@ -130,11 +130,9 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
     if n < 3:
         raise ValueError(f"delaunay_triangulation requires at least 3 points, got {n}")
 
-    faces_np = _lexicographic_triangulation(points)
-    if faces_np.shape[0] == 0:
-        return _launch.empty(0, dtype=wp.int32, device=device)
-
-    faces = _launch.array(np.ascontiguousarray(faces_np.reshape(-1)), dtype=wp.int32, device=device)
+    faces = _lexicographic_triangulation(points)
+    if faces.size == 0:
+        return faces
 
     def launch(
         adjacency: odt.Array2dInt32,
@@ -173,13 +171,14 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
     return faces
 
 
-def _lexicographic_triangulation(points: wp.array[wp.vec2]) -> np.ndarray:
+def _lexicographic_triangulation(points: wp.array[wp.vec2]) -> wp.array[wp.int32]:
     """
     Sequential lexicographic incremental triangulation (``igl::lexicographic_triangulation``).
 
-    Returns an ``(n_faces, 3)`` ``int32`` array of CCW triangles over the input point indices,
-    or an empty ``(0, 3)`` array when the points are collinear. The output is not yet Delaunay —
-    the caller flips it to Delaunay on device.
+    Returns the ``(3 * n_faces,)`` flat buffer of CCW triangles over the input point indices on
+    ``points.device``, empty when the points are collinear. The output is not yet Delaunay — the
+    caller flips it to Delaunay on device. On the CPU device it is a prefix view of the sweep's
+    own buffer.
 
     The lex sort is a radix sort on the points' device; the sweep itself runs in
     [`lexicographic_triangulation`][ordito.kernels.reconstruction.lexicographic_triangulation]
@@ -227,8 +226,12 @@ def _lexicographic_triangulation(points: wp.array[wp.vec2]) -> np.ndarray:
             "collinear points)."
         )
     if written == 0:
-        return np.empty((0, 3), dtype=np.int32)
-    return faces_cpu.numpy()[: 3 * written].reshape(-1, 3)
+        return _launch.empty(0, dtype=wp.int32, device=device)
+    if not device.is_cuda:
+        return _launch.view(faces_cpu, 0, 3 * written)
+    faces = _launch.empty(3 * written, dtype=wp.int32, device=device)
+    _launch.copy(faces, faces_cpu, count=3 * written)
+    return faces
 
 
 def triangulate_point_cloud(
@@ -365,10 +368,11 @@ def triangulate_point_cloud(
     if normals is None:
         normals = od.points.estimate_normals(points, neighbor_idx)
 
-    # Per-point local fan triangulation: point ``v``'s fan fills ``out_tris[v, :count]``. The fans
-    # and their counts in one allocation.
-    tri_rows, fan_counts = _carve(
-        _launch.empty(_carved_size([3 * n * k, n]), dtype=wp.int32, device=device), [3 * n * k, n]
+    # Per-point local fan triangulation: point ``v``'s fan fills ``out_tris[v, :count]``. The fans,
+    # their counts and the grown points' flags in one allocation.
+    widths = [3 * n * k, n, n]
+    tri_rows, fan_counts, grown_flags = _carve(
+        _launch.empty(_carved_size(widths), dtype=wp.int32, device=device), widths
     )
     out_tris = tri_rows.reshape((n, k, 3))
     normals_mode = (
@@ -390,13 +394,14 @@ def triangulate_point_cloud(
             wp.float32(boundary_angle),
             normals_mode,
         ],
-        outputs=[out_tris, fan_counts, grown_radii],
+        outputs=[out_tris, fan_counts, grown_radii, grown_flags],
         device=device,
     )
     _rebuild_grown_fans(
         points,
         normals,
         grown_radii,
+        grown_flags,
         k,
         bounds,
         crit_angle,
@@ -441,6 +446,7 @@ def _rebuild_grown_fans(
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
     grown_radii: wp.array[wp.float32],
+    grown_flags: wp.array[wp.int32],
     k: int,
     bounds: tuple[wp.vec3, wp.vec3],
     crit_angle: float,
@@ -455,9 +461,10 @@ def _rebuild_grown_fans(
     The automatic radius increase: the first fans used ``k`` neighbours, and each one that
     has a border, or whose triangles' circumcircles reach past that search, is triangulated again
     from up to ``max(2 * k, GROWN_NEIGHBOURS_MIN)`` nearest neighbours inside the radius
-    ``build_local_triangulations`` gave it. Its triangles replace its first fan's in its own slots.
+    ``build_local_triangulations`` gave it, which also flagged it in ``grown_flags`` (consumed).
+    Its triangles replace its first fan's in its own slots.
     """
-    grown_points = od.array.flatnonzero(grown_radii)
+    grown_points = od.array.flatnonzero_in_place(grown_flags)
     n_grown = grown_points.size
     if n_grown == 0:
         return
@@ -3252,9 +3259,7 @@ def ball_pivoting(
     crease_cos = math.cos(crease_angle) if crease_angle < math.pi else -1.0
 
     state = _BpaState(points, normals, grid, bvh, radius, clustering, crease_cos, 4 * n + 16)
-    _bpa_run(state, max_waves if max_waves > 0 else 16 * n)
-
-    count = int(read_scalar(state.counters, kernel_bpa.CNT_FACE))
+    count = _bpa_run(state, max_waves if max_waves > 0 else 16 * n)
     # A prefix view, not a copy: nothing writes the face buffer after the run, and the cleanup
     # below returns faces of its own, so the view never reaches the caller.
     faces = (
@@ -3530,9 +3535,11 @@ _BPA_WAVES_PER_BATCH = 8
 _BPA_MAX_BATCHES = 1 << 16
 
 
-def _bpa_run(state: _BpaState, max_waves: int) -> None:
+def _bpa_run(state: _BpaState, max_waves: int) -> int:
     """
-    Drive the wave loop until the front and the orphan set are both exhausted.
+    Drive the wave loop until the front and the orphan set are both exhausted; return the faces.
+
+    The face count comes off the last batch's counter readback.
 
     The host is woken once per batch, and only acts when the device asks it to — to grow the
     triangle budget, to compact a sparse front, or to stop.
@@ -3566,13 +3573,15 @@ def _bpa_run(state: _BpaState, max_waves: int) -> None:
         if counters[kernel_bpa.CNT_CONTINUE]:
             continue
         if counters[kernel_bpa.CNT_DONE] or counters[kernel_bpa.CNT_WAVE] >= max_waves:
-            return
+            return int(counters[kernel_bpa.CNT_FACE])
         if counters[kernel_bpa.CNT_GROW]:
             state.grow()
         else:
             state.compact()
         _launch.fill_(state.counters[kernel_bpa.CNT_CONTINUE : kernel_bpa.CNT_CONTINUE + 1], 1)
         resumed = True
+    # Out of batches: the counters have moved since the last read.
+    return int(read_scalar(state.counters, kernel_bpa.CNT_FACE))
 
 
 def _bpa_wave(state: _BpaState, max_waves: int, *, begin: bool) -> None:

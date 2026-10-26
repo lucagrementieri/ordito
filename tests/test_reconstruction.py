@@ -259,8 +259,8 @@ def test_delaunay_matches_warp_edge_flip_from_the_same_seed(device: str):
     points_wp = points_to_warp_uv(points_np, device)
 
     faces_od = od.reconstruction.delaunay_triangulation(points_wp).numpy().reshape(-1, 3)
-    seed_np = od.reconstruction._lexicographic_triangulation(points_wp)  # pyright: ignore[reportPrivateUsage]
-    faces_warp_wp = wp.array(np.asarray(seed_np).reshape(-1, 3), dtype=wp.int32, device=device)
+    seed_wp = od.reconstruction._lexicographic_triangulation(points_wp)  # pyright: ignore[reportPrivateUsage]
+    faces_warp_wp = wp.array(seed_wp.numpy().reshape(-1, 3), dtype=wp.int32, device=device)
     # Warp annotates the faces ``wp.array2d``, a static helper no runtime array is typed as.
     flips_wp = warp.geometry.delaunay_edge_flip(
         points_wp, cast("wp.array2d[wp.int32]", faces_warp_wp)
@@ -617,6 +617,7 @@ def test_build_local_triangulations_two_neighbour_ring_no_duplicate(device: str)
     # Seeded off zero, so the assert below also shows the kernel wrote the count itself.
     out_counts_wp = wp.full(1, -1, dtype=wp.int32, device=device)
     out_grown_radius_wp = wp.full(1, -1.0, dtype=wp.float32, device=device)
+    out_grown_flags_wp = wp.full(1, -1, dtype=wp.int32, device=device)
     wp.launch(
         kernel_reconstruction.build_local_triangulations,
         dim=1,
@@ -632,6 +633,7 @@ def test_build_local_triangulations_two_neighbour_ring_no_duplicate(device: str)
             out_tris_wp,
             out_counts_wp,
             out_grown_radius_wp,
+            out_grown_flags_wp,
         ],
         device=device,
     )
@@ -641,6 +643,7 @@ def test_build_local_triangulations_two_neighbour_ring_no_duplicate(device: str)
     # The 170-degree wedge's circumcircle reaches far past the unit search radius, so the fan grows
     # its search to MeshLib's cap, twice that radius.
     assert out_grown_radius_wp.numpy()[0] == 2.0
+    assert out_grown_flags_wp.numpy()[0] == 1
 
 
 def test_build_local_triangulations_two_gaps_emits_nothing(device: str):
@@ -671,6 +674,7 @@ def test_build_local_triangulations_two_gaps_emits_nothing(device: str):
     # Seeded off zero: the early return this fan takes must still report its (empty) count.
     out_counts_wp = wp.full(1, -1, dtype=wp.int32, device=device)
     out_grown_radius_wp = wp.full(1, -1.0, dtype=wp.float32, device=device)
+    out_grown_flags_wp = wp.full(1, -1, dtype=wp.int32, device=device)
     wp.launch(
         kernel_reconstruction.build_local_triangulations,
         dim=1,
@@ -686,12 +690,14 @@ def test_build_local_triangulations_two_gaps_emits_nothing(device: str):
             out_tris_wp,
             out_counts_wp,
             out_grown_radius_wp,
+            out_grown_flags_wp,
         ],
         device=device,
     )
     assert out_counts_wp.numpy()[0] == 0
     # Its gaps are borders, so it searches again in twice its unit radius.
     assert out_grown_radius_wp.numpy()[0] == 2.0
+    assert out_grown_flags_wp.numpy()[0] == 1
 
 
 def test_holes_seal_small_hole(device: str):

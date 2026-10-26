@@ -722,12 +722,14 @@ def build_local_triangulations(
     out_tris: wp.array3d[wp.int32],
     out_counts: wp.array[wp.int32],
     out_grown_radius: wp.array[wp.float32],
+    out_grown_flags: wp.array[wp.int32],
 ) -> None:
     # Point ``v``'s fan fills ``out_tris[v, 0 : out_counts[v]]`` contiguously, so the emitted
     # candidates are addressed by a scan of ``n`` counts rather than a compaction of an ``(n, k)``
     # mask. Every point reports a count, and the radius its fan grows to (zero when it does not),
-    # which [`rebuild_grown_local_triangulations`] rebuilds it from. The two kernels run one fan
-    # body, ``local_fan``, and differ in their neighbour rows, their scratch size and their radius.
+    # which [`rebuild_grown_local_triangulations`] rebuilds it from, with its ``0`` / ``1`` flag
+    # for the compaction of the grown points. The two kernels run one fan body, ``local_fan``, and
+    # differ in their neighbour rows, their scratch size and their radius.
     v = wp.int32(wp.tid())
 
     # Both rows stay ``wp.zeros`` rather than becoming ``wp.types.vector(length=MAX_NEIGHBOURS)``
@@ -761,6 +763,7 @@ def build_local_triangulations(
     )
     out_counts[v] = count
     out_grown_radius[v] = grown
+    out_grown_flags[v] = wp.where(grown != 0.0, wp.int32(1), wp.int32(0))
 
 
 @wp.kernel(enable_backward=False)
