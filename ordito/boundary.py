@@ -625,7 +625,7 @@ def loop_perimeters(
         return _launch.empty(0, dtype=wp.float32, device=vertices.device)
     flat_loops, offsets = packed
     return _launch_loop_measure(
-        kernel_boundary.loop_perimeters, wp.float32, vertices, flat_loops, None, offsets
+        kernel_boundary.loop_perimeters, wp.float32, vertices, flat_loops, offsets
     )
 
 
@@ -634,7 +634,6 @@ def loop_perimeters_from_offsets(
     flat_loops: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     *,
-    loop_id: wp.array[wp.int32] | None = None,
     validate: bool = True,
 ) -> wp.array[wp.float32]:
     """
@@ -656,11 +655,6 @@ def loop_perimeters_from_offsets(
     offsets
         ``(n_loops + 1,)`` total-terminated offsets: loop ``i`` is
         ``flat_loops[offsets[i] : offsets[i + 1]]``.
-    loop_id
-        ``(n_loop_vertices,)`` optional precomputed label saying which loop each packed position
-        belongs to. When ``None``, each position finds its loop by a binary search of ``offsets``
-        instead; pass it when the caller already holds it, as [`ordito.holes`][ordito.holes]
-        does.
     validate
         When ``True`` (default), check that ``offsets`` is non-decreasing from ``0`` to
         ``flat_loops``' length before launching -- a real cost (a host readback of ``offsets``),
@@ -676,7 +670,7 @@ def loop_perimeters_from_offsets(
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``flat_loops``, ``offsets`` and ``loop_id`` are not all on one device.
+        If ``vertices``, ``flat_loops`` and ``offsets`` are not all on one device.
     ValueError
         If ``validate`` and the packed pair is malformed -- see ``validate`` above.
 
@@ -699,11 +693,11 @@ def loop_perimeters_from_offsets(
     print(f"{perimeters.numpy()[0]:.4f}")  # 4.0000
     ```
     """
-    require_same_device(vertices=vertices, flat_loops=flat_loops, offsets=offsets, loop_id=loop_id)
+    require_same_device(vertices=vertices, flat_loops=flat_loops, offsets=offsets)
     if validate:
         _validate_packed_loops(flat_loops, offsets, "loop_perimeters_from_offsets")
     return _launch_loop_measure(
-        kernel_boundary.loop_perimeters, wp.float32, vertices, flat_loops, None, offsets
+        kernel_boundary.loop_perimeters, wp.float32, vertices, flat_loops, offsets
     )
 
 
@@ -771,7 +765,7 @@ def loop_directed_areas(
         return _launch.empty(0, dtype=wp.vec3, device=vertices.device)
     flat_loops, offsets = packed
     return _launch_loop_measure(
-        kernel_boundary.loop_directed_areas, wp.vec3, vertices, flat_loops, None, offsets
+        kernel_boundary.loop_directed_areas, wp.vec3, vertices, flat_loops, offsets
     )
 
 
@@ -780,7 +774,6 @@ def loop_directed_areas_from_offsets(
     flat_loops: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     *,
-    loop_id: wp.array[wp.int32] | None = None,
     validate: bool = True,
 ) -> wp.array[wp.vec3]:
     """
@@ -801,11 +794,6 @@ def loop_directed_areas_from_offsets(
     offsets
         ``(n_loops + 1,)`` total-terminated offsets: loop ``i`` is
         ``flat_loops[offsets[i] : offsets[i + 1]]``.
-    loop_id
-        ``(n_loop_vertices,)`` optional precomputed label saying which loop each packed position
-        belongs to. When ``None``, each position finds its loop by a binary search of ``offsets``
-        instead; pass it when the caller already holds it, as [`ordito.holes`][ordito.holes]
-        does.
     validate
         When ``True`` (default), check that ``offsets`` is non-decreasing from ``0`` to
         ``flat_loops``' length before launching -- see
@@ -820,7 +808,7 @@ def loop_directed_areas_from_offsets(
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``flat_loops``, ``offsets`` and ``loop_id`` are not all on one device.
+        If ``vertices``, ``flat_loops`` and ``offsets`` are not all on one device.
     ValueError
         If ``validate`` and the packed pair is malformed -- see ``validate`` above.
 
@@ -842,11 +830,11 @@ def loop_directed_areas_from_offsets(
     print(areas.numpy().round(4).tolist())  # [[0.0, 0.0, 1.0]]
     ```
     """
-    require_same_device(vertices=vertices, flat_loops=flat_loops, offsets=offsets, loop_id=loop_id)
+    require_same_device(vertices=vertices, flat_loops=flat_loops, offsets=offsets)
     if validate:
         _validate_packed_loops(flat_loops, offsets, "loop_directed_areas_from_offsets")
     return _launch_loop_measure(
-        kernel_boundary.loop_directed_areas, wp.vec3, vertices, flat_loops, None, offsets
+        kernel_boundary.loop_directed_areas, wp.vec3, vertices, flat_loops, offsets
     )
 
 
@@ -883,7 +871,6 @@ def _launch_loop_measure(
     dtype: type,
     vertices: wp.array[wp.vec3],
     flat_loops: wp.array[wp.int32],
-    loop_id: wp.array[wp.int32] | None,
     offsets: wp.array[wp.int32],
 ) -> odt.ArrayNd:
     """
@@ -904,7 +891,7 @@ def _launch_loop_measure(
         _launch.launch_tiled(
             _ORDERED_LOOP_MEASURES[kernel],
             dim=n_loops,
-            inputs=[flat_loops, loop_id, offsets, vertices, out],
+            inputs=[flat_loops, None, offsets, vertices, out],
             device=device,
             block_dim=kernel_boundary.LOOP_SUM_BLOCK,
         )
@@ -913,7 +900,7 @@ def _launch_loop_measure(
     _launch.launch(
         kernel,
         dim=flat_loops.size,
-        inputs=[flat_loops, loop_id, offsets, vertices, out],
+        inputs=[flat_loops, None, offsets, vertices, out],
         device=device,
     )
     return out

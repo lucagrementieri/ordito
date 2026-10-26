@@ -194,9 +194,9 @@ class _PackedLoops:
         Delegates to
         [`boundary.loop_perimeters_from_offsets`][ordito.boundary.loop_perimeters_from_offsets]
         rather than launching the segmented kernel again here: the packed layout this class holds
-        *is* that function's argument list. ``loop_id`` is not passed, since the measure finds each
-        position's loop from ``offsets``, so asking for it would upload the fill's tables for a
-        measure that reads none of them. ``validate=False``: ``offsets`` is built from
+        *is* that function's argument list; the measure finds each position's loop from
+        ``offsets``, so the fill's per-slot tables are not uploaded for it. ``validate=False``:
+        ``offsets`` is built from
         ``sizes_np`` right above in this class's own constructor, not handed in from outside, so it
         already fits ``flat_loops`` by construction.
         """

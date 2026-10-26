@@ -924,9 +924,6 @@ def test_batched_loop_measures_agree_with_the_list_forms(
     data and the last bits of a ``float32`` differ with it. Measured while these were written --
     bit-identical on the CPU, agreeing to 9.8e-08 against a host recomputation on CUDA. An
     ``array_equal`` here would fail on CUDA for a correct implementation.
-
-    Also asserted: passing the precomputed ``loop_id`` gives the same answer as letting the function
-    derive it, which is the keyword ``ordito.holes`` uses to keep its own cost.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
@@ -940,22 +937,9 @@ def test_batched_loop_measures_agree_with_the_list_forms(
         rtol=1e-5,
         atol=1e-5,
     )
-    areas_np = od.boundary.loop_directed_areas(vertices_wp, loops_wp).numpy()
     assert np.allclose(
         od.boundary.loop_directed_areas_from_offsets(vertices_wp, flat_wp, offsets_wp).numpy(),
-        areas_np,
-        rtol=1e-5,
-        atol=1e-5,
-    )
-
-    sizes_np = np.diff(offsets_wp.numpy())
-    owner_np = np.repeat(np.arange(sizes_np.size, dtype=np.int32), sizes_np)
-    owner_wp = wp.array(owner_np, dtype=wp.int32, device=vertices_wp.device)
-    assert np.allclose(
-        od.boundary.loop_directed_areas_from_offsets(
-            vertices_wp, flat_wp, offsets_wp, loop_id=owner_wp
-        ).numpy(),
-        areas_np,
+        od.boundary.loop_directed_areas(vertices_wp, loops_wp).numpy(),
         rtol=1e-5,
         atol=1e-5,
     )
