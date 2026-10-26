@@ -1023,8 +1023,25 @@ def _screened_poisson_octree(
         system,
         screen_args,
     )
+    # Every screened cell's weight and corner hat values, formed once for every sweep that reads
+    # them. A coarser cell with samples holds at least one, so its depth has at most
+    # ``n_samples`` such cells.
+    n_coarse = sum(min(8**d, n_samples) for d in range(depth))
+    screen = _launch.empty(
+        (n_samples + n_coarse) * kernel_octree.SCREEN_RECORD, dtype=wp.float32, device=device
+    )
+    screen_index = _launch.empty(cell_offsets_host[depth], dtype=wp.int32, device=device)
+    screen_count = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_octree.octree_screen_records,
+        dim=cell_offsets_host[depth + 1],
+        inputs=[*system, n_samples, *screen_args],
+        outputs=[screen_index, screen_count, screen],
+        device=device,
+    )
+    sweep_args = [flags, flag_offsets, cell_offsets, slots, screen_index, screen]
     prolongeds, fields = _octree_cascade(
-        constraints, base, node_offsets_host, depth, iterations, alpha, system, screen_args
+        constraints, base, node_offsets_host, depth, full_depth, iterations, alpha, sweep_args
     )
 
     res = 2**depth + 1
@@ -1147,10 +1164,20 @@ def _octree_constraints(
     device = normal_field.device
     n_nodes = node_offsets_host[depth + 1]
     constraints = _launch.empty(n_nodes, dtype=wp.float32, device=device)
+    # Every depth's 1-D hat-against-B-spline integrals, which both divergences read.
+    n_integrals = 8 * (2 ** (depth + 1) - 1 + depth + 1)
+    integrals = _launch.empty(n_integrals, dtype=wp.vec2d, device=device)
+    _launch.launch(
+        kernel_octree.octree_axis_integrals,
+        dim=n_integrals,
+        inputs=[depth],
+        outputs=[integrals],
+        device=device,
+    )
     _launch.launch(
         kernel_octree.octree_own_constraints,
         dim=n_nodes,
-        inputs=[depth, normal_field, cell_offsets, node_offsets],
+        inputs=[depth, normal_field, cell_offsets, node_offsets, integrals],
         outputs=[constraints],
         device=device,
     )
@@ -1180,7 +1207,7 @@ def _octree_constraints(
     _launch.launch(
         kernel_octree.octree_coarse_screening_constraints,
         dim=n_nodes,
-        inputs=[*system, accumulated, *screen_args, node_offsets],
+        inputs=[*system, accumulated, *screen_args, node_offsets, integrals],
         outputs=[constraints, base],
         device=device,
     )
@@ -1193,18 +1220,19 @@ def _octree_cascade(
     base: list[float],
     node_offsets: list[int],
     depth: int,
+    full_depth: int,
     iterations: int,
     alpha: float,
-    system: Sequence[object],
-    screen_args: Sequence[object],
+    sweep_args: Sequence[object],
 ) -> tuple[wp.array[wp.float32], wp.array[wp.float32]]:
     """
     Run the cascade: depth 0 on the host, then ``iterations`` wavefront Gauss-Seidel sweeps a depth.
 
     ``constraints`` holds every depth's right-hand side at ``node_offsets``, and ``base`` depth 0's
-    eight entries, its cell's point count and position sum. Returns every depth's prolonged coarser
-    field and its own field, packed at the same offsets (a field minus its prolonged field is the
-    depth's correction, which the extraction's slopes read).
+    eight entries, its cell's point count and position sum. ``sweep_args`` are the sweeps' tables:
+    the activity flags, the cell offsets, the sample slots and the screening records. Returns
+    every depth's prolonged coarser field and its own field, packed at the same offsets (a field
+    minus its prolonged field is the depth's correction, which the extraction's slopes read).
     """
     device = constraints.device
     fields = _launch.empty(node_offsets[-1], dtype=wp.float32, device=device)
@@ -1236,7 +1264,7 @@ def _octree_cascade(
             _launch.launch(
                 kernel_octree.octree_gauss_seidel_depth,
                 dim=1,
-                inputs=[d, *system, iterations, b, *screen_args],
+                inputs=[d, depth, full_depth, iterations, b, *sweep_args],
                 outputs=[field],
                 device=device,
             )
@@ -1251,7 +1279,7 @@ def _octree_cascade(
                 _launch.launch(
                     kernel_octree.octree_gauss_seidel_wave,
                     dim=(last - first + 1, half, half),
-                    inputs=[d, *system, wave, first, colour, b, *screen_args],
+                    inputs=[d, depth, full_depth, wave, first, colour, b, *sweep_args],
                     outputs=[field],
                     device=device,
                 )

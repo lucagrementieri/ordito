@@ -5402,9 +5402,9 @@
  },
  "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cuda-octree-7]": {
   "counts": {
-   "launch": 1504,
-   "alloc": 41,
-   "memset": 13,
+   "launch": 1506,
+   "alloc": 45,
+   "memset": 14,
    "d2d": 1,
    "h2d": 2,
    "d2h": 10,

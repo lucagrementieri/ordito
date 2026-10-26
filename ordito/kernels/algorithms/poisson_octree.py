@@ -561,21 +561,52 @@ def hat_bspline_integrals(dt: wp.int32, i: wp.int32, dd: wp.int32, k: wp.int32) 
 
 
 @wp.func
+def axis_integral_slot(d: wp.int32, shift: wp.int32, i: wp.int32, q: wp.int32) -> wp.int32:
+    # Entry of ``octree_axis_integrals``' table for depth ``d``'s hat ``i`` and the ``q``-th of the
+    # four depth ``d - shift`` B-splines overlapping it: per depth, both shifts, ``res`` hats each.
+    return 8 * ((1 << d) - 1 + d) + (shift * ((1 << d) + 1) + i) * 4 + q
+
+
+@wp.kernel
+def octree_axis_integrals(depth: wp.int32, out_integrals: wp.array[wp.vec2d]) -> None:
+    # Every ``hat_bspline_integrals`` a divergence reads, once: they depend only on the depth, the
+    # hat's coordinate along one axis and the B-spline's, the last fixed by the first and ``q``.
+    flat = wp.int32(wp.tid())
+    d = wp.int32(0)
+    for e in range(depth + 1):
+        if flat >= 8 * ((1 << e) - 1 + e):
+            d = e
+    res = (1 << d) + 1
+    local = flat - 8 * ((1 << d) - 1 + d)
+    shift = local // (4 * res)
+    i = (local % (4 * res)) // 4
+    q = local % 4
+    if d - shift < 0:
+        out_integrals[flat] = wp.vec2d()
+        return
+    out_integrals[flat] = hat_bspline_integrals(d, i, d - shift, (i >> shift) - 2 + q)
+
+
+@wp.func
 def divergence_term(
     d: wp.int32,
     data_depth: wp.int32,
     data: wp.array[wp.vec3],
     data_offset: wp.int32,
     node: wp.vec3i,
+    integrals: wp.array[wp.vec2d],
 ) -> wp.float32:
     # Depth ``d`` node's ``int grad(hat) . V`` for the depth ``data_depth`` (``d`` or ``d - 1``)
     # normal coefficients ``data``: four B-splines per axis overlap a hat at either depth.
     m = 1 << data_depth
     shift = d - data_depth
     first = wp.vec3i((node[0] >> shift) - 2, (node[1] >> shift) - 2, (node[2] >> shift) - 2)
-    # The data is a band around the surface, so most nodes' windows hold only zeros: those return
-    # the ``+0.0`` the ``float64`` sum below would (every term a signed zero) without forming it.
-    found = wp.int32(0)
+    # The data is a band around the surface, so most of a window's cells hold zero, and the whole
+    # window does for most nodes. A zero cell's term is a signed zero and the running sum is never
+    # ``-0.0``, so skipping those cells, and the axis integrals only they would read, leaves the
+    # ``float64`` sum's bits as they were; an empty window returns the ``+0.0`` it would sum to.
+    # This pass records which axis offsets some nonzero cell uses.
+    used = wp.vec3i(0, 0, 0)
     for a in range(4):
         ka = first[0] + a
         if ka >= 0 and ka < m:
@@ -587,8 +618,10 @@ def divergence_term(
                         if kc >= 0 and kc < m:
                             v = data[data_offset + cell_flat(m, wp.vec3i(ka, kb, kc))]
                             if v[0] != 0.0 or v[1] != 0.0 or v[2] != 0.0:
-                                found = 1
-    if found == 0:
+                                used = wp.vec3i(
+                                    used[0] | (1 << a), used[1] | (1 << b), used[2] | (1 << c)
+                                )
+    if used[0] == 0:
         return wp.float32(0.0)
     value_x = wp.vec4d()
     slope_x = wp.vec4d()
@@ -597,15 +630,18 @@ def divergence_term(
     value_z = wp.vec4d()
     slope_z = wp.vec4d()
     for q in range(4):
-        ix = hat_bspline_integrals(d, node[0], data_depth, first[0] + q)
-        iy = hat_bspline_integrals(d, node[1], data_depth, first[1] + q)
-        iz = hat_bspline_integrals(d, node[2], data_depth, first[2] + q)
-        value_x[q] = ix[0]
-        slope_x[q] = ix[1]
-        value_y[q] = iy[0]
-        slope_y[q] = iy[1]
-        value_z[q] = iz[0]
-        slope_z[q] = iz[1]
+        if (used[0] >> q) & 1 != 0:
+            ix = integrals[axis_integral_slot(d, shift, node[0], q)]
+            value_x[q] = ix[0]
+            slope_x[q] = ix[1]
+        if (used[1] >> q) & 1 != 0:
+            iy = integrals[axis_integral_slot(d, shift, node[1], q)]
+            value_y[q] = iy[0]
+            slope_y[q] = iy[1]
+        if (used[2] >> q) & 1 != 0:
+            iz = integrals[axis_integral_slot(d, shift, node[2], q)]
+            value_z[q] = iz[0]
+            slope_z[q] = iz[1]
     total = wp.float64(0.0)
     for a in range(4):
         ka = first[0] + a
@@ -617,11 +653,12 @@ def divergence_term(
                         kc = first[2] + c
                         if kc >= 0 and kc < m:
                             v = data[data_offset + cell_flat(m, wp.vec3i(ka, kb, kc))]
-                            total += (
-                                wp.float64(v[0]) * slope_x[a] * value_y[b] * value_z[c]
-                                + wp.float64(v[1]) * value_x[a] * slope_y[b] * value_z[c]
-                                + wp.float64(v[2]) * value_x[a] * value_y[b] * slope_z[c]
-                            )
+                            if v[0] != 0.0 or v[1] != 0.0 or v[2] != 0.0:
+                                total += (
+                                    wp.float64(v[0]) * slope_x[a] * value_y[b] * value_z[c]
+                                    + wp.float64(v[1]) * value_x[a] * slope_y[b] * value_z[c]
+                                    + wp.float64(v[2]) * value_x[a] * value_y[b] * slope_z[c]
+                                )
     return wp.float32(total)
 
 
@@ -640,6 +677,7 @@ def octree_own_constraints(
     normals: wp.array[wp.vec3],
     cell_offsets: wp.array[wp.int32],
     node_offsets: wp.array[wp.int32],
+    integrals: wp.array[wp.vec2d],
     out_b: wp.array[wp.float32],
 ) -> None:
     # Every depth's ``-int grad(hat) . V`` for its own depth's normal coefficients, all depths'
@@ -648,7 +686,7 @@ def octree_own_constraints(
     at = lattice_node(node_offsets, depth, flat)
     d = at[0]
     node = wp.vec3i(at[1], at[2], at[3])
-    out_b[flat] = wp.float32(0.0) - divergence_term(d, d, normals, cell_offsets[d], node)
+    out_b[flat] = wp.float32(0.0) - divergence_term(d, d, normals, cell_offsets[d], node, integrals)
 
 
 @wp.kernel
@@ -766,14 +804,40 @@ def hat_mass_stiffness(i: wp.int32, offset: wp.int32, res: wp.int32, h: wp.float
     return wp.vec2(mass, stiffness)
 
 
+# A screened cell's record in ``octree_screen_records``' table: its weight
+# ``alpha * 2**d * count`` and its eight corners' hat values at its centroid, corner ``q`` at offset
+# ``(q >> 2, (q >> 1) & 1, q & 1)``. The Gauss-Seidel rows read these instead of forming them from
+# the cell's samples on every update.
+SCREEN_RECORD = 9
+_Corners8i = wp.types.vector(length=8, dtype=wp.int32)
+_Corners8f = wp.types.vector(length=8, dtype=wp.float32)
+
+
 @wp.func
-def octree_row(
+def screen_record(
     d: wp.int32,
+    depth: wp.int32,
+    c: wp.vec3i,
+    cell_offsets: wp.array[wp.int32],
+    slots: wp.array[wp.int32],
+    screen_index: wp.array[wp.int32],
+) -> wp.int32:
+    # Depth ``d`` cell ``c``'s record in the screening table, -1 for none: the finest depth's are
+    # its samples' (``slots``), a coarser depth's are indexed per cell (``screen_index``).
+    n = 1 << d
+    if c[0] < 0 or c[1] < 0 or c[2] < 0 or c[0] >= n or c[1] >= n or c[2] >= n:
+        return -1
+    if d == depth:
+        return slots[cell_flat(n, c)]
+    return screen_index[cell_offsets[d] + cell_flat(n, c)]
+
+
+@wp.kernel
+def octree_screen_records(
     depth: wp.int32,
     full_depth: wp.int32,
     alpha: wp.float32,
-    node: wp.vec3i,
-    field: wp.array[wp.float32],
+    n_samples: wp.int32,
     flags: wp.array[wp.int32],
     flag_offsets: wp.array[wp.int32],
     counts: wp.array[wp.float32],
@@ -782,9 +846,66 @@ def octree_row(
     slots: wp.array[wp.int32],
     sample_counts: wp.array[wp.int32],
     sample_positions: wp.array[wp.vec3],
+    out_index: wp.array[wp.int32],
+    out_count: wp.array[wp.int32],
+    out_records: wp.array[wp.float32],
+) -> None:
+    # Every depth's screened cells' records, one thread a cell of every depth's lattice. A finest
+    # cell's record sits at its sample's slot (weight 0 when the cell is inactive, which
+    # ``cell_screen`` reports as a zero count); a coarser cell with samples takes the next record
+    # after the samples', and ``out_index`` points its cell at it (-1 for none). The arrival order
+    # only numbers the records, so it changes no value a row reads.
+    flat = wp.int32(wp.tid())
+    d = level_of(cell_offsets, 0, depth, flat)
+    n = 1 << d
+    local = flat - cell_offsets[d]
+    c = wp.vec3i(local // (n * n), (local // n) % n, local % n)
+    record = wp.int32(-1)
+    if d == depth:
+        record = slots[local]
+    sample = cell_screen(
+        d,
+        depth,
+        full_depth,
+        c,
+        flags,
+        flag_offsets,
+        counts,
+        position_sums,
+        cell_offsets,
+        slots,
+        sample_counts,
+        sample_positions,
+    )
+    if d < depth:
+        if sample[3] > 0.0:
+            record = n_samples + wp.atomic_add(out_count, 0, 1)
+        out_index[flat] = record
+    if record < 0:
+        return
+    base = record * SCREEN_RECORD
+    scale = alpha * wp.float32(1 << d)
+    out_records[base] = scale * sample[3]
+    p = wp.vec3(sample[0], sample[1], sample[2])
+    for q in range(8):
+        corner = c + wp.vec3i(q >> 2, (q >> 1) & 1, q & 1)
+        out_records[base + 1 + q] = hat_value(d, corner, p)
+
+
+@wp.func
+def octree_row(
+    d: wp.int32,
+    depth: wp.int32,
+    node: wp.vec3i,
+    field: wp.array[wp.float32],
+    cell_offsets: wp.array[wp.int32],
+    slots: wp.array[wp.int32],
+    screen_index: wp.array[wp.int32],
+    screen: wp.array[wp.float32],
 ) -> wp.vec2:
     # ``(row . field, diagonal)`` of depth ``d``'s operator at ``node``: the hat stiffness (27
-    # neighbours) plus the screening of the eight cells around the node.
+    # neighbours) plus the screening of the eight cells around the node, read off their
+    # ``octree_screen_records`` (the node is corner ``corner`` of the cell at ``node - corner``).
     res = (1 << d) + 1
     h = 1.0 / wp.float32(1 << d)
     total = wp.float32(0.0)
@@ -809,34 +930,30 @@ def octree_row(
                             total += entry * field[poisson_grid_index(ia, ib, ic, res)]
                             if a == 1 and b == 1 and c == 1:
                                 diagonal = entry
-    scale = alpha * wp.float32(1 << d)
+    # The eight cells' records and weights are each loaded in one batch before any is used, so
+    # the loads of one cell do not wait on another's.
+    records = _Corners8i()
     for corner in range(8):
         cell = node - wp.vec3i(corner >> 2, (corner >> 1) & 1, corner & 1)
-        sample = cell_screen(
-            d,
-            depth,
-            full_depth,
-            cell,
-            flags,
-            flag_offsets,
-            counts,
-            position_sums,
-            cell_offsets,
-            slots,
-            sample_counts,
-            sample_positions,
+        records[corner] = screen_record(d, depth, cell, cell_offsets, slots, screen_index)
+    weights = _Corners8f()
+    for corner in range(8):
+        weights[corner] = wp.where(
+            records[corner] >= 0, screen[wp.max(records[corner], 0) * SCREEN_RECORD], 0.0
         )
-        if sample[3] > 0.0:
-            p = wp.vec3(sample[0], sample[1], sample[2])
-            phi = hat_value(d, node, p)
+    for corner in range(8):
+        weight = weights[corner]
+        if weight > 0.0:
+            base = records[corner] * SCREEN_RECORD
+            phi = screen[base + 1 + corner]
             interpolated = wp.float32(0.0)
+            cell = node - wp.vec3i(corner >> 2, (corner >> 1) & 1, corner & 1)
             for q in range(8):
                 other = cell + wp.vec3i(q >> 2, (q >> 1) & 1, q & 1)
                 interpolated += (
-                    hat_value(d, other, p)
+                    screen[base + 1 + q]
                     * field[poisson_grid_index(other[0], other[1], other[2], res)]
                 )
-            weight = scale * sample[3]
             total += weight * phi * interpolated
             diagonal += weight * phi * phi
     return wp.vec2(total, diagonal)
@@ -900,6 +1017,7 @@ def octree_coarse_screening_constraints(
     sample_counts: wp.array[wp.int32],
     sample_positions: wp.array[wp.vec3],
     node_offsets: wp.array[wp.int32],
+    integrals: wp.array[wp.vec2d],
     out_b: wp.array[wp.float32],
     out_base: wp.array[wp.float32],
 ) -> None:
@@ -913,7 +1031,7 @@ def octree_coarse_screening_constraints(
     node = wp.vec3i(at[1], at[2], at[3])
     b = out_b[flat]
     if d > 0:
-        b = b - divergence_term(d, d - 1, accumulated, cell_offsets[d - 1], node)
+        b = b - divergence_term(d, d - 1, accumulated, cell_offsets[d - 1], node, integrals)
     b = b + screening_term(
         d,
         depth,
@@ -962,7 +1080,6 @@ def gauss_seidel_node(
     d: wp.int32,
     depth: wp.int32,
     full_depth: wp.int32,
-    alpha: wp.float32,
     wave: wp.int32,
     sweep: wp.int32,
     colour: wp.int32,
@@ -971,12 +1088,10 @@ def gauss_seidel_node(
     b: wp.array[wp.float32],
     flags: wp.array[wp.int32],
     flag_offsets: wp.array[wp.int32],
-    counts: wp.array[wp.float32],
-    position_sums: wp.array[wp.vec3],
     cell_offsets: wp.array[wp.int32],
     slots: wp.array[wp.int32],
-    sample_counts: wp.array[wp.int32],
-    sample_positions: wp.array[wp.vec3],
+    screen_index: wp.array[wp.int32],
+    screen: wp.array[wp.float32],
     field: wp.array[wp.float32],
 ) -> None:
     # The Gauss-Seidel update of node ``(2 a + colour % 2, 2 c + colour / 2)`` on the slice sweep
@@ -997,22 +1112,7 @@ def gauss_seidel_node(
     node = wp.vec3i(x, y, z)
     if not node_active(flags, flag_offsets, full_depth, d, node):
         return
-    row = octree_row(
-        d,
-        depth,
-        full_depth,
-        alpha,
-        node,
-        field,
-        flags,
-        flag_offsets,
-        counts,
-        position_sums,
-        cell_offsets,
-        slots,
-        sample_counts,
-        sample_positions,
-    )
+    row = octree_row(d, depth, node, field, cell_offsets, slots, screen_index, screen)
     index = poisson_grid_index(x, y, z, res)
     field[index] = field[index] + (b[index] - row[0]) / row[1]
 
@@ -1022,19 +1122,16 @@ def octree_gauss_seidel_wave(
     d: wp.int32,
     depth: wp.int32,
     full_depth: wp.int32,
-    alpha: wp.float32,
     wave: wp.int32,
     first_sweep: wp.int32,
     colour: wp.int32,
     b: wp.array[wp.float32],
     flags: wp.array[wp.int32],
     flag_offsets: wp.array[wp.int32],
-    counts: wp.array[wp.float32],
-    position_sums: wp.array[wp.vec3],
     cell_offsets: wp.array[wp.int32],
     slots: wp.array[wp.int32],
-    sample_counts: wp.array[wp.int32],
-    sample_positions: wp.array[wp.vec3],
+    screen_index: wp.array[wp.int32],
+    screen: wp.array[wp.float32],
     field: wp.array[wp.float32],
 ) -> None:
     # One colour of every ``(sweep, slice)`` on wavefront ``wave``, the sweeps from
@@ -1052,7 +1149,6 @@ def octree_gauss_seidel_wave(
         d,
         depth,
         full_depth,
-        alpha,
         wave,
         first_sweep + s,
         colour,
@@ -1061,12 +1157,10 @@ def octree_gauss_seidel_wave(
         b,
         flags,
         flag_offsets,
-        counts,
-        position_sums,
         cell_offsets,
         slots,
-        sample_counts,
-        sample_positions,
+        screen_index,
+        screen,
         field,
     )
 
@@ -1076,17 +1170,14 @@ def octree_gauss_seidel_depth(
     d: wp.int32,
     depth: wp.int32,
     full_depth: wp.int32,
-    alpha: wp.float32,
     iterations: wp.int32,
     b: wp.array[wp.float32],
     flags: wp.array[wp.int32],
     flag_offsets: wp.array[wp.int32],
-    counts: wp.array[wp.float32],
-    position_sums: wp.array[wp.vec3],
     cell_offsets: wp.array[wp.int32],
     slots: wp.array[wp.int32],
-    sample_counts: wp.array[wp.int32],
-    sample_positions: wp.array[wp.vec3],
+    screen_index: wp.array[wp.int32],
+    screen: wp.array[wp.float32],
     field: wp.array[wp.float32],
 ) -> None:
     # Every wave and colour of depth ``d`` in one thread, in ``octree_gauss_seidel_wave``'s launch
@@ -1105,7 +1196,6 @@ def octree_gauss_seidel_depth(
                             d,
                             depth,
                             full_depth,
-                            alpha,
                             wave,
                             sweep,
                             colour,
@@ -1114,12 +1204,10 @@ def octree_gauss_seidel_depth(
                             b,
                             flags,
                             flag_offsets,
-                            counts,
-                            position_sums,
                             cell_offsets,
                             slots,
-                            sample_counts,
-                            sample_positions,
+                            screen_index,
+                            screen,
                             field,
                         )
 
