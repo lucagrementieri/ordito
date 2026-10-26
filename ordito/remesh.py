@@ -3282,8 +3282,9 @@ def flip_by_objective(
           what makes a coarse triangulation of a curved shape follow its principal directions.
           ``planar_angle`` and ``metric`` are ignored.
         - ``"t_vertex"`` — **slivers only.** A quad is eligible only when one of its two triangles
-          is a sliver: its ``aspect_ratio`` (circumradius over twice the inradius) exceeds
-          ``aspect_threshold``; the diagonal is then flipped if that improves the worse of the two.
+          is a sliver whose longest edge is the diagonal: that edge over the height onto it exceeds
+          ``aspect_threshold``; the diagonal is then flipped if that raises the worse
+          height-over-longest-edge of the two.
           A T-vertex — a vertex sitting in the interior of a neighbouring edge — is exactly what
           produces such a sliver, which is why this is the repair for one; see
           [`flip_t_vertices`][ordito.repair.flip_t_vertices] for the wrapper that says so.
@@ -3301,10 +3302,9 @@ def flip_by_objective(
         runs the other way and ``"area"`` is not a shape measure at all. MeshLab's ``planartype``,
         whose default ``'area/max side'`` is this one.
     aspect_threshold
-        Sliver threshold for ``objective="t_vertex"``: only a quad whose worse triangle has an
-        ``aspect_ratio`` above this is eligible. MeshLab's ``meshing_remove_t_vertices`` has the
-        same default of ``40`` for another ratio, the longest edge over the height onto it (see
-        [`flip_t_vertices`][ordito.repair.flip_t_vertices]). Must be positive.
+        Sliver threshold for ``objective="t_vertex"``, as a longest edge over the height onto it
+        (see above). MeshLab's ``meshing_remove_t_vertices`` threshold, whose default of ``40`` is
+        this one. Must be positive.
     max_iter
         Maximum number of parallel flip passes. Each pass commits a conflict-free independent set,
         so a mesh needing many local rewrites needs several.

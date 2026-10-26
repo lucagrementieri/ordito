@@ -3847,12 +3847,11 @@ def flip_t_vertices(
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
     threshold
-        Aspect ratio above which a triangle counts as a T-vertex sliver, in the
-        ``aspect_ratio`` sense of [`face_quality`][ordito.triangles.face_quality] (``1`` is
-        equilateral, unbounded above). MeshLab's ``meshing_remove_t_vertices`` has the same
-        default of ``40`` for a different ratio, the longest edge over the height onto it; on a
-        sliver ``aspect_ratio`` is about the square of that over 8, so ``40`` here is a ratio of
-        about 18 there and flags slivers MeshLab leaves alone. Must be positive.
+        Longest edge over the height onto it above which a triangle counts as a T-vertex
+        sliver; that longest edge is the one flipped. The reciprocal of the ``"area_max_side"``
+        measure of [`face_quality`][ordito.triangles.face_quality] (about ``2 / sqrt(3)`` for an
+        equilateral triangle, unbounded above). MeshLab's ``meshing_remove_t_vertices``
+        threshold, whose default of ``40`` is this one. Must be positive.
     max_iter
         Maximum number of parallel flip passes. Each pass commits a conflict-free independent set of
         flips; MeshLab's ``repeat=True`` is the same idea serially.
