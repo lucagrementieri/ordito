@@ -762,7 +762,6 @@ def icp_point_to_plane(
     # round and condition slots.
     closest = _launch.empty(n, dtype=wp.vec3, device=device)
     distance = _launch.empty(n, dtype=wp.float32, device=device)
-    triangle_id = _launch.empty(n, dtype=wp.int32, device=device)
     # One ``ICP_ACC_SIZE`` row per block, added in a fixed order into the leading slots, where the
     # previous kept cost also lives, so every round repeats bit for bit on CUDA.
     blocks = kernel_reduce.blocks_1d(n)
@@ -771,11 +770,11 @@ def icp_point_to_plane(
     step = _launch.empty(1, dtype=wp.mat44, device=device)
     total = initial_matrix
     # The loop state, then the integer ticket that elects the accumulation's last block to close
-    # the round under the atomic commit (``kernel_registration.last_atomic_block``).
-    words = kernel_array.LOOP_STATE_SIZE
-    state_and_ticket = _launch.zeros(words + 1, dtype=wp.int32, device=device)
-    state = _launch.view(state_and_ticket, 0, words)
-    ticket = _launch.view(state_and_ticket, words, words + 1)
+    # the round under the atomic commit (``kernel_registration.last_atomic_block``), then the
+    # matched faces, which the searches write before any read: one zeroed allocation.
+    state, ticket, triangle_id = _launch.carve(
+        wp.int32, [kernel_array.LOOP_STATE_SIZE, 1, n], device, zeroed=True
+    )
 
     # The correspondence step is one launch: the step applied to each point, and its match on the
     # target -- the closest point on a mesh, or the nearest vertex of a cloud through the hoisted
@@ -957,10 +956,10 @@ def _robust_scale_from_residuals(
         kernel_registration.robust_sigma, dim=1, inputs=[keys], outputs=[stats], device=device
     )
     # The estimate's one readback: the in-range count and the scale.
-    stats_np = stats.numpy()
-    if int(stats_np[kernel_registration.MAD_STATS_COUNT]) == 0:
+    stats_values = read_values(stats, 0, kernel_registration.MAD_STATS_SIZE)
+    if int(stats_values[kernel_registration.MAD_STATS_COUNT]) == 0:
         return 0.0
-    sigma = float(stats_np[kernel_registration.MAD_STATS_VALUE])
+    sigma = float(stats_values[kernel_registration.MAD_STATS_VALUE])
     if sigma <= 0.0:
         sigma = _residual_standard_deviation(
             current, closest, normals, distance, triangle_id, max_distance

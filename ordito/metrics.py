@@ -1688,8 +1688,7 @@ def _corner_runs(
     """
     device = faces.device
     n = face_id.size
-    keys = _launch.empty(6 * n, dtype=wp.int32, device=device)
-    order = _launch.empty(6 * n, dtype=wp.int32, device=device)
+    keys, order = _launch.carve(wp.int32, [6 * n, 6 * n], device)
     _launch.launch(
         kernel_metrics.surface_corner_keys,
         dim=n,

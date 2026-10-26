@@ -2033,7 +2033,7 @@ def closest_pair(points: wp.array[wp.vec3]) -> tuple[int, int, float]:
         block_dim=TILE_1D,
         device=device,
     )
-    key, index_b, _ticket = (int(value) for value in result.numpy())
+    key, index_b = (int(value) for value in read_values(result, 0, 2))
     # The key's high half is the distance's own float32 bits, so it decodes on the host for free.
     distance = float(np.array([key >> 32], dtype=np.uint32).view(np.float32)[0])
     return key & 0xFFFFFFFF, index_b, distance
@@ -2264,7 +2264,8 @@ class _GeodesicBallWalk:
         # At least one row, so an empty mesh walks nothing without a zero-sized pool.
         self.chunk = max(1, min(n, _GEODESIC_BALL_CHUNK))
         stride = kernel_bfs.PER_SOURCE_MAX_NEIGHBORS
-        self.rows_flat = _launch.empty(self.chunk * stride, dtype=wp.int32, device=device)
+        # The queue rows and the per-source counts in one allocation.
+        self.rows_flat, self.counts = _launch.carve(wp.int32, [self.chunk * stride, n], device)
         self.rows = odt.as_array2d(self.rows_flat.reshape((self.chunk, stride)), wp.int32)
         self.row_stride = wp.int32(stride)
         self._visited_pool = _launch.full(
@@ -2276,7 +2277,6 @@ class _GeodesicBallWalk:
         self._ext_idx_pool = odt.empty_2d(
             (self.chunk, kernel_bfs.EXTRAS_CAPACITY), wp.int32, device=device
         )
-        self.counts = _launch.empty(n, dtype=wp.int32, device=device)
         self._overflow = (
             _launch.zeros(1, dtype=wp.int32, device=device) if overflow is None else overflow
         )
@@ -2364,9 +2364,12 @@ def _sorted_vertex_adjacency(
         )
         return columns, offsets, reference
     # Double width, as the radix sort wants. The payload carries nothing: its upper half, free once
-    # the sort has run, holds the slot counts and their scan.
+    # the sort has run, holds the slot counts and their scan. It shares one allocation with the
+    # adjacency it is emitted into.
     keys = _launch.empty(2 * n_keys, dtype=wp.uint64, device=device)
-    payload = _launch.empty(2 * n_keys, dtype=wp.int32, device=device)
+    payload, columns, offsets = _launch.carve(
+        wp.int32, [2 * n_keys, n_keys, n_vertices + 1], device
+    )
     base = wp.uint64(n_vertices)
     _launch.launch(
         kernel_neighbors.directed_face_edge_keys,
@@ -2389,8 +2392,6 @@ def _sorted_vertex_adjacency(
         device=device,
     )
     _launch.array_scan(ranks, out_array=ranks, inclusive=True)
-    columns = _launch.empty(n_keys, dtype=wp.int32, device=device)
-    offsets = _launch.empty(n_vertices + 1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_neighbors.emit_directed_neighbor_lists,
         dim=n_keys,

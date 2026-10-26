@@ -1601,6 +1601,34 @@ def view(src: ArrayT, start: int, stop: int) -> ArrayT:
     return cast("ArrayT", arr)
 
 
+# Each view ``carve`` cuts starts on a multiple of this many elements, at least 128 bytes for every
+# dtype, so a carved table is aligned as a fresh allocation of its own would be for any vector load.
+_CARVE_ALIGN = 32
+
+
+def carve(
+    dtype: type[DType], sizes: Sequence[int], device: wp.DeviceLike, *, zeroed: bool = False
+) -> list[wp.array[DType]]:
+    """
+    One allocation of ``dtype``, zeroed under ``zeroed``, cut into consecutive views of ``sizes``.
+
+    For a call's same-dtype tables that live and die together: one allocation (and at most one
+    memset) where each table took its own, at the cost of a [`view`][ordito._launch.view] each.
+    Any view holds the whole buffer alive, so a table that outlives the call (a return) does not
+    belong in one. A zero size gets its own zero-length array.
+    """
+    starts: list[int] = []
+    total = 0
+    for size in sizes:
+        starts.append(total)
+        total += -(-size // _CARVE_ALIGN) * _CARVE_ALIGN
+    buffer = (zeros if zeroed else empty)(total, dtype=dtype, device=device)
+    return [
+        view(buffer, start, start + size) if size > 0 else empty(0, dtype=dtype, device=device)
+        for start, size in zip(starts, sizes, strict=True)
+    ]
+
+
 # -- host upload ----------------------------------------------------------------------------------
 #
 # ``wp.array(data, dtype=..., device=cuda)`` converts ``data`` with ``np.asarray(data, dtype=<the

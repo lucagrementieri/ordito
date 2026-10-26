@@ -333,8 +333,7 @@ def _morton_order(points: wp.array[wp.vec3]) -> wp.array[wp.int32]:
         inputs=[points, corners],
         device=device,
     )
-    keys = _launch.empty(2 * m, dtype=wp.int32, device=device)
-    order = _launch.empty(2 * m, dtype=wp.int32, device=device)
+    keys, order = _launch.carve(wp.int32, [2 * m, 2 * m], device)
     _launch.launch(
         kernel_visibility.morton_point_order,
         dim=m,
@@ -735,9 +734,13 @@ def _tangent_spheres(
     # capped at it, and a centre farther than that from the mesh misses and stops the sphere where
     # an unbounded query would keep shrinking it, so the two converge to different spheres.
     corners = _launch.full(12, math.inf, dtype=wp.float32, device=device)
+    # The ray directions the seed writes, and the closest-face normals it reads when none were
+    # given: one ``vec3`` allocation for both.
     computed_normals = None
     if normals is None:
-        computed_normals = _launch.empty(m, dtype=wp.vec3, device=device)
+        ray_dirs, computed_normals = _launch.carve(wp.vec3, [m, m], device)
+    else:
+        ray_dirs = _launch.empty(m, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel_visibility.tangent_sphere_setup,
         dim=kernel_reduce.chunks_1d(mesh.points.size)
@@ -758,12 +761,11 @@ def _tangent_spheres(
     # (``ray.longest_ray``'s walk at its default ``planar_tol``) and seeds the sphere, writing the
     # direction for the passes below.
     n_verts = mesh.points.size
-    n_support = _launch.zeros(1, dtype=wp.int32, device=device)
-    ray_dirs = _launch.empty(m, dtype=wp.vec3, device=device)
+    # The escaped-ray counter and the list it appends to, in one zeroed allocation.
+    n_support, support_indices = _launch.carve(wp.int32, [1, m], device, zeroed=True)
     radii = _launch.empty(m, dtype=wp.float32, device=device)
     centers = _launch.empty(m, dtype=wp.vec3, device=device)
     not_converged = _launch.empty(m, dtype=wp.bool, device=device)
-    support_indices = _launch.empty(m, dtype=wp.int32, device=device)
     limits = [corners, wp.float64(threshold)]
     _launch.launch(
         kernel_visibility.seed_tangent_spheres,
