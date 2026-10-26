@@ -890,8 +890,9 @@ def _screened_poisson_octree(
 
     unit_transform = _octree_unit_transform(bounds, scale)
     keys = _launch.empty(n, dtype=wp.int32, device=device)
-    positions = _launch.empty(n, dtype=wp.vec3, device=device)
-    unit_normals = _launch.empty(n, dtype=wp.vec3, device=device)
+    positions, unit_normals = _carve(
+        _launch.empty(_carved_size([n, n]), dtype=wp.vec3, device=device), [n, n]
+    )
     _launch.launch(
         kernel_octree.octree_point_keys,
         dim=n,
@@ -950,9 +951,12 @@ def _screened_poisson_octree(
     )
     density = _launch.finish_group_sums(density_sums)
 
-    sample_depths = _launch.empty(n_samples, dtype=wp.float32, device=device)
-    area_terms = _launch.empty(n_samples, dtype=wp.float32, device=device)
-    count_terms = _launch.empty(n_samples, dtype=wp.float32, device=device)
+    # The depth estimates and both weight terms in one allocation; the area terms' slots take the
+    # iso-value's terms once the weights are summed.
+    sample_depths, area_terms, count_terms = _carve(
+        _launch.empty(_carved_size([n_samples] * 3), dtype=wp.float32, device=device),
+        [n_samples] * 3,
+    )
     _launch.launch(
         kernel_octree.octree_sample_weights,
         dim=n_samples,
@@ -1031,7 +1035,7 @@ def _screened_poisson_octree(
     )
 
     res = 2**depth + 1
-    iso_terms = _launch.empty(n_samples, dtype=wp.float32, device=device)
+    iso_terms = area_terms
     _launch.launch(
         kernel_octree.octree_iso_terms,
         dim=n_samples,
@@ -1319,8 +1323,11 @@ def _octree_extract(
     iso32 = wp.float32(iso)
 
     sources = _launch.empty(node_offsets_host[-1], dtype=wp.int32, device=device)
-    owners = _launch.full(edge_offsets_host[-1], -1, dtype=wp.int32, device=device)
-    partners = _launch.full(edge_offsets_host[-1], -1, dtype=wp.int32, device=device)
+    # The edges' owners and partners, both unset, in one allocation.
+    n_edges = edge_offsets_host[-1]
+    unset = _launch.full(2 * n_edges, -1, dtype=wp.int32, device=device)
+    owners = _launch.view(unset, 0, n_edges)
+    partners = _launch.view(unset, n_edges, 2 * n_edges)
     created = _launch.zeros(edge_offsets_host[-1], dtype=wp.int32, device=device)
     activity = [flags, flag_offsets]
     for d in range(depth, first - 1, -1):
@@ -1379,13 +1386,12 @@ def _octree_extract(
     common = [first, depth, full_depth, iso32, fields, sources, node_offsets, *activity]
     face_args = [*common, cell_offsets, table, owners, edge_offsets]
     face_offsets = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    no_keys = _launch.empty(0, dtype=wp.uint64, device=device)
-    no_faces = _launch.empty(0, dtype=wp.int32, device=device)
+    # The counting pass: no key buffer (a null array reads as empty in the kernel).
     _launch.launch(
         kernel_octree.borrowed_faces,
         dim=n_faces,
         inputs=[*face_args, face_offsets],
-        outputs=[no_keys, no_faces],
+        outputs=[None, None],
         device=device,
     )
     _launch.array_scan(face_offsets, face_offsets, inclusive=True)
@@ -1406,14 +1412,9 @@ def _octree_extract(
 
     n_cells = cell_offsets_host[depth + 1] - cell_offsets_host[first]
     segment_offsets = _launch.empty(n_cells, dtype=wp.int32, device=device)
-    no_segments = _launch.empty(0, dtype=wp.vec2i, device=device)
     segment_args = [*face_args, keys, borrowed, segment_offsets]
     _launch.launch(
-        kernel_octree.cell_segments,
-        dim=n_cells,
-        inputs=segment_args,
-        outputs=[no_segments],
-        device=device,
+        kernel_octree.cell_segments, dim=n_cells, inputs=segment_args, outputs=[None], device=device
     )
     _launch.array_scan(segment_offsets, segment_offsets, inclusive=True)
     # One read sizes the segments.
