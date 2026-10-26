@@ -26,7 +26,7 @@ import warp as wp
 
 import ordito as od
 from tests.comparisons import sparse_allclose
-from tests.conftest import BOUNDARY_MESHES
+from tests.conftest import BOUNDARY_MESHES, MESHES
 from tests.conversions import (
     bsr_to_csr,
     mesh_igl,
@@ -78,81 +78,78 @@ def test_edge_length_loss_edges_change_no_answer(
     assert given == plain
 
 
+@pytest.mark.parametrize("mesh_name", [*MESHES, "mobius", "boy_surface"])
 @pytest.mark.parity("normal_consistency_loss", "pytorch3d")
 def test_normal_consistency_loss_matches_pytorch3d(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class A on edge-manifold input, with the non-manifold divergence **pinned** rather than avoided.
+    Class A: ``mesh_normal_consistency``'s per-pair mean, on oriented and non-orientable meshes.
 
-    ``mesh_normal_consistency`` enumerates every *pair* of faces sharing an edge -- ``C(k, 2)``
-    pairs at an edge with ``k`` incident faces, through its own
-    ``_C.mesh_normal_consistency_find_verts`` -- where
-    [`face_adjacency_angles`][ordito.adjacency.face_adjacency_angles] reports one pair per
-    adjacency. The two coincide exactly wherever every edge has at most two faces, which is what
-    the first half measures: 0.1660283 against 0.1660283 over ``sphere_irregular``'s 1 494 pairs.
-
-    The second half is the divergence itself, on three faces sharing one edge, and it is sharper
-    than a factor: pytorch3d sees ``C(3, 2) = 3`` pairs there and reports **0.777**, while
-    [`face_adjacency`][ordito.adjacency.face_adjacency] keeps only edges with *exactly* two
-    incident faces and so reports **no pairs at all** and a loss of ``0.0``. The test pins both
-    numbers rather than papering over them with a tolerance; without that half the class-A label
-    would read as a claim about all input.
-
-    The third half is a second divergence, on edge-manifold input: pytorch3d orients each pair by
-    the shared *edge* (``(v1 - v0) x (opposite - v0)`` per face), so its loss ignores face winding,
-    where ordito's dihedral angle reads a pair wound against each other as a fold. On
-    ``sphere_irregular`` with every seventh face flipped, pytorch3d reports the unflipped value
-    while ordito's rises to **0.581**, measured, so the agreement is limited to *consistently
-    oriented* input (``mobius`` and ``boy_surface`` part the same way: 0.0062 / 0.0232 and 0.0189 /
-    0.0362). Pinned in both directions so a fix that adopted the edge orientation would fail here
-    and be relabelled.
+    The reference orients every pair by the shared edge, ``(v1 - v0) x (apex - v0)`` per face, and
+    so does ordito; ``mobius`` and ``boy_surface`` have no consistent winding at all, so a pair
+    oriented by the faces' windings instead would read some seams as folds there (the old dihedral
+    form read 0.0062 against 0.0232 on ``mobius``).
     """
-    mesh_tm, mesh_wp = sphere_irregular
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     loss_p3d = float(p3d_loss.mesh_normal_consistency(trimesh_to_pytorch3d(mesh_tm)))
     loss_wp = od.energies.normal_consistency_loss(mesh_wp.points, mesh_wp.indices)
 
     assert loss_p3d > 1e-6
     assert np.allclose(loss_wp, loss_p3d, rtol=1e-5, atol=0.0)
 
-    # Three faces on one edge: 3 reference pairs against ordito's 2 adjacencies.
+
+@pytest.mark.parity("normal_consistency_loss", "pytorch3d")
+def test_normal_consistency_loss_matches_pytorch3d_on_flips_and_fans(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
+) -> None:
+    """
+    Class A on the two inputs a winding-oriented, one-pair-per-edge form gets wrong.
+
+    ``sphere_irregular`` with every seventh face flipped: the reference is winding-free, so its
+    loss equals the unflipped mesh's, and so must ordito's (a face-winding dihedral read 0.581
+    against 0.166 here). Three faces on one edge: the reference counts all ``C(3, 2) = 3`` pairs
+    and reports 0.777, where a pairing that kept only two-face edges would report no pair at all.
+    """
+    mesh_tm, _mesh_wp = sphere_irregular
+    flipped_np = np.asarray(mesh_tm.faces).copy()
+    flipped_np[::7] = flipped_np[::7, ::-1]
+    flipped_tm = tm.Trimesh(mesh_tm.vertices, flipped_np, process=False)
+    assert not flipped_tm.is_winding_consistent
+    flipped_p3d = float(p3d_loss.mesh_normal_consistency(trimesh_to_pytorch3d(flipped_tm)))
+    loss_p3d = float(p3d_loss.mesh_normal_consistency(trimesh_to_pytorch3d(mesh_tm)))
+    flipped_vertices_wp, flipped_faces_wp = numpy_to_warp(mesh_tm.vertices, flipped_np, device)
+    flipped_wp = od.energies.normal_consistency_loss(flipped_vertices_wp, flipped_faces_wp)
+
+    assert np.allclose(flipped_p3d, loss_p3d, rtol=1e-5, atol=0.0)
+    assert np.allclose(flipped_wp, flipped_p3d, rtol=1e-5, atol=0.0)
+
     vertices_np = np.array(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, -1.0, 0.3], [0.0, 0.2, 1.0]],
         dtype=np.float64,
     )
     faces_np = np.array([[0, 1, 2], [1, 0, 3], [1, 0, 4]], dtype=np.int64)
     fan_p3d = float(
-        p3d_loss.mesh_normal_consistency(trimesh_to_pytorch3d(tm.Trimesh(vertices_np, faces_np)))
+        p3d_loss.mesh_normal_consistency(
+            trimesh_to_pytorch3d(tm.Trimesh(vertices_np, faces_np, process=False))
+        )
     )
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     fan_wp = od.energies.normal_consistency_loss(vertices_wp, faces_wp)
 
     assert np.allclose(fan_p3d, 0.777404, rtol=1e-4, atol=0.0)
-    assert fan_wp == 0.0
-
-    # Inconsistent winding: the reference is winding-free, ordito's dihedral angle is not.
-    flipped_np = np.asarray(mesh_tm.faces).copy()
-    flipped_np[::7] = flipped_np[::7, ::-1]
-    flipped_p3d = float(
-        p3d_loss.mesh_normal_consistency(
-            trimesh_to_pytorch3d(tm.Trimesh(mesh_tm.vertices, flipped_np, process=False))
-        )
-    )
-    flipped_vertices_wp, flipped_faces_wp = numpy_to_warp(mesh_tm.vertices, flipped_np, device)
-    flipped_wp = od.energies.normal_consistency_loss(flipped_vertices_wp, flipped_faces_wp)
-    assert np.allclose(flipped_p3d, loss_p3d, rtol=1e-5, atol=0.0)
-    assert flipped_wp > 3.0 * flipped_p3d
+    assert np.allclose(fan_wp, fan_p3d, rtol=1e-5, atol=0.0)
 
 
-def test_normal_consistency_loss_adjacency_changes_no_answer(
+def test_normal_consistency_loss_sorted_edge_keys_change_no_answer(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
-    """Ordito against ordito: ``face_adjacency=`` only spares the face pairing."""
+    """Ordito against ordito: ``sorted_edge_keys=`` only spares the edge sort."""
     _mesh_tm, mesh_wp = sphere_irregular
-    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
-    plain = od.energies.normal_consistency_loss(mesh.vertices, mesh.faces)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    plain = od.energies.normal_consistency_loss(vertices_wp, faces_wp)
     given = od.energies.normal_consistency_loss(
-        mesh.vertices, mesh.faces, face_adjacency=mesh.face_adjacency
+        vertices_wp, faces_wp, sorted_edge_keys=od.adjacency.sorted_face_edge_keys(faces_wp)
     )
     assert plain > 0.0
     assert given == plain

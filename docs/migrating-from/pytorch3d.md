@@ -35,7 +35,7 @@ with `squared=True`.
 |---|---|
 | `p3d_loss.mesh_edge_loss` | [`energies.edge_length_loss`][ordito.energies.edge_length_loss] |
 | `p3d_loss.mesh_laplacian_smoothing` | [`energies.laplacian_smoothing_loss`][ordito.energies.laplacian_smoothing_loss] |
-| `p3d_loss.mesh_normal_consistency` | [`energies.normal_consistency_loss`][ordito.energies.normal_consistency_loss] (counts one term per **edge-manifold** adjacency, unlike PyTorch3D's per-*pair*-of-incident-faces count — the two agree exactly on edge-manifold input) |
+| `p3d_loss.mesh_normal_consistency` | [`energies.normal_consistency_loss`][ordito.energies.normal_consistency_loss] (every pair of faces on an edge, oriented by the edge: agrees on any input, non-manifold fans and inconsistent windings included) |
 | `p3d_ops.cot_laplacian` | [`laplacian.cotmatrix`][ordito.laplacian.cotmatrix] (ordito assembles the diagonal via the row sum and de-duplicates; PyTorch3D's is an uncoalesced sparse tensor with an all-zero diagonal — coalesce and compare, don't assume the raw tensors already agree) |
 | `p3d_ops.taubin_smoothing` | [`smoothing.filter_taubin`][ordito.smoothing.filter_taubin] (pass `recompute=True` to match PyTorch3D's per-half-pass operator rebuild; the default reuses one fixed operator, which is both cheaper and the more standard formulation of Taubin's filter) |
 | `p3d_ops.corresponding_points_alignment` | [`registration.procrustes`][ordito.registration.procrustes] (ordito's rotation is the transpose of PyTorch3D's, since PyTorch3D solves the row-vector form `s·X·R + T = Y`) |

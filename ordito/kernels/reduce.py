@@ -1019,7 +1019,9 @@ def array_term(local: wp.int32, offset: wp.int32, values: Any):
     return values[offset + local]
 
 
-def _reduce_1d_tiled(tile_reduce, atomic, scalar, name, dtype, partials=False, term=None):
+def _reduce_1d_tiled(
+    tile_reduce, atomic, scalar, name, dtype, partials=False, term=None, term_dtype=wp.float32
+):
     """
     axis=None on a 1-D array: ``TILES_PER_BLOCK_1D`` tiles per block, one atomic per block.
 
@@ -1103,7 +1105,7 @@ def _reduce_1d_tiled(tile_reduce, atomic, scalar, name, dtype, partials=False, t
         _k.__annotations__["out_result"] = wp.array[dtype]
         return wp.kernel(_k, name=name)
     _k.__annotations__["source"] = dtype
-    _k.__annotations__["out_result"] = wp.array[wp.float32]
+    _k.__annotations__["out_result"] = wp.array[term_dtype]
     return wp.kernel(_k, name=name, module=term.module)
 
 
@@ -1479,20 +1481,24 @@ SUM1D_PARTIALS = KernelTable(
 
 class TermSum(NamedTuple):
     """
-    The two first stages of a ``float32`` block sum, the pair ``reduce.sum_of_terms`` launches.
+    The two first stages of a ``dtype`` block sum, the pair ``reduce.sum_of_terms`` launches.
 
     ``partials`` stores one sum per block, folded after by ``SUM1D_PARTIALS`` (the fixed-order
-    tree); ``atomic`` adds each block's sum into slot 0, the form taken when ``ordito.config``
-    turns determinism off, or ``None`` where the sum takes the fixed order either way (the
-    weighted sum, as ``reduce.weighted_sum`` does). Each kernel takes its inputs followed by its
-    output.
+    tree; ``sum_vec2_1d_partials`` for a ``wp.vec2``); ``atomic`` adds each block's sum into
+    slot 0, the form taken when ``ordito.config`` turns determinism off, or ``None`` where the sum
+    takes the fixed order either way (the weighted sum, as ``reduce.weighted_sum`` does). Each
+    kernel takes its inputs followed by its output. ``dtype`` is ``float32`` but for a
+    ``term_sum_1d`` built with another.
     """
 
     partials: wp.Kernel
     atomic: wp.Kernel | None
+    dtype: type = wp.float32
 
 
-def term_sum_1d(term: wp.Function, terms_type: type, name: str) -> TermSum:
+def term_sum_1d(
+    term: wp.Function, terms_type: type, name: str, dtype: type = wp.float32
+) -> TermSum:
     """
     Build the [`TermSum`][ordito.kernels.reduce.TermSum] of ``term(local, offset, terms)``.
 
@@ -1501,13 +1507,17 @@ def term_sum_1d(term: wp.Function, terms_type: type, name: str) -> TermSum:
     ``reduce.sum`` of the materialized terms in either determinism setting, with no term buffer.
     ``terms_type`` is the ``@wp.struct`` the kernels take, holding the item count ``n`` and the
     arrays ``term`` reads; ``name`` must be unique, and the two kernels are named ``name`` and
-    ``name + "_partials"``.
+    ``name + "_partials"``. ``dtype`` is what ``term`` returns: ``float32``, or ``wp.vec2`` for two
+    sums that share one pass over their items (each component folds as its own ``float32`` sum).
     """
     return TermSum(
         partials=_reduce_1d_tiled(
-            _tile_sum, None, wp.add, f"{name}_partials", terms_type, True, term=term
+            _tile_sum, None, wp.add, f"{name}_partials", terms_type, True, term, dtype
         ),
-        atomic=_reduce_1d_tiled(_tile_sum, wp.atomic_add, wp.add, name, terms_type, term=term),
+        atomic=_reduce_1d_tiled(
+            _tile_sum, wp.atomic_add, wp.add, name, terms_type, term=term, term_dtype=dtype
+        ),
+        dtype=dtype,
     )
 
 
@@ -1894,6 +1904,11 @@ sum_vec3_1d_partials = _reduce_1d_tiled(
 
 sum_vec4_1d_partials = _reduce_1d_tiled(
     _tile_sum, None, wp.add, "sum_vec4_1d_partials", dtype=wp.vec4, partials=True
+)
+
+# The fold of a ``wp.vec2`` ``term_sum_1d``'s block partials: two sums formed in one pass.
+sum_vec2_1d_partials = _reduce_1d_tiled(
+    _tile_sum, None, wp.add, "sum_vec2_1d_partials", dtype=wp.vec2, partials=True
 )
 
 weighted_sum1d_partials = _weighted_sum_1d_tiled("weighted_sum1d_partials", wp.float32, True)

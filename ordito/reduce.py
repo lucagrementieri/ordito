@@ -548,18 +548,19 @@ def sum_of_terms(
     inputs: Sequence[object],
     n: int,
     *,
-    out: wp.array[wp.float32] | None = None,
+    out: wp.array[Any] | None = None,
     device: wp.DeviceLike = None,
-) -> wp.array[wp.float32]:
+) -> wp.array[Any]:
     """
-    Total of ``n`` ``float32`` terms a block-sum kernel pair forms, left on the device.
+    Total of ``n`` terms a block-sum kernel pair forms, left on the device.
 
     The device-side form of [`sum`][ordito.reduce.sum]: the same blocks, fold tree and determinism
     rule, but the first stage is any ``ordito.kernels.reduce.TermSum`` -- ``sum``'s own
     kernels over an array (``kernel_reduce.ARRAY_SUM``), the weighted sum's
     (``kernel_reduce.WEIGHTED_SUM``), or a fused term built by
     ``ordito.kernels.reduce.term_sum_1d`` that never stores its terms -- and the total
-    stays in a one-slot device array instead of being read back. Under
+    stays in a one-slot device array instead of being read back. The terms are ``float32``, or the
+    ``dtype`` the pair was built with (a ``wp.vec2`` of two sums formed in one pass). Under
     [`is_deterministic`][ordito.config.is_deterministic] (or when ``kernels.atomic`` is ``None``)
     every block stores its sum and the partials fold in a fixed tree; otherwise every block adds
     its sum into the total.
@@ -608,9 +609,9 @@ def sum_of_terms(
     if device is None:
         device = out.device if out is not None else cast(wp.array[Any], inputs[0]).device
     if kernels.atomic is None or is_deterministic():
-        return _sum_in_fixed_order(kernels.partials, inputs, n, wp.float32, device, out=out)
+        return _sum_in_fixed_order(kernels.partials, inputs, n, kernels.dtype, device, out=out)
     if out is None:
-        out = _launch.zeros(1, dtype=wp.float32, device=device)
+        out = _launch.zeros(1, dtype=kernels.dtype, device=device)
     _launch.launch_tiled(
         kernels.atomic,
         dim=[kernel_reduce.blocks_1d(n)],
@@ -931,6 +932,11 @@ _VECTOR_SUM_PARTIALS: dict[type, odt.Kernel] = {
     wp.vec3: kernel_reduce.sum_vec3_1d_partials,
     wp.vec4: kernel_reduce.sum_vec4_1d_partials,
 }
+# ``_sum_in_fixed_order``'s folds: the vector sums', and a ``wp.vec2`` term sum's.
+_FOLD_PARTIALS: dict[type, odt.Kernel] = {
+    **_VECTOR_SUM_PARTIALS,
+    wp.vec2: kernel_reduce.sum_vec2_1d_partials,
+}
 
 _SCALAR_REDUCE: dict[str, _ScalarReduceSpec] = {
     "min": _ScalarReduceSpec(
@@ -1036,7 +1042,7 @@ def _sum_in_fixed_order(
     ``inputs`` holds what ``first`` takes before its output. The last stage writes ``out`` when it
     is given.
     """
-    fold = _VECTOR_SUM_PARTIALS.get(dtype) or kernel_reduce.SUM1D_PARTIALS[dtype]
+    fold = _FOLD_PARTIALS.get(dtype) or kernel_reduce.SUM1D_PARTIALS[dtype]
     kernel = first
     blocks = kernel_reduce.blocks_1d(n)
     while True:

@@ -1,7 +1,13 @@
 import warp as wp
 
-from ordito.kernels.array import OverloadTable, store_coo_key, to_vec3d
-from ordito.kernels.halfedge import halfedge_endpoints
+from ordito.kernels.array import (
+    OverloadTable,
+    sorted_run_end,
+    sorted_run_start,
+    store_coo_key,
+    to_vec3d,
+)
+from ordito.kernels.halfedge import halfedge_endpoints, halfedge_prev
 from ordito.kernels.laplacian import cotmatrix_row, store_half_cotangents
 from ordito.kernels.predicates import (
     angle_defect,
@@ -68,18 +74,60 @@ def edge_deviation_term(local: wp.int32, offset: wp.int32, terms: EdgeDeviationT
 
 
 @wp.struct
-class DihedralTerms:
-    """``normal_consistency_loss``'s pair count and dihedral angles, one per adjacent face pair."""
+class NormalConsistencyTerms:
+    """``normal_consistency_loss``'s halfedge count, sorted edge keys, order, faces, positions."""
 
     n: wp.int32
-    angles: wp.array[wp.float32]
+    keys: wp.array[wp.uint64]
+    order: wp.array[wp.int32]
+    faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3]
 
 
 @wp.func
-def dihedral_term(local: wp.int32, offset: wp.int32, terms: DihedralTerms) -> wp.float32:
-    # ``1 - cos(theta)`` for pair ``offset + local``, the per-pair term of the normal-consistency
-    # regularizer: 0 for a flat pair, 1 at a right angle, 2 for a fold back on itself.
-    return wp.float32(1.0) - wp.cos(terms.angles[offset + local])
+def edge_oriented_unit_normal(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], h: wp.int32
+) -> wp.vec3:
+    # Halfedge ``h``'s face normal oriented by its *edge*, not by the face's winding:
+    # ``(v1 - v0) x (apex - v0)`` with ``(v0, v1)`` the edge's endpoints in ascending index order,
+    # so every face on one edge is crossed against the same edge vector and the normals of two
+    # faces folded flat onto opposite sides point opposite ways whatever their windings. Scaled to
+    # unit length with ``torch.cosine_similarity``'s clamp (``max(||n||, 1e-8)``), so a degenerate
+    # face's vector is zero rather than undefined.
+    origin, destination = halfedge_endpoints(faces, h)
+    p0 = vertices[wp.min(origin, destination)]
+    normal = wp.cross(
+        vertices[wp.max(origin, destination)] - p0, vertices[faces[halfedge_prev(h)]] - p0
+    )
+    return normal / wp.max(wp.length(normal), wp.float32(1e-8))
+
+
+@wp.func
+def edge_pair_consistency_term(
+    local: wp.int32, offset: wp.int32, terms: NormalConsistencyTerms
+) -> wp.vec2:
+    # ``(sum over i < j of 1 + a_i . a_j, C(k, 2))`` over the run of ``k`` sorted halfedges that
+    # starts at sorted position ``offset + local`` (zero at any other position), ``a`` their
+    # ``edge_oriented_unit_normal``s: ``pytorch3d.loss.mesh_normal_consistency``'s
+    # ``1 - cos(n_i, -n_j)`` for every pair of faces on the edge, and the pair count, so the two
+    # sums' ratio is the reference's per-pair mean. The pair's normals are formed on opposite sides
+    # of the edge, so a flat pair reads ``1 - 1 = 0``. One walk, each normal dotted with the running
+    # sum of the earlier ones, so the run is read once and in halfedge order (the sort is stable):
+    # the term is the same on every run. The count rides in the same pass as a second component
+    # rather than a second sum: a separate count sum re-reads every key and cost half the pair
+    # sum's device time at 1.3 M faces.
+    p = offset + local
+    if not sorted_run_start(terms.keys, p):
+        return wp.vec2(0.0, 0.0)
+    earlier = wp.vec3(0.0, 0.0, 0.0)
+    total = wp.float32(0.0)
+    count = wp.float32(0.0)
+    for q in range(p, sorted_run_end(terms.keys, p, terms.n)):
+        unit = edge_oriented_unit_normal(terms.vertices, terms.faces, terms.order[q])
+        total += count + wp.dot(unit, earlier)
+        earlier += unit
+        count += wp.float32(1.0)
+    return wp.vec2(total, count * (count - wp.float32(1.0)) * wp.float32(0.5))
 
 
 @wp.func
@@ -202,9 +250,12 @@ def laplacian_smoothing_cot_norms(
 
 
 # One ``kernels/reduce.TermSum`` per regularizer: the fused map and fixed-order (or atomic) block
-# sum that ``energies._mean_of_terms`` hands to ``reduce.sum_of_terms``.
+# sum handed to ``reduce.sum_of_terms`` (by ``energies._mean_of_terms`` for the ``float32`` ones;
+# the normal-consistency pair sum and pair count share a ``wp.vec2``).
 EDGE_DEVIATION_SUM = term_sum_1d(edge_deviation_term, EdgeDeviationTerms, "edge_deviation_sum")
-DIHEDRAL_SUM = term_sum_1d(dihedral_term, DihedralTerms, "dihedral_sum")
+NORMAL_CONSISTENCY_SUM = term_sum_1d(
+    edge_pair_consistency_term, NormalConsistencyTerms, "normal_consistency_sum", wp.vec2
+)
 SMOOTHING_NORM_SUM = term_sum_1d(smoothing_norm_term, SmoothingNormTerms, "smoothing_norm_sum")
 
 

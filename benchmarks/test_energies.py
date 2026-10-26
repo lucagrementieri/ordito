@@ -128,16 +128,12 @@ def test_edge_length_loss(bench_case: BenchCase) -> None:
 @pytest.mark.benchlibs("ordito", "pytorch3d")
 def test_normal_consistency_loss(bench_case: BenchCase) -> None:
     """
-    The dihedral regularizer: face adjacency, one angle per pair, one reduction.
+    The dihedral regularizer: one edge-key sort, then two fused reductions over its runs.
 
-    The adjacency is inside the timed callable on both sides, and it is the row -- read this
-    against ``face_adjacency_angles`` in [`test_adjacency.py`](test_adjacency.py), where the same
-    build is timed without the reduction.
-
-    **pytorch3d** does measurably more here than ordito, and the extra is not a constant: it
-    enumerates every *pair* of faces per edge through a C++ helper over a per-edge vertex list,
-    where ordito reads one pair per adjacency. The two agree on edge-manifold input
-    (``tests/test_energies.py``) and this row prices that generality.
+    The sort is inside the timed callable on both sides, and it is most of the row. Both sides
+    enumerate every *pair* of faces per edge, oriented by the edge, and agree on any input
+    (``tests/test_energies.py``); pytorch3d forms the pairs through a C++ helper over a per-edge
+    vertex list on the host, where ordito walks each edge's run of sorted halfedges in one thread.
     """
     if bench_case.kind == "pytorch3d":
         _run_loss_pytorch3d(bench_case, lambda mesh_p3d: p3d_loss.mesh_normal_consistency(mesh_p3d))

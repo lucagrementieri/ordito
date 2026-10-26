@@ -146,7 +146,7 @@ def normal_consistency_loss(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
-    face_adjacency: odt.Array2dInt32 | None = None,
+    sorted_edge_keys: tuple[wp.array[wp.uint64], wp.array[wp.int32]] | None = None,
 ) -> float:
     """
     Mean ``1 - cos(theta)`` over the pairs of faces sharing an edge.
@@ -156,45 +156,48 @@ def normal_consistency_loss(
     it against [`edge_length_loss`][ordito.energies.edge_length_loss], which constrains the
     *sizes*; this one constrains the *orientations* and says nothing about scale.
 
+    Every pair of faces on an edge counts, ``k * (k - 1) / 2`` pairs at an edge with ``k`` faces,
+    and each pair is oriented by the edge rather than by the faces' windings: both normals are
+    formed as ``(v1 - v0) x (apex - v0)`` against the one edge ``(v0, v1)``, and ``theta`` is the
+    angle between one and the negation of the other. A pair wound against each other therefore
+    reads as smooth as a consistently wound one, so the loss is the same on an inconsistently
+    oriented or non-orientable mesh as on its oriented counterpart, and a non-manifold fan
+    contributes every pair it holds.
+
     Parameters
     ----------
     vertices
         ``(n_vertices,)`` positions.
     faces
         ``(3 * n_faces,)`` triangle index buffer.
-    face_adjacency
-        ``(m, 2)`` [`face_adjacency`][ordito.adjacency.face_adjacency] of ``faces``, which depends
-        on the connectivity alone: a loop moving the vertices over fixed faces builds it once
-        ([`Trimesh.face_adjacency`][ordito.mesh.Trimesh.face_adjacency]) and each call then skips
-        the sort that pairs the faces. Trusted, not checked.
+    sorted_edge_keys
+        [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys] of ``faces``, which
+        depend on the connectivity alone: a loop moving the vertices over fixed faces builds them
+        once and each call then skips the sort that groups the faces by edge. Trusted, not
+        checked.
 
     Returns
     -------
     float
-        The mean, as a host scalar. ``0.0`` for a mesh with no adjacent face pair.
+        The mean, as a host scalar. ``0.0`` for a mesh with no pair of faces sharing an edge.
 
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``faces`` and ``face_adjacency`` are not all on one device.
+        If ``vertices``, ``faces`` and ``sorted_edge_keys`` are not all on one device.
 
     See Also
     --------
     [`edge_length_loss`][ordito.energies.edge_length_loss]
     [`laplacian_smoothing_loss`][ordito.energies.laplacian_smoothing_loss]
     [`face_adjacency_angles`][ordito.adjacency.face_adjacency_angles]
-        The per-pair dihedral angles this reduces.
+        Per-pair dihedral angles of the manifold edges, oriented by the faces' windings.
 
     Notes
     -----
-    Matches ``pytorch3d.loss.mesh_normal_consistency`` on **consistently oriented, edge-manifold**
-    input. Both restrictions are real and neither is a tolerance. The reference enumerates *every*
-    pair of faces sharing an edge, so an edge with ``k`` incident faces contributes ``C(k, 2)``
-    terms where [`face_adjacency_angles`][ordito.adjacency.face_adjacency_angles] reports one pair
-    per adjacency; the two coincide wherever every edge has at most two faces. And the reference
-    orients each pair by the shared edge rather than by face winding, so it reads a pair wound
-    against each other (an inconsistently oriented or non-orientable mesh) as smooth where this
-    function reads it as a fold.
+    Matches ``pytorch3d.loss.mesh_normal_consistency`` on every input, non-manifold fans and
+    inconsistent windings included. Its per-mesh weighting collapses to a plain mean over the pairs
+    for one mesh, which is ordito's only case.
 
     Examples
     --------
@@ -210,14 +213,28 @@ def normal_consistency_loss(
     print(f"{od.energies.normal_consistency_loss(vertices, faces):.4f}")  # 0.0000
     ```
     """
-    require_same_device(vertices=vertices, faces=faces, face_adjacency=face_adjacency)
-    angles = od.adjacency.face_adjacency_angles(vertices, faces, face_adjacency)
-    if angles.size == 0:
+    require_same_device(vertices=vertices, faces=faces, sorted_edge_keys=sorted_edge_keys)
+    n = faces.size // 3 * 3
+    if n == 0:
         return 0.0
-    terms = kernel_energies.DihedralTerms()
-    terms.n = angles.size
-    terms.angles = angles
-    return _mean_of_terms(kernel_energies.DIHEDRAL_SUM, terms, angles.size, angles.device)
+    device = faces.device
+    if sorted_edge_keys is None:
+        sorted_edge_keys = od.adjacency.sorted_face_edge_keys(
+            faces, n_vertices=max(vertices.size, 1)
+        )
+    terms = kernel_energies.NormalConsistencyTerms()
+    terms.n = n
+    terms.keys, terms.order = sorted_edge_keys
+    terms.faces = faces
+    terms.vertices = vertices
+    # One pass sums the pair terms and counts the pairs, as a ``wp.vec2``, read back because the
+    # mean is a host scalar.
+    total, pairs = read_scalar(
+        od.reduce.sum_of_terms(kernel_energies.NORMAL_CONSISTENCY_SUM, [terms], n, device=device), 0
+    )
+    if pairs == 0.0:
+        return 0.0
+    return float(total) / float(pairs)
 
 
 def laplacian_smoothing_loss(
