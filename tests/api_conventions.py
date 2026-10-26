@@ -234,6 +234,11 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "make_winding_consistent applies each face's flip in the pass that reads it off the parity "
         "words; face_flip_mask would store the mask for a second launch to read back"
     ),
+    ("repair", "validation._face_self_intersecting_mask"): (
+        "fix_self_intersections' cut-and-refill passes decide on whether the mask marks any face, "
+        "which the detector's last launch raises as a word; face_self_intersecting_mask would "
+        "return the mask for a pass of its own to test"
+    ),
     ("repair", "validation._corner_parents_from_mates"): (
         "split_non_manifold_vertices' corner graph is the vertex-manifold one restricted to pairs "
         "wound both ways, hooked off the same halfedge mates; a public form would expose an "

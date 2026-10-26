@@ -652,6 +652,24 @@ def face_self_intersecting_mask(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, mesh=mesh)
+    return _face_self_intersecting_mask(vertices, faces, max_triangle_collisions, mesh)
+
+
+def _face_self_intersecting_mask(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_triangle_collisions: int = 32,
+    mesh: wp.Mesh | None = None,
+    any_marked: tuple[int, wp.array[wp.int32]] | None = None,
+) -> wp.array[wp.bool]:
+    """
+    [`face_self_intersecting_mask`][ordito.validation.face_self_intersecting_mask], trusting.
+
+    With ``any_marked`` as ``(stamp, state)``, ``stamp`` is also stored into ``state[0]`` when the
+    mask marks any face, by the mask's own last launch
+    (``kernels/intersection.mark_overflow_crossings_flag_any``), for a caller deciding on that
+    alone with a four-byte read.
+    """
     device = vertices.device
     n_faces = faces.size // 3
     mask = _launch.zeros(n_faces, dtype=wp.bool, device=device)
@@ -662,7 +680,9 @@ def face_self_intersecting_mask(
         require_nonempty_mesh(faces, "face_self_intersecting_mask")
         mesh = wp.Mesh(points=vertices, indices=faces)
 
-    _mark_self_intersections(mesh, vertices, faces, max_triangle_collisions, True, mask)
+    _mark_self_intersections(
+        mesh, vertices, faces, max_triangle_collisions, True, mask, any_marked=any_marked
+    )
     return mask
 
 
@@ -673,6 +693,8 @@ def _mark_self_intersections(
     max_triangle_collisions: int,
     mark_faces: bool,
     out_marks: wp.array[wp.bool],
+    *,
+    any_marked: tuple[int, wp.array[wp.int32]] | None = None,
 ) -> None:
     """
     Broad and narrow phase of the self-intersection test, shared by the predicate and the mask.
@@ -709,6 +731,16 @@ def _mark_self_intersections(
         inputs=[*inputs, targets, counts, stride, flag_only, out_marks, out_marks],
         device=vertices.device,
     )
+    if any_marked is not None:
+        stamp, state = any_marked
+        _launch.launch(
+            kernel_intersections.mark_overflow_crossings_flag_any,
+            dim=n_faces,
+            inputs=[mesh.id, *inputs, counts, stride, stamp],
+            outputs=[out_marks, state],
+            device=vertices.device,
+        )
+        return
     _launch.launch(
         kernel_intersections.mark_overflow_crossings,
         dim=n_faces,

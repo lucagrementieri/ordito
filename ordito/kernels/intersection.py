@@ -549,8 +549,8 @@ def mark_crossing_slot_masks(
     )  # fmt: skip
 
 
-@wp.kernel
-def mark_overflow_crossings(
+@wp.func
+def mark_overflow_tail(
     mesh_id: wp.uint64,
     query_vertices: wp.array[wp.vec3],
     query_faces: wp.array[wp.int32],
@@ -561,12 +561,12 @@ def mark_overflow_crossings(
     flag_only: wp.bool,
     out_mask_query: wp.array[wp.bool],
     out_mask_target: wp.array[wp.bool],
+    q: wp.int32,
 ) -> None:
-    # The candidates a query face's block could not hold (``counts[q] > max_hits``): the face walks
-    # its box again, skips the ``max_hits`` the block holds (the same traversal order) and marks the
-    # rest inline. Every other face returns at once, so a table that held every candidate costs one
-    # launch and no host read; a face that overflows is rare enough to test serially.
-    q = wp.int32(wp.tid())
+    # The candidates query face ``q``'s block could not hold (``counts[q] > max_hits``): the face
+    # walks its box again, skips the ``max_hits`` the block holds (the same traversal order) and
+    # marks the rest inline. Every other face returns at once, so a table that held every candidate
+    # costs one launch and no host read; a face that overflows is rare enough to test serially.
     if counts[q] <= max_hits:
         return
     v0, v1, v2 = kernel_triangles.face_vertices(query_vertices, query_faces, q)
@@ -581,6 +581,57 @@ def mark_overflow_crossings(
                 out_mask_query, out_mask_target,
             )  # fmt: skip
         c = c + 1
+
+
+@wp.kernel
+def mark_overflow_crossings(
+    mesh_id: wp.uint64,
+    query_vertices: wp.array[wp.vec3],
+    query_faces: wp.array[wp.int32],
+    target_vertices: wp.array[wp.vec3],
+    target_faces: wp.array[wp.int32],
+    counts: wp.array[wp.int32],
+    max_hits: wp.int32,
+    flag_only: wp.bool,
+    out_mask_query: wp.array[wp.bool],
+    out_mask_target: wp.array[wp.bool],
+) -> None:
+    # The overflow tail of every query face (``mark_overflow_tail``). Differs from
+    # ``mark_overflow_crossings_flag_any`` only in raising no "any face marked" word.
+    q = wp.int32(wp.tid())
+    mark_overflow_tail(
+        mesh_id, query_vertices, query_faces, target_vertices, target_faces, counts, max_hits,
+        flag_only, out_mask_query, out_mask_target, q,
+    )  # fmt: skip
+
+
+@wp.kernel
+def mark_overflow_crossings_flag_any(
+    mesh_id: wp.uint64,
+    query_vertices: wp.array[wp.vec3],
+    query_faces: wp.array[wp.int32],
+    target_vertices: wp.array[wp.vec3],
+    target_faces: wp.array[wp.int32],
+    counts: wp.array[wp.int32],
+    max_hits: wp.int32,
+    stamp: wp.int32,
+    out_mask: wp.array[wp.bool],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # ``mark_overflow_crossings`` over a self-intersection face mask, also storing ``stamp`` into
+    # ``out_state[0]`` when the mask holds any face: the "is any face bad" word
+    # ``repair.fix_self_intersections`` reads, raised by the mask's last launch rather than a pass
+    # of its own over it. Exact whatever the arrival order: a face the slot table marked was marked
+    # by the previous launch, and a face this launch marks is marked by a thread that marks its own
+    # query face too and reads it back after its walk, so every marked mask raises the word. The
+    # store is the same ``stamp`` from every thread, so its order is irrelevant.
+    q = wp.int32(wp.tid())
+    mark_overflow_tail(
+        mesh_id, query_vertices, query_faces, target_vertices, target_faces, counts, max_hits,
+        False, out_mask, out_mask, q,
+    )  # fmt: skip
+    if out_mask[q]:
+        out_state[0] = stamp
 
 
 @wp.kernel
