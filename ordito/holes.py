@@ -893,9 +893,11 @@ def _fill_packed_loops(
     combine_id = _METRIC_COMBINE.get(metric, 0)
     min_area_id = _METRIC_IDS["min_area"]
 
-    # The rim positions and their opposite vertices' positions: one allocation.
+    # The rim positions, their opposite vertices' positions and the per-loop plane normals: one
+    # allocation, zeroed for the normals' accumulation (the rest is overwritten).
     total = loops.total
-    positions = _launch.empty(2 * total, dtype=wp.vec3, device=device)
+    n_loops = loops.n_loops
+    positions = _launch.zeros(2 * total + n_loops, dtype=wp.vec3, device=device)
     loop_pos = _launch.view(positions, 0, total)
     # The rim sort's slots and the rim-opposite table, then the chord test's vertex-to-slot
     # scratch, which the same rim pass fills: all arrive ``-1`` (``RIM_NO_FACE``, and "no slot"),
@@ -912,7 +914,7 @@ def _fill_packed_loops(
     # (``finalize_rim_metrics_ordered``) and overwrites the rim pass's: its atomics commit in
     # arrival order, and on a rim with exact metric ties the last bits of the plane pick the
     # triangulation.
-    plane_normals = _launch.zeros(loops.n_loops, dtype=wp.vec3, device=device)
+    plane_normals = _launch.view(positions, 2 * total, 2 * total + n_loops)
     char_areas = _launch.zeros(loops.n_loops, dtype=wp.float32, device=device)
     flat_slot = _table_view(rim_ints, 4 * total, 4 * total + n_slot_scratch)
     _launch.launch(
@@ -964,7 +966,9 @@ def _fill_packed_loops(
     )
 
     dp = _launch.empty(loops.dp_total, dtype=wp.float32, device=device)
-    prev = _launch.empty(loops.dp_total, dtype=wp.int32, device=device)
+    # The predecessor table, then the traceback's per-loop counts and their scan: one allocation.
+    prev_and_counts = _launch.empty(loops.dp_total + 2 * n_loops, dtype=wp.int32, device=device)
+    prev = _launch.view(prev_and_counts, 0, loops.dp_total)
     active = _launch.ones(loops.n_loops, dtype=wp.int32, device=device)
     _run_hole_dp(
         loops,
@@ -1025,7 +1029,8 @@ def _fill_packed_loops(
                 ),
             )
 
-    return _traceback_fill_faces(faces, loops, prev, state, edge_table.n_vertices)
+    counts = _launch.view(prev_and_counts, loops.dp_total, loops.dp_total + 2 * n_loops)
+    return _traceback_fill_faces(faces, loops, prev, state, edge_table.n_vertices, counts)
 
 
 def _traceback_fill_faces(
@@ -1034,6 +1039,7 @@ def _traceback_fill_faces(
     prev: wp.array[wp.int32],
     state: wp.array[wp.int32],
     n_vertices: int,
+    counts_scratch: wp.array[wp.int32],
 ) -> wp.array[wp.int32]:
     """
     Walk every loop's DP predecessor table into fill faces, returned appended to ``faces``.
@@ -1049,7 +1055,7 @@ def _traceback_fill_faces(
     is the total shortfall the walk accumulated into ``state``; only where it is non-zero does a
     scan place the compacted blocks and a second buffer receive them. The same read carries the
     rim-edge passes' face range flag, which raises for ``faces`` indexing outside
-    ``[0, n_vertices)``.
+    ``[0, n_vertices)``. ``counts_scratch`` is ``(2 * n_loops,)``: the counts, then their scan.
     """
     device = loops.device
     triangle_sizes_np = np.maximum(loops.sizes_np - 2, 0)
@@ -1061,7 +1067,7 @@ def _traceback_fill_faces(
     _launch.copy(filled, faces, count=n_face_indices)
     padded = odt.as_dense(filled[n_face_indices:]).reshape((n_padded, 3))
     triangle_offsets = loops.triangle_offsets
-    counts = odt.empty_1d(loops.n_loops, wp.int32, device=device)
+    counts = _launch.view(counts_scratch, 0, loops.n_loops)
     # The walk's pending intervals: one slot per packed rim vertex, which is exactly enough
     # (see ``traceback_fill_triangles``), and caller-allocated because a kernel local cannot be
     # sized by a runtime rim length.
@@ -1091,7 +1097,7 @@ def _traceback_fill_faces(
     n_triangles = n_padded - shortfall
     if n_triangles == 0:
         return _launch.clone(faces)
-    packed_ends = odt.empty_1d(loops.n_loops, wp.int32, device=device)
+    packed_ends = _launch.view(counts_scratch, loops.n_loops, 2 * loops.n_loops)
     _launch.array_scan(counts, packed_ends, inclusive=True)
     compacted = _launch.empty(n_face_indices + 3 * n_triangles, dtype=wp.int32, device=device)
     _launch.copy(compacted, faces, count=n_face_indices)
