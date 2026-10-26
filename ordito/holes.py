@@ -192,14 +192,25 @@ class _PackedLoops:
         Delegates to
         [`boundary.loop_perimeters_from_offsets`][ordito.boundary.loop_perimeters_from_offsets]
         rather than launching the segmented kernel again here: the packed layout this class holds
-        *is* that function's argument list, and ``loop_id`` is passed rather than rebuilt, so the
-        call costs exactly what the private copy this replaced did. ``validate=False``: ``offsets``
-        is built from ``sizes_np`` right above in this class's own constructor, not handed in from
-        outside, so it already fits ``flat_loops`` by construction.
+        *is* that function's argument list. ``loop_id`` is not passed, since the measure finds each
+        position's loop from ``offsets``, so asking for it would upload the fill's tables for a
+        measure that reads none of them. ``validate=False``: ``offsets`` is built from
+        ``sizes_np`` right above in this class's own constructor, not handed in from outside, so it
+        already fits ``flat_loops`` by construction.
         """
-        return od.boundary.loop_perimeters_from_offsets(
-            vertices, self.flat_loops, self.offsets, loop_id=self.loop_id, validate=False
-        ).numpy()
+        perimeters = od.boundary.loop_perimeters_from_offsets(
+            vertices, self.flat_loops, self.offsets, validate=False
+        )
+        # Readback: the callers threshold, rank or average the perimeters on the host. A few loops
+        # come back through the cached scratch rather than a fresh host array.
+        if self.n_loops <= _FEW_LOOPS:
+            return np.asarray(read_values(perimeters, 0, self.n_loops), dtype=np.float32)
+        return perimeters.numpy()
+
+
+# Loop counts up to which ``_PackedLoops.perimeters`` reads back through ``read_values``, whose
+# scratch is cached per count.
+_FEW_LOOPS = 4
 
 
 def _table_view(tables: wp.array[wp.int32], start: int, stop: int) -> wp.array[wp.int32]:
@@ -210,7 +221,7 @@ def _table_view(tables: wp.array[wp.int32], start: int, stop: int) -> wp.array[w
     lands when every packed loop is empty.
     """
     if stop > start:
-        return odt.as_dense(tables[start:stop])
+        return _launch.view(tables, start, stop)
     return _launch.empty(0, dtype=wp.int32, device=tables.device)
 
 
@@ -490,20 +501,40 @@ class _EdgeTable:
         self.key_bits = max(1, (n_vertices * n_vertices - 1).bit_length())
         self.n_vertices = n_vertices
         self.device = device
+        self._rim_ints: wp.array[wp.int32] | None = None
 
-    def rim_sort_buffers(self, total: int) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
+    def rim_sort_buffers(
+        self,
+        total: int,
+        keys: wp.array[wp.uint64] | None = None,
+        ints: wp.array[wp.int32] | None = None,
+    ) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
         """
-        Allocate the rim sort's double-width key and slot buffers, for ``total`` rim slots.
+        Return the rim sort's double-width key and slot buffers, for ``total`` rim slots.
 
         A producer writes each slot's key and the identity payload into the first ``total``
         entries (``kernels/holes.write_rim_sort_entry``); the upper halves are the sort's scratch.
+        The slots are the front half of ``ints``, a ``(4 * total,)`` ``RIM_NO_FACE``-filled buffer
+        whose back half is [`rim_opposite`][ordito.holes._EdgeTable.rim_opposite]'s face table and
+        validity, so the fill that table needs is this buffer's. ``keys`` (``(2 * total,)``) and
+        ``ints`` are views of a caller's shared buffers when it has them, allocated here otherwise.
         """
-        keys = _launch.empty(2 * total, dtype=wp.uint64, device=self.device)
-        slots = _launch.empty(2 * total, dtype=wp.int32, device=self.device)
-        return keys, slots
+        if keys is None:
+            keys = _launch.empty(2 * total, dtype=wp.uint64, device=self.device)
+        if ints is None:
+            ints = self.rim_int_scratch(4 * total)
+        self._rim_ints = ints
+        return keys, _table_view(ints, 0, 2 * total)
+
+    def rim_int_scratch(self, size: int) -> wp.array[wp.int32]:
+        """``(size,)`` ``int32`` scratch filled with ``RIM_NO_FACE``, cut up by the caller."""
+        return _launch.full(size, kernel_holes.RIM_NO_FACE, dtype=wp.int32, device=self.device)
 
     def rim_opposite(
-        self, total: int, sort_buffers: tuple[wp.array[wp.uint64], wp.array[wp.int32]]
+        self,
+        total: int,
+        sort_buffers: tuple[wp.array[wp.uint64], wp.array[wp.int32]],
+        positions: wp.array[wp.vec3] | None = None,
     ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
         """
         Opposite-vertex position + validity per rim edge, for every loop in one pass.
@@ -511,22 +542,27 @@ class _EdgeTable:
         ``sort_buffers`` are ``rim_sort_buffers(total)`` holding the ``total`` rim edges' undirected
         keys under ``self.base`` and the identity slots, written by the caller's own pass over the
         rim (``write_rim_sort_entry``: the fill's ``loop_rim_metrics``, the stitch's
-        ``stitch_rolled_rims``). Sorted in place.
+        ``stitch_rolled_rims``). Sorted in place. ``positions`` is a ``(total,)`` view of a
+        caller's buffer for the positions, allocated here when ``None``; the validity is the back
+        quarter of ``rim_sort_buffers``' ``ints``.
         """
         keys, order = sort_buffers
         if total > 0:
             _launch.radix_sort_pairs(keys, order, count=total, end_bit=self.key_bits)
         sorted_keys = odt.as_dense(keys[:total])
         slots = odt.as_dense(order[:total])
-        third = _launch.full(total, kernel_holes.RIM_NO_FACE, dtype=wp.int32, device=self.device)
+        ints = self._rim_ints
+        assert ints is not None
+        third = _table_view(ints, 2 * total, 3 * total)
         _launch.launch(
             kernel_holes.probe_rim_edges,
             dim=self.faces.size // 3,
             inputs=[self.faces, sorted_keys, slots, self.base, third, self.flag],
             device=self.device,
         )
-        positions = _launch.empty(total, dtype=wp.vec3, device=self.device)
-        valid = _launch.empty(total, dtype=wp.int32, device=self.device)
+        if positions is None:
+            positions = _launch.empty(total, dtype=wp.vec3, device=self.device)
+        valid = _table_view(ints, 3 * total, 4 * total)
         _launch.launch(
             kernel_holes.rim_opposite_positions,
             dim=total,
@@ -536,10 +572,12 @@ class _EdgeTable:
         return positions, valid
 
     def forbidden_chords(
-        self, loops: _PackedLoops, flat_slot: wp.array[wp.int32]
-    ) -> wp.array[wp.int32]:
+        self, loops: _PackedLoops, flat_slot: wp.array[wp.int32], mask: wp.array[wp.int32]
+    ) -> None:
         """
-        Ragged mask of the chords that already exist as mesh edges, for every loop at once.
+        Mark the chords that already exist as mesh edges in ``mask``, for every loop at once.
+
+        ``mask`` is the zeroed ``(dp_total,)`` ragged chord mask.
 
         ``flat_slot`` is the ``(n_vertices,)`` scratch the rim pass filled with each vertex's
         *flat* slot (``kernels/holes.record_loop_position``) rather than its position within one
@@ -547,7 +585,6 @@ class _EdgeTable:
         -- the per-loop version ran one full ``dim = 3 * n_faces`` pass per hole, and cleared the
         scratch between them.
         """
-        mask = _launch.zeros(loops.dp_total, dtype=wp.int32, device=self.device)
         _launch.launch(
             kernel_holes.mark_forbidden_chords,
             dim=self.n_halfedges,
@@ -562,11 +599,6 @@ class _EdgeTable:
             ],
             device=self.device,
         )
-        return mask
-
-    def flat_slot_scratch(self) -> wp.array[wp.int32]:
-        """``(n_vertices,)`` ``-1``-filled scratch the rim pass records loop positions into."""
-        return _launch.full(self.n_vertices, -1, dtype=wp.int32, device=self.device)
 
 
 def fill_min_weight(
@@ -847,8 +879,12 @@ def _fill_packed_loops(
     """
     device = faces.device
     # The retry flag, the traceback's shortfall and the face range flag, read back at two different
-    # points; see ``kernels/holes.py::FILL_STATE_SLOTS``.
-    state = _launch.zeros(kernel_holes.FILL_STATE_SLOTS, dtype=wp.int32, device=device)
+    # points (see ``kernels/holes.py::FILL_STATE_SLOTS``), and behind them the ragged chord mask:
+    # both arrive zeroed, so they share one allocation.
+    n_slots = kernel_holes.FILL_STATE_SLOTS
+    zeroed = _launch.zeros(n_slots + loops.dp_total, dtype=wp.int32, device=device)
+    state = _launch.view(zeroed, 0, n_slots)
+    forbidden = _table_view(zeroed, n_slots, n_slots + loops.dp_total)
     bad_index = kernel_holes.FILL_STATE_BAD_INDEX
     edge_table = _EdgeTable(
         vertices, faces, n_vertices, _launch.view(state, bad_index, bad_index + 1)
@@ -857,8 +893,18 @@ def _fill_packed_loops(
     combine_id = _METRIC_COMBINE.get(metric, 0)
     min_area_id = _METRIC_IDS["min_area"]
 
-    loop_pos = _launch.empty(loops.total, dtype=wp.vec3, device=device)
-    rim_keys, rim_slots = edge_table.rim_sort_buffers(loops.total)
+    # The rim positions and their opposite vertices' positions: one allocation.
+    total = loops.total
+    positions = _launch.empty(2 * total, dtype=wp.vec3, device=device)
+    loop_pos = _launch.view(positions, 0, total)
+    # The rim sort's slots and the rim-opposite table, then the chord test's vertex-to-slot
+    # scratch, which the same rim pass fills: all arrive ``-1`` (``RIM_NO_FACE``, and "no slot"),
+    # so one fill covers them.
+    n_slot_scratch = edge_table.n_vertices if resolve_multiple_edges else 0
+    rim_ints = edge_table.rim_int_scratch(4 * total + n_slot_scratch)
+    rim_keys, rim_slots = edge_table.rim_sort_buffers(
+        total, ints=_table_view(rim_ints, 0, 4 * total)
+    )
     # Accumulated into, then finished in place: the finalize pass reads each loop's sum and writes
     # that loop's slot, so the plane normals overwrite the Newell sums and the ``char_area`` scales
     # overwrite the longest edges rather than taking two buffers of their own.
@@ -868,12 +914,7 @@ def _fill_packed_loops(
     # triangulation.
     plane_normals = _launch.zeros(loops.n_loops, dtype=wp.vec3, device=device)
     char_areas = _launch.zeros(loops.n_loops, dtype=wp.float32, device=device)
-    # The chord test's vertex-to-slot scratch is filled by the same rim pass.
-    flat_slot = (
-        edge_table.flat_slot_scratch()
-        if resolve_multiple_edges
-        else _launch.empty(0, dtype=wp.int32, device=device)
-    )
+    flat_slot = _table_view(rim_ints, 4 * total, 4 * total + n_slot_scratch)
     _launch.launch(
         kernel_holes.loop_rim_metrics,
         dim=loops.total,
@@ -916,12 +957,11 @@ def _fill_packed_loops(
             device=device,
         )
 
-    forbidden = (
-        edge_table.forbidden_chords(loops, flat_slot)
-        if resolve_multiple_edges
-        else _launch.zeros(loops.dp_total, dtype=wp.int32, device=device)
+    if resolve_multiple_edges:
+        edge_table.forbidden_chords(loops, flat_slot, forbidden)
+    rim_opp_pos, rim_opp_valid = edge_table.rim_opposite(
+        total, (rim_keys, rim_slots), _launch.view(positions, total, 2 * total)
     )
-    rim_opp_pos, rim_opp_valid = edge_table.rim_opposite(loops.total, (rim_keys, rim_slots))
 
     dp = _launch.empty(loops.dp_total, dtype=wp.float32, device=device)
     prev = _launch.empty(loops.dp_total, dtype=wp.int32, device=device)
@@ -3193,44 +3233,65 @@ def stitch_loops_min_weight(
     device = faces_a.device
     metric_id = _STITCH_METRIC_IDS[metric]
     offset = vertices_a.size
-    # ``[start_a, start_b, face range flag, band triangle count]``; the closest-pair launch clears
-    # the flag both rim-opposite probes may raise.
-    pair_and_count = _launch.empty(4, dtype=wp.int32, device=device)
+    n_ab = n_a + n_b
+    # Every rim-sized buffer below is a view of one allocation per dtype. The ``int32`` one holds
+    # ``[start_a, start_b, face range flag, band triangle count]``, the rolled loops A and B, the
+    # closest columns and each rim's rim-opposite scratch, and arrives ``RIM_NO_FACE``-filled, which
+    # the scratch needs and the rest overwrite; the closest-pair launch clears the flag both
+    # rim-opposite probes may raise.
+    ints = _launch.full(
+        4 + 2 * n_ab + n_a + 4 * n_ab, kernel_holes.RIM_NO_FACE, dtype=wp.int32, device=device
+    )
+    pair_and_count = _launch.view(ints, 0, 4)
     flag = _launch.view(pair_and_count, 2, 3)
     table_a = _EdgeTable(vertices_a, faces_a, n_vertices_a, flag)
     table_b = _EdgeTable(vertices_b, faces_b, n_vertices_b, flag)
+    la_wp = _launch.view(ints, 4, 4 + n_a)
+    lb_wp = _launch.view(ints, 4 + n_a, 4 + n_ab)
+    col_min = _launch.view(ints, 4 + n_ab, 4 + n_ab + n_a)
+    scratch = 4 + n_ab + n_a
+    # The rims' positions, which the rolled positions then overwrite (nothing reads the first once
+    # the closest pair is found), and the rim-opposite positions.
+    positions = _launch.empty(2 * n_ab, dtype=wp.vec3, device=device)
+    a_pos = _launch.view(positions, 0, n_a)
+    b_pos = _launch.view(positions, n_a, n_ab)
 
     # Reverse loop A so the two rims wind oppositely (facing), then align both at the closest pair.
     # Everything runs on the device, the band's traceback included, so the one thing read back is
     # the band's triangle count: the closest pair is read where it was written, by the launch that
     # rolls both rims to it.
-    a_rim = _launch.empty(n_a, dtype=wp.vec3, device=device)
-    b_rim = _launch.empty(n_b, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel_holes.stitch_rim_positions,
-        dim=n_a + n_b,
+        dim=n_ab,
         inputs=[vertices_a, loop_a, vertices_b, loop_b, wp.int32(0), wp.int32(0)],
-        outputs=[a_rim, b_rim, None, None],
+        outputs=[a_pos, b_pos, None, None],
         device=device,
     )
-    _closest_loop_pair(a_rim, b_rim, _launch.view(pair_and_count, 0, 3))
+    _closest_loop_pair(a_pos, b_pos, _launch.view(pair_and_count, 0, 3), col_min)
     # The rolled rims: their positions, their vertex ids (the traceback's loops) and each rim's
     # edge keys for its rim-opposite probe, written by the pass that already holds both ends.
-    la_wp = _launch.empty(n_a, dtype=wp.int32, device=device)
-    lb_wp = _launch.empty(n_b, dtype=wp.int32, device=device)
-    a_pos = _launch.empty(n_a, dtype=wp.vec3, device=device)
-    b_pos = _launch.empty(n_b, dtype=wp.vec3, device=device)
-    sort_a = table_a.rim_sort_buffers(n_a)
-    sort_b = table_b.rim_sort_buffers(n_b)
+    keys = _launch.empty(2 * n_ab, dtype=wp.uint64, device=device)
+    sort_a = table_a.rim_sort_buffers(
+        n_a, _launch.view(keys, 0, 2 * n_a), _launch.view(ints, scratch, scratch + 4 * n_a)
+    )
+    sort_b = table_b.rim_sort_buffers(
+        n_b,
+        _launch.view(keys, 2 * n_a, 2 * n_ab),
+        _launch.view(ints, scratch + 4 * n_a, scratch + 4 * n_ab),
+    )
     _launch.launch(
         kernel_holes.stitch_rolled_rims,
-        dim=n_a + n_b,
+        dim=n_ab,
         inputs=[vertices_a, loop_a, vertices_b, loop_b, pair_and_count, table_a.base, table_b.base],
         outputs=[a_pos, b_pos, la_wp, lb_wp, *sort_a, *sort_b],
         device=device,
     )
-    a_opp, a_opp_valid = table_a.rim_opposite(n_a, sort_a)
-    b_opp, b_opp_valid = table_b.rim_opposite(n_b, sort_b)
+    a_opp, a_opp_valid = table_a.rim_opposite(
+        n_a, sort_a, _launch.view(positions, n_ab, n_ab + n_a)
+    )
+    b_opp, b_opp_valid = table_b.rim_opposite(
+        n_b, sort_b, _launch.view(positions, n_ab + n_a, 2 * n_ab)
+    )
     up = wp.vec3(*(up_dir if up_dir is not None else (0.0, 0.0, 1.0)))
 
     dp = odt.empty_2d((n_a + 1, n_b + 1), wp.float32, device=device)
@@ -3350,12 +3411,16 @@ def _run_stitch_dp(
 
 
 def _closest_loop_pair(
-    a_pos: wp.array[wp.vec3], b_pos: wp.array[wp.vec3], out_pair: wp.array[wp.int32]
+    a_pos: wp.array[wp.vec3],
+    b_pos: wp.array[wp.vec3],
+    out_pair: wp.array[wp.int32],
+    col_min: wp.array[wp.int32],
 ) -> None:
     """
     Write the closest vertex pair ``(i, j)`` between the two rims (the band start) to ``out_pair``.
 
     Any slot of ``out_pair`` past the pair is cleared (``kernels/holes.global_argmin``).
+    ``col_min`` is a ``(n_a,)`` view of the caller's scratch for each row's nearest column.
 
     Each rim-A vertex's nearest rim-B vertex and the argmin over those run in Warp kernels (the
     same ``row_argmin`` / ``global_argmin`` reduction the greedy zippering uses, at the squared
@@ -3373,7 +3438,6 @@ def _closest_loop_pair(
     device = a_pos.device
     n_a = a_pos.size
     n_b = b_pos.size
-    col_min = _launch.empty(n_a, dtype=wp.int32, device=device)
     val_min = _launch.empty(n_a, dtype=wp.float32, device=device)
     _launch.launch_tiled(
         kernel_holes.row_argmin,
