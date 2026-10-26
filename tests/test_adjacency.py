@@ -955,7 +955,13 @@ def test_face_connected_component_labels_matches_igl_scipy_meshlib_and_pyvista(
     ``{0, 12}``.
 
     - **igl**: ``igl.facet_components`` numbers ``0..k-1`` in its own traversal order and returns
-      ``(n_components, labels)`` -- the count **first**, which is the unpacking trap here.
+      ``(n_components, labels)`` -- the count **first**, which is the unpacking trap here. Its
+      traversal starts each component at its smallest unvisited face, so its label is exactly the
+      **rank** of ordito's (the component's smallest face id) among the distinct labels: the
+      named transform ``np.unique(..., return_inverse=True)``, asserted equal, not only the
+      partition. A dense ``0..k-1`` output is therefore one scan away; measured on CUDA it adds a
+      root-flag launch, an ``int32`` scan and a gather (1.9x the call at 328 k faces, host
+      bound; 1.03x at 5.2 M), which is why the representative id stays the label.
     - **scipy** is a genuinely different decomposition of the work: it builds the dual graph
       explicitly (see [`_face_labels_np`]) and then labels it, where igl does both internally and
       ordito does both on the device. That is why the ``*_depth`` group -- whose benchmark rows are
@@ -994,6 +1000,8 @@ def test_face_connected_component_labels_matches_igl_scipy_meshlib_and_pyvista(
 
     assert n_components_igl == len(components_ml) == np.unique(labels_wp).size
     assert same_partition(labels_wp, np.asarray(labels_igl).ravel())
+    # Stronger than the partition: igl's dense label is the rank of ordito's (smallest face id).
+    assert np.array_equal(np.unique(labels_wp, return_inverse=True)[1], np.ravel(labels_igl))
     assert same_partition(labels_wp, _face_labels_np(faces_np))
     assert same_partition(labels_wp, _face_labels_ml(components_ml, n_faces))
     assert same_partition(labels_wp, labels_pv)
@@ -1019,6 +1027,9 @@ def test_face_connected_component_labels_matches_igl_scipy_meshlib_and_pyvista(
     assert len(doubled_ml) == 2 * len(components_ml)
     assert np.unique(labels_doubled_pv).size == 2 * n_components_igl
     assert same_partition(labels_doubled_wp, np.asarray(labels_doubled_igl).ravel())
+    assert np.array_equal(
+        np.unique(labels_doubled_wp, return_inverse=True)[1], np.ravel(labels_doubled_igl)
+    )
     assert same_partition(labels_doubled_wp, _face_labels_np(doubled_np))
     assert same_partition(labels_doubled_wp, _face_labels_ml(doubled_ml, 2 * n_faces))
     assert same_partition(labels_doubled_wp, labels_doubled_pv)

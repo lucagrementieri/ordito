@@ -17,6 +17,7 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 from scipy.spatial import cKDTree
+from scipy.stats import ks_2samp
 
 import ordito as od
 from ordito.creation import ParametricSurfaceKind
@@ -1886,6 +1887,36 @@ def test_random_soup(device: str) -> None:
     assert not np.array_equal(
         vertices_wp.numpy(), od.creation.random_soup(50, seed=4, device=device)[0].numpy()
     )
+
+
+@pytest.mark.parity("random_soup", "trimesh")
+def test_random_soup_matches_trimesh_in_distribution(device: str) -> None:
+    """
+    Class C (a distribution statistic): the same face buffer and the same uniform cube, per axis.
+
+    [`trimesh.creation.random_soup`][] now takes a seed too, but it draws NumPy's PCG64 stream
+    where ordito draws Warp's per-thread generator, so no seed aligns the values. What both promise
+    is the construction: faces ``arange(3 n)`` row for row (asserted exactly) and every coordinate
+    uniform on ``[-0.5, 0.5)``, compared per axis by the two-sample Kolmogorov-Smirnov statistic
+    at 65 536 faces (196 608 samples an axis).
+
+    **Bug class excluded:** a generator drawing the wrong interval or scale (``[0, 1)``, a missing
+    ``- 0.5``, a width other than one) or a skewed transform. **Mutation probe, measured** over
+    seeds 0-4: the statistic is 0.0021-0.0050 against trimesh, and 0.025-0.026 with ordito's
+    values scaled by 0.95, 0.022-0.025 shifted by 0.02; the bound 0.015 is 3x the worst
+    agreement and below both mutations.
+    """
+    n_faces = 65_536
+    vertices_wp, faces_wp = od.creation.random_soup(n_faces, seed=3, device=device)
+    soup_tm = tm.creation.random_soup(n_faces, seed=3)
+    vertices_np = vertices_wp.numpy().astype(np.float64)
+    vertices_tm = np.asarray(soup_tm.vertices)
+
+    assert np.array_equal(faces_wp.numpy(), np.asarray(soup_tm.faces).ravel())
+    assert not np.allclose(vertices_np, vertices_tm, atol=0.1)  # the streams really differ
+    for axis in range(3):
+        assert ks_2samp(vertices_np[:, axis], vertices_tm[:, axis]).statistic < 0.015
+        assert ks_2samp(0.95 * vertices_np[:, axis], vertices_tm[:, axis]).statistic > 0.015
 
 
 def test_empty_results(device: str) -> None:

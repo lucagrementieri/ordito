@@ -929,9 +929,12 @@ def test_icp_mesh_matches_pyvista(device: str, angle: float) -> None:
     virtualenvs that differ only in their path give the two answers deterministically, as does
     running the filter inside or outside pytest; seeding ``rand``, the thread caps, the filter's own
     parameters (more iterations, no sample reduction, a tighter target distance) do not settle it.
-    An answer that depends on where the process's memory lands is not a reference. Its benchmark
-    row stays as a cost comparison (``benchmarks/test_registration.py::test_icp_mesh``). Its traps,
-    for whoever revisits it: the filter writes the source layer's *transform* and leaves
+    An answer that depends on where the process's memory lands is not a reference. Re-measured
+    2026-10-26 in 16 fresh processes from two working directories: it stalled every time, at RMS
+    0.043-0.049 (0.15 rad) and 0.1035-0.1066 (0.30 rad), the value moving in the second or third
+    digit from run to run of one script, so it is not even repeatable within one install. Its
+    benchmark row stays as a cost comparison (``benchmarks/test_registration.py::test_icp_mesh``).
+    Its traps, for whoever revisits it: the filter writes the source layer's *transform* and leaves
     ``vertex_matrix()`` untouched (read ``transformed_vertex_matrix()``), both layers need faces,
     and at 64 vertices it raises.
 
