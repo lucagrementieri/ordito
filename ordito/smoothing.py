@@ -52,7 +52,7 @@ from __future__ import annotations
 import math
 import warnings
 from collections.abc import Callable
-from typing import Any, Literal, NamedTuple, cast, overload
+from typing import Literal, NamedTuple, cast, overload
 
 import warp as wp
 import warp.optim.linear as wpl
@@ -2908,10 +2908,10 @@ def _region_topology(
     # dropped together: the incidence's offsets (unless a previous region's are given) with the
     # pattern's, and the edge ranks and incident edges (when built here) with the pattern columns.
     own_incidence = incidence is None
-    zeroed = _fields(
+    zeroed = _launch.carve(
         wp.int32, ((n + 1,) if own_incidence else ()) + (n_free + 1,), device, zeroed=True
     )
-    tables = _fields(
+    tables = _launch.carve(
         wp.int32, ((2 * m, 2 * m) if own_incidence else ()) + (capacity,), device, zeroed=False
     )
     pattern_offsets, pattern_columns = zeroed[-1], tables[-1]
@@ -2999,7 +2999,7 @@ def _solve_region_fixed_rim(
     # rows are contiguous 1-D views, so the assembly kernel writes them directly and the three
     # columns solve in one batched CG. Every free row writes all three of its components. One
     # allocation, written whole before it is read.
-    values, rhs_flat, sol_flat = _fields(
+    values, rhs_flat, sol_flat = _launch.carve(
         wp.float64, (region.pattern_capacity, 3 * n_free, 3 * n_free), device, zeroed=False
     )
     rhs = rhs_flat.reshape((3, n_free))
@@ -3084,7 +3084,7 @@ def _solve_region_smooth(
     # ``_solve_region_fixed_rim``'s is and for the same reason; all written before they are read.
     # ``int32``, zeroed: the free degrees (written whole) and the three per-row tables the scans
     # and the anchoring count into.
-    row_sums, row_rhs_flat, atb_flat, factor, factor_t, ratios, sol_flat = _fields(
+    row_sums, row_rhs_flat, atb_flat, factor, factor_t, ratios, sol_flat = _launch.carve(
         wp.float64,
         (n, 3 * n, 3 * n_free, capacity, polynomial_capacity, n_free, 3 * n_free),
         device,
@@ -3093,10 +3093,10 @@ def _solve_region_smooth(
     row_rhs = row_rhs_flat.reshape((n, 3)).view(wp.vec3d)
     atb = atb_flat.reshape((3, n_free))
     sol = sol_flat.reshape((3, n_free))
-    factor_narrow, factor_t_narrow = _fields(
+    factor_narrow, factor_t_narrow = _launch.carve(
         wp.float32, (polynomial_capacity, polynomial_capacity), device, zeroed=False
     )
-    free_degrees, term_offsets, system_offsets, anchored = _fields(
+    free_degrees, term_offsets, system_offsets, anchored = _launch.carve(
         wp.int32, (n, n_free + 1, n_free + 1, n_free), device, zeroed=True
     )
     _launch.launch(
@@ -3143,8 +3143,8 @@ def _solve_region_smooth(
     # buffer and bounds the product's entry count, so its CSR is allocated without a second one.
     n_terms = max(int(read_scalar(term_offsets, n_free)), 1)
     # The gathered terms and the product's CSR, each pair one allocation.
-    row_columns, columns = _fields(wp.int32, (n_terms, n_terms), device, zeroed=False)
-    row_values, values = _fields(wp.float64, (n_terms, n_terms), device, zeroed=False)
+    row_columns, columns = _launch.carve(wp.int32, (n_terms, n_terms), device, zeroed=False)
+    row_values, values = _launch.carve(wp.float64, (n_terms, n_terms), device, zeroed=False)
     system_counts = odt.as_dense(system_offsets[1:])
     _launch.launch(
         kernel_smoothing.normal_equations_rows,
@@ -4286,27 +4286,3 @@ def _as_vec3d(vertices: wp.array[wp.vec3]) -> wp.array[wp.vec3d]:
 def _as_vec3(positions: wp.array[wp.vec3d]) -> wp.array[wp.vec3]:
     """Narrow a ``wp.vec3d`` array back to ``wp.vec3``: the seam where the float64 solves end."""
     return od.array.astype(positions, wp.vec3)
-
-
-def _fields(
-    dtype: type, sizes: tuple[int, ...], device: wp.DeviceLike, *, zeroed: bool
-) -> list[wp.array[Any]]:
-    """
-    One allocation of ``dtype`` cut into consecutive 1-D fields of ``sizes`` entries.
-
-    Zeroed whole when ``zeroed``, else uninitialized. For buffers a call drops together: a caller
-    holding any field holds the whole allocation.
-    """
-    total = sum(sizes)
-    buffer = (_launch.zeros if zeroed else _launch.empty)(total, dtype=dtype, device=device)
-    fields: list[wp.array[Any]] = []
-    start = 0
-    for size in sizes:
-        # Warp refuses a zero-length view at the buffer's end; an empty array holds nothing.
-        fields.append(
-            _launch.view(buffer, start, start + size)
-            if size > 0
-            else _launch.empty(0, dtype=dtype, device=device)
-        )
-        start += size
-    return fields

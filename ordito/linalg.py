@@ -1248,8 +1248,8 @@ def partitioned_interior_system(
     n_free, nnz_uu = (int(v) for v in read_values(ranks, n_dofs, 1)[0])
     # Every output is written whole by the pass below, and the reduced system, its map and its
     # right-hand side are used together: one allocation per dtype.
-    free_map, row_offsets, columns = _consecutive(wp.int32, (n_dofs, n_free + 1, nnz_uu), device)
-    values, rhs_entries = _consecutive(wp.float64, (nnz_uu, n_rhs * n_free), device)
+    free_map, row_offsets, columns = _launch.carve(wp.int32, (n_dofs, n_free + 1, nnz_uu), device)
+    values, rhs_entries = _launch.carve(wp.float64, (nnz_uu, n_rhs * n_free), device)
     rhs = rhs_entries.reshape((n_rhs, n_free))
     _launch.launch(
         kernel_linalg.interior_partition_system,
@@ -4543,7 +4543,7 @@ class SquaredLaplacianPreconditioner:
         # ``M_ff``'s and its transpose's values and the Gershgorin bound below come from one walk
         # of ``L``'s rows, and both take ``L``'s pattern rather than a copy of it: ``L`` is
         # symmetric, so ``M_ffᵀ = L D⁻¹`` is ``L``'s entries scaled by their columns' weights.
-        scaled, scaled_t = _consecutive(wp.float64, (laplacian.values.size,) * 2, self._device)
+        scaled, scaled_t = _launch.carve(wp.float64, (laplacian.values.size,) * 2, self._device)
         bound = _launch.full(1, -math.inf, dtype=wp.float64, device=self._device)
         if self._n > 0:
             _launch.launch_tiled(
@@ -6129,26 +6129,3 @@ def _bsr_over(
     matrix.row_counts = row_counts
     matrix.notify_nnz_changed(nnz=nnz)
     return matrix
-
-
-def _consecutive(
-    dtype: type[odt.DType], sizes: Sequence[int], device: wp.DeviceLike
-) -> list[wp.array[odt.DType]]:
-    """
-    One uninitialized allocation of ``dtype`` cut into consecutive views of ``sizes``.
-
-    A caller holding any view holds the whole allocation, so only arrays used together share one.
-    """
-    total = sum(sizes)
-    buffer = _launch.empty(total, dtype=dtype, device=device)
-    views: list[wp.array[odt.DType]] = []
-    start = 0
-    for size in sizes:
-        # Warp refuses a zero-length view at the buffer's end; an empty array holds nothing.
-        views.append(
-            _launch.view(buffer, start, start + size)
-            if size > 0
-            else _launch.empty(0, dtype=dtype, device=device)
-        )
-        start += size
-    return views
