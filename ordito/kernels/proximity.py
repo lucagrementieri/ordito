@@ -504,7 +504,13 @@ BLOCK_WALK_STACK = 2048
 # (§12.7).
 #
 # That count is not ``max_nodes``, the ``2n - 1`` capacity every builder allocates. The device LBVH
-# builds all of them and leaves ``num_nodes`` at the zero its ``memset`` wrote (``bvh.cu``); the
+# builds all of them and never writes ``num_nodes``: ``wp_bvh_create_device`` copies an
+# uninitialised stack ``wp::BVH`` (``bvh.cu``), so the field is whatever the native stack held --
+# usually zero, but a stale value once sent the bitset pass past the end of ``node_lowers`` (CUDA
+# error 700 in ``ball_pivoting``, after other calls had left the stack dirty). The count is
+# therefore chosen on CUDA by ``constructor_type``, which every device builder writes, never by
+# ``num_nodes`` alone. The host builder (``bvh.cpp``) writes ``num_nodes`` but not
+# ``constructor_type``, so the CPU branch reads the count; the
 # top-down SAH / median builder (``bvh.cpp``: every CPU ``wp.Mesh``, and a CUDA one built with
 # ``bvh_constructor="sah"``, whose nodes are copied over) builds a prefix, counts it in
 # ``num_nodes`` and leaves the rest as uninitialised ``wp_alloc_host`` memory (657 of 1999 nodes
@@ -529,7 +535,13 @@ _BVH_ROOT = "return *((wp::BVH*)bvh_id)->root;"
 _BVH_NODE_PARENT = "return ((wp::BVH*)bvh_id)->node_parents[node];"
 _BVH_NODE_COUNT = """
 const wp::BVH& bvh = *(const wp::BVH*)bvh_id;
-return bvh.num_nodes > 0 ? bvh.num_nodes : bvh.max_nodes;
+#if defined(__CUDA_ARCH__)
+if (bvh.constructor_type == BVH_CONSTRUCTOR_LBVH)
+    return bvh.max_nodes;
+#endif
+if (bvh.num_nodes <= 0)
+    return bvh.max_nodes;
+return bvh.num_nodes < bvh.max_nodes ? bvh.num_nodes : bvh.max_nodes;
 """
 
 
