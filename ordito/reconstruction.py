@@ -371,9 +371,7 @@ def triangulate_point_cloud(
     # Per-point local fan triangulation: point ``v``'s fan fills ``out_tris[v, :count]``. The fans,
     # their counts and the grown points' flags in one allocation.
     widths = [3 * n * k, n, n]
-    tri_rows, fan_counts, grown_flags = _carve(
-        _launch.empty(_carved_size(widths), dtype=wp.int32, device=device), widths
-    )
+    tri_rows, fan_counts, grown_flags = _launch.carve(wp.int32, widths, device)
     out_tris = tri_rows.reshape((n, k, 3))
     normals_mode = (
         kernel_reconstruction.NORMALS_ORIENTED
@@ -890,9 +888,7 @@ def _screened_poisson_octree(
 
     unit_transform = _octree_unit_transform(bounds, scale)
     keys = _launch.empty(n, dtype=wp.int32, device=device)
-    positions, unit_normals = _carve(
-        _launch.empty(_carved_size([n, n]), dtype=wp.vec3, device=device), [n, n]
-    )
+    positions, unit_normals = _launch.carve(wp.vec3, [n, n], device)
     _launch.launch(
         kernel_octree.octree_point_keys,
         dim=n,
@@ -953,10 +949,7 @@ def _screened_poisson_octree(
 
     # The depth estimates and both weight terms in one allocation; the area terms' slots take the
     # iso-value's terms once the weights are summed.
-    sample_depths, area_terms, count_terms = _carve(
-        _launch.empty(_carved_size([n_samples] * 3), dtype=wp.float32, device=device),
-        [n_samples] * 3,
-    )
+    sample_depths, area_terms, count_terms = _launch.carve(wp.float32, [n_samples] * 3, device)
     _launch.launch(
         kernel_octree.octree_sample_weights,
         dim=n_samples,
@@ -1689,9 +1682,7 @@ def _poisson_solve_level(
             ],
             device=device,
         )
-    rhs, smoother = _carve(
-        _launch.empty(_carved_size([n_nodes] * 2), dtype=wp.float32, device=device), [n_nodes] * 2
-    )
+    rhs, smoother = _launch.carve(wp.float32, [n_nodes] * 2, device)
     _launch.launch(
         kernel_reconstruction.poisson_level_setup,
         dim=(res, res, res),
@@ -2117,15 +2108,11 @@ def _screened_poisson_band(
     data = _band_data(
         sample_bands, points, normals, cube_lower, cube_size, confidence, missing, device
     )
-    base_b, base_w = _carve(
-        _launch.zeros(_carved_size([res_b**3] * 2), dtype=wp.float32, device=device), [res_b**3] * 2
-    )
+    base_b, base_w = _launch.carve(wp.float32, [res_b**3] * 2, device, zeroed=True)
     _restrict_band(sample_bands[base + 1], *data[base + 1], None, res_b, base_b, base_w, missing)
 
     lap_b = float(1 << (depth - base))
-    rhs, smoother = _carve(
-        _launch.empty(_carved_size([res_b**3] * 2), dtype=wp.float32, device=device), [res_b**3] * 2
-    )
+    rhs, smoother = _launch.carve(wp.float32, [res_b**3] * 2, device)
     _launch.launch(
         kernel_poisson_band.dense_base_setup,
         dim=(res_b, res_b, res_b),
@@ -2191,10 +2178,7 @@ def _screened_poisson_band(
         source = sample_bands[level]
         # The data, weights and solution in one allocation; the solution's zeros are overwritten by
         # its first start.
-        b, w, x = _carve(
-            _launch.zeros(_carved_size([band.n_nodes] * 3), dtype=wp.float32, device=device),
-            [band.n_nodes] * 3,
-        )
+        b, w, x = _launch.carve(wp.float32, [band.n_nodes] * 3, device, zeroed=True)
         _launch.launch(
             kernel_poisson_band.embed_band_data,
             dim=source.n_nodes,
@@ -2245,12 +2229,7 @@ def _screened_poisson_band(
             )
         else:
             if coarse.previous is None:
-                tau_rhs, previous = _carve(
-                    _launch.empty(
-                        _carved_size([coarse.band.n_nodes] * 2), dtype=wp.float32, device=device
-                    ),
-                    [coarse.band.n_nodes] * 2,
-                )
+                tau_rhs, previous = _launch.carve(wp.float32, [coarse.band.n_nodes] * 2, device)
                 states[level - 1] = coarse = coarse._replace(rhs=tau_rhs, previous=previous)
             assert coarse.previous is not None
             coarse_args = [
@@ -2476,10 +2455,7 @@ def _band_level_solve(
     corrected by the prolonged change of the coarse one since ``previous``.
     """
     band = state.band
-    rhs, inv_diag = _carve(
-        _launch.empty(_carved_size([band.n_nodes] * 2), dtype=wp.float32, device=device),
-        [band.n_nodes] * 2,
-    )
+    rhs, inv_diag = _launch.carve(wp.float32, [band.n_nodes] * 2, device)
     coarse_map, coarse_x, nbk_c, res_c = _band_coarse_args(coarse, base_x, res_b)
     _launch.launch(
         kernel_poisson_band.band_level_setup,
@@ -2517,10 +2493,7 @@ def _band_hierarchy_flags(
         nbk_f = ((1 << (level + 1)) + 8) // 8
         nbk_c = ((1 << level) + 8) // 8
         # The projection's zeroed flags and the dilation's (written whole), in one allocation.
-        projected, grown = _carve(
-            _launch.zeros(_carved_size([nbk_c**3] * 2), dtype=wp.int32, device=device),
-            [nbk_c**3] * 2,
-        )
+        projected, grown = _launch.carve(wp.int32, [nbk_c**3] * 2, device, zeroed=True)
         _launch.launch(
             kernel_poisson_band.project_bricks,
             dim=(nbk_f, nbk_f, nbk_f),
@@ -2562,16 +2535,8 @@ def _compact_bands(
     values = [int(value) for value in read_values(totals, 0, totals.size)]
     # Every set's brick map in one allocation, and every set's brick coordinates in another.
     nbks = [(res + 7) // 8 for _flags, res in flag_sets]
-    maps = _carve(
-        _launch.empty(_carved_size([nbk**3 for nbk in nbks]), dtype=wp.int32, device=device),
-        [nbk**3 for nbk in nbks],
-    )
-    coords = _carve(
-        _launch.empty(
-            _carved_size([max(n, 1) for n in values[:n_sets]]), dtype=wp.vec3i, device=device
-        ),
-        [max(n, 1) for n in values[:n_sets]],
-    )
+    maps = _launch.carve(wp.int32, [nbk**3 for nbk in nbks], device)
+    coords = _launch.carve(wp.vec3i, [max(n, 1) for n in values[:n_sets]], device)
     levels: list[_BandLevel] = []
     for (flags, res), n_bricks, nbk, brick_map, brick_coords in zip(
         flag_sets, values[:n_sets], nbks, maps, coords, strict=True
@@ -2657,10 +2622,7 @@ def _band_data(
     data = {depth: (b, weights)}
     for level in range(depth - 1, min(bands) - 1, -1):
         coarse = bands[level]
-        coarse_b, coarse_w = _carve(
-            _launch.zeros(_carved_size([coarse.n_nodes] * 2), dtype=wp.float32, device=device),
-            [coarse.n_nodes] * 2,
-        )
+        coarse_b, coarse_w = _launch.carve(wp.float32, [coarse.n_nodes] * 2, device, zeroed=True)
         _restrict_band(
             bands[level + 1], *data[level + 1], coarse, coarse.res, coarse_b, coarse_w, missing
         )
@@ -2903,7 +2865,7 @@ def _cg_workspace(
     before it is read, by the solve's initial launch or the seed.
     """
     widths = [stride] * 5 + extra
-    vectors = _carve(_launch.empty(_carved_size(widths), dtype=wp.float32, device=device), widths)
+    vectors = _launch.carve(wp.float32, widths, device)
     reals = _launch.empty(3 * blocks + 10, dtype=wp.float64, device=device)
     scalars = _launch.view(reals, 3 * blocks, 3 * blocks + 10)
     ints = _launch.empty(kernel_array.LOOP_STATE_SIZE + counts, dtype=wp.int32, device=device)
@@ -2944,25 +2906,6 @@ class _CgWorkspace(NamedTuple):
     """``(kernel_array.LOOP_STATE_SIZE,)`` device loop state."""
     counts: wp.array[wp.int32] | None
     """The requested ``int32`` slots, ``None`` for none."""
-
-
-# Each carved view starts on a multiple of this many elements.
-_CARVE_ALIGN = 32
-
-
-def _carved_size(widths: list[int]) -> int:
-    """Return the length of a buffer ``_carve`` cuts ``widths`` from."""
-    return sum(-(-width // _CARVE_ALIGN) * _CARVE_ALIGN for width in widths)
-
-
-def _carve(buffer: wp.array[odt.DType], widths: list[int]) -> list[wp.array[odt.DType]]:
-    """Cut consecutive dense views of ``widths`` entries off ``buffer``, each start aligned."""
-    views: list[wp.array[odt.DType]] = []
-    start = 0
-    for width in widths:
-        views.append(_launch.view(buffer, start, start + width))
-        start += -(-width // _CARVE_ALIGN) * _CARVE_ALIGN
-    return views
 
 
 @functools.cache
@@ -3330,9 +3273,8 @@ class _BpaState:
         # ``kernel_bpa.seed_triangles`` for why a point that once exhausted its candidates without
         # seeding can never succeed later (its candidate set only shrinks), which is what makes
         # never resetting this safe.
-        self.point_used, self.seed_failed = _carve(
-            _launch.zeros(_carved_size([self.n] * 2), dtype=wp.bool, device=self.device),
-            [self.n] * 2,
+        self.point_used, self.seed_failed = _launch.carve(
+            wp.bool, [self.n] * 2, self.device, zeroed=True
         )
         # The orphan each point last deferred to, or whether it can ever seed; see the same kernel.
         self.seed_blocker = _launch.full(
@@ -3356,9 +3298,8 @@ class _BpaState:
         self.edge_mask = wp.int32(capacity - 1)
         self.edge_key = _launch.zeros(capacity, dtype=wp.uint64, device=self.device)
         # The zeroed ``int32`` tables in one allocation, and the unfilled ones in another.
-        self.edge_count, self.edge_state = _carve(
-            _launch.zeros(_carved_size([capacity] * 2), dtype=wp.int32, device=self.device),
-            [capacity] * 2,
+        self.edge_count, self.edge_state = _launch.carve(
+            wp.int32, [capacity] * 2, self.device, zeroed=True
         )
         unfilled = [max_faces * 3] + [capacity] * 4 + [front_capacity] * 5
         (
@@ -3372,9 +3313,7 @@ class _BpaState:
             self.tri_a,
             self.tri_b,
             self.tri_c,
-        ) = _carve(
-            _launch.empty(_carved_size(unfilled), dtype=wp.int32, device=self.device), unfilled
-        )
+        ) = _launch.carve(wp.int32, unfilled, self.device)
         self._bind_edge_table()
 
         # Grid-stride bounds: fixed launch dimensions, which a captured graph requires. Sized from
