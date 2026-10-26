@@ -984,7 +984,6 @@ The audit of every Class B/C/D test (commits `310fb0e8`, `03226107`) left these 
 
 **Decisions suspended (owner's call):**
 
-- **`normal_consistency_loss` differs from pytorch3d on inconsistently wound or non-orientable input** (0.581 vs 0.166 on a sphere with every 7th face flipped; the docstring states it, the test pins it). pytorch3d's rule, per edge with `k` incident faces: `C(k,2) + (|Σ â_i|² − k) / 2`, `â_i` the unit `(v1 − v0) × (o_i − v0)`, needs only an edge scatter and would match on any input, fans and flips included. Not done: it adds launches and a group sum to a census-gated row (re-record both budgets).
 - **`resolve_duplicated_faces` raises `ValueError` on a duplicate group it cannot orient; igl silently drops the group.** Kept because it is documented and tested; matching igl is a behaviour change.
 - **`ears`' `ear_opp` changed meaning** to igl's (the corner opposite the ear's interior edge; it was igl's value shifted by one). No in-repo reader; an external caller would read different numbers. Confirm before a release note.
 
