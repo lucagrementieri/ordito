@@ -465,12 +465,10 @@ def test_upsample_polyline(bench_case: BenchCase) -> None:
     """
     Arc-length upsampling at half the mean segment length: scan, readback, then a lerp pass.
 
-    meshlib's ``subdividePolyline`` takes the same ``maxEdgeLen`` and makes the same guarantee, but
-    it **bisects** where ordito splits each segment into equal pieces, so at a target that is not
-    a power-of-two fraction of the input spacing it overshoots -- roughly doubling the point count,
-    because one halving leaves it a hair over the cap and forces a second. Both satisfy the cap;
-    read the row as a cost at a *shared
-    post-condition* rather than at a shared output size (``tests/test_polyline.py``).
+    meshlib's ``subdividePolyline`` takes the same ``maxEdgeLen`` and **bisects** each segment until
+    its pieces fit under it; ordito's row runs ``method="bisect"``, the same count rule, so both
+    emit the same points (``tests/test_polyline.py``) and the row compares equal output sizes. The
+    default ``"floor"`` count is timed by ``polyline_upsample_closed``.
 
     It mutates, so the ``Polyline3`` is rebuilt inside the timed callable, and ``maxEdgeSplits`` is
     raised from its default of **1 000** -- the same trap ``SubdivideSettings`` has, and on these
@@ -494,7 +492,7 @@ def test_upsample_polyline(bench_case: BenchCase) -> None:
         return
 
     polyline = _polyline_wp(bench_case)
-    dense = bench_case.run(lambda: od.polyline.polyline_upsample(polyline, step))
+    dense = bench_case.run(lambda: od.polyline.polyline_upsample(polyline, step, method="bisect"))
     assert dense.size >= polyline.size
 
 

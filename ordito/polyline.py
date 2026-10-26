@@ -513,14 +513,21 @@ def polyline_point_distance(
 
 
 def polyline_upsample(
-    polyline: wp.array[wp.vec3], step_size: float, *, closed: bool = False
+    polyline: wp.array[wp.vec3],
+    step_size: float,
+    *,
+    closed: bool = False,
+    method: Literal["floor", "bisect"] = "floor",
 ) -> wp.array[wp.vec3]:
     """
     Upsample a polyline to an approximately uniform step size.
 
-    Each segment is split into ``max(floor(length / step_size), 1)`` equal pieces, so on a
-    segment longer than ``step_size`` the spacing is at least ``step_size`` (under twice it), not
-    capped by it. The final endpoint of the polyline is not emitted.
+    Each segment is split into equal pieces on its chord, as many as ``method`` says. With
+    ``"floor"`` that is ``max(floor(length / step_size), 1)``, so on a segment longer than
+    ``step_size`` the spacing is at least ``step_size`` (under twice it). With ``"bisect"`` the
+    segment is halved until every piece is at most ``step_size``, so the spacing is capped by it
+    (and above half of it on a segment longer than ``step_size``). The final endpoint of the
+    polyline is not emitted.
 
     Parameters
     ----------
@@ -532,12 +539,21 @@ def polyline_upsample(
         When ``True``, treat the polyline as a loop: the closing edge back to the first point is
         added if absent (see [`polyline_close`][ordito.polyline.polyline_close]), and the
         duplicated closing point is not emitted, so the result is a cyclic ring.
+    method
+        How many pieces a segment of length ``L`` is split into: ``"floor"`` takes
+        ``max(floor(L / step_size), 1)``, spacing at least the step; ``"bisect"`` takes the
+        smallest power of two whose pieces are at most ``step_size``, spacing at most the step.
 
     Returns
     -------
     wp.array[wp.vec3]
         ``(m,)`` upsampled polyline of ``m`` points. The input is returned unchanged for fewer than
         two points.
+
+    Raises
+    ------
+    ValueError
+        If ``method`` is not ``"floor"`` or ``"bisect"``.
 
     See Also
     --------
@@ -561,9 +577,15 @@ def polyline_upsample(
     upsampled = od.polyline.polyline_upsample(square, 0.25, closed=True)
     print(upsampled.shape)  # (16,)
     print(upsampled.numpy()[1])  # [0.25 0.   0.  ]
+    capped = od.polyline.polyline_upsample(square, 0.3, closed=True, method="bisect")
+    print(capped.shape)  # (16,)
     ```
     """
-    return _upsample(polyline, step_size, closed, kernel_polyline.upsample_gather, [])
+    if method not in ("floor", "bisect"):
+        raise ValueError(f"method must be 'floor' or 'bisect', got {method!r}")
+    return _upsample(
+        polyline, step_size, closed, method == "bisect", kernel_polyline.upsample_gather, []
+    )
 
 
 def polyline_smooth_upsample(
@@ -629,18 +651,21 @@ def polyline_smooth_upsample(
     # ``boundary_loops`` already returned. The gather kernel decides that per thread, with the
     # predicate ``is_closed`` applies, so neither case costs a closure readback.
     gather = kernel_polyline.smooth_upsample_gather
-    return _upsample(polyline, step_size, closed, gather, [wp.int32(closed)])
+    return _upsample(polyline, step_size, closed, False, gather, [wp.int32(closed)])
 
 
 def _upsample(
     polyline: wp.array[wp.vec3],
     step_size: float,
     closed: bool,
+    bisect: bool,
     gather_kernel: odt.Kernel,
     extra_inputs: list[wp.int32 | wp.float32],
 ) -> wp.array[wp.vec3]:
     """
     Split every segment into ``max(floor(length / step_size), 1)`` pieces and gather the samples.
+
+    ``bisect`` takes the smallest power of two whose pieces are at most ``step_size`` instead.
 
     The shared body of [`polyline_upsample`][ordito.polyline.polyline_upsample] and
     [`polyline_smooth_upsample`][ordito.polyline.polyline_smooth_upsample], which differ only in
@@ -659,7 +684,7 @@ def _upsample(
     _launch.launch(
         kernel_polyline.segment_step_counts,
         dim=n_segments,
-        inputs=[polyline, wp.float32(step_size), wp.int32(closed), steps],
+        inputs=[polyline, wp.float32(step_size), wp.int32(closed), wp.int32(bisect), steps],
         device=device,
     )
     offsets, total = od.array.counts_to_offsets(steps)

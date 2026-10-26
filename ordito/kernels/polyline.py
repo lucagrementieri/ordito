@@ -232,6 +232,7 @@ def segment_step_counts(
     polyline: wp.array[wp.vec3],
     step_size: wp.float32,
     wrap_open: wp.int32,
+    bisect: wp.int32,
     out_steps: wp.array[wp.int32],
 ) -> None:
     # Launched over ``n - 1`` segments, or ``n`` for ``closed=True``. Slot ``n - 1`` is then the
@@ -245,7 +246,16 @@ def segment_step_counts(
         out_steps[i] = 0
         return
     length = wp.length(polyline[loop_point(i + 1, n)] - polyline[i])
-    out_steps[i] = wp.max(wp.int32(wp.floor(length / step_size)), wp.int32(1))
+    if bisect == 0:
+        out_steps[i] = wp.max(wp.int32(wp.floor(length / step_size)), wp.int32(1))
+        return
+    # Halve every piece until it is no longer than the step: the smallest power of two whose
+    # pieces fit, tested on the piece length itself so a segment exactly ``2 ** k`` steps long
+    # stops at ``2 ** k``. The cap keeps the count an ``int32``.
+    pieces = wp.int32(1)
+    while length > step_size * wp.float32(pieces) and pieces < (1 << 30):
+        pieces = pieces * 2
+    out_steps[i] = pieces
 
 
 @wp.func

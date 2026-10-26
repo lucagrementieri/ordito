@@ -677,6 +677,80 @@ def test_upsample_polyline_matches_meshlib(device: str, step_factor: float) -> N
         assert not np.allclose(smooth_np, dense_ml[:-1:stride], rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parity("polyline_upsample", "meshlib")
+@pytest.mark.parametrize("step_factor", [1.0, 0.8, 0.4, 0.3, 0.24, 0.07])
+def test_upsample_polyline_bisect_matches_meshlib(device: str, step_factor: float) -> None:
+    """
+    Class A: ``method="bisect"`` emits MeshLib's ``subdividePolyline`` points, every one.
+
+    The same count rule as the reference, ``2 ** ceil(log2(L / step))`` pieces of each segment on
+    its chord, so the two outputs are equal point for point (ordito drops the final endpoint,
+    MeshLib keeps it). The irregular polyline gives segments of many lengths, so one setting
+    exercises several piece counts at once, asserted below; the coarsest setting leaves the
+    shorter segments whole (one piece).
+
+    **Bug class excluded:** an off-by-one in the halving loop (one bisection too many or too few),
+    or the ``"floor"`` count leaking into ``"bisect"``. **Mutation probe, measured:** the default
+    ``"floor"`` output has a different point count at every setting but ``1.0``, where it differs
+    in values, and fails the assert at all six.
+    """
+    pts_np = _random_open_polyline(60)
+    lengths_np = np.linalg.norm(np.diff(pts_np, axis=0), axis=1)
+    step = step_factor * float(lengths_np.mean())
+
+    bisected_wp = od.polyline.polyline_upsample(
+        points_to_warp(pts_np, device), step, method="bisect"
+    ).numpy()
+
+    polyline_ml = _polyline_ml(pts_np)
+    settings_ml = mm.PolylineSubdivideSettings()
+    settings_ml.maxEdgeLen = step
+    settings_ml.maxEdgeSplits = 10_000_000
+    mm.subdividePolyline(polyline_ml, settings_ml)
+    dense_ml = _ordered_ml(polyline_ml)
+
+    # Non-vacuity: several piece counts in one call, and the reference did subdivide.
+    n_pieces_ml = np.maximum(2 ** np.ceil(np.log2(lengths_np / step)), 1)
+    assert np.unique(n_pieces_ml).size > 1
+    assert dense_ml.shape[0] > pts_np.shape[0]
+    assert bisected_wp.shape == dense_ml[:-1].shape
+    assert np.allclose(bisected_wp, dense_ml[:-1], rtol=1e-5, atol=1e-5)
+    assert np.linalg.norm(np.diff(dense_ml, axis=0), axis=1).max() <= step * (1.0 + 1e-5)
+
+    floor_wp = od.polyline.polyline_upsample(points_to_warp(pts_np, device), step).numpy()
+    assert floor_wp.shape != bisected_wp.shape or not np.allclose(
+        floor_wp, bisected_wp, rtol=1e-5, atol=1e-5
+    )
+
+
+@pytest.mark.parametrize(("pieces", "method"), [(4, "bisect"), (4, "floor"), (3, "floor")])
+def test_upsample_polyline_counts_at_an_exact_multiple(
+    device: str, pieces: int, method: Literal["floor", "bisect"]
+) -> None:
+    """
+    Not a library comparison: the boundary of each count rule on a segment exactly ``k`` steps.
+
+    A segment of exactly ``4`` steps takes ``4`` pieces under both rules, ``3`` steps takes ``3``
+    under ``"floor"`` (and ``4`` under ``"bisect"``, the next power of two). A strict-versus-
+    inclusive slip in either rule moves the count by one piece or one doubling.
+    """
+    points_np = np.array([[0.0, 0.0, 0.0], [float(pieces) * 0.25, 0.0, 0.0]], dtype=np.float32)
+    upsampled = od.polyline.polyline_upsample(
+        points_to_warp(points_np, device), 0.25, method=method
+    )
+    assert upsampled.shape == (pieces,)
+
+
+def test_upsample_polyline_rejects_an_unknown_method(device: str) -> None:
+    points_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
+    with pytest.raises(ValueError, match="method must be 'floor' or 'bisect'"):
+        od.polyline.polyline_upsample(
+            points_to_warp(points_np, device),
+            0.25,
+            method="ceil",  # pyright: ignore[reportArgumentType]
+        )
+
+
 # --- smooth upsample (curvature-aware, NumPy reference + circle oracle) ---
 
 
