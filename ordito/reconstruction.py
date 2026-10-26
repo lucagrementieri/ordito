@@ -642,22 +642,25 @@ def screened_poisson(
         elements of every depth, active only near the samples above ``full_depth``, a normal field
         splatted at each sample's estimated depth, screening scaled by the samples' mean area, and
         one cascadic pass of ``solver_iterations`` Gauss-Seidel sweeps per depth -- not a converged
-        solve, and the surface follows that. Its vertices lie on ``open3d``'s surface; its
-        triangulation is this module's marching cubes over each depth's leaf cells, so its
-        triangles differ and a change of depth can leave a crack. ``depth`` is at most 9.
+        solve, and the surface follows that. Its mesh is ``open3d``'s, run on one thread: the same
+        vertices and triangles, stitched across changes of depth as ``open3d`` stitches them,
+        except where ``open3d``'s minimal-area split of a polygon is decided by rounding (a few
+        percent of the triangles; the surface is the same). Those triangles are returned as is:
+        not filtered for degeneracy nor reoriented. ``depth`` is at most 9.
 
     Returns
     -------
     vertices : wp.array[wp.vec3]
         ``(n_vertices,)`` iso-surface vertices on ``points.device``.
     faces : wp.array[wp.int32]
-        ``(3 * n_faces,)`` flat triangle index buffer, free of degenerate triangles in
+        ``(3 * n_faces,)`` flat triangle index buffer. With ``"dense"`` and ``"adaptive"`` it is
+        free of degenerate triangles in
         [`face_nondegenerate_mask`][ordito.triangles.face_nondegenerate_mask]'s sense and oriented
-        outward ([`make_normals_outward`][ordito.repair.make_normals_outward]). The extraction
-        keeps every vertex a small fraction of a lattice edge off the lattice nodes, which bounds
-        every triangle's altitudes away from zero without changing the surface's topology, so the
-        guarantee costs no hole; a lattice so fine that its spacing nears the merge tolerance falls
-        back to dropping the faces
+        outward ([`make_normals_outward`][ordito.repair.make_normals_outward]); with ``"octree"``
+        it is ``open3d``'s winding. Every extraction keeps every vertex a small fraction of a
+        lattice edge off the lattice nodes, which bounds every marching-cubes triangle's altitudes
+        away from zero without changing the surface's topology, so the guarantee costs no hole; a
+        lattice so fine that its spacing nears the merge tolerance falls back to dropping the faces
         ([`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces]).
 
     Raises
@@ -775,18 +778,16 @@ def screened_poisson(
     screen = max(float(point_weight), 1e-4)
 
     if method == "octree":
-        vertices, faces = _screened_poisson_octree(
+        return _screened_poisson_octree(
             points,
             normals,
-            cube_lower,
-            cube_size,
             scale=scale,
             depth=depth,
             full_depth=full_depth,
             point_weight=float(point_weight),
             iterations=solver_iterations,
         )
-    elif method == "adaptive" and full_depth < depth:
+    if method == "adaptive" and full_depth < depth:
         vertices, faces = _screened_poisson_band(
             points,
             normals,
@@ -846,8 +847,6 @@ _OCTREE_MAX_DEPTH = 9
 def _screened_poisson_octree(
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
-    cube_lower: wp.vec3,
-    cube_size: float,
     *,
     scale: float,
     depth: int,
@@ -871,13 +870,14 @@ def _screened_poisson_octree(
     cell_offsets = _launch.array(np.asarray(cell_offsets_host, np.int32), wp.int32, device=device)
     flag_offsets = _launch.array(np.asarray(flag_offsets_host, np.int32), wp.int32, device=device)
 
+    unit_transform = _octree_unit_transform(points, scale)
     keys = _launch.empty(n, dtype=wp.int32, device=device)
     positions = _launch.empty(n, dtype=wp.vec3, device=device)
     unit_normals = _launch.empty(n, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel_octree.octree_point_keys,
         dim=n,
-        inputs=[points, normals, *_octree_unit_transform(points, scale), depth],
+        inputs=[points, normals, *unit_transform, depth],
         outputs=[keys, positions, unit_normals],
         device=device,
     )
@@ -986,7 +986,7 @@ def _screened_poisson_octree(
     constraints = _octree_constraints(
         normal_field, cell_offsets, cell_offsets_host, depth, system, screen_args
     )
-    prolongeds, fields = _octree_cascade(
+    prolongeds, fields, node_offsets = _octree_cascade(
         constraints, depth, iterations, alpha, counts, position_sums, system, screen_args
     )
 
@@ -995,16 +995,53 @@ def _screened_poisson_octree(
     _launch.launch(
         kernel_octree.octree_iso_terms,
         dim=n_samples,
-        inputs=[sample_counts, sample_positions, fields[depth], res],
+        inputs=[
+            sample_counts,
+            sample_positions,
+            _launch.view(fields, node_offsets[depth], node_offsets[depth + 1]),
+            res,
+        ],
         outputs=[iso_terms],
         device=device,
     )
     # The extraction takes the iso-value as a host scalar.
     total = od.reduce.sum(odt.as_dense(sample_counts[:n_samples]))
     iso = od.reduce.sum(iso_terms) / total
-    return _octree_extract(
-        prolongeds, fields, iso, cube_lower, cube_size, depth, full_depth, flags, flag_offsets
+    unit_vertices, faces = _octree_extract(
+        prolongeds,
+        fields,
+        node_offsets,
+        iso,
+        depth,
+        full_depth,
+        flags,
+        flag_offsets,
+        cell_offsets,
+        cell_offsets_host,
     )
+    # The unit cube back to the cloud's frame, as the upstream's inverse transform.
+    inverse, translation = unit_transform
+    scale = 1.0 / float(inverse)
+    shift = [-float(c) * scale for c in odt.vec3_floats(translation)]
+    to_world = wp.mat44(
+        scale,
+        0.0,
+        0.0,
+        shift[0],
+        0.0,
+        scale,
+        0.0,
+        shift[1],
+        0.0,
+        0.0,
+        scale,
+        shift[2],
+        0.0,
+        0.0,
+        0.0,
+        1.0,
+    )
+    return od.transform.transform_points(unit_vertices, to_world, out=unit_vertices), faces
 
 
 def _octree_unit_transform(points: wp.array[wp.vec3], scale: float) -> tuple[wp.float32, wp.vec3]:
@@ -1102,32 +1139,38 @@ def _octree_cascade(
     position_sums: wp.array[wp.vec3],
     system: Sequence[object],
     screen_args: Sequence[object],
-) -> tuple[list[wp.array[wp.float32]], list[wp.array[wp.float32]]]:
+) -> tuple[wp.array[wp.float32], wp.array[wp.float32], list[int]]:
     """
     Run the cascade: depth 0 on the host, then ``iterations`` wavefront Gauss-Seidel sweeps a depth.
 
-    Returns each depth's prolonged coarser field and its own field (their difference is the
-    depth's correction, which the extraction's slopes read).
+    Returns every depth's prolonged coarser field and its own field, each depth's lattice packed
+    at the returned node offsets (a field minus its prolonged field is the depth's correction,
+    which the extraction's slopes read).
     """
     device = counts.device
+    node_offsets = [sum((2**e + 1) ** 3 for e in range(d)) for d in range(depth + 2)]
+    fields = _launch.empty(node_offsets[-1], dtype=wp.float32, device=device)
+    prolongeds = _launch.zeros(node_offsets[-1], dtype=wp.float32, device=device)
+
+    def level(buffer: wp.array[wp.float32], d: int) -> wp.array[wp.float32]:
+        return _launch.view(buffer, node_offsets[d], node_offsets[d + 1])
+
     # Depth 0's eight unknowns: its right-hand side and its one cell's screening sample.
     b0 = np.asarray(constraints[0].numpy(), dtype=np.float64)
     count0 = float(read_scalar(counts, 0))
     centroid0 = np.asarray(read_scalar(position_sums, 0), dtype=np.float64) / max(count0, 1.0)
     x0 = _octree_base_solve(b0, alpha * count0, centroid0)
-    field0 = _launch.array(x0.astype(np.float32), wp.float32, device=device)
-    prolongeds = [_launch.zeros(8, dtype=wp.float32, device=device)]
-    fields = [field0]
+    _launch.copy(level(fields, 0), _launch.array(x0.astype(np.float32), wp.float32, device=device))
     for d in range(1, depth + 1):
         res = 2**d + 1
-        prolonged = _launch.empty(res**3, dtype=wp.float32, device=device)
+        prolonged = level(prolongeds, d)
         _launch.launch(
             kernel_reconstruction.prolong_grid,
             dim=(res, res, res),
-            inputs=[fields[d - 1], 2 ** (d - 1) + 1, res, prolonged],
+            inputs=[level(fields, d - 1), 2 ** (d - 1) + 1, res, prolonged],
             device=device,
         )
-        field = _launch.empty(res**3, dtype=wp.float32, device=device)
+        field = level(fields, d)
         _launch.copy(field, prolonged)
         half = (res + 1) // 2
         for wave in range(res + 2 * (iterations - 1)):
@@ -1143,9 +1186,7 @@ def _octree_cascade(
                     outputs=[field],
                     device=device,
                 )
-        prolongeds.append(prolonged)
-        fields.append(field)
-    return prolongeds, fields
+    return prolongeds, fields, node_offsets
 
 
 def _octree_base_solve(b: np.ndarray, screen: float, centroid: np.ndarray) -> np.ndarray:
@@ -1190,65 +1231,171 @@ def _octree_base_solve(b: np.ndarray, screen: float, centroid: np.ndarray) -> np
 
 
 def _octree_extract(
-    prolongeds: list[wp.array[wp.float32]],
-    fields: list[wp.array[wp.float32]],
+    prolongeds: wp.array[wp.float32],
+    fields: wp.array[wp.float32],
+    node_offsets_host: list[int],
     iso: float,
-    cube_lower: wp.vec3,
-    cube_size: float,
     depth: int,
     full_depth: int,
     flags: wp.array[wp.int32],
     flag_offsets: wp.array[wp.int32],
+    cell_offsets: wp.array[wp.int32],
+    cell_offsets_host: list[int],
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-    """Marching cubes over every depth's leaf cells, into one vertex and one face buffer."""
-    device = flags.device
-    table = _marching_cubes_table(wp.get_device(device).alias)
-    levels: list[tuple[int, wp.array[wp.vec2i], int, int]] = []
-    n_vertices = n_faces = 0
-    for d in range(max(full_depth, 1), depth + 1):
+    """
+    PoissonRecon's extraction over the leaf cells: unit-cube vertices and triangles.
+
+    ``kernels/algorithms/poisson_octree``'s extraction note has the rules. Per depth, finest
+    first, the corner sources and the edges' vertices; then the borrowed faces sorted into their
+    coarse faces' order, every leaf's segments, its loops and their triangles.
+    """
+    device = fields.device
+    first = max(full_depth, 1)
+    node_offsets = _launch.array(np.asarray(node_offsets_host, np.int32), wp.int32, device=device)
+    edge_offsets_host = [3 * node_offsets_host[d] for d in range(depth + 2)]
+    edge_offsets = _launch.array(np.asarray(edge_offsets_host, np.int32), wp.int32, device=device)
+    table = _octree_extraction_table(wp.get_device(device).alias)
+    iso32 = wp.float32(iso)
+
+    sources = _launch.empty(node_offsets_host[-1], dtype=wp.int32, device=device)
+    owners = _launch.full(edge_offsets_host[-1], -1, dtype=wp.int32, device=device)
+    partners = _launch.full(edge_offsets_host[-1], -1, dtype=wp.int32, device=device)
+    created = _launch.zeros(edge_offsets_host[-1], dtype=wp.int32, device=device)
+    activity = [flags, flag_offsets]
+    for d in range(depth, first - 1, -1):
         res = 2**d + 1
-        counts = _launch.empty(res**3, dtype=wp.vec2i, device=device)
         _launch.launch(
-            kernel_octree.octree_leaf_counts,
+            kernel_octree.corner_sources,
             dim=(res, res, res),
-            inputs=[d, depth, full_depth, fields[d], wp.float32(iso), table, flags, flag_offsets],
-            outputs=[counts],
+            inputs=[d, depth, full_depth, *activity, node_offsets],
+            outputs=[sources],
             device=device,
         )
-        _launch.array_scan(counts, counts, inclusive=True)
-        # One read per depth sizes the outputs.
-        totals = read_scalar(counts)
-        levels.append((d, counts, n_vertices, n_faces))
-        n_vertices += int(totals[0])
-        n_faces += int(totals[1])
-    vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
-    faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-    for d, counts, vertex_base, face_base in levels:
-        res = 2**d + 1
         _launch.launch(
-            kernel_octree.octree_leaf_emit,
-            dim=(res, res, res),
+            kernel_octree.classify_edges,
+            dim=(3, res, res, res),
             inputs=[
                 d,
                 depth,
                 full_depth,
-                fields[d],
-                prolongeds[d],
-                fields[d - 1],
-                wp.float32(iso),
-                cube_lower,
-                wp.float32(cube_size),
-                wp.float32(kernel_levelset.lattice_edge_margin(cube_size / 2**d)),
-                table,
-                flags,
-                flag_offsets,
-                counts,
-                wp.vec2i(vertex_base, face_base),
+                iso32,
+                fields,
+                sources,
+                node_offsets,
+                *activity,
+                edge_offsets,
             ],
-            outputs=[vertices, faces],
+            outputs=[owners, partners, created],
             device=device,
         )
-    return vertices, faces
+    ranks = created
+    _launch.array_scan(created, ranks, inclusive=True)
+    # One read sizes the vertices.
+    n_vertices = int(read_scalar(ranks))
+    positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    for d in range(first, depth + 1):
+        res = 2**d + 1
+        margin = kernel_levelset.lattice_edge_margin(1.0 / 2**d)
+        _launch.launch(
+            kernel_octree.place_edge_vertices,
+            dim=(3, res, res, res),
+            inputs=[
+                d,
+                iso32,
+                wp.float32(margin),
+                fields,
+                prolongeds,
+                sources,
+                node_offsets,
+                edge_offsets,
+                ranks,
+            ],
+            outputs=[positions],
+            device=device,
+        )
+
+    n_faces = 6 * (cell_offsets_host[depth + 1] - cell_offsets_host[first])
+    common = [first, depth, full_depth, iso32, fields, sources, node_offsets, *activity]
+    face_args = [*common, cell_offsets, table, owners, edge_offsets]
+    face_offsets = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    no_keys = _launch.empty(0, dtype=wp.uint64, device=device)
+    no_faces = _launch.empty(0, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_octree.borrowed_faces,
+        dim=n_faces,
+        inputs=[*face_args, face_offsets],
+        outputs=[no_keys, no_faces],
+        device=device,
+    )
+    _launch.array_scan(face_offsets, face_offsets, inclusive=True)
+    # One read sizes the borrowed faces' sort.
+    n_borrowed = int(read_scalar(face_offsets))
+    keys = _launch.empty(max(2 * n_borrowed, 2), dtype=wp.uint64, device=device)
+    borrowed = _launch.empty(max(2 * n_borrowed, 2), dtype=wp.int32, device=device)
+    if n_borrowed > 0:
+        _launch.launch(
+            kernel_octree.borrowed_faces,
+            dim=n_faces,
+            inputs=[*face_args, face_offsets],
+            outputs=[keys, borrowed],
+            device=device,
+        )
+        _launch.radix_sort_pairs(keys, borrowed, n_borrowed)
+    keys = _launch.view(keys, 0, n_borrowed)
+
+    n_cells = cell_offsets_host[depth + 1] - cell_offsets_host[first]
+    segment_offsets = _launch.empty(n_cells, dtype=wp.int32, device=device)
+    no_segments = _launch.empty(0, dtype=wp.vec2i, device=device)
+    segment_args = [*face_args, keys, borrowed, segment_offsets]
+    _launch.launch(
+        kernel_octree.cell_segments,
+        dim=n_cells,
+        inputs=segment_args,
+        outputs=[no_segments],
+        device=device,
+    )
+    _launch.array_scan(segment_offsets, segment_offsets, inclusive=True)
+    # One read sizes the segments.
+    n_segments = int(read_scalar(segment_offsets))
+    segments = _launch.empty(max(n_segments, 1), dtype=wp.vec2i, device=device)
+    _launch.launch(
+        kernel_octree.cell_segments,
+        dim=n_cells,
+        inputs=segment_args,
+        outputs=[segments],
+        device=device,
+    )
+    loops = _launch.empty(max(2 * n_segments, 1), dtype=wp.int32, device=device)
+    sizes = _launch.zeros(max(n_segments, 1), dtype=wp.int32, device=device)
+    loop_counts = _launch.empty(n_cells, dtype=wp.vec2i, device=device)
+    _launch.launch(
+        kernel_octree.cell_loops,
+        dim=n_cells,
+        inputs=[segment_offsets, partners, segments],
+        outputs=[loops, sizes, loop_counts],
+        device=device,
+    )
+    _launch.array_scan(loop_counts, loop_counts, inclusive=True)
+    # One read sizes the faces and the minimal-area search's scratch.
+    totals = read_scalar(loop_counts)
+    n_triangles, n_scratch = int(totals[0]), int(totals[1])
+    scratch = _launch.empty(max(n_scratch, 1), dtype=wp.float32, device=device)
+    choices = _launch.empty(max(n_scratch, 1), dtype=wp.int32, device=device)
+    faces = _launch.empty(3 * n_triangles, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_octree.triangulate_loops,
+        dim=n_cells,
+        inputs=[segment_offsets, loop_counts, ranks, positions, loops, sizes, scratch, choices],
+        outputs=[faces],
+        device=device,
+    )
+    return positions, faces
+
+
+@functools.cache
+def _octree_extraction_table(device: str) -> wp.array[wp.int32]:
+    """``kernels/algorithms/poisson_octree.EXTRACTION_TABLE`` on ``device``, uploaded once."""
+    return _launch.array(kernel_octree.EXTRACTION_TABLE, dtype=wp.int32, device=device)
 
 
 def _poisson_cube(points: wp.array[wp.vec3], scale: float) -> tuple[wp.vec3, wp.vec3, float]:

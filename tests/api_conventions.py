@@ -678,6 +678,16 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.poisson_octree", "octree_dilate_flags"): frozenset({"flags"}),
     ("algorithms.poisson_octree", "octree_upsample_coarse_data"): frozenset({"accumulated"}),
     ("algorithms.poisson_octree", "octree_gauss_seidel_wave"): frozenset({"field"}),
+    # The extraction's per-depth tables, each depth's launch reading the finer depth's entries
+    # (corner sources, edge owners) or adding to one buffer every depth shares (pairs, created
+    # flags); counts written by a kernel's count pass and read back by its emit pass; a leaf's
+    # segments consumed by its own loop walk; the minimal-area search's working space.
+    ("algorithms.poisson_octree", "corner_sources"): frozenset({"sources"}),
+    ("algorithms.poisson_octree", "classify_edges"): frozenset({"owners", "partners", "created"}),
+    ("algorithms.poisson_octree", "borrowed_faces"): frozenset({"offsets"}),
+    ("algorithms.poisson_octree", "cell_segments"): frozenset({"offsets"}),
+    ("algorithms.poisson_octree", "cell_loops"): frozenset({"segments"}),
+    ("algorithms.poisson_octree", "triangulate_loops"): frozenset({"scratch", "choices"}),
     # ``edges`` is absent deliberately: this kernel mutates the table only through
     # ``register_face_edge``, and check 13 does not follow writes into a called ``@wp.func``.
     ("algorithms.ball_pivoting", "commit_triangles"): frozenset({"counters", "point_used"}),

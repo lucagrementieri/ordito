@@ -5373,14 +5373,14 @@
  },
  "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cuda-octree-7]": {
   "counts": {
-   "launch": 1530,
-   "alloc": 74,
-   "memset": 25,
-   "d2d": 7,
-   "h2d": 3,
-   "d2h": 18,
+   "launch": 1529,
+   "alloc": 61,
+   "memset": 27,
+   "d2d": 8,
+   "h2d": 5,
+   "d2h": 17,
    "scan": 5,
-   "sort": 2
+   "sort": 1
   }
  },
  "benchmarks/test_reconstruction.py::test_triangulate_point_cloud[sphere_small-ordito-cuda]": {

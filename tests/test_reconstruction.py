@@ -1057,23 +1057,25 @@ def test_poisson_octree_matches_open3d(
     request: pytest.FixtureRequest, device: str, mesh_name: str
 ) -> None:
     """
-    Class C: the fraction of open3d's vertices lying on ordito's ``method="octree"`` surface.
+    Class C: ``method="octree"``'s mesh against open3d's, run on one thread, triangle for triangle.
 
-    The backend solves open3d's own system with its own non-converged schedule, so its surface is
-    open3d's; only the triangulation differs (marching cubes over each depth's leaf cells against
-    PoissonRecon's per-face polygons), so the vertices themselves cannot be matched one to one but
-    every open3d vertex must sit on ordito's surface. Excludes the bug classes "wrong system" (a
-    screening weight, a constraint, a density or a splat depth off), "wrong solver schedule" and
-    "wrong unknowns" (the active nodes above ``full_depth``): each moves the field, and the
-    non-converged far field moves with it.
+    The backend reproduces open3d's system, schedule and extraction, so its vertex and triangle
+    counts must equal open3d's, its vertices must lie on open3d's, and its triangles must be
+    open3d's except where open3d's minimal-area triangulation of a loop is decided by rounding
+    (two splits whose areas agree to a few ``1e-6``, a planar or degenerate loop): those are the
+    only triangles a ``float32`` field computed in another order can split the other way. Vertices
+    are matched by position (a thousandth of a cell). open3d's default thread count is not the
+    reference: its borrowed face segments then arrive in thread order and 5-6 % of its triangles
+    change from run to run.
 
-    At depth 6 (``full_depth`` 5, so the finest depth is sparse) 99.74 % (``sphere_irregular``)
-    and 99.41 % (``saddle_graded``, open) of open3d's vertices are within a thousandth of a cell
-    of ordito's surface; the rest are at changes of depth, where open3d stitches a coarse leaf to
-    its finer neighbours' vertices. The threshold, 98 %, allows 3.4x the measured misses. Mutation
-    probes, each failing the assert: 9 sweeps instead of 8 (28 % / 33 %), ``point_weight`` 2.2
-    instead of 2 (10 % / 31 %), and the splats past a high face dropped instead of aliased to the
-    midplane nodes (29 % / 80 %).
+    Measured at depth 6 (``full_depth`` 5, so the finest depth is sparse and coarse leaves stitch
+    to finer ones): counts equal; 100 % / 99.5 % of open3d's vertices matched; 98.1-98.2 %
+    (``sphere_irregular``) and 97.2-97.4 % (``saddle_graded``) of its triangles reproduced
+    exactly, CPU and CUDA. The threshold, 92 %, allows about 3x the measured misses. Mutation
+    probes, each failing an assert: the quad split's comparison reversed (53 % / 38 %), the
+    corner values not copied up from finer leaves (counts off by 1-2 vertices and 9-10 faces).
+    Not pinned by any input measured: the slab order of a coarse ``x`` or ``y`` face's borrowed
+    segments (dropping it changed no triangle at depths 6-7 here nor on a crown).
     """
     mesh_tm, _ = request.getfixturevalue(mesh_name)
     points_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
@@ -1086,11 +1088,25 @@ def test_poisson_octree_matches_open3d(
         points_to_open3d(points_np, normals_np), depth=6, n_threads=1
     )
     vertices_o3d = np.asarray(mesh_o3d.vertices)
-    assert vertices_o3d.shape[0] > 1000
-    mesh_od = warp_to_trimesh(vertices_wp, faces_wp)
+    faces_o3d = np.asarray(mesh_o3d.triangles)
+    vertices_np = np.asarray(vertices_wp.numpy(), dtype=np.float64)
+    faces_np = np.asarray(faces_wp.numpy(), dtype=np.int64).reshape(-1, 3)
+    assert faces_o3d.shape[0] > 1000
+    assert vertices_np.shape[0] == vertices_o3d.shape[0]
+    assert faces_np.shape[0] == faces_o3d.shape[0]
     cell = 1.1 * float(np.ptp(points_np, axis=0).max()) / 2**6
-    distance = np.abs(tm.proximity.signed_distance(mesh_od, vertices_o3d)) / cell
-    assert np.mean(distance < 1e-3) > 0.98
+    distance, nearest = cKDTree(vertices_o3d).query(vertices_np)
+    matched = np.asarray(distance) < 1e-3 * cell
+    assert np.mean(matched) > 0.99
+    mapped = np.where(matched, nearest, -1)[faces_np]
+
+    def rotated(face: list[int]) -> tuple[int, ...]:
+        start = int(np.argmin(face))
+        return tuple(face[start:] + face[:start])
+
+    ours = {rotated(face) for face in mapped.tolist() if min(face) >= 0}
+    reproduced = np.mean([rotated(face) in ours for face in faces_o3d.tolist()])
+    assert reproduced > 0.92
 
 
 @pytest.mark.parametrize(

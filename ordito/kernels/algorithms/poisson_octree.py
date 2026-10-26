@@ -50,24 +50,18 @@ wavefront (``octree_gauss_seidel_wave``): sweep ``s`` on slice ``z`` only waits 
 and a level costs ``4 * (res + 2 * (iterations - 1))`` launches instead of ``4 * res *
 iterations``, with the same values.
 
-**Extraction** runs marching cubes on each depth's leaf cells (active cells with no active
-children) from that depth's field, placing every vertex with the upstream non-linear fit: the
-Hermite cubic through the edge's ends whose end slopes are rescaled to remove its cubic term, the
-slope at a corner split into the depth's own correction (a central difference) and the coarser
-field's (its own lattice's slope). The upstream extraction also stitches a coarse leaf's faces to
-its finer neighbours' vertices and triangulates its polygons by minimal area; this one does
-neither, which moves a triangle, never a vertex, and can leave a crack along a depth change.
+**Extraction** is the upstream's, cell by cell (the extraction section's note): corner values
+copied up from the deepest leaf at each point, edge vertices placed by the upstream non-linear fit
+and shared with finer neighbours (taken over or paired), each leaf's faces by marching squares or
+borrowed from the finer leaves across them in the upstream's single-threaded order, loops walked as
+the upstream walks them and triangulated by its minimal-area rule. Its triangles are the upstream's
+up to the splits its own rounding decides (two splits of a loop whose areas agree to a few
+``1e-6``), which a field computed in another order can decide the other way.
 """
 
 import warp as wp
 
-from ordito.kernels.levelset import (
-    MC_CORNERS,
-    mc_case_corner,
-    mc_case_final,
-    mc_triangle_edge,
-    mc_values_cross,
-)
+from ordito.kernels.array import binary_search_index_left
 from ordito.kernels.reconstruction import (
     poisson_grid_index,
     poisson_restrict_node,
@@ -926,6 +920,101 @@ def octree_iso_terms(
 # ---------------------------------------------------------------------------------------------
 # Extraction
 # ---------------------------------------------------------------------------------------------
+#
+# PoissonRecon's extraction, cell by cell (``IsoSurfaceExtractor`` in its
+# ``FEMTree.IsoSurface.specialized.inl``), run as independent per-depth and per-cell passes.
+#
+# - **Corner values.** A leaf reads its corners through its depth's lattice, and every finer leaf
+#   copies its corner values (and slopes) up to the coarser lattices at the same point, finest
+#   first: a corner takes the value of the deepest leaf having it as a corner (``corner_sources``).
+# - **Edge vertices.** Finest depth first, an edge of a refined cell takes the vertex of the one
+#   finer half that has one, or pairs the two halves' vertices when both do; an edge of a leaf whose
+#   corners straddle the iso-value and that holds no vertex yet gets its own (``classify_edges``).
+# - **Faces.** A leaf's face is marching squares on its corners (the below-iso corners joined
+#   through the centre on an ambiguous face), unless the cell across is refined: then the face is
+#   the finer leaves' faces on it, in the order the upstream single-threaded pass pushes them
+#   (``borrowed_face_key``).
+# - **Polygons.** The faces' segments, oriented by each face's flag, are walked into loops exactly
+#   as the upstream does (last segment first, swap-removal, a pair crossed where a segment ends on
+#   one), and each loop is triangulated by minimal area (``polygon_triangles``).
+#
+# The tables come from PoissonRecon's ``HyperCube`` (corner ``c`` is ``(c & 1, c >> 1 & 1,
+# c >> 2 & 1)``; faces ``z0 y0 x0 x1 y1 z1``; a face's square edges ``x0 y0 y1 x1`` in its own
+# axes), dumped by compiling its headers.
+
+# Packed table: cube edges' lower-corner offset bits and axis (12), each face's four square edges
+# as cube edges (24), each face's four square corners as cube corners (24), each face's orientation
+# flag (6), and marching squares' segments per square case (16 x 4, -1 padded).
+EXTRACTION_EDGES = 0
+EXTRACTION_FACE_EDGES = 12
+EXTRACTION_FACE_CORNERS = 36
+EXTRACTION_FACE_ORIENTED = 60
+EXTRACTION_SQUARE_SEGMENTS = 66
+_EDGE_CORNERS = (
+    (0, 1),
+    (0, 2),
+    (1, 3),
+    (2, 3),
+    (0, 4),
+    (1, 5),
+    (2, 6),
+    (3, 7),
+    (4, 5),
+    (4, 6),
+    (5, 7),
+    (6, 7),
+)
+_SQUARE_SEGMENTS = (
+    (),
+    (1, 0),
+    (0, 2),
+    (1, 2),
+    (3, 1),
+    (3, 0),
+    (0, 1, 3, 2),
+    (3, 2),
+    (2, 3),
+    (1, 3, 2, 0),
+    (0, 3),
+    (1, 3),
+    (2, 1),
+    (2, 0),
+    (0, 1),
+    (),
+)
+EXTRACTION_TABLE = (
+    *(a | ((b ^ a).bit_length() - 1) << 3 for a, b in _EDGE_CORNERS),
+    *(0, 1, 2, 3, 0, 4, 5, 8, 1, 4, 6, 9, 2, 5, 7, 10, 3, 6, 7, 11, 8, 9, 10, 11),
+    *(0, 1, 2, 3, 0, 1, 4, 5, 0, 2, 4, 6, 1, 3, 5, 7, 2, 3, 6, 7, 4, 5, 6, 7),
+    *(0, 1, 0, 1, 0, 1),
+    *(x for seg in _SQUARE_SEGMENTS for x in (*seg, -1, -1, -1, -1)[:4]),
+)
+
+
+@wp.func
+def face_axis(f: wp.int32) -> wp.int32:
+    # The axis a face of the cube is normal to (faces ``z0 y0 x0 x1 y1 z1``).
+    axis = wp.int32(2)
+    if f == 1 or f == 4:
+        axis = 1
+    elif f == 2 or f == 3:
+        axis = 0
+    return axis
+
+
+@wp.func
+def face_across(c: wp.vec3i, f: wp.int32) -> wp.vec3i:
+    # The cell sharing face ``f`` of cell ``c``.
+    across = wp.vec3i(c[0], c[1], c[2])
+    axis = face_axis(f)
+    across[axis] = across[axis] + wp.where(f >= 3, 1, -1)
+    return across
+
+
+@wp.func
+def octree_inside(d: wp.int32, c: wp.vec3i) -> wp.bool:
+    n = 1 << d
+    return c[0] >= 0 and c[1] >= 0 and c[2] >= 0 and c[0] < n and c[1] < n and c[2] < n
 
 
 @wp.func
@@ -938,8 +1027,7 @@ def leaf_cell(
     c: wp.vec3i,
 ) -> wp.bool:
     # Whether depth ``d`` cell ``c`` is a leaf: inside the cube, active, its children not.
-    n = 1 << d
-    if c[0] < 0 or c[1] < 0 or c[2] < 0 or c[0] >= n or c[1] >= n or c[2] >= n:
+    if not octree_inside(d, c):
         return False
     if not node_active(flags, flag_offsets, full_depth, d, c):
         return False
@@ -949,124 +1037,49 @@ def leaf_cell(
 
 
 @wp.func
-def leaf_edge_crosses(
-    field: wp.array[wp.float32],
-    iso: wp.float32,
+def refined_cell(
     flags: wp.array[wp.int32],
     flag_offsets: wp.array[wp.int32],
     depth: wp.int32,
     full_depth: wp.int32,
     d: wp.int32,
-    node: wp.vec3i,
-    axis: wp.int32,
-) -> wp.int32:
-    # 1 when the edge from ``node`` along ``axis`` crosses ``iso`` and bounds a leaf cell.
-    res = (1 << d) + 1
-    end = node + wp.vec3i(
-        wp.where(axis == 0, 1, 0), wp.where(axis == 1, 1, 0), wp.where(axis == 2, 1, 0)
+    c: wp.vec3i,
+) -> wp.bool:
+    # Whether depth ``d`` cell ``c`` is inside the cube, active and has active children.
+    if d >= depth or not octree_inside(d, c):
+        return False
+    return node_active(flags, flag_offsets, full_depth, d, c) and children_active(
+        flags, flag_offsets, d, c
     )
-    if end[0] >= res or end[1] >= res or end[2] >= res:
-        return 0
-    crossing = mc_values_cross(
-        field[poisson_grid_index(node[0], node[1], node[2], res)],
-        field[poisson_grid_index(end[0], end[1], end[2], res)],
-        iso,
-    )
-    if crossing == 0:
-        return 0
-    u = (axis + 1) % 3
-    v = (axis + 2) % 3
-    for q in range(4):
-        cell = wp.vec3i(node[0], node[1], node[2])
-        cell[u] = cell[u] - (q & 1)
-        cell[v] = cell[v] - (q >> 1)
-        if leaf_cell(flags, flag_offsets, depth, full_depth, d, cell):
-            return 1
-    return 0
 
 
 @wp.func
-def leaf_cell_triangles(
-    field: wp.array[wp.float32],
-    iso: wp.float32,
-    table: wp.array[wp.int32],
-    flags: wp.array[wp.int32],
-    flag_offsets: wp.array[wp.int32],
-    depth: wp.int32,
-    full_depth: wp.int32,
-    d: wp.int32,
-    node: wp.vec3i,
-) -> wp.vec2i:
-    # ``(first table slot, triangle count)`` of the leaf cell at ``node``; nothing for a non-leaf.
-    res = (1 << d) + 1
-    if not leaf_cell(flags, flag_offsets, depth, full_depth, d, node):
-        return wp.vec2i(0, 0)
-    code = wp.int32(0)
-    for c in range(8):
-        code = mc_case_corner(
-            code,
-            field[
-                poisson_grid_index(
-                    node[0] + wp.static(MC_CORNERS[c][0]),
-                    node[1] + wp.static(MC_CORNERS[c][1]),
-                    node[2] + wp.static(MC_CORNERS[c][2]),
-                    res,
-                )
-            ],
-            iso,
-            wp.static(1 << c),
-        )
-    code = mc_case_final(code)
-    start = table[code]
-    return wp.vec2i(start, (table[code + 1] - start) // 3)
-
-
-@wp.kernel
-def octree_leaf_counts(
-    d: wp.int32,
-    depth: wp.int32,
-    full_depth: wp.int32,
-    field: wp.array[wp.float32],
-    iso: wp.float32,
-    table: wp.array[wp.int32],
-    flags: wp.array[wp.int32],
-    flag_offsets: wp.array[wp.int32],
-    out_counts: wp.array[wp.vec2i],
-) -> None:
-    # Per node: its leaf-bounding crossing edges (vertices) and its leaf cell's triangles.
-    i, j, k = wp.tid()
-    node = wp.vec3i(i, j, k)
-    vertices = wp.int32(0)
-    for axis in range(3):
-        vertices += leaf_edge_crosses(
-            field, iso, flags, flag_offsets, depth, full_depth, d, node, axis
-        )
-    cell = leaf_cell_triangles(field, iso, table, flags, flag_offsets, depth, full_depth, d, node)
-    out_counts[poisson_grid_index(i, j, k, (1 << d) + 1)] = wp.vec2i(vertices, cell[1])
+def lattice_index(d: wp.int32, node: wp.vec3i) -> wp.int32:
+    return poisson_grid_index(node[0], node[1], node[2], (1 << d) + 1)
 
 
 @wp.func
 def split_slope(
-    field: wp.array[wp.float32],
-    prolonged: wp.array[wp.float32],
-    coarse: wp.array[wp.float32],
+    fields: wp.array[wp.float32],
+    prolongeds: wp.array[wp.float32],
+    node_offsets: wp.array[wp.int32],
     d: wp.int32,
     node: wp.vec3i,
     axis: wp.int32,
 ) -> wp.float32:
-    # The field's slope along ``axis`` at ``node``, times the cell width, as the upstream evaluator
-    # forms it: the depth's own correction's (``field - prolonged``) averaged one-sided slopes plus
-    # the coarser field's slope on its own lattice (averaged at its nodes, exact between them),
-    # interpolated linearly across the other two axes.
+    # The field's slope along ``axis`` at depth ``d``'s lattice node, times the depth's cell width,
+    # as the upstream evaluator forms it: the depth's own correction's (``field - prolonged``)
+    # averaged one-sided slopes plus the coarser field's slope on its own lattice (averaged at its
+    # nodes, exact between them), interpolated linearly across the other two axes.
     res = (1 << d) + 1
     res_c = (1 << (d - 1)) + 1
     up = wp.vec3i(node[0], node[1], node[2])
     down = wp.vec3i(node[0], node[1], node[2])
     up[axis] = wp.min(node[axis] + 1, res - 1)
     down[axis] = wp.max(node[axis] - 1, 0)
-    upper = poisson_grid_index(up[0], up[1], up[2], res)
-    lower = poisson_grid_index(down[0], down[1], down[2], res)
-    slope = 0.5 * ((field[upper] - prolonged[upper]) - (field[lower] - prolonged[lower]))
+    upper = node_offsets[d] + lattice_index(d, up)
+    lower = node_offsets[d] + lattice_index(d, down)
+    slope = 0.5 * ((fields[upper] - prolongeds[upper]) - (fields[lower] - prolongeds[lower]))
     u = (axis + 1) % 3
     v = (axis + 2) % 3
     coarse_slope = wp.float32(0.0)
@@ -1104,11 +1117,118 @@ def split_slope(
                 weight
                 * factor
                 * (
-                    coarse[poisson_grid_index(hi[0], hi[1], hi[2], res_c)]
-                    - coarse[poisson_grid_index(lo[0], lo[1], lo[2], res_c)]
+                    fields[node_offsets[d - 1] + lattice_index(d - 1, hi)]
+                    - fields[node_offsets[d - 1] + lattice_index(d - 1, lo)]
                 )
             )
     return slope + coarse_slope
+
+
+@wp.func
+def touched_by_leaf(
+    flags: wp.array[wp.int32],
+    flag_offsets: wp.array[wp.int32],
+    depth: wp.int32,
+    full_depth: wp.int32,
+    d: wp.int32,
+    node: wp.vec3i,
+) -> wp.bool:
+    # Whether a depth ``d`` leaf has lattice node ``node`` as a corner.
+    for k in range(8):
+        cell = node - wp.vec3i(k & 1, (k >> 1) & 1, (k >> 2) & 1)
+        if leaf_cell(flags, flag_offsets, depth, full_depth, d, cell):
+            return True
+    return False
+
+
+@wp.kernel
+def corner_sources(
+    d: wp.int32,
+    depth: wp.int32,
+    full_depth: wp.int32,
+    flags: wp.array[wp.int32],
+    flag_offsets: wp.array[wp.int32],
+    node_offsets: wp.array[wp.int32],
+    sources: wp.array[wp.int32],
+) -> None:
+    # The depth whose value a depth ``d`` leaf reads at this lattice node: the deepest leaf having
+    # the point as a corner (copied up the lattices finest first), ``d`` itself when only depth
+    # ``d`` leaves have it, -1 when none. Run finest first.
+    i, j, k = wp.tid()
+    node = wp.vec3i(i, j, k)
+    source = wp.int32(-1)
+    if d < depth:
+        source = sources[node_offsets[d + 1] + lattice_index(d + 1, 2 * node)]
+    if source < 0 and touched_by_leaf(flags, flag_offsets, depth, full_depth, d, node):
+        source = d
+    sources[node_offsets[d] + lattice_index(d, node)] = source
+
+
+@wp.func
+def corner_sample(
+    fields: wp.array[wp.float32],
+    prolongeds: wp.array[wp.float32],
+    sources: wp.array[wp.int32],
+    node_offsets: wp.array[wp.int32],
+    d: wp.int32,
+    node: wp.vec3i,
+    axis: wp.int32,
+) -> wp.vec2:
+    # ``(value, slope along axis times depth d's cell width)`` a depth ``d`` leaf reads at
+    # ``node``: the source depth's lattice value and slope (``corner_sources``).
+    source = sources[node_offsets[d] + lattice_index(d, node)]
+    if source < 0:
+        source = d
+    shift = source - d
+    at = wp.vec3i(node[0] << shift, node[1] << shift, node[2] << shift)
+    value = fields[node_offsets[source] + lattice_index(source, at)]
+    slope = wp.float32(0.0)
+    if axis >= 0:
+        slope = split_slope(fields, prolongeds, node_offsets, source, at, axis) * wp.float32(
+            1 << shift
+        )
+    return wp.vec2(value, slope)
+
+
+@wp.func
+def corner_below(
+    fields: wp.array[wp.float32],
+    sources: wp.array[wp.int32],
+    node_offsets: wp.array[wp.int32],
+    iso: wp.float32,
+    d: wp.int32,
+    node: wp.vec3i,
+) -> wp.bool:
+    # The upstream marching-cubes bit: the corner's value is below the iso-value.
+    sample = corner_sample(fields, fields, sources, node_offsets, d, node, -1)
+    return sample[0] < iso
+
+
+@wp.func
+def cell_case(
+    fields: wp.array[wp.float32],
+    sources: wp.array[wp.int32],
+    node_offsets: wp.array[wp.int32],
+    iso: wp.float32,
+    d: wp.int32,
+    c: wp.vec3i,
+) -> wp.int32:
+    # A leaf's 8-bit case, bit ``k`` set when corner ``k`` is below the iso-value.
+    code = wp.int32(0)
+    for k in range(8):
+        corner = c + wp.vec3i(k & 1, (k >> 1) & 1, (k >> 2) & 1)
+        if corner_below(fields, sources, node_offsets, iso, d, corner):
+            code = code | (1 << k)
+    return code
+
+
+@wp.func
+def edge_slot(
+    edge_offsets: wp.array[wp.int32], d: wp.int32, axis: wp.int32, node: wp.vec3i
+) -> wp.int32:
+    # Depth ``d``'s edge from ``node`` along ``axis`` in the packed edge-vertex table.
+    res = (1 << d) + 1
+    return edge_offsets[d] + axis * res * res * res + lattice_index(d, node)
 
 
 @wp.func
@@ -1118,101 +1238,529 @@ def fitted_edge_root(
     slope_here: wp.float32,
     slope_there: wp.float32,
     iso: wp.float32,
-) -> wp.float32:
-    # The upstream non-linear fit: the end slopes rescaled so the Hermite cubic loses its cubic
-    # term, the mean of the quadratic's roots in ``[0, 1]``, else the linear root.
-    x0 = wp.float64(here)
-    x1 = wp.float64(there)
-    scale = (x1 - x0) / ((wp.float64(slope_here) + wp.float64(slope_there)) * wp.float64(0.5))
-    d0 = wp.float64(slope_here) * scale
-    d1 = wp.float64(slope_there) * scale
-    a = wp.float64(3.0) * (x1 - x0) - d1 - wp.float64(2.0) * d0
-    c = x0 - wp.float64(iso)
+) -> wp.float64:
+    # The upstream non-linear fit, in its precisions: the end slopes rescaled so the Hermite cubic
+    # loses its cubic term (``float32`` value differences, ``float64`` slopes), the mean of the
+    # quadratic's real roots in ``[0, 1]`` as ``Factor`` forms them, else the ``float32`` linear
+    # root.
+    step = there - here
+    d0 = wp.float64(slope_here)
+    d1 = wp.float64(slope_there)
+    scale = wp.float64(step) / ((d1 + d0) / wp.float64(2.0))
+    d0 = d0 * scale
+    d1 = d1 * scale
+    a2 = wp.float64(3.0 * step) - d1 - wp.float64(2.0) * d0
+    a1 = d0
+    a0 = wp.float64(here) - wp.float64(iso)
     roots = wp.float64(0.0)
     found = wp.int32(0)
-    if a == wp.float64(0.0):
-        if d0 != wp.float64(0.0):
-            t = -c / d0
+    if wp.abs(a2) <= wp.float64(0.0):
+        if wp.abs(a1) > wp.float64(0.0):
+            t = -a0 / a1
             if t >= wp.float64(0.0) and t <= wp.float64(1.0):
                 roots = t
                 found = 1
     else:
-        disc = d0 * d0 - wp.float64(4.0) * a * c
+        disc = a1 * a1 - wp.float64(4.0) * a0 * a2
         if disc >= wp.float64(0.0):
-            root = wp.sqrt(disc)
+            half = a1 / (wp.float64(2.0) * a2)
+            root = wp.sqrt(disc) / (wp.float64(2.0) * a2)
             for sign in range(2):
-                t = (-d0 + wp.where(sign == 0, root, -root)) / (wp.float64(2.0) * a)
+                t = -half + wp.where(sign == 0, -root, root)
                 if t >= wp.float64(0.0) and t <= wp.float64(1.0):
                     roots += t
                     found += 1
     if found > 0:
-        return wp.float32(roots / wp.float64(found))
-    return (iso - here) / (there - here)
+        return roots / wp.float64(found)
+    return wp.float64((iso - here) / step)
 
 
 @wp.kernel
-def octree_leaf_emit(
+def classify_edges(
     d: wp.int32,
     depth: wp.int32,
     full_depth: wp.int32,
-    field: wp.array[wp.float32],
-    prolonged: wp.array[wp.float32],
-    coarse: wp.array[wp.float32],
     iso: wp.float32,
-    lower: wp.vec3,
-    size: wp.float32,
-    margin: wp.float32,
-    table: wp.array[wp.int32],
+    fields: wp.array[wp.float32],
+    sources: wp.array[wp.int32],
+    node_offsets: wp.array[wp.int32],
     flags: wp.array[wp.int32],
     flag_offsets: wp.array[wp.int32],
-    offsets: wp.array[wp.vec2i],
-    base: wp.vec2i,
-    out_vertices: wp.array[wp.vec3],
-    out_faces: wp.array[wp.int32],
+    edge_offsets: wp.array[wp.int32],
+    owners: wp.array[wp.int32],
+    partners: wp.array[wp.int32],
+    created: wp.array[wp.int32],
 ) -> None:
-    # ``marching_cubes_emit`` restricted to leaf cells, writing after ``base`` (this depth's first
-    # vertex and face), each vertex placed by ``fitted_edge_root`` and kept ``margin`` of the edge
-    # off its ends.
-    i, j, k = wp.tid()
+    # Depth ``d``'s edge from node ``(i, j, k)`` along ``axis``: the vertex it holds, named by the
+    # edge that created it (``owners``). An edge of a refined cell takes over the vertex of the one
+    # finer half that has one, or pairs the two halves' vertices (``partners``); an edge still
+    # without one gets its own (``created``) when a leaf's corners straddle the iso-value along it.
+    # Run finest first.
+    axis, i, j, k = wp.tid()
     res = (1 << d) + 1
     node = wp.vec3i(i, j, k)
-    ends = offsets[poisson_grid_index(i, j, k, res)]
-    crossing = wp.vec3i(
-        leaf_edge_crosses(field, iso, flags, flag_offsets, depth, full_depth, d, node, 0),
-        leaf_edge_crosses(field, iso, flags, flag_offsets, depth, full_depth, d, node, 1),
-        leaf_edge_crosses(field, iso, flags, flag_offsets, depth, full_depth, d, node, 2),
-    )
-    slot = ends[0] - (crossing[0] + crossing[1] + crossing[2])
-    width = size / wp.float32(1 << d)
-    for axis in range(3):
-        if crossing[axis] != 0:
-            end = wp.vec3i(i, j, k)
-            end[axis] = end[axis] + 1
-            here = field[poisson_grid_index(i, j, k, res)]
-            there = field[poisson_grid_index(end[0], end[1], end[2], res)]
-            t = fitted_edge_root(
-                here,
-                there,
-                split_slope(field, prolonged, coarse, d, node, axis),
-                split_slope(field, prolonged, coarse, d, end, axis),
-                iso,
-            )
-            t = wp.clamp(t, margin, 1.0 - margin)
-            position = wp.vec3(wp.float32(i), wp.float32(j), wp.float32(k))
-            position[axis] = position[axis] + t
-            out_vertices[base[0] + slot] = lower + position * width
-            slot += 1
+    end = wp.vec3i(i, j, k)
+    end[axis] = end[axis] + 1
+    slot = edge_slot(edge_offsets, d, axis, node)
+    if end[axis] >= res:
+        owners[slot] = -1
+        return
+    u = (axis + 1) % 3
+    v = (axis + 2) % 3
+    any_refined = wp.bool(False)
+    any_leaf = wp.bool(False)
+    for q in range(4):
+        cell = wp.vec3i(i, j, k)
+        cell[u] = cell[u] - (q & 1)
+        cell[v] = cell[v] - (q >> 1)
+        if refined_cell(flags, flag_offsets, depth, full_depth, d, cell):
+            any_refined = True
+        if leaf_cell(flags, flag_offsets, depth, full_depth, d, cell):
+            any_leaf = True
+    owner = wp.int32(-1)
+    if any_refined:
+        first = owners[edge_slot(edge_offsets, d + 1, axis, 2 * node)]
+        second = owners[edge_slot(edge_offsets, d + 1, axis, 2 * node + (end - node))]
+        if (first >= 0) != (second >= 0):
+            owner = wp.max(first, second)
+        elif first >= 0:
+            partners[first] = second
+            partners[second] = first
+    if owner < 0 and any_leaf:
+        here = corner_below(fields, sources, node_offsets, iso, d, node)
+        there = corner_below(fields, sources, node_offsets, iso, d, end)
+        if here != there:
+            owner = slot
+            created[slot] = 1
+    owners[slot] = owner
 
-    cell = leaf_cell_triangles(field, iso, table, flags, flag_offsets, depth, full_depth, d, node)
-    first_face = ends[1] - cell[1]
-    for tri in range(cell[1]):
-        for s in range(3):
-            edge = mc_triangle_edge(table, cell[0] + 3 * tri + s)
-            owner = node + wp.vec3i(edge[0], edge[1], edge[2])
-            axis = edge[3]
-            vertex = offsets[poisson_grid_index(owner[0], owner[1], owner[2], res)][0] - 1
-            for higher in range(axis + 1, 3):
-                vertex -= leaf_edge_crosses(
-                    field, iso, flags, flag_offsets, depth, full_depth, d, owner, higher
+
+@wp.kernel
+def place_edge_vertices(
+    d: wp.int32,
+    iso: wp.float32,
+    margin: wp.float32,
+    fields: wp.array[wp.float32],
+    prolongeds: wp.array[wp.float32],
+    sources: wp.array[wp.int32],
+    node_offsets: wp.array[wp.int32],
+    edge_offsets: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    out_positions: wp.array[wp.vec3],
+) -> None:
+    # A created vertex's unit-cube position at its number (``ranks``, the inclusive scan of
+    # ``created``), by the non-linear fit on its edge's corner values and slopes, kept ``margin``
+    # of the edge off its ends.
+    axis, i, j, k = wp.tid()
+    node = wp.vec3i(i, j, k)
+    slot = edge_slot(edge_offsets, d, axis, node)
+    previous = wp.where(slot > 0, ranks[slot - 1], 0)
+    if ranks[slot] == previous:
+        return
+    end = wp.vec3i(i, j, k)
+    end[axis] = end[axis] + 1
+    here = corner_sample(fields, prolongeds, sources, node_offsets, d, node, axis)
+    there = corner_sample(fields, prolongeds, sources, node_offsets, d, end, axis)
+    t = fitted_edge_root(here[0], there[0], here[1], there[1], iso)
+    t = wp.clamp(t, wp.float64(margin), wp.float64(1.0 - margin))
+    # The upstream's position: the cell's corner in ``float32`` and ``start + width * t`` along the
+    # edge in ``float64``, rounded once.
+    width = 1.0 / wp.float32(1 << d)
+    position = wp.vec3(wp.float32(i) * width, wp.float32(j) * width, wp.float32(k) * width)
+    position[axis] = wp.float32(wp.float64(position[axis]) + wp.float64(width) * t)
+    out_positions[previous] = position
+
+
+@wp.func
+def face_segments(
+    table: wp.array[wp.int32],
+    owners: wp.array[wp.int32],
+    edge_offsets: wp.array[wp.int32],
+    code: wp.int32,
+    d: wp.int32,
+    c: wp.vec3i,
+    f: wp.int32,
+) -> wp.vec4i:
+    # Marching squares on face ``f`` of depth ``d`` cell ``c`` (case ``code``): up to two segments
+    # as vertex pairs (``owners``' names) in the face's own orientation, ``-1`` past the last.
+    square = wp.int32(0)
+    for s in range(4):
+        if (code >> table[EXTRACTION_FACE_CORNERS + 4 * f + s]) & 1 != 0:
+            square = square | (1 << s)
+    out = wp.vec4i(-1, -1, -1, -1)
+    for s in range(4):
+        local = table[EXTRACTION_SQUARE_SEGMENTS + 4 * square + s]
+        if local >= 0:
+            packed = table[EXTRACTION_EDGES + table[EXTRACTION_FACE_EDGES + 4 * f + local]]
+            corner = wp.vec3i(packed & 1, (packed >> 1) & 1, (packed >> 2) & 1)
+            out[s] = owners[edge_slot(edge_offsets, d, packed >> 3, c + corner)]
+    return out
+
+
+@wp.func
+def unpack_cell(
+    cell_offsets: wp.array[wp.int32], first: wp.int32, last: wp.int32, flat: wp.int32
+) -> wp.vec4i:
+    # ``(x, y, z, depth)`` of the cell at ``flat`` in the packed per-depth cell range.
+    d = level_of(cell_offsets, first, last, flat)
+    n = 1 << d
+    local = flat - cell_offsets[d]
+    return wp.vec4i(local // (n * n), (local // n) % n, local % n, d)
+
+
+@wp.func
+def depth_first_rank(c: wp.vec3i, d: wp.int32) -> wp.int32:
+    # Rank of a depth ``d`` cell among those of its slice in the upstream's depth-first order:
+    # per level the ``y`` bit above the ``x`` bit.
+    rank = wp.int32(0)
+    for b in range(d - 1, -1, -1):
+        rank = (rank << 2) | (((c[1] >> b) & 1) << 1) | ((c[0] >> b) & 1)
+    return rank
+
+
+@wp.func
+def borrowed_face_key(
+    flags: wp.array[wp.int32],
+    flag_offsets: wp.array[wp.int32],
+    cell_offsets: wp.array[wp.int32],
+    depth: wp.int32,
+    full_depth: wp.int32,
+    d: wp.int32,
+    c: wp.vec3i,
+    f: wp.int32,
+) -> wp.uint64:
+    # When face ``f`` of leaf ``c`` lies on a coarser leaf ``C`` whose cell across is refined, the
+    # sort key placing its segments in ``C``'s face list in the upstream push order: ``C``, ``C``'s
+    # face, then for a ``z`` face the finer depth first and the slice's depth-first rank, for an
+    # ``x`` or ``y`` face the slab's top first, then the finer depth and the rank. 0 otherwise.
+    across = face_across(c, f)
+    if not octree_inside(d, across) or node_active(flags, flag_offsets, full_depth, d, across):
+        return wp.uint64(0)
+    key = wp.uint64(0)
+    for step in range(1, d - full_depth + 1):
+        j = d - step
+        coarse = wp.vec3i(across[0] >> step, across[1] >> step, across[2] >> step)
+        if node_active(flags, flag_offsets, full_depth, j, coarse):
+            mine = wp.vec3i(c[0] >> step, c[1] >> step, c[2] >> step)
+            if leaf_cell(flags, flag_offsets, depth, full_depth, j, coarse) and refined_cell(
+                flags, flag_offsets, depth, full_depth, j, mine
+            ):
+                order = (wp.uint64(15 - d) << wp.uint64(18)) | wp.uint64(depth_first_rank(c, d))
+                if face_axis(f) != 2:
+                    slab_end = wp.uint64((c[2] + 1) << (depth - d))
+                    order = order | (slab_end << wp.uint64(22))
+                flat = cell_offsets[j] + cell_flat(1 << j, coarse)
+                key = (
+                    (wp.uint64(flat) << wp.uint64(35)) | (wp.uint64(5 - f) << wp.uint64(32)) | order
                 )
-            out_faces[3 * (base[1] + first_face + tri) + s] = base[0] + vertex
+            return key
+    return key
+
+
+@wp.kernel
+def borrowed_faces(
+    first_depth: wp.int32,
+    depth: wp.int32,
+    full_depth: wp.int32,
+    iso: wp.float32,
+    fields: wp.array[wp.float32],
+    sources: wp.array[wp.int32],
+    node_offsets: wp.array[wp.int32],
+    flags: wp.array[wp.int32],
+    flag_offsets: wp.array[wp.int32],
+    cell_offsets: wp.array[wp.int32],
+    table: wp.array[wp.int32],
+    owners: wp.array[wp.int32],
+    edge_offsets: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    out_keys: wp.array[wp.uint64],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # One leaf face with segments lying on a coarser leaf's face (``borrowed_face_key``): counted
+    # into ``offsets`` while ``out_keys`` is empty, written at its scanned slot otherwise.
+    t = wp.int32(wp.tid())
+    flat = t // 6 + cell_offsets[first_depth]
+    f = t % 6
+    cell = unpack_cell(cell_offsets, first_depth, depth, flat)
+    d = cell[3]
+    c = wp.vec3i(cell[0], cell[1], cell[2])
+    key = wp.uint64(0)
+    if leaf_cell(flags, flag_offsets, depth, full_depth, d, c):
+        key = borrowed_face_key(flags, flag_offsets, cell_offsets, depth, full_depth, d, c, f)
+        if key != wp.uint64(0):
+            code = cell_case(fields, sources, node_offsets, iso, d, c)
+            if face_segments(table, owners, edge_offsets, code, d, c, f)[0] < 0:
+                key = wp.uint64(0)
+    if out_keys.shape[0] == 0:
+        offsets[t] = wp.where(key != wp.uint64(0), 1, 0)
+    elif key != wp.uint64(0):
+        slot = offsets[t] - 1
+        out_keys[slot] = key
+        out_faces[slot] = flat * 6 + f
+
+
+@wp.func
+def push_face(
+    segments: wp.vec4i,
+    flip: wp.int32,
+    count: wp.int32,
+    base: wp.int32,
+    out_segments: wp.array[wp.vec2i],
+) -> wp.int32:
+    # Append a face's segments, reversed when the cell's face is not oriented; return the count. A
+    # segment with an end on an edge holding no vertex (the upstream stops there) is skipped.
+    for s in range(2):
+        if segments[2 * s] >= 0 and segments[2 * s + 1] >= 0:
+            if out_segments.shape[0] > 0:
+                a = segments[2 * s + flip]
+                b = segments[2 * s + 1 - flip]
+                out_segments[base + count] = wp.vec2i(a, b)
+            count += 1
+    return count
+
+
+@wp.kernel
+def cell_segments(
+    first_depth: wp.int32,
+    depth: wp.int32,
+    full_depth: wp.int32,
+    iso: wp.float32,
+    fields: wp.array[wp.float32],
+    sources: wp.array[wp.int32],
+    node_offsets: wp.array[wp.int32],
+    flags: wp.array[wp.int32],
+    flag_offsets: wp.array[wp.int32],
+    cell_offsets: wp.array[wp.int32],
+    table: wp.array[wp.int32],
+    owners: wp.array[wp.int32],
+    edge_offsets: wp.array[wp.int32],
+    borrowed_keys: wp.array[wp.uint64],
+    borrowed: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    out_segments: wp.array[wp.vec2i],
+) -> None:
+    # A leaf's directed segments, face by face (``z0 y0 x0 x1 y1 z1``): its own face's marching
+    # squares, or the finer leaves' faces across it in their sorted order. Counted into ``offsets``
+    # while ``out_segments`` is empty, written after the scanned count otherwise.
+    t = wp.int32(wp.tid())
+    flat = t + cell_offsets[first_depth]
+    cell = unpack_cell(cell_offsets, first_depth, depth, flat)
+    d = cell[3]
+    c = wp.vec3i(cell[0], cell[1], cell[2])
+    count = wp.int32(0)
+    base = wp.int32(0)
+    if out_segments.shape[0] > 0:
+        base = wp.where(t > 0, offsets[t - 1], 0)
+    if leaf_cell(flags, flag_offsets, depth, full_depth, d, c):
+        code = cell_case(fields, sources, node_offsets, iso, d, c)
+        for side in range(6):
+            f = wp.int32(side)
+            flip = 1 - table[EXTRACTION_FACE_ORIENTED + f]
+            if refined_cell(flags, flag_offsets, depth, full_depth, d, face_across(c, f)):
+                prefix = (wp.uint64(flat) << wp.uint64(35)) | (wp.uint64(side) << wp.uint64(32))
+                r = binary_search_index_left(borrowed_keys, prefix)
+                while r < borrowed_keys.shape[0] and (borrowed_keys[r] >> wp.uint64(32)) == (
+                    prefix >> wp.uint64(32)
+                ):
+                    fine = unpack_cell(cell_offsets, first_depth, depth, borrowed[r] // 6)
+                    fc = wp.vec3i(fine[0], fine[1], fine[2])
+                    fine_code = cell_case(fields, sources, node_offsets, iso, fine[3], fc)
+                    segments = face_segments(
+                        table, owners, edge_offsets, fine_code, fine[3], fc, borrowed[r] % 6
+                    )
+                    count = push_face(segments, flip, count, base, out_segments)
+                    r += 1
+            else:
+                segments = face_segments(table, owners, edge_offsets, code, d, c, f)
+                count = push_face(segments, flip, count, base, out_segments)
+    if out_segments.shape[0] == 0:
+        offsets[t] = count
+
+
+@wp.kernel
+def cell_loops(
+    offsets: wp.array[wp.int32],
+    partners: wp.array[wp.int32],
+    segments: wp.array[wp.vec2i],
+    out_loops: wp.array[wp.int32],
+    out_sizes: wp.array[wp.int32],
+    out_counts: wp.array[wp.vec2i],
+) -> None:
+    # A leaf's segments walked into closed loops as the upstream walks them: start from the last
+    # segment, follow the first segment leaving the current vertex (swap-removing it), cross to a
+    # vertex's pair when no segment leaves it. Loop ``k``'s vertices land after the previous ones in
+    # the cell's ``2 n``-slot range of ``out_loops`` (``n`` its segments), its size in
+    # ``out_sizes``; ``out_counts`` gets the cell's triangles and largest loop.
+    t = wp.int32(wp.tid())
+    begin = wp.where(t > 0, offsets[t - 1], 0)
+    remaining = offsets[t] - begin
+    written = wp.int32(0)
+    loops = wp.int32(0)
+    triangles = wp.int32(0)
+    largest = wp.int32(0)
+    while remaining > 0:
+        last = segments[begin + remaining - 1]
+        remaining -= 1
+        start = last[0]
+        current = last[1]
+        size = wp.int32(0)
+        closed = wp.bool(True)
+        while current != start:
+            if size >= 2 * (offsets[t] - begin):
+                closed = False
+                break
+            out_loops[2 * begin + written + size] = current
+            size += 1
+            found = wp.int32(-1)
+            for j in range(remaining):
+                if found < 0 and segments[begin + j][0] == current:
+                    found = j
+            if found >= 0:
+                current = segments[begin + found][1]
+                segments[begin + found] = segments[begin + remaining - 1]
+                remaining -= 1
+            else:
+                current = partners[current]
+                if current < 0:
+                    closed = False
+                    break
+        if closed:
+            out_loops[2 * begin + written + size] = start
+            size += 1
+            out_sizes[begin + loops] = size
+            written += size
+            loops += 1
+            triangles += size - 2
+            largest = wp.max(largest, size)
+    out_counts[t] = wp.vec2i(triangles, wp.where(largest >= 5, largest * largest, 0))
+
+
+# PoissonRecon's ``SquareArea``, ``(|v1|^2 |v2|^2 - <v1, v2>^2) / 4``, operation by operation and
+# never fused: it cancels on thin triangles, which is why the minimal-area search clamps it at zero,
+# and its rounding decides the upstream's near-ties (an x86 build fuses none of it).
+_SQUARE_AREA = """
+const float x1 = b.c[0] - a.c[0], y1 = b.c[1] - a.c[1], z1 = b.c[2] - a.c[2];
+const float x2 = c.c[0] - a.c[0], y2 = c.c[1] - a.c[1], z2 = c.c[2] - a.c[2];
+#if defined(__CUDA_ARCH__)
+const float dot = __fadd_rn(__fadd_rn(__fmul_rn(x1, x2), __fmul_rn(y1, y2)), __fmul_rn(z1, z2));
+const float l1 = __fadd_rn(__fadd_rn(__fmul_rn(x1, x1), __fmul_rn(y1, y1)), __fmul_rn(z1, z1));
+const float l2 = __fadd_rn(__fadd_rn(__fmul_rn(x2, x2), __fmul_rn(y2, y2)), __fmul_rn(z2, z2));
+return __fdiv_rn(__fsub_rn(__fmul_rn(l1, l2), __fmul_rn(dot, dot)), 4.0f);
+#else
+float terms[9] = {x1 * x2, y1 * y2, z1 * z2, x1 * x1, y1 * y1, z1 * z1, x2 * x2, y2 * y2, z2 * z2};
+const float dot = (terms[0] + terms[1]) + terms[2];
+const float l1 = (terms[3] + terms[4]) + terms[5];
+const float l2 = (terms[6] + terms[7]) + terms[8];
+const float products[2] = {l1 * l2, dot * dot};
+return (products[0] - products[1]) / 4.0f;
+#endif
+"""
+
+
+@wp.func_native(_SQUARE_AREA)
+def square_area(a: wp.vec3, b: wp.vec3, c: wp.vec3) -> wp.float32: ...
+
+
+@wp.func
+def vertex_of(ranks: wp.array[wp.int32], owner: wp.int32) -> wp.int32:
+    # The output number of the vertex created on edge slot ``owner``.
+    return ranks[owner] - 1
+
+
+@wp.kernel
+def triangulate_loops(
+    offsets: wp.array[wp.int32],
+    counts: wp.array[wp.vec2i],
+    ranks: wp.array[wp.int32],
+    positions: wp.array[wp.vec3],
+    loops: wp.array[wp.int32],
+    sizes: wp.array[wp.int32],
+    scratch: wp.array[wp.float32],
+    choices: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # Each loop of a leaf triangulated as ``MinimalAreaTriangulation`` does, every triangle written
+    # reversed (the upstream winding): a triangle as is, a quad split by comparing the second
+    # triangle of each split (the upstream's ``area[i] =`` assigns rather than accumulates), a
+    # longer loop by the minimal-area interval search with the first best split kept.
+    t = wp.int32(wp.tid())
+    begin = wp.where(t > 0, offsets[t - 1], 0)
+    n_segments = offsets[t] - begin
+    face = wp.where(t > 0, counts[t - 1][0], 0)
+    work = wp.where(t > 0, counts[t - 1][1], 0)
+    written = wp.int32(0)
+    k = wp.int32(0)
+    while written < 2 * n_segments and k < n_segments and sizes[begin + k] > 0:
+        n = sizes[begin + k]
+        first = 2 * begin + written
+        if n == 3:
+            out_faces[3 * face] = vertex_of(ranks, loops[first + 2])
+            out_faces[3 * face + 1] = vertex_of(ranks, loops[first + 1])
+            out_faces[3 * face + 2] = vertex_of(ranks, loops[first])
+            face += 1
+        elif n == 4:
+            p0 = positions[vertex_of(ranks, loops[first])]
+            p1 = positions[vertex_of(ranks, loops[first + 1])]
+            p2 = positions[vertex_of(ranks, loops[first + 2])]
+            p3 = positions[vertex_of(ranks, loops[first + 3])]
+            if square_area(p2, p3, p0) > square_area(p3, p1, p2):
+                out_faces[3 * face] = vertex_of(ranks, loops[first + 3])
+                out_faces[3 * face + 1] = vertex_of(ranks, loops[first + 1])
+                out_faces[3 * face + 2] = vertex_of(ranks, loops[first])
+                out_faces[3 * face + 3] = vertex_of(ranks, loops[first + 2])
+                out_faces[3 * face + 4] = vertex_of(ranks, loops[first + 1])
+                out_faces[3 * face + 5] = vertex_of(ranks, loops[first + 3])
+            else:
+                out_faces[3 * face] = vertex_of(ranks, loops[first + 2])
+                out_faces[3 * face + 1] = vertex_of(ranks, loops[first + 1])
+                out_faces[3 * face + 2] = vertex_of(ranks, loops[first])
+                out_faces[3 * face + 3] = vertex_of(ranks, loops[first])
+                out_faces[3 * face + 4] = vertex_of(ranks, loops[first + 3])
+                out_faces[3 * face + 5] = vertex_of(ranks, loops[first + 2])
+            face += 2
+        elif n >= 5:
+            # Interval (i, j) of the loop's vertices 1..n (n standing for vertex 0) at
+            # ``work + (i - 1) n + j - 1``: its best area and split.
+            for span in range(2, n):
+                for i in range(1, n - span + 1):
+                    j = i + span
+                    best = wp.float32(3.402823e38)
+                    split = wp.int32(-1)
+                    for r in range(i + 1, j):
+                        area = square_area(
+                            positions[vertex_of(ranks, loops[first + i % n])],
+                            positions[vertex_of(ranks, loops[first + r % n])],
+                            positions[vertex_of(ranks, loops[first + j % n])],
+                        )
+                        total = wp.sqrt(wp.max(area, 0.0))
+                        if r - i >= 2:
+                            total += scratch[work + (i - 1) * n + r - 1]
+                        if j - r >= 2:
+                            total += scratch[work + (r - 1) * n + j - 1]
+                        if total < best:
+                            best = total
+                            split = r
+                    scratch[work + (i - 1) * n + j - 1] = best
+                    choices[work + (i - 1) * n + j - 1] = split
+            # Emit the chosen splits, outermost first, with an explicit stack in ``choices``'
+            # diagonal (unused by the search).
+            stack = wp.int32(0)
+            choices[work + stack * n + stack] = (1 << 16) | n
+            stack = wp.int32(1)
+            while stack > 0:
+                stack -= 1
+                packed = choices[work + stack * n + stack]
+                i = packed >> 16
+                j = packed & 0xFFFF
+                if j - i >= 2:
+                    r = choices[work + (i - 1) * n + j - 1]
+                    out_faces[3 * face] = vertex_of(ranks, loops[first + j % n])
+                    out_faces[3 * face + 1] = vertex_of(ranks, loops[first + r % n])
+                    out_faces[3 * face + 2] = vertex_of(ranks, loops[first + i % n])
+                    face += 1
+                    choices[work + stack * n + stack] = (i << 16) | r
+                    stack += 1
+                    choices[work + stack * n + stack] = (r << 16) | j
+                    stack += 1
+        written += n
+        k += 1
