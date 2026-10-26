@@ -52,7 +52,7 @@ from __future__ import annotations
 import math
 import warnings
 from collections.abc import Callable
-from typing import Literal, NamedTuple, cast, overload
+from typing import Any, Literal, NamedTuple, cast, overload
 
 import warp as wp
 import warp.optim.linear as wpl
@@ -2903,13 +2903,25 @@ def _region_topology(
         edges if edges is not None else od.edges.edges_unique(faces, n_vertices=n, validate=False)
     )
     m = int(unique_edges.shape[0])
+    capacity = n_free + 2 * m
+    # The region's tables in two allocations, the zeroed offsets and the rest, all of them
+    # dropped together: the incidence's offsets (unless a previous region's are given) with the
+    # pattern's, and the edge ranks and incident edges (when built here) with the pattern columns.
+    own_incidence = incidence is None
+    zeroed = _fields(
+        wp.int32, ((n + 1,) if own_incidence else ()) + (n_free + 1,), device, zeroed=True
+    )
+    tables = _fields(
+        wp.int32, ((2 * m, 2 * m) if own_incidence else ()) + (capacity,), device, zeroed=False
+    )
+    pattern_offsets, pattern_columns = zeroed[-1], tables[-1]
     if incidence is None:
         # A counting sort with no global sort in it -- degrees, a scan, a ranked fill -- and one
         # per-row sort, which puts each row in neighbour order (see ``kernels/smoothing``). The
         # offsets are scanned in place and the total, ``2 m`` less any self-loops, is never read.
-        incidence_offsets = _launch.zeros(n + 1, dtype=wp.int32, device=device)
+        incidence_offsets = zeroed[0]
         counts = odt.as_dense(incidence_offsets[1:])
-        ranks = odt.empty_2d((m, 2), wp.int32, device=device)
+        ranks = odt.as_array2d(tables[0].reshape((m, 2)), wp.int32)
         _launch.launch(
             kernel_smoothing.incident_edge_counts,
             dim=m,
@@ -2918,7 +2930,7 @@ def _region_topology(
             device=device,
         )
         _launch.array_scan(counts, counts, inclusive=True)
-        incident_edges = _launch.empty(2 * m, dtype=wp.int32, device=device)
+        incident_edges = tables[1]
         _launch.launch(
             kernel_smoothing.scatter_incident_edges,
             dim=m,
@@ -2934,7 +2946,6 @@ def _region_topology(
     # The free-free pattern, sized without a readback: a free row holds its diagonal and at most
     # its degree of neighbours, so ``n_free + 2 m`` bounds the whole. Every reader walks rows
     # through the offsets, so the unused tail is never touched.
-    pattern_offsets = _launch.zeros(n_free + 1, dtype=wp.int32, device=device)
     pattern_counts = odt.as_dense(pattern_offsets[1:])
     pattern_inputs = [incidence_offsets, incident_edges, unique_edges, free_mask, free_map]
     _launch.launch(
@@ -2952,8 +2963,6 @@ def _region_topology(
         device=device,
     )
     _launch.array_scan(pattern_counts, pattern_counts, inclusive=True)
-    capacity = n_free + 2 * m
-    pattern_columns = _launch.empty(capacity, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_smoothing.free_pattern_columns,
         dim=n,
@@ -2986,18 +2995,21 @@ def _solve_region_fixed_rim(
     n = vertices.size
     free_map, n_free = region.free_map, region.n_free
     weights, unit = _edge_weights(vertices, faces, "unit", region)
-    values = _launch.empty(region.pattern_capacity, dtype=wp.float64, device=device)
-    # One contiguous (3, n_free) right-hand side: its rows are contiguous 1-D views, so the
-    # assembly kernel writes them directly and the three columns solve in one batched CG. Every
-    # free row writes all three of its components.
-    rhs = _launch.empty((3, n_free), dtype=wp.float64, device=device)
+    # The system's values, then one contiguous (3, n_free) right-hand side and solution: their
+    # rows are contiguous 1-D views, so the assembly kernel writes them directly and the three
+    # columns solve in one batched CG. Every free row writes all three of its components. One
+    # allocation, written whole before it is read.
+    values, rhs_flat, sol_flat = _fields(
+        wp.float64, (region.pattern_capacity, 3 * n_free, 3 * n_free), device, zeroed=False
+    )
+    rhs = rhs_flat.reshape((3, n_free))
     # The initial guess, written by the assembly kernel: every free vertex's current position.
     # [`solve_spd_columns`][ordito.linalg.solve_spd_columns] starts from its ``solution``, and
     # seeding it is a **correctness** requirement before it is a warm start: a vertex no face refers
     # to contributes no row, so CG never writes its entry and it keeps whatever the seed held --
     # from zeros it would be silently moved to the origin. Seeded from the current positions it
     # stays put, the only defensible answer for an unknown the system does not constrain.
-    sol = _launch.empty((3, n_free), dtype=wp.float64, device=device)
+    sol = sol_flat.reshape((3, n_free))
     _launch.launch(
         kernel_smoothing.dirichlet_system_values,
         dim=n,
@@ -3059,9 +3071,34 @@ def _solve_region_smooth(
     # for a vertex with no row) and its right-hand side. M, its transpose and the product ``M^T M``
     # are never built as matrices of their own -- ``normal_equations_*`` assemble the product's CSR
     # directly from the rows, and ``M^T b`` with it.
-    row_sums = _launch.empty(n, dtype=wp.float64, device=device)
-    row_rhs = _launch.empty(n, dtype=wp.vec3d, device=device)
-    free_degrees = _launch.empty(n, dtype=wp.int32, device=device)
+    capacity = region.pattern_capacity
+    # The preconditioner's form (``_SMOOTH_REGION_MULTIGRID_FROM``): the polynomial takes the
+    # factor, its transpose and their ``float32`` copies; the V-cycle takes ``L_ff`` (into
+    # ``factor``) and ``D`` (into ``ratios``) alone.
+    laplacian_form = n_free >= _SMOOTH_REGION_MULTIGRID_FROM
+    polynomial_capacity = 0 if laplacian_form else capacity
+    # The assembly's buffers, dropped together, in one allocation per dtype and initial value.
+    # ``float64``: the rows' weight sums and right-hand sides, the ``(3, n_free)`` ``M^T b`` (one
+    # contiguous block, so the three columns batch; every free row writes all three components),
+    # the factor and its transpose, ``D`` and the ``(3, n_free)`` initial guess, seeded as
+    # ``_solve_region_fixed_rim``'s is and for the same reason; all written before they are read.
+    # ``int32``, zeroed: the free degrees (written whole) and the three per-row tables the scans
+    # and the anchoring count into.
+    row_sums, row_rhs_flat, atb_flat, factor, factor_t, ratios, sol_flat = _fields(
+        wp.float64,
+        (n, 3 * n, 3 * n_free, capacity, polynomial_capacity, n_free, 3 * n_free),
+        device,
+        zeroed=False,
+    )
+    row_rhs = row_rhs_flat.reshape((n, 3)).view(wp.vec3d)
+    atb = atb_flat.reshape((3, n_free))
+    sol = sol_flat.reshape((3, n_free))
+    factor_narrow, factor_t_narrow = _fields(
+        wp.float32, (polynomial_capacity, polynomial_capacity), device, zeroed=False
+    )
+    free_degrees, term_offsets, system_offsets, anchored = _fields(
+        wp.int32, (n, n_free + 1, n_free + 1, n_free), device, zeroed=True
+    )
     _launch.launch(
         kernel_smoothing.least_squares_rows,
         dim=n,
@@ -3069,25 +3106,7 @@ def _solve_region_smooth(
         outputs=[row_sums, row_rhs, free_degrees],
         device=device,
     )
-    capacity = region.pattern_capacity
-    term_offsets = _launch.zeros(n_free + 1, dtype=wp.int32, device=device)
     term_counts = odt.as_dense(term_offsets[1:])
-    # One contiguous (3, n_free) right-hand side, so the three columns batch; every free row
-    # writes all three components.
-    atb = _launch.empty((3, n_free), dtype=wp.float64, device=device)
-    # The preconditioner's form (``_SMOOTH_REGION_MULTIGRID_FROM``): the polynomial takes the
-    # factor, its transpose and their ``float32`` copies; the V-cycle takes ``L_ff`` (into
-    # ``factor``) and ``D`` (into ``ratios``) alone.
-    laplacian_form = n_free >= _SMOOTH_REGION_MULTIGRID_FROM
-    factor = _launch.empty(capacity, dtype=wp.float64, device=device)
-    factor_t = factor_narrow = factor_t_narrow = None
-    if not laplacian_form:
-        factor_t = _launch.empty(capacity, dtype=wp.float64, device=device)
-        factor_narrow = _launch.empty(capacity, dtype=wp.float32, device=device)
-        factor_t_narrow = _launch.empty(capacity, dtype=wp.float32, device=device)
-    ratios = _launch.empty(n_free, dtype=wp.float64, device=device)
-    # The initial guess, seeded as ``_solve_region_fixed_rim``'s is and for the same reason.
-    sol = _launch.empty((3, n_free), dtype=wp.float64, device=device)
     _launch.launch(
         kernel_smoothing.normal_equations_setup,
         dim=n,
@@ -3123,9 +3142,9 @@ def _solve_region_smooth(
     # The one readback of the assembly: how many terms the product gathers, which sizes the term
     # buffer and bounds the product's entry count, so its CSR is allocated without a second one.
     n_terms = max(int(read_scalar(term_offsets, n_free)), 1)
-    row_columns = _launch.empty(n_terms, dtype=wp.int32, device=device)
-    row_values = _launch.empty(n_terms, dtype=wp.float64, device=device)
-    system_offsets = _launch.zeros(n_free + 1, dtype=wp.int32, device=device)
+    # The gathered terms and the product's CSR, each pair one allocation.
+    row_columns, columns = _fields(wp.int32, (n_terms, n_terms), device, zeroed=False)
+    row_values, values = _fields(wp.float64, (n_terms, n_terms), device, zeroed=False)
     system_counts = odt.as_dense(system_offsets[1:])
     _launch.launch(
         kernel_smoothing.normal_equations_rows,
@@ -3143,7 +3162,6 @@ def _solve_region_smooth(
     labels = od.graph.connected_component_labels(
         _csr_matrix(n_free, region.pattern_offsets, region.pattern_columns, factor)
     )
-    anchored = _launch.zeros(n_free, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_smoothing.mark_anchored_components,
         dim=n,
@@ -3151,8 +3169,6 @@ def _solve_region_smooth(
         outputs=[anchored],
         device=device,
     )
-    columns = _launch.empty(n_terms, dtype=wp.int32, device=device)
-    values = _launch.empty(n_terms, dtype=wp.float64, device=device)
     _launch.launch(
         kernel_smoothing.normal_equations_values,
         dim=n,
@@ -3194,9 +3210,6 @@ def _solve_region_smooth(
             degree=_smooth_region_chebyshev_degree(n_free, unit),
         )
     else:
-        assert factor_t is not None
-        assert factor_narrow is not None
-        assert factor_t_narrow is not None
         preconditioner = twl.SquaredLaplacianPreconditioner.from_factors(
             _csr_matrix(n_free, *pattern, factor),
             _csr_matrix(n_free, *pattern, factor_t),
@@ -4273,3 +4286,27 @@ def _as_vec3d(vertices: wp.array[wp.vec3]) -> wp.array[wp.vec3d]:
 def _as_vec3(positions: wp.array[wp.vec3d]) -> wp.array[wp.vec3]:
     """Narrow a ``wp.vec3d`` array back to ``wp.vec3``: the seam where the float64 solves end."""
     return od.array.astype(positions, wp.vec3)
+
+
+def _fields(
+    dtype: type, sizes: tuple[int, ...], device: wp.DeviceLike, *, zeroed: bool
+) -> list[wp.array[Any]]:
+    """
+    One allocation of ``dtype`` cut into consecutive 1-D fields of ``sizes`` entries.
+
+    Zeroed whole when ``zeroed``, else uninitialized. For buffers a call drops together: a caller
+    holding any field holds the whole allocation.
+    """
+    total = sum(sizes)
+    buffer = (_launch.zeros if zeroed else _launch.empty)(total, dtype=dtype, device=device)
+    fields: list[wp.array[Any]] = []
+    start = 0
+    for size in sizes:
+        # Warp refuses a zero-length view at the buffer's end; an empty array holds nothing.
+        fields.append(
+            _launch.view(buffer, start, start + size)
+            if size > 0
+            else _launch.empty(0, dtype=dtype, device=device)
+        )
+        start += size
+    return fields
