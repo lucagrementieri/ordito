@@ -308,6 +308,11 @@ def make_solid(
                 vertices, faces = remover(vertices, faces)
                 version += int(counts() != before)
                 clean_after[name] = version
+        # The collapse runs on the degeneracy pass's output and keeps only faces passing the same
+        # test (its remap applies the predicate on the positions it keeps), so what it returns is
+        # also a mesh that pass leaves alone.
+        if clean_after["collapse"] == version:
+            clean_after["degenerate"] = version
         if clean_after["cut"] != version:
             uncut = faces
             vertices, faces = _cut_and_refill(vertices, faces, 1, inner_iter)
@@ -321,7 +326,14 @@ def make_solid(
         if keep_largest and clean_after["components"] != version:
             before = counts()
             vertices, faces = remove_small_components(vertices, faces, keep_largest=True)
-            version += int(counts() != before)
+            if counts() != before:
+                # A subset of the faces on the same positions: what the three stages above found
+                # nothing to do in still holds nothing for them (no degenerate face, none below the
+                # collapse's threshold, which a smaller box only lowers, no crossing pair).
+                for name in ("degenerate", "collapse", "cut"):
+                    if clean_after[name] == version:
+                        clean_after[name] = version + 1
+                version += 1
             clean_after["components"] = version
         if faces.size == n_faces_before:
             break
