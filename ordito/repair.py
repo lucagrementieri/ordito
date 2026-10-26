@@ -1713,9 +1713,10 @@ def fix_degeneracies(
 
     Notes
     -----
-    The collapses of one pass are a conflict-free independent set, chosen shortest edge first
-    within each neighbourhood, so they are applied together but never overlap; the sequence
-    differs from a serial shortest-edge-first queue, and so does the triangulation it ends on.
+    The collapses of one pass are a conflict-free independent set, each neighbourhood's winner
+    chosen by a hashed priority rather than by length, so they are applied together but never
+    overlap; the sequence differs from a serial shortest-edge-first queue, and so does the
+    triangulation it ends on.
     The region is fixed when the call starts and follows the surviving vertices, so the moves never
     spread past it. A degenerate triangle no move can fix (a cap on the boundary, a needle whose
     collapse would leave worse faces) is left in place.
@@ -2985,15 +2986,7 @@ def remove_folded_faces(
     _launch.launch(
         kernel_repair.mark_unfolded_faces,
         dim=n_faces,
-        inputs=[
-            vertices,
-            faces,
-            None,
-            mates,
-            wp.float32(math.cos(math.radians(angle))),
-            keep,
-            ranks,
-        ],
+        inputs=[vertices, faces, None, mates, wp.float32(math.radians(angle)), keep, ranks],
         device=device,
     )
     new_vertices, new_faces, _vertex_index, _ranks = _compact_marked_submesh(
@@ -3856,8 +3849,10 @@ def flip_t_vertices(
     threshold
         Aspect ratio above which a triangle counts as a T-vertex sliver, in the
         ``aspect_ratio`` sense of [`face_quality`][ordito.triangles.face_quality] (``1`` is
-        equilateral, unbounded above). MeshLab's ``meshing_remove_t_vertices`` threshold, whose
-        default of ``40`` is this one. Must be positive.
+        equilateral, unbounded above). MeshLab's ``meshing_remove_t_vertices`` has the same
+        default of ``40`` for a different ratio, the longest edge over the height onto it; on a
+        sliver ``aspect_ratio`` is about the square of that over 8, so ``40`` here is a ratio of
+        about 18 there and flags slivers MeshLab leaves alone. Must be positive.
     max_iter
         Maximum number of parallel flip passes. Each pass commits a conflict-free independent set of
         flips; MeshLab's ``repeat=True`` is the same idea serially.

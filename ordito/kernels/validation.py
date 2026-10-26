@@ -22,6 +22,9 @@ from ordito.kernels.triangles import (
 
 wp.set_module_options({"enable_backward": False})
 
+# ``face_defective``'s disabled fold gate: an angle in radians past pi, which no dihedral exceeds.
+FOLD_ANGLE_OFF = wp.float32(4.0)
+
 
 @wp.func
 def directed_edge(
@@ -859,13 +862,14 @@ def face_defective(
     f: wp.int32,
     min_quality: wp.float32,
     max_normal_cos: wp.float32,
-    max_fold_cos: wp.float32,
+    max_fold_angle: wp.float32,
 ) -> wp.bool:
     # Is face ``f`` bad: too thin, too far from its neighbourhood's consensus normal, or folded
     # back onto its own ring? Each criterion is disabled by passing a cosine of -2 / a quality of
-    # -1, which no real value can reach, so the three gates compose without a separate flag
-    # argument. The decision rule behind ``face_defective_mask`` and ``repair.remove_folded_faces``'
-    # marking pass (``repair.mark_unfolded_faces``).
+    # -1 / a fold angle of ``FOLD_ANGLE_OFF`` (radians, past pi), which no real value can reach, so
+    # the three gates compose without a separate flag argument. The decision rule behind
+    # ``face_defective_mask`` and ``repair.remove_folded_faces``' marking pass
+    # (``repair.mark_unfolded_faces``).
     #
     # The thinness is ``triangles.face_quality``'s ``radius_ratio`` formed from the corners in
     # registers, and the neighbourhood is gathered through the face's halfedge mates
@@ -877,7 +881,7 @@ def face_defective(
         v0, v1, v2 = face_vertices(vertices, faces, f)
         if triangle_radius_ratio(v0, v1, v2) < min_quality:
             return True
-    if max_normal_cos <= -2.0 and max_fold_cos <= -2.0:
+    if max_normal_cos <= -2.0 and max_fold_angle >= FOLD_ANGLE_OFF:
         return False
 
     normal, neighbor_sum, max_angle = neighbor_normals(vertices, faces, face_normals, mates, f)
@@ -889,11 +893,13 @@ def face_defective(
     if wp.length_sq(consensus) > 0.0 and agreement < max_normal_cos:
         return True
 
-    # Fold: some neighbour meets this face at nearly pi (an unsigned dihedral, so the gate is on its
-    # cosine) *and* this face is the one facing against its own neighbourhood. Both halves matter --
-    # a fold has two faces and only one of them is the mistake, so flagging both would delete a good
-    # triangle along with it.
-    return wp.cos(max_angle) < max_fold_cos and agreement < 0.0
+    # Fold: some neighbour meets this face at nearly pi *and* this face is the one facing against
+    # its own neighbourhood. Both halves matter -- a fold has two faces and only one of them is the
+    # mistake, so flagging both would delete a good triangle along with it. The gate is on the angle
+    # itself, strict, not on its cosine: the cosine is flat at pi, so in ``float32`` every threshold
+    # above ~179.98 degrees rounded to ``cos == -1`` and an exactly folded-back pair (``atan2``
+    # gives pi) was never flagged, where MeshLab's ``folded_faces_angle_threshold`` flags it.
+    return max_angle > max_fold_angle and agreement < 0.0
 
 
 @wp.kernel
@@ -904,11 +910,11 @@ def face_defective_mask(
     mates: wp.array[wp.int32],
     min_quality: wp.float32,
     max_normal_cos: wp.float32,
-    max_fold_cos: wp.float32,
+    max_fold_angle: wp.float32,
     out_bad: wp.array[wp.bool],
 ) -> None:
     # One thread per face does all of ``face_defective``.
     f = wp.int32(wp.tid())
     out_bad[f] = face_defective(
-        vertices, faces, face_normals, mates, f, min_quality, max_normal_cos, max_fold_cos
+        vertices, faces, face_normals, mates, f, min_quality, max_normal_cos, max_fold_angle
     )

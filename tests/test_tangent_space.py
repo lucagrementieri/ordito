@@ -41,17 +41,26 @@ def test_vertex_tangent_frames_match_potpourri3d(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class B (gauge fix): only the normal is comparable directly; the tangents share a rotation.
+    Class B (gauge fix): geometry-central's ``basis_x`` predicted from ordito's frame per vertex.
 
-    Both libraries pick ``basis_x`` by their own convention, so the comparison is that the two
-    frames differ by a rotation *about the shared normal* -- one angle for the whole frame,
-    checked by reconstructing each side's ``basis_y`` from the other's. Comparing ``basis_x``
-    elementwise is ruled out: geometry-central's reference is ``vertex.halfedge()``, which its
-    construction leaves on the highest-index face's outgoing halfedge for most interior vertices
-    but not all, and on no edge direction at all for about a tenth of ``sphere_irregular``'s
-    vertices (measured; no rule ordito could adopt reproduced it). Normals and the rotation agree
-    to 1.7e-07 and 1.3e-07 (measured on both fixtures), so every assert is at ``1e-5``; the
-    cross-library ones were ``1e-4``.
+    Both libraries pick ``basis_x`` by their own convention, so the frames are first checked to
+    differ by a rotation *about the shared normal* (one angle per vertex, ``basis_y`` following),
+    then that angle is predicted. geometry-central's ``basis_x`` is not an edge direction: it is
+    fitted to the whole fan, ``arg sum_k proj(e_k) exp(-i theta_k)`` with ``theta_k`` the normalized
+    corner angles measured from its reference halfedge ``vertex.halfedge()`` (a boundary vertex
+    adding its closing rim edge at half a turn), so it lies on an edge only where the fan is flat
+    -- 87 of ``sphere_irregular``'s 500 vertices and 1 044 of ``saddle_graded``'s 1 156 within
+    1e-6, which is why "the highest-index face's halfedge" once looked like a rule with a tenth of
+    exceptions. The reference halfedge itself has a rule without exceptions (measured on both
+    fixtures, every vertex): the outgoing halfedge of the vertex's highest-index face at an
+    interior vertex (the last face written wins), the outgoing boundary halfedge at a rim vertex.
+    ``_geometry_central_basis_x`` rebuilds the vector from those two rules and ordito's own
+    ``halfedge_tangent_angles``, and it matches potpourri3d's to 4.8e-7 (componentwise).
+
+    Normals and the rotation agree to 1.7e-07 and 1.3e-07 (measured on both fixtures), so every
+    assert is at ``1e-5``. Mutation probe: taking the reference halfedge from the *lowest*-index
+    face instead moves the predicted ``basis_x`` of every interior vertex past 1e-3 (500 of 500 and
+    1 024 of 1 156).
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     basis_x_wp, basis_y_wp, normal_wp = od.tangent_space.vertex_tangent_frames(
@@ -80,6 +89,54 @@ def test_vertex_tangent_frames_match_potpourri3d(
     # in the same orientation rather than mirrored.
     assert np.allclose((basis_y * basis_x_pp).sum(axis=1), -sine, rtol=1e-5, atol=1e-5)
     assert np.allclose((basis_y * basis_y_pp).sum(axis=1), cosine, rtol=1e-5, atol=1e-5)
+
+    # The rotation itself: geometry-central's basis_x, predicted without consulting it.
+    theta_wp = od.tangent_space.halfedge_tangent_angles(mesh_wp.points, mesh_wp.indices)
+    predicted = _geometry_central_basis_x(
+        np.asarray(mesh_tm.vertices, dtype=np.float64),
+        np.asarray(mesh_tm.faces, dtype=np.int64),
+        basis_x.astype(np.float64),
+        basis_y.astype(np.float64),
+        theta_wp.numpy().astype(np.float64),
+    )
+    assert np.allclose(predicted, basis_x_pp, rtol=1e-5, atol=1e-5)
+
+
+def _geometry_central_basis_x(
+    vertices_np: np.ndarray,
+    faces_np: np.ndarray,
+    basis_x: np.ndarray,
+    basis_y: np.ndarray,
+    theta: np.ndarray,
+) -> np.ndarray:
+    # geometry-central's vertex ``basis_x`` from ordito's frame and halfedge tangent angles. The fit
+    # ``arg sum_k proj(e_k) exp(-i theta_k)`` is taken in ordito's frame with ordito's angles, which
+    # gives geometry-central's direction less its reference halfedge's angle; adding that angle back
+    # is the whole difference between the two conventions.
+    n_vertices = vertices_np.shape[0]
+    origin = faces_np.reshape(-1)
+    target = np.roll(faces_np, -1, axis=1).reshape(-1)
+    edge = vertices_np[target] - vertices_np[origin]
+    projected = (edge * basis_x[origin]).sum(axis=1) + 1j * (edge * basis_y[origin]).sum(axis=1)
+    anchor = np.zeros(n_vertices, dtype=np.complex128)
+    np.add.at(anchor, origin, projected * np.exp(-1j * theta))
+    boundary = ~np.isin(origin * n_vertices + target, target * n_vertices + origin)
+    # A boundary halfedge a -> b: at b the fan's closing edge points to a, at half a turn.
+    at = target[boundary]
+    closing = vertices_np[origin[boundary]] - vertices_np[at]
+    np.add.at(
+        anchor,
+        at,
+        -((closing * basis_x[at]).sum(axis=1) + 1j * (closing * basis_y[at]).sum(axis=1)),
+    )
+
+    # The reference halfedge: the highest-index face's outgoing one, unless the vertex has an
+    # outgoing boundary halfedge. Halfedges ascend by face, so the largest is the highest face's.
+    reference = np.zeros(n_vertices, dtype=np.int64)
+    np.maximum.at(reference, origin, np.arange(origin.size))
+    reference[origin[boundary]] = np.flatnonzero(boundary)
+    angle = np.angle(anchor) + theta[reference]
+    return np.cos(angle)[:, None] * basis_x + np.sin(angle)[:, None] * basis_y
 
 
 def test_vertex_tangent_frames_isolated_vertex(device: str) -> None:
