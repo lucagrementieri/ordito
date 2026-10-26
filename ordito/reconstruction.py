@@ -1390,10 +1390,8 @@ def _octree_extract(
             outputs=[owners, partners, created],
             device=device,
         )
-    # The vertices' numbers: each word's set bits, scanned (``kernel_array.bit_rank``).
-    ranks = _launch.empty(created.size, dtype=wp.int32, device=device)
-    _launch.map(kernel_array.popcount32, created, out=ranks)
-    _launch.array_scan(ranks, ranks, inclusive=True)
+    # The vertices' numbers: the created edges' ranks.
+    ranks = _bit_ranks(created)
     # One read sizes the vertices.
     n_vertices = int(read_scalar(ranks))
     positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
@@ -1419,15 +1417,40 @@ def _octree_extract(
             device=device,
         )
 
-    n_faces = 6 * (cell_offsets_host[depth + 1] - cell_offsets_host[first])
+    # The leaves that can have segments, in cell order: the per-cell passes below run over these
+    # alone, and every count and slot they scan follows the same order.
+    n_cells = cell_offsets_host[depth + 1] - cell_offsets_host[first]
     common = [first, depth, full_depth, iso32, fields, sources, node_offsets, *activity]
+    band_bits = _launch.zeros((n_cells + 31) // 32, dtype=wp.uint32, device=device)
+    _launch.launch(
+        kernel_octree.extraction_band,
+        dim=n_cells,
+        inputs=[*common, cell_offsets],
+        outputs=[band_bits],
+        device=device,
+    )
+    band_ranks = _bit_ranks(band_bits)
+    # One read sizes the band.
+    n_band = int(read_scalar(band_ranks))
+    if n_band == 0:
+        return positions, _launch.empty(0, dtype=wp.int32, device=device)
+    band = _launch.empty(n_band, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_octree.band_cells,
+        dim=band_bits.size,
+        inputs=[band_bits, band_ranks],
+        outputs=[band],
+        device=device,
+    )
+
+    n_faces = 6 * n_band
     face_args = [*common, cell_offsets, table, owners, edge_offsets]
     face_offsets = _launch.empty(n_faces, dtype=wp.int32, device=device)
     # The counting pass: no key buffer (a null array reads as empty in the kernel).
     _launch.launch(
         kernel_octree.borrowed_faces,
         dim=n_faces,
-        inputs=[*face_args, face_offsets],
+        inputs=[*face_args, band, face_offsets],
         outputs=[None, None],
         device=device,
     )
@@ -1440,18 +1463,17 @@ def _octree_extract(
         _launch.launch(
             kernel_octree.borrowed_faces,
             dim=n_faces,
-            inputs=[*face_args, face_offsets],
+            inputs=[*face_args, band, face_offsets],
             outputs=[keys, borrowed],
             device=device,
         )
         _launch.radix_sort_pairs(keys, borrowed, n_borrowed)
     keys = _launch.view(keys, 0, n_borrowed)
 
-    n_cells = cell_offsets_host[depth + 1] - cell_offsets_host[first]
-    segment_offsets = _launch.empty(n_cells, dtype=wp.int32, device=device)
-    segment_args = [*face_args, keys, borrowed, segment_offsets]
+    segment_offsets = _launch.empty(n_band, dtype=wp.int32, device=device)
+    segment_args = [*face_args, keys, borrowed, band, segment_offsets]
     _launch.launch(
-        kernel_octree.cell_segments, dim=n_cells, inputs=segment_args, outputs=[None], device=device
+        kernel_octree.cell_segments, dim=n_band, inputs=segment_args, outputs=[None], device=device
     )
     _launch.array_scan(segment_offsets, segment_offsets, inclusive=True)
     # One read sizes the segments.
@@ -1459,17 +1481,17 @@ def _octree_extract(
     segments = _launch.empty(max(n_segments, 1), dtype=wp.vec2i, device=device)
     _launch.launch(
         kernel_octree.cell_segments,
-        dim=n_cells,
+        dim=n_band,
         inputs=segment_args,
         outputs=[segments],
         device=device,
     )
     loops = _launch.empty(max(2 * n_segments, 1), dtype=wp.int32, device=device)
     sizes = _launch.zeros(max(n_segments, 1), dtype=wp.int32, device=device)
-    loop_counts = _launch.empty(n_cells, dtype=wp.vec2i, device=device)
+    loop_counts = _launch.empty(n_band, dtype=wp.vec2i, device=device)
     _launch.launch(
         kernel_octree.cell_loops,
-        dim=n_cells,
+        dim=n_band,
         inputs=[segment_offsets, partners, segments],
         outputs=[loops, sizes, loop_counts],
         device=device,
@@ -1483,7 +1505,7 @@ def _octree_extract(
     faces = _launch.empty(3 * n_triangles, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_octree.triangulate_loops,
-        dim=n_cells,
+        dim=n_band,
         inputs=[
             segment_offsets,
             loop_counts,
@@ -1499,6 +1521,14 @@ def _octree_extract(
         device=device,
     )
     return positions, faces
+
+
+def _bit_ranks(words: wp.array[wp.uint32]) -> wp.array[wp.int32]:
+    """Return the inclusive scan of a bitmask's word bit counts, for ``kernel_array.bit_rank``."""
+    ranks = _launch.empty(words.size, dtype=wp.int32, device=words.device)
+    _launch.map(kernel_array.popcount32, words, out=ranks)
+    _launch.array_scan(ranks, ranks, inclusive=True)
+    return ranks
 
 
 @functools.cache

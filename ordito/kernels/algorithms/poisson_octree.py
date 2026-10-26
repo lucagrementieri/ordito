@@ -1730,6 +1730,56 @@ def depth_first_rank(c: wp.vec3i, d: wp.int32) -> wp.int32:
     return rank
 
 
+@wp.kernel
+def extraction_band(
+    first_depth: wp.int32,
+    depth: wp.int32,
+    full_depth: wp.int32,
+    iso: wp.float32,
+    fields: wp.array[wp.float32],
+    sources: wp.array[wp.int8],
+    node_offsets: wp.array[wp.int32],
+    flags: wp.array[wp.int32],
+    flag_offsets: wp.array[wp.int32],
+    cell_offsets: wp.array[wp.int32],
+    out_band: wp.array[wp.uint32],
+) -> None:
+    # Bit ``t`` set for the leaves that can have segments (``cell_segments``' test): corners
+    # straddling the iso-value, or a refined cell across a face, whose finer faces it takes over.
+    # A borrowed face is a straddling leaf's, so it is in the band too. The extraction's per-cell
+    # passes run over these alone, in the same order.
+    t = wp.int32(wp.tid())
+    flat = t + cell_offsets[first_depth]
+    cell = unpack_cell(cell_offsets, first_depth, depth, flat)
+    d = cell[3]
+    c = wp.vec3i(cell[0], cell[1], cell[2])
+    if not leaf_cell(flags, flag_offsets, depth, full_depth, d, c):
+        return
+    code = cell_case(fields, sources, node_offsets, iso, d, c)
+    keep = code != 0 and code != 255
+    for f in range(6):
+        if not keep and refined_cell(flags, flag_offsets, depth, full_depth, d, face_across(c, f)):
+            keep = True
+    if keep:
+        wp.atomic_or(out_band, t >> 5, wp.uint32(1) << wp.uint32(t & 31))
+
+
+@wp.kernel
+def band_cells(
+    band: wp.array[wp.uint32], ranks: wp.array[wp.int32], out_cells: wp.array[wp.int32]
+) -> None:
+    # The band's cells (``extraction_band``) in ascending order: each word's set bits at their rank.
+    w = wp.int32(wp.tid())
+    word = band[w]
+    if word == wp.uint32(0):
+        return
+    rank = bit_rank(band, ranks, 32 * w)
+    for b in range(32):
+        if (word >> wp.uint32(b)) & wp.uint32(1) != wp.uint32(0):
+            out_cells[rank] = 32 * w + b
+            rank += 1
+
+
 @wp.func
 def borrowed_face_key(
     flags: wp.array[wp.int32],
@@ -1784,14 +1834,15 @@ def borrowed_faces(
     table: wp.array[wp.int32],
     owners: wp.array[wp.int32],
     edge_offsets: wp.array[wp.int32],
+    band: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     out_keys: wp.array[wp.uint64],
     out_faces: wp.array[wp.int32],
 ) -> None:
-    # One leaf face with segments lying on a coarser leaf's face (``borrowed_face_key``): counted
-    # into ``offsets`` while ``out_keys`` is empty, written at its scanned slot otherwise.
+    # One band leaf's face with segments lying on a coarser leaf's face (``borrowed_face_key``):
+    # counted into ``offsets`` while ``out_keys`` is empty, written at its scanned slot otherwise.
     t = wp.int32(wp.tid())
-    flat = t // 6 + cell_offsets[first_depth]
+    flat = band[t // 6] + cell_offsets[first_depth]
     f = t % 6
     cell = unpack_cell(cell_offsets, first_depth, depth, flat)
     d = cell[3]
@@ -1848,14 +1899,15 @@ def cell_segments(
     edge_offsets: wp.array[wp.int32],
     borrowed_keys: wp.array[wp.uint64],
     borrowed: wp.array[wp.int32],
+    band: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     out_segments: wp.array[wp.vec2i],
 ) -> None:
-    # A leaf's directed segments, face by face (``z0 y0 x0 x1 y1 z1``): its own face's marching
-    # squares, or the finer leaves' faces across it in their sorted order. Counted into ``offsets``
-    # while ``out_segments`` is empty, written after the scanned count otherwise.
+    # A band leaf's directed segments, face by face (``z0 y0 x0 x1 y1 z1``): its own face's
+    # marching squares, or the finer leaves' faces across it in their sorted order. Counted into
+    # ``offsets`` while ``out_segments`` is empty, written after the scanned count otherwise.
     t = wp.int32(wp.tid())
-    flat = t + cell_offsets[first_depth]
+    flat = band[t] + cell_offsets[first_depth]
     cell = unpack_cell(cell_offsets, first_depth, depth, flat)
     d = cell[3]
     c = wp.vec3i(cell[0], cell[1], cell[2])
