@@ -2,6 +2,7 @@ import warp as wp
 
 from ordito.constants import TOLERANCE_MERGE_CONSTANT, TOLERANCE_ZERO_CONSTANT
 from ordito.kernels.adjacency import unshared_projection, unshared_vertex
+from ordito.kernels.algorithms.bfs import ball_row_bounds
 from ordito.kernels.linalg import solve_normal_equations
 from ordito.kernels.neighbors import in_ball
 from ordito.kernels.predicates import angle_defect, segment_aabb, unit_tangent, vector_angle
@@ -175,6 +176,8 @@ def fit_principal_curvature(
     vertex_normals: wp.array[wp.vec3],
     neighbor_indices: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
+    row_stride: wp.int32,
+    chunk_start: wp.int32,
     reference_neighbors: wp.array[wp.int32],
     frame_independent: wp.bool,
     out_pd1: wp.array[wp.vec3],
@@ -187,10 +190,12 @@ def fit_principal_curvature(
 
     Extract principal curvature directions and magnitudes. Matches igl::principal_curvature.
     """
-    i = wp.int32(wp.tid())
+    # The neighborhoods arrive in either of ``ball_row_bounds``' layouts; thread ``t`` fits vertex
+    # ``chunk_start + t``.
+    t = wp.int32(wp.tid())
+    i = chunk_start + t
 
-    start = offsets[i]
-    end = offsets[i + 1]  # ``geodesic_ball`` returns the terminated (n + 1) CSR row bounds
+    start, end = ball_row_bounds(offsets, row_stride, i, t)
     n_nbr = end - start
 
     # The ball includes the centre vertex itself, which the fit loop below skips, so a determined

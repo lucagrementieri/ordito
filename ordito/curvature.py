@@ -148,9 +148,11 @@ def principal_curvature(
 
     # Collect vertex neighborhoods as geodesic balls (libigl getSphere) on device. A Euclidean ball
     # would pull in vertices across surface folds and corrupt the quadric fit; see
-    # od.neighbors.geodesic_ball.
-    neighbor_indices, offsets, reference_neighbors = od.neighbors.geodesic_ball(
-        vertices, faces, scaled_radius
+    # od.neighbors.geodesic_ball. The fit reads each chunk of the walk's queue rows as the walk
+    # leaves them -- the same rows ``geodesic_ball`` packs, entry for entry -- so no neighbor list
+    # over the whole mesh is held. ``min_count`` is ``geodesic_ball``'s default of 6.
+    walk = od.neighbors._GeodesicBallWalk(  # pyright: ignore[reportPrivateUsage]
+        vertices, faces, scaled_radius, 6
     )
 
     # Fit quadric and extract principal curvature per vertex. ``wp.empty``: every exit of the
@@ -160,23 +162,27 @@ def principal_curvature(
     pv1 = _launch.empty(n_vertices, dtype=wp.float32, device=device)
     pv2 = _launch.empty(n_vertices, dtype=wp.float32, device=device)
 
-    _launch.launch(
-        kernel_curvature.fit_principal_curvature,
-        dim=n_vertices,
-        inputs=[
-            vertices,
-            vertex_normals,
-            neighbor_indices,
-            offsets,
-            reference_neighbors,
-            frame_independent,
-            pd1,
-            pd2,
-            pv1,
-            pv2,
-        ],
-        device=device,
-    )
+    for start, m in walk.chunks():
+        _launch.launch(
+            kernel_curvature.fit_principal_curvature,
+            dim=m,
+            inputs=[
+                vertices,
+                vertex_normals,
+                walk.rows_flat,
+                walk.counts,
+                walk.row_stride,
+                wp.int32(start),
+                walk.reference,
+                frame_independent,
+                pd1,
+                pd2,
+                pv1,
+                pv2,
+            ],
+            device=device,
+        )
+    walk.warn_clipped()
 
     return pd1, pd2, pv1, pv2
 

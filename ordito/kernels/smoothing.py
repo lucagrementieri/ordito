@@ -2,6 +2,7 @@ from typing import Any
 
 import warp as wp
 
+from ordito.kernels.algorithms.bfs import ball_row_bounds
 from ordito.kernels.array import (
     OverloadTable,
     greater,
@@ -2070,6 +2071,8 @@ def relax_approx_step(
     positions: wp.array[wp.vec3],
     neighbor_indices: wp.array[wp.int32],
     neighbor_offsets: wp.array[wp.int32],
+    row_stride: wp.int32,
+    chunk_start: wp.int32,
     region: wp.array[wp.bool],
     initial: wp.array[wp.vec3],
     force: wp.float32,
@@ -2082,10 +2085,14 @@ def relax_approx_step(
     # not 3, even though a plane alone needs only that many -- so an under-populated neighbourhood
     # is left alone rather than fitted to whatever it has; ``smoothing.relax_approx``'s docstring
     # states this uniform floor as the intended behavior.
-    vertex = wp.int32(wp.tid())
+    #
+    # The neighbourhoods arrive in either of ``ball_row_bounds``' layouts: the packed list over
+    # every vertex at ``chunk_start = 0``, or one chunk of the walk's queue rows, thread ``t``
+    # fitting vertex ``chunk_start + t``.
+    t = wp.int32(wp.tid())
+    vertex = chunk_start + t
     current = positions[vertex]
-    begin = neighbor_offsets[vertex]
-    end = neighbor_offsets[vertex + 1]  # terminated (n + 1) CSR row bounds from ``geodesic_ball``
+    begin, end = ball_row_bounds(neighbor_offsets, row_stride, vertex, t)
     if not in_region(region, vertex) or end - begin < 6:
         out_positions[vertex] = current
         return

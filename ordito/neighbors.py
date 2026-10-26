@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Literal, cast, overload
 
 import numpy as np
@@ -93,6 +93,8 @@ _KNN_START_SAMPLE_MIN_QUERIES = 1_000_000
 # latency-bound, so the chunk is also the launch's thread count, and it is as large as it can be
 # before the pools stop fitting in the device's L2 cache.
 _GEODESIC_BALL_CHUNK = 1 << 16
+# Entries the packed ``geodesic_ball`` list can hold: its offsets are ``int32``.
+_PACKED_ENTRIES_MAX = 2**31 - 1
 
 _GRID_BINS_MIN = 128
 _GRID_BINS_MAX = 384
@@ -2096,6 +2098,9 @@ def geodesic_ball(
 
     Raises
     ------
+    ValueError
+        If the neighborhoods hold more than ``2**31 - 1`` entries in total, past the range of the
+        ``int32`` offsets.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -2126,29 +2131,9 @@ def geodesic_ball(
             _launch.empty(0, dtype=wp.int32, device=device),
         )
 
-    # ``sort_rows=True`` is load-bearing, not tidiness. The ball is a geometric predicate and is
-    # order-independent, but the traversal below emits its queue in *visit* order, so a permuted
-    # adjacency row permutes the returned row -- and ``curvature.principal_curvature``, which
-    # consumes this, accumulates its quadric's normal equations along that row, so a permutation
-    # moves its answer at the near-flat vertices where the fit is ill conditioned. Sorted rows make
-    # this builder's output identical to ``graph.edges_to_csr``'s, for a fraction of its cost; a
-    # mesh vertex's valence is far below the degree where the per-row sort stops paying.
-    adj_columns, adj_offsets, reference_neighbors = _sorted_vertex_adjacency(faces, n)
-
-    # Per-source scratch lives in shared global-memory pools sized for one chunk of sources
-    # (queue rows, an open-addressing visited row pre-filled with -1 per launch, and a small
-    # nearest-fallback pool) instead of kilobytes of per-thread local arrays.
+    # Per-source scratch is sized for one chunk of sources (``_GeodesicBallWalk``); this packs each
+    # chunk's queue rows into its own flat buffer before the next chunk reuses them.
     chunk = min(n, _GEODESIC_BALL_CHUNK)
-    queue_pool = _launch.empty(
-        (chunk, kernel_bfs.PER_SOURCE_MAX_NEIGHBORS), dtype=wp.int32, device=device
-    )
-    visited_pool = _launch.full(
-        (chunk, kernel_bfs.VISITED_HASH_CAPACITY), -1, dtype=wp.int32, device=device
-    )
-    ext_dist_pool = odt.empty_2d((chunk, kernel_bfs.EXTRAS_CAPACITY), wp.float32, device=device)
-    ext_idx_pool = odt.empty_2d((chunk, kernel_bfs.EXTRAS_CAPACITY), wp.int32, device=device)
-
-    counts = _launch.empty(n, dtype=wp.int32, device=device)
     # CSR row bounds in the length-``n + 1`` form. The leading zero from ``wp.zeros`` is the first
     # exclusive offset and the inclusive scan fills the rest, so ``offsets[n]`` holds the total --
     # ``array.counts_to_offsets``' convention, open-coded here because that helper reads the total
@@ -2169,32 +2154,14 @@ def geodesic_ball(
         total_at = 0
         offsets = _launch.zeros(n + 1, dtype=wp.int32, device=device)
         local_offsets = _launch.empty(chunk, dtype=wp.int32, device=device)
-    overflow = odt.as_dense(totals[total_at + 1 : total_at + 2])
+    walk = _GeodesicBallWalk(
+        vertices, faces, radius, min_count, odt.as_dense(totals[total_at + 1 : total_at + 2])
+    )
+    counts = walk.counts
     chunk_flats: list[wp.array[wp.int32]] = []
     n_overflow = 0
-    for start in range(0, n, chunk):
-        m = min(chunk, n - start)
-        if start > 0:
-            _launch.fill_(visited_pool, -1)
-        _launch.launch(
-            kernel_neighbors.query_geodesic_ball_collect,
-            dim=m,
-            inputs=[
-                vertices,
-                adj_offsets,
-                adj_columns,
-                wp.float32(radius),
-                wp.int32(min_count),
-                wp.int32(start),
-                queue_pool,
-                visited_pool,
-                ext_dist_pool,
-                ext_idx_pool,
-                counts,
-                overflow,
-            ],
-            device=device,
-        )
+    n_total = 0
+    for start, m in walk.chunks():
         # Gather this chunk's queue rows before the next chunk reuses the pools: chunk-local
         # exclusive scan of counts, one 4-byte readback for the chunk total, then a coalesced
         # 2D copy into the chunk's flat buffer.
@@ -2211,32 +2178,162 @@ def geodesic_ball(
             chunk_total, n_overflow = read_values(totals, total_at, 2)
         else:
             chunk_total = int(read_scalar(totals, 0))
+        # The offsets are ``int32``: a list past their range would wrap them silently, so it is
+        # refused here, on the totals already read back, before the next chunk is walked.
+        n_total += chunk_total
+        if n_total > _PACKED_ENTRIES_MAX:
+            raise ValueError(
+                f"geodesic_ball: the packed neighbor list passes {_PACKED_ENTRIES_MAX} entries "
+                f"after {start + m} of {n} vertices; radius {radius} is too large for int32 "
+                "offsets on this mesh"
+            )
         flat_chunk = _launch.empty(chunk_total, dtype=wp.int32, device=device)
         if chunk_total > 0:
             _launch.launch(
                 kernel_neighbors.gather_queue_rows,
                 dim=(m, kernel_bfs.PER_SOURCE_MAX_NEIGHBORS),
-                inputs=[queue_pool, counts, local_offsets, wp.int32(start), flat_chunk],
+                inputs=[walk.rows, counts, local_offsets, wp.int32(start), flat_chunk],
                 device=device,
             )
         chunk_flats.append(flat_chunk)
 
-    if n_overflow > 0:
-        warnings.warn(
-            f"geodesic_ball: {n_overflow} of {n} neighborhoods exceeded the fixed capacity of "
-            f"{kernel_bfs.PER_SOURCE_MAX_NEIGHBORS}; their surplus neighbors were dropped.",
-            stacklevel=2,
-        )
+    walk.warn_clipped(n_overflow)
 
     if single_chunk:
         # Single chunk (n <= chunk): the chunk buffer already is the global CSR neighbor buffer.
-        return chunk_flats[0], offsets, reference_neighbors
+        return chunk_flats[0], offsets, walk.reference
 
     _launch.array_scan(counts, out_array=offsets[1:], inclusive=True)
 
     # Chunk order equals ascending source order, so concatenation lines up with the global scan.
     # Same per-segment ``wp.copy`` loop either way -- that is the packing floor -- one call for it.
-    return od.array.concatenate(chunk_flats), offsets, reference_neighbors
+    return od.array.concatenate(chunk_flats), offsets, walk.reference
+
+
+class _GeodesicBallWalk:
+    """
+    The chunked walk behind ``geodesic_ball``: each chunk's balls as rows of a reused queue pool.
+
+    ``chunks()`` walks ``chunk`` sources at a time and yields ``(start, m)`` once sources
+    ``start .. start + m`` hold their balls in ``rows[t, : counts[start + t]]``: the queue prefix in
+    visit order, which is ``geodesic_ball``'s packed row entry for entry. The next chunk reuses the
+    pools, so a consumer launches on a chunk before resuming the iterator. A consumer that only
+    reduces each ball (a per-vertex fit) reads the rows in place and never holds more than one
+    chunk of neighbours, where the packed list is up to ``PER_SOURCE_MAX_NEIGHBORS`` entries a
+    vertex: on a scan of 14 M vertices at a radius of a few percent of its diagonal every ball
+    fills its row and the list is past both the device's memory and the ``int32`` offsets.
+    ``rows_flat`` is ``rows`` as one buffer, read with ``kernels/algorithms/bfs.ball_row_bounds`` at
+    stride ``row_stride`` with ``counts`` in place of the offsets.
+
+    The adjacency is built here, with ascending rows. ``sort_rows=True`` is load-bearing, not
+    tidiness. The ball is a geometric predicate and is order-independent, but the traversal emits
+    its queue in *visit* order, so a permuted adjacency row permutes the returned row -- and
+    ``curvature.principal_curvature`` accumulates its quadric's normal equations along that row, so
+    a permutation moves its answer at the near-flat vertices where the fit is ill conditioned.
+    Sorted rows make this builder's output identical to ``graph.edges_to_csr``'s, for a fraction of
+    its cost; a mesh vertex's valence is far below the degree where the per-row sort stops paying.
+
+    Per-source scratch lives in shared global-memory pools sized for one chunk of sources (queue
+    rows, an open-addressing visited row pre-filled with -1 per launch, and a small nearest-fallback
+    pool) instead of kilobytes of per-thread local arrays. Each walk adds the sources it clipped to
+    ``overflow`` (a fresh one-element counter when not given), which ``warn_clipped`` reports.
+    """
+
+    reference: wp.array[wp.int32]
+    counts: wp.array[wp.int32]
+    rows: odt.Array2dInt32
+    rows_flat: wp.array[wp.int32]
+    row_stride: wp.int32
+    chunk: int
+
+    def __init__(
+        self,
+        vertices: wp.array[wp.vec3],
+        faces: wp.array[wp.int32],
+        radius: float,
+        min_count: int,
+        overflow: wp.array[wp.int32] | None = None,
+    ) -> None:
+        device = vertices.device
+        n = vertices.size
+        self._vertices = vertices
+        self._radius = wp.float32(radius)
+        self._min_count = wp.int32(min_count)
+        self._n = n
+        self._columns, self._offsets, self.reference = _sorted_vertex_adjacency(faces, n)
+        # At least one row, so an empty mesh walks nothing without a zero-sized pool.
+        self.chunk = max(1, min(n, _GEODESIC_BALL_CHUNK))
+        stride = kernel_bfs.PER_SOURCE_MAX_NEIGHBORS
+        self.rows_flat = _launch.empty(self.chunk * stride, dtype=wp.int32, device=device)
+        self.rows = odt.as_array2d(self.rows_flat.reshape((self.chunk, stride)), wp.int32)
+        self.row_stride = wp.int32(stride)
+        self._visited_pool = _launch.full(
+            (self.chunk, kernel_bfs.VISITED_HASH_CAPACITY), -1, dtype=wp.int32, device=device
+        )
+        self._ext_dist_pool = odt.empty_2d(
+            (self.chunk, kernel_bfs.EXTRAS_CAPACITY), wp.float32, device=device
+        )
+        self._ext_idx_pool = odt.empty_2d(
+            (self.chunk, kernel_bfs.EXTRAS_CAPACITY), wp.int32, device=device
+        )
+        self.counts = _launch.empty(n, dtype=wp.int32, device=device)
+        self._overflow = (
+            _launch.zeros(1, dtype=wp.int32, device=device) if overflow is None else overflow
+        )
+        self._warned = False
+        self._visited_dirty = False
+
+    def chunks(self) -> Iterator[tuple[int, int]]:
+        """Walk the sources a chunk at a time, yielding ``(start, m)`` with each chunk's rows."""
+        for start in range(0, self._n, self.chunk):
+            m = min(self.chunk, self._n - start)
+            # The pool is allocated holding -1; every later chunk, a second walk's first included,
+            # clears what the previous chunk left.
+            if self._visited_dirty:
+                _launch.fill_(self._visited_pool, -1)
+            self._visited_dirty = True
+            _launch.launch(
+                kernel_neighbors.query_geodesic_ball_collect,
+                dim=m,
+                inputs=[
+                    self._vertices,
+                    self._offsets,
+                    self._columns,
+                    self._radius,
+                    self._min_count,
+                    wp.int32(start),
+                    self.rows,
+                    self._visited_pool,
+                    self._ext_dist_pool,
+                    self._ext_idx_pool,
+                    self.counts,
+                    self._overflow,
+                ],
+                device=self._vertices.device,
+            )
+            yield start, m
+
+    def warn_clipped(self, n_overflow: int | None = None) -> None:
+        """
+        Warn once about the balls the first full walk clipped at their row's capacity.
+
+        ``n_overflow`` is the counter when the caller already read it back; otherwise it is read
+        here. Later calls do nothing, so a caller walking once per pass reports the first pass,
+        before the counter accumulates over the next.
+        """
+        if self._warned:
+            return
+        self._warned = True
+        if n_overflow is None:
+            # The one readback a consumer pays: whether to warn is a host decision.
+            n_overflow = int(read_scalar(self._overflow, 0))
+        if n_overflow > 0:
+            warnings.warn(
+                f"geodesic_ball: {n_overflow} of {self._n} neighborhoods exceeded the fixed "
+                f"capacity of {kernel_bfs.PER_SOURCE_MAX_NEIGHBORS}; their surplus neighbors were "
+                "dropped.",
+                stacklevel=3,
+            )
 
 
 def _sorted_vertex_adjacency(
