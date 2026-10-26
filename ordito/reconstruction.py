@@ -976,6 +976,8 @@ def _screened_poisson_octree(
         )
     area_sum, count_sum = read_values(weight_sums, 0, 2)
     alpha = point_weight * area_sum / count_sum
+    # The density is read only by the weights: released before the normal splat allocates.
+    del density_sums, density
 
     normal_sums = _launch.group_sums(cell_offsets_host[depth + 1], wp.vec3, 2 * n_samples, device)
     _launch.launch_group_sums(
@@ -1023,6 +1025,8 @@ def _screened_poisson_octree(
         system,
         screen_args,
     )
+    # The normal field is read only by the flags and the constraints: released before the solve.
+    del normal_sums, normal_field
     # Every screened cell's weight and corner hat values, formed once for every sweep that reads
     # them. A coarser cell with samples holds at least one, so its depth has at most
     # ``n_samples`` such cells.
@@ -1043,6 +1047,10 @@ def _screened_poisson_octree(
     prolongeds, fields = _octree_cascade(
         constraints, base, node_offsets_host, depth, full_depth, iterations, alpha, sweep_args
     )
+    # The solve's inputs are dead: released before the extraction allocates, which is where the
+    # call's memory would otherwise peak.
+    del sweep_args, screen_args, sample_args, constraints, slots, counts, position_sums
+    del screen, screen_index, screen_count
 
     res = 2**depth + 1
     iso_terms = area_terms
