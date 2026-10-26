@@ -682,7 +682,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.poisson_octree", "octree_clip_flags"): frozenset({"flags"}),
     ("algorithms.poisson_octree", "octree_dilate_flags"): frozenset({"flags"}),
     ("algorithms.poisson_octree", "octree_upsample_coarse_data"): frozenset({"accumulated"}),
-    ("algorithms.poisson_octree", "octree_gauss_seidel_wave"): frozenset({"field"}),
     # The extraction's per-depth tables, each depth's launch reading the finer depth's entries
     # (corner sources, edge owners) or adding to one buffer every depth shares (pairs, created
     # flags); counts written by a kernel's count pass and read back by its emit pass; a leaf's

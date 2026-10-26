@@ -1219,6 +1219,7 @@ def _octree_cascade(
     centroid0 = np.asarray(base[9:12], dtype=np.float64) / max(count0, 1.0)
     x0 = _octree_base_solve(b0, alpha * count0, centroid0)
     _launch.copy(level(fields, 0), _launch.array(x0.astype(np.float32), wp.float32, device=device))
+    serial = not wp.get_device(device).is_cuda
     for d in range(1, depth + 1):
         res = 2**d + 1
         field = level(fields, d)
@@ -1230,6 +1231,16 @@ def _octree_cascade(
             device=device,
         )
         b = level(constraints, d)
+        if serial:
+            # The CPU runs a launch's threads in order anyway: every wave in one launch.
+            _launch.launch(
+                kernel_octree.octree_gauss_seidel_depth,
+                dim=1,
+                inputs=[d, *system, iterations, b, *screen_args],
+                outputs=[field],
+                device=device,
+            )
+            continue
         half = (res + 1) // 2
         for wave in range(res + 2 * (iterations - 1)):
             first = max(0, (wave - res + 2) // 2)

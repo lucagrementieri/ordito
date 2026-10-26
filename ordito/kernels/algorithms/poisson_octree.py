@@ -48,7 +48,8 @@ in ascending ``x % 2 + 2 (y % 2)`` order -- the upstream order, sweep for sweep.
 wavefront (``octree_gauss_seidel_wave``): sweep ``s`` on slice ``z`` only waits for sweep ``s`` on
 ``z + 1`` and sweep ``s - 1`` on ``z - 1``, so one launch relaxes every ``(s, z)`` on a diagonal
 and a level costs ``4 * (res + 2 * (iterations - 1))`` launches instead of ``4 * res *
-iterations``, with the same values.
+iterations``, with the same values. The CPU runs a launch's threads one after another anyway, so
+there one launch a level runs every wave in that order (``octree_gauss_seidel_depth``).
 
 **Extraction** is the upstream's, cell by cell (the extraction section's note): corner values
 copied up from the deepest leaf at each point, edge vertices placed by the upstream non-linear fit
@@ -939,15 +940,17 @@ def octree_prolong(
     out_field[index] = value
 
 
-@wp.kernel
-def octree_gauss_seidel_wave(
+@wp.func
+def gauss_seidel_node(
     d: wp.int32,
     depth: wp.int32,
     full_depth: wp.int32,
     alpha: wp.float32,
     wave: wp.int32,
-    first_sweep: wp.int32,
+    sweep: wp.int32,
     colour: wp.int32,
+    a: wp.int32,
+    c: wp.int32,
     b: wp.array[wp.float32],
     flags: wp.array[wp.int32],
     flag_offsets: wp.array[wp.int32],
@@ -959,13 +962,16 @@ def octree_gauss_seidel_wave(
     sample_positions: wp.array[wp.vec3],
     field: wp.array[wp.float32],
 ) -> None:
-    # One colour of every ``(sweep, slice)`` on wavefront ``wave = 2 sweep + (res - 1 - z)``: a
-    # Gauss-Seidel update of each active node of that colour on that slice. ``field`` starts at the
-    # coarser field prolonged, so its updates are the upstream correction's (which starts at zero
-    # against ``b - A prolonged``) with the coarser field added.
-    s, a, c = wp.tid()
+    # The Gauss-Seidel update of node ``(2 a + colour % 2, 2 c + colour / 2)`` on the slice sweep
+    # ``sweep`` relaxes on wavefront ``wave = 2 sweep + (res - 1 - z)``, when the node is active;
+    # the caller passes only sweeps whose slice exists. ``field`` starts at the coarser field
+    # prolonged, so its updates are the upstream correction's (which starts at zero against
+    # ``b - A prolonged``) with the coarser field added. Shared by the two schedules of the same
+    # sweeps: ``octree_gauss_seidel_wave`` (one launch a wave and colour, CUDA's) and
+    # ``octree_gauss_seidel_depth`` (every wave of a depth in one thread, the CPU's). The updates
+    # of one wave and colour touch nodes two apart in ``x``, ``y`` and (across sweeps) ``z``,
+    # beyond the stencil's reach, so their order is free and the two give the same bits.
     res = (1 << d) + 1
-    sweep = first_sweep + s
     z = res - 1 - (wave - 2 * sweep)
     x = 2 * a + (colour & 1)
     y = 2 * c + (colour >> 1)
@@ -992,6 +998,113 @@ def octree_gauss_seidel_wave(
     )
     index = poisson_grid_index(x, y, z, res)
     field[index] = field[index] + (b[index] - row[0]) / row[1]
+
+
+@wp.kernel
+def octree_gauss_seidel_wave(
+    d: wp.int32,
+    depth: wp.int32,
+    full_depth: wp.int32,
+    alpha: wp.float32,
+    wave: wp.int32,
+    first_sweep: wp.int32,
+    colour: wp.int32,
+    b: wp.array[wp.float32],
+    flags: wp.array[wp.int32],
+    flag_offsets: wp.array[wp.int32],
+    counts: wp.array[wp.float32],
+    position_sums: wp.array[wp.vec3],
+    cell_offsets: wp.array[wp.int32],
+    slots: wp.array[wp.int32],
+    sample_counts: wp.array[wp.int32],
+    sample_positions: wp.array[wp.vec3],
+    field: wp.array[wp.float32],
+) -> None:
+    # One colour of every ``(sweep, slice)`` on wavefront ``wave``, the sweeps from
+    # ``first_sweep`` on: a launch a wave and colour, sized to the wave's sweeps.
+    #
+    # **Recording the waves as a CUDA graph is declined** (measured 2026-10-26): with the wave read
+    # off a device counter, a group of 8 waves recorded once per depth and replayed was
+    # bit-identical but 0.93-0.96x at depths 6-7 and 0.97-1.00x at depth 8. The sweeps are
+    # device-bound, not launch-bound: the call's kernel time equals its wall time (depth 7: 37.6
+    # against 36.1 ms), each wave launch costs ~14 us of device time rebuilding its rows
+    # (``octree_row``), and the host issues launches faster than the device drains them. The lever
+    # is a launch's own cost, not the launch count.
+    s, a, c = wp.tid()
+    gauss_seidel_node(
+        d,
+        depth,
+        full_depth,
+        alpha,
+        wave,
+        first_sweep + s,
+        colour,
+        a,
+        c,
+        b,
+        flags,
+        flag_offsets,
+        counts,
+        position_sums,
+        cell_offsets,
+        slots,
+        sample_counts,
+        sample_positions,
+        field,
+    )
+
+
+@wp.kernel
+def octree_gauss_seidel_depth(
+    d: wp.int32,
+    depth: wp.int32,
+    full_depth: wp.int32,
+    alpha: wp.float32,
+    iterations: wp.int32,
+    b: wp.array[wp.float32],
+    flags: wp.array[wp.int32],
+    flag_offsets: wp.array[wp.int32],
+    counts: wp.array[wp.float32],
+    position_sums: wp.array[wp.vec3],
+    cell_offsets: wp.array[wp.int32],
+    slots: wp.array[wp.int32],
+    sample_counts: wp.array[wp.int32],
+    sample_positions: wp.array[wp.vec3],
+    field: wp.array[wp.float32],
+) -> None:
+    # Every wave and colour of depth ``d`` in one thread, in ``octree_gauss_seidel_wave``'s launch
+    # order: the CPU device runs a launch's threads one after another anyway, so this is those
+    # launches' arithmetic in one launch.
+    res = (1 << d) + 1
+    half = (res + 1) // 2
+    for wave in range(res + 2 * (iterations - 1)):
+        first = wp.max(0, (wave - res + 2) // 2)
+        last = wp.min(iterations - 1, wave // 2)
+        for colour in range(4):
+            for sweep in range(first, last + 1):
+                for a in range(half):
+                    for c in range(half):
+                        gauss_seidel_node(
+                            d,
+                            depth,
+                            full_depth,
+                            alpha,
+                            wave,
+                            sweep,
+                            colour,
+                            a,
+                            c,
+                            b,
+                            flags,
+                            flag_offsets,
+                            counts,
+                            position_sums,
+                            cell_offsets,
+                            slots,
+                            sample_counts,
+                            sample_positions,
+                            field,
+                        )
 
 
 @wp.kernel
