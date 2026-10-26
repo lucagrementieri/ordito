@@ -90,6 +90,7 @@ from ordito.validation import (
     _closed_signed_volume,  # pyright: ignore[reportPrivateUsage]
     _corner_parents_from_mates,  # pyright: ignore[reportPrivateUsage]
     _face_flip_words,  # pyright: ignore[reportPrivateUsage]
+    _face_self_intersecting_mask,  # pyright: ignore[reportPrivateUsage]
 )
 
 # Lattice resolution for ``fix_self_intersections(method="voxel")``, in samples across the mesh's
@@ -3190,19 +3191,14 @@ def _cut_and_refill(
     """
     current_vertices, current_faces = vertices, faces
     # Two decision words per pass, each raised on the device by the launch that produced its mask
-    # (``kernel_repair.flag_any_selected``, the dilation's last lookup): a four-byte read each
-    # rather than a copy of the whole face mask. A word is raised to the pass's stamp, so neither
-    # is reset between passes.
+    # (the detector's last launch, the dilation's last lookup): a four-byte read each rather than a
+    # copy of the whole face mask. A word is raised to the pass's stamp, so neither is reset
+    # between passes.
     state = _launch.zeros(2, dtype=wp.int32, device=vertices.device)
     for pass_index in range(max_iter):
         stamp = pass_index + 1
-        bad_mask = od.validation.face_self_intersecting_mask(current_vertices, current_faces)
-        n_faces = current_faces.size // 3
-        _launch.launch(
-            kernel_repair.flag_any_selected,
-            dim=n_faces,
-            inputs=[bad_mask, stamp, state],
-            device=state.device,
+        bad_mask = _face_self_intersecting_mask(
+            current_vertices, current_faces, any_marked=(stamp, state)
         )
         if int(read_scalar(state, 0)) != stamp:
             break
