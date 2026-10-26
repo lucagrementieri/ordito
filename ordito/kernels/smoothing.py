@@ -425,6 +425,7 @@ def write_factor_pair(
     row_sums: wp.array[wp.float64],
     j: wp.int32,
     slot: wp.int32,
+    laplacian_form: wp.int32,
     out_factor: wp.array[wp.float64],
     out_factor_t: wp.array[wp.float64],
     out_factor_narrow: wp.array[wp.float32],
@@ -432,7 +433,13 @@ def write_factor_pair(
 ) -> wp.float64:
     # Entry ``slot`` = ``(i, j)`` of ``B = D^-1 L_ff`` and of ``B^T`` (``normal_equations_setup``),
     # given ``L_ij = L_ji``; returns ``|L_ij|`` for the Gershgorin sum, ``0`` on an invalid row.
+    # Under ``laplacian_form`` (warp-uniform) the entry of ``L_ff`` itself goes into ``out_factor``
+    # alone, zero where row ``i`` or row ``j`` is invalid so the matrix stays symmetric, and the
+    # three other buffers are not written.
     sum_j = row_sums[j]
+    if laplacian_form != wp.int32(0):
+        out_factor[slot] = wp.where(valid_i and sum_j != wp.float64(0.0), lij, wp.float64(0.0))
+        return wp.float64(0.0)
     factor = wp.where(valid_i, lij * scale_i, wp.float64(0.0))
     factor_t = wp.where(sum_j != wp.float64(0.0), lij * inverse_or_one(sum_j), wp.float64(0.0))
     out_factor[slot] = factor
@@ -456,6 +463,8 @@ def normal_equations_setup(
     free_degrees: wp.array[wp.int32],
     pattern_offsets: wp.array[wp.int32],
     points: wp.array[wp.vec3],
+    laplacian_form: wp.int32,
+    laplacian_shift: wp.float64,
     out_term_counts: wp.array[wp.int32],
     out_atb_x: wp.array[wp.float64],
     out_atb_y: wp.array[wp.float64],
@@ -487,7 +496,11 @@ def normal_equations_setup(
     #   the pattern is symmetric, so the transpose shares it, and where row ``j`` is invalid the
     #   entry is a structural zero. The arithmetic is ``linalg.SquaredLaplacianPreconditioner``'s
     #   own -- ``L * (1/D)`` through ``inverse_or_one``, the absolute values summed in column
-    #   order.
+    #   order. Under ``laplacian_form`` (the V-cycle form of that preconditioner, which needs
+    #   ``L_ff`` and ``D`` rather than the factor) row ``i`` of ``L_ff + laplacian_shift * D``
+    #   goes into ``out_factor`` and ``D_i`` (``1`` on an invalid row) into ``out_ratios``; see
+    #   ``write_factor_pair``. The shift makes the matrix definite on a free component no fixed
+    #   vertex touches, where ``L_ff`` itself is singular.
     #
     # And the solve's initial guess (``gather_free_positions``).
     i = wp.int32(wp.tid())
@@ -501,6 +514,8 @@ def normal_equations_setup(
     valid_i = sum_i != wp.float64(0.0)
     scale_i = inverse_or_one(wp.where(valid_i, sum_i, wp.float64(1.0)))
     one = wp.float64(1.0)
+    # The diagonal entry written: ``L_ii`` for the factor, ``(1 + shift) L_ii`` for ``L_ff``.
+    diagonal_value = wp.where(laplacian_form != wp.int32(0), sum_i * (one + laplacian_shift), sum_i)
     ax = wp.float64(0.0)
     ay = wp.float64(0.0)
     az = wp.float64(0.0)
@@ -535,11 +550,12 @@ def normal_equations_setup(
             if diagonal != before:
                 total += write_factor_pair(
                     valid_i,
-                    sum_i,
+                    diagonal_value,
                     scale_i,
                     row_sums,
                     i,
                     diagonal,
+                    laplacian_form,
                     out_factor,
                     out_factor_t,
                     out_factor_narrow,
@@ -552,6 +568,7 @@ def normal_equations_setup(
                 row_sums,
                 v,
                 entry,
+                laplacian_form,
                 out_factor,
                 out_factor_t,
                 out_factor_narrow,
@@ -562,11 +579,12 @@ def normal_equations_setup(
     if diagonal < 0:
         total += write_factor_pair(
             valid_i,
-            sum_i,
+            diagonal_value,
             scale_i,
             row_sums,
             i,
             slot,
+            laplacian_form,
             out_factor,
             out_factor_t,
             out_factor_narrow,
@@ -576,7 +594,10 @@ def normal_equations_setup(
     out_atb_x[ri] = ax
     out_atb_y[ri] = ay
     out_atb_z[ri] = az
-    out_ratios[ri] = wp.where(valid_i, total / sum_i, wp.float64(0.0))
+    if laplacian_form != wp.int32(0):
+        out_ratios[ri] = wp.where(valid_i, sum_i, wp.float64(1.0))
+    else:
+        out_ratios[ri] = wp.where(valid_i, total / sum_i, wp.float64(0.0))
 
 
 @wp.func
@@ -768,6 +789,28 @@ def normal_equations_values(
 
 
 @wp.kernel
+def mark_anchored_components(
+    free_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    incidence_offsets: wp.array[wp.int32],
+    pattern_offsets: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    out_anchored: wp.array[wp.int32],
+) -> None:
+    # Flag the free component (``labels``, over the free-free pattern) of every free vertex with a
+    # fixed neighbour. Its pattern row holds the diagonal and one entry per free neighbour, so a
+    # vertex has a fixed neighbour exactly when it has more incident edges than that. Every writer
+    # stores the same ``1``, so the order the stores land in decides nothing.
+    v = wp.int32(wp.tid())
+    i = selected_row(free_mask, free_map, v)
+    if i < 0:
+        return
+    degree = incidence_offsets[v + 1] - incidence_offsets[v]
+    if degree > pattern_offsets[i + 1] - pattern_offsets[i] - 1:
+        out_anchored[labels[i]] = wp.int32(1)
+
+
+@wp.kernel
 def scatter_free_solution(
     free_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
@@ -775,13 +818,22 @@ def scatter_free_solution(
     sol_x: wp.array[wp.float64],
     sol_y: wp.array[wp.float64],
     sol_z: wp.array[wp.float64],
+    labels: wp.array[wp.int32],
+    anchored: wp.array[wp.int32],
     out_points: wp.array[wp.vec3],
 ) -> None:
     # The solved positions: the reduced solve's answer over the free vertices, and the position it
     # arrived with for a pinned one. Every vertex is written, so the result needs no copy of
     # ``points`` first. The inverse of ``gather_free_positions``, which seeds the same solve.
+    # Given ``anchored`` (``mark_anchored_components``; empty for a solve whose every component is
+    # determined), a free vertex of a component no fixed vertex touches keeps its position too: the
+    # least-squares system fixes such a component only up to a translation, and the solve's drift
+    # along it is the preconditioner's, not an answer.
     v = wp.int32(wp.tid())
     i = selected_row(free_mask, free_map, v)
+    if i >= 0 and anchored.shape[0] > 0:
+        if anchored[labels[i]] == 0:
+            i = wp.int32(-1)
     if i >= 0:
         out_points[v] = wp.vec3(wp.float32(sol_x[i]), wp.float32(sol_y[i]), wp.float32(sol_z[i]))
     else:

@@ -78,6 +78,17 @@ from ordito.kernels import vertices as kernel_vertices
 from ordito.triangles import face_normals_and_areas
 from ordito.vertices import mean_vertex_normals
 
+# Free-vertex count from which ``smooth_region`` preconditions its normal equations with a V-cycle
+# on the free rows' Laplacian (``squared_laplacian_preconditioner(method="multigrid")``) instead of
+# the setup-free Chebyshev polynomial.
+_SMOOTH_REGION_MULTIGRID_FROM = 20_000
+
+# The V-cycle is built on ``L_ff + (_SMOOTH_REGION_MULTIGRID_SHIFT / n_free) D`` rather than on
+# ``L_ff``: a free component with no fixed neighbour (a scan's floating fragment inside the region)
+# makes ``L_ff`` singular, and a V-cycle on it diverges. The shift sits below the smallest
+# eigenvalue of ``D^-1 L_ff`` on the anchored components, which falls as about ``5 / n_free``.
+_SMOOTH_REGION_MULTIGRID_SHIFT = 5.0
+
 # Fraction of the way to the level set each ``smooth_region_boundary`` pass moves. A full step
 # overshoots, because the field is rebuilt from the moved positions and the level set moves too.
 _ISOLINE_DAMPING = wp.float32(0.75)
@@ -2564,6 +2575,10 @@ def smooth_region(
     constrain it and it is returned where it was. That is what the ``solution`` seed decides rather
     than the system: it is seeded with the current positions, not with zeros.
 
+    A free connected component with no fixed neighbour -- a fragment lying wholly inside the
+    region -- is likewise returned where it was: its equations fix its shape only up to a
+    translation, so the system does not place it.
+
     Examples
     --------
     The 9 interior vertices of a flat grid are lifted at random; with the flat rim held fixed, the
@@ -2998,10 +3013,13 @@ def _solve_region_fixed_rim(
         maxiter=10 * n_free,
     )
     out = _launch.empty(n, dtype=wp.vec3, device=device)
+    # No component pinning (empty ``anchored``): an entirely free component is this function's
+    # documented caller contract (or ``stabilizer``'s), not a case it resolves.
+    unpinned = _launch.empty(0, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_smoothing.scatter_free_solution,
         dim=n,
-        inputs=[free_mask, free_map, vertices, sol[0], sol[1], sol[2]],
+        inputs=[free_mask, free_map, vertices, sol[0], sol[1], sol[2], unpinned, unpinned],
         outputs=[out],
         device=device,
     )
@@ -3048,10 +3066,16 @@ def _solve_region_smooth(
     # One contiguous (3, n_free) right-hand side, so the three columns batch; every free row
     # writes all three components.
     atb = _launch.empty((3, n_free), dtype=wp.float64, device=device)
+    # The preconditioner's form (``_SMOOTH_REGION_MULTIGRID_FROM``): the polynomial takes the
+    # factor, its transpose and their ``float32`` copies; the V-cycle takes ``L_ff`` (into
+    # ``factor``) and ``D`` (into ``ratios``) alone.
+    laplacian_form = unit and n_free >= _SMOOTH_REGION_MULTIGRID_FROM
     factor = _launch.empty(capacity, dtype=wp.float64, device=device)
-    factor_t = _launch.empty(capacity, dtype=wp.float64, device=device)
-    factor_narrow = _launch.empty(capacity, dtype=wp.float32, device=device)
-    factor_t_narrow = _launch.empty(capacity, dtype=wp.float32, device=device)
+    factor_t = factor_narrow = factor_t_narrow = None
+    if not laplacian_form:
+        factor_t = _launch.empty(capacity, dtype=wp.float64, device=device)
+        factor_narrow = _launch.empty(capacity, dtype=wp.float32, device=device)
+        factor_t_narrow = _launch.empty(capacity, dtype=wp.float32, device=device)
     ratios = _launch.empty(n_free, dtype=wp.float64, device=device)
     # The initial guess, seeded as ``_solve_region_fixed_rim``'s is and for the same reason.
     sol = _launch.empty((3, n_free), dtype=wp.float64, device=device)
@@ -3067,6 +3091,8 @@ def _solve_region_smooth(
             free_degrees,
             region.pattern_offsets,
             vertices,
+            wp.int32(1 if laplacian_form else 0),
+            wp.float64(_SMOOTH_REGION_MULTIGRID_SHIFT / max(n_free, 1)),
         ],
         outputs=[
             term_counts,
@@ -3116,12 +3142,23 @@ def _solve_region_smooth(
     # preconditioning with the inverse of their square is what brings it back down. That factor,
     # its transpose and their ``float32`` copies were written by ``normal_equations_setup``.
     pattern = (region.pattern_offsets, region.pattern_columns)
-    preconditioner = twl.SquaredLaplacianPreconditioner.from_factors(
-        _csr_matrix(n_free, *pattern, factor),
-        _csr_matrix(n_free, *pattern, factor_t),
-        ratios,
-        (factor_narrow, factor_t_narrow),
-    )
+    if laplacian_form:
+        # A large region: the polynomial's iteration count grows with the unknown count (it
+        # resolves ``D^-1 L``'s spectrum only down to about ``bound / degree^2``, while the
+        # smallest eigenvalue falls as ``1 / n_free``), and a V-cycle on ``L_ff`` does not.
+        preconditioner = twl.squared_laplacian_preconditioner(
+            _csr_matrix(n_free, *pattern, factor), ratios, method="multigrid"
+        )
+    else:
+        assert factor_t is not None
+        assert factor_narrow is not None
+        assert factor_t_narrow is not None
+        preconditioner = twl.SquaredLaplacianPreconditioner.from_factors(
+            _csr_matrix(n_free, *pattern, factor),
+            _csr_matrix(n_free, *pattern, factor_t),
+            ratios,
+            (factor_narrow, factor_t_narrow),
+        )
     twl.solve_spd_columns(
         system,
         odt.as_array2d(atb, wp.float64),
@@ -3130,11 +3167,24 @@ def _solve_region_smooth(
         maxiter=10 * n_free,
         preconditioner=preconditioner,
     )
+    # A free component no fixed vertex touches is placed by no equation, only shaped: its rows
+    # are all umbrella rows of its own vertices, so any translation of it solves them as well, and
+    # the solve moves it along that freedom as the preconditioner happens to (the V-cycle form by
+    # twice a scan's diagonal). It keeps its input position instead, as a vertex with no row does.
+    labels = od.graph.connected_component_labels(_csr_matrix(n_free, *pattern, factor))
+    anchored = _launch.zeros(n_free, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_smoothing.mark_anchored_components,
+        dim=n,
+        inputs=[free_mask, free_map, region.incidence_offsets, region.pattern_offsets, labels],
+        outputs=[anchored],
+        device=device,
+    )
     out = _launch.empty(n, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel_smoothing.scatter_free_solution,
         dim=n,
-        inputs=[free_mask, free_map, vertices, sol[0], sol[1], sol[2]],
+        inputs=[free_mask, free_map, vertices, sol[0], sol[1], sol[2], labels, anchored],
         outputs=[out],
         device=device,
     )
