@@ -41,6 +41,7 @@ from ordito import _launch
 from ordito._device import (
     prefers_tiled_reduction,
     read_scalar,
+    read_values,
     require_nonempty_mesh,
     require_same_device,
 )
@@ -369,8 +370,7 @@ def closest_point_on_edges(
     n_bounds = n_edges if bvh is None else 0
     lower = upper = None
     if bvh is None:
-        lower = _launch.empty(n_edges, dtype=wp.vec3, device=device)
-        upper = _launch.empty(n_edges, dtype=wp.vec3, device=device)
+        lower, upper = _launch.carve(wp.vec3, [n_edges, n_edges], device)
     _launch.launch(
         kernel_proximity.edge_bounds_and_scene_box,
         dim=n_bounds + kernel_reduce.chunks_1d(vertices.size) + n_query_chunks,
@@ -531,8 +531,7 @@ def mesh_to_mesh_distance(
     # The per-face AABBs stay: the kernel's box-gap prune reads them, so they are not merely the
     # input to a build. There is no second acceleration structure built over them -- the kernels
     # read the ``wp.Mesh`` built above's own BVH directly with ``wp.mesh_get_bvh``.
-    lower = _launch.empty(n_faces_b, dtype=wp.vec3, device=device)
-    upper = _launch.empty(n_faces_b, dtype=wp.vec3, device=device)
+    lower, upper = _launch.carve(wp.vec3, [n_faces_b, n_faces_b], device)
     # The walk's three running scalars in one buffer (``kernels.proximity.*_SLOT``): the published
     # prune limit, the corner seed and the upper bound that grows every face's query box.
     if upper_bound is None:
@@ -610,7 +609,6 @@ def mesh_to_mesh_distance(
         )
 
     distance_sq = _launch.empty(n_faces_a, dtype=wp.float32, device=device)
-    witness = _launch.empty(n_faces_a, dtype=wp.int32, device=device)
     # The broad phase is wildly unbalanced -- most query faces return no candidate at all, while a
     # few carry most of the traversal -- so the walk runs in two passes on CUDA: a thread per face,
     # capped, then a *block* per face that exceeded the cap. See ``_QUERY_CANDIDATE_CAP``. On the
@@ -618,7 +616,7 @@ def mesh_to_mesh_distance(
     # re-walk; there the cap is disabled and the first pass settles every face instead.
     tiled = prefers_tiled_reduction(device)
     candidate_cap = _QUERY_CANDIDATE_CAP if tiled else INT32_MAX
-    overflow = _launch.empty(n_faces_a if tiled else 1, dtype=wp.int32, device=device)
+    witness, overflow = _launch.carve(wp.int32, [n_faces_a, n_faces_a if tiled else 1], device)
     # ``counter[0]`` and ``counter[2]`` count the faces the thread pass appends to the two ends of
     # ``overflow``; ``counter[1]`` and ``counter[3]`` are the two tiled passes' work claims.
     #
@@ -705,8 +703,9 @@ def mesh_to_mesh_distance(
         block_dim=TILE_1D,
         device=device,
     )
-    # The answer itself: the three scalars this function returns.
-    key, face_b, _ticket = (int(value) for value in result.numpy())
+    # The answer itself, the three scalars this function returns, in the leading two slots (the
+    # third is the reduction's ticket).
+    key, face_b = (int(value) for value in read_values(result, 0, 2))
     best_distance_sq = np.array([key >> 32], dtype=np.uint32).view(np.float32)[0]
     return math.sqrt(float(best_distance_sq)), key & 0xFFFFFFFF, face_b
 
@@ -1374,8 +1373,14 @@ def _winding_number_tree(
         inputs=[vertices, corners_box],
         device=device,
     )
-    keys = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
-    order = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    # The build's ``int32`` tables in one allocation, its ``vec3`` and ``vec4`` ones in one each,
+    # and the two zeroed edge counters in one: they all live exactly as long as this call.
+    keys, order, rank, count, first, cap_offsets = _launch.carve(
+        wp.int32, [2 * n_faces, 2 * n_faces, n_faces, n_nodes, n_nodes, n_nodes + 1], device
+    )
+    corners, lower, upper = _launch.carve(wp.vec3, [3 * n_faces, n_nodes, n_nodes], device)
+    slab_lower, slab_upper = _launch.carve(wp.vec4, [n_nodes, n_nodes], device)
+    perimeter, fill = _launch.carve(wp.int32, [n_nodes, n_nodes], device, zeroed=True)
     _launch.launch(
         kernel_proximity.winding_face_keys,
         dim=n_faces,
@@ -1383,8 +1388,6 @@ def _winding_number_tree(
         device=device,
     )
     _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=30)
-    corners = _launch.empty(3 * n_faces, dtype=wp.vec3, device=device)
-    rank = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_proximity.winding_sorted_faces,
         dim=n_faces,
@@ -1392,13 +1395,7 @@ def _winding_number_tree(
         device=device,
     )
 
-    lower = _launch.empty(n_nodes, dtype=wp.vec3, device=device)
-    upper = _launch.empty(n_nodes, dtype=wp.vec3, device=device)
-    slab_lower = _launch.empty(n_nodes, dtype=wp.vec4, device=device)
-    slab_upper = _launch.empty(n_nodes, dtype=wp.vec4, device=device)
     corner_sum = _launch.empty(n_nodes, dtype=wp.vec3d, device=device)
-    count = _launch.empty(n_nodes, dtype=wp.int32, device=device)
-    first = _launch.empty(n_nodes, dtype=wp.int32, device=device)
     nodes = [lower, upper, slab_lower, slab_upper, corner_sum, count, first]
     _launch.launch(
         kernel_proximity.winding_leaves,
@@ -1426,7 +1423,6 @@ def _winding_number_tree(
     )
 
     mates = od.halfedge.halfedge_mates(faces, vertices.size)
-    perimeter = _launch.zeros(n_nodes, dtype=wp.int32, device=device)
     cap_levels = [mates, rank, wp.int32(leaf_faces), wp.int32(depth)]
     _launch.launch(
         kernel_proximity.count_cap_edges,
@@ -1434,7 +1430,6 @@ def _winding_number_tree(
         inputs=[faces, *cap_levels, perimeter],
         device=device,
     )
-    cap_offsets = _launch.empty(n_nodes + 1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_proximity.cap_edge_counts,
         dim=n_nodes,
@@ -1445,9 +1440,7 @@ def _winding_number_tree(
     _launch.array_scan(cap_sizes, cap_sizes, inclusive=True)
     # One readback: the cap edges' total sizes their buffers, and only the device knows it.
     n_cap_edges = int(read_scalar(cap_offsets))
-    cap_start = _launch.empty(max(n_cap_edges, 1), dtype=wp.vec3, device=device)
-    cap_end = _launch.empty(max(n_cap_edges, 1), dtype=wp.vec3, device=device)
-    fill = _launch.zeros(n_nodes, dtype=wp.int32, device=device)
+    cap_start, cap_end = _launch.carve(wp.vec3, [max(n_cap_edges, 1), max(n_cap_edges, 1)], device)
     _launch.launch(
         kernel_proximity.fill_cap_edges,
         dim=3 * n_faces,

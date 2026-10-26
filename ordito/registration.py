@@ -957,10 +957,10 @@ def _robust_scale_from_residuals(
         kernel_registration.robust_sigma, dim=1, inputs=[keys], outputs=[stats], device=device
     )
     # The estimate's one readback: the in-range count and the scale.
-    stats_np = stats.numpy()
-    if int(stats_np[kernel_registration.MAD_STATS_COUNT]) == 0:
+    stats_values = read_values(stats, 0, kernel_registration.MAD_STATS_SIZE)
+    if int(stats_values[kernel_registration.MAD_STATS_COUNT]) == 0:
         return 0.0
-    sigma = float(stats_np[kernel_registration.MAD_STATS_VALUE])
+    sigma = float(stats_values[kernel_registration.MAD_STATS_VALUE])
     if sigma <= 0.0:
         sigma = _residual_standard_deviation(
             current, closest, normals, distance, triangle_id, max_distance
