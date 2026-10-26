@@ -6089,8 +6089,9 @@ deterministic either way):</p>
 <li>the order of the hits <a class="autorefs autorefs-internal" title="intersects_location" href="../ray/#ordito.ray.intersects_location"><code>intersects_location</code></a> returns
   (ascending ray order when on);</li>
 <li>the lattice data of <a class="autorefs autorefs-internal" title="screened_poisson" href="../reconstruction/#ordito.reconstruction.screened_poisson"><code>screened_poisson</code></a>, and so its
-  surface: the splat of the normals (each node's terms added in ascending sample order when on)
-  and the adaptive backend's restriction of it down its levels.</li>
+  surface: the splat of the normals (each node's terms added in ascending sample order when on),
+  the adaptive backend's restriction of it down its levels, and the octree backend's density
+  and normal splats and sample merge (exact group sums when on).</li>
 </ul>
 <p>What it does not govern:</p>
 <ul>
@@ -6262,8 +6263,7 @@ is_deterministic : Read the setting in force.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/config.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">118</span>
-<span class="normal">119</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">119</span>
 <span class="normal">120</span>
 <span class="normal">121</span>
 <span class="normal">122</span>
@@ -6294,7 +6294,8 @@ is_deterministic : Read the setting in force.</p>
 <span class="normal">147</span>
 <span class="normal">148</span>
 <span class="normal">149</span>
-<span class="normal">150</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">set_deterministic</span><span class="p">(</span><span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">150</span>
+<span class="normal">151</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">set_deterministic</span><span class="p">(</span><span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Set the process-wide default for reproducible results (see [`ordito.config`][ordito.config]).</span>
 
@@ -6393,8 +6394,7 @@ thread or task, or the process-wide default set by
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/config.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">153</span>
-<span class="normal">154</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">154</span>
 <span class="normal">155</span>
 <span class="normal">156</span>
 <span class="normal">157</span>
@@ -6414,7 +6414,8 @@ thread or task, or the process-wide default set by
 <span class="normal">171</span>
 <span class="normal">172</span>
 <span class="normal">173</span>
-<span class="normal">174</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_deterministic</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">174</span>
+<span class="normal">175</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_deterministic</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Whether results are reproducible in the current context (see [`ordito.config`][ordito.config]).</span>
 
@@ -6548,8 +6549,7 @@ block inherit it), nests, and restores the previous value on exit, also when the
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/config.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">177</span>
-<span class="normal">178</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">178</span>
 <span class="normal">179</span>
 <span class="normal">180</span>
 <span class="normal">181</span>
@@ -6589,7 +6589,8 @@ block inherit it), nests, and restores the previous value on exit, also when the
 <span class="normal">215</span>
 <span class="normal">216</span>
 <span class="normal">217</span>
-<span class="normal">218</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@contextlib</span><span class="o">.</span><span class="n">contextmanager</span>
+<span class="normal">218</span>
+<span class="normal">219</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@contextlib</span><span class="o">.</span><span class="n">contextmanager</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">deterministic</span><span class="p">(</span><span class="n">enabled</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">Generator</span><span class="p">[</span><span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Override the determinism setting within a ``with`` block.</span>

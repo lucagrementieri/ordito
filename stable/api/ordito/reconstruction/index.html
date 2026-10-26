@@ -6330,8 +6330,7 @@ than exact predicates, so near-cocircular inputs may resolve either ambiguous di
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 68</span>
-<span class="normal"> 69</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 69</span>
 <span class="normal"> 70</span>
 <span class="normal"> 71</span>
 <span class="normal"> 72</span>
@@ -6433,7 +6432,8 @@ than exact predicates, so near-cocircular inputs may resolve either ambiguous di
 <span class="normal">168</span>
 <span class="normal">169</span>
 <span class="normal">170</span>
-<span class="normal">171</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">delaunay_triangulation</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">max_iter</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1000</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
+<span class="normal">171</span>
+<span class="normal">172</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">delaunay_triangulation</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">max_iter</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1000</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Delaunay triangulation of a 2D point set.</span>
 
@@ -6569,10 +6569,13 @@ than exact predicates, so near-cocircular inputs may resolve either ambiguous di
         <p>Reconstruct a triangle mesh from an (optionally oriented) point cloud.</p>
 <p>Local-triangulation reconstruction, on the GPU. Each point independently builds a local
 triangle fan over its nearest neighbours in the tangent plane, greedily
-optimised toward a Delaunay-like fan (<code>build_local_triangulations</code>); triangles that recur in
-two or three of these local triangulations are kept and assembled into a triangle-soup mesh
-(vertices are the input points). Non-manifold and degenerate faces are dropped and small
-boundary holes are filled.</p>
+optimised toward a Delaunay-like fan (<code>build_local_triangulations</code>). A fan whose search may
+have missed a neighbour is built again from a wider one: a fan with a border (an angular gap
+wider than <code>boundary_angle</code>) searches twice its first radius, and any other fan as far as its
+triangles' circumcircles reach, up to that double. Triangles that recur in two or three of
+these local triangulations are kept and assembled into a triangle-soup mesh (vertices are the
+input points). Non-manifold and degenerate faces are dropped and small boundary holes are
+filled, each hole measured on its own where two touch at a vertex.</p>
 <p>Supplied <code>normals</code> are <strong>trusted</strong>: each face is wound to agree with them, so an
 inward-facing cloud gives an inward-facing mesh. Leave them <code>None</code> to estimate them by PCA
 (<a class="autorefs autorefs-internal" title="estimate_normals" href="../points/#ordito.points.estimate_normals"><code>estimate_normals</code></a>); their signs are then ignored, and each
@@ -6800,8 +6803,11 @@ compile-time cap.</p>
 
 <details class="note" open>
   <summary>Notes</summary>
-  <p>The per-point fan is bounded by <code>max_neighbours</code> and the search radius is never grown
-automatically, so very sparse or highly non-uniform clouds may leave extra boundary holes.</p>
+  <p>The first fan of each point is bounded by <code>max_neighbours</code> and a rebuilt one by
+<code>max(2 * k, 100)</code> neighbours (<code>k</code> the first fan's count), and the radius grows once, to at
+most twice the first: very sparse or highly non-uniform clouds may still leave extra boundary
+holes. The doubled search of a border fan also triangulates across a gap in the cloud narrower
+than about that radius, so a hole that small closes whatever <code>crit_hole_length</code> says.</p>
 </details>
 
 <details class="see-also" open>
@@ -6835,8 +6841,7 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">232</span>
-<span class="normal">233</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">233</span>
 <span class="normal">234</span>
 <span class="normal">235</span>
 <span class="normal">236</span>
@@ -7017,7 +7022,29 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
 <span class="normal">411</span>
 <span class="normal">412</span>
 <span class="normal">413</span>
-<span class="normal">414</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_point_cloud</span><span class="p">(</span>
+<span class="normal">414</span>
+<span class="normal">415</span>
+<span class="normal">416</span>
+<span class="normal">417</span>
+<span class="normal">418</span>
+<span class="normal">419</span>
+<span class="normal">420</span>
+<span class="normal">421</span>
+<span class="normal">422</span>
+<span class="normal">423</span>
+<span class="normal">424</span>
+<span class="normal">425</span>
+<span class="normal">426</span>
+<span class="normal">427</span>
+<span class="normal">428</span>
+<span class="normal">429</span>
+<span class="normal">430</span>
+<span class="normal">431</span>
+<span class="normal">432</span>
+<span class="normal">433</span>
+<span class="normal">434</span>
+<span class="normal">435</span>
+<span class="normal">436</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_point_cloud</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7033,10 +7060,13 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
 
 <span class="sd">    Local-triangulation reconstruction, on the GPU. Each point independently builds a local</span>
 <span class="sd">    triangle fan over its nearest neighbours in the tangent plane, greedily</span>
-<span class="sd">    optimised toward a Delaunay-like fan (``build_local_triangulations``); triangles that recur in</span>
-<span class="sd">    two or three of these local triangulations are kept and assembled into a triangle-soup mesh</span>
-<span class="sd">    (vertices are the input points). Non-manifold and degenerate faces are dropped and small</span>
-<span class="sd">    boundary holes are filled.</span>
+<span class="sd">    optimised toward a Delaunay-like fan (``build_local_triangulations``). A fan whose search may</span>
+<span class="sd">    have missed a neighbour is built again from a wider one: a fan with a border (an angular gap</span>
+<span class="sd">    wider than ``boundary_angle``) searches twice its first radius, and any other fan as far as its</span>
+<span class="sd">    triangles' circumcircles reach, up to that double. Triangles that recur in two or three of</span>
+<span class="sd">    these local triangulations are kept and assembled into a triangle-soup mesh (vertices are the</span>
+<span class="sd">    input points). Non-manifold and degenerate faces are dropped and small boundary holes are</span>
+<span class="sd">    filled, each hole measured on its own where two touch at a vertex.</span>
 
 <span class="sd">    Supplied ``normals`` are **trusted**: each face is wound to agree with them, so an</span>
 <span class="sd">    inward-facing cloud gives an inward-facing mesh. Leave them ``None`` to estimate them by PCA</span>
@@ -7088,8 +7118,11 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
 
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
-<span class="sd">    The per-point fan is bounded by ``max_neighbours`` and the search radius is never grown</span>
-<span class="sd">    automatically, so very sparse or highly non-uniform clouds may leave extra boundary holes.</span>
+<span class="sd">    The first fan of each point is bounded by ``max_neighbours`` and a rebuilt one by</span>
+<span class="sd">    ``max(2 * k, 100)`` neighbours (``k`` the first fan's count), and the radius grows once, to at</span>
+<span class="sd">    most twice the first: very sparse or highly non-uniform clouds may still leave extra boundary</span>
+<span class="sd">    holes. The doubled search of a border fan also triangulates across a gap in the cloud narrower</span>
+<span class="sd">    than about that radius, so a hole that small closes whatever ``crit_hole_length`` says.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -7151,6 +7184,12 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
         <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">_carved_size</span><span class="p">([</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n</span> <span class="o">*</span> <span class="n">k</span><span class="p">,</span> <span class="n">n</span><span class="p">]),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="p">[</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n</span> <span class="o">*</span> <span class="n">k</span><span class="p">,</span> <span class="n">n</span><span class="p">]</span>
     <span class="p">)</span>
     <span class="n">out_tris</span> <span class="o">=</span> <span class="n">tri_rows</span><span class="o">.</span><span class="n">reshape</span><span class="p">((</span><span class="n">n</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
+    <span class="n">normals_mode</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">kernel_reconstruction</span><span class="o">.</span><span class="n">NORMALS_ORIENTED</span>
+        <span class="k">if</span> <span class="n">oriented</span>
+        <span class="k">else</span> <span class="n">kernel_reconstruction</span><span class="o">.</span><span class="n">NORMALS_UNORIENTED</span>
+    <span class="p">)</span>
+    <span class="n">grown_radii</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_reconstruction</span><span class="o">.</span><span class="n">build_local_triangulations</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n</span><span class="p">,</span>
@@ -7162,13 +7201,22 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
             <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">radius</span><span class="p">),</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">crit_angle</span><span class="p">),</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">boundary_angle</span><span class="p">),</span>
-            <span class="n">kernel_reconstruction</span><span class="o">.</span><span class="n">NORMALS_ORIENTED</span>
-            <span class="k">if</span> <span class="n">oriented</span>
-            <span class="k">else</span> <span class="n">kernel_reconstruction</span><span class="o">.</span><span class="n">NORMALS_UNORIENTED</span><span class="p">,</span>
-            <span class="n">out_tris</span><span class="p">,</span>
-            <span class="n">fan_counts</span><span class="p">,</span>
+            <span class="n">normals_mode</span><span class="p">,</span>
         <span class="p">],</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">out_tris</span><span class="p">,</span> <span class="n">fan_counts</span><span class="p">,</span> <span class="n">grown_radii</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">_rebuild_grown_fans</span><span class="p">(</span>
+        <span class="n">points</span><span class="p">,</span>
+        <span class="n">normals</span><span class="p">,</span>
+        <span class="n">grown_radii</span><span class="p">,</span>
+        <span class="n">k</span><span class="p">,</span>
+        <span class="n">bounds</span><span class="p">,</span>
+        <span class="n">crit_angle</span><span class="p">,</span>
+        <span class="n">boundary_angle</span><span class="p">,</span>
+        <span class="n">normals_mode</span><span class="p">,</span>
+        <span class="n">out_tris</span><span class="p">,</span>
+        <span class="n">fan_counts</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="c1"># Scanned in place: each fan's packed offset is its predecessor's inclusive total, and the last</span>
     <span class="c1"># entry sizes the candidate buffers.</span>
@@ -7221,11 +7269,13 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
     <span class="n">depth</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">8</span><span class="p">,</span>
     <span class="n">full_depth</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5</span><span class="p">,</span>
     <span class="n">scale</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.1</span><span class="p">,</span>
-    <span class="n">point_weight</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">4.0</span><span class="p">,</span>
-    <span class="n">solver_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">100</span><span class="p">,</span>
+    <span class="n">point_weight</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">solver_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">solver_tolerance</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-05</span><span class="p">,</span>
     <span class="n">confidence</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"dense"</span><span class="p">,</span> <span class="s2">"adaptive"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"dense"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span>
+        <span class="s2">"dense"</span><span class="p">,</span> <span class="s2">"adaptive"</span><span class="p">,</span> <span class="s2">"octree"</span>
+    <span class="p">]</span> <span class="o">=</span> <span class="s2">"dense"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
 </code></pre></div>
 
@@ -7243,7 +7293,8 @@ extracted with <a class="autorefs autorefs-internal" title="marching_cubes" href
 given by the average of <code>x</code> over the input points. A <strong>cascadic</strong> coarse-to-fine schedule
 solves the system from <code>full_depth</code> up to <code>depth</code>, prolonging each level's solution as the
 next level's initial guess (mirroring PoissonRecon's multigrid hierarchy); <code>method</code> describes
-the adaptive backend's variant of the schedule.</p>
+the adaptive backend's variant of the schedule, and <code>method="octree"</code> instead reproduces
+PoissonRecon's own system and solver, the surface <code>open3d</code> returns.</p>
 <p><code>normals</code> are <strong>required</strong> and must be globally consistently oriented (all pointing outward or
 all inward): the reconstruction encodes the surface orientation in the sign of the vector field,
 and <a class="autorefs autorefs-internal" title="estimate_normals" href="../points/#ordito.points.estimate_normals"><code>estimate_normals</code></a> performs no global orientation.</p>
@@ -7352,16 +7403,18 @@ extent (<code>&gt;= 1</code>, so the cube always contains the cloud); <code>1.1<
                 <code>point_weight</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#float">float</a></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#float">float</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
                 <p>Screening weight <code>alpha</code> tying the iso-surface to the input samples. <code>0</code> recovers the
-unscreened Poisson reconstruction (a tiny epsilon is still added to keep the operator SPD).</p>
+unscreened Poisson reconstruction (a tiny epsilon is still added to keep the operator SPD).
+<code>None</code> is <code>4</code> for <code>"dense"</code> and <code>"adaptive"</code>, and <code>2</code> for <code>"octree"</code>, which
+multiplies it by the samples' mean area weight as PoissonRecon does.</p>
               </div>
             </td>
             <td>
-                  <code>4.0</code>
+                  <code>None</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -7369,7 +7422,7 @@ unscreened Poisson reconstruction (a tiny epsilon is still added to keep the ope
                 <code>solver_iterations</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a></code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a> | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -7377,11 +7430,12 @@ unscreened Poisson reconstruction (a tiny epsilon is still added to keep the ope
 the adaptive backend's dense base). The default leaves room: the multigrid-preconditioned
 solve reaches the default tolerance in a dozen or so at any depth. The adaptive backend's
 band levels instead run a fixed, smaller number of Jacobi-preconditioned rounds, capped by
-this value: each only corrects its coarser level's solution near the surface.</p>
+this value: each only corrects its coarser level's solution near the surface. <code>None</code> is
+<code>100</code>, and for <code>"octree"</code> <code>8</code>: the Gauss-Seidel sweeps of each depth.</p>
               </div>
             </td>
             <td>
-                  <code>100</code>
+                  <code>None</code>
             </td>
           </tr>
           <tr class="doc-section-item">
@@ -7393,11 +7447,12 @@ this value: each only corrects its coarser level's solution near the surface.</p
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Relative residual tolerance for the conjugate-gradient solves. A dense level that stops at
-<code>solver_iterations</code> above it warns; an adaptive band level stops at it or at its fixed
-round count and never warns. The system is solved in <code>float32</code>, whose rounding bounds
-the relative residual either backend can actually reach at a few <code>1e-6</code> -- a tolerance
-below that is never met and only spends the whole iteration budget.</p>
+                <p>Relative residual tolerance for the conjugate-gradient solves (not read by <code>"octree"</code>).
+A dense level that stops at <code>solver_iterations</code> above it warns; an adaptive band level
+stops at it or at its fixed round count and never warns. The system is solved in
+<code>float32</code>, whose rounding bounds the relative residual either backend can actually reach
+at a few <code>1e-6</code> -- a tolerance below that is never met and only spends the whole
+iteration budget.</p>
               </div>
             </td>
             <td>
@@ -7414,7 +7469,8 @@ below that is never met and only spends the whole iteration budget.</p>
             <td>
               <div class="doc-md-description">
                 <p>When <code>True</code>, weight each sample's splat by <code>|normals[i]|</code> (treating the normal magnitude
-as a per-sample confidence), matching PoissonRecon's <code>confidence</code> flag.</p>
+as a per-sample confidence), matching PoissonRecon's <code>confidence</code> flag. Not available
+with <code>"octree"</code>, which, like <code>open3d</code>, uses unit normals.</p>
               </div>
             </td>
             <td>
@@ -7426,7 +7482,7 @@ as a per-sample confidence), matching PoissonRecon's <code>confidence</code> fla
                 <code>method</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;dense&#39;, &#39;adaptive&#39;]</code>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;dense&#39;, &#39;adaptive&#39;, &#39;octree&#39;]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -7438,7 +7494,17 @@ that band with the lattice away from it held at the coarser solution (every coar
 data is the finest level's, restricted, so that solution is a valid boundary value). Its
 surface agrees with <code>dense</code> to a small fraction of a cell, its cost follows the surface
 rather than the volume, and it runs at <code>depth=10</code>, whose dense lattice does not fit a
-32 GB device. With <code>depth == full_depth</code> there is no band and it is the dense solve.</p>
+32 GB device. With <code>depth == full_depth</code> there is no band and it is the dense solve.
+<code>"octree"</code> solves PoissonRecon's system the way <code>open3d</code>'s
+<code>create_from_point_cloud_poisson</code> does, at the same parameters: hierarchical trilinear
+elements of every depth, active only near the samples above <code>full_depth</code>, a normal field
+splatted at each sample's estimated depth, screening scaled by the samples' mean area, and
+one cascadic pass of <code>solver_iterations</code> Gauss-Seidel sweeps per depth -- not a converged
+solve, and the surface follows that. Its mesh is <code>open3d</code>'s, run on one thread: the same
+vertices and triangles, stitched across changes of depth as <code>open3d</code> stitches them,
+except where <code>open3d</code>'s minimal-area split of a polygon is decided by rounding (a few
+percent of the triangles; the surface is the same). Those triangles are returned as is:
+not filtered for degeneracy nor reoriented. <code>depth</code> is at most 9.</p>
               </div>
             </td>
             <td>
@@ -7474,13 +7540,14 @@ rather than the volume, and it runs at <code>depth=10</code>, whose dense lattic
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>(3 * n_faces,)</code> flat triangle index buffer, free of degenerate triangles in
+                <p><code>(3 * n_faces,)</code> flat triangle index buffer. With <code>"dense"</code> and <code>"adaptive"</code> it is
+free of degenerate triangles in
 <a class="autorefs autorefs-internal" title="face_nondegenerate_mask" href="../triangles/#ordito.triangles.face_nondegenerate_mask"><code>face_nondegenerate_mask</code></a>'s sense and oriented
-outward (<a class="autorefs autorefs-internal" title="make_normals_outward" href="../repair/#ordito.repair.make_normals_outward"><code>make_normals_outward</code></a>). The extraction
-keeps every vertex a small fraction of a lattice edge off the lattice nodes, which bounds
-every triangle's altitudes away from zero without changing the surface's topology, so the
-guarantee costs no hole; a lattice so fine that its spacing nears the merge tolerance falls
-back to dropping the faces
+outward (<a class="autorefs autorefs-internal" title="make_normals_outward" href="../repair/#ordito.repair.make_normals_outward"><code>make_normals_outward</code></a>); with <code>"octree"</code>
+it is <code>open3d</code>'s winding. Every extraction keeps every vertex a small fraction of a
+lattice edge off the lattice nodes, which bounds every marching-cubes triangle's altitudes
+away from zero without changing the surface's topology, so the guarantee costs no hole; a
+lattice so fine that its spacing nears the merge tolerance falls back to dropping the faces
 (<a class="autorefs autorefs-internal" title="remove_degenerate_faces" href="../repair/#ordito.repair.remove_degenerate_faces"><code>remove_degenerate_faces</code></a>).</p>
               </div>
             </td>
@@ -7505,8 +7572,9 @@ back to dropping the faces
             <td>
               <div class="doc-md-description">
                 <p>If <code>points</code> has fewer than 3 points, <code>normals</code> does not have one entry per point, the
-depth/scale parameters are out of range, or <code>method</code> is not <code>"dense"</code> or
-<code>"adaptive"</code>.</p>
+depth/scale parameters are out of range, <code>method</code> is not <code>"dense"</code>, <code>"adaptive"</code> or
+<code>"octree"</code>, or with <code>"octree"</code> <code>depth</code> is above 9, <code>confidence</code> is set or no normal
+is nonzero.</p>
               </div>
             </td>
           </tr>
@@ -7623,77 +7691,7 @@ taken from it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">484</span>
-<span class="normal">485</span>
-<span class="normal">486</span>
-<span class="normal">487</span>
-<span class="normal">488</span>
-<span class="normal">489</span>
-<span class="normal">490</span>
-<span class="normal">491</span>
-<span class="normal">492</span>
-<span class="normal">493</span>
-<span class="normal">494</span>
-<span class="normal">495</span>
-<span class="normal">496</span>
-<span class="normal">497</span>
-<span class="normal">498</span>
-<span class="normal">499</span>
-<span class="normal">500</span>
-<span class="normal">501</span>
-<span class="normal">502</span>
-<span class="normal">503</span>
-<span class="normal">504</span>
-<span class="normal">505</span>
-<span class="normal">506</span>
-<span class="normal">507</span>
-<span class="normal">508</span>
-<span class="normal">509</span>
-<span class="normal">510</span>
-<span class="normal">511</span>
-<span class="normal">512</span>
-<span class="normal">513</span>
-<span class="normal">514</span>
-<span class="normal">515</span>
-<span class="normal">516</span>
-<span class="normal">517</span>
-<span class="normal">518</span>
-<span class="normal">519</span>
-<span class="normal">520</span>
-<span class="normal">521</span>
-<span class="normal">522</span>
-<span class="normal">523</span>
-<span class="normal">524</span>
-<span class="normal">525</span>
-<span class="normal">526</span>
-<span class="normal">527</span>
-<span class="normal">528</span>
-<span class="normal">529</span>
-<span class="normal">530</span>
-<span class="normal">531</span>
-<span class="normal">532</span>
-<span class="normal">533</span>
-<span class="normal">534</span>
-<span class="normal">535</span>
-<span class="normal">536</span>
-<span class="normal">537</span>
-<span class="normal">538</span>
-<span class="normal">539</span>
-<span class="normal">540</span>
-<span class="normal">541</span>
-<span class="normal">542</span>
-<span class="normal">543</span>
-<span class="normal">544</span>
-<span class="normal">545</span>
-<span class="normal">546</span>
-<span class="normal">547</span>
-<span class="normal">548</span>
-<span class="normal">549</span>
-<span class="normal">550</span>
-<span class="normal">551</span>
-<span class="normal">552</span>
-<span class="normal">553</span>
-<span class="normal">554</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">554</span>
 <span class="normal">555</span>
 <span class="normal">556</span>
 <span class="normal">557</span>
@@ -7867,18 +7865,129 @@ taken from it.</p>
 <span class="normal">725</span>
 <span class="normal">726</span>
 <span class="normal">727</span>
-<span class="normal">728</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">screened_poisson</span><span class="p">(</span>
+<span class="normal">728</span>
+<span class="normal">729</span>
+<span class="normal">730</span>
+<span class="normal">731</span>
+<span class="normal">732</span>
+<span class="normal">733</span>
+<span class="normal">734</span>
+<span class="normal">735</span>
+<span class="normal">736</span>
+<span class="normal">737</span>
+<span class="normal">738</span>
+<span class="normal">739</span>
+<span class="normal">740</span>
+<span class="normal">741</span>
+<span class="normal">742</span>
+<span class="normal">743</span>
+<span class="normal">744</span>
+<span class="normal">745</span>
+<span class="normal">746</span>
+<span class="normal">747</span>
+<span class="normal">748</span>
+<span class="normal">749</span>
+<span class="normal">750</span>
+<span class="normal">751</span>
+<span class="normal">752</span>
+<span class="normal">753</span>
+<span class="normal">754</span>
+<span class="normal">755</span>
+<span class="normal">756</span>
+<span class="normal">757</span>
+<span class="normal">758</span>
+<span class="normal">759</span>
+<span class="normal">760</span>
+<span class="normal">761</span>
+<span class="normal">762</span>
+<span class="normal">763</span>
+<span class="normal">764</span>
+<span class="normal">765</span>
+<span class="normal">766</span>
+<span class="normal">767</span>
+<span class="normal">768</span>
+<span class="normal">769</span>
+<span class="normal">770</span>
+<span class="normal">771</span>
+<span class="normal">772</span>
+<span class="normal">773</span>
+<span class="normal">774</span>
+<span class="normal">775</span>
+<span class="normal">776</span>
+<span class="normal">777</span>
+<span class="normal">778</span>
+<span class="normal">779</span>
+<span class="normal">780</span>
+<span class="normal">781</span>
+<span class="normal">782</span>
+<span class="normal">783</span>
+<span class="normal">784</span>
+<span class="normal">785</span>
+<span class="normal">786</span>
+<span class="normal">787</span>
+<span class="normal">788</span>
+<span class="normal">789</span>
+<span class="normal">790</span>
+<span class="normal">791</span>
+<span class="normal">792</span>
+<span class="normal">793</span>
+<span class="normal">794</span>
+<span class="normal">795</span>
+<span class="normal">796</span>
+<span class="normal">797</span>
+<span class="normal">798</span>
+<span class="normal">799</span>
+<span class="normal">800</span>
+<span class="normal">801</span>
+<span class="normal">802</span>
+<span class="normal">803</span>
+<span class="normal">804</span>
+<span class="normal">805</span>
+<span class="normal">806</span>
+<span class="normal">807</span>
+<span class="normal">808</span>
+<span class="normal">809</span>
+<span class="normal">810</span>
+<span class="normal">811</span>
+<span class="normal">812</span>
+<span class="normal">813</span>
+<span class="normal">814</span>
+<span class="normal">815</span>
+<span class="normal">816</span>
+<span class="normal">817</span>
+<span class="normal">818</span>
+<span class="normal">819</span>
+<span class="normal">820</span>
+<span class="normal">821</span>
+<span class="normal">822</span>
+<span class="normal">823</span>
+<span class="normal">824</span>
+<span class="normal">825</span>
+<span class="normal">826</span>
+<span class="normal">827</span>
+<span class="normal">828</span>
+<span class="normal">829</span>
+<span class="normal">830</span>
+<span class="normal">831</span>
+<span class="normal">832</span>
+<span class="normal">833</span>
+<span class="normal">834</span>
+<span class="normal">835</span>
+<span class="normal">836</span>
+<span class="normal">837</span>
+<span class="normal">838</span>
+<span class="normal">839</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">screened_poisson</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">depth</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">8</span><span class="p">,</span>
     <span class="n">full_depth</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">5</span><span class="p">,</span>
     <span class="n">scale</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.1</span><span class="p">,</span>
-    <span class="n">point_weight</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">4.0</span><span class="p">,</span>
-    <span class="n">solver_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">100</span><span class="p">,</span>
+    <span class="n">point_weight</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">solver_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">solver_tolerance</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1e-5</span><span class="p">,</span>
     <span class="n">confidence</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"dense"</span><span class="p">,</span> <span class="s2">"adaptive"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"dense"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"dense"</span><span class="p">,</span> <span class="s2">"adaptive"</span><span class="p">,</span> <span class="s2">"octree"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"dense"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Screened-Poisson surface reconstruction from an oriented point cloud (Kazhdan PoissonRecon).</span>
@@ -7894,7 +8003,8 @@ taken from it.</p>
 <span class="sd">    given by the average of ``x`` over the input points. A **cascadic** coarse-to-fine schedule</span>
 <span class="sd">    solves the system from ``full_depth`` up to ``depth``, prolonging each level's solution as the</span>
 <span class="sd">    next level's initial guess (mirroring PoissonRecon's multigrid hierarchy); ``method`` describes</span>
-<span class="sd">    the adaptive backend's variant of the schedule.</span>
+<span class="sd">    the adaptive backend's variant of the schedule, and ``method="octree"`` instead reproduces</span>
+<span class="sd">    PoissonRecon's own system and solver, the surface ``open3d`` returns.</span>
 
 <span class="sd">    ``normals`` are **required** and must be globally consistently oriented (all pointing outward or</span>
 <span class="sd">    all inward): the reconstruction encodes the surface orientation in the sign of the vector field,</span>
@@ -7922,21 +8032,26 @@ taken from it.</p>
 <span class="sd">    point_weight</span>
 <span class="sd">        Screening weight ``alpha`` tying the iso-surface to the input samples. ``0`` recovers the</span>
 <span class="sd">        unscreened Poisson reconstruction (a tiny epsilon is still added to keep the operator SPD).</span>
+<span class="sd">        ``None`` is ``4`` for ``"dense"`` and ``"adaptive"``, and ``2`` for ``"octree"``, which</span>
+<span class="sd">        multiplies it by the samples' mean area weight as PoissonRecon does.</span>
 <span class="sd">    solver_iterations</span>
 <span class="sd">        Maximum conjugate-gradient iterations per dense level (every level of the dense backend,</span>
 <span class="sd">        the adaptive backend's dense base). The default leaves room: the multigrid-preconditioned</span>
 <span class="sd">        solve reaches the default tolerance in a dozen or so at any depth. The adaptive backend's</span>
 <span class="sd">        band levels instead run a fixed, smaller number of Jacobi-preconditioned rounds, capped by</span>
-<span class="sd">        this value: each only corrects its coarser level's solution near the surface.</span>
+<span class="sd">        this value: each only corrects its coarser level's solution near the surface. ``None`` is</span>
+<span class="sd">        ``100``, and for ``"octree"`` ``8``: the Gauss-Seidel sweeps of each depth.</span>
 <span class="sd">    solver_tolerance</span>
-<span class="sd">        Relative residual tolerance for the conjugate-gradient solves. A dense level that stops at</span>
-<span class="sd">        ``solver_iterations`` above it warns; an adaptive band level stops at it or at its fixed</span>
-<span class="sd">        round count and never warns. The system is solved in ``float32``, whose rounding bounds</span>
-<span class="sd">        the relative residual either backend can actually reach at a few ``1e-6`` -- a tolerance</span>
-<span class="sd">        below that is never met and only spends the whole iteration budget.</span>
+<span class="sd">        Relative residual tolerance for the conjugate-gradient solves (not read by ``"octree"``).</span>
+<span class="sd">        A dense level that stops at ``solver_iterations`` above it warns; an adaptive band level</span>
+<span class="sd">        stops at it or at its fixed round count and never warns. The system is solved in</span>
+<span class="sd">        ``float32``, whose rounding bounds the relative residual either backend can actually reach</span>
+<span class="sd">        at a few ``1e-6`` -- a tolerance below that is never met and only spends the whole</span>
+<span class="sd">        iteration budget.</span>
 <span class="sd">    confidence</span>
 <span class="sd">        When ``True``, weight each sample's splat by ``|normals[i]|`` (treating the normal magnitude</span>
-<span class="sd">        as a per-sample confidence), matching PoissonRecon's ``confidence`` flag.</span>
+<span class="sd">        as a per-sample confidence), matching PoissonRecon's ``confidence`` flag. Not available</span>
+<span class="sd">        with ``"octree"``, which, like ``open3d``, uses unit normals.</span>
 <span class="sd">    method</span>
 <span class="sd">        Solver backend. ``"dense"`` (default) solves on the whole node lattice described above.</span>
 <span class="sd">        ``"adaptive"`` solves the same lattice's system stored only near the surface: below</span>
@@ -7947,27 +8062,39 @@ taken from it.</p>
 <span class="sd">        surface agrees with ``dense`` to a small fraction of a cell, its cost follows the surface</span>
 <span class="sd">        rather than the volume, and it runs at ``depth=10``, whose dense lattice does not fit a</span>
 <span class="sd">        32 GB device. With ``depth == full_depth`` there is no band and it is the dense solve.</span>
+<span class="sd">        ``"octree"`` solves PoissonRecon's system the way ``open3d``'s</span>
+<span class="sd">        ``create_from_point_cloud_poisson`` does, at the same parameters: hierarchical trilinear</span>
+<span class="sd">        elements of every depth, active only near the samples above ``full_depth``, a normal field</span>
+<span class="sd">        splatted at each sample's estimated depth, screening scaled by the samples' mean area, and</span>
+<span class="sd">        one cascadic pass of ``solver_iterations`` Gauss-Seidel sweeps per depth -- not a converged</span>
+<span class="sd">        solve, and the surface follows that. Its mesh is ``open3d``'s, run on one thread: the same</span>
+<span class="sd">        vertices and triangles, stitched across changes of depth as ``open3d`` stitches them,</span>
+<span class="sd">        except where ``open3d``'s minimal-area split of a polygon is decided by rounding (a few</span>
+<span class="sd">        percent of the triangles; the surface is the same). Those triangles are returned as is:</span>
+<span class="sd">        not filtered for degeneracy nor reoriented. ``depth`` is at most 9.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
 <span class="sd">    vertices : wp.array[wp.vec3]</span>
 <span class="sd">        ``(n_vertices,)`` iso-surface vertices on ``points.device``.</span>
 <span class="sd">    faces : wp.array[wp.int32]</span>
-<span class="sd">        ``(3 * n_faces,)`` flat triangle index buffer, free of degenerate triangles in</span>
+<span class="sd">        ``(3 * n_faces,)`` flat triangle index buffer. With ``"dense"`` and ``"adaptive"`` it is</span>
+<span class="sd">        free of degenerate triangles in</span>
 <span class="sd">        [`face_nondegenerate_mask`][ordito.triangles.face_nondegenerate_mask]'s sense and oriented</span>
-<span class="sd">        outward ([`make_normals_outward`][ordito.repair.make_normals_outward]). The extraction</span>
-<span class="sd">        keeps every vertex a small fraction of a lattice edge off the lattice nodes, which bounds</span>
-<span class="sd">        every triangle's altitudes away from zero without changing the surface's topology, so the</span>
-<span class="sd">        guarantee costs no hole; a lattice so fine that its spacing nears the merge tolerance falls</span>
-<span class="sd">        back to dropping the faces</span>
+<span class="sd">        outward ([`make_normals_outward`][ordito.repair.make_normals_outward]); with ``"octree"``</span>
+<span class="sd">        it is ``open3d``'s winding. Every extraction keeps every vertex a small fraction of a</span>
+<span class="sd">        lattice edge off the lattice nodes, which bounds every marching-cubes triangle's altitudes</span>
+<span class="sd">        away from zero without changing the surface's topology, so the guarantee costs no hole; a</span>
+<span class="sd">        lattice so fine that its spacing nears the merge tolerance falls back to dropping the faces</span>
 <span class="sd">        ([`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces]).</span>
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
 <span class="sd">        If ``points`` has fewer than 3 points, ``normals`` does not have one entry per point, the</span>
-<span class="sd">        depth/scale parameters are out of range, or ``method`` is not ``"dense"`` or</span>
-<span class="sd">        ``"adaptive"``.</span>
+<span class="sd">        depth/scale parameters are out of range, ``method`` is not ``"dense"``, ``"adaptive"`` or</span>
+<span class="sd">        ``"octree"``, or with ``"octree"`` ``depth`` is above 9, ``confidence`` is set or no normal</span>
+<span class="sd">        is nonzero.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``points`` and ``normals`` are not all on one device.</span>
 
@@ -8044,8 +8171,21 @@ taken from it.</p>
         <span class="c1"># than raising, so those points would silently splat onto the boundary node instead of</span>
         <span class="c1"># being rejected or the cube being grown.</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"screened_poisson requires scale &gt;= 1, got </span><span class="si">{</span><span class="n">scale</span><span class="si">}</span><span class="s2">."</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"dense"</span><span class="p">,</span> <span class="s2">"adaptive"</span><span class="p">):</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"screened_poisson method must be 'dense' or 'adaptive', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">."</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"dense"</span><span class="p">,</span> <span class="s2">"adaptive"</span><span class="p">,</span> <span class="s2">"octree"</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"screened_poisson method must be 'dense', 'adaptive' or 'octree', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">."</span>
+        <span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"octree"</span> <span class="ow">and</span> <span class="n">depth</span> <span class="o">&gt;</span> <span class="n">_OCTREE_MAX_DEPTH</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"screened_poisson with method='octree' requires depth &lt;= </span><span class="si">{</span><span class="n">_OCTREE_MAX_DEPTH</span><span class="si">}</span><span class="s2">, got "</span>
+            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">depth</span><span class="si">}</span><span class="s2">."</span>
+        <span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"octree"</span> <span class="ow">and</span> <span class="n">confidence</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"screened_poisson with method='octree' does not take confidence=True."</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">point_weight</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">point_weight</span> <span class="o">=</span> <span class="mf">2.0</span> <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"octree"</span> <span class="k">else</span> <span class="mf">4.0</span>
+    <span class="k">if</span> <span class="n">solver_iterations</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">solver_iterations</span> <span class="o">=</span> <span class="mi">8</span> <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"octree"</span> <span class="k">else</span> <span class="mi">100</span>
 
     <span class="n">device</span> <span class="o">=</span> <span class="n">points</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n</span> <span class="o">=</span> <span class="n">points</span><span class="o">.</span><span class="n">size</span>
@@ -8062,6 +8202,16 @@ taken from it.</p>
     <span class="c1"># Effective screening weight: a floor keeps the operator SPD even at point_weight == 0.</span>
     <span class="n">screen</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">point_weight</span><span class="p">),</span> <span class="mf">1e-4</span><span class="p">)</span>
 
+    <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"octree"</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_screened_poisson_octree</span><span class="p">(</span>
+            <span class="n">points</span><span class="p">,</span>
+            <span class="n">normals</span><span class="p">,</span>
+            <span class="n">scale</span><span class="o">=</span><span class="n">scale</span><span class="p">,</span>
+            <span class="n">depth</span><span class="o">=</span><span class="n">depth</span><span class="p">,</span>
+            <span class="n">full_depth</span><span class="o">=</span><span class="n">full_depth</span><span class="p">,</span>
+            <span class="n">point_weight</span><span class="o">=</span><span class="nb">float</span><span class="p">(</span><span class="n">point_weight</span><span class="p">),</span>
+            <span class="n">iterations</span><span class="o">=</span><span class="n">solver_iterations</span><span class="p">,</span>
+        <span class="p">)</span>
     <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"adaptive"</span> <span class="ow">and</span> <span class="n">full_depth</span> <span class="o">&lt;</span> <span class="n">depth</span><span class="p">:</span>
         <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">_screened_poisson_band</span><span class="p">(</span>
             <span class="n">points</span><span class="p">,</span>
@@ -8363,138 +8513,138 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2236</span>
-<span class="normal">2237</span>
-<span class="normal">2238</span>
-<span class="normal">2239</span>
-<span class="normal">2240</span>
-<span class="normal">2241</span>
-<span class="normal">2242</span>
-<span class="normal">2243</span>
-<span class="normal">2244</span>
-<span class="normal">2245</span>
-<span class="normal">2246</span>
-<span class="normal">2247</span>
-<span class="normal">2248</span>
-<span class="normal">2249</span>
-<span class="normal">2250</span>
-<span class="normal">2251</span>
-<span class="normal">2252</span>
-<span class="normal">2253</span>
-<span class="normal">2254</span>
-<span class="normal">2255</span>
-<span class="normal">2256</span>
-<span class="normal">2257</span>
-<span class="normal">2258</span>
-<span class="normal">2259</span>
-<span class="normal">2260</span>
-<span class="normal">2261</span>
-<span class="normal">2262</span>
-<span class="normal">2263</span>
-<span class="normal">2264</span>
-<span class="normal">2265</span>
-<span class="normal">2266</span>
-<span class="normal">2267</span>
-<span class="normal">2268</span>
-<span class="normal">2269</span>
-<span class="normal">2270</span>
-<span class="normal">2271</span>
-<span class="normal">2272</span>
-<span class="normal">2273</span>
-<span class="normal">2274</span>
-<span class="normal">2275</span>
-<span class="normal">2276</span>
-<span class="normal">2277</span>
-<span class="normal">2278</span>
-<span class="normal">2279</span>
-<span class="normal">2280</span>
-<span class="normal">2281</span>
-<span class="normal">2282</span>
-<span class="normal">2283</span>
-<span class="normal">2284</span>
-<span class="normal">2285</span>
-<span class="normal">2286</span>
-<span class="normal">2287</span>
-<span class="normal">2288</span>
-<span class="normal">2289</span>
-<span class="normal">2290</span>
-<span class="normal">2291</span>
-<span class="normal">2292</span>
-<span class="normal">2293</span>
-<span class="normal">2294</span>
-<span class="normal">2295</span>
-<span class="normal">2296</span>
-<span class="normal">2297</span>
-<span class="normal">2298</span>
-<span class="normal">2299</span>
-<span class="normal">2300</span>
-<span class="normal">2301</span>
-<span class="normal">2302</span>
-<span class="normal">2303</span>
-<span class="normal">2304</span>
-<span class="normal">2305</span>
-<span class="normal">2306</span>
-<span class="normal">2307</span>
-<span class="normal">2308</span>
-<span class="normal">2309</span>
-<span class="normal">2310</span>
-<span class="normal">2311</span>
-<span class="normal">2312</span>
-<span class="normal">2313</span>
-<span class="normal">2314</span>
-<span class="normal">2315</span>
-<span class="normal">2316</span>
-<span class="normal">2317</span>
-<span class="normal">2318</span>
-<span class="normal">2319</span>
-<span class="normal">2320</span>
-<span class="normal">2321</span>
-<span class="normal">2322</span>
-<span class="normal">2323</span>
-<span class="normal">2324</span>
-<span class="normal">2325</span>
-<span class="normal">2326</span>
-<span class="normal">2327</span>
-<span class="normal">2328</span>
-<span class="normal">2329</span>
-<span class="normal">2330</span>
-<span class="normal">2331</span>
-<span class="normal">2332</span>
-<span class="normal">2333</span>
-<span class="normal">2334</span>
-<span class="normal">2335</span>
-<span class="normal">2336</span>
-<span class="normal">2337</span>
-<span class="normal">2338</span>
-<span class="normal">2339</span>
-<span class="normal">2340</span>
-<span class="normal">2341</span>
-<span class="normal">2342</span>
-<span class="normal">2343</span>
-<span class="normal">2344</span>
-<span class="normal">2345</span>
-<span class="normal">2346</span>
-<span class="normal">2347</span>
-<span class="normal">2348</span>
-<span class="normal">2349</span>
-<span class="normal">2350</span>
-<span class="normal">2351</span>
-<span class="normal">2352</span>
-<span class="normal">2353</span>
-<span class="normal">2354</span>
-<span class="normal">2355</span>
-<span class="normal">2356</span>
-<span class="normal">2357</span>
-<span class="normal">2358</span>
-<span class="normal">2359</span>
-<span class="normal">2360</span>
-<span class="normal">2361</span>
-<span class="normal">2362</span>
-<span class="normal">2363</span>
-<span class="normal">2364</span>
-<span class="normal">2365</span>
-<span class="normal">2366</span>
-<span class="normal">2367</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2906</span>
+<span class="normal">2907</span>
+<span class="normal">2908</span>
+<span class="normal">2909</span>
+<span class="normal">2910</span>
+<span class="normal">2911</span>
+<span class="normal">2912</span>
+<span class="normal">2913</span>
+<span class="normal">2914</span>
+<span class="normal">2915</span>
+<span class="normal">2916</span>
+<span class="normal">2917</span>
+<span class="normal">2918</span>
+<span class="normal">2919</span>
+<span class="normal">2920</span>
+<span class="normal">2921</span>
+<span class="normal">2922</span>
+<span class="normal">2923</span>
+<span class="normal">2924</span>
+<span class="normal">2925</span>
+<span class="normal">2926</span>
+<span class="normal">2927</span>
+<span class="normal">2928</span>
+<span class="normal">2929</span>
+<span class="normal">2930</span>
+<span class="normal">2931</span>
+<span class="normal">2932</span>
+<span class="normal">2933</span>
+<span class="normal">2934</span>
+<span class="normal">2935</span>
+<span class="normal">2936</span>
+<span class="normal">2937</span>
+<span class="normal">2938</span>
+<span class="normal">2939</span>
+<span class="normal">2940</span>
+<span class="normal">2941</span>
+<span class="normal">2942</span>
+<span class="normal">2943</span>
+<span class="normal">2944</span>
+<span class="normal">2945</span>
+<span class="normal">2946</span>
+<span class="normal">2947</span>
+<span class="normal">2948</span>
+<span class="normal">2949</span>
+<span class="normal">2950</span>
+<span class="normal">2951</span>
+<span class="normal">2952</span>
+<span class="normal">2953</span>
+<span class="normal">2954</span>
+<span class="normal">2955</span>
+<span class="normal">2956</span>
+<span class="normal">2957</span>
+<span class="normal">2958</span>
+<span class="normal">2959</span>
+<span class="normal">2960</span>
+<span class="normal">2961</span>
+<span class="normal">2962</span>
+<span class="normal">2963</span>
+<span class="normal">2964</span>
+<span class="normal">2965</span>
+<span class="normal">2966</span>
+<span class="normal">2967</span>
+<span class="normal">2968</span>
+<span class="normal">2969</span>
+<span class="normal">2970</span>
+<span class="normal">2971</span>
+<span class="normal">2972</span>
+<span class="normal">2973</span>
+<span class="normal">2974</span>
+<span class="normal">2975</span>
+<span class="normal">2976</span>
+<span class="normal">2977</span>
+<span class="normal">2978</span>
+<span class="normal">2979</span>
+<span class="normal">2980</span>
+<span class="normal">2981</span>
+<span class="normal">2982</span>
+<span class="normal">2983</span>
+<span class="normal">2984</span>
+<span class="normal">2985</span>
+<span class="normal">2986</span>
+<span class="normal">2987</span>
+<span class="normal">2988</span>
+<span class="normal">2989</span>
+<span class="normal">2990</span>
+<span class="normal">2991</span>
+<span class="normal">2992</span>
+<span class="normal">2993</span>
+<span class="normal">2994</span>
+<span class="normal">2995</span>
+<span class="normal">2996</span>
+<span class="normal">2997</span>
+<span class="normal">2998</span>
+<span class="normal">2999</span>
+<span class="normal">3000</span>
+<span class="normal">3001</span>
+<span class="normal">3002</span>
+<span class="normal">3003</span>
+<span class="normal">3004</span>
+<span class="normal">3005</span>
+<span class="normal">3006</span>
+<span class="normal">3007</span>
+<span class="normal">3008</span>
+<span class="normal">3009</span>
+<span class="normal">3010</span>
+<span class="normal">3011</span>
+<span class="normal">3012</span>
+<span class="normal">3013</span>
+<span class="normal">3014</span>
+<span class="normal">3015</span>
+<span class="normal">3016</span>
+<span class="normal">3017</span>
+<span class="normal">3018</span>
+<span class="normal">3019</span>
+<span class="normal">3020</span>
+<span class="normal">3021</span>
+<span class="normal">3022</span>
+<span class="normal">3023</span>
+<span class="normal">3024</span>
+<span class="normal">3025</span>
+<span class="normal">3026</span>
+<span class="normal">3027</span>
+<span class="normal">3028</span>
+<span class="normal">3029</span>
+<span class="normal">3030</span>
+<span class="normal">3031</span>
+<span class="normal">3032</span>
+<span class="normal">3033</span>
+<span class="normal">3034</span>
+<span class="normal">3035</span>
+<span class="normal">3036</span>
+<span class="normal">3037</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -8938,174 +9088,174 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2370</span>
-<span class="normal">2371</span>
-<span class="normal">2372</span>
-<span class="normal">2373</span>
-<span class="normal">2374</span>
-<span class="normal">2375</span>
-<span class="normal">2376</span>
-<span class="normal">2377</span>
-<span class="normal">2378</span>
-<span class="normal">2379</span>
-<span class="normal">2380</span>
-<span class="normal">2381</span>
-<span class="normal">2382</span>
-<span class="normal">2383</span>
-<span class="normal">2384</span>
-<span class="normal">2385</span>
-<span class="normal">2386</span>
-<span class="normal">2387</span>
-<span class="normal">2388</span>
-<span class="normal">2389</span>
-<span class="normal">2390</span>
-<span class="normal">2391</span>
-<span class="normal">2392</span>
-<span class="normal">2393</span>
-<span class="normal">2394</span>
-<span class="normal">2395</span>
-<span class="normal">2396</span>
-<span class="normal">2397</span>
-<span class="normal">2398</span>
-<span class="normal">2399</span>
-<span class="normal">2400</span>
-<span class="normal">2401</span>
-<span class="normal">2402</span>
-<span class="normal">2403</span>
-<span class="normal">2404</span>
-<span class="normal">2405</span>
-<span class="normal">2406</span>
-<span class="normal">2407</span>
-<span class="normal">2408</span>
-<span class="normal">2409</span>
-<span class="normal">2410</span>
-<span class="normal">2411</span>
-<span class="normal">2412</span>
-<span class="normal">2413</span>
-<span class="normal">2414</span>
-<span class="normal">2415</span>
-<span class="normal">2416</span>
-<span class="normal">2417</span>
-<span class="normal">2418</span>
-<span class="normal">2419</span>
-<span class="normal">2420</span>
-<span class="normal">2421</span>
-<span class="normal">2422</span>
-<span class="normal">2423</span>
-<span class="normal">2424</span>
-<span class="normal">2425</span>
-<span class="normal">2426</span>
-<span class="normal">2427</span>
-<span class="normal">2428</span>
-<span class="normal">2429</span>
-<span class="normal">2430</span>
-<span class="normal">2431</span>
-<span class="normal">2432</span>
-<span class="normal">2433</span>
-<span class="normal">2434</span>
-<span class="normal">2435</span>
-<span class="normal">2436</span>
-<span class="normal">2437</span>
-<span class="normal">2438</span>
-<span class="normal">2439</span>
-<span class="normal">2440</span>
-<span class="normal">2441</span>
-<span class="normal">2442</span>
-<span class="normal">2443</span>
-<span class="normal">2444</span>
-<span class="normal">2445</span>
-<span class="normal">2446</span>
-<span class="normal">2447</span>
-<span class="normal">2448</span>
-<span class="normal">2449</span>
-<span class="normal">2450</span>
-<span class="normal">2451</span>
-<span class="normal">2452</span>
-<span class="normal">2453</span>
-<span class="normal">2454</span>
-<span class="normal">2455</span>
-<span class="normal">2456</span>
-<span class="normal">2457</span>
-<span class="normal">2458</span>
-<span class="normal">2459</span>
-<span class="normal">2460</span>
-<span class="normal">2461</span>
-<span class="normal">2462</span>
-<span class="normal">2463</span>
-<span class="normal">2464</span>
-<span class="normal">2465</span>
-<span class="normal">2466</span>
-<span class="normal">2467</span>
-<span class="normal">2468</span>
-<span class="normal">2469</span>
-<span class="normal">2470</span>
-<span class="normal">2471</span>
-<span class="normal">2472</span>
-<span class="normal">2473</span>
-<span class="normal">2474</span>
-<span class="normal">2475</span>
-<span class="normal">2476</span>
-<span class="normal">2477</span>
-<span class="normal">2478</span>
-<span class="normal">2479</span>
-<span class="normal">2480</span>
-<span class="normal">2481</span>
-<span class="normal">2482</span>
-<span class="normal">2483</span>
-<span class="normal">2484</span>
-<span class="normal">2485</span>
-<span class="normal">2486</span>
-<span class="normal">2487</span>
-<span class="normal">2488</span>
-<span class="normal">2489</span>
-<span class="normal">2490</span>
-<span class="normal">2491</span>
-<span class="normal">2492</span>
-<span class="normal">2493</span>
-<span class="normal">2494</span>
-<span class="normal">2495</span>
-<span class="normal">2496</span>
-<span class="normal">2497</span>
-<span class="normal">2498</span>
-<span class="normal">2499</span>
-<span class="normal">2500</span>
-<span class="normal">2501</span>
-<span class="normal">2502</span>
-<span class="normal">2503</span>
-<span class="normal">2504</span>
-<span class="normal">2505</span>
-<span class="normal">2506</span>
-<span class="normal">2507</span>
-<span class="normal">2508</span>
-<span class="normal">2509</span>
-<span class="normal">2510</span>
-<span class="normal">2511</span>
-<span class="normal">2512</span>
-<span class="normal">2513</span>
-<span class="normal">2514</span>
-<span class="normal">2515</span>
-<span class="normal">2516</span>
-<span class="normal">2517</span>
-<span class="normal">2518</span>
-<span class="normal">2519</span>
-<span class="normal">2520</span>
-<span class="normal">2521</span>
-<span class="normal">2522</span>
-<span class="normal">2523</span>
-<span class="normal">2524</span>
-<span class="normal">2525</span>
-<span class="normal">2526</span>
-<span class="normal">2527</span>
-<span class="normal">2528</span>
-<span class="normal">2529</span>
-<span class="normal">2530</span>
-<span class="normal">2531</span>
-<span class="normal">2532</span>
-<span class="normal">2533</span>
-<span class="normal">2534</span>
-<span class="normal">2535</span>
-<span class="normal">2536</span>
-<span class="normal">2537</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3040</span>
+<span class="normal">3041</span>
+<span class="normal">3042</span>
+<span class="normal">3043</span>
+<span class="normal">3044</span>
+<span class="normal">3045</span>
+<span class="normal">3046</span>
+<span class="normal">3047</span>
+<span class="normal">3048</span>
+<span class="normal">3049</span>
+<span class="normal">3050</span>
+<span class="normal">3051</span>
+<span class="normal">3052</span>
+<span class="normal">3053</span>
+<span class="normal">3054</span>
+<span class="normal">3055</span>
+<span class="normal">3056</span>
+<span class="normal">3057</span>
+<span class="normal">3058</span>
+<span class="normal">3059</span>
+<span class="normal">3060</span>
+<span class="normal">3061</span>
+<span class="normal">3062</span>
+<span class="normal">3063</span>
+<span class="normal">3064</span>
+<span class="normal">3065</span>
+<span class="normal">3066</span>
+<span class="normal">3067</span>
+<span class="normal">3068</span>
+<span class="normal">3069</span>
+<span class="normal">3070</span>
+<span class="normal">3071</span>
+<span class="normal">3072</span>
+<span class="normal">3073</span>
+<span class="normal">3074</span>
+<span class="normal">3075</span>
+<span class="normal">3076</span>
+<span class="normal">3077</span>
+<span class="normal">3078</span>
+<span class="normal">3079</span>
+<span class="normal">3080</span>
+<span class="normal">3081</span>
+<span class="normal">3082</span>
+<span class="normal">3083</span>
+<span class="normal">3084</span>
+<span class="normal">3085</span>
+<span class="normal">3086</span>
+<span class="normal">3087</span>
+<span class="normal">3088</span>
+<span class="normal">3089</span>
+<span class="normal">3090</span>
+<span class="normal">3091</span>
+<span class="normal">3092</span>
+<span class="normal">3093</span>
+<span class="normal">3094</span>
+<span class="normal">3095</span>
+<span class="normal">3096</span>
+<span class="normal">3097</span>
+<span class="normal">3098</span>
+<span class="normal">3099</span>
+<span class="normal">3100</span>
+<span class="normal">3101</span>
+<span class="normal">3102</span>
+<span class="normal">3103</span>
+<span class="normal">3104</span>
+<span class="normal">3105</span>
+<span class="normal">3106</span>
+<span class="normal">3107</span>
+<span class="normal">3108</span>
+<span class="normal">3109</span>
+<span class="normal">3110</span>
+<span class="normal">3111</span>
+<span class="normal">3112</span>
+<span class="normal">3113</span>
+<span class="normal">3114</span>
+<span class="normal">3115</span>
+<span class="normal">3116</span>
+<span class="normal">3117</span>
+<span class="normal">3118</span>
+<span class="normal">3119</span>
+<span class="normal">3120</span>
+<span class="normal">3121</span>
+<span class="normal">3122</span>
+<span class="normal">3123</span>
+<span class="normal">3124</span>
+<span class="normal">3125</span>
+<span class="normal">3126</span>
+<span class="normal">3127</span>
+<span class="normal">3128</span>
+<span class="normal">3129</span>
+<span class="normal">3130</span>
+<span class="normal">3131</span>
+<span class="normal">3132</span>
+<span class="normal">3133</span>
+<span class="normal">3134</span>
+<span class="normal">3135</span>
+<span class="normal">3136</span>
+<span class="normal">3137</span>
+<span class="normal">3138</span>
+<span class="normal">3139</span>
+<span class="normal">3140</span>
+<span class="normal">3141</span>
+<span class="normal">3142</span>
+<span class="normal">3143</span>
+<span class="normal">3144</span>
+<span class="normal">3145</span>
+<span class="normal">3146</span>
+<span class="normal">3147</span>
+<span class="normal">3148</span>
+<span class="normal">3149</span>
+<span class="normal">3150</span>
+<span class="normal">3151</span>
+<span class="normal">3152</span>
+<span class="normal">3153</span>
+<span class="normal">3154</span>
+<span class="normal">3155</span>
+<span class="normal">3156</span>
+<span class="normal">3157</span>
+<span class="normal">3158</span>
+<span class="normal">3159</span>
+<span class="normal">3160</span>
+<span class="normal">3161</span>
+<span class="normal">3162</span>
+<span class="normal">3163</span>
+<span class="normal">3164</span>
+<span class="normal">3165</span>
+<span class="normal">3166</span>
+<span class="normal">3167</span>
+<span class="normal">3168</span>
+<span class="normal">3169</span>
+<span class="normal">3170</span>
+<span class="normal">3171</span>
+<span class="normal">3172</span>
+<span class="normal">3173</span>
+<span class="normal">3174</span>
+<span class="normal">3175</span>
+<span class="normal">3176</span>
+<span class="normal">3177</span>
+<span class="normal">3178</span>
+<span class="normal">3179</span>
+<span class="normal">3180</span>
+<span class="normal">3181</span>
+<span class="normal">3182</span>
+<span class="normal">3183</span>
+<span class="normal">3184</span>
+<span class="normal">3185</span>
+<span class="normal">3186</span>
+<span class="normal">3187</span>
+<span class="normal">3188</span>
+<span class="normal">3189</span>
+<span class="normal">3190</span>
+<span class="normal">3191</span>
+<span class="normal">3192</span>
+<span class="normal">3193</span>
+<span class="normal">3194</span>
+<span class="normal">3195</span>
+<span class="normal">3196</span>
+<span class="normal">3197</span>
+<span class="normal">3198</span>
+<span class="normal">3199</span>
+<span class="normal">3200</span>
+<span class="normal">3201</span>
+<span class="normal">3202</span>
+<span class="normal">3203</span>
+<span class="normal">3204</span>
+<span class="normal">3205</span>
+<span class="normal">3206</span>
+<span class="normal">3207</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
