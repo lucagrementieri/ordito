@@ -1817,8 +1817,8 @@ def _log_map(mesh: Trimesh, owned: bool, source: int, t: float | None) -> wp.arr
     # ``[vector system; heat system]`` for the reason ``transport_tangent_vectors`` gives.
     sources = _launch.empty(1, dtype=wp.int32, device=device)
     rows = 3 * n_vertices
-    # The stack's right-hand side and solution, and the divergence's sums: one buffer.
-    rhs, diffused, scratch = _zeroed_fields(device, rows, rows, n_vertices)
+    # The stack's right-hand side and solution, the divergence's sums and the distance: one buffer.
+    rhs, diffused, scratch, phi = _zeroed_fields(device, rows, rows, n_vertices, n_vertices)
     _launch.launch(
         kernel_heat.seed_log_map_source,
         dim=1,
@@ -1833,7 +1833,7 @@ def _log_map(mesh: Trimesh, owned: bool, source: int, t: float | None) -> wp.arr
     # expressed in each vertex's frame.
     order = _corner_order(mesh, solver)
     distance = _distance_from_heat(
-        mesh, solver, sources, _launch.view(diffused, 2 * n_vertices, rows), order, scratch
+        mesh, solver, sources, _launch.view(diffused, 2 * n_vertices, rows), order, scratch, phi
     )
     normals, areas = scalar[6], scalar[7]
     n_faces = faces.size // 3
@@ -1866,13 +1866,15 @@ def _distance_from_heat(
     heat: wp.array[wp.float64],
     order: _CornerOrder,
     scratch: wp.array[wp.float64],
+    phi: wp.array[wp.float64] | None = None,
 ) -> wp.array[wp.float64]:
     """
     ``heat_geodesic`` from the diffused heat on: the divergence, the Poisson solve and the shift.
 
     Split out so ``log_map`` can diffuse the heat inside a stacked solve of its own. ``order`` is
     `_corner_order`'s choice of how per-face terms reach the vertices; ``scratch`` is a zeroed
-    ``(n_vertices,)`` buffer the divergence is summed into.
+    ``(n_vertices,)`` buffer the divergence is summed into, and ``phi``, when given, a zeroed one
+    the distance is solved into (allocated here otherwise).
     """
     vertices, faces = mesh.vertices, mesh.faces
     device = vertices.device
@@ -1898,7 +1900,8 @@ def _distance_from_heat(
     )
     _sum_corner_outputs(order, corner_divergence, neg_divergence)
 
-    phi = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    if phi is None:
+        phi = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     solver.solve_poisson(neg_divergence, phi)
 
     # Shift so the field's mean over the sources is zero, and orient it positive -- the
