@@ -1354,7 +1354,8 @@ def _octree_extract(
     table = _octree_extraction_table(wp.get_device(device).alias)
     iso32 = wp.float32(iso)
 
-    sources = _launch.empty(node_offsets_host[-1], dtype=wp.int32, device=device)
+    # A depth or -1 a node: ``int8`` holds it.
+    sources = _launch.empty(node_offsets_host[-1], dtype=wp.int8, device=device)
     # The edges' owners and partners, both unset, in one allocation.
     n_edges = edge_offsets_host[-1]
     unset = _launch.full(2 * n_edges, -1, dtype=wp.int32, device=device)

@@ -1460,7 +1460,7 @@ def corner_sources(
     flags: wp.array[wp.int32],
     flag_offsets: wp.array[wp.int32],
     node_offsets: wp.array[wp.int32],
-    sources: wp.array[wp.int32],
+    sources: wp.array[wp.int8],
 ) -> None:
     # The depth whose value a depth ``d`` leaf reads at this lattice node: the deepest leaf having
     # the point as a corner (copied up the lattices finest first), ``d`` itself when only depth
@@ -1469,17 +1469,17 @@ def corner_sources(
     node = wp.vec3i(i, j, k)
     source = wp.int32(-1)
     if d < depth:
-        source = sources[node_offsets[d + 1] + lattice_index(d + 1, 2 * node)]
+        source = wp.int32(sources[node_offsets[d + 1] + lattice_index(d + 1, 2 * node)])
     if source < 0 and touched_by_leaf(flags, flag_offsets, depth, full_depth, d, node):
         source = d
-    sources[node_offsets[d] + lattice_index(d, node)] = source
+    sources[node_offsets[d] + lattice_index(d, node)] = wp.int8(source)
 
 
 @wp.func
 def corner_sample(
     fields: wp.array[wp.float32],
     prolongeds: wp.array[wp.float32],
-    sources: wp.array[wp.int32],
+    sources: wp.array[wp.int8],
     node_offsets: wp.array[wp.int32],
     d: wp.int32,
     node: wp.vec3i,
@@ -1487,7 +1487,7 @@ def corner_sample(
 ) -> wp.vec2:
     # ``(value, slope along axis times depth d's cell width)`` a depth ``d`` leaf reads at
     # ``node``: the source depth's lattice value and slope (``corner_sources``).
-    source = sources[node_offsets[d] + lattice_index(d, node)]
+    source = wp.int32(sources[node_offsets[d] + lattice_index(d, node)])
     if source < 0:
         source = d
     shift = source - d
@@ -1504,7 +1504,7 @@ def corner_sample(
 @wp.func
 def corner_below(
     fields: wp.array[wp.float32],
-    sources: wp.array[wp.int32],
+    sources: wp.array[wp.int8],
     node_offsets: wp.array[wp.int32],
     iso: wp.float32,
     d: wp.int32,
@@ -1518,7 +1518,7 @@ def corner_below(
 @wp.func
 def cell_case(
     fields: wp.array[wp.float32],
-    sources: wp.array[wp.int32],
+    sources: wp.array[wp.int8],
     node_offsets: wp.array[wp.int32],
     iso: wp.float32,
     d: wp.int32,
@@ -1593,7 +1593,7 @@ def classify_edges(
     full_depth: wp.int32,
     iso: wp.float32,
     fields: wp.array[wp.float32],
-    sources: wp.array[wp.int32],
+    sources: wp.array[wp.int8],
     node_offsets: wp.array[wp.int32],
     flags: wp.array[wp.int32],
     flag_offsets: wp.array[wp.int32],
@@ -1654,7 +1654,7 @@ def place_edge_vertices(
     margin: wp.float32,
     fields: wp.array[wp.float32],
     prolongeds: wp.array[wp.float32],
-    sources: wp.array[wp.int32],
+    sources: wp.array[wp.int8],
     node_offsets: wp.array[wp.int32],
     edge_offsets: wp.array[wp.int32],
     created: wp.array[wp.uint32],
@@ -1776,7 +1776,7 @@ def borrowed_faces(
     full_depth: wp.int32,
     iso: wp.float32,
     fields: wp.array[wp.float32],
-    sources: wp.array[wp.int32],
+    sources: wp.array[wp.int8],
     node_offsets: wp.array[wp.int32],
     flags: wp.array[wp.int32],
     flag_offsets: wp.array[wp.int32],
@@ -1838,7 +1838,7 @@ def cell_segments(
     full_depth: wp.int32,
     iso: wp.float32,
     fields: wp.array[wp.float32],
-    sources: wp.array[wp.int32],
+    sources: wp.array[wp.int8],
     node_offsets: wp.array[wp.int32],
     flags: wp.array[wp.int32],
     flag_offsets: wp.array[wp.int32],
