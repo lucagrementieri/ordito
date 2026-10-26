@@ -124,6 +124,8 @@ class _PackedLoops:
         self.dp_total = int((self.sizes_np * self.sizes_np).sum())
         self._offsets = offsets
         self._tables: tuple[wp.array[wp.int32], ...] | None = None
+        # The perimeters a fill measured in its rim pass, with the positions it measured them on.
+        self.measured_perimeters: tuple[wp.array[wp.vec3], wp.array[wp.float32]] | None = None
 
     @property
     def offsets(self) -> wp.array[wp.int32]:
@@ -198,9 +200,13 @@ class _PackedLoops:
         ``sizes_np`` right above in this class's own constructor, not handed in from outside, so it
         already fits ``flat_loops`` by construction.
         """
-        perimeters = od.boundary.loop_perimeters_from_offsets(
-            vertices, self.flat_loops, self.offsets, validate=False
-        )
+        measured = self.measured_perimeters
+        if measured is not None and measured[0] is vertices:
+            perimeters = measured[1]
+        else:
+            perimeters = od.boundary.loop_perimeters_from_offsets(
+                vertices, self.flat_loops, self.offsets, validate=False
+            )
         # Readback: the callers threshold, rank or average the perimeters on the host. A few loops
         # come back through the cached scratch rather than a fresh host array.
         if self.n_loops <= _FEW_LOOPS:
@@ -864,6 +870,7 @@ def _fill_packed_loops(
     smooth_boundary: bool,
     *,
     n_vertices: int | None = None,
+    measure_perimeters: bool = False,
 ) -> wp.array[wp.int32]:
     """
     Min-weight-triangulate every packed loop **together** and append the fill faces.
@@ -875,7 +882,9 @@ def _fill_packed_loops(
     one-thread-per-loop traceback that keeps the predecessor table on the device. What is left on
     the host is two scalar reads of one small state buffer: whether any loop needs the fallback
     metric, and whether the traceback fell short of a full triangulation anywhere. ``n_vertices``
-    is [`_EdgeTable`][ordito.holes._EdgeTable]'s.
+    is [`_EdgeTable`][ordito.holes._EdgeTable]'s. ``measure_perimeters`` has the rim pass also
+    measure every loop's perimeter into ``loops.measured_perimeters``, for a caller that derives a
+    target from them.
     """
     device = faces.device
     # The retry flag, the traceback's shortfall and the face range flag, read back at two different
@@ -915,7 +924,12 @@ def _fill_packed_loops(
     # arrival order, and on a rim with exact metric ties the last bits of the plane pick the
     # triangulation.
     plane_normals = _launch.view(positions, 2 * total, 2 * total + n_loops)
-    char_areas = _launch.zeros(loops.n_loops, dtype=wp.float32, device=device)
+    # The perimeters, when measured, are the zeroed tail of the ``char_area`` scales' buffer.
+    rim_floats = _launch.zeros(
+        2 * n_loops if measure_perimeters else n_loops, dtype=wp.float32, device=device
+    )
+    char_areas = _launch.view(rim_floats, 0, n_loops) if measure_perimeters else rim_floats
+    perimeters = _launch.view(rim_floats, n_loops, 2 * n_loops) if measure_perimeters else None
     flat_slot = _table_view(rim_ints, 4 * total, 4 * total + n_slot_scratch)
     _launch.launch(
         kernel_holes.loop_rim_metrics,
@@ -932,6 +946,7 @@ def _fill_packed_loops(
             rim_keys,
             rim_slots,
             flat_slot,
+            perimeters,
         ],
         device=device,
     )
@@ -947,6 +962,7 @@ def _fill_packed_loops(
                 char_areas,
                 plane_normals,
                 char_areas,
+                perimeters,
             ],
             device=device,
             block_dim=kernel_boundary.LOOP_SUM_BLOCK,
@@ -958,6 +974,8 @@ def _fill_packed_loops(
             inputs=[char_areas, plane_normals, plane_normals, char_areas],
             device=device,
         )
+    if perimeters is not None:
+        loops.measured_perimeters = (vertices, perimeters)
 
     if resolve_multiple_edges:
         edge_table.forbidden_chords(loops, flat_slot, forbidden)
@@ -1636,6 +1654,7 @@ def fill_smooth(
         resolve_multiple_edges,
         smooth_boundary,
         n_vertices=n_vertices,
+        measure_perimeters=max_edge is None and not triangulate_only,
     )
     n_faces_after = faces_filled.size // 3
     patch_mask = _patch_mask(n_faces_before, n_faces_after, device)
@@ -1807,7 +1826,14 @@ def refill_region(
     # The kept faces come out of the deletion's compaction, so every index is below the kept
     # vertex count by construction and the fill needs no reduction to bound them.
     faces_filled = _fill_packed_loops(
-        kept_vertices, kept_faces, packed, metric, True, True, n_vertices=kept_vertices.size
+        kept_vertices,
+        kept_faces,
+        packed,
+        metric,
+        True,
+        True,
+        n_vertices=kept_vertices.size,
+        measure_perimeters=max_edge is None and not triangulate_only,
     )
     patch_mask = _patch_mask(n_kept_faces, faces_filled.size // 3, device)
     if triangulate_only:

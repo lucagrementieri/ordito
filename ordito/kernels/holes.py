@@ -12,7 +12,7 @@ from ordito.kernels.array import (
     update_argmin,
 )
 from ordito.kernels.array import wrap_index as _wrap
-from ordito.kernels.boundary import loop_newell_lanes
+from ordito.kernels.boundary import add_rim_edge_length, loop_newell_lanes, loop_perimeter_lanes
 from ordito.kernels.halfedge import halfedge_endpoints, halfedge_prev
 from ordito.kernels.predicates import (
     circumcircle_diameter,
@@ -268,6 +268,7 @@ def loop_rim_metrics(
     out_keys: wp.array[wp.uint64],
     out_slots: wp.array[wp.int32],
     out_flat_slot: wp.array[wp.int32],
+    out_perimeter: wp.array[wp.float32],
 ) -> None:
     # One thread per rim vertex of every loop at once. Each thread owns the rim edge leaving its
     # vertex and folds it into its loop's two per-loop scalars: the longest edge (segmented max,
@@ -279,7 +280,9 @@ def loop_rim_metrics(
     # them: the rim vertex's position (the gather ``loop_pos`` would otherwise be), the edge's
     # undirected key with its slot for the rim-opposite probe, and -- when ``out_flat_slot`` is not
     # empty, which is when the fill forbids existing chords -- where each mesh vertex sits in the
-    # packed loop buffer (``record_loop_position``) for ``mark_forbidden_chords``.
+    # packed loop buffer (``record_loop_position``) for ``mark_forbidden_chords``. When
+    # ``out_perimeter`` is not empty it also accumulates each loop's perimeter, the arrival-order
+    # ``boundary.loop_perimeters`` (``fill_smooth``'s derived refine target).
     t = wp.int32(wp.tid())
     ell = loop_id[t]
     u, v = loop_rim_edge_vertices(flat_loops, loop_id, loop_offsets, t)
@@ -291,6 +294,8 @@ def loop_rim_metrics(
         record_loop_position(u, t, out_flat_slot)
     wp.atomic_max(out_max_edge_sq, ell, wp.length_sq(c - a))
     wp.atomic_add(out_normal, ell, newell_term(a, c, vertices[flat_loops[loop_offsets[ell]]]))
+    if out_perimeter.shape[0] > 0:
+        add_rim_edge_length(out_perimeter, ell, a, c)
 
 
 @wp.kernel
@@ -317,17 +322,25 @@ def finalize_rim_metrics_ordered(
     max_edge_sq: wp.array[wp.float32],
     out_normals: wp.array[wp.vec3],
     out_char_areas: wp.array[wp.float32],
+    out_perimeter: wp.array[wp.float32],
 ) -> None:
     # ``finalize_rim_metrics`` in deterministic mode, which re-forms the Newell sum rather than
     # normalizing ``loop_rim_metrics``' arrival-order one (left unread in ``out_normals``, which it
     # overwrites): one block per loop (``boundary.LOOP_SUM_BLOCK`` lanes) sums it in a fixed lane
     # order (``boundary.loop_newell_lanes``), so the hole plane, and with it every metric tie the
-    # DP breaks, is the same on every run. Same launch count as the atomic form.
+    # DP breaks, is the same on every run. Same launch count as the atomic form. When
+    # ``out_perimeter`` is not empty the block also writes each loop's perimeter over the
+    # arrival-order one ``loop_rim_metrics`` left there, in ``boundary.loop_perimeters_ordered``'s
+    # lane order (``loop_perimeter_lanes``), so it equals that kernel's bit for bit.
     ell, lane = wp.tid()
     newell = loop_newell_lanes(flat_loops, loop_id, loop_offsets, vertices, ell, lane)
     if lane == 0:
         out_normals[ell] = wp.normalize(newell)
         out_char_areas[ell] = char_area_from_max(max_edge_sq[ell])
+    if out_perimeter.shape[0] > 0:
+        perimeter = loop_perimeter_lanes(flat_loops, loop_id, loop_offsets, vertices, ell, lane)
+        if lane == 0:
+            out_perimeter[ell] = perimeter
 
 
 @wp.kernel
