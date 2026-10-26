@@ -2750,7 +2750,10 @@ def _one_block_eligible(
     matrix: odt.SparseMatrix, n: int, preconditioner: str | SquaredLaplacianPreconditioner
 ) -> TypeGuard[odt.BsrMatrix[wp.float64]]:
     """Whether a solve can run as ``_cg_one_block``: small, compact ``float64``, a fitting one."""
-    fitting = isinstance(preconditioner, SquaredLaplacianPreconditioner) or preconditioner == "diag"
+    fitting = (
+        isinstance(preconditioner, SquaredLaplacianPreconditioner)
+        and preconditioner._is_polynomial()  # pyright: ignore[reportPrivateUsage]
+    ) or preconditioner == "diag"
     return (
         fitting
         and 0 < n <= CG_ONE_BLOCK_MAX_ROWS
@@ -3892,7 +3895,10 @@ def _cached_solver(
         and pooled
         and matrix.values.dtype == wp.float64
         and (
-            isinstance(preconditioner, SquaredLaplacianPreconditioner)
+            (
+                isinstance(preconditioner, SquaredLaplacianPreconditioner)
+                and preconditioner._is_polynomial()  # pyright: ignore[reportPrivateUsage]
+            )
             or preconditioner in ("diag", "chebyshev")
         )
         and int(matrix.nrow) > 0
@@ -4351,7 +4357,10 @@ def chebyshev_preconditioner(
 
 
 def squared_laplacian_preconditioner(
-    laplacian: odt.BsrMatrix[wp.float64], weight_sums: wp.array[wp.float64]
+    laplacian: odt.BsrMatrix[wp.float64],
+    weight_sums: wp.array[wp.float64],
+    *,
+    method: Literal["polynomial", "multigrid"] = "polynomial",
 ) -> SquaredLaplacianPreconditioner:
     """
     Preconditioner for normal equations ``(MᵀM) x = Mᵀ b`` whose square block is ``D⁻¹ L``.
@@ -4383,6 +4392,15 @@ def squared_laplacian_preconditioner(
         is left at zero, as it is in the system: an unknown no equation touches.
     weight_sums
         ``(n,)`` diagonal of ``D``, positive. ``M_ff = D⁻¹ L``; give ``1`` for an empty row.
+    method
+        How ``M_ff⁻¹`` is approximated. ``"polynomial"`` (the default) is the Chebyshev
+        polynomial above, with no setup. ``"multigrid"`` applies ``V D² V`` instead, ``V`` one
+        smoothed-aggregation V-cycle on ``L``
+        ([`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner]'s hierarchy): it
+        pays a hierarchy setup, and in exchange its iteration count stays nearly flat as ``n``
+        grows, where the polynomial's grows with ``n`` -- the choice for a system of many
+        thousands of unknowns. ``L`` must then be symmetric. When the coarsening stalls the
+        polynomial is returned instead.
 
     Returns
     -------
@@ -4393,6 +4411,8 @@ def squared_laplacian_preconditioner(
     ------
     RuntimeError
         If ``laplacian`` and ``weight_sums`` are not all on one device.
+    ValueError
+        If ``method`` is not ``"polynomial"`` or ``"multigrid"``.
 
     See Also
     --------
@@ -4430,6 +4450,12 @@ def squared_laplacian_preconditioner(
     ```
     """
     require_same_device(laplacian=laplacian.values, weight_sums=weight_sums)
+    if method == "multigrid":
+        multigrid = SquaredLaplacianPreconditioner._from_multigrid(laplacian, weight_sums)  # pyright: ignore[reportPrivateUsage]
+        if multigrid is not None:
+            return multigrid
+    elif method != "polynomial":
+        raise ValueError(f"method must be 'polynomial' or 'multigrid', got {method!r}")
     return SquaredLaplacianPreconditioner(laplacian, weight_sums)
 
 
@@ -4524,6 +4550,43 @@ class SquaredLaplacianPreconditioner:
             bound, self._n, SQUARED_LAPLACIAN_INTERVAL, SQUARED_LAPLACIAN_DEGREE, squared=True
         )
         self._narrowed: tuple[wp.array[wp.float32], wp.array[wp.float32]] | None = None
+        self._multigrid: _SquaredMultigrid | None = None
+
+    @classmethod
+    def _from_multigrid(
+        cls, laplacian: odt.BsrMatrix[wp.float64], weight_sums: wp.array[wp.float64]
+    ) -> SquaredLaplacianPreconditioner | None:
+        """
+        Build the ``V D² V`` form: a V-cycle hierarchy on ``L`` and ``D²``.
+
+        ``M_ff⁻¹ M_ff⁻ᵀ = L⁻¹ D² L⁻¹``, so with ``V ≈ L⁻¹`` one symmetric V-cycle -- its pre- and
+        post-smoothing are the same Jacobi sweeps -- the apply ``V D² V`` is symmetric
+        positive-definite, as conjugate gradient needs. ``None`` when the coarsening stalls.
+        """
+        hierarchy = _multigrid_hierarchy(laplacian, 0)
+        if hierarchy is None:
+            return None
+        self = cls.__new__(cls)
+        self._n = int(laplacian.nrow)
+        self._device = laplacian.values.device
+        squares = _launch.empty(self._n, dtype=wp.float64, device=self._device)
+        if self._n > 0:
+            _launch.launch(
+                kernel_cg.scaled_diagonal_apply,
+                dim=self._n,
+                inputs=[
+                    wp.int32(self._n),
+                    wp.int32(self._n),
+                    weight_sums,
+                    wp.float64(1.0),
+                    weight_sums,
+                ],
+                outputs=[squares],
+                device=self._device,
+            )
+        self._multigrid = _SquaredMultigrid(hierarchy, squares)
+        self._narrowed = None
+        return self
 
     @classmethod
     def from_factors(
@@ -4573,11 +4636,24 @@ class SquaredLaplacianPreconditioner:
             squared=True,
         )
         self._narrowed = narrowed
+        self._multigrid = None
         return self
 
-    def bind(self, n_columns: int, stride: int) -> _SquaredLaplacianApply:
+    def bind(self, n_columns: int, stride: int) -> _SquaredLaplacianApply | _SquaredMultigridApply:
         """Working vectors for ``n_columns`` blocks at column pitch ``stride``."""
+        if self._multigrid is not None:
+            return _SquaredMultigridApply(self._multigrid, self._n, n_columns, stride)
         return _SquaredLaplacianApply(self, n_columns, stride)
+
+    def _is_polynomial(self) -> bool:
+        """
+        Whether this is the polynomial form, the one pooled states and ``_cg_one_block`` take.
+
+        The ``V D² V`` form's hierarchy is derived from ``L`` by a whole setup, which a pooled
+        state's copy-in-place ``refresh`` cannot redo, and the one-block kernel applies only the
+        polynomial.
+        """
+        return self._multigrid is None
 
     def _shares_pattern(self) -> bool:
         """Whether ``Bᵀ`` is stored over ``B``'s own pattern arrays, as region solves write it."""
@@ -4588,6 +4664,9 @@ class SquaredLaplacianPreconditioner:
 
     def _pool_shape(self) -> tuple[object, ...]:
         """Return what a pooled solver state's copy of this must match to be rewritten in place."""
+        if self._multigrid is not None:
+            # Never pooled (``_is_polynomial``): the key only has to be distinct.
+            return ("squared-multigrid", id(self))
         return (
             "squared",
             self._shares_pattern(),
@@ -4612,6 +4691,7 @@ class SquaredLaplacianPreconditioner:
         )
         copy._steps = _launch.clone(self._steps)
         copy._narrowed = None
+        copy._multigrid = None
         return copy
 
     def _assign(self, other: SquaredLaplacianPreconditioner) -> None:
@@ -4738,6 +4818,59 @@ class _SquaredLaplacianApply(_ChebyshevApply):
         """``destination = B Bᵀ source``: ``Bᵀ`` first, then ``B``."""
         self._polynomial(self._owner._factor_t, source, self._middle)  # pyright: ignore[reportPrivateUsage]
         self._polynomial(self._owner._factor, self._middle, destination)  # pyright: ignore[reportPrivateUsage]
+
+
+_SQUARED_MULTIGRID_SWEEPS = 4
+
+
+class _SquaredMultigrid(NamedTuple):
+    """The ``V D² V`` form's operator side: ``L``'s V-cycle hierarchy and ``D²``."""
+
+    hierarchy: tuple[list[_MultigridLevel], odt.ArrayNd]
+    squares: wp.array[wp.float64]
+
+
+class _SquaredMultigridApply:
+    """``z = V D² V r`` over the padded column blocks of one conjugate-gradient state."""
+
+    def __init__(self, owner: _SquaredMultigrid, n: int, n_columns: int, stride: int) -> None:
+        self._n = n
+        self._stride = stride
+        self._squares = owner.squares
+        self._cycle = _MultigridCycle(
+            *owner.hierarchy, n_columns=n_columns, stride=stride, sweeps=_SQUARED_MULTIGRID_SWEEPS
+        )
+        dofs = n_columns * stride
+        self._dofs = dofs
+        device = owner.squares.device
+        self._device = device
+        # The two intermediate vectors, zeroed once: the pad between a column's ``n`` live rows and
+        # ``stride`` is never written by the cycle or the scaling, and the cycle's top level reads
+        # its right-hand side's pad as zero (``scaled_diagonal_apply``).
+        if dofs > 0:
+            vectors = _launch.zeros(2 * dofs, dtype=wp.float64, device=device)
+            self._middle = _launch.view(vectors, 0, dofs)
+            self._scaled = _launch.view(vectors, dofs, 2 * dofs)
+        else:
+            self._middle = self._scaled = _launch.zeros(0, dtype=wp.float64, device=device)
+
+    def apply(self, source: wp.array[wp.float64], destination: wp.array[wp.float64]) -> None:
+        """``destination = V D² V source``: a V-cycle, the diagonal scaling, a V-cycle."""
+        self._cycle.apply(source, self._middle)
+        _launch.launch(
+            kernel_cg.scaled_diagonal_apply,
+            dim=self._dofs,
+            inputs=[
+                wp.int32(self._n),
+                wp.int32(self._stride),
+                self._squares,
+                wp.float64(1.0),
+                self._middle,
+            ],
+            outputs=[self._scaled],
+            device=self._device,
+        )
+        self._cycle.apply(self._scaled, destination)
 
 
 class _JacobiChebyshev:

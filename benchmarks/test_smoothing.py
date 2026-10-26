@@ -723,23 +723,25 @@ def test_smooth_region(bench_case: BenchCase) -> None:
 
     meshlib's ``positionVertsSmoothly`` is that same system with the same unit edge weights
     (``EdgeWeights.Unit``, ``VertexMass.Unit``), factorized where ordito iterates -- the answers
-    agree to 1e-4. It mutates the mesh in place and returns nothing, so its mesh is rebuilt inside
-    the timed callable and the row carries the build.
+    agree to 1e-4. ordito's row passes ``edge_weights="unit"`` for that reason: the default
+    cotangent weights are another system, ten times the CG iterations on dragon. meshlib mutates
+    the mesh in place and returns nothing, so its mesh is rebuilt inside the timed callable and the
+    row carries the build.
 
-    **No row here builds a multigrid hierarchy**, which is the thing to know before reading a
-    change in either. ``smooth_region``'s normal equations are preconditioned by
-    ``linalg.squared_laplacian_preconditioner`` -- a Chebyshev polynomial in the free rows' square
-    block ``D^-1 L``, applied as ``B B^T`` -- which cut the iteration count 2.5-6x against the
-    V-cycle on ``M^T M`` that ``preconditioner="auto"`` built, with no setup to pay. So
-    ``linalg._MULTIGRID_THETA`` and ``CG_MULTIGRID_DOMINANCE`` no longer move these rows; the
-    polynomial's degree and interval (``SQUARED_LAPLACIAN_DEGREE``, ``SQUARED_LAPLACIAN_INTERVAL``)
-    do.
+    **Two preconditioners, switched by size.** Below ``smoothing._SMOOTH_REGION_MULTIGRID_FROM``
+    free vertices (and for cotangent weights at any size) the normal equations take
+    ``linalg.squared_laplacian_preconditioner``'s Chebyshev polynomial in the free rows' square
+    block ``D^-1 L``, applied as ``B B^T``, with no setup; its degree and interval
+    (``SQUARED_LAPLACIAN_DEGREE``, ``SQUARED_LAPLACIAN_INTERVAL``) move the bunny row. Its
+    iteration count grows with the free count, so from the gate unit weights take
+    ``method="multigrid"``, ``V D^2 V`` with ``V`` a smoothed-aggregation V-cycle on ``L_ff``
+    (``linalg._SQUARED_MULTIGRID_SWEEPS``): dragon 1 035 -> 171 iterations, lucy past 600 s ->
+    43 s. ``linalg._MULTIGRID_THETA`` moves the scan rows.
     """
     skip_larger_than(
         bench_case,
-        "bunny",
-        "the Dirichlet solve over a quarter of the mesh runs into tens of seconds past bunny "
-        "(15.8 s on dragon, 24.9 s on happy_buddha for one ordito round)",
+        "happy_buddha",
+        "one ordito round on lucy is 43 s (1 885 CG iterations over 3.5 M free vertices)",
     )
     n_vertices = bench_case.n_vertices
     free_np = _free_mask_np(bench_case)
@@ -761,7 +763,7 @@ def test_smooth_region(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     free_wp = wp.array(free_np, dtype=wp.bool, device=bench_case.device)
     smoothed = bench_case.run(
-        lambda: od.smoothing.smooth_region(vertices, faces, free_wp), rounds=3
+        lambda: od.smoothing.smooth_region(vertices, faces, free_wp, "unit"), rounds=3
     )
     assert smoothed.shape == (n_vertices,)
 

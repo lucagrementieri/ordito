@@ -1766,8 +1766,11 @@ def test_smooth_region_fixed_rim_matches_meshlib(device: str):
 
 
 @pytest.mark.parametrize("edge_weights", ["cotan", "unit"])
+@pytest.mark.parametrize("multigrid_from", [None, 0], ids=["polynomial", "multigrid"])
 @pytest.mark.parity("smooth_region", "meshlib")
-def test_smooth_region_matches_meshlib(device: str, edge_weights: str):
+def test_smooth_region_matches_meshlib(
+    device: str, edge_weights: str, multigrid_from: int | None, monkeypatch: pytest.MonkeyPatch
+):
     """
     Class A on the positions, over both edge weightings: ``positionVertsSmoothly``'s two modes.
 
@@ -1777,7 +1780,14 @@ def test_smooth_region_matches_meshlib(device: str, edge_weights: str):
     which discretization each name means -- the same kind of claim MeshLib settles for the vertex
     normals. ``VertexMass.Unit`` is passed explicitly for that reason: the mass matrix is the third
     axis, and ordito has no counterpart to its area-weighted setting.
+
+    Parametrized over the preconditioner form too: a region this small takes the polynomial, and
+    lowering the free-vertex gate makes unit weights take the V-cycle form large regions take
+    (here a one-level hierarchy, its dense coarse solve; ``tests/test_linalg.py`` covers two
+    levels). Cotangent weights keep the polynomial whatever the gate, so their two cells agree.
     """
+    if multigrid_from is not None:
+        monkeypatch.setattr(od.smoothing, "_SMOOTH_REGION_MULTIGRID_FROM", multigrid_from)
     vertices_np, faces_np, free_np, v_wp, f_wp, free_wp = _sphere_region_wp(device)
 
     result_wp = od.smoothing.smooth_region(v_wp, f_wp, free_wp, edge_weights=edge_weights)
@@ -1791,6 +1801,54 @@ def test_smooth_region_matches_meshlib(device: str, edge_weights: str):
 
     assert np.allclose(result_wp.numpy(), verts_ml, rtol=1e-4, atol=1e-4)
     assert np.array_equal(result_wp.numpy()[~free_np], v_wp.numpy()[~free_np])
+
+
+@pytest.mark.parametrize("multigrid_from", [None, 0], ids=["polynomial", "multigrid"])
+def test_smooth_region_leaves_an_unanchored_fragment_in_place(
+    device: str, multigrid_from: int | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: no reference places a free component that touches no fixed vertex.
+
+    A bumpy grid whose interior is free sits beside a second, wholly free grid. The second's
+    umbrella rows fix its shape only up to a translation, so it must come back where it was, and
+    the first must solve exactly as it does alone (the two are decoupled). Without the pinning the
+    V-cycle form moved such a fragment by twice the dragon scan's diagonal; the polynomial moved it
+    too, by less. Both preconditioner forms are run.
+    """
+    if multigrid_from is not None:
+        monkeypatch.setattr(od.smoothing, "_SMOOTH_REGION_MULTIGRID_FROM", multigrid_from)
+    grid_v, grid_f = od.creation.grid(count=(6, 6))
+    grid_np = np.asarray(grid_v.numpy(), dtype=np.float32).reshape(-1, 3)
+    faces_np = grid_f.numpy()
+    rng = np.random.default_rng(7)
+    bumpy_np = grid_np.copy()
+    interior_np = np.asarray((np.abs(grid_np[:, :2]) < 0.45).all(axis=1), dtype=bool)
+    bumpy_np[interior_np, 2] = rng.uniform(-0.2, 0.2, int(interior_np.sum()))
+    fragment_np = grid_np * 0.3 + np.array([3.0, 0.0, 0.0], dtype=np.float32)
+    fragment_np[:, 2] = rng.uniform(-0.1, 0.1, fragment_np.shape[0])
+    n_grid = grid_np.shape[0]
+    vertices_np = np.concatenate([bumpy_np, fragment_np]).astype(np.float32)
+    both_faces_np = np.concatenate([faces_np, faces_np + n_grid]).astype(np.int32)
+    free_np = np.concatenate([interior_np, np.ones(n_grid, dtype=bool)])
+
+    both_wp = od.smoothing.smooth_region(
+        wp.array(vertices_np, dtype=wp.vec3, device=device),
+        wp.array(both_faces_np, dtype=wp.int32, device=device),
+        wp.array(free_np, dtype=wp.bool, device=device),
+        "unit",
+    ).numpy()
+    alone_wp = od.smoothing.smooth_region(
+        wp.array(bumpy_np, dtype=wp.vec3, device=device),
+        wp.array(faces_np, dtype=wp.int32, device=device),
+        wp.array(interior_np, dtype=wp.bool, device=device),
+        "unit",
+    ).numpy()
+
+    # Non-vacuity: the anchored grid did move.
+    assert np.abs(alone_wp - bumpy_np).max() > 1e-2
+    assert np.array_equal(both_wp[n_grid:], fragment_np)
+    assert np.allclose(both_wp[:n_grid], alone_wp, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parity("smooth_region", "meshlib")

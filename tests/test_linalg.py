@@ -5,7 +5,7 @@ from __future__ import annotations
 import gc
 import warnings
 import weakref
-from typing import Any, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 
 import igl
 import numpy as np
@@ -1985,8 +1985,14 @@ def _normal_equations_system(
 @pytest.mark.parametrize("negative", [False, True], ids=["positive_weights", "negative_weights"])
 @pytest.mark.parametrize("n_columns", [1, 3])
 @pytest.mark.parametrize("engine", ["one_block", "batched"])
+@pytest.mark.parametrize("method", ["polynomial", "multigrid"])
 def test_squared_laplacian_preconditioner_solves_the_same_system(
-    device: str, negative: bool, n_columns: int, engine: str, request: pytest.FixtureRequest
+    device: str,
+    negative: bool,
+    n_columns: int,
+    engine: str,
+    method: Literal["polynomial", "multigrid"],
+    request: pytest.FixtureRequest,
 ) -> None:
     """
     Class A, against ``numpy.linalg.solve``: the preconditioner changes the path, not the answer.
@@ -1995,7 +2001,8 @@ def test_squared_laplacian_preconditioner_solves_the_same_system(
     past 2, the end of a fixed Chebyshev interval, over the column count because this
     preconditioner routes a single column through the batched solver too, and over the two engines
     a system this small can take: the one-block solve applies the same polynomial in-block, and
-    lowering its gate reaches the batched one.
+    lowering its gate reaches the batched one. The ``"multigrid"`` form (``V D² V``, a V-cycle
+    on ``L``) always takes the batched engine; its two-level hierarchy here is a real one.
     """
     if engine == "batched":
         request.getfixturevalue("batched_engine")
@@ -2009,15 +2016,22 @@ def test_squared_laplacian_preconditioner_solves_the_same_system(
         system_wp,
         rhs_wp,
         odt.as_array2d(solution_wp, wp.float64),
-        preconditioner=od.linalg.squared_laplacian_preconditioner(laplacian_wp, sums_wp),
+        preconditioner=od.linalg.squared_laplacian_preconditioner(
+            laplacian_wp, sums_wp, method=method
+        ),
     )
     assert np.allclose(solution_wp.numpy(), reference_np, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("negative", [False, True], ids=["positive_weights", "negative_weights"])
 @pytest.mark.parametrize("engine", ["one_block", "batched"])
+@pytest.mark.parametrize("method", ["polynomial", "multigrid"])
 def test_squared_laplacian_preconditioner_needs_far_fewer_iterations(
-    device: str, negative: bool, engine: str, request: pytest.FixtureRequest
+    device: str,
+    negative: bool,
+    engine: str,
+    method: Literal["polynomial", "multigrid"],
+    request: pytest.FixtureRequest,
 ) -> None:
     """
     Not a library comparison: the reason the preconditioner exists, stated as an assertion.
@@ -2037,7 +2051,10 @@ def test_squared_laplacian_preconditioner_needs_far_fewer_iterations(
     counts = {}
     for name, preconditioner in (
         ("diag", "diag"),
-        ("squared", od.linalg.squared_laplacian_preconditioner(laplacian_wp, sums_wp)),
+        (
+            "squared",
+            od.linalg.squared_laplacian_preconditioner(laplacian_wp, sums_wp, method=method),
+        ),
     ):
         solution_wp = wp.zeros_like(rhs_wp)
         counts[name] = od.linalg.solve_spd_columns(
@@ -2048,6 +2065,19 @@ def test_squared_laplacian_preconditioner_needs_far_fewer_iterations(
             preconditioner=preconditioner,
         )[0]
     assert counts["squared"] * 8 < counts["diag"], counts
+
+
+def test_squared_laplacian_preconditioner_rejects_an_unknown_method(device: str) -> None:
+    """Not a parity assert: the ``method`` menu is validated, not silently read as the default."""
+    _system_wp, _rhs_wp, laplacian_wp, sums_wp, _system_np, _rhs_np = _normal_equations_system(
+        device, negative=False
+    )
+    with pytest.raises(ValueError, match="method must be 'polynomial' or 'multigrid'"):
+        od.linalg.squared_laplacian_preconditioner(
+            laplacian_wp,
+            sums_wp,
+            method="amg",  # pyright: ignore[reportArgumentType]
+        )
 
 
 def _chebyshev_reference(dense_np: np.ndarray, rhs_np: np.ndarray) -> np.ndarray:
