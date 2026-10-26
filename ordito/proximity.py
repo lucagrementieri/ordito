@@ -662,8 +662,12 @@ def mesh_to_mesh_distance(
     )
     if tiled:
         # Persistent blocks that claim stragglers until the counts the thread pass left on the
-        # device run out, so no count is read back to size a launch.
-        straggler_blocks = min(n_faces_a, _STRAGGLER_BLOCKS_PER_SM * wp.get_device(device).sm_count)
+        # device run out, so no count is read back to size a launch. The cpu device reports no
+        # multiprocessors, so without the floor of one SM the launch would have no block and every
+        # straggler would keep the thread pass's partial answer; its blocks run one after another,
+        # so one SM's worth claims the whole list.
+        sm_count = max(1, wp.get_device(device).sm_count)
+        straggler_blocks = min(n_faces_a, _STRAGGLER_BLOCKS_PER_SM * sm_count)
         for kernel in (
             kernel_proximity.face_to_mesh_distance_tiled,
             kernel_proximity.face_to_mesh_distance_tiled_overfull,

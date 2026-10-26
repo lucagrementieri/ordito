@@ -647,7 +647,9 @@ def test_mesh_to_mesh_distance_tiled_pass_agrees_with_the_capped_one(
     configuration that exercises the tiled kernel hardest; the reference run raises it past any
     possible candidate count so the tiled pass never launches. On the cpu device the split is
     disabled outright (``wp.launch_tiled`` runs one lane per block there) and both runs take the
-    same path, which makes this a no-op rather than a skip.
+    same path, which makes this a no-op rather than a skip -- except under ``--cpu-blocks``, which
+    runs the split there too and is held to the same non-vacuity check (the cpu device reports no
+    multiprocessors, and the straggler launch once sized itself to zero blocks from that).
 
     The witness ``face_b`` is deliberately **not** compared: the two walks tie-break differently and
     the ties are real, which the function's own note measures.
@@ -687,7 +689,7 @@ def test_mesh_to_mesh_distance_tiled_pass_agrees_with_the_capped_one(
             a_vertices_wp, a_faces_wp, b_vertices_wp, b_faces_wp
         )
 
-    if wp.get_device(device).is_cuda:
+    if wp.get_device(device).is_cuda or wp.config.enable_cpu_blocks:
         # Non-vacuity: without this the test passes when the tiled pass never runs at all.
         assert tiled_launches, "a cap of 1 must reach the tiled pass at all"
         assert tiled_launches[0], "the tiled pass must be handed a non-empty overflow list"

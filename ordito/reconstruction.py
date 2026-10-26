@@ -37,7 +37,13 @@ from warp.geometry import delaunay_edge_flip
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device, run_device_loop
+from ordito._device import (
+    prefers_tiled_reduction,
+    read_scalar,
+    read_values,
+    require_same_device,
+    run_device_loop,
+)
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
@@ -2566,17 +2572,17 @@ class _BpaState:
         # (``kernel_bpa.mark_overfull_point_leaves``); a binary tree over ``n`` points has fewer
         # than ``2 * n`` nodes. ``counters`` is a prefix view, so its readbacks stay small.
         #
-        # The bitset is filled on CUDA only. On the cpu device the cooperative walk is a serial
-        # query with no result buffer to overrun, and the CPU-built tree leaves the nodes past its
-        # used count uninitialised, which the marking kernel cannot tell apart; the bitset stays
-        # zero there, so every pivot search takes the builtin.
+        # The bitset is filled only where a block runs more than one lane
+        # (``prefers_tiled_reduction``: CUDA, or the CPU under ``wp.config.enable_cpu_blocks``).
+        # On the plain cpu device the cooperative walk is a serial query with no result buffer to
+        # overrun, so the bitset stays zero there and every pivot search takes the builtin.
         n_nodes = 2 * self.n
         state_words = _launch.zeros(
             kernel_bpa.BPA_COUNTERS + (n_nodes + 31) // 32, dtype=wp.int32, device=self.device
         )
         self.counters = odt.as_dense(state_words[: kernel_bpa.BPA_COUNTERS])
         self.overfull = odt.as_dense(state_words[kernel_bpa.BPA_COUNTERS :])
-        if wp.get_device(self.device).is_cuda:
+        if prefers_tiled_reduction(self.device):
             _launch.launch(
                 kernel_bpa.mark_overfull_point_leaves,
                 dim=n_nodes,
