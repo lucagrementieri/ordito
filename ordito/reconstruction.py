@@ -52,6 +52,7 @@ from ordito.kernels import reconstruction as kernel_reconstruction
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import remesh as kernel_remesh
 from ordito.kernels import repair as kernel_repair
+from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels.algorithms import ball_pivoting as kernel_bpa
 from ordito.kernels.algorithms import conjugate_gradient as kernel_cg
 from ordito.kernels.algorithms import poisson_band as kernel_poisson_band
@@ -773,7 +774,8 @@ def screened_poisson(
             f"{n} points."
         )
 
-    cube_lower, cube_upper, cube_size = _poisson_cube(points, scale)
+    bounds = od.bounds.aabb(points)
+    cube_lower, cube_upper, cube_size = _poisson_cube(points, scale, bounds=bounds)
     # Effective screening weight: a floor keeps the operator SPD even at point_weight == 0.
     screen = max(float(point_weight), 1e-4)
 
@@ -781,6 +783,7 @@ def screened_poisson(
         return _screened_poisson_octree(
             points,
             normals,
+            bounds,
             scale=scale,
             depth=depth,
             full_depth=full_depth,
@@ -847,6 +850,7 @@ _OCTREE_MAX_DEPTH = 9
 def _screened_poisson_octree(
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
+    bounds: tuple[wp.vec3, wp.vec3],
     *,
     scale: float,
     depth: int,
@@ -867,10 +871,17 @@ def _screened_poisson_octree(
     kernel_depth = depth - 2
     cell_offsets_host = [sum(8**e for e in range(d)) for d in range(depth + 2)]
     flag_offsets_host = [sum((2**e + 2) ** 3 for e in range(d)) for d in range(depth + 1)]
-    cell_offsets = _launch.array(np.asarray(cell_offsets_host, np.int32), wp.int32, device=device)
-    flag_offsets = _launch.array(np.asarray(flag_offsets_host, np.int32), wp.int32, device=device)
+    node_offsets_host = [sum((2**e + 1) ** 3 for e in range(d)) for d in range(depth + 2)]
+    edge_offsets_host = [3 * offset for offset in node_offsets_host]
+    # The four offset tables in one upload.
+    tables = [cell_offsets_host, flag_offsets_host, node_offsets_host, edge_offsets_host]
+    packed = _launch.array(np.concatenate(tables).astype(np.int32), wp.int32, device=device)
+    starts = np.cumsum([0] + [len(table) for table in tables]).tolist()
+    cell_offsets, flag_offsets, node_offsets, edge_offsets = (
+        _launch.view(packed, starts[t], starts[t + 1]) for t in range(4)
+    )
 
-    unit_transform = _octree_unit_transform(points, scale)
+    unit_transform = _octree_unit_transform(bounds, scale)
     keys = _launch.empty(n, dtype=wp.int32, device=device)
     positions = _launch.empty(n, dtype=wp.vec3, device=device)
     unit_normals = _launch.empty(n, dtype=wp.vec3, device=device)
@@ -887,11 +898,16 @@ def _screened_poisson_octree(
     )
     n_groups = sample_keys.size
     # The last group holds the points with no usable normal, when there are any.
-    n_samples = n_groups - (1 if int(read_scalar(sample_keys)) == sentinel else 0)
+    n_samples = n_groups
+    n_merged = n
+    if int(read_scalar(sample_keys)) == sentinel:
+        n_samples -= 1
+        # The dropped points' count, read only when there are any: the iso-value's divisor.
+        n_merged -= int(read_scalar(sample_counts))
     if n_samples == 0:
         raise ValueError("screened_poisson requires at least one point with a nonzero normal.")
-    sample_positions = od.reduce.scatter_sum(positions, inverse, n_groups)
-    sample_normals = od.reduce.scatter_sum(unit_normals, inverse, n_groups)
+    sample_positions = _octree_group_sums(positions, inverse, n_groups)
+    sample_normals = _octree_group_sums(unit_normals, inverse, n_groups)
     slots = _launch.full(8**depth, -1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_octree.octree_sample_slots,
@@ -944,8 +960,18 @@ def _screened_poisson_octree(
         outputs=[sample_depths, area_terms, count_terms],
         device=device,
     )
-    # The mean area weight scales the screening, so the host needs it.
-    alpha = point_weight * od.reduce.sum(area_terms) / od.reduce.sum(count_terms)
+    # The mean area weight scales the screening, so the host needs it: both sums in one read.
+    weight_sums = _launch.zeros(2, dtype=wp.float32, device=device)
+    for slot, terms in enumerate((area_terms, count_terms)):
+        od.reduce.sum_of_terms(
+            kernel_reduce.ARRAY_SUM,
+            [terms],
+            n_samples,
+            out=_launch.view(weight_sums, slot, slot + 1),
+            device=device,
+        )
+    area_sum, count_sum = read_values(weight_sums, 0, 2)
+    alpha = point_weight * area_sum / count_sum
 
     normal_sums = _launch.group_sums(cell_offsets_host[depth + 1], wp.vec3, 2 * n_samples, device)
     _launch.launch_group_sums(
@@ -983,11 +1009,18 @@ def _screened_poisson_octree(
 
     system = [depth, full_depth, wp.float32(alpha)]
     screen_args = [flags, flag_offsets, counts, position_sums, cell_offsets, *sample_args]
-    constraints = _octree_constraints(
-        normal_field, cell_offsets, cell_offsets_host, depth, system, screen_args
+    constraints, base = _octree_constraints(
+        normal_field,
+        cell_offsets,
+        cell_offsets_host,
+        node_offsets,
+        node_offsets_host,
+        depth,
+        system,
+        screen_args,
     )
-    prolongeds, fields, node_offsets = _octree_cascade(
-        constraints, depth, iterations, alpha, counts, position_sums, system, screen_args
+    prolongeds, fields = _octree_cascade(
+        constraints, base, node_offsets_host, depth, iterations, alpha, system, screen_args
     )
 
     res = 2**depth + 1
@@ -998,19 +1031,21 @@ def _screened_poisson_octree(
         inputs=[
             sample_counts,
             sample_positions,
-            _launch.view(fields, node_offsets[depth], node_offsets[depth + 1]),
+            _launch.view(fields, node_offsets_host[depth], node_offsets_host[depth + 1]),
             res,
         ],
         outputs=[iso_terms],
         device=device,
     )
     # The extraction takes the iso-value as a host scalar.
-    total = od.reduce.sum(odt.as_dense(sample_counts[:n_samples]))
-    iso = od.reduce.sum(iso_terms) / total
+    iso = od.reduce.sum(iso_terms) / n_merged
     unit_vertices, faces = _octree_extract(
         prolongeds,
         fields,
         node_offsets,
+        node_offsets_host,
+        edge_offsets,
+        edge_offsets_host,
         iso,
         depth,
         full_depth,
@@ -1044,16 +1079,40 @@ def _screened_poisson_octree(
     return od.transform.transform_points(unit_vertices, to_world, out=unit_vertices), faces
 
 
-def _octree_unit_transform(points: wp.array[wp.vec3], scale: float) -> tuple[wp.float32, wp.vec3]:
+def _octree_group_sums(
+    values: wp.array[wp.vec3], groups: wp.array[wp.int32], n_groups: int
+) -> wp.array[wp.vec3]:
+    """
+    [`scatter_sum`][ordito.reduce.scatter_sum] of per-point vectors into their merged samples.
+
+    Without its validation: the groups are ``unique_1d``'s inverse, so the index range needs no
+    read.
+    """
+    device = values.device
+    sums = _launch.group_sums(n_groups, wp.vec3, values.size, device)
+    _launch.launch_group_sums(
+        kernel_scatter.SCATTER_SUM_VECTORS[wp.vec3],
+        values.size,
+        [values, groups],
+        sums,
+        device=device,
+    )
+    return _launch.finish_group_sums(sums)
+
+
+def _octree_unit_transform(
+    bounds: tuple[wp.vec3, wp.vec3], scale: float
+) -> tuple[wp.float32, wp.vec3]:
     """
     ``(1 / side, -corner / side)``, the unit-cube map in the upstream's ``float32`` arithmetic.
 
     The cube's side and corner rounded the way PoissonRecon forms them (centre and extent of the
     ``float32`` bounding box, ``1 / side`` taken in ``float64`` and rounded). The clouds this
     backend is matched against often sit on a lattice whose planes the octree's cell faces land on,
-    where a last-bit difference moves a point into the next cell.
+    where a last-bit difference moves a point into the next cell. ``bounds`` is the cloud's
+    [`aabb`][ordito.bounds.aabb].
     """
-    lo, hi = od.bounds.aabb(points)
+    lo, hi = bounds
     lower = np.asarray(odt.vec3_floats(lo), dtype=np.float32)
     upper = np.asarray(odt.vec3_floats(hi), dtype=np.float32)
     center = (upper + lower) / np.float32(2.0)
@@ -1067,37 +1126,41 @@ def _octree_constraints(
     normal_field: wp.array[wp.vec3],
     cell_offsets: wp.array[wp.int32],
     cell_offsets_host: list[int],
+    node_offsets: wp.array[wp.int32],
+    node_offsets_host: list[int],
     depth: int,
     system: Sequence[object],
     screen_args: Sequence[object],
-) -> list[wp.array[wp.float32]]:
+) -> tuple[wp.array[wp.float32], list[float]]:
     """
     Every depth's right-hand side: the divergence of the multi-depth normal field, then screening.
 
     Own and finer data first, restricted down depth by depth; coarser data enters only through the
     parent depth's coefficients carried up (``octree_upsample_coarse_data``), after the
-    restriction so it is not restricted twice.
+    restriction so it is not restricted twice. Returns the right-hand sides packed at the node
+    offsets, and depth 0's eight entries followed by its one cell's point count and position sum.
     """
     device = normal_field.device
-    constraints: list[wp.array[wp.float32]] = []
-    for d in range(depth + 1):
-        res = 2**d + 1
-        b = _launch.zeros(res**3, dtype=wp.float32, device=device)
-        _launch.launch(
-            kernel_octree.octree_divergence_constraints,
-            dim=(res, res, res),
-            inputs=[d, d, normal_field, cell_offsets_host[d]],
-            outputs=[b],
-            device=device,
-        )
-        constraints.append(b)
+    n_nodes = node_offsets_host[depth + 1]
+    constraints = _launch.empty(n_nodes, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_octree.octree_own_constraints,
+        dim=n_nodes,
+        inputs=[depth, normal_field, cell_offsets, node_offsets],
+        outputs=[constraints],
+        device=device,
+    )
     for d in reversed(range(depth)):
         res_c = 2**d + 1
         _launch.launch(
             kernel_octree.octree_restrict_add,
             dim=(res_c, res_c, res_c),
-            inputs=[constraints[d + 1], 2 ** (d + 1) + 1, res_c],
-            outputs=[constraints[d]],
+            inputs=[
+                _launch.view(constraints, node_offsets_host[d + 1], node_offsets_host[d + 2]),
+                2 ** (d + 1) + 1,
+                res_c,
+            ],
+            outputs=[_launch.view(constraints, node_offsets_host[d], node_offsets_host[d + 1])],
             device=device,
         )
     accumulated = _launch.empty(cell_offsets_host[depth], dtype=wp.vec3, device=device)
@@ -1109,46 +1172,37 @@ def _octree_constraints(
             outputs=[accumulated],
             device=device,
         )
-    for d in range(1, depth + 1):
-        res = 2**d + 1
-        _launch.launch(
-            kernel_octree.octree_divergence_constraints,
-            dim=(res, res, res),
-            inputs=[d, d - 1, accumulated, cell_offsets_host[d - 1]],
-            outputs=[constraints[d]],
-            device=device,
-        )
-    for d in range(depth + 1):
-        res = 2**d + 1
-        _launch.launch(
-            kernel_octree.octree_screening_constraints,
-            dim=(res, res, res),
-            inputs=[d, *system, *screen_args],
-            outputs=[constraints[d]],
-            device=device,
-        )
-    return constraints
+    base = _launch.empty(12, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_octree.octree_coarse_screening_constraints,
+        dim=n_nodes,
+        inputs=[*system, accumulated, *screen_args, node_offsets],
+        outputs=[constraints, base],
+        device=device,
+    )
+    # The host solves depth 0.
+    return constraints, read_values(base, 0, 12)
 
 
 def _octree_cascade(
-    constraints: list[wp.array[wp.float32]],
+    constraints: wp.array[wp.float32],
+    base: list[float],
+    node_offsets: list[int],
     depth: int,
     iterations: int,
     alpha: float,
-    counts: wp.array[wp.float32],
-    position_sums: wp.array[wp.vec3],
     system: Sequence[object],
     screen_args: Sequence[object],
-) -> tuple[wp.array[wp.float32], wp.array[wp.float32], list[int]]:
+) -> tuple[wp.array[wp.float32], wp.array[wp.float32]]:
     """
     Run the cascade: depth 0 on the host, then ``iterations`` wavefront Gauss-Seidel sweeps a depth.
 
-    Returns every depth's prolonged coarser field and its own field, each depth's lattice packed
-    at the returned node offsets (a field minus its prolonged field is the depth's correction,
-    which the extraction's slopes read).
+    ``constraints`` holds every depth's right-hand side at ``node_offsets``, and ``base`` depth 0's
+    eight entries, its cell's point count and position sum. Returns every depth's prolonged coarser
+    field and its own field, packed at the same offsets (a field minus its prolonged field is the
+    depth's correction, which the extraction's slopes read).
     """
-    device = counts.device
-    node_offsets = [sum((2**e + 1) ** 3 for e in range(d)) for d in range(depth + 2)]
+    device = constraints.device
     fields = _launch.empty(node_offsets[-1], dtype=wp.float32, device=device)
     prolongeds = _launch.zeros(node_offsets[-1], dtype=wp.float32, device=device)
 
@@ -1156,22 +1210,22 @@ def _octree_cascade(
         return _launch.view(buffer, node_offsets[d], node_offsets[d + 1])
 
     # Depth 0's eight unknowns: its right-hand side and its one cell's screening sample.
-    b0 = np.asarray(constraints[0].numpy(), dtype=np.float64)
-    count0 = float(read_scalar(counts, 0))
-    centroid0 = np.asarray(read_scalar(position_sums, 0), dtype=np.float64) / max(count0, 1.0)
+    b0 = np.asarray(base[:8], dtype=np.float64)
+    count0 = base[8]
+    centroid0 = np.asarray(base[9:12], dtype=np.float64) / max(count0, 1.0)
     x0 = _octree_base_solve(b0, alpha * count0, centroid0)
     _launch.copy(level(fields, 0), _launch.array(x0.astype(np.float32), wp.float32, device=device))
     for d in range(1, depth + 1):
         res = 2**d + 1
-        prolonged = level(prolongeds, d)
+        field = level(fields, d)
         _launch.launch(
-            kernel_reconstruction.prolong_grid,
+            kernel_octree.octree_prolong,
             dim=(res, res, res),
-            inputs=[level(fields, d - 1), 2 ** (d - 1) + 1, res, prolonged],
+            inputs=[level(fields, d - 1), 2 ** (d - 1) + 1, res],
+            outputs=[level(prolongeds, d), field],
             device=device,
         )
-        field = level(fields, d)
-        _launch.copy(field, prolonged)
+        b = level(constraints, d)
         half = (res + 1) // 2
         for wave in range(res + 2 * (iterations - 1)):
             first = max(0, (wave - res + 2) // 2)
@@ -1182,11 +1236,11 @@ def _octree_cascade(
                 _launch.launch(
                     kernel_octree.octree_gauss_seidel_wave,
                     dim=(last - first + 1, half, half),
-                    inputs=[d, *system, wave, first, colour, constraints[d], *screen_args],
+                    inputs=[d, *system, wave, first, colour, b, *screen_args],
                     outputs=[field],
                     device=device,
                 )
-    return prolongeds, fields, node_offsets
+    return prolongeds, fields
 
 
 def _octree_base_solve(b: np.ndarray, screen: float, centroid: np.ndarray) -> np.ndarray:
@@ -1233,7 +1287,10 @@ def _octree_base_solve(b: np.ndarray, screen: float, centroid: np.ndarray) -> np
 def _octree_extract(
     prolongeds: wp.array[wp.float32],
     fields: wp.array[wp.float32],
+    node_offsets: wp.array[wp.int32],
     node_offsets_host: list[int],
+    edge_offsets: wp.array[wp.int32],
+    edge_offsets_host: list[int],
     iso: float,
     depth: int,
     full_depth: int,
@@ -1251,9 +1308,6 @@ def _octree_extract(
     """
     device = fields.device
     first = max(full_depth, 1)
-    node_offsets = _launch.array(np.asarray(node_offsets_host, np.int32), wp.int32, device=device)
-    edge_offsets_host = [3 * node_offsets_host[d] for d in range(depth + 2)]
-    edge_offsets = _launch.array(np.asarray(edge_offsets_host, np.int32), wp.int32, device=device)
     table = _octree_extraction_table(wp.get_device(device).alias)
     iso32 = wp.float32(iso)
 
@@ -1398,9 +1452,15 @@ def _octree_extraction_table(device: str) -> wp.array[wp.int32]:
     return _launch.array(kernel_octree.EXTRACTION_TABLE, dtype=wp.int32, device=device)
 
 
-def _poisson_cube(points: wp.array[wp.vec3], scale: float) -> tuple[wp.vec3, wp.vec3, float]:
-    """Return the padded cubic reconstruction domain (lower, upper, side) around the cloud AABB."""
-    lo, hi = od.bounds.aabb(points)
+def _poisson_cube(
+    points: wp.array[wp.vec3], scale: float, *, bounds: tuple[wp.vec3, wp.vec3] | None = None
+) -> tuple[wp.vec3, wp.vec3, float]:
+    """
+    Return the padded cubic reconstruction domain (lower, upper, side) around the cloud AABB.
+
+    ``bounds`` is the cloud's [`aabb`][ordito.bounds.aabb] when the caller holds it.
+    """
+    lo, hi = od.bounds.aabb(points) if bounds is None else bounds
     center = 0.5 * (lo + hi)
     max_extent = max(b - a for a, b in zip(odt.vec3_floats(lo), odt.vec3_floats(hi), strict=True))
     if max_extent <= 0.0:

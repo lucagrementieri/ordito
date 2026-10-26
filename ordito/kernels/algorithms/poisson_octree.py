@@ -64,6 +64,7 @@ import warp as wp
 from ordito.kernels.array import binary_search_index_left
 from ordito.kernels.reconstruction import (
     poisson_grid_index,
+    poisson_prolong_node,
     poisson_restrict_node,
     poisson_sample_grid,
 )
@@ -558,22 +559,19 @@ def hat_bspline_integrals(dt: wp.int32, i: wp.int32, dd: wp.int32, k: wp.int32) 
     return wp.vec2d(value, slope)
 
 
-@wp.kernel
-def octree_divergence_constraints(
+@wp.func
+def divergence_term(
     d: wp.int32,
     data_depth: wp.int32,
     data: wp.array[wp.vec3],
     data_offset: wp.int32,
-    out_b: wp.array[wp.float32],
-) -> None:
-    # Depth ``d`` node's ``-int grad(hat) . V`` for the depth ``data_depth`` (``d`` or ``d - 1``)
+    node: wp.vec3i,
+) -> wp.float32:
+    # Depth ``d`` node's ``int grad(hat) . V`` for the depth ``data_depth`` (``d`` or ``d - 1``)
     # normal coefficients ``data``: four B-splines per axis overlap a hat at either depth.
-    i, j, k = wp.tid()
-    res = (1 << d) + 1
     m = 1 << data_depth
     shift = d - data_depth
-    node = wp.vec3i(i, j, k)
-    first = wp.vec3i((i >> shift) - 2, (j >> shift) - 2, (k >> shift) - 2)
+    first = wp.vec3i((node[0] >> shift) - 2, (node[1] >> shift) - 2, (node[2] >> shift) - 2)
     value_x = wp.vec4d()
     slope_x = wp.vec4d()
     value_y = wp.vec4d()
@@ -606,8 +604,33 @@ def octree_divergence_constraints(
                                 + wp.float64(v[1]) * value_x[a] * slope_y[b] * value_z[c]
                                 + wp.float64(v[2]) * value_x[a] * value_y[b] * slope_z[c]
                             )
-    index = poisson_grid_index(i, j, k, res)
-    out_b[index] = out_b[index] - wp.float32(total)
+    return wp.float32(total)
+
+
+@wp.func
+def lattice_node(node_offsets: wp.array[wp.int32], depth: wp.int32, flat: wp.int32) -> wp.vec4i:
+    # ``(d, i, j, k)`` of entry ``flat`` of the per-depth node lattices packed at ``node_offsets``.
+    d = level_of(node_offsets, 0, depth, flat)
+    res = (1 << d) + 1
+    local = flat - node_offsets[d]
+    return wp.vec4i(d, local // (res * res), (local // res) % res, local % res)
+
+
+@wp.kernel
+def octree_own_constraints(
+    depth: wp.int32,
+    normals: wp.array[wp.vec3],
+    cell_offsets: wp.array[wp.int32],
+    node_offsets: wp.array[wp.int32],
+    out_b: wp.array[wp.float32],
+) -> None:
+    # Every depth's ``-int grad(hat) . V`` for its own depth's normal coefficients, all depths'
+    # lattices in one launch (``octree_coarse_screening_constraints`` adds the coarser data's).
+    flat = wp.int32(wp.tid())
+    at = lattice_node(node_offsets, depth, flat)
+    d = at[0]
+    node = wp.vec3i(at[1], at[2], at[3])
+    out_b[flat] = wp.float32(0.0) - divergence_term(d, d, normals, cell_offsets[d], node)
 
 
 @wp.kernel
@@ -801,12 +824,13 @@ def octree_row(
     return wp.vec2(total, diagonal)
 
 
-@wp.kernel
-def octree_screening_constraints(
+@wp.func
+def screening_term(
     d: wp.int32,
     depth: wp.int32,
     full_depth: wp.int32,
     alpha: wp.float32,
+    node: wp.vec3i,
     flags: wp.array[wp.int32],
     flag_offsets: wp.array[wp.int32],
     counts: wp.array[wp.float32],
@@ -815,11 +839,9 @@ def octree_screening_constraints(
     slots: wp.array[wp.int32],
     sample_counts: wp.array[wp.int32],
     sample_positions: wp.array[wp.vec3],
-    out_b: wp.array[wp.float32],
-) -> None:
-    # The screening's right-hand side: target value 1/2 at every screening sample.
-    i, j, k = wp.tid()
-    node = wp.vec3i(i, j, k)
+) -> wp.float32:
+    # The screening's right-hand side at depth ``d`` node ``node``: target value 1/2 at every
+    # screening sample.
     scale = 0.5 * alpha * wp.float32(1 << d)
     total = wp.float32(0.0)
     for corner in range(8):
@@ -842,8 +864,79 @@ def octree_screening_constraints(
             total += (
                 scale * sample[3] * hat_value(d, node, wp.vec3(sample[0], sample[1], sample[2]))
             )
-    index = poisson_grid_index(i, j, k, (1 << d) + 1)
-    out_b[index] = out_b[index] + total
+    return total
+
+
+@wp.kernel
+def octree_coarse_screening_constraints(
+    depth: wp.int32,
+    full_depth: wp.int32,
+    alpha: wp.float32,
+    accumulated: wp.array[wp.vec3],
+    flags: wp.array[wp.int32],
+    flag_offsets: wp.array[wp.int32],
+    counts: wp.array[wp.float32],
+    position_sums: wp.array[wp.vec3],
+    cell_offsets: wp.array[wp.int32],
+    slots: wp.array[wp.int32],
+    sample_counts: wp.array[wp.int32],
+    sample_positions: wp.array[wp.vec3],
+    node_offsets: wp.array[wp.int32],
+    out_b: wp.array[wp.float32],
+    out_base: wp.array[wp.float32],
+) -> None:
+    # Every depth's right-hand side finished, after its own and finer data (restricted): the
+    # coarser data's divergence carried up from the parent depth, then the screening. Depth 0's
+    # eight entries, its one cell's point count and position sum also go to ``out_base``, the
+    # host's base solve in one read.
+    flat = wp.int32(wp.tid())
+    at = lattice_node(node_offsets, depth, flat)
+    d = at[0]
+    node = wp.vec3i(at[1], at[2], at[3])
+    b = out_b[flat]
+    if d > 0:
+        b = b - divergence_term(d, d - 1, accumulated, cell_offsets[d - 1], node)
+    b = b + screening_term(
+        d,
+        depth,
+        full_depth,
+        alpha,
+        node,
+        flags,
+        flag_offsets,
+        counts,
+        position_sums,
+        cell_offsets,
+        slots,
+        sample_counts,
+        sample_positions,
+    )
+    out_b[flat] = b
+    if d == 0:
+        out_base[flat] = b
+        if flat == 0:
+            out_base[8] = counts[0]
+            p = position_sums[0]
+            out_base[9] = p[0]
+            out_base[10] = p[1]
+            out_base[11] = p[2]
+
+
+@wp.kernel
+def octree_prolong(
+    coarse: wp.array[wp.float32],
+    res_c: wp.int32,
+    res_f: wp.int32,
+    out_prolonged: wp.array[wp.float32],
+    out_field: wp.array[wp.float32],
+) -> None:
+    # A depth's prolonged coarser field, kept for the extraction's slopes, and the same values as
+    # the start of its Gauss-Seidel sweeps (``reconstruction.prolong_grid`` writes one copy).
+    i, j, k = wp.tid()
+    index = poisson_grid_index(i, j, k, res_f)
+    value = poisson_prolong_node(coarse, res_c, i, j, k)
+    out_prolonged[index] = value
+    out_field[index] = value
 
 
 @wp.kernel
