@@ -11,6 +11,7 @@ import pytorch3d.ops.utils as p3d_ops_utils
 import torch
 import warp as wp
 
+import ordito.array as od_array
 import ordito.reduce as od_reduce
 import ordito.typing as odt
 from ordito import _launch
@@ -1193,12 +1194,17 @@ def test_scalar_statistics_match_pymeshlab(device: str, n: int) -> None:
 
     **``"med"`` is not ordito's median, and the difference is a definition rather than a
     tolerance.** MeshLab reports the sorted element at index ``n // 2 - 1``, one *below* the middle,
-    for both parities: measured at n = 100, 101 and 1001 it returns ranks 49, 49 and 499 where the
-    middle is 49.5, 50 and 500. So it is compared against that named order statistic instead, which
-    still checks that the two see the same sorted distribution, while
-    [`tests.test_reduce.test_reduce_median_matches_numpy`][] is the oracle for
-    [`ordito.reduce.median`][] itself. Both parities run, since that is where the two definitions
-    part: one rank below the averaged middle pair at even ``n``, one full rank below at odd ``n``.
+    for both parities: measured at every n in 2-7, 10, 11, 100, 101, 1 000 and 1 001 it returns
+    exactly that rank (49, 49 and 499 at n = 100, 101 and 1 001, where the middle is 49.5, 50 and
+    500). So the named transform for ``"med"`` is that rank, read off **ordito's** sorted copy
+    ([`sort_and_argsort`][ordito.array.sort_and_argsort], the radix sort
+    [`ordito.reduce.median`][] reads its middle from): MeshLab's value equals ordito's order
+    statistic at ``n // 2 - 1``, and ordito's median equals the mean of its ranks ``n // 2 - 1`` and
+    ``n // 2`` (even) or its rank ``n // 2`` (odd), so the two answers are tied together through
+    one sorted buffer rather than each against NumPy alone.
+    [`tests.test_reduce.test_reduce_median_matches_numpy`][] stays the oracle for the median
+    itself. Both parities run, since that is where the two definitions part: one rank below the
+    averaged middle pair at even ``n``, one full rank below at odd ``n``.
     """
     rng = np.random.default_rng(0)
     values_np = rng.standard_normal(n)
@@ -1219,4 +1225,9 @@ def test_scalar_statistics_match_pymeshlab(device: str, n: int) -> None:
     assert np.isclose(od_reduce.mean(values_wp), statistics_pml["avg"], rtol=1e-5, atol=1e-5)
 
     assert np.isclose(od_reduce.median(values_wp), np.median(values_np), rtol=1e-5, atol=1e-5)
-    assert np.isclose(statistics_pml["med"], np.sort(values_np)[n // 2 - 1], rtol=1e-5, atol=1e-5)
+    sorted_wp = od_array.sort_and_argsort(values_wp)[0].numpy()
+    assert np.isclose(statistics_pml["med"], sorted_wp[n // 2 - 1], rtol=1e-5, atol=1e-5)
+    middle_wp = sorted_wp[n // 2] if n % 2 else (sorted_wp[n // 2 - 1] + sorted_wp[n // 2]) / 2
+    assert np.isclose(od_reduce.median(values_wp), middle_wp, rtol=1e-5, atol=1e-5)
+    # Non-vacuity: the rank transform is load-bearing, MeshLab's value is not ordito's median.
+    assert not np.isclose(statistics_pml["med"], od_reduce.median(values_wp), rtol=1e-5, atol=1e-5)

@@ -150,7 +150,8 @@ def test_map_vertices_to_circle_on_a_long_loop(device: str, deterministic: bool)
     The fixtures' loops fit in one chunk of the fixed-order scan; this one spans dozens, on both
     the deterministic scan and CUB's (``False``), and the deterministic map must repeat bit for
     bit. The tolerance is ``1e-4``: the float32 arc length over 100k edges carries ~1e-5 relative
-    rounding into the angle, against libigl's float64 sum.
+    rounding into the angle, against libigl's float64 sum. Re-measured: 3.0e-05 on CPU (both
+    settings, so ``1e-5`` fails there), 1.1e-06 / 2.3e-06 on CUDA (deterministic / CUB).
     """
     t = np.sort(np.random.default_rng(6).random(100_000)) * 2.0 * np.pi
     vertices_np = np.stack([np.cos(t) * (1.0 + 0.3 * np.sin(5.0 * t)), np.sin(t), 0.0 * t], 1)
@@ -296,9 +297,10 @@ def test_polyharmonic_matches_reference(request: pytest.FixtureRequest, mesh_nam
     Class B: igl's operators with the barycentric mass, solved directly.
 
     The named transform is the mass: igl.harmonic's default is Voronoi. ``k == 2`` agrees to
-    7.0e-08 and holds the standard ``1e-5``; ``k == 3`` reaches 1.3e-04 (CUDA, ``cap``; 4.4e-05 to
-    6.8e-05 elsewhere) because its system squares the biharmonic one's conditioning, which igl
-    flags as not numerically robust, so it keeps ``1e-4``. ``k == 3`` is solved by a
+    7.0e-08 and holds the standard ``1e-5``; ``k == 3`` reaches 6.8e-05 (re-measured 2026-10-26:
+    CPU 4.4e-05 ``cap`` / 6.8e-05 ``band``, CUDA 9.5e-06 / 8.9e-06; the 1.3e-04 once recorded on
+    CUDA predates its direct solve) because its system squares the biharmonic one's conditioning,
+    which igl flags as not numerically robust, so it keeps ``1e-4``. ``k == 3`` is solved by a
     factorization; its conjugate gradient used to stop at its tolerance 1e-5 to 1e-2 of the range
     away from the answer on these fixtures.
     """

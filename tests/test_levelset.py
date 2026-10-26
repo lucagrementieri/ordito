@@ -232,43 +232,89 @@ def test_marching_cubes_matches_meshlib(device: str) -> None:
 @pytest.mark.parity("marching_cubes", "pytorch3d")
 def test_marching_cubes_matches_pytorch3d(device: str) -> None:
     """
-    Class A: the fifth implementation of the case table, in ordito's own index space.
+    Class B: the same vertices and, cell by cell, the same polygon, after one named axis transform.
 
-    ``return_local_coords=False`` is what makes this a direct comparison: with it ``True``
-    pytorch3d rescales its output into a normalized ``[-1, 1]`` cube and the two would differ by an
-    affine map. Off, it emits lattice indices, which is exactly what ``marching_cubes`` returns
-    without ``bounds`` -- so the comparison needs no convention fix at all, unlike the igl /
-    pyvista / meshlib trio above, each of which needed a different one.
+    ``return_local_coords=False`` makes pytorch3d emit lattice indices, which is what
+    ``marching_cubes`` returns without ``bounds`` -- but pytorch3d reads its volume as
+    ``(D, H, W)`` and writes each vertex as ``(x, y, z) = (w, h, d)``, the **reverse** of ordito's
+    ``(i, j, k)`` index order. That is the named transform: reverse pytorch3d's coordinate columns,
+    and reverse its triangles' winding, since an axis reversal is a reflection. The field is an
+    off-centre tilted ellipsoid on purpose. The radial field this test used before is symmetric
+    under the reversal: it matched the vertices with no transform at all and, read untransformed,
+    gave the "324 of 956 triangles shared" this row was once declined on. Here the untransformed
+    match misses by whole lattice cells, which is the assert that keeps the transform load-bearing.
 
-    Measured on a 16^3 radial field at ``iso=1.0``: **480** vertices and **956** faces from both
-    sides, and the matched coordinates agree at **0.0**. Matched rather than indexed because
-    nothing pins two case-table walks to one emission order -- and matched by ``cKDTree`` with a
-    bijection check rather than by ``lexsort_rows``, which is
-    unusable on float coordinates: the rounding this used to do mitigates the hazard without
-    removing it, since two values straddling a rounding boundary still sort differently.
+    Measured on the 20^3 ellipsoid at ``iso = 0.9``: **704** vertices and **1 400** faces from
+    both, the transformed coordinates agree at **0.0**, and every one of the **704** occupied cells
+    holds the same directed rim polygon. What the two do not share is how a cell's polygon is
+    triangulated: **1 256** of the 1 400 triangles coincide (824 of 956 on the radial field, 4 684
+    of 5 910 on a trigonometric one), and the other diagonal choice moves area and volume by
+    1.5e-7 and 3.7e-5 (up to 1.9e-5 and 6.9e-5 on the trigonometric field), so the surfaces are
+    compared polygon by polygon rather than triangle by triangle or by a 1e-5 volume.
 
     Note the import: ``marching_cubes`` is **not** re-exported from ``pytorch3d.ops``, only from
     ``pytorch3d.ops.marching_cubes``, so ``p3d_ops.marching_cubes`` is an ``AttributeError``.
     """
-    resolution, extent, iso = 16, 1.5, 1.0
+    resolution, extent, iso = 20, 1.5, 0.9
     axis_np = np.linspace(-extent, extent, resolution)
     x_np, y_np, z_np = np.meshgrid(axis_np, axis_np, axis_np, indexing="ij")
-    field_np = (x_np**2 + y_np**2 + z_np**2).astype(np.float32)
+    field_np = (
+        (x_np - 0.13) ** 2 + 1.7 * (y_np + 0.07) ** 2 + 0.6 * z_np**2 + 0.3 * x_np * y_np
+    ).astype(np.float32)
 
     vertices_p3d, faces_p3d = p3d_marching_cubes(
         torch.as_tensor(field_np, device=device)[None], isolevel=iso, return_local_coords=False
     )
     vertices_p3d = vertices_p3d[0].cpu().numpy()
+    faces_p3d = faces_p3d[0].cpu().numpy()
 
     field_wp = wp.array(field_np, dtype=wp.float32, device=device)
     vertices_wp, faces_wp = od.levelset.marching_cubes(odt.as_array3d(field_wp, wp.float32), iso)
+    vertices_np, faces_od_np = vertices_wp.numpy(), faces_wp.numpy().reshape(-1, 3)
 
     assert vertices_p3d.shape[0] > 0
-    assert vertices_wp.size == vertices_p3d.shape[0]
-    assert faces_wp.size // 3 == faces_p3d[0].shape[0]
-    distance_np, match_np = map(np.asarray, cKDTree(vertices_p3d).query(vertices_wp.numpy()))
-    assert distance_np.max() == 0.0, f"vertices differ by up to {distance_np.max():.3e}"
-    assert len(set(match_np.tolist())) == match_np.size, "the vertex match is not a bijection"
+    assert faces_od_np.shape[0] == faces_p3d.shape[0]
+    # The transform is load-bearing: untransformed, the vertex sets miss by whole cells.
+    assert np.max(cKDTree(vertices_p3d).query(vertices_np)[0]) > 1.0
+    matched_np = assert_nearest_bijection(
+        np.ascontiguousarray(vertices_p3d[:, ::-1]), vertices_np, 0.0
+    )
+    faces_p3d_np = matched_np[faces_p3d[:, ::-1]]
+
+    rims_od = _cell_rims(faces_od_np, vertices_np)
+    rims_p3d = _cell_rims(faces_p3d_np, vertices_np)
+    assert len(rims_od) > 100  # non-vacuity: many occupied cells
+    assert rims_od == rims_p3d
+    # And the triangulations genuinely differ, which is why the comparison is per polygon.
+    shared = {tuple(np.roll(row, -np.argmin(row))) for row in faces_od_np} & {
+        tuple(np.roll(row, -np.argmin(row))) for row in faces_p3d_np
+    }
+    assert len(shared) < faces_od_np.shape[0]
+
+    for mesh_faces_np in (faces_od_np, faces_p3d_np):
+        assert open_edge_count(mesh_faces_np) == 0
+        assert euler_characteristic(mesh_faces_np) == 2
+        assert tm.Trimesh(vertices_np, mesh_faces_np, process=False).volume > 0.0
+
+
+def _cell_rims(
+    faces_np: np.ndarray, vertices_np: np.ndarray
+) -> dict[tuple[int, ...], frozenset[tuple[int, int]]]:
+    """
+    Map each lattice cell to the directed rim of the triangles marching cubes emitted in it.
+
+    A triangle's cell is the floor of its centroid (its corners lie on that cell's edges), and the
+    rim is the set of directed edges whose reverse no triangle of the same cell carries: the
+    polygon the case table chose, independent of how it was triangulated.
+    """
+    cells_np = np.floor(vertices_np[faces_np].mean(axis=1)).astype(np.int64)
+    edges: dict[tuple[int, ...], set[tuple[int, int]]] = {}
+    for cell_np, (a, b, c) in zip(cells_np, faces_np.tolist(), strict=True):
+        edges.setdefault(tuple(cell_np.tolist()), set()).update(((a, b), (b, c), (c, a)))
+    return {
+        cell: frozenset(edge for edge in directed if (edge[1], edge[0]) not in directed)
+        for cell, directed in edges.items()
+    }
 
 
 @pytest.mark.parametrize("case", ["anisotropic", "ties", "nan"])

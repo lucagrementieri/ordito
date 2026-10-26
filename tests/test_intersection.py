@@ -1514,7 +1514,10 @@ def test_slice_and_split_with_plane_match_meshlib(
     both, with an area of **49.355791**. What is *not* shared is the vertex count of the slice --
     384 against 293 -- since
     ordito emits a cut vertex per crossing edge where MeshLib reuses its half-edge topology, which
-    is why this is a count-and-area comparison rather than a buffer one.
+    is why this is a count-and-area comparison rather than a buffer one. The welded slice is
+    already a composition, so no ``weld=`` keyword is owed (no in-repo caller welds a slice
+    either): ``submesh_from_face_mask(*split_mesh_with_plane(...))`` keeps the split's shared
+    crossings and has MeshLib's **293** vertices, the 293 distinct positions of the slice's 384.
 
     The plane's ``d`` is the transform, and the assert that catches it getting lost is the z-range:
     both results start exactly at the cut.
@@ -1557,6 +1560,14 @@ def test_slice_and_split_with_plane_match_meshlib(
     assert int(side_wp.numpy().sum()) == sliced_tm.faces.shape[0]  # and it is the sliced side
     assert np.isclose(split_tm.area, subdivided_tm.area, rtol=1e-5)
     assert np.isclose(split_tm.area, mesh_tm.area, rtol=1e-5)  # splitting conserves the surface
+
+    # The welded slice: the split's positive side, compacted, is MeshLib's trimmed mesh.
+    welded_vertices_wp, welded_faces_wp = od.selection.submesh_from_face_mask(
+        split_vertices_wp, split_faces_wp, side_wp
+    )[:2]
+    assert welded_vertices_wp.size == trimmed_tm.vertices.shape[0]
+    assert welded_vertices_wp.size < sliced_vertices_wp.size  # the slice itself is unwelded
+    assert welded_faces_wp.size == sliced_faces_wp.size
 
 
 @pytest.mark.parity("split_mesh_with_plane", "pyvista")

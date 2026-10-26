@@ -917,19 +917,12 @@ def test_random_hills(bench_lib: BenchLibrary, resolution: int) -> None:
     assert faces_wp.size // 3 > 0
 
 
-@pytest.mark.noparity(
-    "trimesh",
-    reason="D5 stochastic with no shared invariant: both draw n random triangles in the unit "
-    "cube, but ordito takes a seed and trimesh does not, so no two runs can be aligned. Only "
-    "the shape, the bounds and the cost are comparable, and the first two are asserted in "
-    "tests/test_creation.py::test_random_soup without needing trimesh.",
-)
 @pytest.mark.benchmark(group="random_soup")
 @pytest.mark.benchlibs("ordito", "trimesh")
 @pytest.mark.parametrize("face_count", [1_024, 262_144])
 def test_random_soup(bench_lib: BenchLibrary, face_count: int) -> None:
-    # Pure generation: Warp's per-thread RNG against NumPy's global stream. Values differ by
-    # construction (see the note in ordito.creation.random_soup); only the cost is comparable.
+    # Pure generation: Warp's per-thread RNG against NumPy's PCG64 stream. Values differ by
+    # construction; tests/test_creation.py compares the two in distribution.
     if bench_lib.kind == "ordito":
         device = bench_lib.device
         vertices_wp, _ = bench_lib.run(

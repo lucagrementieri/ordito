@@ -194,7 +194,9 @@ def test_connected_component_labels_matches_igl(device: str, node_count: int, n_
     It returns ``(n_components, labels, sizes)``, three values, and numbers components ``0..k-1`` in
     its own traversal order where ordito names each after a representative node, so
     [`same_partition`][tests.comparisons.same_partition] is the transform exactly as it is for the
-    ``scipy.sparse.csgraph.connected_components`` comparison.
+    ``scipy.sparse.csgraph.connected_components`` comparison. igl's traversal starts each component
+    at its smallest unvisited node, so its label also equals the rank of ordito's (the smallest
+    node id) among the distinct labels, which is asserted too.
 
     Two shapes, and each carries a different half of the claim. The 64-node random graph is what
     exercises the *label packing*, so its edge count is chosen to fragment it: measured on this
@@ -234,6 +236,10 @@ def test_connected_component_labels_matches_igl(device: str, node_count: int, n_
     # Non-vacuous on the random shape: the path is one component by design, see the docstring.
     assert int(n_components_igl) > 1 or n_edges == node_count - 1
     assert same_partition(labels_wp.numpy(), np.asarray(labels_igl).ravel())
+    # igl's dense label is the rank of ordito's (each component's smallest node id).
+    assert np.array_equal(
+        np.unique(labels_wp.numpy(), return_inverse=True)[1], np.ravel(labels_igl)
+    )
     assert same_partition(labels_wp.numpy(), _scipy_component_labels(edges_np, node_count))
 
 

@@ -820,11 +820,13 @@ def test_estimate_normals_matches_meshlib(device: str) -> None:
     """
     Class B (sign gauge): ``makeUnorientedNormals`` is the same PCA under a *radius* search.
 
-    The named transform is the neighbourhood: MeshLib searches by **radius** where ordito is given
-    a k-nearest table, so the two see the same points only where the cloud is uniform -- which is
-    what the Fibonacci sphere is for. Measured there: minimum ``|dot|`` **0.99966** at a radius of
-    1.5 mean spacings and **0.99945** at 3.0, i.e. every one of 2 000 normals agrees, and the result
-    is insensitive to the radius over a factor of two.
+    The named transform is the neighbourhood: MeshLib searches by **radius**, so ordito is handed
+    the same ball as a hybrid table -- [`query_nearest`][ordito.neighbors.query_nearest] with
+    ``max_radius`` the same radius and ``k`` the largest ball's population, so no ball is cut.
+    Over the same points the PCA is the same: measured minimum ``|dot|`` **1 - 9e-8** at 1.5, 2
+    and 3 mean spacings on the Fibonacci sphere, so the bound is ``1 - 1e-6``. The plain 30-nearest
+    table this compared before agreed only to **0.99919-0.99946** (a different neighbourhood), and
+    is asserted to miss the bound, which is what keeps the transform load-bearing.
 
     ``makeOrientedNormals`` is the oriented sibling and fixes the sign by propagating over a
     spanning structure; on a closed cloud it agrees with the outward radial direction on **100 %**
@@ -839,14 +841,21 @@ def test_estimate_normals_matches_meshlib(device: str) -> None:
     neighbor_idx_wp, _distances_wp = od_neighbors.query_nearest(
         points_wp, points_wp, k=knn, backend="bvh"
     )
-    normals_wp = od.estimate_normals(points_wp, neighbor_idx_wp).numpy()
+    normals_knn_wp = od.estimate_normals(points_wp, neighbor_idx_wp).numpy()
 
     cloud_ml = points_to_meshlib(points_np)
+    tree_np = scipy.spatial.cKDTree(points_np)
     for radius_scale in (1.5, 3.0):
-        unoriented_ml = mm.makeUnorientedNormals(cloud_ml, radius_scale * spacing)
-        normals_ml = mn.toNumpyArray(unoriented_ml)
+        radius = radius_scale * spacing
+        normals_ml = mn.toNumpyArray(mm.makeUnorientedNormals(cloud_ml, radius))
         assert normals_ml.shape == points_np.shape  # non-vacuity: one normal per point
-        assert np.abs(np.einsum("ij,ij->i", normals_wp, normals_ml)).min() > 0.999
+        largest_ball = int(tree_np.query_ball_point(points_np, radius, return_length=True).max())
+        ball_idx_wp, _ = od_neighbors.query_nearest(
+            points_wp, points_wp, k=largest_ball, max_radius=radius, backend="bvh"
+        )
+        normals_wp = od.estimate_normals(points_wp, ball_idx_wp).numpy()
+        assert np.abs(np.einsum("ij,ij->i", normals_wp, normals_ml)).min() > 1.0 - 1e-6
+        assert np.abs(np.einsum("ij,ij->i", normals_knn_wp, normals_ml)).min() < 1.0 - 1e-6
 
     # The oriented form, against ordito's outward reference: both point away from the centre.
     oriented_ml = mm.makeOrientedNormals(cloud_ml, 2.0 * spacing)
@@ -934,7 +943,11 @@ def test_outlier_probability_ranks_the_planted_outliers(device: str) -> None:
     power -- a defect in VCG, not a convention, so ordito keeps the published formula. Re-scored
     that way, ordito's probabilities equal MeshLab's attribute to **3.2e-07** (both devices),
     against the ``1e-5`` bound; a float64 scipy PLOF under the same transform reproduces it to
-    7.8e-09. The selection at ``propthreshold`` then follows exactly, and holds points the
+    7.8e-09. The diagnosis was re-measured against the attribute on three seeds: the recorded
+    VCG form matches to 1.2e-09-1.7e-08, while the published score (0.076-0.080 off), ``erf``
+    without ``lambda`` (0.47), the complete fourth-power polynomial without ``lambda`` (0.47) and
+    the defective polynomial *with* ``lambda`` (0.54) all miss. The selection at ``propthreshold``
+    then follows exactly, and holds points the
     published score keeps below 0.8 (the two scales differ), which is the non-vacuity check on the
     transform.
     """
@@ -1676,10 +1689,12 @@ def test_convex_subset_mask_against_the_three_qhull_backends(device: str) -> Non
       not hull vertices, and this assertion would fail there by design.
     - **recall**, asserted with a bound: measured **27 of 31** hull vertices at
       ``n_directions=256`` (0.871) against all three references, which agree with each other on the
-      hull exactly. The 0.70 floor leaves room for a different direction set without admitting a
-      filter that has stopped finding most of the hull. The gap is not slack in the test -- the four
-      missed vertices have normal cones spanning 3e-5 to 2e-3 of the sphere, so no direction sample
-      this size is expected to find them; recall reaches 1.00 on this cloud at 16384 directions.
+      hull exactly, and the same 27 on CPU and CUDA (the direction set is fixed, so the answer is
+      deterministic; seeds 1-3 give 0.88-0.95). The floor is 0.85, so losing one more hull vertex
+      (26 of 31, 0.84) fails; the old 0.70 admitted five more misses. The gap is not slack in the
+      test -- the four missed vertices have normal cones spanning 3e-5 to 2e-3 of the sphere, so no
+      direction sample this size is expected to find them; recall reaches 1.00 on this cloud at
+      16384 directions.
 
     Marked for all three libraries deliberately: they compute the identical answer here, so one
     assertion covers all three rows, and confirming they agree is itself worth a line -- it says the
@@ -1725,7 +1740,7 @@ def test_convex_subset_mask_against_the_three_qhull_backends(device: str) -> Non
 
     for name, hull in (("trimesh", hull_tm), ("open3d", hull_o3d), ("pymeshlab", hull_pml)):
         assert selected <= hull, f"{name}: selected a point that is not a hull vertex"
-        assert len(selected & hull) / len(hull) > 0.70, f"{name}: recall too low"
+        assert len(selected & hull) / len(hull) > 0.85, f"{name}: recall too low"
 
 
 def test_convex_subset_mask_scale_invariant(device: str) -> None:

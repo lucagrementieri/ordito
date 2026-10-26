@@ -994,18 +994,16 @@ The audit of every Class B/C/D test (commits `310fb0e8`, `03226107`) left these 
 - **`fix_degeneracies` / `collapse_small_triangles` vs MeshLib** (986 vs 1020 vertices kept on the saddle; a shrunk-edge chain resolved from opposite ends): "serial-queue order." Same doubt; the C bounds were tightened instead.
 - **Fold-test threshold inclusivity**: MeshLib flags at exactly the threshold, ordito does not; "at an exact float threshold that is rounding, and the pymeshlab and trimesh fold checks are strict." Doubt: never probed on an input built to sit exactly on the threshold.
 - **`polyline_upsample` keeps `floor(L / step)` points; MeshLib bisects.** "The docstring says it matches its source." Doubt: whether that source is the reference users expect.
-- **`split_faces_along_field` returns the high side first; VTK returns the low side first.** Declined only because it reorders a public return.
-- **`slice_mesh_with_plane` does not weld cut points** (384 vertices for 293 positions): trimesh's `slice_faces_plane` does not either, MeshLib does. A `weld=` keyword could serve both.
-- **`cluster_decimate` and `voxel_down_sample` grid anchoring**: MeshLib fits `ceil(extent / voxel_size)` (anisotropic, box-fitted) cells. Declined because it breaks the exact Open3D parity (cluster) or needs an API change (down-sample); the voxel test fixes the geometry so the grids coincide instead.
-- **Boundary loop direction is opposite to MeshLib's.** "Flipping would touch every `boundary_loops` consumer." Not counted; the consumers may well be direction-agnostic.
-- **Component labels are representative face ids, not igl's dense `0..k-1`.** "An extra compaction pass." Not priced; the scan may already exist in the labelling path.
 - **`log_map` angles vs potpourri3d differ by a median 13°**, relabelled B to C: "two constructions; a convention fix moved it under 0.1°." Only one convention hypothesis was tested.
 - **Heat geodesic vs igl relabelled A to C**: the gap is igl's Voronoi mass against ordito's barycentric one. An optional Voronoi mass was not considered; it would make igl a Class A oracle.
 - **Tangent-frame gauge vs potpourri3d**: geometry-central's `basis_x` is mostly the outgoing halfedge of the highest-index face, but ~10 % of vertices match no edge direction; left unexplained.
-- **MeshLab's `"med"` statistic is rank `n // 2 - 1`**; ordito has no order-statistic function, so the `median` / pymeshlab claim is checked only against NumPy.
-- **pymeshlab's LoOP outlier score is VCG's formula without λ = 3 and with an erf polynomial missing its 4th power**: a reference defect, not adopted; the test re-scores ordito that way.
-- **pytorch3d marching cubes shares 324 of 956 triangles** (its case table splits cells differently); its test stays vertex-only.
-- **`noparity` icp_mesh / pymeshlab** ("the result depends on where the process's memory lands") and **`random_soup` / trimesh** ("would need NumPy's global RNG") were not re-measured.
-- **Kept loose by measurement:** polyharmonic `k = 3` (1.3e-4), the 100 k-vertex circle map (fails 1e-5 on CPU), convex-subset recall 0.70 (27 of 31), MeshLib radius normals 0.999.
+
+**Re-measured 2026-10-26 (confirmed declines; the public changes are the owner's call):**
+
+- **`split_faces_along_field`'s "high side first" is a mask, not an order**: it returns one mesh and a `values >= isovalue` mask, the side `clip_mesh_with_field` keeps; only the pyvista test pairs VTK's `(below, above)` tuple against it. Inverting the mask would invert that shared convention for no reference's sake. Callers: 0 in `ordito/`, 5 in `tests/test_intersection.py`, 1 benchmark row, 1 guide example (`docs/examples/cutting.md`) and its own docstring.
+- **Boundary loop direction: keep it.** ordito's direction *is* igl's (`boundary_loop`, `boundary_loop_all`: exact `array_equal`); trimesh's outline is direction-agnostic; only MeshLib's `getLeftRing` walks the other way (it walks the hole). Flipping would touch 15 library consumers (every filler, `extend_hole`, the stitchers, `_cap_section_loops`, `map_vertices_to_circle` and the maps chained on it, `heat_signed_distance`, `loop_directed_areas`), 9 docstring outputs, 20 tests and 3 guide pages; 11 consumers, 60 tests and every benchmark are agnostic.
+- **Dense `0..k-1` component labels: priced, not adopted.** igl's label is exactly the rank of ordito's (smallest face / node id), now asserted in both igl tests. A dense output costs a root-flag launch, an `int32` scan and a gather: 1.9x the call at 328 k faces (host-bound), 1.03x at 5.2 M.
+- **icp_mesh / pymeshlab stays `noparity`**: 16 fresh processes, two working directories, never converged (RMS 0.043-0.049 at 0.15 rad, 0.1035-0.1066 at 0.30) and moved run to run.
+- **polyharmonic `k = 3` keeps `1e-4`** (CPU 6.8e-5, CUDA 9.5e-6) and the 100 k circle map keeps `1e-4` (CPU 3.0e-5, CUDA 2.3e-6).
 
 **Verification not run after the audit:** the full two-process `python -m tests.devices` (only the changed test files ran on CPU), `--cpu-blocks`, and the CUDA census; the CPU census ran on `benchmarks/test_{repair,boundary,energies}.py` only (no count rose).

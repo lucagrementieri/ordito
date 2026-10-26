@@ -2734,9 +2734,9 @@ def random_soup(
 
     Notes
     -----
-    Takes an explicit ``seed`` where [`trimesh.creation.random_soup`][] draws from NumPy's global
-    RNG, so results are reproducible. The point values come from Warp's per-thread generator and do
-    not match NumPy's stream.
+    A given ``seed`` reproduces the result, as it does for [`trimesh.creation.random_soup`][], but
+    the point values come from Warp's per-thread generator and do not match NumPy's stream: the two
+    agree in distribution, not value for value.
 
     See Also
     --------

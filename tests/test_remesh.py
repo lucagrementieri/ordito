@@ -1191,7 +1191,12 @@ def test_cluster_decimate_matches_meshlib_cell_count(device: str, voxel_fraction
     anchors half a cell below the bounding box with cells of exactly ``voxel_size`` (Open3D's grid),
     where MeshLib, measured, fits ``ceil(extent / voxel_size)`` cells *exactly* to the bounding box
     and so stretches them. Hence a bound of 1.12x rather than exact: about 3x the worse 3.5 %
-    residual.
+    residual. The attribution is asserted, not assumed: a NumPy count of the occupied cells of
+    each grid reproduces each side **exactly** (ordito's 2 310 / 541 on Open3D's grid, MeshLib's
+    2 394 / 548 on the box-fitted one; 151 against 128 at 10 %). So adopting MeshLib's grid would
+    move every count off Open3D's, which
+    [`test_cluster_decimate_matches_open3d`][tests.test_remesh.test_cluster_decimate_matches_open3d]
+    pins exactly.
 
     **Bug class excluded:** a voxel size interpreted in the wrong units, or a grid whose cells are
     the wrong size. **Mutation probe, measured:** the count falls **4.3x** between consecutive
@@ -1217,6 +1222,18 @@ def test_cluster_decimate_matches_meshlib_cell_count(device: str, voxel_fraction
     assert 0 < n_cells_wp < sphere_tm.vertices.shape[0]
     assert 1.0 / 1.12 < n_cells_wp / n_cells_ml < 1.12
     assert clustered_faces_wp.size > 0
+
+    # The residual is the anchoring and nothing else: each count is its own grid's, exactly.
+    points_np = vertices_wp.numpy().astype(np.float64)
+    lower_np, upper_np = points_np.min(axis=0), points_np.max(axis=0)
+    open3d_cells_np = np.floor((points_np - (lower_np - voxel_size / 2)) / voxel_size)
+    dims_np = np.ceil((upper_np - lower_np) / voxel_size)
+    fitted_cells_np = np.minimum(
+        np.floor((points_np - lower_np) / ((upper_np - lower_np) / dims_np)), dims_np - 1
+    )
+    assert n_cells_wp == np.unique(open3d_cells_np, axis=0).shape[0]
+    assert n_cells_ml == np.unique(fitted_cells_np, axis=0).shape[0]
+    assert n_cells_wp != n_cells_ml  # non-vacuity: the two grids really differ here
 
 
 @pytest.mark.parametrize("voxel_size", [1e-3, 0.1])
