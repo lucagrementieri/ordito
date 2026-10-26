@@ -1000,4 +1000,4 @@ The audit of every Class B/C/D test (commits `310fb0e8`, `03226107`) left these 
 - **icp_mesh / pymeshlab stays `noparity`**: 16 fresh processes, two working directories, never converged (RMS 0.043-0.049 at 0.15 rad, 0.1035-0.1066 at 0.30) and moved run to run.
 - **polyharmonic `k = 3` keeps `1e-4`** (CPU 6.8e-5, CUDA 9.5e-6) and the 100 k circle map keeps `1e-4` (CPU 3.0e-5, CUDA 2.3e-6).
 
-**Verification not run after the audit:** the full two-process `python -m tests.devices` (only the changed test files ran on CPU), `--cpu-blocks`, and the CUDA census; the CPU census ran on `benchmarks/test_{repair,boundary,energies}.py` only (no count rose).
+**Verification after the audit and the 2026-10-26 fixes:** the two-process `python -m tests.devices --cpu-blocks` (CUDA 4 835, CPU 4 732, CPU blocks 4 732 passed; no failure), both census budgets strict, `zensical build --strict`, `basedpyright` 0 errors, 664 parity pairs (637 covered, 0 uncovered).
