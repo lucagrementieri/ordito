@@ -1356,11 +1356,9 @@ def _octree_extract(
 
     # A depth or -1 a node: ``int8`` holds it.
     sources = _launch.empty(node_offsets_host[-1], dtype=wp.int8, device=device)
-    # The edges' owners and partners, both unset, in one allocation.
+    # The vertex each edge holds, named by the edge that created it.
     n_edges = edge_offsets_host[-1]
-    unset = _launch.full(2 * n_edges, -1, dtype=wp.int32, device=device)
-    owners = _launch.view(unset, 0, n_edges)
-    partners = _launch.view(unset, n_edges, 2 * n_edges)
+    owners = _launch.full(n_edges, -1, dtype=wp.int32, device=device)
     # One bit an edge: whether it creates a vertex.
     created = _launch.zeros((n_edges + 31) // 32, dtype=wp.uint32, device=device)
     activity = [flags, flag_offsets]
@@ -1387,7 +1385,7 @@ def _octree_extract(
                 *activity,
                 edge_offsets,
             ],
-            outputs=[owners, partners, created],
+            outputs=[owners, created],
             device=device,
         )
     # The vertices' numbers: the created edges' ranks.
@@ -1395,6 +1393,16 @@ def _octree_extract(
     # One read sizes the vertices.
     n_vertices = int(read_scalar(ranks))
     positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    # Each vertex's pair across a refined edge, by vertex number (-1 for none).
+    partners = _launch.full(max(n_vertices, 1), -1, dtype=wp.int32, device=device)
+    if depth > first:
+        _launch.launch(
+            kernel_octree.pair_edge_vertices,
+            dim=edge_offsets_host[depth] - edge_offsets_host[first],
+            inputs=[first, depth, full_depth, *activity, edge_offsets, owners, created, ranks],
+            outputs=[partners],
+            device=device,
+        )
     for d in range(first, depth + 1):
         res = 2**d + 1
         margin = kernel_levelset.lattice_edge_margin(1.0 / 2**d)
@@ -1492,7 +1500,7 @@ def _octree_extract(
     _launch.launch(
         kernel_octree.cell_loops,
         dim=n_band,
-        inputs=[segment_offsets, partners, segments],
+        inputs=[segment_offsets, created, ranks, partners, segments],
         outputs=[loops, sizes, loop_counts],
         device=device,
     )

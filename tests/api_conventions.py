@@ -687,7 +687,7 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # flags); counts written by a kernel's count pass and read back by its emit pass; a leaf's
     # segments consumed by its own loop walk; the minimal-area search's working space.
     ("algorithms.poisson_octree", "corner_sources"): frozenset({"sources"}),
-    ("algorithms.poisson_octree", "classify_edges"): frozenset({"owners", "partners"}),
+    ("algorithms.poisson_octree", "classify_edges"): frozenset({"owners"}),
     ("algorithms.poisson_octree", "borrowed_faces"): frozenset({"offsets"}),
     ("algorithms.poisson_octree", "cell_segments"): frozenset({"offsets"}),
     ("algorithms.poisson_octree", "cell_loops"): frozenset({"segments"}),

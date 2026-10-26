@@ -1586,6 +1586,50 @@ def fitted_edge_root(
     return wp.float64((iso - here) / step)
 
 
+@wp.func
+def edge_cells(
+    flags: wp.array[wp.int32],
+    flag_offsets: wp.array[wp.int32],
+    depth: wp.int32,
+    full_depth: wp.int32,
+    d: wp.int32,
+    axis: wp.int32,
+    node: wp.vec3i,
+) -> wp.vec2i:
+    # Whether any of the four depth ``d`` cells around the edge from ``node`` along ``axis`` is
+    # refined, and whether any is a leaf (1 or 0 each).
+    u = (axis + 1) % 3
+    v = (axis + 2) % 3
+    refined = wp.int32(0)
+    leaf = wp.int32(0)
+    for q in range(4):
+        cell = wp.vec3i(node[0], node[1], node[2])
+        cell[u] = cell[u] - (q & 1)
+        cell[v] = cell[v] - (q >> 1)
+        if refined_cell(flags, flag_offsets, depth, full_depth, d, cell):
+            refined = 1
+        if leaf_cell(flags, flag_offsets, depth, full_depth, d, cell):
+            leaf = 1
+    return wp.vec2i(refined, leaf)
+
+
+@wp.func
+def finer_half_owners(
+    owners: wp.array[wp.int32],
+    edge_offsets: wp.array[wp.int32],
+    d: wp.int32,
+    axis: wp.int32,
+    node: wp.vec3i,
+) -> wp.vec2i:
+    # The vertices the two depth ``d + 1`` halves of an edge hold (``owners``, -1 for none).
+    step = wp.vec3i(0, 0, 0)
+    step[axis] = 1
+    return wp.vec2i(
+        owners[edge_slot(edge_offsets, d + 1, axis, 2 * node)],
+        owners[edge_slot(edge_offsets, d + 1, axis, 2 * node + step)],
+    )
+
+
 @wp.kernel
 def classify_edges(
     d: wp.int32,
@@ -1599,15 +1643,13 @@ def classify_edges(
     flag_offsets: wp.array[wp.int32],
     edge_offsets: wp.array[wp.int32],
     owners: wp.array[wp.int32],
-    partners: wp.array[wp.int32],
     created: wp.array[wp.uint32],
 ) -> None:
     # Depth ``d``'s edge from node ``(i, j, k)`` along ``axis``: the vertex it holds, named by the
     # edge that created it (``owners``). An edge of a refined cell takes over the vertex of the one
-    # finer half that has one, or pairs the two halves' vertices (``partners``); an edge still
-    # without one gets its own (bit ``slot`` of ``created``) when a leaf's corners straddle the
-    # iso-value along it.
-    # Run finest first.
+    # finer half that has one (two halves with one each are paired by ``pair_edge_vertices``); an
+    # edge still without one gets its own (bit ``slot`` of ``created``) when a leaf's corners
+    # straddle the iso-value along it. Run finest first.
     axis, i, j, k = wp.tid()
     res = (1 << d) + 1
     node = wp.vec3i(i, j, k)
@@ -1617,34 +1659,53 @@ def classify_edges(
     if end[axis] >= res:
         owners[slot] = -1
         return
-    u = (axis + 1) % 3
-    v = (axis + 2) % 3
-    any_refined = wp.bool(False)
-    any_leaf = wp.bool(False)
-    for q in range(4):
-        cell = wp.vec3i(i, j, k)
-        cell[u] = cell[u] - (q & 1)
-        cell[v] = cell[v] - (q >> 1)
-        if refined_cell(flags, flag_offsets, depth, full_depth, d, cell):
-            any_refined = True
-        if leaf_cell(flags, flag_offsets, depth, full_depth, d, cell):
-            any_leaf = True
+    around = edge_cells(flags, flag_offsets, depth, full_depth, d, axis, node)
     owner = wp.int32(-1)
-    if any_refined:
-        first = owners[edge_slot(edge_offsets, d + 1, axis, 2 * node)]
-        second = owners[edge_slot(edge_offsets, d + 1, axis, 2 * node + (end - node))]
-        if (first >= 0) != (second >= 0):
-            owner = wp.max(first, second)
-        elif first >= 0:
-            partners[first] = second
-            partners[second] = first
-    if owner < 0 and any_leaf:
+    if around[0] != 0:
+        halves = finer_half_owners(owners, edge_offsets, d, axis, node)
+        if (halves[0] >= 0) != (halves[1] >= 0):
+            owner = wp.max(halves[0], halves[1])
+    if owner < 0 and around[1] != 0:
         here = corner_below(fields, sources, node_offsets, iso, d, node)
         there = corner_below(fields, sources, node_offsets, iso, d, end)
         if here != there:
             owner = slot
             wp.atomic_or(created, slot >> 5, wp.uint32(1) << wp.uint32(slot & 31))
     owners[slot] = owner
+
+
+@wp.kernel
+def pair_edge_vertices(
+    first_depth: wp.int32,
+    depth: wp.int32,
+    full_depth: wp.int32,
+    flags: wp.array[wp.int32],
+    flag_offsets: wp.array[wp.int32],
+    edge_offsets: wp.array[wp.int32],
+    owners: wp.array[wp.int32],
+    created: wp.array[wp.uint32],
+    ranks: wp.array[wp.int32],
+    out_partners: wp.array[wp.int32],
+) -> None:
+    # The edges ``classify_edges`` leaves without a vertex because both finer halves hold one:
+    # each half's vertex names the other (``out_partners``, by vertex number), the crossing the loop
+    # walk takes when no segment leaves a vertex. One thread an edge of every depth but the finest.
+    slot = wp.int32(wp.tid()) + edge_offsets[first_depth]
+    d = level_of(edge_offsets, first_depth, depth - 1, slot)
+    res = (1 << d) + 1
+    cube = res * res * res
+    local = slot - edge_offsets[d]
+    axis = local // cube
+    r = local % cube
+    node = wp.vec3i(r // (res * res), (r // res) % res, r % res)
+    if node[axis] + 1 >= res:
+        return
+    if edge_cells(flags, flag_offsets, depth, full_depth, d, axis, node)[0] == 0:
+        return
+    halves = finer_half_owners(owners, edge_offsets, d, axis, node)
+    if halves[0] >= 0 and halves[1] >= 0:
+        out_partners[bit_rank(created, ranks, halves[0])] = halves[1]
+        out_partners[bit_rank(created, ranks, halves[1])] = halves[0]
 
 
 @wp.kernel
@@ -1944,6 +2005,8 @@ def cell_segments(
 @wp.kernel
 def cell_loops(
     offsets: wp.array[wp.int32],
+    created: wp.array[wp.uint32],
+    ranks: wp.array[wp.int32],
     partners: wp.array[wp.int32],
     segments: wp.array[wp.vec2i],
     out_loops: wp.array[wp.int32],
@@ -1984,7 +2047,7 @@ def cell_loops(
                 segments[begin + found] = segments[begin + remaining - 1]
                 remaining -= 1
             else:
-                current = partners[current]
+                current = partners[bit_rank(created, ranks, current)]
                 if current < 0:
                     closed = False
                     break
