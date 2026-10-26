@@ -4068,7 +4068,13 @@ def test_remove_tunnels_leaves_a_long_tunnel_and_a_sphere_alone(
 
 @pytest.mark.parametrize(
     ("mesh_kind", "threshold"),
-    [("t_vertex_patch", 40.0), ("clean_icosphere", 40.0), ("saddle_graded", 20.0)],
+    [
+        ("t_vertex_patch", 40.0),
+        ("clean_icosphere", 40.0),
+        ("saddle_graded", 40.0),
+        ("saddle_graded", 20.0),
+        ("torus_irregular", 40.0),
+    ],
 )
 @pytest.mark.parity("flip_t_vertices", "pymeshlab")
 def test_remove_t_vertices_matches_pymeshlab(
@@ -4096,36 +4102,24 @@ def test_remove_t_vertices_matches_pymeshlab(
     which is the check that MeshLab really took the flip path and not a split. On the icosphere no
     triangle is anywhere near the threshold, and ordito's face buffer must come back byte for byte.
 
-    ``saddle_graded`` at ``threshold=20`` is the hard-fixture case: its graded rows of needles
-    make both sides replace the **same 128** faces, on both devices. That is as far as the
-    agreement goes on the irregular fixtures (faces changed by MeshLab / by ordito / differing
-    between them, measured on both devices):
-
-    | fixture | threshold 40 | threshold 20 |
-    |---|---|---|
-    | ``sphere_irregular`` | 47 / 97 / 172 | 109 / 153 / 234 |
-    | ``torus_irregular`` | 16 / 70 / 130 | 79 / 135 / 196 |
-    | ``saddle_graded`` | 128 / 64 / 128 | 128 / 128 / **0** |
-
-    The gap is the rule, not the order. MeshLab's filter documentation says it flips "the opposite
-    edge on the degenerate face if the triangulation quality improves", and its ``threshold`` is a
-    *base over height* ratio: probed on a single sliver, it flips exactly while the longest edge
-    over the height onto it is at least the threshold (base/height 40, 20 and 100 against
-    ``aspect_ratio`` 200.6, 50.6 and 1 050.8). ordito's threshold is ``aspect_ratio``
-    (``(base / height)^2 / 8`` on a sliver, so 40 here is base/height ~18) and any edge of a sliver
-    is a candidate. A NumPy prototype of the documented rule -- flag by longest edge over height,
-    flip that longest edge when the worse longest-over-height of the pair drops -- run in parallel
-    rounds won by the lowest edge key, which is ordito's claim order, reproduces MeshLab face for
-    face on four of the six cells (both thresholds on the saddle, 40 on the sphere and torus) and
-    differs by 38 and 6 faces at threshold 20 on the sphere and torus; a serial ascending-face sweep
-    does no better on the sphere (32). In the kernel, with ordito's convexity guard kept, the same
-    rule differs by 4 and 36 faces on the sphere, 0 and 6 on the torus and 0 and 0 on the saddle
-    (thresholds 40 and 20): the sphere's 4 are two MeshLab flips of non-convex quads, which fold
-    it to a 178.3 degree dihedral (169.0 with the guard; without it the counts are 0 and 38).
-    Adopting the rule changes what ``threshold`` means for every caller, so it is the owner's
-    call; until then those cells are recorded here and not asserted.
+    The rule is MeshLab's documented one: "flipping the opposite edge on the degenerate face if
+    the triangulation quality improves", with ``threshold`` a longest edge over the height onto it
+    (probed on single slivers: MeshLab flips exactly while that ratio reaches the threshold, at
+    base/height 40, 20 and 100, whose ``aspect_ratio`` is 200.6, 50.6 and 1 050.8). The hard
+    fixtures then agree face for face: the saddle's graded rows of needles (the same **128** faces
+    at both thresholds) and ``torus_irregular`` at 40 (16). Where slivers neighbour each other the
+    order still shows (faces differing between them, both devices): 4 and 36 on
+    ``sphere_irregular`` at 40 and 20, 6 on the torus at 20. The sphere's 4 are two MeshLab flips
+    of non-convex quads, which ordito's convexity guard refuses (they fold it to a 178.3 degree
+    dihedral, 169.0 without them); the rest is order, and a serial ascending-face sweep of the same
+    rule does no better (32 on the sphere at 20). Under the previous rule (``aspect_ratio``, any
+    sliver edge) the differences were 172 / 234 / 130 / 196 / 128 / 0.
     """
-    if mesh_kind == "t_vertex_patch":
+    if mesh_kind == "torus_irregular":
+        torus_tm, _torus_wp = request.getfixturevalue("torus_irregular")
+        vertices_np, faces_np = np.asarray(torus_tm.vertices), np.asarray(torus_tm.faces)
+        expect_change = True
+    elif mesh_kind == "t_vertex_patch":
         vertices_np, faces_np = t_vertex_patch
         expect_change = True
     elif mesh_kind == "saddle_graded":

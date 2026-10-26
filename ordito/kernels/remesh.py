@@ -79,6 +79,7 @@ from ordito.kernels.triangles import (
     face_normals_and_area,
     face_vertices_vec3d,
     local_corner,
+    triangle_area_max_side,
     triangle_mean_ratio,
     triangle_quality,
     write_corner_triple,
@@ -3708,14 +3709,24 @@ def objective_flip_candidates(
         return
 
     if objective == OBJECTIVE_T_VERTEX:
-        # A T-vertex shows up as a sliver: one apex sits (nearly) on the opposite edge, which drives
-        # the circumradius-to-inradius ratio through the roof. Flip only when the sliver is *that*
-        # bad and the flip actually improves it, so a merely thin triangle is left alone.
-        old_worst = wp.max(triangle_aspect_ratio(ap, bp, cp), triangle_aspect_ratio(ap, cp, dp))
-        if not (old_worst > aspect_threshold):  # also excludes a NaN ratio
+        # A T-vertex shows up as a sliver whose apex sits (nearly) on its longest edge: the edge
+        # flipped is that longest edge, and the sliver is judged by its longest edge over the height
+        # onto it, ``1 / triangle_area_max_side`` -- MeshLab's ``meshing_remove_t_vertices`` rule
+        # and ratio. A flip is taken when it raises the worse ``height / longest`` of the pair.
+        diagonal_sq = wp.length_sq(cp - ap)
+        abc_longest = diagonal_sq >= wp.max(wp.length_sq(bp - ap), wp.length_sq(cp - bp))
+        acd_longest = diagonal_sq >= wp.max(wp.length_sq(dp - ap), wp.length_sq(dp - cp))
+        quality_abc = triangle_area_max_side(ap, bp, cp)
+        quality_acd = triangle_area_max_side(ap, cp, dp)
+        sliver_quality = wp.float32(1.0) / aspect_threshold
+        sliver = (abc_longest and quality_abc < sliver_quality) or (
+            acd_longest and quality_acd < sliver_quality
+        )
+        if not sliver:
             return
-        new_worst = wp.max(triangle_aspect_ratio(ap, bp, dp), triangle_aspect_ratio(dp, bp, cp))
-        out_flip[k] = new_worst < old_worst
+        old_worst = wp.min(quality_abc, quality_acd)
+        new_worst = wp.min(triangle_area_max_side(ap, bp, dp), triangle_area_max_side(dp, bp, cp))
+        out_flip[k] = new_worst > old_worst
         return
 
     normal_abc = triangle_normal(ap, bp, cp)
