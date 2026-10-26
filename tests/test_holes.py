@@ -24,7 +24,12 @@ from tests.comparisons import (
     lexsort_rows,
     same_partition,
 )
-from tests.conftest import BOUNDARY_MESHES, OPEN_MESHES, open_cylinder_arrays
+from tests.conftest import (
+    BOUNDARY_MESHES,
+    OPEN_MESHES,
+    open_cylinder_arrays,
+    touching_holes_grid_arrays,
+)
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
@@ -1404,6 +1409,30 @@ def test_fill_small_fills_exactly_the_loops_under_the_threshold(device: str) -> 
     assert above_both_wp.size // 3 == n_faces + sum(loop_sizes) - 4
     # The prefix is the input face buffer: fill triangles are appended, never interleaved.
     assert np.array_equal(above_both_wp.numpy()[: faces_wp.size], faces_wp.numpy())
+
+
+def test_fill_small_measures_holes_touching_at_a_vertex_one_by_one(device: str) -> None:
+    """
+    Class A: two holes touching at a vertex are filled as two, each judged by its own perimeter.
+
+    Two square holes of perimeter 1.0 share the grid's centre vertex (non-vacuity, below: it lies
+    on both). At ``max_perimeter=1.5`` each hole is small and is closed with ``4 - 2`` triangles,
+    and the outer rim (perimeter 4.0) is kept: exactly four faces are added and the rim is the one
+    loop left. Measured as one loop through the shared vertex twice (perimeter 2.0), the threshold
+    would have filled nothing, and a triangulation of a loop that repeats a vertex is not a surface.
+    """
+    vertices_np, faces_np = touching_holes_grid_arrays()
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    holes = [loop.numpy() for loop in od.boundary.boundary_loops(vertices_wp, faces_wp)]
+    assert sorted(loop.size for loop in holes) == [4, 4, 16]
+    assert sum(12 in loop for loop in holes) == 2
+
+    filled_wp = od.holes.fill_small(vertices_wp, faces_wp, 1.5)
+
+    assert filled_wp.size // 3 == faces_np.shape[0] + 4
+    remaining = od.boundary.boundary_loops(vertices_wp, filled_wp)
+    assert [loop.size for loop in remaining] == [16]
+    assert od.validation.is_edge_manifold(filled_wp)
 
 
 def test_fill_small_leaves_a_watertight_mesh_alone(

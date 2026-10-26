@@ -4310,8 +4310,8 @@ def _boundary_loops_packed(
 
     The packed buffer is
     [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]' own, handed on
-    unsplit; the sizes come from the single offsets readback the ragged indexing needs anyway, or
-    with one loop from the buffer's own length.
+    unsplit; the sizes come from the single offsets readback the
+    ragged indexing needs anyway, or with one loop from the buffer's own length.
     """
     flat_loops, offsets = od.boundary.boundary_loops_with_offsets(vertices, faces, mates=mates)
     if offsets.size == 1:

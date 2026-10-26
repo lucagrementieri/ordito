@@ -406,9 +406,9 @@ def test_ball_pivoting(bench_case: BenchCase) -> None:
 @pytest.mark.benchmark(group="screened_poisson")
 @pytest.mark.benchlibs("ordito", "meshlib")
 @pytest.mark.parametrize("depth", _POISSON_DEPTHS)
-@pytest.mark.parametrize("method", ["dense", "adaptive"])
+@pytest.mark.parametrize("method", ["dense", "adaptive", "octree"])
 def test_screened_poisson(
-    bench_case: BenchCase, method: Literal["dense", "adaptive"], depth: int
+    bench_case: BenchCase, method: Literal["dense", "adaptive", "octree"], depth: int
 ) -> None:
     # **The CPU Poisson rows were removed, deliberately.** open3d and pymeshlab both wrap Kazhdan's
     # CPU solver, and between them they were the majority of the whole benchmark suite's wall clock
@@ -424,11 +424,11 @@ def test_screened_poisson(
     )
     if bench_case.mesh_name not in MESHES_BY_NAME and depth != _POISSON_DEPTHS[0]:
         pytest.skip("the census row on a feature mesh counts the smallest depth only")
-    if depth > 9 and (method == "dense" or bench_case.kind == "meshlib"):
+    if depth > 9 and (method != "adaptive" or bench_case.kind == "meshlib"):
         pytest.skip("the dense 2^10 lattice does not fit the device; only the band backend runs")
     if bench_case.kind == "meshlib":
-        if method == "adaptive":
-            pytest.skip("its lattice is uniform: there is no adaptive variant to match")
+        if method != "dense":
+            pytest.skip("its lattice is uniform: there is no adaptive or octree variant to match")
         # The lattice is matched to ordito's octree depth by cell *count* along the longest axis,
         # ``2 ** depth``, which is the only parameter the two share. ``sigma`` is set from the
         # cloud's own spacing rather than left at its default of 1.0, an absolute length that would

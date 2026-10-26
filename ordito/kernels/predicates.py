@@ -458,6 +458,17 @@ def circumcircle_diameter(a: Any, b: Any, c: Any) -> wp.Float:
 
 
 @wp.func
+def circumcircle_center(u: Any, w: Any) -> Any:
+    # Centre of the circumcircle through the origin, ``u`` and ``w``, relative to the origin: the
+    # triangle ``(a, a + u, a + w)``'s circumcentre minus ``a``. Collinear (or repeated) corners
+    # have no circumcircle and give a non-finite vector.
+    normal = wp.cross(u, w)
+    return wp.cross(wp.length_sq(u) * w - wp.length_sq(w) * u, normal) / (
+        type(u[0])(2.0) * wp.length_sq(normal)
+    )
+
+
+@wp.func
 def delone_metrics(a: Any, b: Any, c: Any, d: Any) -> tuple[wp.Float, wp.Float]:
     # For quadrangle ABCD, the pair of Delone metrics compared when deciding whether to flip the
     # diagonal AC to BD: each is the larger circumcircle of the two triangles that diagonal makes.

@@ -33,6 +33,7 @@ from ordito.kernels.array import (
     update_argmax,
 )
 from ordito.kernels.predicates import (
+    circumcircle_center,
     circumcircle_diameter_sq,
     is_unfold_quadrangle_convex,
     orient2d,
@@ -56,6 +57,12 @@ wp.set_module_options({"enable_backward": False})
 # Compile-time upper bound on the per-point fan size (neighbours kept for one center).
 # Per-thread scratch arrays are sized to this; the runtime ``max_neighbours`` must not exceed it.
 MAX_NEIGHBOURS = 64
+# A fan whose search radius grows (``grown_radius``) is rebuilt from up to
+# ``max(2 * k, GROWN_NEIGHBOURS_MIN)`` nearest neighbours inside its grown radius.
+# ``GROWN_NEIGHBOURS`` sizes that rebuild's scratch rows and holds the largest such count
+# ``MAX_NEIGHBOURS`` allows.
+GROWN_NEIGHBOURS_MIN = 100
+GROWN_NEIGHBOURS = 2 * MAX_NEIGHBOURS
 
 # Faces with aspect ratio above this are treated as degenerate and removed first.
 CRITICAL_ASPECT_RATIO = wp.constant(wp.float32(1e3))
@@ -467,8 +474,60 @@ def edge_removal_weight(
 # --------------------------------------------------------------------------------------
 # Local fan triangulation: a Boissonnat-style fan about each point, greedily optimized
 # --------------------------------------------------------------------------------------
-@wp.kernel(enable_backward=False)
-def build_local_triangulations(
+@wp.func
+def search_radius(
+    neighbor_dist: wp.array2d[wp.float32], row: wp.int32, radius: wp.float32
+) -> wp.float32:
+    # The radius a fan's neighbours were searched in: the given radius,
+    # or the distance to the farthest neighbour found (the ``k``-th nearest).
+    if radius > 0.0:
+        return radius
+    farthest = wp.float32(0.0)
+    for i in range(neighbor_dist.shape[1]):
+        d = neighbor_dist[row, i]
+        if is_positive_finite(d):
+            farthest = wp.max(farthest, d)
+    return farthest
+
+
+@wp.func
+def grown_radius(
+    a: wp.vec3,
+    points: wp.array[wp.vec3],
+    nbr: wp.array[wp.int32],
+    m: wp.int32,
+    live: wp.int32,
+    border: wp.int32,
+    base_radius: wp.float32,
+) -> wp.float32:
+    # The automatic radius increase of the local triangulation: the radius an optimized
+    # fan centred at ``a`` searches its neighbours again in, zero when it keeps ``base_radius``. A
+    # fan with a border, or fewer than two live neighbours, doubles it; any other grows to the
+    # farthest reach of its triangles' circumcircles, since a point
+    # inside one of them would make the fan not Delaunay, capped at the double.
+    doubled_radius = base_radius + base_radius
+    reach = doubled_radius
+    if live >= 2 and border < 0:
+        reach = wp.float32(0.0)
+        for i in range(m):
+            if nbr[i] < 0:
+                continue
+            nxt = cycle_next(nbr, m, i)
+            b = points[nbr[i]]
+            c = points[nbr[nxt]]
+            diameter_sq = circumcircle_diameter_sq(a, b, c)
+            if reach * reach >= diameter_sq:
+                continue
+            center = circumcircle_center(b - a, c - a)
+            reach = wp.max(reach, wp.length(center) + 0.5 * wp.sqrt(diameter_sq))
+        reach = wp.min(reach, doubled_radius)
+    return wp.where(reach > base_radius, reach, wp.float32(0.0))
+
+
+@wp.func
+def local_fan(
+    v: wp.int32,
+    row: wp.int32,
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
     neighbor_idx: wp.array2d[wp.int32],
@@ -477,33 +536,22 @@ def build_local_triangulations(
     crit_angle: wp.float32,
     boundary_angle: wp.float32,
     oriented: wp.int32,
+    nbr: wp.array[wp.int32],
+    ang: wp.array[wp.float32],
+    capacity: wp.int32,
     out_tris: wp.array3d[wp.int32],
-    out_counts: wp.array[wp.int32],
-) -> None:
-    # Point ``v``'s fan fills ``out_tris[v, 0 : out_counts[v]]`` contiguously, so the emitted
-    # candidates are addressed by a scan of ``n`` counts rather than a compaction of an ``(n, k)``
-    # mask. The count is written before any early return, so every point reports one.
-    v = wp.int32(wp.tid())
+) -> tuple[wp.int32, wp.float32]:
+    # Point ``v``'s fan over the neighbours in row ``row`` of the neighbour table that lie within
+    # ``radius`` (any distance when it is zero), into ``out_tris[v, 0 : count]``, with ``nbr`` and
+    # ``ang`` the caller's ``capacity``-slot scratch rows. Returns the triangle count and the
+    # radius the automatic radius increase grows this fan's search to (``grown_radius``), or
+    # zero when it would not grow.
     k = neighbor_idx.shape[1]
     cap = out_tris.shape[1]
-    out_counts[v] = wp.int32(0)
+    base_radius = search_radius(neighbor_dist, row, radius)
 
     a = points[v]
     n_center = normals[v]
-
-    # Both rows stay ``wp.zeros`` rather than becoming ``wp.types.vector(length=MAX_NEIGHBOURS)``
-    # register rows: every access below is a *runtime* index (the gather cursor, the selection
-    # sort's ``mn``, the fan scan's ``i``), which spills a vector to local memory anyway, and
-    # ``edge_removal_weight`` / ``cycle_prev`` / ``cycle_next`` take them as ``wp.array``, so the
-    # vector form would additionally need ``wp.ref`` variants of all three. Measured on the clean
-    # case of the same class -- ``algorithms/ball_pivoting.seed_triangles``, one 64-wide row with no
-    # helper passing -- the register row gives nothing end to end, so there is no gain to trade that
-    # complexity for.
-    #
-    # And ``wp.fixedarray`` is not a third option: its own docstring says it is "only used during
-    # codegen, and for type hints" -- it *is* the codegen type of a kernel-scope ``wp.zeros``.
-    nbr = wp.zeros(shape=MAX_NEIGHBOURS, dtype=wp.int32)
-    ang = wp.zeros(shape=MAX_NEIGHBOURS, dtype=wp.float32)
 
     # --- gather + filter neighbours ---
     # A constructor call -- wp.int32(...) / wp.float32(...) -- declares a mutable Warp dynamic
@@ -512,16 +560,16 @@ def build_local_triangulations(
     # of it: the older int()/float() forms are the same builtins under a different name.
     m = wp.int32(0)
     for i in range(k):
-        if m >= MAX_NEIGHBOURS:
+        if m >= capacity:
             # Silent truncation, not a check: this file cannot itself raise
             # if the caller's ``max_neighbours`` violated the module-level invariant. The wrapper's
             # ``max_neighbours > MAX_NEIGHBOURS`` guard is what makes this branch unreachable at
-            # the public entry point; a direct launch of this kernel bypasses it.
+            # the public entry point; a direct launch of the kernels bypasses it.
             break
-        nb = neighbor_idx[v, i]
+        nb = neighbor_idx[row, i]
         if nb < 0 or nb == v:
             continue
-        if radius > 0.0 and neighbor_dist[v, i] > radius:
+        if radius > 0.0 and neighbor_dist[row, i] > radius:
             continue
         pn = points[nb]
         if pn[0] == a[0] and pn[1] == a[1] and pn[2] == a[2]:
@@ -532,8 +580,10 @@ def build_local_triangulations(
         nbr[m] = nb
         m += 1
 
+    # A fan with a border, or with fewer than two neighbours, searches again in twice its radius.
+    doubled_radius = base_radius + base_radius
     if m < 2:
-        return
+        return wp.int32(0), doubled_radius
 
     # --- tangent-plane basis (project neighbours onto plane through center) ---
     base = wp.vec3(0.0, 0.0, 0.0)
@@ -598,7 +648,8 @@ def build_local_triangulations(
         # point untriangulated is an accepted outcome elsewhere in the reconstruction pipeline (a
         # confirmed triangle needs two of its three vertices' fans to agree, so no single point's
         # fan is required to succeed), and `crit_hole_length` fills the small holes this leaves.
-        return
+        # Its gaps are borders, so it searches again in twice its radius, as a one-gap fan does.
+        return wp.int32(0), doubled_radius
 
     # --- greedy fan optimisation (linear-scan replacement of the priority queue) ---
     current = m  # inherits m's dynamic-variable type (m is already mutable)
@@ -655,7 +706,100 @@ def build_local_triangulations(
             out_tris[v, slot, 1] = bidx
             out_tris[v, slot, 2] = cidx
             slot += 1
-    out_counts[v] = slot
+    return slot, grown_radius(a, points, nbr, m, current, border, base_radius)
+
+
+@wp.kernel(enable_backward=False)
+def build_local_triangulations(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    neighbor_idx: wp.array2d[wp.int32],
+    neighbor_dist: wp.array2d[wp.float32],
+    radius: wp.float32,
+    crit_angle: wp.float32,
+    boundary_angle: wp.float32,
+    oriented: wp.int32,
+    out_tris: wp.array3d[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_grown_radius: wp.array[wp.float32],
+) -> None:
+    # Point ``v``'s fan fills ``out_tris[v, 0 : out_counts[v]]`` contiguously, so the emitted
+    # candidates are addressed by a scan of ``n`` counts rather than a compaction of an ``(n, k)``
+    # mask. Every point reports a count, and the radius its fan grows to (zero when it does not),
+    # which [`rebuild_grown_local_triangulations`] rebuilds it from. The two kernels run one fan
+    # body, ``local_fan``, and differ in their neighbour rows, their scratch size and their radius.
+    v = wp.int32(wp.tid())
+
+    # Both rows stay ``wp.zeros`` rather than becoming ``wp.types.vector(length=MAX_NEIGHBOURS)``
+    # register rows: every access below is a *runtime* index (the gather cursor, the selection
+    # sort's ``mn``, the fan scan's ``i``), which spills a vector to local memory anyway, and
+    # ``edge_removal_weight`` / ``cycle_prev`` / ``cycle_next`` take them as ``wp.array``, so the
+    # vector form would additionally need ``wp.ref`` variants of all three. Measured on the clean
+    # case of the same class -- ``algorithms/ball_pivoting.seed_triangles``, one 64-wide row with no
+    # helper passing -- the register row gives nothing end to end, so there is no gain to trade that
+    # complexity for.
+    #
+    # And ``wp.fixedarray`` is not a third option: its own docstring says it is "only used during
+    # codegen, and for type hints" -- it *is* the codegen type of a kernel-scope ``wp.zeros``.
+    nbr = wp.zeros(shape=MAX_NEIGHBOURS, dtype=wp.int32)
+    ang = wp.zeros(shape=MAX_NEIGHBOURS, dtype=wp.float32)
+    count, grown = local_fan(
+        v,
+        v,
+        points,
+        normals,
+        neighbor_idx,
+        neighbor_dist,
+        radius,
+        crit_angle,
+        boundary_angle,
+        oriented,
+        nbr,
+        ang,
+        wp.int32(MAX_NEIGHBOURS),
+        out_tris,
+    )
+    out_counts[v] = count
+    out_grown_radius[v] = grown
+
+
+@wp.kernel(enable_backward=False)
+def rebuild_grown_local_triangulations(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    grown_points: wp.array[wp.int32],
+    grown_radii: wp.array[wp.float32],
+    neighbor_idx: wp.array2d[wp.int32],
+    neighbor_dist: wp.array2d[wp.float32],
+    crit_angle: wp.float32,
+    boundary_angle: wp.float32,
+    oriented: wp.int32,
+    out_tris: wp.array3d[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # The second fan of a point whose first one grew its radius: the same ``local_fan`` over row
+    # ``t`` of the grown neighbour table, cut at the grown radius, into the point's own slots.
+    t = wp.int32(wp.tid())
+    v = grown_points[t]
+    nbr = wp.zeros(shape=GROWN_NEIGHBOURS, dtype=wp.int32)
+    ang = wp.zeros(shape=GROWN_NEIGHBOURS, dtype=wp.float32)
+    count, _grown = local_fan(
+        v,
+        t,
+        points,
+        normals,
+        neighbor_idx,
+        neighbor_dist,
+        grown_radii[v],
+        crit_angle,
+        boundary_angle,
+        oriented,
+        nbr,
+        ang,
+        wp.int32(GROWN_NEIGHBOURS),
+        out_tris,
+    )
+    out_counts[v] = count
 
 
 @wp.kernel

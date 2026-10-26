@@ -301,6 +301,12 @@ def boundary_loops_with_offsets(
     [`successor_cycles_from_table`][ordito.graph.successor_cycles_from_table] straight off the
     boundary's successor table.
 
+    Every loop is simple. Where two holes touch at one vertex (a *pinch*), walking the boundary one
+    fan of faces at a time can make the two holes one loop passing that vertex twice; such a loop is
+    cut into cycles at the vertices it passes twice, which are the loops a hole filler closes (a
+    triangulation of a loop that repeats a vertex is not a surface). That cut costs one readback of
+    the boundary, and only a pinched boundary pays it.
+
     Parameters
     ----------
     vertices
@@ -372,7 +378,7 @@ def boundary_loops_with_offsets(
     if boundary.count() == 0:
         return _launch.empty_packed(wp.int32, device)
     if has_pinch:
-        return _pinched_boundary_cycles(boundary)
+        return _split_at_pinches(*_pinched_boundary_cycles(boundary))
     if has_seam:
         return _unoriented_boundary_cycles(boundary.edges(sort_pair=True), n_vertices)
     # With neither defect no boundary vertex has two boundary edges out or three incident, so the
@@ -380,6 +386,46 @@ def boundary_loops_with_offsets(
     # edge-manifold, chains running into a vertex with no edge out, which the ranking drops.
     tails, next_node = boundary.successors(n_vertices)
     return successor_cycles_from_table(tails, next_node)
+
+
+def _split_at_pinches(
+    flat_loops: wp.array[wp.int32], offsets: wp.array[wp.int32]
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Cut every loop that passes a vertex twice into simple cycles, kept in its direction.
+
+    The last step of [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]
+    on a pinched boundary. Each cycle starts at its smallest vertex and the cycles ascend by their
+    first two vertices, the order of the unsplit loops. On the host: only a pinched boundary comes
+    here, and its loops are boundary-sized.
+    """
+    device = flat_loops.device
+    # Readback: the cut walks each loop in order, which is host-sequential work on the boundary.
+    flat_np = flat_loops.numpy()
+    offsets_np = offsets.numpy()
+    cycles: list[np.ndarray] = []
+    for start, stop in zip(offsets_np[:-1].tolist(), offsets_np[1:].tolist(), strict=True):
+        path: list[int] = []
+        position: dict[int, int] = {}
+        for vertex in flat_np[start:stop].tolist():
+            if vertex in position:
+                first = position[vertex]
+                cycles.append(np.asarray(path[first:], dtype=np.int32))
+                for dropped in path[first + 1 :]:
+                    del position[dropped]
+                del path[first + 1 :]
+            else:
+                position[vertex] = len(path)
+                path.append(vertex)
+        cycles.append(np.asarray(path, dtype=np.int32))
+    cycles = [np.roll(cycle, -int(np.argmin(cycle))) for cycle in cycles if cycle.size > 0]
+    cycles.sort(key=lambda cycle: (int(cycle[0]), int(cycle[1]) if cycle.size > 1 else -1))
+    sizes = np.array([cycle.size for cycle in cycles], dtype=np.int32)
+    new_offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int32)
+    return (
+        _launch.array(np.concatenate(cycles), dtype=wp.int32, device=device),
+        _launch.array(new_offsets, dtype=wp.int32, device=device),
+    )
 
 
 def _boundary_defects(boundary: _BoundaryHalfedges, n_vertices: int) -> tuple[bool, bool]:
@@ -436,7 +482,8 @@ def _pinched_boundary_cycles(
     So the cycles are the boundary of the surface with each pinch vertex split once per fan: every
     boundary edge appears exactly once, and a cycle can pass through a pinch vertex twice where two
     holes touch there (one fan hands the walk from the first rim to the second, the other hands it
-    back). Only this branch builds a twin table (unvalidated: a mesh this function accepts need not
+    back); [`_split_at_pinches`][ordito.boundary._split_at_pinches] then cuts it in two. Only this
+    branch builds a twin table (unvalidated: a mesh this function accepts need not
     be edge-manifold, and on one that is not, the walk is still
     bounded and in range, just not meaningful). There a rotation can dead-end on a halfedge that is
     not a boundary one, and the chain it leaves is dropped rather than ranked (see

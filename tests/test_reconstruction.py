@@ -41,7 +41,7 @@ from tests.comparisons import (
     symmetric_surface_distance,
     undirected_edges,
 )
-from tests.conftest import CLOSED_MESHES, ROUND_FRAME_SCALE, ROUND_FRAME_SHIFT
+from tests.conftest import CLOSED_MESHES, ROUND_FRAME_SCALE, ROUND_FRAME_SHIFT, saddle_graded_arrays
 from tests.conversions import (
     meshlib_to_trimesh,
     numpy_to_meshlib,
@@ -429,6 +429,45 @@ def test_torus_matches_meshlib_reference(device: str):
     assert od.measures.euler_characteristic(faces_wp) == 0
 
 
+@pytest.mark.parity("triangulate_point_cloud", "meshlib")
+def test_graded_open_cloud_matches_meshlib_reference(device: str):
+    """
+    Class C (a statistic of the face sets): the share of MeshLib's faces ordito reproduces.
+
+    On a graded open cloud -- ``saddle_graded``'s vertices with its vertex normals, needles of
+    aspect ~4 800 and a rim -- a fan over the 16 nearest neighbours often misses a neighbour its
+    Delaunay fan needs, so MeshLib rebuilds such fans from a wider search
+    (``automaticRadiusIncrease``, on by default). Excludes the bug class "a fan is never rebuilt,
+    or rebuilt from the wrong radius". Measured on the CPU: ordito reproduces **0.9932** of
+    MeshLib's 2 046 faces and returns 2 046 (28 faces differ); the bound 0.979 is 3.1x the
+    measured disagreement. Mutation probe: without the rebuild (the previous ordito) it reproduced
+    0.8534 with 1 754 faces, failing both asserts. Both index the input points, matched by
+    position since ordito drops an unreferenced point.
+    """
+    vertices_np, faces_np = saddle_graded_arrays()
+    mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+    used = np.unique(faces_np)
+    points_np = np.asarray(mesh_tm.vertices[used], dtype=np.float64)
+    normals_np = np.asarray(mesh_tm.vertex_normals[used], dtype=np.float64)
+    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+
+    _vertices_ml, faces_ml = _meshlib_triangulate(points_np, normals_np, 16)
+    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(
+        points_wp, normals_wp, num_neighbours=16
+    )
+    distance, input_index = cKDTree(points_np).query(vertices_wp.numpy().astype(np.float64))
+    assert np.max(distance) < 1e-5  # every vertex is an input point
+
+    def row_set(rows: np.ndarray) -> set[tuple[int, ...]]:
+        return {tuple(row) for row in np.sort(rows, axis=1).tolist()}
+
+    faces_ml_set = row_set(np.asarray(faces_ml, dtype=np.int64))
+    faces_wp_set = row_set(np.asarray(input_index)[faces_wp.numpy().reshape(-1, 3)])
+    assert len(faces_ml_set) > 0  # non-vacuity
+    assert len(faces_wp_set & faces_ml_set) >= 0.979 * len(faces_ml_set)
+    assert abs(len(faces_wp_set) - len(faces_ml_set)) <= 0.01 * len(faces_ml_set)
+
+
 @pytest.mark.parity("triangulate_point_cloud_unoriented", "meshlib")
 def test_torus_without_normals_matches_meshlib_reference(device: str):
     """
@@ -533,9 +572,20 @@ def test_open_hemisphere_keeps_single_boundary(device: str):
         points_wp, normals_wp, num_neighbours=18
     )
     assert od.validation.is_edge_manifold(faces_wp)
-    # The intended equator rim is a single large boundary loop, not filled and not fragmented.
-    loops = od.boundary.boundary_loops(vertices_wp, faces_wp)
-    assert len(loops) == 1
+    # The intended equator rim is one large boundary loop, not filled and not fragmented. The
+    # rim's fans search twice as far (MeshLib's automatic radius increase), which can leave small
+    # gaps beside the rim: slivers between it and a chord across three of its points, or a notch
+    # touching it at a vertex, which is its own loop. MeshLib leaves one sliver here (rim
+    # perimeter 6.27, sliver 0.69); ordito two slivers and a 4-vertex notch.
+    loops = sorted(od.boundary.boundary_loops(vertices_wp, faces_wp), key=lambda loop: -loop.size)
+    heights = np.abs(vertices_wp.numpy()[:, 2])
+    n_equator = int(np.count_nonzero(np.abs(points_np[:, 2]) < 1e-6))
+    rim_np = loops[0].numpy()
+    assert rim_np.size >= 0.85 * n_equator
+    assert (heights[rim_np] < 1e-6).all()
+    for gap in loops[1:]:
+        assert gap.size <= 4
+        assert heights[gap.numpy()].max() < 0.08  # within one edge of the rim
 
 
 def test_build_local_triangulations_two_neighbour_ring_no_duplicate(device: str):
@@ -566,6 +616,7 @@ def test_build_local_triangulations_two_neighbour_ring_no_duplicate(device: str)
     out_tris_wp = wp.zeros((1, 3, 3), dtype=wp.int32, device=device)
     # Seeded off zero, so the assert below also shows the kernel wrote the count itself.
     out_counts_wp = wp.full(1, -1, dtype=wp.int32, device=device)
+    out_grown_radius_wp = wp.full(1, -1.0, dtype=wp.float32, device=device)
     wp.launch(
         kernel_reconstruction.build_local_triangulations,
         dim=1,
@@ -580,12 +631,16 @@ def test_build_local_triangulations_two_neighbour_ring_no_duplicate(device: str)
             kernel_reconstruction.NORMALS_ORIENTED,
             out_tris_wp,
             out_counts_wp,
+            out_grown_radius_wp,
         ],
         device=device,
     )
     assert out_counts_wp.numpy()[0] == 1
     triangle = out_tris_wp.numpy()[0, 0]
     assert set(triangle.tolist()) == {0, 1, 2}
+    # The 170-degree wedge's circumcircle reaches far past the unit search radius, so the fan grows
+    # its search to MeshLib's cap, twice that radius.
+    assert out_grown_radius_wp.numpy()[0] == 2.0
 
 
 def test_build_local_triangulations_two_gaps_emits_nothing(device: str):
@@ -615,6 +670,7 @@ def test_build_local_triangulations_two_gaps_emits_nothing(device: str):
     out_tris_wp = wp.zeros((1, 6, 3), dtype=wp.int32, device=device)
     # Seeded off zero: the early return this fan takes must still report its (empty) count.
     out_counts_wp = wp.full(1, -1, dtype=wp.int32, device=device)
+    out_grown_radius_wp = wp.full(1, -1.0, dtype=wp.float32, device=device)
     wp.launch(
         kernel_reconstruction.build_local_triangulations,
         dim=1,
@@ -629,18 +685,23 @@ def test_build_local_triangulations_two_gaps_emits_nothing(device: str):
             kernel_reconstruction.NORMALS_ORIENTED,
             out_tris_wp,
             out_counts_wp,
+            out_grown_radius_wp,
         ],
         device=device,
     )
     assert out_counts_wp.numpy()[0] == 0
+    # Its gaps are borders, so it searches again in twice its unit radius.
+    assert out_grown_radius_wp.numpy()[0] == 2.0
 
 
 def test_holes_seal_small_hole(device: str):
     rng = np.random.default_rng(0)
     points_np, normals_np = _sphere_cloud(4)
-    # Remove a small cluster of points to open a genuine boundary hole.
+    # Remove a small cluster of points to open a genuine boundary hole. Wider than the doubled
+    # search of the rim's fans, which triangulate straight across a 0.2 puncture (MeshLib's do
+    # too); at 0.35 both leave the same 7-vertex hole.
     seed = points_np[rng.integers(points_np.shape[0])]
-    keep = np.linalg.norm(points_np - seed, axis=1) > 0.2
+    keep = np.linalg.norm(points_np - seed, axis=1) > 0.35
     points_np, normals_np = points_np[keep], normals_np[keep]
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
@@ -983,6 +1044,55 @@ def test_poisson_matches_pymeshlab_metric(device: str):
     assert mean_distance < 0.015
 
 
+@pytest.mark.parity(
+    "screened_poisson",
+    "open3d",
+    benchmarked=False,
+    reason="open3d wraps Kazhdan's CPU solver, whose screened_poisson rows were removed from the "
+    "benchmarks for dominating the suite's wall clock (see test_poisson_matches_open3d_metric); "
+    "the octree backend's comparison lives here, at a size a correctness test can afford.",
+)
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+def test_poisson_octree_matches_open3d(
+    request: pytest.FixtureRequest, device: str, mesh_name: str
+) -> None:
+    """
+    Class C: the fraction of open3d's vertices lying on ordito's ``method="octree"`` surface.
+
+    The backend solves open3d's own system with its own non-converged schedule, so its surface is
+    open3d's; only the triangulation differs (marching cubes over each depth's leaf cells against
+    PoissonRecon's per-face polygons), so the vertices themselves cannot be matched one to one but
+    every open3d vertex must sit on ordito's surface. Excludes the bug classes "wrong system" (a
+    screening weight, a constraint, a density or a splat depth off), "wrong solver schedule" and
+    "wrong unknowns" (the active nodes above ``full_depth``): each moves the field, and the
+    non-converged far field moves with it.
+
+    At depth 6 (``full_depth`` 5, so the finest depth is sparse) 99.74 % (``sphere_irregular``)
+    and 99.41 % (``saddle_graded``, open) of open3d's vertices are within a thousandth of a cell
+    of ordito's surface; the rest are at changes of depth, where open3d stitches a coarse leaf to
+    its finer neighbours' vertices. The threshold, 98 %, allows 3.4x the measured misses. Mutation
+    probes, each failing the assert: 9 sweeps instead of 8 (28 % / 33 %), ``point_weight`` 2.2
+    instead of 2 (10 % / 31 %), and the splats past a high face dropped instead of aliased to the
+    midplane nodes (29 % / 80 %).
+    """
+    mesh_tm, _ = request.getfixturevalue(mesh_name)
+    points_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    normals_np = np.asarray(mesh_tm.vertex_normals, dtype=np.float64)
+    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+    vertices_wp, faces_wp = od.reconstruction.screened_poisson(
+        points_wp, normals_wp, depth=6, method="octree"
+    )
+    mesh_o3d, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+        points_to_open3d(points_np, normals_np), depth=6, n_threads=1
+    )
+    vertices_o3d = np.asarray(mesh_o3d.vertices)
+    assert vertices_o3d.shape[0] > 1000
+    mesh_od = warp_to_trimesh(vertices_wp, faces_wp)
+    cell = 1.1 * float(np.ptp(points_np, axis=0).max()) / 2**6
+    distance = np.abs(tm.proximity.signed_distance(mesh_od, vertices_o3d)) / cell
+    assert np.mean(distance < 1e-3) > 0.98
+
+
 @pytest.mark.parametrize(
     ("n_points", "arguments", "match"),
     [
@@ -990,6 +1100,10 @@ def test_poisson_matches_pymeshlab_metric(device: str):
         pytest.param(162, {"depth": 11}, "full_depth", id="depth_too_large"),
         pytest.param(162, {"scale": 0.0}, "scale", id="zero_scale"),
         pytest.param(162, {"method": "bogus"}, "method", id="off_menu_method"),
+        pytest.param(162, {"depth": 10, "method": "octree"}, "depth", id="octree_depth_10"),
+        pytest.param(
+            162, {"confidence": True, "method": "octree"}, "confidence", id="octree_confidence"
+        ),
         pytest.param(2, {"depth": 4, "full_depth": 3}, "at least 3 points", id="two_points"),
     ],
 )
@@ -1263,10 +1377,12 @@ def test_poisson_adaptive_confidence_runs(device: str):
     assert warp_to_trimesh(vertices_wp, faces_wp).euler_number == 2
 
 
-@pytest.mark.parametrize("confidence", [False, True])
-@pytest.mark.parametrize("method", ["dense", "adaptive"])
+@pytest.mark.parametrize(
+    ("method", "confidence"),
+    [("dense", False), ("dense", True), ("adaptive", False), ("adaptive", True), ("octree", False)],
+)
 def test_poisson_is_reproducible(
-    device: str, method: Literal["dense", "adaptive"], confidence: bool
+    device: str, method: Literal["dense", "adaptive", "octree"], confidence: bool
 ) -> None:
     """
     Ordito against ordito: the identical call, four times, must return identical buffers.
@@ -1279,7 +1395,8 @@ def test_poisson_is_reproducible(
     weightings. With the deterministic setting on (``tests/conftest.py``) the splat sums each
     node's terms in one fixed order and the restriction gathers in ascending fine-node order, so
     the outputs repeat byte for byte. The CPU device repeats either way. A jittered cloud with
-    normals of varying length, so ``confidence=True`` weights unequally.
+    normals of varying length, so ``confidence=True`` weights unequally. The octree backend's
+    density and normal splats are group sums under the same setting (it takes no ``confidence``).
     """
     points_np, normals_np = _sphere_cloud(4)
     rng = np.random.default_rng(0)

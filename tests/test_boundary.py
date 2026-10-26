@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from collections import Counter
 
 import igl
@@ -20,7 +21,7 @@ from tests.comparisons import (
     lexsort_rows,
     trimesh_outline_loops,
 )
-from tests.conftest import BOUNDARY_MESHES, open_cylinder_arrays
+from tests.conftest import BOUNDARY_MESHES, open_cylinder_arrays, touching_holes_grid_arrays
 from tests.conversions import (
     numpy_to_warp,
     pyvista_edges_to_indices,
@@ -596,6 +597,35 @@ def test_boundary_loops_walk_a_pinched_rim_edge_by_edge(device: str) -> None:
     )
     assert (walked_np[:, 0] != walked_np[:, 1]).all()  # no fake self-edge
     assert Counter(map(tuple, walked_np.tolist())) == Counter(map(tuple, boundary_np.tolist()))
+
+
+def test_boundary_loops_cut_a_pinched_loop_into_simple_cycles(device: str) -> None:
+    """
+    Class B, against trimesh's boundary edges: two holes touching at a vertex are two loops.
+
+    Two square holes share vertex 12, which then carries four boundary edges (non-vacuity: the
+    rim is pinched). Walked one fan at a time they would be one loop through vertex 12 twice; the
+    loops are cut into simple cycles there, so they are the two four-cycles and the outer rim. The
+    named transform is from consecutive loop pairs to directed edges: every oriented boundary edge
+    ``trimesh`` reads off the faces appears exactly once, in its direction.
+    """
+    vertices_np, faces_np = touching_holes_grid_arrays()
+    mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+    boundary_np = mesh_tm.edges[tm_grouping.group_rows(mesh_tm.edges_sorted, require_count=1)]
+    assert np.bincount(boundary_np.ravel())[12] == 4
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+
+    flat_wp, offsets_wp = od.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp)
+    flat_np = flat_wp.numpy()
+    loops = [flat_np[a:b].tolist() for a, b in itertools.pairwise(offsets_wp.numpy().tolist())]
+
+    assert sorted(len(loop) for loop in loops) == [4, 4, 16]
+    assert all(len(set(loop)) == len(loop) for loop in loops)
+    assert {tuple(loop) for loop in loops if len(loop) == 4} == {(6, 11, 12, 7), (12, 17, 18, 13)}
+    walked = Counter(
+        (loop[i], loop[(i + 1) % len(loop)]) for loop in loops for i in range(len(loop))
+    )
+    assert walked == Counter(map(tuple, boundary_np.tolist()))
 
 
 @pytest.mark.parametrize(

@@ -237,7 +237,7 @@ def make_solid(
         dtype=wp.int32,
     )
     print(od.validation.is_watertight(broken_vertices, broken_faces))  # False
-    print(len(od.boundary.boundary_loops(broken_vertices, broken_faces)))  # 1
+    print(len(od.boundary.boundary_loops(broken_vertices, broken_faces)))  # 3
     solid_vertices, solid_faces = od.repair.make_solid(broken_vertices, broken_faces)
     print(od.validation.is_watertight(solid_vertices, solid_faces))  # True
     print(od.measures.euler_characteristic(solid_faces))  # 2

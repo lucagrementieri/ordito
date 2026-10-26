@@ -68,8 +68,9 @@ deterministic either way):
 - the order of the hits [`intersects_location`][ordito.ray.intersects_location] returns
   (ascending ray order when on);
 - the lattice data of [`screened_poisson`][ordito.reconstruction.screened_poisson], and so its
-  surface: the splat of the normals (each node's terms added in ascending sample order when on)
-  and the adaptive backend's restriction of it down its levels.
+  surface: the splat of the normals (each node's terms added in ascending sample order when on),
+  the adaptive backend's restriction of it down its levels, and the octree backend's density
+  and normal splats and sample merge (exact group sums when on).
 
 What it does not govern:
 

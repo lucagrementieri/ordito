@@ -668,6 +668,16 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.multigrid", "cycle_chebyshev_update"): frozenset({"direction", "iterate"}),
     # in-place: the coarse solution, overwritten by the finer band's where that band covers it.
     ("algorithms.poisson_band", "fas_inject"): frozenset({"coarse_x"}),
+    # in-place: the octree backend's per-depth buffers packed in one, each depth's launch reading
+    # the depth before it (aggregates and flags finest first, the carried-up normal coefficients
+    # coarsest first), and a depth's field relaxed in place by its Gauss-Seidel wavefronts.
+    ("algorithms.poisson_octree", "octree_child_aggregates"): frozenset(
+        {"counts", "position_sums"}
+    ),
+    ("algorithms.poisson_octree", "octree_clip_flags"): frozenset({"flags"}),
+    ("algorithms.poisson_octree", "octree_dilate_flags"): frozenset({"flags"}),
+    ("algorithms.poisson_octree", "octree_upsample_coarse_data"): frozenset({"accumulated"}),
+    ("algorithms.poisson_octree", "octree_gauss_seidel_wave"): frozenset({"field"}),
     # ``edges`` is absent deliberately: this kernel mutates the table only through
     # ``register_face_edge``, and check 13 does not follow writes into a called ``@wp.func``.
     ("algorithms.ball_pivoting", "commit_triangles"): frozenset({"counters", "point_used"}),

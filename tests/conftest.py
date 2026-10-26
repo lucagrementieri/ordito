@@ -936,6 +936,28 @@ def open_cylinder_arrays(sections: int) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(mesh.vertices), np.asarray(mesh.faces)
 
 
+def touching_holes_grid_arrays() -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return a ``5 x 5``-vertex unit grid with two diagonal quads cut out, touching at vertex ``12``.
+
+    The two square holes ``[6, 11, 12, 7]`` and ``[12, 17, 18, 13]`` (side ``0.25``) share only
+    the grid's centre vertex, which the faces around it split into two fans; walked one fan at a
+    time, the two holes are one boundary loop passing vertex ``12`` twice. The outer rim is a third
+    loop of 16 vertices.
+    """
+    side = np.linspace(-0.5, 0.5, 5)
+    xs, ys = np.meshgrid(side, side)
+    vertices = np.stack([xs.ravel(), ys.ravel(), np.zeros(25)], axis=1)
+    faces = []
+    for row in range(4):
+        for col in range(4):
+            if (row, col) in ((1, 1), (2, 2)):
+                continue
+            corner = 5 * row + col
+            faces += [[corner, corner + 1, corner + 6], [corner, corner + 6, corner + 5]]
+    return vertices, np.asarray(faces, dtype=np.int64)
+
+
 @functools.cache
 def torus_irregular_arrays() -> tuple[np.ndarray, np.ndarray]:
     """
