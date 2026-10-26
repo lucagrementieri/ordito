@@ -882,10 +882,22 @@ def oriented_bounding_box(
         n = points.size
 
     device = points.device
-    # The axes kernel also seeds each candidate's six extent slots, so ``corners`` is uninitialised
+    # One chain when there is nothing to refine: the seeding walk's first pick is the global
+    # argmin, so it stops after a single round and the row it writes is already the answer.
+    n_chains = 1 if refine_iterations == 0 else _REFINE_CHAINS
+    # The refinement's state is ping-ponged: round ``r`` reads half ``r % 2`` of each buffer and
+    # its selection writes the other, so the frames and rows a launch writes are never ones it
+    # still reads. The seeding walk writes half 0, including the first round's frames.
+    count = _REFINE_CANDIDATES if refine_iterations > 0 else 0
+    total = n_chains * count
+    # Every table of the search is carved from one ``mat33`` and one ``float32`` allocation. The
+    # axes kernel also seeds each candidate's six extent slots, so ``corners`` is uninitialised
     # until then and every slot is written before the extents kernel reads it.
-    axes = _launch.empty(rotations, dtype=wp.mat33, device=device)
-    corners = _launch.empty(6 * rotations, dtype=wp.float32, device=device)
+    axes, refine_axes = _launch.carve(wp.mat33, [rotations, 2 * total], device)
+    state_size = 2 * n_chains * kernel_bounds.BOX_STATE_COLUMNS
+    corners, loss, refine_corners, state_flat = _launch.carve(
+        wp.float32, [6 * rotations, rotations, 12 * total, state_size], device
+    )
     _launch.launch(
         kernel_bounds.oriented_box_candidate_axes,
         dim=rotations,
@@ -901,29 +913,15 @@ def oriented_bounding_box(
     kernel, dim = kernel_bounds.OBB_EXTENTS.launch_shape(rotations, n_slices)
     _launch.launch(kernel, dim=dim, inputs=[points, axes, n_slices, corners], device=points.device)
 
-    loss = _launch.empty(rotations, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_bounds.oriented_box_losses,
         dim=rotations,
         inputs=[corners, _BOX_OBJECTIVES[objective], loss],
         device=device,
     )
-    # One chain when there is nothing to refine: the seeding walk's first pick is the global
-    # argmin, so it stops after a single round and the row it writes is already the answer.
-    n_chains = 1 if refine_iterations == 0 else _REFINE_CHAINS
-    # The refinement's state is ping-ponged: round ``r`` reads half ``r % 2`` of each buffer and
-    # its selection writes the other, so the frames and rows a launch writes are never ones it
-    # still reads. The seeding walk writes half 0, including the first round's frames.
-    count = _REFINE_CANDIDATES if refine_iterations > 0 else 0
-    total = n_chains * count
     chain_state = odt.as_array2d(
-        _launch.empty(
-            (2 * n_chains, kernel_bounds.BOX_STATE_COLUMNS), dtype=wp.float32, device=device
-        ),
-        wp.float32,
+        state_flat.reshape((2 * n_chains, kernel_bounds.BOX_STATE_COLUMNS)), wp.float32
     )
-    refine_axes = _launch.empty(2 * total, dtype=wp.mat33, device=device)
-    refine_corners = _launch.empty(12 * total, dtype=wp.float32, device=device)
     # Start at the covering radius of the global grid: the sampled winner is at most about this
     # far from its basin's optimum, and each round shrinks the radius.
     sigma = 2.0 * (math.pi**2 / max(rotations, 2)) ** (1.0 / 3.0)
