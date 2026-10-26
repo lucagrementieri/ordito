@@ -119,6 +119,10 @@ class SparseCholesky:
         [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET] counts.
     negated : bool
         Whether ``-matrix`` was factored (a negative semi-definite operator).
+    expandable : bool
+        Whether the analysis was built for
+        [`with_expanded_operator`][ordito.cholesky.SparseCholesky.with_expanded_operator] to
+        derive from (``sparse_cholesky(expandable=True)``).
     records_at_once : bool
         Whether a solve records its refinement graph on its first run (a factorization solved many
         times), rather than on its second against the same operator storage (the default: a
@@ -139,6 +143,7 @@ class SparseCholesky:
     def __init__(self, plan: _Plan, matrix: odt.BsrMatrix[wp.float64], *, negated: bool) -> None:
         """Factor ``matrix`` (or its negation) over ``plan``'s structure."""
         self.negated = negated
+        self.expandable = plan.granularity == 2
         self.records_at_once = False
         self.n = plan.n
         self.device = plan.device
@@ -242,16 +247,22 @@ class SparseCholesky:
             solve.matrix = matrix
         self._valid = True
 
-    def _require_pattern(self, matrix: odt.BsrMatrix[wp.float64], caller: str) -> None:
-        """Raise unless ``matrix`` has this factorization's shape and storage for its pattern."""
-        n = self.n
+    def _require_pattern(
+        self, matrix: odt.BsrMatrix[wp.float64], caller: str, expanded: bool = False
+    ) -> None:
+        """
+        Raise unless ``matrix`` has the shape and storage of this factorization's pattern.
+
+        With ``expanded``, of its 2 x 2 block expansion.
+        """
+        n = 2 * self.n if expanded else self.n
         rows, cols = int(matrix.nrow), int(matrix.ncol)
         if matrix.values.dtype != wp.float64 or rows != n or cols != n:
             raise ValueError(
                 f"SparseCholesky.{caller}: expected an ({n}, {n}) scalar float64 operator, got "
                 f"({rows}, {cols}) of {matrix.values.dtype.__name__}"
             )
-        stored = self._plan.n_stored
+        stored = 4 * self._plan.n_stored if expanded else self._plan.n_stored
         if matrix.offsets.size < n + 1 or min(matrix.columns.size, matrix.values.size) < stored:
             raise ValueError(
                 f"SparseCholesky.{caller}: the operator stores fewer entries than the {stored} of "
@@ -328,6 +339,67 @@ class SparseCholesky:
         require_same_device(matrix=matrix, factor=self)
         self._require_pattern(matrix, "with_operator")
         return _factored(self._plan, matrix, negated)
+
+    def with_expanded_operator(
+        self, matrix: odt.BsrMatrix[wp.float64], *, negated: bool | None = None
+    ) -> SparseCholesky:
+        """
+        Factor an operator over this pattern's 2 x 2 block expansion, deriving its analysis.
+
+        ``matrix`` is a ``wp.mat22d`` operator stored over this factorization's pattern, as
+        [`scalar_expansion`][ordito.array.scalar_expansion] presents it: unknown ``i`` becomes
+        unknowns ``2 * i`` and ``2 * i + 1``. Those two are eliminated one after the other where
+        ``i`` was, so the expansion's analysis is this one's with every supernode and every row of
+        its structure doubled: no ordering or symbolic analysis of its own is run. The new
+        factorization holds its own analysis, and is independent of this one otherwise. Its
+        supernodes are twice this one's: as fine as an analysis of the expansion's own when this
+        one was built ``expandable`` (see [`sparse_cholesky`][ordito.cholesky.sparse_cholesky]),
+        coarser, with more fill, otherwise.
+
+        Parameters
+        ----------
+        matrix
+            ``(2 * n, 2 * n)`` symmetric ``float64`` operator stored over the 2 x 2 block
+            expansion of the pattern this factorization was built for. Only its shape and its
+            storage's sizes are checked, as
+            [`refactor`][ordito.cholesky.SparseCholesky.refactor] checks them.
+        negated
+            As [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] takes it: ``None`` factors
+            whichever sign is positive definite.
+
+        Returns
+        -------
+        SparseCholesky
+            The factorization of ``matrix``.
+
+        Raises
+        ------
+        ValueError
+            If ``matrix`` is not ``(2 * n, 2 * n)`` scalar ``float64``, stores fewer entries than
+            the expanded pattern, or the factorization's peak device memory would exceed
+            [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].
+        NotPositiveDefiniteError
+            If the operator (with ``negated=None``: either sign of it) is not positive definite.
+        RuntimeError
+            If ``matrix`` is not on this factorization's device.
+
+        Examples
+        --------
+        The vector heat system is stored over the scalar heat system's pattern, by blocks:
+
+        ```python
+        import ordito as od
+
+        vertices, faces = od.creation.icosphere(subdivisions=2)
+        vector_system, scalar_operators = od.heat.vector_heat_operators(vertices, faces)[:2]
+        heat = od.cholesky.sparse_cholesky(scalar_operators[0], vertices, expandable=True)
+        tangent = heat.with_expanded_operator(od.array.scalar_expansion(vector_system))
+        print(heat.n, tangent.n)  # 162 324
+        ```
+        """
+        require_same_device(matrix=matrix, factor=self)
+        self._require_pattern(matrix, "with_expanded_operator", expanded=True)
+        return _factored(_Plan(matrix, None, None, expanding=self._plan), matrix, negated)
 
     def solve(
         self,
@@ -427,6 +499,7 @@ def sparse_cholesky(
     coordinates: wp.array[wp.vec3] | None = None,
     *,
     negated: bool | None = False,
+    expandable: bool = False,
 ) -> SparseCholesky:
     """
     Sparse Cholesky factorization of a symmetric positive-(semi-)definite ``float64`` operator.
@@ -452,6 +525,13 @@ def sparse_cholesky(
         [`cotmatrix`][ordito.laplacian.cotmatrix]; solves still answer ``matrix x = rhs``. When
         ``None``, factor whichever of ``matrix`` and ``-matrix`` is positive definite, over one
         analysis: the sign of the leading diagonal is tried first.
+    expandable
+        Order with leaves and merged tops of half
+        [`CHOLESKY_LEAF_ROWS`][ordito.cholesky.CHOLESKY_LEAF_ROWS] and
+        [`CHOLESKY_TOP_ROWS`][ordito.cholesky.CHOLESKY_TOP_ROWS] rows, for a factorization whose
+        [`with_expanded_operator`][ordito.cholesky.SparseCholesky.with_expanded_operator] will
+        derive a 2 x 2 block expansion's analysis: doubled, its supernodes are then as fine as an
+        ordering of the expansion's own rows.
 
     Returns
     -------
@@ -513,7 +593,8 @@ def sparse_cholesky(
     ```
     """
     require_same_device(matrix=matrix, coordinates=coordinates)
-    return _factored(_plan_cholesky(matrix, coordinates), matrix, negated)
+    granularity = 2 if expandable else 1
+    return _factored(_plan_cholesky(matrix, coordinates, granularity=granularity), matrix, negated)
 
 
 def _factored(
@@ -590,7 +671,10 @@ def held_nbytes(factorizations: Iterable[SparseCholesky]) -> int:
 
 
 def _plan_cholesky(
-    matrix: odt.BsrMatrix[wp.float64], coordinates: wp.array[wp.vec3] | None = None
+    matrix: odt.BsrMatrix[wp.float64],
+    coordinates: wp.array[wp.vec3] | None = None,
+    *,
+    granularity: int = 1,
 ) -> _Plan:
     """Return the symbolic half of ``sparse_cholesky``: ordering, structure, every device map."""
     if matrix.values.dtype != wp.float64 or int(matrix.nrow) != int(matrix.ncol):
@@ -605,7 +689,7 @@ def _plan_cholesky(
     )
     if coordinates is None:
         coordinates = _landmark_coordinates(matrix, labels)
-    return _Plan(matrix, coordinates, labels)
+    return _Plan(matrix, coordinates, labels, granularity=granularity)
 
 
 class _Plan:
@@ -614,41 +698,68 @@ class _Plan:
     def __init__(
         self,
         matrix: odt.BsrMatrix[wp.float64],
-        coordinates: wp.array[wp.vec3],
-        labels: wp.array[wp.int32],
+        coordinates: wp.array[wp.vec3] | None,
+        labels: wp.array[wp.int32] | None,
+        *,
+        granularity: int = 1,
+        expanding: _Plan | None = None,
     ) -> None:
+        """
+        Analyse ``matrix``'s pattern, ordered by ``coordinates`` with components ``labels``.
+
+        The dissection's leaves and each tree's merged top hold at most ``CHOLESKY_LEAF_ROWS`` and
+        ``CHOLESKY_TOP_ROWS`` rows divided by ``granularity``. With ``expanding``, ``matrix`` is
+        the 2 x 2 block expansion of that plan's pattern and the analysis is derived from that
+        plan's (``_expanded_structure``): ``coordinates``, ``labels`` and ``granularity`` are not
+        read.
+        """
         n = int(matrix.nrow)
         device = matrix.device
         self.n = n
         self.device = device
+        self.granularity = 1 if expanding is not None else granularity
         if n == 0:
-            self._empty(labels)
+            self._empty(
+                _launch.empty(0, dtype=wp.int32, device=device) if labels is None else labels
+            )
             return
         offsets, columns = matrix.offsets, matrix.columns
-        # Components, for the singular-component pins and the null-space projection: the rows in
-        # label order (one stable sort) and the run starts' scan, issued ahead of the dissection
-        # so the component count is read with the structure's counts.
-        component_rows = _launch.empty(2 * n, dtype=wp.int32, device=device)
+        components: tuple[wp.array[wp.int32], ...] = ()
+        if expanding is not None:
+            s, labels, component_rows = _expanded_structure(expanding, offsets, columns)
+        else:
+            assert coordinates is not None
+            assert labels is not None
+            # Components, for the singular-component pins and the null-space projection: the rows
+            # in label order (one stable sort) and the run starts' scan, issued ahead of the
+            # dissection so the component count is read with the structure's counts.
+            component_rows = _launch.empty(2 * n, dtype=wp.int32, device=device)
+            component_keys, flags, ends = _carve(wp.int32, [2 * n, n, n], device, zeroed=False)
+            _launch.launch(
+                kernel_grouping.KEYS_AND_IDENTITY[wp.int32],
+                dim=n,
+                inputs=[labels],
+                outputs=[component_keys, component_rows],
+                device=device,
+            )
+            _launch.radix_sort_pairs(component_keys, component_rows, n, end_bit=_bits(n))
+            _launch.launch(
+                kernel_grouping.MARK_SORTED_RUN_STARTS[wp.int32],
+                dim=n,
+                inputs=[component_keys],
+                outputs=[flags],
+                device=device,
+            )
+            _launch.array_scan(flags, ends, inclusive=True)
+            components = (component_keys, flags, ends)
+            node, tree, state, depths = _nested_dissection(
+                offsets, columns, n, coordinates, CHOLESKY_LEAF_ROWS // granularity
+            )
+            s = _structure(
+                offsets, columns, n, node, tree, state, depths, ends,
+                CHOLESKY_TOP_ROWS // granularity,
+            )  # fmt: skip
         self.component_rows = component_rows
-        component_keys, flags, ends = _carve(wp.int32, [2 * n, n, n], device, zeroed=False)
-        _launch.launch(
-            kernel_grouping.KEYS_AND_IDENTITY[wp.int32],
-            dim=n,
-            inputs=[labels],
-            outputs=[component_keys, component_rows],
-            device=device,
-        )
-        _launch.radix_sort_pairs(component_keys, component_rows, n, end_bit=_bits(n))
-        _launch.launch(
-            kernel_grouping.MARK_SORTED_RUN_STARTS[wp.int32],
-            dim=n,
-            inputs=[component_keys],
-            outputs=[flags],
-            device=device,
-        )
-        _launch.array_scan(flags, ends, inclusive=True)
-        node, tree, state, depths = _nested_dissection(offsets, columns, n, coordinates)
-        s = _structure(offsets, columns, n, node, tree, state, depths, ends)
         n_sn, n_levels = s.n_sn, s.n_levels
         self.n_levels = n_levels
         panel = int(kernel_cholesky.PANEL)
@@ -790,6 +901,7 @@ class _Plan:
             tasks=(f_tasks, max(n_r, 0), b_tasks, n_c),
             widest=widest,
             n_components=n_components,
+            expanded=expanding is not None,
         )
         # The budget is the first factorization's peak: what it holds plus the larger of the
         # transient fronts arena and a one-column solve's scratch. It also bounds every count the
@@ -921,13 +1033,23 @@ class _Plan:
         )
         # Each component's label, start and last-eliminated row.
         self.labels = labels
-        _launch.launch(
-            kernel_cholesky.component_tables,
-            dim=n,
-            inputs=[component_keys, flags, ends, component_rows, s.pos],
-            outputs=[self.component_label, self.component_offsets, self.component_last],
-            device=device,
-        )
+        if expanding is None:
+            _launch.launch(
+                kernel_cholesky.component_tables,
+                dim=n,
+                inputs=[*components, component_rows, s.pos],
+                outputs=[self.component_label, self.component_offsets, self.component_last],
+                device=device,
+            )
+        else:
+            _launch.launch(
+                kernel_cholesky.expanded_component_tables,
+                dim=expanding.n_components,
+                inputs=[offsets, expanding.component_label, expanding.component_offsets,
+                        expanding.component_rows, expanding.component_last],
+                outputs=[self.component_label, self.component_offsets, self.component_last],
+                device=device,
+            )  # fmt: skip
         # The null-space projection's chunks: each component's rows in ``NULL_SPACE_CHUNK``s,
         # at most ``chunk_bound`` of them, so no count is read back. The same launch finds each
         # component's pinned diagonal in the fronts arena.
@@ -1216,6 +1338,7 @@ def _analysis_nbytes(
     tasks: tuple[int, int, int, int],
     widest: int,
     n_components: int,
+    expanded: bool,
 ) -> int:
     """
     Device memory a ``_Plan`` of these counts holds once built, in bytes, before it allocates it.
@@ -1226,12 +1349,13 @@ def _analysis_nbytes(
     owners, columns and first columns (one a row); the row structure (``row_capacity``, sized by
     the structure pairs) and each supernode's first row; the entry maps; the parents' local rows;
     the four solve task maps; the forward gather's offsets and pairs; the panel inverses and their
-    scratch; and the component tables.
+    scratch; and the component tables. An ``expanded`` plan (``_expanded_structure``) sorts none
+    of its per-row tables, and sizes columns and first columns by its supernodes.
     """
     n_f, n_r, n_b, n_c = tasks
     # Labels; the components' rows and the elimination order (both of sort width); owners,
     # columns and first columns.
-    per_row = 4 * n + 8 * n + 8 * n + 3 * 4 * n
+    per_row = 4 * n * 4 + 2 * 4 * n_sn if expanded else 4 * n + 8 * n + 8 * n + 3 * 4 * n
     # Front sizes, parents and first rows; the level order (sort width); the front and solve-block
     # offsets; the extend-add members (sort width).
     per_supernode = 3 * 4 * n_sn + 8 * n_sn + 2 * 8 * (n_sn + 1) + 8 * n_sn
@@ -1441,6 +1565,7 @@ def _structure(
     state: wp.array[wp.int32],
     depths: int,
     component_ends: wp.array[wp.int32],
+    top_rows: int,
 ) -> _Structure:
     """
     Merge each tree's top, lay the supernodes out in postorder and derive the row structure.
@@ -1452,7 +1577,7 @@ def _structure(
     """
     device = node.device
     # Supernodes: each tree's top merged into its root while it holds at most
-    # ``CHOLESKY_TOP_ROWS`` rows, whole depths at a time (the root's at least), every other node
+    # ``top_rows`` rows, whole depths at a time (the root's at least), every other node
     # a supernode of its own; the groups in elimination order (one sort of the nodes by their
     # group's first position, then their own), each supernode's columns, parent and height.
     width = depths + 2
@@ -1482,7 +1607,7 @@ def _structure(
     _launch.launch(
         kernel_cholesky.supernode_keys,
         dim=n,
-        inputs=[tree, state, depth_rows, wp.int32(width), wp.int32(CHOLESKY_TOP_ROWS),
+        inputs=[tree, state, depth_rows, wp.int32(width), wp.int32(top_rows),
                 wp.int32(n), sentinel],
         outputs=[group_keys, nodes],
         device=device,
@@ -1662,15 +1787,93 @@ class _Structure:
     n_components: int
 
 
+def _expanded_structure(
+    plan: _Plan, offsets: wp.array[wp.int32], columns: wp.array[wp.int32]
+) -> tuple[_Structure, wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Return the structure of ``plan``'s pattern expanded by 2 x 2 blocks, derived from its own.
+
+    Each unknown becomes two consecutive ones of the elimination order (``kernels/cholesky``'s
+    block-expansion section): the same supernode tree, every supernode with twice the columns and
+    every structure row doubled; its components are two a scalar one (``kernels/cholesky``'s
+    ``expanded_component_tables``). Returned with the expansion's component labels and its rows in
+    label order. Only each row's lower-entry count is taken from the expanded operator
+    (``offsets``, ``columns``), for the entry maps that index its entries: one launch and one scan,
+    where an analysis of its own orders, sorts and deduplicates.
+    """
+    n = 2 * plan.n
+    device = plan.device
+    n_sn = plan.ncol.size
+    n_rows = plan.rows.size - 1
+    # Kept: the labels, the rows in label order, the elimination order, the owners, each
+    # supernode's columns and first column; each supernode's first row and the rows (the last slot
+    # zero, as an analysis of its own leaves it). Scratch: the inverse order, the row counts,
+    # parents, heights and column ends, each row's supernode, the heights' header and the row count.
+    labels, component_rows, perm, owner, ncol, c0 = _carve(
+        wp.int32, [n, n, n, n, n_sn, n_sn], device, zeroed=False
+    )
+    row_start, rows = _carve(wp.int32, [n_sn, 2 * n_rows + 1], device)
+    pos, nrow, parent, height, column_end, row_node, header, row_ends = _carve(
+        wp.int32,
+        [n, n_sn, n_sn, n_sn, n_sn, max(2 * n_rows, 1), kernel_cholesky.HEADER_SLOTS, 1],
+        device,
+    )
+    entry_ends = _launch.empty(n, dtype=wp.vec2i, device=device)
+    _launch.launch(
+        kernel_cholesky.expanded_rows,
+        dim=plan.n,
+        inputs=[offsets, plan.perm, plan.owner, plan.labels, plan.component_rows],
+        outputs=[perm, pos, owner, labels, component_rows],
+        device=device,
+    )
+    _launch.launch(
+        kernel_cholesky.expanded_supernodes,
+        dim=n_sn,
+        inputs=[plan.ncol, plan.c0, plan.front_size, plan.parent, plan.row_offsets, plan.rows,
+                wp.int32(n_rows)],
+        outputs=[ncol, c0, nrow, parent, column_end, row_start, rows, row_node, header, row_ends],
+        device=device,
+    )  # fmt: skip
+    _launch.launch(
+        kernel_cholesky.supernode_heights,
+        dim=n_sn,
+        inputs=[parent],
+        outputs=[height, header],
+        device=device,
+    )
+    _launch.launch(
+        kernel_cholesky.count_row_entries,
+        dim=n,
+        inputs=[offsets, columns, pos, owner, column_end, parent],
+        outputs=[entry_ends, header],
+        device=device,
+    )
+    _launch.array_scan(entry_ends, entry_ends, inclusive=True)
+    # The lower triangle's entries with no read: an off-diagonal scalar entry expands to four
+    # lower ones and a diagonal entry to three, and a symmetric pattern stores the off-diagonal
+    # ones twice, so the scalar diagonal count is ``2 * lower - stored``.
+    lower = plan.entry_source.size
+    n_entries = 4 * lower - (2 * lower - plan.n_stored)
+    structure = _Structure(
+        perm, pos, owner, ncol, nrow, c0, parent, height, rows, row_node, row_start, row_ends,
+        entry_ends, n_entries, 4 * plan.n_stored, n_sn, plan.n_levels, 2 * plan.n_components,
+    )  # fmt: skip
+    return structure, labels, component_rows
+
+
 def _nested_dissection(
-    offsets: wp.array[wp.int32], columns: wp.array[wp.int32], n: int, coordinates: wp.array[wp.vec3]
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    n: int,
+    coordinates: wp.array[wp.vec3],
+    leaf_rows: int,
 ) -> tuple[wp.array[wp.int32], odt.Array2dInt32, wp.array[wp.int32], int]:
     """
     Every subset of one depth bisected at once: each vertex's node, and the tree.
 
     A subset is split at the median of its projection onto its principal axis, and the separator
     is the smaller of the two endpoint sets of the pattern edges crossing the split. A subset of at
-    most ``CHOLESKY_LEAF_ROWS`` rows is a leaf; a split with no crossing edge (two components)
+    most ``leaf_rows`` rows is a leaf; a split with no crossing edge (two components)
     makes no node, and its halves hang from the subset's parent. Each subset owns an interval of
     the elimination order -- its lower half's, its upper half's, then its separator's rows -- so a
     node's first position orders the tree in postorder.
@@ -1684,7 +1887,7 @@ def _nested_dissection(
     depth past the last segment launches over empty slots.
     """
     device = coordinates.device
-    if n <= CHOLESKY_LEAF_ROWS:
+    if n <= leaf_rows:
         # One leaf rooting its own tree (``n >= 1``): every row in node 0.
         node = _launch.zeros(n, dtype=wp.int32, device=device)
         (leaf,) = _upload(device, wp.int32, np.array([0, n, -1, 0, 0]))
@@ -1692,15 +1895,15 @@ def _nested_dissection(
         return node, odt.as_array2d(leaf.reshape((1, 5)), wp.int32), state, 0
     depths = 0
     largest = n
-    while largest > CHOLESKY_LEAF_ROWS:
+    while largest > leaf_rows:
         depths += 1
         largest -= largest // 2
     cuda = wp.get_device(device).is_cuda
     chunk = kernel_cholesky.DISSECTION_CHUNK_CUDA if cuda else kernel_cholesky.DISSECTION_CHUNK_CPU
     # Every depth's buffers, allocated once at their largest: a depth's live vertices are at most
-    # ``n``, and its segments each hold more than ``CHOLESKY_LEAF_ROWS`` of them. The survivors are
+    # ``n``, and its segments each hold more than ``leaf_rows`` of them. The survivors are
     # compacted into ``order`` itself, which the depth has finished reading by then.
-    slots = max(1, n // (CHOLESKY_LEAF_ROWS + 1))
+    slots = max(1, n // (leaf_rows + 1))
     max_tasks = slots + n // chunk + 1
     # Every int32 table in one zeroed allocation: the order (an identity), its segments, the
     # median-side tags (``-1``: no side yet), the crossing marks, the crossing counts with each
@@ -1735,7 +1938,7 @@ def _nested_dissection(
         device=device,
     )
     tree = odt.as_array2d(tree_rows.reshape((n, 5)), wp.int32)
-    leaf_rows = wp.int32(CHOLESKY_LEAF_ROWS)
+    leaf_limit = wp.int32(leaf_rows)
     # The sentinel key past the live vertices carries segment ``slots + 1`` (above every real one).
     sort_bits = 32 + _bits(slots + 1)
     block_dim = 128 if cuda else 1
@@ -1792,7 +1995,7 @@ def _nested_dissection(
         _launch.launch_tiled(
             kernel_cholesky.dissection_bookkeeping,
             dim=[1],
-            inputs=[segment_start, segment, wp.int32(live), leaf_rows,
+            inputs=[segment_start, segment, wp.int32(live), leaf_limit,
                     wp.int32(chunk), counts, state],
             outputs=[tree, separator_side, separator_node, child_next, child_leaf, next_table,
                      next_segments],

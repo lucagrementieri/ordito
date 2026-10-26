@@ -2562,6 +2562,124 @@ def component_chunks_and_diagonals(
 
 
 # --------------------------------------------------------------------------------------
+# Symbolic analysis: a 2 x 2 block expansion, from the scalar pattern's analysis
+# --------------------------------------------------------------------------------------
+#
+# Unknown ``v`` of the scalar pattern becomes the expansion's ``2 v`` and ``2 v + 1``, eliminated
+# one after the other where ``v`` was. The expansion's graph is the scalar one with every vertex
+# doubled into a clique, so this order's supernodal elimination tree is the scalar tree, each
+# supernode with twice the columns and every structure row ``r`` as the pair ``2 r``, ``2 r + 1``:
+# the scalar structure doubled, with no ordering, sort or deduplication of its own. So are the
+# components, but for an empty scalar row (an unreferenced vertex), whose two rows are two
+# components: each scalar component becomes two, the second empty unless it is such a row's.
+
+
+@wp.func
+def lone_empty_row(offsets: wp.array[wp.int32], v: wp.int32) -> wp.int32:
+    # ``1`` when scalar row ``v`` stores nothing, read off the expansion's row ``2 v``: its two
+    # rows are then components of their own; ``0`` otherwise.
+    return wp.where(offsets[2 * v] == offsets[2 * v + 1], 1, 0)
+
+
+@wp.kernel
+def expanded_rows(
+    offsets: wp.array[wp.int32],
+    perm: wp.array[wp.int32],
+    owner: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    component_rows: wp.array[wp.int32],
+    out_perm: wp.array[wp.int32],
+    out_pos: wp.array[wp.int32],
+    out_owner: wp.array[wp.int32],
+    out_labels: wp.array[wp.int32],
+    out_component_rows: wp.array[wp.int32],
+) -> None:
+    # Index ``i`` of each per-row table -- position ``i``, vertex ``i``, ``i``-th row in label
+    # order -- as the expansion's two: the permutation and its inverse, the owners, the component
+    # labels (doubled, so they stay rows of their component and keep its order; an empty row's
+    # second its own) and the rows in label order.
+    i = wp.int32(wp.tid())
+    v = perm[i]
+    lone = lone_empty_row(offsets, i)
+    for a in range(2):
+        out_perm[2 * i + a] = 2 * v + a
+        out_pos[2 * v + a] = 2 * i + a
+        out_owner[2 * i + a] = owner[i]
+        out_labels[2 * i + a] = 2 * labels[i] + a * lone
+        out_component_rows[2 * i + a] = 2 * component_rows[i] + a
+
+
+@wp.kernel
+def expanded_supernodes(
+    ncol: wp.array[wp.int32],
+    c0: wp.array[wp.int32],
+    front_size: wp.array[wp.int32],
+    parent: wp.array[wp.int32],
+    row_offsets: wp.array[wp.int32],
+    rows: wp.array[wp.int32],
+    n_rows: wp.int32,
+    out_ncol: wp.array[wp.int32],
+    out_c0: wp.array[wp.int32],
+    out_nrow: wp.array[wp.int32],
+    out_parent: wp.array[wp.int32],
+    out_column_end: wp.array[wp.int32],
+    out_row_offsets: wp.array[wp.int32],
+    out_rows: wp.array[wp.int32],
+    out_row_node: wp.array[wp.int32],
+    out_header: wp.array[wp.int32],
+    out_row_ends: wp.array[wp.int32],
+) -> None:
+    # Supernode ``k`` doubled: its columns, first column, row count and column end, its parent
+    # (the clamped scalar one, ``-1`` again for a root: exactly the supernodes with no row), and
+    # its structure rows, each as its pair at twice its slot. Thread 0 also writes the supernode
+    # count ``supernode_heights`` reads and the distinct row count the schedule reads.
+    k = wp.int32(wp.tid())
+    width = ncol[k]
+    below = front_size[k] - width
+    out_ncol[k] = 2 * width
+    out_c0[k] = 2 * c0[k]
+    out_nrow[k] = 2 * below
+    out_parent[k] = wp.where(below > 0, parent[k], -1)
+    out_column_end[k] = 2 * (c0[k] + width)
+    first = row_offsets[k]
+    out_row_offsets[k] = 2 * first
+    for t in range(first, first + below):
+        for a in range(2):
+            out_rows[2 * t + a] = 2 * rows[t] + a
+            out_row_node[2 * t + a] = k
+    if k == 0:
+        out_header[HEADER_SUPERNODES] = ncol.shape[0]
+        out_row_ends[0] = 2 * n_rows
+
+
+@wp.kernel
+def expanded_component_tables(
+    offsets: wp.array[wp.int32],
+    label: wp.array[wp.int32],
+    component_offsets: wp.array[wp.int32],
+    component_rows: wp.array[wp.int32],
+    last: wp.array[wp.int32],
+    out_label: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+    out_last: wp.array[wp.int32],
+) -> None:
+    # Scalar component ``c`` as the expansion's ``2 c`` and ``2 c + 1``: each one's label, its
+    # rows' start in label order and its last-eliminated position. An empty row's two rows are
+    # one each; any other component is all ``2 c``'s, and ``2 c + 1`` holds no row, its label and
+    # last position ``2 c``'s, so its pin repeats ``2 c``'s and no row's search lands on it.
+    c = wp.int32(wp.tid())
+    start = component_offsets[c]
+    count = component_offsets[c + 1] - start
+    lone = wp.where(count == 1, lone_empty_row(offsets, component_rows[start]), 0)
+    out_label[2 * c] = 2 * label[c]
+    out_offsets[2 * c] = 2 * start
+    out_last[2 * c] = 2 * last[c] + 1 - lone
+    out_label[2 * c + 1] = 2 * label[c] + lone
+    out_offsets[2 * c + 1] = 2 * start + wp.where(lone != 0, 1, 2 * count)
+    out_last[2 * c + 1] = 2 * last[c] + 1
+
+
+# --------------------------------------------------------------------------------------
 # Symbolic analysis: landmark coordinates (an ordering from the pattern alone)
 # --------------------------------------------------------------------------------------
 

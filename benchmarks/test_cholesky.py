@@ -104,3 +104,25 @@ def test_sparse_cholesky_with_operator(bench_case: BenchCase) -> None:
     other = _system_at_another_time(bench_case)
     shared = bench_case.run(lambda: factor.with_operator(other), rounds=3)
     assert shared.n == bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="sparse_cholesky_with_expanded_operator")
+@pytest.mark.benchmeshes("sphere_small", "sphere_med", "saddle", "saddle_graded")
+@pytest.mark.benchlibs("ordito")
+def test_sparse_cholesky_with_expanded_operator(bench_case: BenchCase) -> None:
+    """
+    The vector heat system factored over the heat system's analysis, doubled.
+
+    Its analysis is derived from the heat factorization's (built ``expandable``), with no ordering
+    of its own: read against ``sparse_cholesky`` on a mesh of twice the rows for the analysis it
+    skips.
+    """
+    vector_system, scalar_operators = od.heat.vector_heat_operators(
+        bench_case.vertices_wp, bench_case.faces_wp
+    )[:2]
+    factor = od.cholesky.sparse_cholesky(
+        scalar_operators[0], bench_case.vertices_wp, expandable=True
+    )
+    expanded = od.array.scalar_expansion(vector_system)
+    derived = bench_case.run(lambda: factor.with_expanded_operator(expanded), rounds=3)
+    assert derived.n == 2 * bench_case.n_vertices

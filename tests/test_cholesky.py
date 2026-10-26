@@ -398,6 +398,100 @@ def test_negated_factorization_solves_a_negative_definite_operator(
     assert np.allclose(solution.numpy(), expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
 
 
+def _vector_heat_systems(
+    mesh_wp: wp.Mesh,
+) -> tuple[odt.BsrMatrix[wp.float64], odt.BsrMatrix[wp.float64]]:
+    """Return the heat system and the vector heat system's scalar expansion, one pattern apart."""
+    vector_system, scalar_operators = od.heat.vector_heat_operators(
+        mesh_wp.points, mesh_wp.indices
+    )[:2]
+    return scalar_operators[0], od.array.scalar_expansion(vector_system)
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+def test_with_expanded_operator_matches_spsolve(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class A at 1e-11: the vector heat system, its analysis derived, against SciPy's direct solve.
+
+    The expansion's analysis is the heat system's doubled, with no ordering of its own; its fill
+    must not exceed an analysis of the expansion's own rows (ordito against ordito, the solve
+    blocks' entries within 2 %: measured 0.99x on ``saddle_graded`` and 0.96x on
+    ``sphere_irregular``, both devices). Mutation probe: deriving from a heat analysis at the
+    default granularity (``expandable=False``), whose merged top holds either fixture whole, holds
+    2.0x and 5.0x, and fails the fill bound.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    heat_system, expanded = _vector_heat_systems(mesh_wp)
+    device = mesh_wp.device
+    n = int(expanded.nrow)
+    heat = od.cholesky.sparse_cholesky(heat_system, mesh_wp.points, expandable=True)
+    assert heat.expandable
+    derived = heat.with_expanded_operator(expanded)
+    assert derived.n == n == 2 * heat.n
+    assert not derived.expandable
+    rhs_np = np.random.default_rng(23).standard_normal(n)
+    solution = wp.zeros(n, dtype=wp.float64, device=device)
+    derived.solve(wp.array(rhs_np, dtype=wp.float64, device=device), solution)
+    expected = spla.spsolve(bsr_to_csr(expanded).tocsc(), rhs_np)
+    assert np.allclose(solution.numpy(), expected, rtol=1e-11, atol=1e-11 * np.abs(expected).max())
+    points = wp.array(np.repeat(mesh_wp.points.numpy(), 2, axis=0), dtype=wp.vec3, device=device)
+    own = od.cholesky._plan_cholesky(expanded, points)  # pyright: ignore[reportPrivateUsage]
+    blocks = derived._plan.block_entries  # pyright: ignore[reportPrivateUsage]
+    assert blocks <= 1.02 * own.block_entries
+
+
+def test_with_expanded_operator_keeps_each_empty_row(device: str) -> None:
+    """
+    Class A: an unreferenced vertex's two expanded rows are two components, each left untouched.
+
+    The expansion's components are the scalar ones doubled except there: the two rows of an empty
+    scalar row share no entry, so each is pinned on its own. Mutation probe: labelling both rows
+    as one component leaves one zero pivot unpinned, and the factorization raises
+    ``NotPositiveDefiniteError``.
+    """
+    scalar = scipy_to_bsr(
+        sp.csr_matrix(
+            (np.array([4.0, -1.0, -1.0, 4.0]), np.array([0, 1, 0, 1]), np.array([0, 2, 4, 4])),
+            shape=(3, 3),
+        ),
+        device,
+    )
+    factor = od.cholesky.sparse_cholesky(scalar, expandable=True)
+    identity = np.eye(2)
+    blocks = np.stack([4.0 * identity, -identity, -identity, 4.0 * identity])
+    block_system = od.array.bsr_from_csr(
+        3,
+        3,
+        wp.array([0, 2, 4, 4], dtype=wp.int32, device=device),
+        wp.array([0, 1, 0, 1], dtype=wp.int32, device=device),
+        wp.array(blocks, dtype=wp.mat22d, device=device),
+    )
+    derived = factor.with_expanded_operator(od.array.scalar_expansion(block_system))
+    solution = wp.array([0.0, 0.0, 0.0, 0.0, 7.0, 9.0], dtype=wp.float64, device=device)
+    rhs = wp.array([2.0, 2.0, 7.0, 7.0, 0.0, 0.0], dtype=wp.float64, device=device)
+    derived.solve(rhs, solution)
+    assert np.allclose(solution.numpy(), [1.0, 1.0, 2.0, 2.0, 7.0, 9.0], rtol=1e-14, atol=0.0)
+
+
+def test_with_expanded_operator_rejects_another_operator_shape(
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """Not a library comparison: an operator not of the expansion's size or storage is refused."""
+    _, mesh_wp = sphere_irregular
+    heat_system, expanded = _vector_heat_systems(mesh_wp)
+    factor = od.cholesky.sparse_cholesky(heat_system, mesh_wp.points)
+    n = 2 * factor.n
+    smaller = scipy_to_bsr(sp.identity(n - 1, format="csr"), device)
+    diagonal = scipy_to_bsr(sp.identity(n, format="csr"), device)
+    for operator, match in ((heat_system, "expected an"), (smaller, "expected an"),
+                            (diagonal, "fewer entries")):  # fmt: skip
+        with pytest.raises(ValueError, match=match):
+            factor.with_expanded_operator(operator)
+    assert factor.with_expanded_operator(expanded).n == n
+
+
 def _two_component_system(device: str) -> tuple[sp.csr_matrix, np.ndarray]:
     sphere = tm.creation.icosphere(3)
     shell = tm.creation.icosphere(2)
@@ -637,6 +731,30 @@ def test_nbytes_is_the_memory_the_factorization_holds(
     sibling = fresh.with_operator(system)
     together = od.cholesky.held_nbytes([fresh, sibling, fresh])
     assert together == _held_bytes(fresh, sibling) < fresh.nbytes + sibling.nbytes
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "icosahedron"])
+def test_nbytes_of_a_derived_analysis_is_the_memory_it_holds(
+    request: pytest.FixtureRequest, device: str, mesh_name: str
+) -> None:
+    """
+    Not a library comparison: a derived analysis' ``nbytes`` against the allocations it holds.
+
+    ``with_expanded_operator`` sizes its analysis' tables by the expansion (no sort width, columns
+    by supernode), which ``nbytes`` must count to the byte, built and after a solve; the derived
+    factorization holds none of the scalar one's analysis, so together they hold their sum. The
+    icosahedron is one leaf: one supernode, no extend-add.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    heat_system, expanded = _vector_heat_systems(mesh_wp)
+    heat = od.cholesky.sparse_cholesky(heat_system, mesh_wp.points, expandable=True)
+    derived = heat.with_expanded_operator(expanded)
+    assert derived.nbytes == _held_bytes(derived) > 0
+    rhs = wp.ones(derived.n, dtype=wp.float64, device=device)
+    derived.solve(rhs, wp.zeros_like(rhs))
+    assert derived.nbytes == _held_bytes(derived)
+    together = od.cholesky.held_nbytes([heat, derived])
+    assert together == _held_bytes(heat, derived) == heat.nbytes + derived.nbytes
 
 
 def test_landmark_coordinates_match_breadth_first_distances(device: str) -> None:
