@@ -2075,6 +2075,31 @@ def test_geodesic_ball_chunks_agree(
     assert len(whole_warnings) == (1 if radius_scale > 10.0 else 0)
 
 
+def test_geodesic_ball_refuses_a_list_past_its_offsets(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: a packed list longer than its ``int32`` offsets hold raises.
+
+    The real bound is ``2**31 - 1`` entries, which needs a scan of millions of vertices; the bound
+    is lowered instead, between the first chunk's total and the whole list's, so the refusal must
+    come from the running total and not from the last chunk alone. At the true bound the same list
+    is returned.
+    """
+    mesh_tm = tm.creation.icosphere(subdivisions=4)
+    vertices_wp, faces_wp = numpy_to_warp(
+        np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
+    )
+    radius = 3.0 * float(od.edges.mean_edge_length(vertices_wp, faces_wp))
+    monkeypatch.setattr(od.neighbors, "_GEODESIC_BALL_CHUNK", 700)
+    _, offsets_wp, _ = od.neighbors.geodesic_ball(vertices_wp, faces_wp, radius)
+    offsets_np = offsets_wp.numpy()
+    assert offsets_np[700] < offsets_np[1400] - 1
+    monkeypatch.setattr(od.neighbors, "_PACKED_ENTRIES_MAX", int(offsets_np[1400]) - 1)
+    with pytest.raises(ValueError, match="after 1400 of"):
+        od.neighbors.geodesic_ball(vertices_wp, faces_wp, radius)
+
+
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
 @pytest.mark.parity(
     "query_ball_bvh",

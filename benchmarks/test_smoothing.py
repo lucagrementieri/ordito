@@ -1055,9 +1055,9 @@ def test_relax_approx(bench_case: BenchCase) -> None:
     skip_larger_than(
         bench_case,
         "happy_buddha",
-        "the geodesic-ball pools are sized per source chunk, and at lucy's 14M vertices the "
-        "64 MB flat-buffer allocation fails outright -- an OOM that then corrupts every later row "
-        "in the same process, so this is a hard cap rather than a slow row",
+        "a ball of 3 % of lucy's diagonal holds about 57 000 vertices by area, so every ordito "
+        "ball is clipped at its 512-entry row and the two rows would not time the same fit; the "
+        "call itself runs (streamed balls, about 5 GB of device memory)",
     )
     radius = 0.03 * float(
         np.linalg.norm(bench_case.vertices_np.max(0) - bench_case.vertices_np.min(0))

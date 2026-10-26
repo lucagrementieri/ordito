@@ -966,14 +966,12 @@ The full per-component detail is in `reference/component-status.md`; read the co
 ### Open items from the 2026-10-23 uncapped sweep: ordito on large meshes
 
 The sweep (`.benchmarks/merged-2026-10-23-final/incomplete.jsonl`, ordito-cuda rows) left ordito
-with no time on three large-mesh rows. None is attributed yet.
+with no time on three large-mesh rows. The `relax_approx` one is fixed (streamed geodesic balls,
+`reference/component-status.md`, "k-NN and ball queries"); the other two are not attributed yet.
 
 - **`ball_pivoting` raises on happy_buddha**: `resolve_duplicated_faces` (`ordito/repair.py:745`)
   finds a non-orientable duplicate face group (group 431165, signed count 2), so the pivoting emits
   a duplicate pair with equal winding that its own cleanup cannot orient. dragon and lucy pass.
-- **`relax_approx` runs out of device memory on lucy**: `neighbors.geodesic_ball` chunks its walk
-  but concatenates every chunk's neighbour list into one buffer (`ordito/neighbors.py:2261`), a
-  28.7 GB allocation on a 32 GB card. The chunking bounds the walk, not the output.
 - **`smooth_region` runs past the 600 s limit on lucy** (the dragon and happy_buddha rows take
   26 s and 11 s of wall time, rounds included). `smooth_region_fixed_rim` and
   `smooth_region_boundary` finish on lucy.

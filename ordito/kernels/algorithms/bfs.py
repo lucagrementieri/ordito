@@ -232,3 +232,23 @@ def per_source_bfs_collect(
     if clipped or visited_n > _VISITED_MAX_FILL:
         wp.atomic_add(out_overflow, 0, 1)
     return collected
+
+
+@wp.func
+def ball_row_bounds(
+    neighbor_offsets: wp.array[wp.int32], row_stride: wp.int32, vertex: wp.int32, t: wp.int32
+) -> tuple[wp.int32, wp.int32]:
+    """
+    ``(begin, end)`` of ``vertex``'s geodesic ball in either layout ``neighbors`` hands out.
+
+    At ``row_stride == 0`` the packed list of ``neighbors.geodesic_ball``: ``neighbor_offsets`` are
+    its terminated ``(n + 1)`` CSR row bounds. Otherwise one chunk of ``per_source_bfs_collect``'s
+    queue rows, flattened: thread ``t`` of the chunk owns row ``t`` of ``row_stride`` slots and
+    ``neighbor_offsets`` are the per-vertex counts. Both list the same entries in the same order.
+    """
+    begin = t * row_stride
+    end = begin + neighbor_offsets[vertex]
+    if row_stride == wp.int32(0):
+        begin = neighbor_offsets[vertex]
+        end = neighbor_offsets[vertex + 1]
+    return begin, end

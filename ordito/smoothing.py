@@ -89,6 +89,11 @@ _ORIGIN_D = wp.vec3d()
 # ``lamb`` pulls the contraction factor towards 1, and the step count grows as ``1 / (1 - q)``.
 _IMPLICIT_FIXED_POINT_MAX_STEPS = 400
 
+# Vertices up to which several ``relax_approx`` passes pack the geodesic balls once and reuse them.
+# The packed list holds up to ``PER_SOURCE_MAX_NEIGHBORS`` (512) entries a vertex, 4 GiB at this
+# count; above it every pass walks again and fits each chunk of balls as the walk leaves it.
+_PACKED_BALL_MAX_VERTICES = 1 << 21
+
 
 def filter_laplacian(
     vertices: wp.array[wp.vec3],
@@ -1281,22 +1286,34 @@ def relax_approx(
     if not active:
         return _launch.clone(vertices)
 
-    # Built once from the input positions: which vertices are in the ball is a decision about the
-    # surface's connectivity, and the relaxation moves everything by less than the radius anyway.
+    # Which vertices are in the ball is a decision about the surface's connectivity, made from the
+    # input positions on every pass: the relaxation moves everything by less than the radius anyway.
     # ``min_count=1`` disables the nearest-neighbour backfill: a ball too small to fit is a
     # documented no-op here, and backfilling would quietly fit something else instead.
-    neighbor_indices, neighbor_offsets, _ = od.neighbors.geodesic_ball(
-        vertices, faces, dilate_radius, min_count=1
-    )
-
-    def relax_pass(src: wp.array[wp.vec3], dst: wp.array[wp.vec3]) -> None:
+    #
+    # The fit is a per-vertex reduction over the ball, so it reads each chunk of the walk's queue
+    # rows as the walk leaves them and the neighbour lists are never packed: a list that can reach
+    # ``PER_SOURCE_MAX_NEIGHBORS`` entries a vertex outgrows the device on a large scan at a radius
+    # of a few percent of its size. Several passes over a mesh whose packed list is bounded small
+    # build it once and reuse it, since a walk per pass costs more than a fit.
+    def relax_launch(
+        src: wp.array[wp.vec3],
+        dst: wp.array[wp.vec3],
+        neighbor_indices: wp.array[wp.int32],
+        neighbor_offsets: wp.array[wp.int32],
+        row_stride: wp.int32,
+        start: int,
+        dim: int,
+    ) -> None:
         _launch.launch(
             kernel_smoothing.relax_approx_step,
-            dim=n_vertices,
+            dim=dim,
             inputs=[
                 src,
                 neighbor_indices,
                 neighbor_offsets,
+                row_stride,
+                wp.int32(start),
                 region,
                 vertices,
                 wp.float32(force),
@@ -1306,6 +1323,24 @@ def relax_approx(
             ],
             device=device,
         )
+
+    if iterations > 1 and n_vertices <= _PACKED_BALL_MAX_VERTICES:
+        neighbor_indices, neighbor_offsets, _ = od.neighbors.geodesic_ball(
+            vertices, faces, dilate_radius, min_count=1
+        )
+
+        def relax_pass(src: wp.array[wp.vec3], dst: wp.array[wp.vec3]) -> None:
+            relax_launch(src, dst, neighbor_indices, neighbor_offsets, wp.int32(0), 0, n_vertices)
+
+    else:
+        walk = od.neighbors._GeodesicBallWalk(  # pyright: ignore[reportPrivateUsage]
+            vertices, faces, dilate_radius, 1
+        )
+
+        def relax_pass(src: wp.array[wp.vec3], dst: wp.array[wp.vec3]) -> None:
+            for start, m in walk.chunks():
+                relax_launch(src, dst, walk.rows_flat, walk.counts, walk.row_stride, start, m)
+            walk.warn_clipped()
 
     return _float32_passes(vertices, iterations, relax_pass)
 

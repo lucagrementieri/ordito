@@ -612,6 +612,27 @@ def test_principal_curvature_is_reproducible(saddle_graded: tuple[tm.Trimesh, wp
         assert np.array_equal(runs[0][1], pv2_np)
 
 
+def test_principal_curvature_fits_each_chunk_of_balls_alike(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the fit over a walk of several chunks is the fit over one.
+
+    Each chunk of geodesic balls is fitted as the walk leaves it, so a mesh larger than one chunk
+    launches the fit once a chunk, reading that chunk's queue rows. No fixture is that large, so the
+    chunk is forced down to an uneven split; the one-chunk call carries the libigl oracle
+    (``test_principal_curvature_graded``) and all four outputs must equal it bit for bit.
+    """
+    _, mesh_wp = saddle_graded
+    whole = od.curvature.principal_curvature(mesh_wp.points, mesh_wp.indices, radius=3)
+    chunk = mesh_wp.points.shape[0] // 3 + 7
+    monkeypatch.setattr(od.neighbors, "_GEODESIC_BALL_CHUNK", chunk)
+    chunked = od.curvature.principal_curvature(mesh_wp.points, mesh_wp.indices, radius=3)
+    assert np.ptp(whole[2].numpy()) > 0.2
+    for whole_wp, chunked_wp in zip(whole, chunked, strict=True):
+        assert np.array_equal(whole_wp.numpy(), chunked_wp.numpy())
+
+
 @pytest.mark.parametrize("scale", [3e-4, 1e-9])
 def test_principal_curvature_is_scale_equivariant(
     sphere_round: tuple[tm.Trimesh, wp.Mesh], scale: float

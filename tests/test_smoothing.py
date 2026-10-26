@@ -1064,6 +1064,60 @@ def test_relax_approx_needs_a_radius_that_reaches(device: str) -> None:
         od.smoothing.relax_approx(vertices_wp, faces_wp, 0.3, max_displacement=-1.0)
 
 
+@pytest.mark.parametrize("iterations", [1, 3])
+@pytest.mark.parametrize("radius_scale", [3.0, 100.0], ids=["ball", "clipped"])
+def test_relax_approx_fits_streamed_balls_as_packed_ones(
+    device: str, monkeypatch: pytest.MonkeyPatch, iterations: int, radius_scale: float
+) -> None:
+    """
+    Ordito against ordito: fitting each chunk of balls as the walk leaves them is the packed fit.
+
+    A large mesh never packs its geodesic balls: every pass walks them again and fits each chunk
+    of the walk's queue rows in place. No fixture is that large, so the chunk is forced down to an
+    uneven split and the packed path off, and the result must equal the default call bit for bit --
+    one chunk, packed once for several passes -- whose fit carries the meshlib oracle above. A
+    second pass is the case where the walk's scratch pools come back dirty from the first; the
+    clipped radius checks the overflow warning is raised once, not once per pass.
+    """
+    mesh_tm = tm.creation.icosphere(subdivisions=4)
+    vertices_wp, faces_wp = numpy_to_warp(
+        np.asarray(mesh_tm.vertices, dtype=np.float32)
+        + np.random.default_rng(3).normal(0.0, 0.01, mesh_tm.vertices.shape).astype(np.float32),
+        np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1),
+        device,
+    )
+    radius = radius_scale * float(od.edges.mean_edge_length(vertices_wp, faces_wp))
+    region_wp = wp.array(
+        np.arange(vertices_wp.size) % 5 != 0, dtype=wp.bool, device=vertices_wp.device
+    )
+    calls: list[Callable[[], wp.array[wp.vec3]]] = [
+        lambda: od.smoothing.relax_approx(vertices_wp, faces_wp, radius, iterations),
+        lambda: od.smoothing.relax_approx(
+            vertices_wp,
+            faces_wp,
+            radius,
+            iterations,
+            fit="quadric",
+            region=region_wp,
+            max_displacement=0.5 * radius,
+        ),
+    ]
+    with warnings.catch_warnings(record=True) as whole_warnings:
+        warnings.simplefilter("always")
+        whole_wp = [call().numpy() for call in calls]
+    monkeypatch.setattr(od.neighbors, "_GEODESIC_BALL_CHUNK", 700)
+    monkeypatch.setattr(od.smoothing, "_PACKED_BALL_MAX_VERTICES", 0)
+    assert vertices_wp.size > 3 * 700
+    with warnings.catch_warnings(record=True) as chunked_warnings:
+        warnings.simplefilter("always")
+        chunked_wp = [call().numpy() for call in calls]
+    assert not np.array_equal(whole_wp[0], vertices_wp.numpy())
+    for whole, chunked in zip(whole_wp, chunked_wp, strict=True):
+        assert np.array_equal(whole, chunked)
+    assert [str(w.message) for w in whole_warnings] == [str(w.message) for w in chunked_warnings]
+    assert len(whole_warnings) == (len(calls) if radius_scale > 10.0 else 0)
+
+
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("filter_taubin", "trimesh")
 def test_filter_taubin(request: pytest.FixtureRequest, mesh_name: str) -> None:
