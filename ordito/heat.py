@@ -2600,9 +2600,13 @@ class HeatSolver:
         return kept
 
     def _sharing(self, role: str) -> twl.OperatorFactorization | None:
-        """Return the heat system's factorization slot, whose analysis the Poisson one shares."""
+        """
+        Return the heat system's factorization slot, whose analysis the Poisson one shares.
+
+        The vector system, stored over its pattern by blocks, derives its analysis from it.
+        """
         heat = self._systems.get("heat")
-        return heat.factorization if role == "poisson" and heat is not None else None
+        return heat.factorization if role in ("poisson", "vector") and heat is not None else None
 
     def _require_fields(
         self, caller: str, rhs: odt.ArrayNd, solution: odt.ArrayNd, rows: int, per_vertex: int
@@ -2695,9 +2699,11 @@ class _StackedFactorization(twl.OperatorFactorization):
         """Device memory the factorizations held for the stack hold, in bytes."""
         return held_nbytes(_held_factorizations(self))
 
-    def factor(self, sharing: twl.OperatorFactorization | None = None) -> bool:
-        """Factor the stack, whole or by blocks; ``sharing`` is not read."""
-        del sharing
+    def factor(
+        self, sharing: twl.OperatorFactorization | None = None, *, expandable: bool = False
+    ) -> bool:
+        """Factor the stack, whole or by blocks; ``sharing`` and ``expandable`` are not read."""
+        del sharing, expandable
         if self.factorization is not None:
             return True
         blocks = (
@@ -2710,8 +2716,10 @@ class _StackedFactorization(twl.OperatorFactorization):
                 self._coordinates = _stacked_positions(self._vertices, self._n_scalars)
                 self._vertices = None
             return super().factor()
-        vector = self._vector.factor()
-        heat = self._heat.factor()
+        # The heat system first, built for the vector system (stored over its pattern by blocks)
+        # to derive its analysis from.
+        heat = self._heat.factor(expandable=True)
+        vector = self._vector.factor(self._heat)
         return vector and heat
 
     def solve(

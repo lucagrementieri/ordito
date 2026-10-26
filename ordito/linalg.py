@@ -2208,7 +2208,9 @@ class OperatorFactorization:
         """Device memory the built factorization holds, in bytes; ``0`` when none is."""
         return 0 if self._factorization is None else self._factorization.nbytes
 
-    def factor(self, sharing: OperatorFactorization | None = None) -> bool:
+    def factor(
+        self, sharing: OperatorFactorization | None = None, *, expandable: bool = False
+    ) -> bool:
         """
         Factor the operator unless it already is, or could not be.
 
@@ -2217,7 +2219,13 @@ class OperatorFactorization:
         sharing
             ``None``, or a factorization of another scalar operator stored over this one's
             pattern (the same ``offsets`` and ``columns`` arrays): when it holds a factorization,
-            this one reuses its analysis and pays only the numeric factorization.
+            this one reuses its analysis and pays only the numeric factorization. A
+            ``wp.mat22d`` operator stored over a scalar one's pattern derives its analysis from
+            that one's when it was built ``expandable``
+            ([`with_expanded_operator`][ordito.cholesky.SparseCholesky.with_expanded_operator]).
+        expandable
+            Build a scalar operator's analysis for a block operator over its pattern to derive
+            from, as [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] takes it.
 
         Returns
         -------
@@ -2239,18 +2247,25 @@ class OperatorFactorization:
         shared = None
         if (
             sharing is not None
-            and not blocks
-            and sharing.matrix.offsets is scalar.offsets
-            and sharing.matrix.columns is scalar.columns
+            and not odt.has_blocks(sharing.matrix, wp.mat22d)
+            and sharing.matrix.offsets is self._matrix.offsets
+            and sharing.matrix.columns is self._matrix.columns
         ):
             shared = sharing.factorization
         try:
             # Either sign, over one analysis: a cotangent operator is negative definite.
-            if shared is not None:
+            if shared is not None and not blocks:
                 self._factorization = shared.with_operator(_storage_alias(scalar))
+            elif shared is not None and shared.expandable:
+                self._factorization = shared.with_expanded_operator(_storage_alias(scalar))
             else:
                 points = _expanded_coordinates(self._ordering_points(), 2 if blocks else 1)
-                self._factorization = sparse_cholesky(_storage_alias(scalar), points, negated=None)
+                self._factorization = sparse_cholesky(
+                    _storage_alias(scalar),
+                    points,
+                    negated=None,
+                    expandable=expandable and not blocks,
+                )
         except NotPositiveDefiniteError:
             self._indefinite = True
         except ValueError:
