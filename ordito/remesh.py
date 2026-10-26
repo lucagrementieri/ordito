@@ -1138,10 +1138,10 @@ def _flip_interior_edges(
 
     ``faces`` is mutated in place. Each iteration lets ``launch_candidates`` mark flippable edges
     (predicate-specific) and commits a conflict-free subset (no two committed flips touch a shared
-    face or create the same new edge). The first flipping round is followed by a regroup that also
-    builds ``_FlipTopology``'s incremental state; every later round refreshes the adjacency rows
-    from the halfedge maps the commit kept current instead of regrouping. Returns the total number
-    of flips performed. The winding rewrite matches ``igl::flip_edge``.
+    face or create the same new edge). The first flipping round is followed by the seeding of
+    ``_FlipTopology``'s duplicate-edge set; that round and every later one refreshes the adjacency
+    rows from the halfedge maps the commit kept current instead of regrouping. Returns the total
+    number of flips performed. The winding rewrite matches ``igl::flip_edge``.
 
     ``launch_candidates(adjacency, adjacency_edges, unshared, sorted_keys, edge_set, edge_set_mask,
     key_base, out_flip, out_quad)`` receives the current rows and the current edge keys for the
@@ -1298,10 +1298,11 @@ def _flip_interior_edges(
                 topology.refresh()
                 topology.flipped(n)
             else:
-                # A plain build's first flipping round regroups, as every round once did, and that
-                # regroup builds the incremental state the later rounds -- the recorded ones --
-                # run on. A call that flips at most once never pays for it.
-                topology.rebuild(read_count=False, incremental=True)
+                # A plain build's first flipping round seeds the duplicate-edge set the later
+                # rounds -- the recorded ones -- run on, from the halfedge maps every build keeps
+                # and the round's commit moved, and refreshes the rows in the same launch. A call
+                # that flips at most once never pays for it.
+                topology.adopt_edge_set()
             continue
         n = int(read_scalar(count, 0)) - total
         total += n
@@ -1320,13 +1321,14 @@ class _FlipTopology:
     maintains the face adjacency rather than rebuilding it every round.
 
     A build is one key launch, one radix sort, a run-length mark, a scan and a single emit that
-    writes the adjacency pairs, their shared-edge endpoints and the opposite apexes together. An
-    *incremental* build also keeps the two halfedges of each row in both directions and seeds the
-    set of every edge key, and from then on a flip round never regroups: ``commit_flips`` moves the
+    writes the adjacency pairs, their shared-edge endpoints, the opposite apexes and the two
+    halfedges of each row in both directions together. An *incremental* build also seeds the set
+    of every edge key, and from then on a flip round never regroups: ``commit_flips`` moves the
     halfedges of the rows a flip touched, swaps the old diagonal's key for the new one in the set,
     and ``refresh`` rewrites every row from its halfedges in one launch. The flip loop starts
-    plain and takes the incremental build as the regroup after its first flipping round, so a call
-    that flips at most once pays for none of it.
+    plain, and after its first flipping round ``adopt_edge_set`` seeds the set from the halfedges
+    that round's commit kept current, so a call that flips at most once pays for none of it and
+    none regroups to start the incremental rounds.
 
     Each edge keeps its row, so the rows stop being in ascending key order after the first
     incremental flip -- which no consumer depends on, since the independent-set claims rank
@@ -1367,11 +1369,11 @@ class _FlipTopology:
     unshared : odt.Array2dInt32
         ``(m, 2)`` apex of each incident face opposite the shared edge.
     row_halfedges : odt.Array2dInt32 | None
-        ``(m, 2)`` the two halfedges (``3f + corner``) each row's edge is made of; ``None`` until an
-        incremental build.
+        ``(m, 2)`` the two halfedges (``3f + corner``) each row's edge is made of; ``None`` until a
+        build.
     halfedge_row : wp.array[wp.int32] | None
         Length ``3 * n_faces`` row of each halfedge's edge, or ``-1`` for an edge that is not a
-        two-face interior edge; ``None`` until an incremental build.
+        two-face interior edge; ``None`` until a build.
     flip : wp.array[wp.bool]
         Length ``m`` candidate mask. Every predicate kernel opens by writing all of it, so it is
         deliberately not zeroed between passes.
@@ -1442,8 +1444,8 @@ class _FlipTopology:
         # Whether both claim tables hold the unclaimed key: a refresh arms them for the next round,
         # a commit spends them.
         self.claims_armed = False
-        # The incremental state is allocated by the first incremental build; a plain build passes
-        # ``None`` for it (a null descriptor, which the kernels read as "no incremental state").
+        # The halfedge maps are carved above and adopted by the first build; the key set is
+        # allocated when the topology first turns incremental.
         self.incremental = False
         self.halfedge_row: wp.array[wp.int32] | None = None
         self.row_halfedges: odt.Array2dInt32 | None = None
@@ -1479,8 +1481,8 @@ class _FlipTopology:
         Every public attribute is rewritten; the returned row count is also the launch dimension
         for the candidate, claim and commit kernels. ``read_count=False`` skips the one readback,
         for a rebuild of a face buffer whose row count is already known (a flip loop's), and
-        returns the known count. ``incremental=True`` also builds the state a flip round keeps
-        current -- the halfedge <-> row maps and the duplicate-edge set -- and the topology stays
+        returns the known count. Every build keeps the halfedge <-> row maps a flip round keeps
+        current; ``incremental=True`` also seeds the duplicate-edge set, and the topology stays
         incremental from then on.
 
         **It is whole-mesh, not region-scoped**: ``_flip_region_faces`` builds over the whole mesh
@@ -1492,15 +1494,9 @@ class _FlipTopology:
         self._sort()
         self.built = True
         self._flips_since_build = 0
-        self.incremental = self.incremental or incremental
-        if self.incremental:
-            if self.halfedge_row is None:
-                self.halfedge_row = self._halfedge_row_store
-                self.edge_set = _launch.zeros(
-                    self._edge_set_table, dtype=wp.uint64, device=self._device
-                )
-            else:
-                _launch.zero_(self.edge_set)
+        self.halfedge_row = self._halfedge_row_store
+        if self.incremental or incremental:
+            self._arm_edge_set()
         if self.valence is not None:
             _launch.zero_(self.valence)
         _launch.launch(
@@ -1530,8 +1526,7 @@ class _FlipTopology:
             # paying for bounds checks: a rebuild whose row count moved would index past the tables.
             if wp.config.mode == "debug" and not wp.get_device(self._device).is_capturing:
                 assert int(read_scalar(self._ranks_tail, 0)) == m, "interior-edge count changed"
-        if self.incremental:
-            self.row_halfedges = self._row_halfedges_store
+        self.row_halfedges = self._row_halfedges_store
         if m > 0:
             _launch.launch(
                 kernel_remesh.emit_flip_topology,
@@ -1586,6 +1581,48 @@ class _FlipTopology:
             device=self._device,
         )
         self.claims_armed = True
+
+    def adopt_edge_set(self) -> None:
+        """
+        Seed the duplicate-edge set from the current halfedges and refresh every row, in one launch.
+
+        For the round after a plain build's first flipping round: its commit kept the halfedge
+        maps current, so the set of the faces as they are now is the only incremental state
+        missing, and the topology is incremental from then on. Like ``refresh``, it re-arms both
+        claim tables.
+        """
+        self._arm_edge_set()
+        self._flips_since_build = 0
+        self._sorted_stale = True
+        _launch.launch(
+            kernel_remesh.adopt_flip_edge_set,
+            dim=self._n_corners,
+            inputs=[
+                self._faces,
+                self.halfedge_row,
+                self.row_halfedges,
+                self._radix,
+                wp.int32(self.edge_set_mask),
+                self.edge_set,
+                self.adjacency,
+                self.adjacency_edges,
+                self.unshared,
+                self.face_claim,
+                self.edge_claim,
+            ],
+            device=self._device,
+        )
+        self.claims_armed = True
+
+    def _arm_edge_set(self) -> None:
+        """Hand the topology an empty duplicate-edge set, allocating it the first time."""
+        if self.incremental:
+            _launch.zero_(self.edge_set)
+        else:
+            self.edge_set = _launch.zeros(
+                self._edge_set_table, dtype=wp.uint64, device=self._device
+            )
+            self.incremental = True
 
     def arm_claims(self) -> None:
         """Fill both claim tables with the unclaimed key, unless a refresh already did."""

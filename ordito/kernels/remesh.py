@@ -1174,10 +1174,10 @@ def mark_edge_pair_starts(
     # that one takes every run whatever its length, because the decimation pass wants all unique
     # edges where a flip pass wants only the manifold-interior ones.
     #
-    # An incremental build (``out_halfedge_row`` given, ``edge_set_mask >= 0``) seeds the flip
-    # loop's other two structures in the same pass: every halfedge starts with no row
-    # (``emit_flip_topology`` then writes the interior ones), and every run -- every undirected
-    # edge, whatever its multiplicity -- goes into the zeroed duplicate-edge set. A non-empty
+    # The pass also seeds the flip loop's other two structures: every halfedge starts with no row
+    # (``out_halfedge_row`` given; ``emit_flip_topology`` then writes the interior ones), and on an
+    # incremental build (``edge_set_mask >= 0``) every run -- every undirected edge, whatever its
+    # multiplicity -- goes into the zeroed duplicate-edge set. A non-empty
     # ``out_valence`` (zeroed by the caller) gets every vertex's degree from the same runs
     # (``scatter.add_edge_valence``), which the valence flip objective reads, and a non-empty
     # ``out_boundary_vertex`` (zeroed) both endpoints of every run of exactly one -- a boundary
@@ -1250,10 +1250,10 @@ def emit_flip_topology(
     # -- the same ascending-key row order the ``flatnonzero`` compaction inside
     # ``grouping.group`` produces, which is what keeps this byte-identical to the composed path.
     #
-    # An incremental build keeps the two halfedges too, in both directions (row -> halfedges,
-    # halfedge -> row; ``mark_edge_pair_starts`` resets the second first), which is what lets
-    # ``commit_flips`` keep the rows current across a flip round instead of regrouping the whole
-    # mesh. A plain build passes ``None`` for both.
+    # The build keeps the two halfedges too, in both directions (row -> halfedges, halfedge -> row;
+    # ``mark_edge_pair_starts`` resets the second first), which is what lets ``commit_flips`` keep
+    # the rows current across a flip round instead of regrouping the whole mesh. A caller with no
+    # flip loop passes ``None`` for both.
     i = wp.int32(wp.tid())
     if starts[i] == 0:
         return
@@ -1269,6 +1269,42 @@ def emit_flip_topology(
     out_halfedge_row[edge_1] = slot
 
 
+@wp.func
+def refresh_flip_row(
+    faces: wp.array[wp.int32],
+    row_halfedges: wp.array2d[wp.int32],
+    k: wp.int32,
+    stride: wp.int32,
+    out_adjacency: wp.array2d[wp.int32],
+    out_adjacency_edges: wp.array2d[wp.int32],
+    out_unshared: wp.array2d[wp.int32],
+    out_face_claim: wp.array[wp.uint64],
+    out_edge_claim: wp.array[wp.uint64],
+) -> None:
+    # Row ``k`` of the flip tables again, from the halfedges ``commit_flips`` kept current: the row
+    # ``emit_flip_topology`` would write after a full regroup, except that each edge keeps the row
+    # it had instead of moving to its new key's rank -- which the flip loop does not depend on,
+    # since ``claim_flips`` ranks candidates by key rather than by row.
+    #
+    # Also re-arms the next round's two claim tables, which this round's commit was the last to
+    # read and the next round's candidates never read: two memsets fewer per round, the launch's
+    # ``stride`` threads striding over tables longer than their count.
+    for f in range(k, out_face_claim.shape[0], stride):
+        out_face_claim[f] = UINT64_MAX_CONSTANT
+    for s in range(k, out_edge_claim.shape[0], stride):
+        out_edge_claim[s] = UINT64_MAX_CONSTANT
+    if k < row_halfedges.shape[0]:
+        write_flip_row(
+            faces,
+            row_halfedges[k, 0],
+            row_halfedges[k, 1],
+            k,
+            out_adjacency,
+            out_adjacency_edges,
+            out_unshared,
+        )
+
+
 @wp.kernel
 def refresh_flip_rows(
     faces: wp.array[wp.int32],
@@ -1279,28 +1315,62 @@ def refresh_flip_rows(
     out_face_claim: wp.array[wp.uint64],
     out_edge_claim: wp.array[wp.uint64],
 ) -> None:
-    # Every row of the flip tables again, from the halfedges ``commit_flips`` kept current: the
-    # rows ``emit_flip_topology`` would write after a full regroup, row for row, except that each
-    # edge keeps the row it had instead of moving to its new key's rank -- which the flip loop does
-    # not depend on, since ``claim_flips`` ranks candidates by key rather than by row.
-    #
-    # Also re-arms the next round's two claim tables, which this round's commit was the last to
-    # read and the next round's candidates never read: two memsets fewer per round, the row threads
-    # striding over tables longer than the row count.
+    # Every row of an incremental flip round, one thread a row. ``adopt_flip_edge_set`` below is
+    # the same refresh launched over the halfedges, for the round that first builds the key set.
     k = wp.int32(wp.tid())
-    rows = row_halfedges.shape[0]
-    for f in range(k, out_face_claim.shape[0], rows):
-        out_face_claim[f] = UINT64_MAX_CONSTANT
-    for s in range(k, out_edge_claim.shape[0], rows):
-        out_edge_claim[s] = UINT64_MAX_CONSTANT
-    write_flip_row(
+    refresh_flip_row(
         faces,
-        row_halfedges[k, 0],
-        row_halfedges[k, 1],
+        row_halfedges,
         k,
+        row_halfedges.shape[0],
         out_adjacency,
         out_adjacency_edges,
         out_unshared,
+        out_face_claim,
+        out_edge_claim,
+    )
+
+
+@wp.kernel
+def adopt_flip_edge_set(
+    faces: wp.array[wp.int32],
+    halfedge_row: wp.array[wp.int32],
+    row_halfedges: wp.array2d[wp.int32],
+    base: wp.uint64,
+    edge_set_mask: wp.int32,
+    edge_set: wp.array[wp.uint64],
+    out_adjacency: wp.array2d[wp.int32],
+    out_adjacency_edges: wp.array2d[wp.int32],
+    out_unshared: wp.array2d[wp.int32],
+    out_face_claim: wp.array[wp.uint64],
+    out_edge_claim: wp.array[wp.uint64],
+) -> None:
+    # The incremental state after a plain build's first flipping round, without the regroup that
+    # would rebuild it (a key launch, a radix sort, a mark, a scan and an emit): the plain build
+    # already kept the halfedge <-> row maps and the round's commit moved them, so only the
+    # duplicate-edge set is new. One thread per halfedge inserts the current key of every edge
+    # once -- an interior row's from its first halfedge, any other halfedge's (a boundary or
+    # non-manifold edge, ``halfedge_row == -1``) from itself, duplicates merged by the insert --
+    # which is the set ``mark_edge_pair_starts`` seeds from a fresh sort's runs. The same threads
+    # then refresh the rows as ``refresh_flip_rows`` does; there are more halfedges than rows.
+    h = wp.int32(wp.tid())
+    row = halfedge_row[h]
+    if row < 0 or row_halfedges[row, 0] == h:
+        f = h // 3
+        j = h - 3 * f
+        hash_find_or_insert(
+            pack_edge_key(faces[h], faces[3 * f + (j + 1) % 3], base), edge_set, edge_set_mask
+        )
+    refresh_flip_row(
+        faces,
+        row_halfedges,
+        h,
+        halfedge_row.shape[0],
+        out_adjacency,
+        out_adjacency_edges,
+        out_unshared,
+        out_face_claim,
+        out_edge_claim,
     )
 
 
@@ -1668,8 +1738,9 @@ def commit_flips(
     out_faces: wp.array[wp.int32],
     out_count: wp.array[wp.int32],
 ) -> None:
-    # Commit the winning flips, and keep the loop's incremental state describing the new faces:
-    # the halfedge <-> row maps (so ``refresh_flip_rows`` can rebuild every row without a regroup),
+    # Commit the winning flips, and keep the loop's state describing the new faces: the halfedge
+    # <-> row maps every build keeps (so ``refresh_flip_rows`` can rebuild every row without a
+    # regroup),
     # the duplicate-edge set once it exists (``edge_set_mask >= 0``; the old diagonal out, the new
     # one in -- it cannot already be there,
     # or the candidate guard would have rejected the flip, and the edge claim stops two flips
@@ -1691,7 +1762,7 @@ def commit_flips(
     c = quad[k, 2]
     d = quad[k, 3]
     if halfedge_row.shape[0] == 0:
-        # A plain build's round: no incremental state to keep; the caller regroups.
+        # No halfedge maps to keep: the caller regroups.
         write_flipped_quad(out_faces, f0, f1, a, b, c, d)
         wp.atomic_add(out_count, 0, 1)
         return
