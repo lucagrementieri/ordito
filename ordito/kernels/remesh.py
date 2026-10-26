@@ -20,6 +20,7 @@ from ordito.kernels.array import (
     next_row_entry,
     pack_edge_key,
     pack_index_triple,
+    popcount32,
     scanned_slot,
     sort3,
     sort_segment,
@@ -4099,15 +4100,6 @@ def begin_decimation_pass(
 # over 2048 on a 35k-face decimation pass, flat on 870k faces, where 512 lanes lost 1.18x.
 SCAN_CHUNK = wp.constant(512)
 SCAN_BLOCK_DIM = 256
-
-
-@wp.func
-def popcount32(x: wp.uint32) -> wp.int32:
-    # Set bits of ``x`` (the SWAR reduction; Warp has no population-count builtin).
-    v = x - ((x >> wp.uint32(1)) & wp.uint32(0x55555555))
-    v = (v & wp.uint32(0x33333333)) + ((v >> wp.uint32(2)) & wp.uint32(0x33333333))
-    v = (v + (v >> wp.uint32(4))) & wp.uint32(0x0F0F0F0F)
-    return wp.int32((v * wp.uint32(0x01010101)) >> wp.uint32(24))
 
 
 @wp.func

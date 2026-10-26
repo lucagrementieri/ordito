@@ -62,7 +62,7 @@ up to the splits its own rounding decides (two splits of a loop whose areas agre
 
 import warp as wp
 
-from ordito.kernels.array import binary_search_index_left
+from ordito.kernels.array import binary_search_index_left, bit_is_set, bit_rank
 from ordito.kernels.reconstruction import (
     poisson_grid_index,
     poisson_prolong_node,
@@ -1600,12 +1600,13 @@ def classify_edges(
     edge_offsets: wp.array[wp.int32],
     owners: wp.array[wp.int32],
     partners: wp.array[wp.int32],
-    created: wp.array[wp.int32],
+    created: wp.array[wp.uint32],
 ) -> None:
     # Depth ``d``'s edge from node ``(i, j, k)`` along ``axis``: the vertex it holds, named by the
     # edge that created it (``owners``). An edge of a refined cell takes over the vertex of the one
     # finer half that has one, or pairs the two halves' vertices (``partners``); an edge still
-    # without one gets its own (``created``) when a leaf's corners straddle the iso-value along it.
+    # without one gets its own (bit ``slot`` of ``created``) when a leaf's corners straddle the
+    # iso-value along it.
     # Run finest first.
     axis, i, j, k = wp.tid()
     res = (1 << d) + 1
@@ -1642,7 +1643,7 @@ def classify_edges(
         there = corner_below(fields, sources, node_offsets, iso, d, end)
         if here != there:
             owner = slot
-            created[slot] = 1
+            wp.atomic_or(created, slot >> 5, wp.uint32(1) << wp.uint32(slot & 31))
     owners[slot] = owner
 
 
@@ -1656,17 +1657,17 @@ def place_edge_vertices(
     sources: wp.array[wp.int32],
     node_offsets: wp.array[wp.int32],
     edge_offsets: wp.array[wp.int32],
+    created: wp.array[wp.uint32],
     ranks: wp.array[wp.int32],
     out_positions: wp.array[wp.vec3],
 ) -> None:
-    # A created vertex's unit-cube position at its number (``ranks``, the inclusive scan of
-    # ``created``), by the non-linear fit on its edge's corner values and slopes, kept ``margin``
-    # of the edge off its ends.
+    # A created vertex's unit-cube position at its number (its bit's rank in ``created``, ``ranks``
+    # the scan of the words' bit counts), by the non-linear fit on its edge's corner values and
+    # slopes, kept ``margin`` of the edge off its ends.
     axis, i, j, k = wp.tid()
     node = wp.vec3i(i, j, k)
     slot = edge_slot(edge_offsets, d, axis, node)
-    previous = wp.where(slot > 0, ranks[slot - 1], 0)
-    if ranks[slot] == previous:
+    if not bit_is_set(created, slot):
         return
     end = wp.vec3i(i, j, k)
     end[axis] = end[axis] + 1
@@ -1679,7 +1680,7 @@ def place_edge_vertices(
     width = 1.0 / wp.float32(1 << d)
     position = wp.vec3(wp.float32(i) * width, wp.float32(j) * width, wp.float32(k) * width)
     position[axis] = wp.float32(wp.float64(position[axis]) + wp.float64(width) * t)
-    out_positions[previous] = position
+    out_positions[bit_rank(created, ranks, slot)] = position
 
 
 @wp.func
@@ -1973,15 +1974,16 @@ def square_area(a: wp.vec3, b: wp.vec3, c: wp.vec3) -> wp.float32: ...
 
 
 @wp.func
-def vertex_of(ranks: wp.array[wp.int32], owner: wp.int32) -> wp.int32:
+def vertex_of(created: wp.array[wp.uint32], ranks: wp.array[wp.int32], owner: wp.int32) -> wp.int32:
     # The output number of the vertex created on edge slot ``owner``.
-    return ranks[owner] - 1
+    return bit_rank(created, ranks, owner)
 
 
 @wp.kernel
 def triangulate_loops(
     offsets: wp.array[wp.int32],
     counts: wp.array[wp.vec2i],
+    created: wp.array[wp.uint32],
     ranks: wp.array[wp.int32],
     positions: wp.array[wp.vec3],
     loops: wp.array[wp.int32],
@@ -2005,29 +2007,29 @@ def triangulate_loops(
         n = sizes[begin + k]
         first = 2 * begin + written
         if n == 3:
-            out_faces[3 * face] = vertex_of(ranks, loops[first + 2])
-            out_faces[3 * face + 1] = vertex_of(ranks, loops[first + 1])
-            out_faces[3 * face + 2] = vertex_of(ranks, loops[first])
+            out_faces[3 * face] = vertex_of(created, ranks, loops[first + 2])
+            out_faces[3 * face + 1] = vertex_of(created, ranks, loops[first + 1])
+            out_faces[3 * face + 2] = vertex_of(created, ranks, loops[first])
             face += 1
         elif n == 4:
-            p0 = positions[vertex_of(ranks, loops[first])]
-            p1 = positions[vertex_of(ranks, loops[first + 1])]
-            p2 = positions[vertex_of(ranks, loops[first + 2])]
-            p3 = positions[vertex_of(ranks, loops[first + 3])]
+            p0 = positions[vertex_of(created, ranks, loops[first])]
+            p1 = positions[vertex_of(created, ranks, loops[first + 1])]
+            p2 = positions[vertex_of(created, ranks, loops[first + 2])]
+            p3 = positions[vertex_of(created, ranks, loops[first + 3])]
             if square_area(p2, p3, p0) > square_area(p3, p1, p2):
-                out_faces[3 * face] = vertex_of(ranks, loops[first + 3])
-                out_faces[3 * face + 1] = vertex_of(ranks, loops[first + 1])
-                out_faces[3 * face + 2] = vertex_of(ranks, loops[first])
-                out_faces[3 * face + 3] = vertex_of(ranks, loops[first + 2])
-                out_faces[3 * face + 4] = vertex_of(ranks, loops[first + 1])
-                out_faces[3 * face + 5] = vertex_of(ranks, loops[first + 3])
+                out_faces[3 * face] = vertex_of(created, ranks, loops[first + 3])
+                out_faces[3 * face + 1] = vertex_of(created, ranks, loops[first + 1])
+                out_faces[3 * face + 2] = vertex_of(created, ranks, loops[first])
+                out_faces[3 * face + 3] = vertex_of(created, ranks, loops[first + 2])
+                out_faces[3 * face + 4] = vertex_of(created, ranks, loops[first + 1])
+                out_faces[3 * face + 5] = vertex_of(created, ranks, loops[first + 3])
             else:
-                out_faces[3 * face] = vertex_of(ranks, loops[first + 2])
-                out_faces[3 * face + 1] = vertex_of(ranks, loops[first + 1])
-                out_faces[3 * face + 2] = vertex_of(ranks, loops[first])
-                out_faces[3 * face + 3] = vertex_of(ranks, loops[first])
-                out_faces[3 * face + 4] = vertex_of(ranks, loops[first + 3])
-                out_faces[3 * face + 5] = vertex_of(ranks, loops[first + 2])
+                out_faces[3 * face] = vertex_of(created, ranks, loops[first + 2])
+                out_faces[3 * face + 1] = vertex_of(created, ranks, loops[first + 1])
+                out_faces[3 * face + 2] = vertex_of(created, ranks, loops[first])
+                out_faces[3 * face + 3] = vertex_of(created, ranks, loops[first])
+                out_faces[3 * face + 4] = vertex_of(created, ranks, loops[first + 3])
+                out_faces[3 * face + 5] = vertex_of(created, ranks, loops[first + 2])
             face += 2
         elif n >= 5:
             # Interval (i, j) of the loop's vertices 1..n (n standing for vertex 0) at
@@ -2039,9 +2041,9 @@ def triangulate_loops(
                     split = wp.int32(-1)
                     for r in range(i + 1, j):
                         area = square_area(
-                            positions[vertex_of(ranks, loops[first + i % n])],
-                            positions[vertex_of(ranks, loops[first + r % n])],
-                            positions[vertex_of(ranks, loops[first + j % n])],
+                            positions[vertex_of(created, ranks, loops[first + i % n])],
+                            positions[vertex_of(created, ranks, loops[first + r % n])],
+                            positions[vertex_of(created, ranks, loops[first + j % n])],
                         )
                         total = wp.sqrt(wp.max(area, 0.0))
                         if r - i >= 2:
@@ -2065,9 +2067,9 @@ def triangulate_loops(
                 j = packed & 0xFFFF
                 if j - i >= 2:
                     r = choices[work + (i - 1) * n + j - 1]
-                    out_faces[3 * face] = vertex_of(ranks, loops[first + j % n])
-                    out_faces[3 * face + 1] = vertex_of(ranks, loops[first + r % n])
-                    out_faces[3 * face + 2] = vertex_of(ranks, loops[first + i % n])
+                    out_faces[3 * face] = vertex_of(created, ranks, loops[first + j % n])
+                    out_faces[3 * face + 1] = vertex_of(created, ranks, loops[first + r % n])
+                    out_faces[3 * face + 2] = vertex_of(created, ranks, loops[first + i % n])
                     face += 1
                     choices[work + stack * n + stack] = (i << 16) | r
                     stack += 1

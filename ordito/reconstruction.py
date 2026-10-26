@@ -1360,7 +1360,8 @@ def _octree_extract(
     unset = _launch.full(2 * n_edges, -1, dtype=wp.int32, device=device)
     owners = _launch.view(unset, 0, n_edges)
     partners = _launch.view(unset, n_edges, 2 * n_edges)
-    created = _launch.zeros(edge_offsets_host[-1], dtype=wp.int32, device=device)
+    # One bit an edge: whether it creates a vertex.
+    created = _launch.zeros((n_edges + 31) // 32, dtype=wp.uint32, device=device)
     activity = [flags, flag_offsets]
     for d in range(depth, first - 1, -1):
         res = 2**d + 1
@@ -1388,8 +1389,10 @@ def _octree_extract(
             outputs=[owners, partners, created],
             device=device,
         )
-    ranks = created
-    _launch.array_scan(created, ranks, inclusive=True)
+    # The vertices' numbers: each word's set bits, scanned (``kernel_array.bit_rank``).
+    ranks = _launch.empty(created.size, dtype=wp.int32, device=device)
+    _launch.map(kernel_array.popcount32, created, out=ranks)
+    _launch.array_scan(ranks, ranks, inclusive=True)
     # One read sizes the vertices.
     n_vertices = int(read_scalar(ranks))
     positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
@@ -1408,6 +1411,7 @@ def _octree_extract(
                 sources,
                 node_offsets,
                 edge_offsets,
+                created,
                 ranks,
             ],
             outputs=[positions],
@@ -1479,7 +1483,17 @@ def _octree_extract(
     _launch.launch(
         kernel_octree.triangulate_loops,
         dim=n_cells,
-        inputs=[segment_offsets, loop_counts, ranks, positions, loops, sizes, scratch, choices],
+        inputs=[
+            segment_offsets,
+            loop_counts,
+            created,
+            ranks,
+            positions,
+            loops,
+            sizes,
+            scratch,
+            choices,
+        ],
         outputs=[faces],
         device=device,
     )

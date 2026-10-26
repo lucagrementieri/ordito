@@ -1596,6 +1596,31 @@ def _register_overloads() -> None:
 _register_overloads()
 
 
+@wp.func
+def popcount32(x: wp.uint32) -> wp.int32:
+    # Set bits of ``x`` (the SWAR reduction; Warp has no population-count builtin).
+    v = x - ((x >> wp.uint32(1)) & wp.uint32(0x55555555))
+    v = (v & wp.uint32(0x33333333)) + ((v >> wp.uint32(2)) & wp.uint32(0x33333333))
+    v = (v + (v >> wp.uint32(4))) & wp.uint32(0x0F0F0F0F)
+    return wp.int32((v * wp.uint32(0x01010101)) >> wp.uint32(24))
+
+
+@wp.func
+def bit_is_set(words: wp.array[wp.uint32], p: wp.int32) -> wp.bool:
+    # Bit ``p`` of a bitmask, 32 bits to a ``uint32`` word.
+    return (words[p >> 5] >> wp.uint32(p & 31)) & wp.uint32(1) != wp.uint32(0)
+
+
+@wp.func
+def bit_rank(words: wp.array[wp.uint32], word_ranks: wp.array[wp.int32], p: wp.int32) -> wp.int32:
+    # Set bits ahead of bit ``p``: ``word_ranks`` is the inclusive scan of the words' set-bit
+    # counts (``popcount32`` mapped over ``words``), so this is the exclusive scan of the bits a
+    # 0/1 ``int32`` table would hold, at a 32nd of its memory.
+    word = words[p >> 5]
+    below = (wp.uint32(1) << wp.uint32(p & 31)) - wp.uint32(1)
+    return word_ranks[p >> 5] - popcount32(word) + popcount32(word & below)
+
+
 # ``wp.map`` has the same lazy-instantiation property ``_register_overloads`` exists for, and the
 # same fix: a ``wp.map(op, ...)`` call generates a module named ``map_<unqualified op name>``, each
 # distinct *call signature* forks its hash, and a module's hash covers the kernels instantiated in
@@ -1741,6 +1766,7 @@ def _declare_map_kernels() -> None:
             (nonzero_flag, (dense(wp.float32),), wp.int32),
             (nonzero_flag, (dense(wp.int32),), wp.int32),
             (nonzero_flag, (dense(wp.int8),), wp.int32),
+            (popcount32, (dense(wp.uint32),), wp.int32),
         ]
     )
 
