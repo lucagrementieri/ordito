@@ -1659,6 +1659,29 @@ def trace_stitch_band(
 
 
 @wp.kernel
+def combined_rim_loops(
+    loop_a: wp.array[wp.int32],
+    loop_b: wp.array[wp.int32],
+    b_offset: wp.int32,
+    out_loops: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+) -> None:
+    # Both stitched rims as two packed loops of the combined mesh, one thread per slot: rim A as
+    # given, rim B offset past A's vertices, and their ``[0, n_a, n_a + n_b]`` offsets, which the
+    # first thread writes (``stitch_smooth``'s derived refine target measures them).
+    t = wp.int32(wp.tid())
+    n_a = loop_a.shape[0]
+    if t < n_a:
+        out_loops[t] = loop_a[t]
+    else:
+        out_loops[t] = loop_b[t - n_a] + b_offset
+    if t == 0:
+        out_offsets[0] = wp.int32(0)
+        out_offsets[1] = n_a
+        out_offsets[2] = n_a + loop_b.shape[0]
+
+
+@wp.kernel
 def count_loop_vertices(
     flat_loops: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],

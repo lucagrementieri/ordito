@@ -2680,14 +2680,23 @@ def stitch_smooth(
 
     target_edge = max_edge
     if target_edge is None:
-        # Both rims in the combined numbering, packed into one buffer as they are written: loop A
-        # copied, loop B shifted past A's vertices by an elementwise map into the tail.
+        # Both rims in the combined numbering and their offsets, packed into one buffer by one
+        # launch: loop A as given, loop B shifted past A's vertices.
         n_a, n_b = loop_a.size, loop_b.size
-        rims = _launch.empty(n_a + n_b, dtype=wp.int32, device=device)
-        _launch.copy(rims, loop_a, count=n_a)
-        _launch.map(wp.add, loop_b, wp.int32(vertices_a.size), out=odt.as_dense(rims[n_a:]))
+        n_ab = n_a + n_b
+        rims = _launch.empty(n_ab + 3, dtype=wp.int32, device=device)
+        flat_rims = _launch.view(rims, 0, n_ab)
+        rim_offsets = _launch.view(rims, n_ab, n_ab + 3)
+        _launch.launch(
+            kernel_holes.combined_rim_loops,
+            dim=n_ab,
+            inputs=[loop_a, loop_b, wp.int32(vertices_a.size)],
+            outputs=[flat_rims, rim_offsets],
+            device=device,
+        )
         target_edge = _mean_rim_edge_length(
-            combined_vertices, _PackedLoops(rims, np.array([n_a, n_b], dtype=np.int64))
+            combined_vertices,
+            _PackedLoops(flat_rims, np.array([n_a, n_b], dtype=np.int64), rim_offsets),
         )
     new_vertices, new_faces, out_patch = od.smoothing.refine_and_smooth_region(
         combined_vertices,
@@ -2924,9 +2933,10 @@ def stitch_loops(
 
     # Rim positions, loop A reversed so both rims wind the same way. Everything below reads loop A
     # reversed (``kernels/holes.rim_vertex``): neither the reversed nor the rolled loops are
-    # written.
-    a_pos = _launch.empty(n, dtype=wp.vec3, device=device)
-    b_pos = _launch.empty(m, dtype=wp.vec3, device=device)
+    # written. Both rims are views of one allocation.
+    positions = _launch.empty(n + m, dtype=wp.vec3, device=device)
+    a_pos = _launch.view(positions, 0, n)
+    b_pos = _launch.view(positions, n, n + m)
     _launch.launch(
         kernel_holes.stitch_rim_positions,
         dim=n + m,
