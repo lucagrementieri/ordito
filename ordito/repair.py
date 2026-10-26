@@ -854,11 +854,12 @@ def remove_non_manifold_faces(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], max_iter: int = 3
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
-    Remove faces touching a non-manifold (>2-incident) edge, iterating until edge-manifold.
+    Remove faces touching a non-manifold (>2-incident) edge, leaving the mesh edge-manifold.
 
-    Each pass keeps only faces whose three edges are each used by at most two faces
-    ([`edge_manifold_mask`][ordito.validation.edge_manifold_mask]); dropping a face can make a
-    neighbour manifold, so it repeats up to ``max_iter`` times.
+    Keeps only faces whose three edges are each used by at most two faces
+    ([`edge_manifold_mask`][ordito.validation.edge_manifold_mask]). Dropping a face only lowers the
+    share count of its own edges, and every edge used three or more times loses all its faces, so
+    one pass leaves every edge used at most twice: a further pass would keep every face.
 
     Parameters
     ----------
@@ -867,7 +868,8 @@ def remove_non_manifold_faces(
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
     max_iter
-        Maximum number of removal passes.
+        Maximum number of removal passes. One pass already reaches the fixpoint, so every value
+        from ``1`` gives the same answer; ``0`` removes nothing.
 
     Returns
     -------
@@ -875,8 +877,8 @@ def remove_non_manifold_faces(
         ``(n_new_vertices,)`` vertices still referenced after non-manifold faces are dropped,
         compacted from index zero; ``vertices`` itself, not a copy, when no face is dropped.
     new_faces : wp.array[wp.int32]
-        ``(3 * n_new_faces,)`` flat buffer of the surviving (edge-manifold, up to ``max_iter``
-        passes) faces; ``faces`` itself, not a copy, when no face is dropped.
+        ``(3 * n_new_faces,)`` flat buffer of the surviving (edge-manifold) faces; ``faces``
+        itself, not a copy, when no face is dropped.
 
     Raises
     ------
@@ -927,8 +929,8 @@ def remove_degenerate_and_non_manifold_faces(
     The same answer as [`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces]
     followed by [`remove_non_manifold_faces`][ordito.repair.remove_non_manifold_faces], byte for
     byte. The manifold test reads only face indices and every compaction preserves the order of
-    both the faces and the vertices, so the passes run over the input's own vertex numbering and
-    the referenced vertices are compacted once, at the end, instead of after every pass.
+    both the faces and the vertices, so the manifold pass runs over the input's own vertex
+    numbering and the referenced vertices are compacted once, at the end.
 
     Parameters
     ----------
@@ -938,7 +940,9 @@ def remove_degenerate_and_non_manifold_faces(
         ``(3 * n_faces,)`` flat triangle index buffer, every index in
         ``[0, n_vertices)``.
     max_iter
-        Maximum number of non-manifold removal passes.
+        Maximum number of non-manifold removal passes, as in
+        [`remove_non_manifold_faces`][ordito.repair.remove_non_manifold_faces]: every value from
+        ``1`` gives the same answer.
 
     Returns
     -------
@@ -1007,18 +1011,20 @@ def _edge_manifold_survivors(
     max_iter: int,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.bool] | None]:
     """
-    Run up to ``max_iter`` edge-manifold removal passes over ``faces[keep]``, in index space.
+    Run the edge-manifold removal over ``faces[keep]``, in index space.
 
     ``prefilter`` is ``keep`` with its ``0`` / ``1`` ``int32`` flags (consumed by the scan), or
     ``None`` for all of ``faces``.
 
     The surviving faces are always ``faces[keep]`` for the pair this returns (all of ``faces``
-    when ``keep`` is ``None``), with ``keep`` ``None`` only when ``prefilter`` is and no pass
-    removed a face. Vertex indices are never remapped, so a caller compacts once with
-    [`submesh_from_face_mask`][ordito.selection.submesh_from_face_mask]. A pass stops the loop
-    when it keeps every face or when no face is left. The pair returned is the last removing pass's
-    input and mask, so the final removal is never gathered out and the compaction reads the mask
-    that pass already wrote.
+    when ``keep`` is ``None``), with ``keep`` ``None`` only when ``prefilter`` is and the pass
+    removed no face. Vertex indices are never remapped, so a caller compacts once with
+    [`submesh_from_face_mask`][ordito.selection.submesh_from_face_mask].
+
+    One pass is the fixpoint whatever ``max_iter`` (at least one) allows: removing a face only
+    lowers the share count of its own edges, and every edge shared by three or more faces loses
+    all of them, so the survivors' edges are each shared at most twice and a second pass would
+    keep every face. ``max_iter`` below one runs none.
 
     ``n_vertices`` is the edge-key radix: any bound above every index of ``faces``.
     """
@@ -1030,35 +1036,33 @@ def _edge_manifold_survivors(
         n_kept = _scan_kept_count(keep_flags)
         if n_kept != faces.size // 3:
             tested = _compact_scanned_faces(faces, keep_flags, n_kept)
-    # Each pass's flags are scanned at once, for the count that stops the loop, but the faces they
-    # keep are compacted only once another pass is going to test them, so the last pass writes no
-    # face buffer and no index list sits between the scan and the compaction.
-    pending = None
-    for _ in range(max_iter):
-        if pending is not None:
-            tested = _compact_scanned_faces(tested, *pending)
-        n_faces = tested.size // 3
-        if n_faces == 0:
-            break
-        # ``validation.edge_manifold_mask`` with the flags its survivors are compacted from written
-        # by the same per-face pass, so no fill and no bool-to-flag pass sit before the scan.
-        mates = od.halfedge.halfedge_mates(tested, n_vertices)
-        manifold = _launch.empty(n_faces, dtype=wp.bool, device=tested.device)
-        flags = _launch.empty(n_faces, dtype=wp.int32, device=tested.device)
-        _launch.launch(
-            kernel_repair.face_mate_manifold_flags,
-            dim=n_faces,
-            inputs=[mates, wp.bool(True)],
-            outputs=[manifold, flags],
-            device=tested.device,
+    n_faces = tested.size // 3
+    if max_iter < 1 or n_faces == 0:
+        return faces, keep
+    mates = od.halfedge.halfedge_mates(tested, n_vertices)
+    if keep is not None:
+        # The caller compacts ``tested[manifold]`` whatever the pass kept, so no kept count is
+        # needed: an all-``True`` mask over the prefilter's survivors is the same submesh as the
+        # prefilter's own mask over ``faces``.
+        manifold = od.validation.edge_manifold_mask(
+            tested, n_vertices=n_vertices, validate=False, mates=mates
         )
-        # Readback: the kept count is the stopping test.
-        n_kept = _scan_kept_count(flags)
-        if n_kept == n_faces:
-            break  # already edge-manifold
-        faces, keep = tested, manifold
-        pending = (flags, n_kept)
-    return faces, keep
+        return tested, manifold
+    # ``validation.edge_manifold_mask`` with the flags its survivors would be counted from, written
+    # by the same per-face pass.
+    manifold = _launch.empty(n_faces, dtype=wp.bool, device=tested.device)
+    flags = _launch.empty(n_faces, dtype=wp.int32, device=tested.device)
+    _launch.launch(
+        kernel_repair.face_mate_manifold_flags,
+        dim=n_faces,
+        inputs=[mates, wp.bool(True)],
+        outputs=[manifold, flags],
+        device=tested.device,
+    )
+    # Readback: an edge-manifold input is returned as it came, uncompacted.
+    if _scan_kept_count(flags) == n_faces:
+        return faces, None
+    return tested, manifold
 
 
 def _scan_kept_count(flags: wp.array[wp.int32]) -> int:
