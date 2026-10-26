@@ -1885,7 +1885,8 @@ def test_ball_pivoting_on_a_bvh_leaf_past_the_tile_walk_buffer(
     On CUDA the overfull bitset is asserted non-empty for the chained cloud and empty for the patch,
     so the test cannot pass by both runs taking the builtin's walk. The cpu device builds a
     different tree (no overfull leaf here), walks serially and marks nothing, so there it only pins
-    agreement.
+    agreement; under ``--cpu-blocks`` it runs the bitset pass over that tree, which must flag
+    nothing.
     """
     side, spacing = 24, 0.005
     positions = 0.4 + spacing * np.arange(side)
@@ -1925,6 +1926,12 @@ def test_ball_pivoting_on_a_bvh_leaf_past_the_tile_walk_buffer(
         assert len(flags) == 2
         assert flags[0].numpy().any(), "the chained cloud's tree must hold an overfull leaf"
         assert not flags[1].numpy().any()
+    elif wp.config.enable_cpu_blocks:
+        flags = list({id(bitset): bitset for bitset in flags}.values())
+        assert len(flags) == 2
+        # The bitset pass runs wherever blocks have several lanes, but the cpu device's tree has
+        # no overfull leaf here, so both bitsets stay empty.
+        assert not any(bitset.numpy().any() for bitset in flags)
     else:
         assert not flags
     (chained_vertices_np, chained_faces_np), (patch_vertices_np, patch_faces_np) = results

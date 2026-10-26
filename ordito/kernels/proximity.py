@@ -499,9 +499,18 @@ BLOCK_WALK_STACK = 2048
 # Reads of a ``wp.Bvh``'s nodes, which no Warp builtin exposes (``warp/native/bvh.h``): a node's box
 # corner (``side`` 0 lower, 1 upper), its two packed indices (a leaf's range ``[first, second)`` in
 # ``primitive_indices``, an internal node's two children), its leaf bit, the primitive at a
-# position of ``primitive_indices``, the root node, a node's parent (-1 at the root) and the node
-# count. The layout is Warp's: re-probe these at every
-# Warp upgrade (§12.7).
+# position of ``primitive_indices``, the root node, a node's parent (-1 at the root) and the count
+# of nodes the builder initialised. The layout is Warp's: re-probe these at every Warp upgrade
+# (§12.7).
+#
+# That count is not ``max_nodes``, the ``2n - 1`` capacity every builder allocates. The device LBVH
+# builds all of them and leaves ``num_nodes`` at the zero its ``memset`` wrote (``bvh.cu``); the
+# top-down SAH / median builder (``bvh.cpp``: every CPU ``wp.Mesh``, and a CUDA one built with
+# ``bvh_constructor="sah"``, whose nodes are copied over) builds a prefix, counts it in
+# ``num_nodes`` and leaves the rest as uninitialised ``wp_alloc_host`` memory (657 of 1999 nodes
+# measured); cuBQL sets both to its node count. Read past the prefix, a garbage parent index sent
+# ``flag_overfull_leaf``'s climb into an ``atomic_or`` far outside the bitset, which corrupted the
+# CPU heap under ``wp.config.enable_cpu_blocks`` (the only CPU setting that runs the bitset pass).
 _BVH_NODE_BOUND = """
 const wp::BVH& bvh = *(const wp::BVH*)bvh_id;
 const wp::BVHPackedNodeHalf* half = side == 0 ? bvh.node_lowers : bvh.node_uppers;
@@ -518,7 +527,10 @@ _BVH_NODE_IS_LEAF = "return (int)wp::bvh_load_node(((wp::BVH*)bvh_id)->node_lowe
 _BVH_PRIMITIVE = "return ((wp::BVH*)bvh_id)->primitive_indices[position];"
 _BVH_ROOT = "return *((wp::BVH*)bvh_id)->root;"
 _BVH_NODE_PARENT = "return ((wp::BVH*)bvh_id)->node_parents[node];"
-_BVH_NODE_COUNT = "return ((wp::BVH*)bvh_id)->max_nodes;"
+_BVH_NODE_COUNT = """
+const wp::BVH& bvh = *(const wp::BVH*)bvh_id;
+return bvh.num_nodes > 0 ? bvh.num_nodes : bvh.max_nodes;
+"""
 
 
 @wp.func_native(_BVH_NODE_BOUND)
@@ -565,9 +577,10 @@ def flag_overfull_leaf(bvh: wp.uint64, node: wp.int32, out_flags: wp.array[wp.in
     # ``mark_overfull_leaves`` (a mesh's BVH) and ``ball_pivoting.mark_overfull_point_leaves`` (a
     # point BVH).
     #
-    # ``bvh_node_count`` is the node *capacity*: valid on a CUDA LBVH, whose ``2n - 1`` nodes are
-    # all built, but a CPU SAH tree initialises only a prefix of them, so both callers launch on
-    # CUDA only -- where the tile walk this guards exists at all.
+    # ``bvh_node_count`` is the count of nodes the builder initialised, not the ``2n - 1``
+    # capacity: a top-down (CPU, or ``"sah"``) tree leaves the nodes past its prefix as garbage.
+    # Both callers launch only where blocks run more than one lane (``prefers_tiled_reduction``),
+    # the only place the tile walk this guards can overrun.
     if node >= bvh_node_count(bvh) or bvh_node_is_leaf(bvh, node) == 0:
         return
     if bvh_node_index(bvh, node, 1) - bvh_node_index(bvh, node, 0) <= TILE_WALK_LEAF_MAX:
