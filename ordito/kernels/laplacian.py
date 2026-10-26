@@ -440,11 +440,12 @@ def operator_row(
     return acc
 
 
-@wp.kernel
-def mesh_operator_keys(
+@wp.func
+def store_operator_keys(
     faces: wp.array[wp.int32],
     n_vertices: wp.int32,
     diagonal: wp.int32,
+    t: wp.int32,
     out_keys: wp.array[wp.uint64],
     out_order: wp.array[wp.int32],
 ) -> None:
@@ -462,8 +463,7 @@ def mesh_operator_keys(
     # ``mesh_edge_keys`` shares, so one value kernel serves both builds; it reads the direction off
     # the row. A diagonal slot's payload is never read, so it is not written. A degenerate face's
     # self-edge keeps its keys and lands on the diagonal entry; each value kernel decides what that
-    # means.
-    t = wp.int32(wp.tid())
+    # means. This is thread ``t``'s share of the build.
     n_faces = faces.shape[0] // 3
     tail = 6 * n_faces
     if diagonal == 2 and t < n_vertices:
@@ -482,6 +482,38 @@ def mesh_operator_keys(
         vertex = faces[t * 3 + e]
         if diagonal == 1 and vertex >= 0 and vertex < n_vertices:
             out_keys[tail + vertex] = csr_key(vertex, vertex, n_vertices, n_vertices)
+
+
+@wp.kernel
+def mesh_operator_keys(
+    faces: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    diagonal: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # The directed pattern build's keys (``store_operator_keys``).
+    t = wp.int32(wp.tid())
+    store_operator_keys(faces, n_vertices, diagonal, t, out_keys, out_order)
+
+
+@wp.kernel
+def cotmatrix_entries_and_operator_keys(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    diagonal: wp.int32,
+    out_cot: wp.array2d[wp.Float],
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # ``mesh_operator_keys`` and ``cotmatrix_entries`` in one pass, for an operator built from the
+    # faces alone (``laplacian._cotmatrix_entries_and_pattern``): the two kernels differ only in
+    # that this one also stores face ``t``'s half-cotangents.
+    t = wp.int32(wp.tid())
+    store_operator_keys(faces, n_vertices, diagonal, t, out_keys, out_order)
+    if t < faces.shape[0] // 3:
+        store_half_cotangents(vertices, faces, t, out_cot)
 
 
 @wp.kernel
@@ -963,6 +995,7 @@ _MATRIX_DTYPES = (wp.float32, wp.float64)
 # ``COTMATRIX_ROWS`` keys on the pair ``(entry dtype, matrix dtype)`` because those two
 # templates are independent, exactly as the registration already was.
 COTMATRIX_ENTRIES: OverloadTable
+COTMATRIX_ENTRIES_AND_OPERATOR_KEYS: OverloadTable
 COTMATRIX_ENTRIES_INTRINSIC: OverloadTable
 ROW_NORMALIZE: OverloadTable
 LAPLACIAN_TRIPLETS_SYMMETRIC: OverloadTable
@@ -978,7 +1011,8 @@ MASS_DIAGONAL_ROWS: OverloadTable
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
-    global COTMATRIX_ENTRIES, COTMATRIX_ENTRIES_INTRINSIC, ROW_NORMALIZE
+    global COTMATRIX_ENTRIES, COTMATRIX_ENTRIES_AND_OPERATOR_KEYS, COTMATRIX_ENTRIES_INTRINSIC
+    global ROW_NORMALIZE
     global LAPLACIAN_TRIPLETS_SYMMETRIC, LAPLACIAN_TRIPLETS_DIRECTED
     global LAPLACIAN_KEYS_SYMMETRIC, LAPLACIAN_KEYS_DIRECTED
     global COTMATRIX_ROWS, CONNECTION_LAPLACIAN_ROWS, LAPLACIAN_ROWS, GRAPH_LAPLACIAN_ROWS
@@ -986,6 +1020,21 @@ def _register_overloads() -> None:
     COTMATRIX_ENTRIES = OverloadTable(
         cotmatrix_entries,
         {d: [wp.array[wp.vec3], wp.array[wp.int32], wp.array2d[d]] for d in _MATRIX_DTYPES},
+    )
+    COTMATRIX_ENTRIES_AND_OPERATOR_KEYS = OverloadTable(
+        cotmatrix_entries_and_operator_keys,
+        {
+            d: [
+                wp.array[wp.vec3],
+                wp.array[wp.int32],
+                wp.int32,
+                wp.int32,
+                wp.array2d[d],
+                wp.array[wp.uint64],
+                wp.array[wp.int32],
+            ]
+            for d in _MATRIX_DTYPES
+        },
     )
     COTMATRIX_ENTRIES_INTRINSIC = OverloadTable(
         cotmatrix_entries_intrinsic,

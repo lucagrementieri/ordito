@@ -43,7 +43,7 @@ they are read by a human or by an optimizer's stopping rule, not solved with.
 
 from __future__ import annotations
 
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import warp as wp
 
@@ -688,8 +688,12 @@ def hessian_energy(
     if n_faces == 0:
         return od.array.empty_square_bsr(n_vertices, dtype, device)
 
-    gradients = _launch.empty(3 * n_faces, dtype=wp.vec3d, device=device)
-    areas = _launch.empty(n_faces, dtype=wp.float64, device=device)
+    # The per-face gradients and areas and the per-vertex inverse mass, each written whole before
+    # it is read: one allocation.
+    gradient_entries, areas, inverse_mass = _fields(
+        wp.float64, (9 * n_faces, n_faces, n_vertices), device, zeroed=False
+    )
+    gradients = gradient_entries.reshape((3 * n_faces, 3)).view(wp.vec3d)
     # The triplets below are emitted in the vertex-face rows' order and summed in that order, so
     # a reproducible result needs ordered rows as well as an ordered mass sum: under
     # ``ordito.config``'s deterministic mode the kernel writes each corner's share and one sort of
@@ -717,7 +721,6 @@ def hessian_energy(
         vf_indices, vf_offsets = sorted_rows
     else:
         vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
-    inverse_mass = _launch.empty(n_vertices, dtype=wp.float64, device=device)
     counts = _launch.empty(n_vertices, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_energies.hessian_energy_counts,
@@ -842,16 +845,23 @@ def curved_hessian_energy(
     unique_edges, inverse = _edge_numbering(vertices, faces, unique_edges, edge_map)
     n_edges = int(unique_edges.shape[0])
 
-    angles = _launch.empty((n_faces, 3), dtype=wp.float64, device=device)
+    # The buffers below are cut from one allocation per dtype and initial value: the zeroed sums
+    # and counters, and the tables their passes write whole.
+    angle_entries, par_entries, perp_entries = _fields(
+        wp.float64, (3 * n_faces, 4 * n_edges, 4 * n_edges), device, zeroed=False
+    )
+    angles = odt.as_array2d(angle_entries.reshape((n_faces, 3)), wp.float64)
     # Summed atomically by the angle pass, or afterwards in a fixed order (see
-    # ``_sorted_vertex_corner_sums``) under ``ordito.config``'s deterministic mode.
+    # ``_sorted_vertex_corner_sums``) under ``ordito.config``'s deterministic mode; and
+    # ``_cr_mass_diagonal``'s edge mass, summed by the same face pass.
     deterministic = is_deterministic()
-    angle_sums = _launch.zeros(0 if deterministic else n_vertices, dtype=wp.float64, device=device)
+    angle_sums, mass = _fields(
+        wp.float64, (0 if deterministic else n_vertices, n_edges), device, zeroed=True
+    )
     # Each unique edge's two halfedges are recorded by the same face pass.
     edge_halfedges = _launch.full((n_edges, 2), -1, dtype=wp.int32, device=device)
-    cursor = _launch.zeros(n_edges, dtype=wp.int32, device=device)
-    # ``_cr_mass_diagonal``'s edge mass, summed by the same face pass.
-    mass = _launch.zeros(n_edges, dtype=wp.float64, device=device)
+    # Each unique edge's halfedge count, and the edge-manifold flag of the launch after.
+    cursor, nonmanifold = _fields(wp.int32, (n_edges, 1), device, zeroed=True)
     _launch.launch(
         kernel_energies.internal_angles_and_sums,
         dim=n_faces,
@@ -868,7 +878,6 @@ def curved_hessian_energy(
     # on the boundary (curvature is only corrected at interior vertices) and for a non-positive
     # angle sum: zeroing the boundary's *sums* gives that zero where the triplet kernel forms the
     # kappa as it reads it, and it forms each edge's inverse mass likewise.
-    nonmanifold = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_energies.zero_at_boundary_edges,
         dim=n_edges,
@@ -885,8 +894,8 @@ def curved_hessian_energy(
         )
 
     vertex_slots = _launch.empty((n_edges, 4), dtype=wp.int32, device=device)
-    par = _launch.empty((n_edges, 4), dtype=wp.float64, device=device)
-    perp = _launch.empty((n_edges, 4), dtype=wp.float64, device=device)
+    par = par_entries.reshape((n_edges, 4))
+    perp = perp_entries.reshape((n_edges, 4))
     _launch.launch(
         kernel_energies.cr_gradient_rows,
         dim=n_edges,
@@ -1465,3 +1474,27 @@ def _sorted_vertex_corner_sums(
         device=device,
     )
     return sums, ((vertex_faces, offsets) if with_rows else None)
+
+
+def _fields(
+    dtype: type, sizes: tuple[int, ...], device: wp.DeviceLike, *, zeroed: bool
+) -> list[wp.array[Any]]:
+    """
+    One allocation of ``dtype`` cut into consecutive 1-D fields of ``sizes`` entries.
+
+    Zeroed whole when ``zeroed``, else uninitialized. For buffers a call drops together: a caller
+    holding any field holds the whole allocation.
+    """
+    total = sum(sizes)
+    buffer = (_launch.zeros if zeroed else _launch.empty)(total, dtype=dtype, device=device)
+    fields: list[wp.array[Any]] = []
+    start = 0
+    for size in sizes:
+        # Warp refuses a zero-length view at the buffer's end; an empty array holds nothing.
+        fields.append(
+            _launch.view(buffer, start, start + size)
+            if size > 0
+            else _launch.empty(0, dtype=dtype, device=device)
+        )
+        start += size
+    return fields

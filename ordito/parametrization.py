@@ -840,20 +840,27 @@ def arap(
         )
         return out_uv
 
-    # Weight-folded rest edges of the isometrically flattened triangles (internal buffer, plain
-    # wp.empty; kernels index it as wp.array2d).
-    rest_edges = _launch.empty((n_faces, 3), dtype=wp.vec2d, device=device)
     # Pre-loop buffers (no allocation inside the loop). ``sol`` (2, n_interior) holds the
     # warm-started CG solution per column; the same launch seeds it from ``uv_init``'s interior
     # values. The loop reads the working UV field off ``sol`` and the constraints, so it is
     # scattered into ``out_uv`` once, after the last step. Every row of ``sol`` is seeded. It
-    # shares one allocation with the global step's right-hand side ``b`` and, outside the
-    # deterministic setting, the zeroed rotation right-hand side (the first local step's).
+    # shares one allocation with the global step's right-hand side ``b``, outside the
+    # deterministic setting the zeroed rotation right-hand side (the first local step's), and the
+    # weight-folded rest edges of the isometrically flattened triangles, which the setup launch
+    # writes whole (kernels index them as ``wp.array2d``).
     deterministic = is_deterministic()
     n_solve = 2 * n_interior
     n_rotation = 0 if deterministic else 2 * n_vertices
+    rest_start = 2 * n_solve + n_rotation
     solve_buffers = (_launch.empty if deterministic else _launch.zeros)(
-        2 * n_solve + n_rotation, dtype=wp.float64, device=device
+        rest_start + 6 * n_faces, dtype=wp.float64, device=device
+    )
+    rest_edges = (
+        _launch.view(solve_buffers, rest_start, rest_start + 6 * n_faces)
+        .reshape((n_faces, 3, 2))
+        .view(wp.vec2d)
+        if n_faces > 0
+        else _launch.empty((0, 3), dtype=wp.vec2d, device=device)
     )
     sol = _launch.view(solve_buffers, 0, n_solve).reshape((2, n_interior))
     # Under the deterministic setting each local step stores its six edge terms a face instead of

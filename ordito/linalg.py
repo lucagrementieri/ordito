@@ -1089,8 +1089,15 @@ def assemble_interior_system(
     n_dofs = fixed_mask.size
     n_rhs = _rhs_rows(fixed_values, load)
     # Every free row writes its own count and its column of ``rhs`` exactly once (``free_map`` is a
-    # bijection onto ``[0, n_free)``), so there is nothing to pre-zero.
-    counts = _launch.empty(n_free, dtype=wp.int32, device=device)
+    # bijection onto ``[0, n_free)``), so ``rhs`` has nothing to pre-zero. The counts are written
+    # into the tail of the total-terminated offsets, whose leading zero the allocation holds, and
+    # scanned there in place.
+    row_offsets = _launch.zeros(n_free + 1, dtype=wp.int32, device=device)
+    counts = (
+        _launch.view(row_offsets, 1, n_free + 1)
+        if n_free > 0
+        else _launch.empty(0, dtype=wp.int32, device=device)
+    )
     rhs = _launch.empty((n_rhs, n_free), dtype=wp.float64, device=device)
     _launch.launch(
         kernel_linalg.interior_row_counts,
@@ -1111,7 +1118,10 @@ def assemble_interior_system(
     )
     # The total-terminated form *is* the CSR offsets array, and the one host read it costs is what
     # sizes ``columns`` / ``values`` for their final use at allocation time.
-    row_offsets, nnz_uu = od.array.counts_to_offsets(counts)
+    nnz_uu = 0
+    if n_free > 0:
+        _launch.array_scan(counts, counts, inclusive=True)
+        nnz_uu = int(read_scalar(row_offsets, n_free))
     columns = _launch.empty(nnz_uu, dtype=wp.int32, device=device)
     values = _launch.empty(nnz_uu, dtype=wp.float64, device=device)
     _launch.launch(
@@ -4974,11 +4984,25 @@ class _JacobiChebyshev:
         # is the same arithmetic without the copy -- and ``bsr_copy`` is most of what a setup would
         # otherwise cost.
         self.matrix = matrix
-        self.inverse_diagonal = _launch.empty(self.n, dtype=wp.float64, device=self.device)
+        # The polynomial's steps, the rows' largest ratio and ``D⁻¹`` in one allocation, filled
+        # with the ``-inf`` the ratio's maximum starts from: the walk and the fit below write the
+        # rest whole.
+        n_steps = CHEBYSHEV_DEGREE - 1
+        table = _launch.full(
+            4 * n_steps + 1 + self.n, -math.inf, dtype=wp.float64, device=self.device
+        )
+        steps = _launch.view(table, 0, 4 * n_steps).reshape((n_steps, 4)).view(wp.vec4d)
+        self.inverse_diagonal = (
+            _launch.view(table, 4 * n_steps + 1, 4 * n_steps + 1 + self.n)
+            if self.n > 0
+            else _launch.empty(0, dtype=wp.float64, device=self.device)
+        )
         # The rows' largest ratio, folded in the walk that writes ``D⁻¹`` (``_dominance_bound``).
         # Kept for ``refit``: the fit leaves it at ``-inf``, and a pooled state's ``refresh``
         # commits the refreshed rows' maximum into it.
-        self.bound = _dominance_bound(matrix, self.inverse_diagonal)
+        self.bound = _dominance_bound(
+            matrix, self.inverse_diagonal, bound=_launch.view(table, 4 * n_steps, 4 * n_steps + 1)
+        )
         # Gershgorin's discs for ``D⁻¹ A`` are centred on 1 with radius ``r_i = sum_j |A_ij| /
         # |A_ii|``, whatever the diagonal's sign. ``1 + max r`` bounds the spectrum from above, and
         # a polynomial fitted short of it changes sign past its end, as a clamped negative
@@ -4990,7 +5014,7 @@ class _JacobiChebyshev:
         # 1 - r), 1 + r]`` with ``r = max(max_i r_i, 1e-3)``, computed on the device
         # (``_device_chebyshev_steps``).
         self.steps = _device_chebyshev_steps(
-            self.bound, self.n, CHEBYSHEV_INTERVAL, CHEBYSHEV_DEGREE, squared=False
+            self.bound, self.n, CHEBYSHEV_INTERVAL, CHEBYSHEV_DEGREE, squared=False, out=steps
         )
 
     def refit(self) -> None:
@@ -5005,18 +5029,23 @@ class _JacobiChebyshev:
 
 
 def _dominance_bound(
-    matrix: odt.BsrMatrix[wp.float64], inverse_diagonal: wp.array[wp.float64] | None = None
+    matrix: odt.BsrMatrix[wp.float64],
+    inverse_diagonal: wp.array[wp.float64] | None = None,
+    *,
+    bound: wp.array[wp.float64] | None = None,
 ) -> wp.array[wp.float64]:
     """
     Reduce the rows' largest Gershgorin ratio into a ``(1,)`` device array.
 
     ``kernels/linalg.jacobi_dominance_bound``'s launch, shared by the multigrid gate and the
     Jacobi-Chebyshev setup, which also takes the Jacobi scaling from the same walk into
-    ``inverse_diagonal``.
+    ``inverse_diagonal``. ``bound``, when given, is a ``(1,)`` buffer holding ``-inf`` that the
+    maximum is committed into instead of a new one.
     """
     n_rows = int(matrix.nrow)
     device = matrix.values.device
-    bound = _launch.full(1, -math.inf, dtype=wp.float64, device=device)
+    if bound is None:
+        bound = _launch.full(1, -math.inf, dtype=wp.float64, device=device)
     if n_rows > 0:
         _launch.launch_tiled(
             kernel_linalg.jacobi_dominance_bound,
