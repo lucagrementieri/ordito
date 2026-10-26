@@ -91,6 +91,16 @@ _SMOOTH_REGION_MULTIGRID_FROM = 30_000
 # which falls as about ``5 / n_free``.
 _SMOOTH_REGION_MULTIGRID_SHIFT = 5.0
 
+# Free-vertex counts from which ``smooth_region``'s V-cycle form wraps each V-cycle in a degree-3
+# Chebyshev iteration (``squared_laplacian_preconditioner``'s ``degree``), per weighting. The bare
+# ``V D² V`` iteration count grows with the region (lucy, cotangent: 338 on dragon's 109 k free
+# vertices, 3 370 on 3.5 M), and the polynomial trades it for a costlier iteration. Measured on
+# lucy's top 2 / 5 / 10 / 25 % (281 k / 701 k / 1.4 M / 3.5 M free), degree 3 over degree 1:
+# cotangent 1.24x / 0.81x / 0.72x / 0.64x the time, unit 1.69x / 1.22x / 1.10x / 0.87x. Degree 2 and
+# 4 lost to 3 on lucy, 6 and 8 on dragon.
+_SMOOTH_REGION_CHEBYSHEV_FROM_COTAN = 500_000
+_SMOOTH_REGION_CHEBYSHEV_FROM_UNIT = 2_500_000
+
 # Fraction of the way to the level set each ``smooth_region_boundary`` pass moves. A full step
 # overshoots, because the field is rebuilt from the moved positions and the level set moves too.
 _ISOLINE_DAMPING = wp.float32(0.75)
@@ -3178,7 +3188,10 @@ def _solve_region_smooth(
         # the smallest eigenvalue falls as ``1 / n_free``; clamped cotangent weights also inflate
         # the bound, one near-cancelling row setting it), and a V-cycle on ``L_ff`` far less.
         preconditioner = twl.squared_laplacian_preconditioner(
-            _csr_matrix(n_free, *pattern, factor), ratios, method="multigrid"
+            _csr_matrix(n_free, *pattern, factor),
+            ratios,
+            method="multigrid",
+            degree=_smooth_region_chebyshev_degree(n_free, unit),
         )
     else:
         assert factor_t is not None
@@ -3207,6 +3220,12 @@ def _solve_region_smooth(
         device=device,
     )
     return out
+
+
+def _smooth_region_chebyshev_degree(n_free: int, unit: int) -> int:
+    """Return the V-cycle form's Chebyshev degree for a region of ``n_free`` free vertices."""
+    start = _SMOOTH_REGION_CHEBYSHEV_FROM_UNIT if unit else _SMOOTH_REGION_CHEBYSHEV_FROM_COTAN
+    return 3 if n_free >= start else 1
 
 
 def _csr_matrix(

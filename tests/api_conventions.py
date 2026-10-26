@@ -662,6 +662,10 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("reconstruction", "lexicographic_triangulation"): frozenset({"hull"}),
     # in-place: a band level's solution, started or corrected by its coarse level's change.
     ("algorithms.poisson_band", "band_level_setup"): frozenset({"x"}),
+    # The Chebyshev iteration a squared preconditioner wraps each V-cycle in carries its search
+    # direction and its iterate from step to step, updated in place
+    # (``linalg._SquaredMultigridApply``).
+    ("algorithms.multigrid", "cycle_chebyshev_update"): frozenset({"direction", "iterate"}),
     # in-place: the coarse solution, overwritten by the finer band's where that band covers it.
     ("algorithms.poisson_band", "fas_inject"): frozenset({"coarse_x"}),
     # ``edges`` is absent deliberately: this kernel mutates the table only through

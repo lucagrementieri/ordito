@@ -736,13 +736,15 @@ def test_smooth_region(bench_case: BenchCase) -> None:
     weightings take ``method="multigrid"``, ``V D^2 V`` with ``V`` a smoothed-aggregation V-cycle
     on ``L_ff`` under l1-Jacobi smoothing (``linalg._SQUARED_MULTIGRID_SWEEPS``): unit weights
     dragon 1 035 -> 99 iterations, lucy past 600 s -> 48 s; the default cotangent weights dragon
-    10 948 -> 339 (6.4 -> 0.58 s), lucy 153 s where the polynomial did not finish.
+    10 948 -> 339 (6.4 -> 0.58 s), lucy 153 s where the polynomial did not finish. On the largest
+    regions each V-cycle is further wrapped in a degree-3 Chebyshev iteration
+    (``smoothing._SMOOTH_REGION_CHEBYSHEV_FROM_*``): lucy cotangent 153 -> 99 s, unit 48 -> 42 s.
     ``linalg._MULTIGRID_THETA`` moves the scan rows.
     """
     skip_larger_than(
         bench_case,
         "happy_buddha",
-        "one ordito round on lucy is 48 s (1 181 CG iterations over 3.5 M free vertices)",
+        "one ordito round on lucy is 42 s (350 CG iterations over 3.5 M free vertices)",
     )
     n_vertices = bench_case.n_vertices
     free_np = _free_mask_np(bench_case)

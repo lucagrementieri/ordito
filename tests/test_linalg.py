@@ -1985,13 +1985,18 @@ def _normal_equations_system(
 @pytest.mark.parametrize("negative", [False, True], ids=["positive_weights", "negative_weights"])
 @pytest.mark.parametrize("n_columns", [1, 3])
 @pytest.mark.parametrize("engine", ["one_block", "batched"])
-@pytest.mark.parametrize("method", ["polynomial", "multigrid"])
+@pytest.mark.parametrize(
+    ("method", "degree"),
+    [("polynomial", 1), ("multigrid", 1), ("multigrid", 3)],
+    ids=["polynomial", "multigrid", "multigrid_chebyshev"],
+)
 def test_squared_laplacian_preconditioner_solves_the_same_system(
     device: str,
     negative: bool,
     n_columns: int,
     engine: str,
     method: Literal["polynomial", "multigrid"],
+    degree: int,
     request: pytest.FixtureRequest,
 ) -> None:
     """
@@ -2002,7 +2007,8 @@ def test_squared_laplacian_preconditioner_solves_the_same_system(
     preconditioner routes a single column through the batched solver too, and over the two engines
     a system this small can take: the one-block solve applies the same polynomial in-block, and
     lowering its gate reaches the batched one. The ``"multigrid"`` form (``V D² V``, a V-cycle
-    on ``L``) always takes the batched engine; its two-level hierarchy here is a real one.
+    on ``L``) always takes the batched engine; its two-level hierarchy here is a real one. At
+    ``degree=3`` each V-cycle is wrapped in a Chebyshev iteration (``C D² C``).
     """
     if engine == "batched":
         request.getfixturevalue("batched_engine")
@@ -2017,7 +2023,7 @@ def test_squared_laplacian_preconditioner_solves_the_same_system(
         rhs_wp,
         odt.as_array2d(solution_wp, wp.float64),
         preconditioner=od.linalg.squared_laplacian_preconditioner(
-            laplacian_wp, sums_wp, method=method
+            laplacian_wp, sums_wp, method=method, degree=degree
         ),
     )
     assert np.allclose(solution_wp.numpy(), reference_np, rtol=1e-5, atol=1e-5)
@@ -2025,12 +2031,17 @@ def test_squared_laplacian_preconditioner_solves_the_same_system(
 
 @pytest.mark.parametrize("negative", [False, True], ids=["positive_weights", "negative_weights"])
 @pytest.mark.parametrize("engine", ["one_block", "batched"])
-@pytest.mark.parametrize("method", ["polynomial", "multigrid"])
+@pytest.mark.parametrize(
+    ("method", "degree"),
+    [("polynomial", 1), ("multigrid", 1), ("multigrid", 3)],
+    ids=["polynomial", "multigrid", "multigrid_chebyshev"],
+)
 def test_squared_laplacian_preconditioner_needs_far_fewer_iterations(
     device: str,
     negative: bool,
     engine: str,
     method: Literal["polynomial", "multigrid"],
+    degree: int,
     request: pytest.FixtureRequest,
 ) -> None:
     """
@@ -2053,7 +2064,9 @@ def test_squared_laplacian_preconditioner_needs_far_fewer_iterations(
         ("diag", "diag"),
         (
             "squared",
-            od.linalg.squared_laplacian_preconditioner(laplacian_wp, sums_wp, method=method),
+            od.linalg.squared_laplacian_preconditioner(
+                laplacian_wp, sums_wp, method=method, degree=degree
+            ),
         ),
     ):
         solution_wp = wp.zeros_like(rhs_wp)
@@ -2068,7 +2081,7 @@ def test_squared_laplacian_preconditioner_needs_far_fewer_iterations(
 
 
 def test_squared_laplacian_preconditioner_rejects_an_unknown_method(device: str) -> None:
-    """Not a parity assert: the ``method`` menu is validated, not silently read as the default."""
+    """Not a parity assert: ``method`` and ``degree`` are validated, not silently read."""
     _system_wp, _rhs_wp, laplacian_wp, sums_wp, _system_np, _rhs_np = _normal_equations_system(
         device, negative=False
     )
@@ -2077,6 +2090,10 @@ def test_squared_laplacian_preconditioner_rejects_an_unknown_method(device: str)
             laplacian_wp,
             sums_wp,
             method="amg",  # pyright: ignore[reportArgumentType]
+        )
+    with pytest.raises(ValueError, match="degree must be positive"):
+        od.linalg.squared_laplacian_preconditioner(
+            laplacian_wp, sums_wp, method="multigrid", degree=0
         )
 
 

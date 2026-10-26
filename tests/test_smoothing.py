@@ -1820,10 +1820,10 @@ def test_smooth_region_fixed_rim_matches_meshlib(device: str):
 
 
 @pytest.mark.parametrize("edge_weights", ["cotan", "unit"])
-@pytest.mark.parametrize("multigrid_from", [None, 0], ids=["polynomial", "multigrid"])
+@pytest.mark.parametrize("form", ["polynomial", "multigrid", "multigrid_chebyshev"])
 @pytest.mark.parity("smooth_region", "meshlib")
 def test_smooth_region_matches_meshlib(
-    device: str, edge_weights: str, multigrid_from: int | None, monkeypatch: pytest.MonkeyPatch
+    device: str, edge_weights: str, form: str, monkeypatch: pytest.MonkeyPatch
 ):
     """
     Class A on the positions, over both edge weightings: ``positionVertsSmoothly``'s two modes.
@@ -1838,10 +1838,13 @@ def test_smooth_region_matches_meshlib(
     Parametrized over the preconditioner form too: a region this small takes the polynomial, and
     lowering the free-vertex gate makes it take the V-cycle form large regions take
     (here a one-level hierarchy, its dense coarse solve; ``tests/test_linalg.py`` covers two
-    levels).
+    levels), and at the sizes where the V-cycle is wrapped in a degree-3 Chebyshev iteration.
     """
-    if multigrid_from is not None:
-        monkeypatch.setattr(od.smoothing, "_SMOOTH_REGION_MULTIGRID_FROM", multigrid_from)
+    if form != "polynomial":
+        monkeypatch.setattr(od.smoothing, "_SMOOTH_REGION_MULTIGRID_FROM", 0)
+    if form == "multigrid_chebyshev":
+        monkeypatch.setattr(od.smoothing, "_SMOOTH_REGION_CHEBYSHEV_FROM_COTAN", 0)
+        monkeypatch.setattr(od.smoothing, "_SMOOTH_REGION_CHEBYSHEV_FROM_UNIT", 0)
     vertices_np, faces_np, free_np, v_wp, f_wp, free_wp = _sphere_region_wp(device)
 
     result_wp = od.smoothing.smooth_region(v_wp, f_wp, free_wp, edge_weights=edge_weights)
