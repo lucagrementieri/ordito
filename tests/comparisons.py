@@ -150,6 +150,32 @@ def edge_multiplicity(faces_np: np.ndarray) -> np.ndarray:
     return np.unique(undirected_edges(faces_np), axis=0, return_counts=True)[1]
 
 
+def oriented_boundary_edges(faces_np: np.ndarray) -> np.ndarray:
+    """
+    Return a face set's oriented edges left once each cancels against its reverse, sorted.
+
+    Two face sets with equal results cover the same oriented polygons, however each polygon is
+    triangulated: an interior diagonal appears once in each direction and cancels, the polygon's
+    own edges remain. That is the check for "these faces retriangulate the same holes" -- a vertex
+    out of place, a reversed polygon or a missing face leaves an edge behind.
+
+    Returns
+    -------
+    np.ndarray
+        ``(k, 2)`` the surviving directed edges, each listed once per uncancelled use,
+        lexicographically sorted.
+    """
+    faces_np = np.asarray(faces_np, dtype=np.int64).reshape(-1, 3)
+    directed = np.concatenate([faces_np[:, [0, 1]], faces_np[:, [1, 2]], faces_np[:, [2, 0]]])
+    edges_np, counts_np = np.unique(directed, axis=0, return_counts=True)
+    net: dict[tuple[int, int], int] = {}
+    for (a, b), count in zip(edges_np.tolist(), counts_np.tolist(), strict=True):
+        net[(a, b)] = net.get((a, b), 0) + count
+        net[(b, a)] = net.get((b, a), 0) - count
+    rows = [edge for edge, count in net.items() for _ in range(max(count, 0))]
+    return lexsort_rows(np.asarray(rows, dtype=np.int64).reshape(-1, 2))
+
+
 def euler_characteristic(faces_np: np.ndarray) -> int:
     """
     ``V - E + F`` of a face array, counting only the vertices some face references.
