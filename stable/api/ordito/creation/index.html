@@ -15426,9 +15426,9 @@ through <a class="autorefs autorefs-internal" title="resolve_seed" href="../samp
 
 <details class="note" open>
   <summary>Notes</summary>
-  <p>Takes an explicit <code>seed</code> where <a class="autorefs autorefs-external" href="https://trimesh.org/trimesh.creation.html#trimesh.creation.random_soup"><code>trimesh.creation.random_soup</code></a> draws from NumPy's global
-RNG, so results are reproducible. The point values come from Warp's per-thread generator and do
-not match NumPy's stream.</p>
+  <p>A given <code>seed</code> reproduces the result, as it does for <a class="autorefs autorefs-external" href="https://trimesh.org/trimesh.creation.html#trimesh.creation.random_soup"><code>trimesh.creation.random_soup</code></a>, but
+the point values come from Warp's per-thread generator and do not match NumPy's stream: the two
+agree in distribution, not value for value.</p>
 </details>
 
 <details class="see-also" open>
@@ -15534,9 +15534,9 @@ not match NumPy's stream.</p>
 
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
-<span class="sd">    Takes an explicit ``seed`` where [`trimesh.creation.random_soup`][] draws from NumPy's global</span>
-<span class="sd">    RNG, so results are reproducible. The point values come from Warp's per-thread generator and do</span>
-<span class="sd">    not match NumPy's stream.</span>
+<span class="sd">    A given ``seed`` reproduces the result, as it does for [`trimesh.creation.random_soup`][], but</span>
+<span class="sd">    the point values come from Warp's per-thread generator and do not match NumPy's stream: the two</span>
+<span class="sd">    agree in distribution, not value for value.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>

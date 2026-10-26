@@ -6330,13 +6330,7 @@ than exact predicates, so near-cocircular inputs may resolve either ambiguous di
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 62</span>
-<span class="normal"> 63</span>
-<span class="normal"> 64</span>
-<span class="normal"> 65</span>
-<span class="normal"> 66</span>
-<span class="normal"> 67</span>
-<span class="normal"> 68</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 68</span>
 <span class="normal"> 69</span>
 <span class="normal"> 70</span>
 <span class="normal"> 71</span>
@@ -6433,7 +6427,13 @@ than exact predicates, so near-cocircular inputs may resolve either ambiguous di
 <span class="normal">162</span>
 <span class="normal">163</span>
 <span class="normal">164</span>
-<span class="normal">165</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">delaunay_triangulation</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">max_iter</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1000</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
+<span class="normal">165</span>
+<span class="normal">166</span>
+<span class="normal">167</span>
+<span class="normal">168</span>
+<span class="normal">169</span>
+<span class="normal">170</span>
+<span class="normal">171</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">delaunay_triangulation</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">max_iter</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1000</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Delaunay triangulation of a 2D point set.</span>
 
@@ -6835,13 +6835,7 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">226</span>
-<span class="normal">227</span>
-<span class="normal">228</span>
-<span class="normal">229</span>
-<span class="normal">230</span>
-<span class="normal">231</span>
-<span class="normal">232</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">232</span>
 <span class="normal">233</span>
 <span class="normal">234</span>
 <span class="normal">235</span>
@@ -7017,7 +7011,13 @@ automatically, so very sparse or highly non-uniform clouds may leave extra bound
 <span class="normal">405</span>
 <span class="normal">406</span>
 <span class="normal">407</span>
-<span class="normal">408</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_point_cloud</span><span class="p">(</span>
+<span class="normal">408</span>
+<span class="normal">409</span>
+<span class="normal">410</span>
+<span class="normal">411</span>
+<span class="normal">412</span>
+<span class="normal">413</span>
+<span class="normal">414</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_point_cloud</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7623,13 +7623,7 @@ taken from it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">478</span>
-<span class="normal">479</span>
-<span class="normal">480</span>
-<span class="normal">481</span>
-<span class="normal">482</span>
-<span class="normal">483</span>
-<span class="normal">484</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">484</span>
 <span class="normal">485</span>
 <span class="normal">486</span>
 <span class="normal">487</span>
@@ -7867,7 +7861,13 @@ taken from it.</p>
 <span class="normal">719</span>
 <span class="normal">720</span>
 <span class="normal">721</span>
-<span class="normal">722</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">screened_poisson</span><span class="p">(</span>
+<span class="normal">722</span>
+<span class="normal">723</span>
+<span class="normal">724</span>
+<span class="normal">725</span>
+<span class="normal">726</span>
+<span class="normal">727</span>
+<span class="normal">728</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">screened_poisson</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -8363,13 +8363,7 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2230</span>
-<span class="normal">2231</span>
-<span class="normal">2232</span>
-<span class="normal">2233</span>
-<span class="normal">2234</span>
-<span class="normal">2235</span>
-<span class="normal">2236</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2236</span>
 <span class="normal">2237</span>
 <span class="normal">2238</span>
 <span class="normal">2239</span>
@@ -8494,7 +8488,13 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="normal">2358</span>
 <span class="normal">2359</span>
 <span class="normal">2360</span>
-<span class="normal">2361</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
+<span class="normal">2361</span>
+<span class="normal">2362</span>
+<span class="normal">2363</span>
+<span class="normal">2364</span>
+<span class="normal">2365</span>
+<span class="normal">2366</span>
+<span class="normal">2367</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -8938,13 +8938,7 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2364</span>
-<span class="normal">2365</span>
-<span class="normal">2366</span>
-<span class="normal">2367</span>
-<span class="normal">2368</span>
-<span class="normal">2369</span>
-<span class="normal">2370</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2370</span>
 <span class="normal">2371</span>
 <span class="normal">2372</span>
 <span class="normal">2373</span>
@@ -9105,7 +9099,13 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="normal">2528</span>
 <span class="normal">2529</span>
 <span class="normal">2530</span>
-<span class="normal">2531</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
+<span class="normal">2531</span>
+<span class="normal">2532</span>
+<span class="normal">2533</span>
+<span class="normal">2534</span>
+<span class="normal">2535</span>
+<span class="normal">2536</span>
+<span class="normal">2537</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>

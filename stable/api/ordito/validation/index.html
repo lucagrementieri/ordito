@@ -12333,7 +12333,8 @@ can fail it too (a cube with one triangle reversed flags that triangle and one n
 <span class="normal">1832</span>
 <span class="normal">1833</span>
 <span class="normal">1834</span>
-<span class="normal">1835</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_defective_mask</span><span class="p">(</span>
+<span class="normal">1835</span>
+<span class="normal">1836</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_defective_mask</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -12474,8 +12475,9 @@ can fail it too (a cube with one triangle reversed flags that triangle and one n
         <span class="n">face_normals</span> <span class="o">=</span> <span class="kc">None</span>
         <span class="n">mates</span> <span class="o">=</span> <span class="kc">None</span>
 
-    <span class="c1"># -2 is unreachable for a cosine and -1 for the normalized quality, so a disabled criterion</span>
-    <span class="c1"># simply never fires and the kernel needs no per-criterion flag.</span>
+    <span class="c1"># -2 is unreachable for a cosine, -1 for the normalized quality and ``FOLD_ANGLE_OFF`` (past</span>
+    <span class="c1"># pi) for a dihedral, so a disabled criterion simply never fires and the kernel needs no</span>
+    <span class="c1"># per-criterion flag.</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_validation</span><span class="o">.</span><span class="n">face_defective_mask</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
@@ -12488,9 +12490,9 @@ can fail it too (a cube with one triangle reversed flags that triangle and one n
             <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span>
                 <span class="n">math</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="n">max_normal_angle</span><span class="p">))</span> <span class="k">if</span> <span class="n">max_normal_angle</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="o">-</span><span class="mf">2.0</span>
             <span class="p">),</span>
-            <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span>
-                <span class="n">math</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="n">max_fold_angle</span><span class="p">))</span> <span class="k">if</span> <span class="n">max_fold_angle</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="o">-</span><span class="mf">2.0</span>
-            <span class="p">),</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="n">max_fold_angle</span><span class="p">))</span>
+            <span class="k">if</span> <span class="n">max_fold_angle</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+            <span class="k">else</span> <span class="n">kernel_validation</span><span class="o">.</span><span class="n">FOLD_ANGLE_OFF</span><span class="p">,</span>
             <span class="n">out_bad</span><span class="p">,</span>
         <span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>

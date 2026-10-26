@@ -10126,44 +10126,45 @@ binds a set of working vectors to the column layout of each solve that uses it.<
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/linalg.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4489</span>
-<span class="normal">4490</span>
-<span class="normal">4491</span>
-<span class="normal">4492</span>
-<span class="normal">4493</span>
-<span class="normal">4494</span>
-<span class="normal">4495</span>
-<span class="normal">4496</span>
-<span class="normal">4497</span>
-<span class="normal">4498</span>
-<span class="normal">4499</span>
-<span class="normal">4500</span>
-<span class="normal">4501</span>
-<span class="normal">4502</span>
-<span class="normal">4503</span>
-<span class="normal">4504</span>
-<span class="normal">4505</span>
-<span class="normal">4506</span>
-<span class="normal">4507</span>
-<span class="normal">4508</span>
-<span class="normal">4509</span>
-<span class="normal">4510</span>
-<span class="normal">4511</span>
-<span class="normal">4512</span>
-<span class="normal">4513</span>
-<span class="normal">4514</span>
-<span class="normal">4515</span>
-<span class="normal">4516</span>
-<span class="normal">4517</span>
-<span class="normal">4518</span>
-<span class="normal">4519</span>
-<span class="normal">4520</span>
-<span class="normal">4521</span>
-<span class="normal">4522</span>
-<span class="normal">4523</span>
-<span class="normal">4524</span>
-<span class="normal">4525</span>
-<span class="normal">4526</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4527</span>
+<span class="normal">4528</span>
+<span class="normal">4529</span>
+<span class="normal">4530</span>
+<span class="normal">4531</span>
+<span class="normal">4532</span>
+<span class="normal">4533</span>
+<span class="normal">4534</span>
+<span class="normal">4535</span>
+<span class="normal">4536</span>
+<span class="normal">4537</span>
+<span class="normal">4538</span>
+<span class="normal">4539</span>
+<span class="normal">4540</span>
+<span class="normal">4541</span>
+<span class="normal">4542</span>
+<span class="normal">4543</span>
+<span class="normal">4544</span>
+<span class="normal">4545</span>
+<span class="normal">4546</span>
+<span class="normal">4547</span>
+<span class="normal">4548</span>
+<span class="normal">4549</span>
+<span class="normal">4550</span>
+<span class="normal">4551</span>
+<span class="normal">4552</span>
+<span class="normal">4553</span>
+<span class="normal">4554</span>
+<span class="normal">4555</span>
+<span class="normal">4556</span>
+<span class="normal">4557</span>
+<span class="normal">4558</span>
+<span class="normal">4559</span>
+<span class="normal">4560</span>
+<span class="normal">4561</span>
+<span class="normal">4562</span>
+<span class="normal">4563</span>
+<span class="normal">4564</span>
+<span class="normal">4565</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span> <span class="n">laplacian</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">weight_sums</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Build ``M_ff`` and its transpose from ``L`` and ``D``, and fix the interval."""</span>
@@ -10201,6 +10202,7 @@ binds a set of working vectors to the column layout of each solve that uses it.<
         <span class="n">bound</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_n</span><span class="p">,</span> <span class="n">SQUARED_LAPLACIAN_INTERVAL</span><span class="p">,</span> <span class="n">SQUARED_LAPLACIAN_DEGREE</span><span class="p">,</span> <span class="n">squared</span><span class="o">=</span><span class="kc">True</span>
     <span class="p">)</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_narrowed</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_multigrid</span><span class="p">:</span> <span class="n">_SquaredMultigrid</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 </code></pre></div></td></tr></table></div>
                   </details>
 
@@ -10355,55 +10357,56 @@ casts them on first use.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4528</span>
-<span class="normal">4529</span>
-<span class="normal">4530</span>
-<span class="normal">4531</span>
-<span class="normal">4532</span>
-<span class="normal">4533</span>
-<span class="normal">4534</span>
-<span class="normal">4535</span>
-<span class="normal">4536</span>
-<span class="normal">4537</span>
-<span class="normal">4538</span>
-<span class="normal">4539</span>
-<span class="normal">4540</span>
-<span class="normal">4541</span>
-<span class="normal">4542</span>
-<span class="normal">4543</span>
-<span class="normal">4544</span>
-<span class="normal">4545</span>
-<span class="normal">4546</span>
-<span class="normal">4547</span>
-<span class="normal">4548</span>
-<span class="normal">4549</span>
-<span class="normal">4550</span>
-<span class="normal">4551</span>
-<span class="normal">4552</span>
-<span class="normal">4553</span>
-<span class="normal">4554</span>
-<span class="normal">4555</span>
-<span class="normal">4556</span>
-<span class="normal">4557</span>
-<span class="normal">4558</span>
-<span class="normal">4559</span>
-<span class="normal">4560</span>
-<span class="normal">4561</span>
-<span class="normal">4562</span>
-<span class="normal">4563</span>
-<span class="normal">4564</span>
-<span class="normal">4565</span>
-<span class="normal">4566</span>
-<span class="normal">4567</span>
-<span class="normal">4568</span>
-<span class="normal">4569</span>
-<span class="normal">4570</span>
-<span class="normal">4571</span>
-<span class="normal">4572</span>
-<span class="normal">4573</span>
-<span class="normal">4574</span>
-<span class="normal">4575</span>
-<span class="normal">4576</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@classmethod</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4608</span>
+<span class="normal">4609</span>
+<span class="normal">4610</span>
+<span class="normal">4611</span>
+<span class="normal">4612</span>
+<span class="normal">4613</span>
+<span class="normal">4614</span>
+<span class="normal">4615</span>
+<span class="normal">4616</span>
+<span class="normal">4617</span>
+<span class="normal">4618</span>
+<span class="normal">4619</span>
+<span class="normal">4620</span>
+<span class="normal">4621</span>
+<span class="normal">4622</span>
+<span class="normal">4623</span>
+<span class="normal">4624</span>
+<span class="normal">4625</span>
+<span class="normal">4626</span>
+<span class="normal">4627</span>
+<span class="normal">4628</span>
+<span class="normal">4629</span>
+<span class="normal">4630</span>
+<span class="normal">4631</span>
+<span class="normal">4632</span>
+<span class="normal">4633</span>
+<span class="normal">4634</span>
+<span class="normal">4635</span>
+<span class="normal">4636</span>
+<span class="normal">4637</span>
+<span class="normal">4638</span>
+<span class="normal">4639</span>
+<span class="normal">4640</span>
+<span class="normal">4641</span>
+<span class="normal">4642</span>
+<span class="normal">4643</span>
+<span class="normal">4644</span>
+<span class="normal">4645</span>
+<span class="normal">4646</span>
+<span class="normal">4647</span>
+<span class="normal">4648</span>
+<span class="normal">4649</span>
+<span class="normal">4650</span>
+<span class="normal">4651</span>
+<span class="normal">4652</span>
+<span class="normal">4653</span>
+<span class="normal">4654</span>
+<span class="normal">4655</span>
+<span class="normal">4656</span>
+<span class="normal">4657</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@classmethod</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">from_factors</span><span class="p">(</span>
     <span class="bp">cls</span><span class="p">,</span>
     <span class="n">factor</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
@@ -10451,6 +10454,7 @@ casts them on first use.</p>
         <span class="n">squared</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_narrowed</span> <span class="o">=</span> <span class="n">narrowed</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_multigrid</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="k">return</span> <span class="bp">self</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -10466,7 +10470,9 @@ casts them on first use.</p>
 
 
 </h3>
-<div class="doc-signature highlight"><pre><span></span><code><span class="nf">bind</span><span class="p">(</span><span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">stride</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_SquaredLaplacianApply</span>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">bind</span><span class="p">(</span>
+    <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">stride</span><span class="p">:</span> <span class="nb">int</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_SquaredLaplacianApply</span> <span class="o">|</span> <span class="n">_SquaredMultigridApply</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -10477,10 +10483,14 @@ casts them on first use.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4578</span>
-<span class="normal">4579</span>
-<span class="normal">4580</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">stride</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_SquaredLaplacianApply</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4659</span>
+<span class="normal">4660</span>
+<span class="normal">4661</span>
+<span class="normal">4662</span>
+<span class="normal">4663</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">stride</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_SquaredLaplacianApply</span> <span class="o">|</span> <span class="n">_SquaredMultigridApply</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Working vectors for ``n_columns`` blocks at column pitch ``stride``."""</span>
+    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_multigrid</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_SquaredMultigridApply</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_multigrid</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_n</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">,</span> <span class="n">stride</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">_SquaredLaplacianApply</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">,</span> <span class="n">stride</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -10511,22 +10521,22 @@ casts them on first use.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4628</span>
-<span class="normal">4629</span>
-<span class="normal">4630</span>
-<span class="normal">4631</span>
-<span class="normal">4632</span>
-<span class="normal">4633</span>
-<span class="normal">4634</span>
-<span class="normal">4635</span>
-<span class="normal">4636</span>
-<span class="normal">4637</span>
-<span class="normal">4638</span>
-<span class="normal">4639</span>
-<span class="normal">4640</span>
-<span class="normal">4641</span>
-<span class="normal">4642</span>
-<span class="normal">4643</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">narrowed</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4725</span>
+<span class="normal">4726</span>
+<span class="normal">4727</span>
+<span class="normal">4728</span>
+<span class="normal">4729</span>
+<span class="normal">4730</span>
+<span class="normal">4731</span>
+<span class="normal">4732</span>
+<span class="normal">4733</span>
+<span class="normal">4734</span>
+<span class="normal">4735</span>
+<span class="normal">4736</span>
+<span class="normal">4737</span>
+<span class="normal">4738</span>
+<span class="normal">4739</span>
+<span class="normal">4740</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">narrowed</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Return ``B``'s and ``Bᵀ``'s values in ``float32``, built once.</span>
 
@@ -16490,13 +16500,7 @@ lumped masses:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4033</span>
-<span class="normal">4034</span>
-<span class="normal">4035</span>
-<span class="normal">4036</span>
-<span class="normal">4037</span>
-<span class="normal">4038</span>
-<span class="normal">4039</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4039</span>
 <span class="normal">4040</span>
 <span class="normal">4041</span>
 <span class="normal">4042</span>
@@ -16591,7 +16595,13 @@ lumped masses:</p>
 <span class="normal">4131</span>
 <span class="normal">4132</span>
 <span class="normal">4133</span>
-<span class="normal">4134</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">replicated_operator</span><span class="p">(</span>
+<span class="normal">4134</span>
+<span class="normal">4135</span>
+<span class="normal">4136</span>
+<span class="normal">4137</span>
+<span class="normal">4138</span>
+<span class="normal">4139</span>
+<span class="normal">4140</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">replicated_operator</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span> <span class="o">|</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -16905,13 +16915,7 @@ that did not help.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4137</span>
-<span class="normal">4138</span>
-<span class="normal">4139</span>
-<span class="normal">4140</span>
-<span class="normal">4141</span>
-<span class="normal">4142</span>
-<span class="normal">4143</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4143</span>
 <span class="normal">4144</span>
 <span class="normal">4145</span>
 <span class="normal">4146</span>
@@ -17018,7 +17022,13 @@ that did not help.</p>
 <span class="normal">4247</span>
 <span class="normal">4248</span>
 <span class="normal">4249</span>
-<span class="normal">4250</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">multigrid_preconditioner</span><span class="p">(</span>
+<span class="normal">4250</span>
+<span class="normal">4251</span>
+<span class="normal">4252</span>
+<span class="normal">4253</span>
+<span class="normal">4254</span>
+<span class="normal">4255</span>
+<span class="normal">4256</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">multigrid_preconditioner</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -17321,13 +17331,7 @@ preconditioner apply is always <code>z = M x</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4253</span>
-<span class="normal">4254</span>
-<span class="normal">4255</span>
-<span class="normal">4256</span>
-<span class="normal">4257</span>
-<span class="normal">4258</span>
-<span class="normal">4259</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4259</span>
 <span class="normal">4260</span>
 <span class="normal">4261</span>
 <span class="normal">4262</span>
@@ -17418,7 +17422,13 @@ preconditioner apply is always <code>z = M x</code>.</p>
 <span class="normal">4347</span>
 <span class="normal">4348</span>
 <span class="normal">4349</span>
-<span class="normal">4350</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chebyshev_preconditioner</span><span class="p">(</span>
+<span class="normal">4350</span>
+<span class="normal">4351</span>
+<span class="normal">4352</span>
+<span class="normal">4353</span>
+<span class="normal">4354</span>
+<span class="normal">4355</span>
+<span class="normal">4356</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chebyshev_preconditioner</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -17533,6 +17543,11 @@ preconditioner apply is always <code>z = M x</code>.</p>
 <div class="doc-signature highlight"><pre><span></span><code><span class="nf">squared_laplacian_preconditioner</span><span class="p">(</span>
     <span class="n">laplacian</span><span class="p">:</span> <span class="n">BsrMatrix</span><span class="p">[</span><span class="n">float64</span><span class="p">],</span>
     <span class="n">weight_sums</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">float64</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span>
+        <span class="s2">"polynomial"</span><span class="p">,</span> <span class="s2">"multigrid"</span>
+    <span class="p">]</span> <span class="o">=</span> <span class="s2">"polynomial"</span><span class="p">,</span>
+    <span class="n">degree</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SquaredLaplacianPreconditioner</span>
 </code></pre></div>
 
@@ -17608,6 +17623,52 @@ is left at zero, as it is in the system: an unknown no equation touches.</p>
                 <em>required</em>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>method</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;polynomial&#39;, &#39;multigrid&#39;]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>How <code>M_ff⁻¹</code> is approximated. <code>"polynomial"</code> (the default) is the Chebyshev
+polynomial above, with no setup. <code>"multigrid"</code> applies <code>V D² V</code> instead, <code>V</code> one
+smoothed-aggregation V-cycle on <code>L</code>
+(<a class="autorefs autorefs-internal" title="multigrid_preconditioner" href="./#ordito.linalg.multigrid_preconditioner"><code>multigrid_preconditioner</code></a>'s hierarchy, its
+Jacobi sweeps scaled by each row's absolute sum so that an <code>L</code> far from diagonal
+dominance, as clamped cotangent weights make it, is still smoothed): it pays a hierarchy
+setup, and in exchange its iteration count grows far more slowly with <code>n</code> than the
+polynomial's, which grows in proportion -- the choice for a system of many thousands of
+unknowns. <code>L</code> must then be symmetric positive-definite. When the coarsening stalls the
+polynomial is returned instead.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;polynomial&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>degree</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>For <code>method="multigrid"</code>, the degree of the Chebyshev iteration each V-cycle is wrapped
+in: <code>C D² C</code> with <code>C = p(V L) V ≈ L⁻¹</code>, <code>p</code> of this degree. <code>1</code> is the bare
+<code>V D² V</code>. Squaring a V-cycle squares its error on the smooth modes, so the bare form's
+iteration count still grows with <code>n</code>; a higher degree cuts the iterations by more than
+it multiplies their cost only on large systems (hundreds of thousands of unknowns and
+more). Ignored by <code>"polynomial"</code>. Must be positive.</p>
+              </div>
+            </td>
+            <td>
+                  <code>1</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -17651,6 +17712,16 @@ is left at zero, as it is in the system: an unknown no equation touches.</p>
             <td>
               <div class="doc-md-description">
                 <p>If <code>laplacian</code> and <code>weight_sums</code> are not all on one device.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>method</code> is not <code>"polynomial"</code> or <code>"multigrid"</code>, or <code>degree</code> is not positive.</p>
               </div>
             </td>
           </tr>
@@ -17701,13 +17772,7 @@ square of its interior Laplacian block (<code>D = 1</code>), agrees with a direc
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4353</span>
-<span class="normal">4354</span>
-<span class="normal">4355</span>
-<span class="normal">4356</span>
-<span class="normal">4357</span>
-<span class="normal">4358</span>
-<span class="normal">4359</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4359</span>
 <span class="normal">4360</span>
 <span class="normal">4361</span>
 <span class="normal">4362</span>
@@ -17781,8 +17846,50 @@ square of its interior Laplacian block (<code>D = 1</code>), agrees with a direc
 <span class="normal">4430</span>
 <span class="normal">4431</span>
 <span class="normal">4432</span>
-<span class="normal">4433</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">squared_laplacian_preconditioner</span><span class="p">(</span>
-    <span class="n">laplacian</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">weight_sums</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span>
+<span class="normal">4433</span>
+<span class="normal">4434</span>
+<span class="normal">4435</span>
+<span class="normal">4436</span>
+<span class="normal">4437</span>
+<span class="normal">4438</span>
+<span class="normal">4439</span>
+<span class="normal">4440</span>
+<span class="normal">4441</span>
+<span class="normal">4442</span>
+<span class="normal">4443</span>
+<span class="normal">4444</span>
+<span class="normal">4445</span>
+<span class="normal">4446</span>
+<span class="normal">4447</span>
+<span class="normal">4448</span>
+<span class="normal">4449</span>
+<span class="normal">4450</span>
+<span class="normal">4451</span>
+<span class="normal">4452</span>
+<span class="normal">4453</span>
+<span class="normal">4454</span>
+<span class="normal">4455</span>
+<span class="normal">4456</span>
+<span class="normal">4457</span>
+<span class="normal">4458</span>
+<span class="normal">4459</span>
+<span class="normal">4460</span>
+<span class="normal">4461</span>
+<span class="normal">4462</span>
+<span class="normal">4463</span>
+<span class="normal">4464</span>
+<span class="normal">4465</span>
+<span class="normal">4466</span>
+<span class="normal">4467</span>
+<span class="normal">4468</span>
+<span class="normal">4469</span>
+<span class="normal">4470</span>
+<span class="normal">4471</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">squared_laplacian_preconditioner</span><span class="p">(</span>
+    <span class="n">laplacian</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
+    <span class="n">weight_sums</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"polynomial"</span><span class="p">,</span> <span class="s2">"multigrid"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"polynomial"</span><span class="p">,</span>
+    <span class="n">degree</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">SquaredLaplacianPreconditioner</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Preconditioner for normal equations ``(MᵀM) x = Mᵀ b`` whose square block is ``D⁻¹ L``.</span>
@@ -17814,6 +17921,24 @@ square of its interior Laplacian block (<code>D = 1</code>), agrees with a direc
 <span class="sd">        is left at zero, as it is in the system: an unknown no equation touches.</span>
 <span class="sd">    weight_sums</span>
 <span class="sd">        ``(n,)`` diagonal of ``D``, positive. ``M_ff = D⁻¹ L``; give ``1`` for an empty row.</span>
+<span class="sd">    method</span>
+<span class="sd">        How ``M_ff⁻¹`` is approximated. ``"polynomial"`` (the default) is the Chebyshev</span>
+<span class="sd">        polynomial above, with no setup. ``"multigrid"`` applies ``V D² V`` instead, ``V`` one</span>
+<span class="sd">        smoothed-aggregation V-cycle on ``L``</span>
+<span class="sd">        ([`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner]'s hierarchy, its</span>
+<span class="sd">        Jacobi sweeps scaled by each row's absolute sum so that an ``L`` far from diagonal</span>
+<span class="sd">        dominance, as clamped cotangent weights make it, is still smoothed): it pays a hierarchy</span>
+<span class="sd">        setup, and in exchange its iteration count grows far more slowly with ``n`` than the</span>
+<span class="sd">        polynomial's, which grows in proportion -- the choice for a system of many thousands of</span>
+<span class="sd">        unknowns. ``L`` must then be symmetric positive-definite. When the coarsening stalls the</span>
+<span class="sd">        polynomial is returned instead.</span>
+<span class="sd">    degree</span>
+<span class="sd">        For ``method="multigrid"``, the degree of the Chebyshev iteration each V-cycle is wrapped</span>
+<span class="sd">        in: ``C D² C`` with ``C = p(V L) V ≈ L⁻¹``, ``p`` of this degree. ``1`` is the bare</span>
+<span class="sd">        ``V D² V``. Squaring a V-cycle squares its error on the smooth modes, so the bare form's</span>
+<span class="sd">        iteration count still grows with ``n``; a higher degree cuts the iterations by more than</span>
+<span class="sd">        it multiplies their cost only on large systems (hundreds of thousands of unknowns and</span>
+<span class="sd">        more). Ignored by ``"polynomial"``. Must be positive.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -17824,6 +17949,8 @@ square of its interior Laplacian block (<code>D = 1</code>), agrees with a direc
 <span class="sd">    ------</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``laplacian`` and ``weight_sums`` are not all on one device.</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If ``method`` is not ``"polynomial"`` or ``"multigrid"``, or ``degree`` is not positive.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -17861,6 +17988,14 @@ square of its interior Laplacian block (<code>D = 1</code>), agrees with a direc
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">laplacian</span><span class="o">=</span><span class="n">laplacian</span><span class="o">.</span><span class="n">values</span><span class="p">,</span> <span class="n">weight_sums</span><span class="o">=</span><span class="n">weight_sums</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">degree</span> <span class="o">&lt;</span> <span class="mi">1</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"degree must be positive, got </span><span class="si">{</span><span class="n">degree</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"multigrid"</span><span class="p">:</span>
+        <span class="n">multigrid</span> <span class="o">=</span> <span class="n">SquaredLaplacianPreconditioner</span><span class="o">.</span><span class="n">_from_multigrid</span><span class="p">(</span><span class="n">laplacian</span><span class="p">,</span> <span class="n">weight_sums</span><span class="p">,</span> <span class="n">degree</span><span class="p">)</span>  <span class="c1"># pyright: ignore[reportPrivateUsage]</span>
+        <span class="k">if</span> <span class="n">multigrid</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="k">return</span> <span class="n">multigrid</span>
+    <span class="k">elif</span> <span class="n">method</span> <span class="o">!=</span> <span class="s2">"polynomial"</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method must be 'polynomial' or 'multigrid', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">SquaredLaplacianPreconditioner</span><span class="p">(</span><span class="n">laplacian</span><span class="p">,</span> <span class="n">weight_sums</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>

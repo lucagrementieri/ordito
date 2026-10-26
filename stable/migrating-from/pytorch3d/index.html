@@ -6043,7 +6043,7 @@ with <code>squared=True</code>.</p>
 </tr>
 <tr>
 <td><code>p3d_loss.mesh_normal_consistency</code></td>
-<td><a class="autorefs autorefs-internal" title="normal_consistency_loss" href="../../api/ordito/energies/#ordito.energies.normal_consistency_loss"><code>energies.normal_consistency_loss</code></a> (counts one term per <strong>edge-manifold</strong> adjacency, unlike PyTorch3D's per-<em>pair</em>-of-incident-faces count — the two agree exactly on edge-manifold input)</td>
+<td><a class="autorefs autorefs-internal" title="normal_consistency_loss" href="../../api/ordito/energies/#ordito.energies.normal_consistency_loss"><code>energies.normal_consistency_loss</code></a> (every pair of faces on an edge, oriented by the edge: agrees on any input, non-manifold fans and inconsistent windings included)</td>
 </tr>
 <tr>
 <td><code>p3d_ops.cot_laplacian</code></td>

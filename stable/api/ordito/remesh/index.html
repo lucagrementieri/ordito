@@ -9748,8 +9748,9 @@ these two objectives are what MeshLab's <code>meshing_edge_flip_by_planar_optimi
   what makes a coarse triangulation of a curved shape follow its principal directions.
   <code>planar_angle</code> and <code>metric</code> are ignored.</li>
 <li><code>"t_vertex"</code> — <strong>slivers only.</strong> A quad is eligible only when one of its two triangles
-  is a sliver: its <code>aspect_ratio</code> (circumradius over twice the inradius) exceeds
-  <code>aspect_threshold</code>; the diagonal is then flipped if that improves the worse of the two.
+  is a sliver whose longest edge is the diagonal: that edge over the height onto it exceeds
+  <code>aspect_threshold</code>; the diagonal is then flipped if that raises the worse
+  height-over-longest-edge of the two.
   A T-vertex — a vertex sitting in the interior of a neighbouring edge — is exactly what
   produces such a sliver, which is why this is the repair for one; see
   <a class="autorefs autorefs-internal" title="flip_t_vertices" href="../repair/#ordito.repair.flip_t_vertices"><code>flip_t_vertices</code></a> for the wrapper that says so.
@@ -9824,9 +9825,9 @@ whose default <code>'area/max side'</code> is this one.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Sliver threshold for <code>objective="t_vertex"</code>: only a quad whose worse triangle has an
-<code>aspect_ratio</code> above this is eligible. MeshLab's <code>meshing_remove_t_vertices</code> threshold,
-whose default of <code>40</code> is this one. Must be positive.</p>
+                <p>Sliver threshold for <code>objective="t_vertex"</code>, as a longest edge over the height onto it
+(see above). MeshLab's <code>meshing_remove_t_vertices</code> threshold, whose default of <code>40</code> is
+this one. Must be positive.</p>
               </div>
             </td>
             <td>
@@ -10130,7 +10131,8 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="normal">3419</span>
 <span class="normal">3420</span>
 <span class="normal">3421</span>
-<span class="normal">3422</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_by_objective</span><span class="p">(</span>
+<span class="normal">3422</span>
+<span class="normal">3423</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_by_objective</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -10170,8 +10172,9 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="sd">          what makes a coarse triangulation of a curved shape follow its principal directions.</span>
 <span class="sd">          ``planar_angle`` and ``metric`` are ignored.</span>
 <span class="sd">        - ``"t_vertex"`` — **slivers only.** A quad is eligible only when one of its two triangles</span>
-<span class="sd">          is a sliver: its ``aspect_ratio`` (circumradius over twice the inradius) exceeds</span>
-<span class="sd">          ``aspect_threshold``; the diagonal is then flipped if that improves the worse of the two.</span>
+<span class="sd">          is a sliver whose longest edge is the diagonal: that edge over the height onto it exceeds</span>
+<span class="sd">          ``aspect_threshold``; the diagonal is then flipped if that raises the worse</span>
+<span class="sd">          height-over-longest-edge of the two.</span>
 <span class="sd">          A T-vertex — a vertex sitting in the interior of a neighbouring edge — is exactly what</span>
 <span class="sd">          produces such a sliver, which is why this is the repair for one; see</span>
 <span class="sd">          [`flip_t_vertices`][ordito.repair.flip_t_vertices] for the wrapper that says so.</span>
@@ -10189,9 +10192,9 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="sd">        runs the other way and ``"area"`` is not a shape measure at all. MeshLab's ``planartype``,</span>
 <span class="sd">        whose default ``'area/max side'`` is this one.</span>
 <span class="sd">    aspect_threshold</span>
-<span class="sd">        Sliver threshold for ``objective="t_vertex"``: only a quad whose worse triangle has an</span>
-<span class="sd">        ``aspect_ratio`` above this is eligible. MeshLab's ``meshing_remove_t_vertices`` threshold,</span>
-<span class="sd">        whose default of ``40`` is this one. Must be positive.</span>
+<span class="sd">        Sliver threshold for ``objective="t_vertex"``, as a longest edge over the height onto it</span>
+<span class="sd">        (see above). MeshLab's ``meshing_remove_t_vertices`` threshold, whose default of ``40`` is</span>
+<span class="sd">        this one. Must be positive.</span>
 <span class="sd">    max_iter</span>
 <span class="sd">        Maximum number of parallel flip passes. Each pass commits a conflict-free independent set,</span>
 <span class="sd">        so a mesh needing many local rewrites needs several.</span>
@@ -10571,8 +10574,7 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3466</span>
-<span class="normal">3467</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3467</span>
 <span class="normal">3468</span>
 <span class="normal">3469</span>
 <span class="normal">3470</span>
@@ -10751,7 +10753,8 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="normal">3643</span>
 <span class="normal">3644</span>
 <span class="normal">3645</span>
-<span class="normal">3646</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intrinsic_delaunay</span><span class="p">(</span>
+<span class="normal">3646</span>
+<span class="normal">3647</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intrinsic_delaunay</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">epsilon</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">TOLERANCE_MOLLIFY</span><span class="p">,</span>
@@ -11137,8 +11140,7 @@ rebuilds them.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3649</span>
-<span class="normal">3650</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3650</span>
 <span class="normal">3651</span>
 <span class="normal">3652</span>
 <span class="normal">3653</span>
@@ -11219,7 +11221,8 @@ rebuilds them.</p>
 <span class="normal">3728</span>
 <span class="normal">3729</span>
 <span class="normal">3730</span>
-<span class="normal">3731</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide</span><span class="p">(</span>
+<span class="normal">3731</span>
+<span class="normal">3732</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -11629,8 +11632,7 @@ toward its smooth limit; the operator maps the 12 input vertices to the 42 outpu
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3752</span>
-<span class="normal">3753</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3753</span>
 <span class="normal">3754</span>
 <span class="normal">3755</span>
 <span class="normal">3756</span>
@@ -11856,7 +11858,8 @@ toward its smooth limit; the operator maps the 12 input vertices to the 42 outpu
 <span class="normal">3976</span>
 <span class="normal">3977</span>
 <span class="normal">3978</span>
-<span class="normal">3979</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_loop</span><span class="p">(</span>
+<span class="normal">3979</span>
+<span class="normal">3980</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_loop</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -12357,8 +12360,7 @@ returned when <code>return_index</code> is <code>True</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4063</span>
-<span class="normal">4064</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4064</span>
 <span class="normal">4065</span>
 <span class="normal">4066</span>
 <span class="normal">4067</span>
@@ -12440,7 +12442,8 @@ returned when <code>return_index</code> is <code>True</code>.</p>
 <span class="normal">4143</span>
 <span class="normal">4144</span>
 <span class="normal">4145</span>
-<span class="normal">4146</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_to_size</span><span class="p">(</span>
+<span class="normal">4146</span>
+<span class="normal">4147</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_to_size</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">max_edge</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span>
@@ -12939,8 +12942,7 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4430</span>
-<span class="normal">4431</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4431</span>
 <span class="normal">4432</span>
 <span class="normal">4433</span>
 <span class="normal">4434</span>
@@ -13206,7 +13208,8 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 <span class="normal">4694</span>
 <span class="normal">4695</span>
 <span class="normal">4696</span>
-<span class="normal">4697</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_region_to_size</span><span class="p">(</span>
+<span class="normal">4697</span>
+<span class="normal">4698</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_region_to_size</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -13804,8 +13807,7 @@ already split) is refined until it matches its surroundings:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4752</span>
-<span class="normal">4753</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4753</span>
 <span class="normal">4754</span>
 <span class="normal">4755</span>
 <span class="normal">4756</span>
@@ -14003,7 +14005,8 @@ already split) is refined until it matches its surroundings:</p>
 <span class="normal">4948</span>
 <span class="normal">4949</span>
 <span class="normal">4950</span>
-<span class="normal">4951</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
+<span class="normal">4951</span>
+<span class="normal">4952</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -14579,8 +14582,7 @@ splits just the two faces sharing that edge:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5052</span>
-<span class="normal">5053</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5053</span>
 <span class="normal">5054</span>
 <span class="normal">5055</span>
 <span class="normal">5056</span>
@@ -14761,7 +14763,8 @@ splits just the two faces sharing that edge:</p>
 <span class="normal">5231</span>
 <span class="normal">5232</span>
 <span class="normal">5233</span>
-<span class="normal">5234</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
+<span class="normal">5234</span>
+<span class="normal">5235</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">split_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>

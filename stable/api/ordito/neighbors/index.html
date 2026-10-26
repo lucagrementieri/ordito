@@ -6639,9 +6639,7 @@ centre has four neighbours at distance 1, a corner two:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">112</span>
-<span class="normal">113</span>
-<span class="normal">114</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">114</span>
 <span class="normal">115</span>
 <span class="normal">116</span>
 <span class="normal">117</span>
@@ -6690,7 +6688,9 @@ centre has four neighbours at distance 1, a corner two:</p>
 <span class="normal">160</span>
 <span class="normal">161</span>
 <span class="normal">162</span>
-<span class="normal">163</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bvh_from_points</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">leaf_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">:</span>
+<span class="normal">163</span>
+<span class="normal">164</span>
+<span class="normal">165</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bvh_from_points</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">leaf_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Build a bounding-volume hierarchy over ``points`` for radius queries.</span>
 
@@ -6893,9 +6893,7 @@ search (<code>warp.HashGrid</code> itself does not keep it).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">166</span>
-<span class="normal">167</span>
-<span class="normal">168</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">168</span>
 <span class="normal">169</span>
 <span class="normal">170</span>
 <span class="normal">171</span>
@@ -6950,7 +6948,9 @@ search (<code>warp.HashGrid</code> itself does not keep it).</p>
 <span class="normal">220</span>
 <span class="normal">221</span>
 <span class="normal">222</span>
-<span class="normal">223</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hashgrid_from_points</span><span class="p">(</span>
+<span class="normal">223</span>
+<span class="normal">224</span>
+<span class="normal">225</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hashgrid_from_points</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">grid_bins</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">HashGrid</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7172,9 +7172,7 @@ broad-phase intersection tests.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">226</span>
-<span class="normal">227</span>
-<span class="normal">228</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">228</span>
 <span class="normal">229</span>
 <span class="normal">230</span>
 <span class="normal">231</span>
@@ -7221,7 +7219,9 @@ broad-phase intersection tests.</p>
 <span class="normal">272</span>
 <span class="normal">273</span>
 <span class="normal">274</span>
-<span class="normal">275</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bvh_from_bounds</span><span class="p">(</span>
+<span class="normal">275</span>
+<span class="normal">276</span>
+<span class="normal">277</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bvh_from_bounds</span><span class="p">(</span>
     <span class="n">lower</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">upper</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">leaf_size</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7459,9 +7459,7 @@ hurts most.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">278</span>
-<span class="normal">279</span>
-<span class="normal">280</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">280</span>
 <span class="normal">281</span>
 <span class="normal">282</span>
 <span class="normal">283</span>
@@ -7566,7 +7564,9 @@ hurts most.</p>
 <span class="normal">382</span>
 <span class="normal">383</span>
 <span class="normal">384</span>
-<span class="normal">385</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_bvh_ball</span><span class="p">(</span>
+<span class="normal">385</span>
+<span class="normal">386</span>
+<span class="normal">387</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_bvh_ball</span><span class="p">(</span>
     <span class="n">bvh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">,</span> <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7878,9 +7878,7 @@ the four grid points <code>(-2..-1, -2..-1)</code> on its corners:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">388</span>
-<span class="normal">389</span>
-<span class="normal">390</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">390</span>
 <span class="normal">391</span>
 <span class="normal">392</span>
 <span class="normal">393</span>
@@ -7989,7 +7987,9 @@ the four grid points <code>(-2..-1, -2..-1)</code> on its corners:</p>
 <span class="normal">496</span>
 <span class="normal">497</span>
 <span class="normal">498</span>
-<span class="normal">499</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_bvh_box</span><span class="p">(</span>
+<span class="normal">499</span>
+<span class="normal">500</span>
+<span class="normal">501</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_bvh_box</span><span class="p">(</span>
     <span class="n">bvh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span><span class="p">,</span> <span class="n">query_lower</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">query_upper</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8478,9 +8478,7 @@ holds it and its four axis neighbours; about a corner, three points:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">534</span>
-<span class="normal">535</span>
-<span class="normal">536</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">536</span>
 <span class="normal">537</span>
 <span class="normal">538</span>
 <span class="normal">539</span>
@@ -8631,7 +8629,9 @@ holds it and its four axis neighbours; about a corner, three points:</p>
 <span class="normal">684</span>
 <span class="normal">685</span>
 <span class="normal">686</span>
-<span class="normal">687</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball</span><span class="p">(</span>
+<span class="normal">687</span>
+<span class="normal">688</span>
+<span class="normal">689</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
     <span class="n">r</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -9036,9 +9036,7 @@ broad phase ran, so the count does not depend on <code>backend</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">690</span>
-<span class="normal">691</span>
-<span class="normal">692</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">692</span>
 <span class="normal">693</span>
 <span class="normal">694</span>
 <span class="normal">695</span>
@@ -9127,7 +9125,9 @@ broad phase ran, so the count does not depend on <code>backend</code>.</p>
 <span class="normal">778</span>
 <span class="normal">779</span>
 <span class="normal">780</span>
-<span class="normal">781</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball_count</span><span class="p">(</span>
+<span class="normal">781</span>
+<span class="normal">782</span>
+<span class="normal">783</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball_count</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">r</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -9513,9 +9513,7 @@ disagree slightly with pure <code>float64</code> SciPy runs.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">784</span>
-<span class="normal">785</span>
-<span class="normal">786</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">786</span>
 <span class="normal">787</span>
 <span class="normal">788</span>
 <span class="normal">789</span>
@@ -9608,7 +9606,9 @@ disagree slightly with pure <code>float64</code> SciPy runs.</p>
 <span class="normal">876</span>
 <span class="normal">877</span>
 <span class="normal">878</span>
-<span class="normal">879</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball_with_offsets</span><span class="p">(</span>
+<span class="normal">879</span>
+<span class="normal">880</span>
+<span class="normal">881</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_ball_with_offsets</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
     <span class="n">r</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -9860,9 +9860,7 @@ point gives <code>inf</code>, one complete scan:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1022</span>
-<span class="normal">1023</span>
-<span class="normal">1024</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1024</span>
 <span class="normal">1025</span>
 <span class="normal">1026</span>
 <span class="normal">1027</span>
@@ -9935,7 +9933,9 @@ point gives <code>inf</code>, one complete scan:</p>
 <span class="normal">1094</span>
 <span class="normal">1095</span>
 <span class="normal">1096</span>
-<span class="normal">1097</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">knn_initial_radius</span><span class="p">(</span>
+<span class="normal">1097</span>
+<span class="normal">1098</span>
+<span class="normal">1099</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">knn_initial_radius</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">bounds</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -10432,9 +10432,7 @@ contradicts the type of <code>accelerator</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1144</span>
-<span class="normal">1145</span>
-<span class="normal">1146</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1146</span>
 <span class="normal">1147</span>
 <span class="normal">1148</span>
 <span class="normal">1149</span>
@@ -10742,7 +10740,9 @@ contradicts the type of <code>accelerator</code>.</p>
 <span class="normal">1451</span>
 <span class="normal">1452</span>
 <span class="normal">1453</span>
-<span class="normal">1454</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_nearest</span><span class="p">(</span>
+<span class="normal">1454</span>
+<span class="normal">1455</span>
+<span class="normal">1456</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_nearest</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
     <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span>
@@ -11305,9 +11305,7 @@ beats the unweighted site at distance 1; from <code>x = -1</code> it does not:</
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1739</span>
-<span class="normal">1740</span>
-<span class="normal">1741</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1741</span>
 <span class="normal">1742</span>
 <span class="normal">1743</span>
 <span class="normal">1744</span>
@@ -11446,7 +11444,9 @@ beats the unweighted site at distance 1; from <code>x = -1</code> it does not:</
 <span class="normal">1877</span>
 <span class="normal">1878</span>
 <span class="normal">1879</span>
-<span class="normal">1880</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_weighted_nearest</span><span class="p">(</span>
+<span class="normal">1880</span>
+<span class="normal">1881</span>
+<span class="normal">1882</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_weighted_nearest</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">weights</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span>
     <span class="n">queries</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -11713,9 +11713,7 @@ neighbour. The distances are <code>float32</code> (<code>wp.length</code>), so t
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1893</span>
-<span class="normal">1894</span>
-<span class="normal">1895</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1895</span>
 <span class="normal">1896</span>
 <span class="normal">1897</span>
 <span class="normal">1898</span>
@@ -11775,7 +11773,9 @@ neighbour. The distances are <code>float32</code> (<code>wp.length</code>), so t
 <span class="normal">1952</span>
 <span class="normal">1953</span>
 <span class="normal">1954</span>
-<span class="normal">1955</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">nearest_neighbor_distance</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
+<span class="normal">1955</span>
+<span class="normal">1956</span>
+<span class="normal">1957</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">nearest_neighbor_distance</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Distance from each point to the closest *other* point of the same cloud.</span>
 
@@ -11979,9 +11979,7 @@ across the bus.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1958</span>
-<span class="normal">1959</span>
-<span class="normal">1960</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1960</span>
 <span class="normal">1961</span>
 <span class="normal">1962</span>
 <span class="normal">1963</span>
@@ -12058,7 +12056,9 @@ across the bus.</p>
 <span class="normal">2034</span>
 <span class="normal">2035</span>
 <span class="normal">2036</span>
-<span class="normal">2037</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closest_pair</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
+<span class="normal">2037</span>
+<span class="normal">2038</span>
+<span class="normal">2039</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closest_pair</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">float</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Find the two closest points of a cloud, and the distance between them.</span>
 
@@ -12314,6 +12314,17 @@ sum of per-vertex neighbor counts (CSR row bounds); vertex <code>i</code> owns
       <tbody>
           <tr class="doc-section-item">
             <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the neighborhoods hold more than <code>2**31 - 1</code> entries in total, past the range of the
+<code>int32</code> offsets.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                   <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#RuntimeError">RuntimeError</a></code>
             </td>
             <td>
@@ -12350,9 +12361,7 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/neighbors.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2040</span>
-<span class="normal">2041</span>
-<span class="normal">2042</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2042</span>
 <span class="normal">2043</span>
 <span class="normal">2044</span>
 <span class="normal">2045</span>
@@ -12520,36 +12529,7 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
 <span class="normal">2207</span>
 <span class="normal">2208</span>
 <span class="normal">2209</span>
-<span class="normal">2210</span>
-<span class="normal">2211</span>
-<span class="normal">2212</span>
-<span class="normal">2213</span>
-<span class="normal">2214</span>
-<span class="normal">2215</span>
-<span class="normal">2216</span>
-<span class="normal">2217</span>
-<span class="normal">2218</span>
-<span class="normal">2219</span>
-<span class="normal">2220</span>
-<span class="normal">2221</span>
-<span class="normal">2222</span>
-<span class="normal">2223</span>
-<span class="normal">2224</span>
-<span class="normal">2225</span>
-<span class="normal">2226</span>
-<span class="normal">2227</span>
-<span class="normal">2228</span>
-<span class="normal">2229</span>
-<span class="normal">2230</span>
-<span class="normal">2231</span>
-<span class="normal">2232</span>
-<span class="normal">2233</span>
-<span class="normal">2234</span>
-<span class="normal">2235</span>
-<span class="normal">2236</span>
-<span class="normal">2237</span>
-<span class="normal">2238</span>
-<span class="normal">2239</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_ball</span><span class="p">(</span>
+<span class="normal">2210</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_ball</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">radius</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span> <span class="n">min_count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">6</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -12608,6 +12588,9 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If the neighborhoods hold more than ``2**31 - 1`` entries in total, past the range of the</span>
+<span class="sd">        ``int32`` offsets.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices`` and ``faces`` are not all on one device.</span>
 
@@ -12638,29 +12621,9 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
             <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
         <span class="p">)</span>
 
-    <span class="c1"># ``sort_rows=True`` is load-bearing, not tidiness. The ball is a geometric predicate and is</span>
-    <span class="c1"># order-independent, but the traversal below emits its queue in *visit* order, so a permuted</span>
-    <span class="c1"># adjacency row permutes the returned row -- and ``curvature.principal_curvature``, which</span>
-    <span class="c1"># consumes this, accumulates its quadric's normal equations along that row, so a permutation</span>
-    <span class="c1"># moves its answer at the near-flat vertices where the fit is ill conditioned. Sorted rows make</span>
-    <span class="c1"># this builder's output identical to ``graph.edges_to_csr``'s, for a fraction of its cost; a</span>
-    <span class="c1"># mesh vertex's valence is far below the degree where the per-row sort stops paying.</span>
-    <span class="n">adj_columns</span><span class="p">,</span> <span class="n">adj_offsets</span><span class="p">,</span> <span class="n">reference_neighbors</span> <span class="o">=</span> <span class="n">_sorted_vertex_adjacency</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span>
-
-    <span class="c1"># Per-source scratch lives in shared global-memory pools sized for one chunk of sources</span>
-    <span class="c1"># (queue rows, an open-addressing visited row pre-filled with -1 per launch, and a small</span>
-    <span class="c1"># nearest-fallback pool) instead of kilobytes of per-thread local arrays.</span>
+    <span class="c1"># Per-source scratch is sized for one chunk of sources (``_GeodesicBallWalk``); this packs each</span>
+    <span class="c1"># chunk's queue rows into its own flat buffer before the next chunk reuses them.</span>
     <span class="n">chunk</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">_GEODESIC_BALL_CHUNK</span><span class="p">)</span>
-    <span class="n">queue_pool</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span>
-        <span class="p">(</span><span class="n">chunk</span><span class="p">,</span> <span class="n">kernel_bfs</span><span class="o">.</span><span class="n">PER_SOURCE_MAX_NEIGHBORS</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
-    <span class="p">)</span>
-    <span class="n">visited_pool</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span>
-        <span class="p">(</span><span class="n">chunk</span><span class="p">,</span> <span class="n">kernel_bfs</span><span class="o">.</span><span class="n">VISITED_HASH_CAPACITY</span><span class="p">),</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
-    <span class="p">)</span>
-    <span class="n">ext_dist_pool</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">chunk</span><span class="p">,</span> <span class="n">kernel_bfs</span><span class="o">.</span><span class="n">EXTRAS_CAPACITY</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">ext_idx_pool</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">chunk</span><span class="p">,</span> <span class="n">kernel_bfs</span><span class="o">.</span><span class="n">EXTRAS_CAPACITY</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-
-    <span class="n">counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="c1"># CSR row bounds in the length-``n + 1`` form. The leading zero from ``wp.zeros`` is the first</span>
     <span class="c1"># exclusive offset and the inclusive scan fills the rest, so ``offsets[n]`` holds the total --</span>
     <span class="c1"># ``array.counts_to_offsets``' convention, open-coded here because that helper reads the total</span>
@@ -12681,32 +12644,14 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
         <span class="n">total_at</span> <span class="o">=</span> <span class="mi">0</span>
         <span class="n">offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="n">local_offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">chunk</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">overflow</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">totals</span><span class="p">[</span><span class="n">total_at</span> <span class="o">+</span> <span class="mi">1</span> <span class="p">:</span> <span class="n">total_at</span> <span class="o">+</span> <span class="mi">2</span><span class="p">])</span>
+    <span class="n">walk</span> <span class="o">=</span> <span class="n">_GeodesicBallWalk</span><span class="p">(</span>
+        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">radius</span><span class="p">,</span> <span class="n">min_count</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">totals</span><span class="p">[</span><span class="n">total_at</span> <span class="o">+</span> <span class="mi">1</span> <span class="p">:</span> <span class="n">total_at</span> <span class="o">+</span> <span class="mi">2</span><span class="p">])</span>
+    <span class="p">)</span>
+    <span class="n">counts</span> <span class="o">=</span> <span class="n">walk</span><span class="o">.</span><span class="n">counts</span>
     <span class="n">chunk_flats</span><span class="p">:</span> <span class="nb">list</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span> <span class="o">=</span> <span class="p">[]</span>
     <span class="n">n_overflow</span> <span class="o">=</span> <span class="mi">0</span>
-    <span class="k">for</span> <span class="n">start</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">chunk</span><span class="p">):</span>
-        <span class="n">m</span> <span class="o">=</span> <span class="nb">min</span><span class="p">(</span><span class="n">chunk</span><span class="p">,</span> <span class="n">n</span> <span class="o">-</span> <span class="n">start</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">start</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">fill_</span><span class="p">(</span><span class="n">visited_pool</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">query_geodesic_ball_collect</span><span class="p">,</span>
-            <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
-                <span class="n">vertices</span><span class="p">,</span>
-                <span class="n">adj_offsets</span><span class="p">,</span>
-                <span class="n">adj_columns</span><span class="p">,</span>
-                <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">radius</span><span class="p">),</span>
-                <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">min_count</span><span class="p">),</span>
-                <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">start</span><span class="p">),</span>
-                <span class="n">queue_pool</span><span class="p">,</span>
-                <span class="n">visited_pool</span><span class="p">,</span>
-                <span class="n">ext_dist_pool</span><span class="p">,</span>
-                <span class="n">ext_idx_pool</span><span class="p">,</span>
-                <span class="n">counts</span><span class="p">,</span>
-                <span class="n">overflow</span><span class="p">,</span>
-            <span class="p">],</span>
-            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-        <span class="p">)</span>
+    <span class="n">n_total</span> <span class="o">=</span> <span class="mi">0</span>
+    <span class="k">for</span> <span class="n">start</span><span class="p">,</span> <span class="n">m</span> <span class="ow">in</span> <span class="n">walk</span><span class="o">.</span><span class="n">chunks</span><span class="p">():</span>
         <span class="c1"># Gather this chunk's queue rows before the next chunk reuses the pools: chunk-local</span>
         <span class="c1"># exclusive scan of counts, one 4-byte readback for the chunk total, then a coalesced</span>
         <span class="c1"># 2D copy into the chunk's flat buffer.</span>
@@ -12723,32 +12668,36 @@ included. At <code>1.8</code> it holds every vertex but the antipode:</p>
             <span class="n">chunk_total</span><span class="p">,</span> <span class="n">n_overflow</span> <span class="o">=</span> <span class="n">read_values</span><span class="p">(</span><span class="n">totals</span><span class="p">,</span> <span class="n">total_at</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="n">chunk_total</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">totals</span><span class="p">,</span> <span class="mi">0</span><span class="p">))</span>
+        <span class="c1"># The offsets are ``int32``: a list past their range would wrap them silently, so it is</span>
+        <span class="c1"># refused here, on the totals already read back, before the next chunk is walked.</span>
+        <span class="n">n_total</span> <span class="o">+=</span> <span class="n">chunk_total</span>
+        <span class="k">if</span> <span class="n">n_total</span> <span class="o">&gt;</span> <span class="n">_PACKED_ENTRIES_MAX</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">"geodesic_ball: the packed neighbor list passes </span><span class="si">{</span><span class="n">_PACKED_ENTRIES_MAX</span><span class="si">}</span><span class="s2"> entries "</span>
+                <span class="sa">f</span><span class="s2">"after </span><span class="si">{</span><span class="n">start</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="n">m</span><span class="si">}</span><span class="s2"> of </span><span class="si">{</span><span class="n">n</span><span class="si">}</span><span class="s2"> vertices; radius </span><span class="si">{</span><span class="n">radius</span><span class="si">}</span><span class="s2"> is too large for int32 "</span>
+                <span class="s2">"offsets on this mesh"</span>
+            <span class="p">)</span>
         <span class="n">flat_chunk</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">chunk_total</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">chunk_total</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
             <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
                 <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">gather_queue_rows</span><span class="p">,</span>
                 <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">kernel_bfs</span><span class="o">.</span><span class="n">PER_SOURCE_MAX_NEIGHBORS</span><span class="p">),</span>
-                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">queue_pool</span><span class="p">,</span> <span class="n">counts</span><span class="p">,</span> <span class="n">local_offsets</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">start</span><span class="p">),</span> <span class="n">flat_chunk</span><span class="p">],</span>
+                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">walk</span><span class="o">.</span><span class="n">rows</span><span class="p">,</span> <span class="n">counts</span><span class="p">,</span> <span class="n">local_offsets</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">start</span><span class="p">),</span> <span class="n">flat_chunk</span><span class="p">],</span>
                 <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
             <span class="p">)</span>
         <span class="n">chunk_flats</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">flat_chunk</span><span class="p">)</span>
 
-    <span class="k">if</span> <span class="n">n_overflow</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
-            <span class="sa">f</span><span class="s2">"geodesic_ball: </span><span class="si">{</span><span class="n">n_overflow</span><span class="si">}</span><span class="s2"> of </span><span class="si">{</span><span class="n">n</span><span class="si">}</span><span class="s2"> neighborhoods exceeded the fixed capacity of "</span>
-            <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">kernel_bfs</span><span class="o">.</span><span class="n">PER_SOURCE_MAX_NEIGHBORS</span><span class="si">}</span><span class="s2">; their surplus neighbors were dropped."</span><span class="p">,</span>
-            <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
-        <span class="p">)</span>
+    <span class="n">walk</span><span class="o">.</span><span class="n">warn_clipped</span><span class="p">(</span><span class="n">n_overflow</span><span class="p">)</span>
 
     <span class="k">if</span> <span class="n">single_chunk</span><span class="p">:</span>
         <span class="c1"># Single chunk (n &lt;= chunk): the chunk buffer already is the global CSR neighbor buffer.</span>
-        <span class="k">return</span> <span class="n">chunk_flats</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">reference_neighbors</span>
+        <span class="k">return</span> <span class="n">chunk_flats</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">walk</span><span class="o">.</span><span class="n">reference</span>
 
     <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">offsets</span><span class="p">[</span><span class="mi">1</span><span class="p">:],</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 
     <span class="c1"># Chunk order equals ascending source order, so concatenation lines up with the global scan.</span>
     <span class="c1"># Same per-segment ``wp.copy`` loop either way -- that is the packing floor -- one call for it.</span>
-    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">concatenate</span><span class="p">(</span><span class="n">chunk_flats</span><span class="p">),</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">reference_neighbors</span>
+    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">concatenate</span><span class="p">(</span><span class="n">chunk_flats</span><span class="p">),</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">walk</span><span class="o">.</span><span class="n">reference</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

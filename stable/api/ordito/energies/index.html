@@ -6713,7 +6713,8 @@ edge length is <code>(12 + 6 * 2) / 18</code>:</p>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
-    <span class="n">face_adjacency</span><span class="p">:</span> <span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">sorted_edge_keys</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">array</span><span class="p">[</span><span class="n">uint64</span><span class="p">],</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]]</span>
+    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span>
 </code></pre></div>
 
@@ -6724,6 +6725,13 @@ edge length is <code>(12 + 6 * 2) / 18</code>:</p>
 <code>0</code> for a flat pair, <code>1</code> at a right angle and <code>2</code> for a face doubled back on itself. Read
 it against <a class="autorefs autorefs-internal" title="edge_length_loss" href="./#ordito.energies.edge_length_loss"><code>edge_length_loss</code></a>, which constrains the
 <em>sizes</em>; this one constrains the <em>orientations</em> and says nothing about scale.</p>
+<p>Every pair of faces on an edge counts, <code>k * (k - 1) / 2</code> pairs at an edge with <code>k</code> faces,
+and each pair is oriented by the edge rather than by the faces' windings: both normals are
+formed as <code>(v1 - v0) x (apex - v0)</code> against the one edge <code>(v0, v1)</code>, and <code>theta</code> is the
+angle between one and the negation of the other. A pair wound against each other therefore
+reads as smooth as a consistently wound one, so the loss is the same on an inconsistently
+oriented or non-orientable mesh as on its oriented counterpart, and a non-manifold fan
+contributes every pair it holds.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6771,22 +6779,17 @@ it against <a class="autorefs autorefs-internal" title="edge_length_loss" href="
           </tr>
           <tr class="doc-section-item">
             <td>
-                <code>face_adjacency</code>
+                <code>sorted_edge_keys</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-internal" title="Array2dInt32
-
-
-  
-      module-attribute
-   (ordito.typing.Array2dInt32)" href="../typing/#ordito.typing.Array2dInt32">Array2dInt32</a> | None</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple">tuple</a>[<span title="warp.array">array</span>[<span title="warp.uint64">uint64</span>], <span title="warp.array">array</span>[<span title="warp.int32">int32</span>]] | None</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>(m, 2)</code> <a class="autorefs autorefs-internal" title="face_adjacency" href="../adjacency/#ordito.adjacency.face_adjacency"><code>face_adjacency</code></a> of <code>faces</code>, which depends
-on the connectivity alone: a loop moving the vertices over fixed faces builds it once
-(<a class="autorefs autorefs-internal" title="face_adjacency" href="../mesh/#ordito.mesh.Trimesh.face_adjacency"><code>Trimesh.face_adjacency</code></a>) and each call then skips
-the sort that pairs the faces. Trusted, not checked.</p>
+                <p><a class="autorefs autorefs-internal" title="sorted_face_edge_keys" href="../adjacency/#ordito.adjacency.sorted_face_edge_keys"><code>sorted_face_edge_keys</code></a> of <code>faces</code>, which
+depend on the connectivity alone: a loop moving the vertices over fixed faces builds them
+once and each call then skips the sort that groups the faces by edge. Trusted, not
+checked.</p>
               </div>
             </td>
             <td>
@@ -6812,7 +6815,7 @@ the sort that pairs the faces. Trusted, not checked.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>The mean, as a host scalar. <code>0.0</code> for a mesh with no adjacent face pair.</p>
+                <p>The mean, as a host scalar. <code>0.0</code> for a mesh with no pair of faces sharing an edge.</p>
               </div>
             </td>
           </tr>
@@ -6835,7 +6838,7 @@ the sort that pairs the faces. Trusted, not checked.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>vertices</code>, <code>faces</code> and <code>face_adjacency</code> are not all on one device.</p>
+                <p>If <code>vertices</code>, <code>faces</code> and <code>sorted_edge_keys</code> are not all on one device.</p>
               </div>
             </td>
           </tr>
@@ -6848,19 +6851,14 @@ the sort that pairs the faces. Trusted, not checked.</p>
   <p><a class="autorefs autorefs-internal" title="edge_length_loss" href="./#ordito.energies.edge_length_loss"><code>edge_length_loss</code></a>
 <a class="autorefs autorefs-internal" title="laplacian_smoothing_loss" href="./#ordito.energies.laplacian_smoothing_loss"><code>laplacian_smoothing_loss</code></a>
 <a class="autorefs autorefs-internal" title="face_adjacency_angles" href="../adjacency/#ordito.adjacency.face_adjacency_angles"><code>face_adjacency_angles</code></a>
-    The per-pair dihedral angles this reduces.</p>
+    Per-pair dihedral angles of the manifold edges, oriented by the faces' windings.</p>
 </details>
 
 <details class="note" open>
   <summary>Notes</summary>
-  <p>Matches <code>pytorch3d.loss.mesh_normal_consistency</code> on <strong>consistently oriented, edge-manifold</strong>
-input. Both restrictions are real and neither is a tolerance. The reference enumerates <em>every</em>
-pair of faces sharing an edge, so an edge with <code>k</code> incident faces contributes <code>C(k, 2)</code>
-terms where <a class="autorefs autorefs-internal" title="face_adjacency_angles" href="../adjacency/#ordito.adjacency.face_adjacency_angles"><code>face_adjacency_angles</code></a> reports one pair
-per adjacency; the two coincide wherever every edge has at most two faces. And the reference
-orients each pair by the shared edge rather than by face winding, so it reads a pair wound
-against each other (an inconsistently oriented or non-orientable mesh) as smooth where this
-function reads it as a fold.</p>
+  <p>Matches <code>pytorch3d.loss.mesh_normal_consistency</code> on every input, non-manifold fans and
+inconsistent windings included. Its per-mesh weighting collapses to a plain mean over the pairs
+for one mesh, which is ordito's only case.</p>
 </details>
 
 <p><span class="doc-section-title">Examples:</span></p>
@@ -6961,11 +6959,28 @@ a flat grid has no fold at all:</p>
 <span class="normal">217</span>
 <span class="normal">218</span>
 <span class="normal">219</span>
-<span class="normal">220</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">normal_consistency_loss</span><span class="p">(</span>
+<span class="normal">220</span>
+<span class="normal">221</span>
+<span class="normal">222</span>
+<span class="normal">223</span>
+<span class="normal">224</span>
+<span class="normal">225</span>
+<span class="normal">226</span>
+<span class="normal">227</span>
+<span class="normal">228</span>
+<span class="normal">229</span>
+<span class="normal">230</span>
+<span class="normal">231</span>
+<span class="normal">232</span>
+<span class="normal">233</span>
+<span class="normal">234</span>
+<span class="normal">235</span>
+<span class="normal">236</span>
+<span class="normal">237</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">normal_consistency_loss</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
-    <span class="n">face_adjacency</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">sorted_edge_keys</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Mean ``1 - cos(theta)`` over the pairs of faces sharing an edge.</span>
@@ -6975,45 +6990,48 @@ a flat grid has no fold at all:</p>
 <span class="sd">    it against [`edge_length_loss`][ordito.energies.edge_length_loss], which constrains the</span>
 <span class="sd">    *sizes*; this one constrains the *orientations* and says nothing about scale.</span>
 
+<span class="sd">    Every pair of faces on an edge counts, ``k * (k - 1) / 2`` pairs at an edge with ``k`` faces,</span>
+<span class="sd">    and each pair is oriented by the edge rather than by the faces' windings: both normals are</span>
+<span class="sd">    formed as ``(v1 - v0) x (apex - v0)`` against the one edge ``(v0, v1)``, and ``theta`` is the</span>
+<span class="sd">    angle between one and the negation of the other. A pair wound against each other therefore</span>
+<span class="sd">    reads as smooth as a consistently wound one, so the loss is the same on an inconsistently</span>
+<span class="sd">    oriented or non-orientable mesh as on its oriented counterpart, and a non-manifold fan</span>
+<span class="sd">    contributes every pair it holds.</span>
+
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
 <span class="sd">    vertices</span>
 <span class="sd">        ``(n_vertices,)`` positions.</span>
 <span class="sd">    faces</span>
 <span class="sd">        ``(3 * n_faces,)`` triangle index buffer.</span>
-<span class="sd">    face_adjacency</span>
-<span class="sd">        ``(m, 2)`` [`face_adjacency`][ordito.adjacency.face_adjacency] of ``faces``, which depends</span>
-<span class="sd">        on the connectivity alone: a loop moving the vertices over fixed faces builds it once</span>
-<span class="sd">        ([`Trimesh.face_adjacency`][ordito.mesh.Trimesh.face_adjacency]) and each call then skips</span>
-<span class="sd">        the sort that pairs the faces. Trusted, not checked.</span>
+<span class="sd">    sorted_edge_keys</span>
+<span class="sd">        [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys] of ``faces``, which</span>
+<span class="sd">        depend on the connectivity alone: a loop moving the vertices over fixed faces builds them</span>
+<span class="sd">        once and each call then skips the sort that groups the faces by edge. Trusted, not</span>
+<span class="sd">        checked.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
 <span class="sd">    float</span>
-<span class="sd">        The mean, as a host scalar. ``0.0`` for a mesh with no adjacent face pair.</span>
+<span class="sd">        The mean, as a host scalar. ``0.0`` for a mesh with no pair of faces sharing an edge.</span>
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    RuntimeError</span>
-<span class="sd">        If ``vertices``, ``faces`` and ``face_adjacency`` are not all on one device.</span>
+<span class="sd">        If ``vertices``, ``faces`` and ``sorted_edge_keys`` are not all on one device.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
 <span class="sd">    [`edge_length_loss`][ordito.energies.edge_length_loss]</span>
 <span class="sd">    [`laplacian_smoothing_loss`][ordito.energies.laplacian_smoothing_loss]</span>
 <span class="sd">    [`face_adjacency_angles`][ordito.adjacency.face_adjacency_angles]</span>
-<span class="sd">        The per-pair dihedral angles this reduces.</span>
+<span class="sd">        Per-pair dihedral angles of the manifold edges, oriented by the faces' windings.</span>
 
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
-<span class="sd">    Matches ``pytorch3d.loss.mesh_normal_consistency`` on **consistently oriented, edge-manifold**</span>
-<span class="sd">    input. Both restrictions are real and neither is a tolerance. The reference enumerates *every*</span>
-<span class="sd">    pair of faces sharing an edge, so an edge with ``k`` incident faces contributes ``C(k, 2)``</span>
-<span class="sd">    terms where [`face_adjacency_angles`][ordito.adjacency.face_adjacency_angles] reports one pair</span>
-<span class="sd">    per adjacency; the two coincide wherever every edge has at most two faces. And the reference</span>
-<span class="sd">    orients each pair by the shared edge rather than by face winding, so it reads a pair wound</span>
-<span class="sd">    against each other (an inconsistently oriented or non-orientable mesh) as smooth where this</span>
-<span class="sd">    function reads it as a fold.</span>
+<span class="sd">    Matches ``pytorch3d.loss.mesh_normal_consistency`` on every input, non-manifold fans and</span>
+<span class="sd">    inconsistent windings included. Its per-mesh weighting collapses to a plain mean over the pairs</span>
+<span class="sd">    for one mesh, which is ordito's only case.</span>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
@@ -7029,14 +7047,28 @@ a flat grid has no fold at all:</p>
 <span class="sd">    print(f"{od.energies.normal_consistency_loss(vertices, faces):.4f}")  # 0.0000</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">face_adjacency</span><span class="o">=</span><span class="n">face_adjacency</span><span class="p">)</span>
-    <span class="n">angles</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">face_adjacency_angles</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_adjacency</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">angles</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+    <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">sorted_edge_keys</span><span class="o">=</span><span class="n">sorted_edge_keys</span><span class="p">)</span>
+    <span class="n">n</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span> <span class="o">*</span> <span class="mi">3</span>
+    <span class="k">if</span> <span class="n">n</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="mf">0.0</span>
-    <span class="n">terms</span> <span class="o">=</span> <span class="n">kernel_energies</span><span class="o">.</span><span class="n">DihedralTerms</span><span class="p">()</span>
-    <span class="n">terms</span><span class="o">.</span><span class="n">n</span> <span class="o">=</span> <span class="n">angles</span><span class="o">.</span><span class="n">size</span>
-    <span class="n">terms</span><span class="o">.</span><span class="n">angles</span> <span class="o">=</span> <span class="n">angles</span>
-    <span class="k">return</span> <span class="n">_mean_of_terms</span><span class="p">(</span><span class="n">kernel_energies</span><span class="o">.</span><span class="n">DIHEDRAL_SUM</span><span class="p">,</span> <span class="n">terms</span><span class="p">,</span> <span class="n">angles</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">angles</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
+    <span class="k">if</span> <span class="n">sorted_edge_keys</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">sorted_edge_keys</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">sorted_face_edge_keys</span><span class="p">(</span>
+            <span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span>
+        <span class="p">)</span>
+    <span class="n">terms</span> <span class="o">=</span> <span class="n">kernel_energies</span><span class="o">.</span><span class="n">NormalConsistencyTerms</span><span class="p">()</span>
+    <span class="n">terms</span><span class="o">.</span><span class="n">n</span> <span class="o">=</span> <span class="n">n</span>
+    <span class="n">terms</span><span class="o">.</span><span class="n">keys</span><span class="p">,</span> <span class="n">terms</span><span class="o">.</span><span class="n">order</span> <span class="o">=</span> <span class="n">sorted_edge_keys</span>
+    <span class="n">terms</span><span class="o">.</span><span class="n">faces</span> <span class="o">=</span> <span class="n">faces</span>
+    <span class="n">terms</span><span class="o">.</span><span class="n">vertices</span> <span class="o">=</span> <span class="n">vertices</span>
+    <span class="c1"># One pass sums the pair terms and counts the pairs, as a ``wp.vec2``, read back because the</span>
+    <span class="c1"># mean is a host scalar.</span>
+    <span class="n">total</span><span class="p">,</span> <span class="n">pairs</span> <span class="o">=</span> <span class="n">read_scalar</span><span class="p">(</span>
+        <span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">sum_of_terms</span><span class="p">(</span><span class="n">kernel_energies</span><span class="o">.</span><span class="n">NORMAL_CONSISTENCY_SUM</span><span class="p">,</span> <span class="p">[</span><span class="n">terms</span><span class="p">],</span> <span class="n">n</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="mi">0</span>
+    <span class="p">)</span>
+    <span class="k">if</span> <span class="n">pairs</span> <span class="o">==</span> <span class="mf">0.0</span><span class="p">:</span>
+        <span class="k">return</span> <span class="mf">0.0</span>
+    <span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="n">total</span><span class="p">)</span> <span class="o">/</span> <span class="nb">float</span><span class="p">(</span><span class="n">pairs</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -7267,24 +7299,7 @@ residual, a length, doubles:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">223</span>
-<span class="normal">224</span>
-<span class="normal">225</span>
-<span class="normal">226</span>
-<span class="normal">227</span>
-<span class="normal">228</span>
-<span class="normal">229</span>
-<span class="normal">230</span>
-<span class="normal">231</span>
-<span class="normal">232</span>
-<span class="normal">233</span>
-<span class="normal">234</span>
-<span class="normal">235</span>
-<span class="normal">236</span>
-<span class="normal">237</span>
-<span class="normal">238</span>
-<span class="normal">239</span>
-<span class="normal">240</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">240</span>
 <span class="normal">241</span>
 <span class="normal">242</span>
 <span class="normal">243</span>
@@ -7425,7 +7440,24 @@ residual, a length, doubles:</p>
 <span class="normal">378</span>
 <span class="normal">379</span>
 <span class="normal">380</span>
-<span class="normal">381</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">laplacian_smoothing_loss</span><span class="p">(</span>
+<span class="normal">381</span>
+<span class="normal">382</span>
+<span class="normal">383</span>
+<span class="normal">384</span>
+<span class="normal">385</span>
+<span class="normal">386</span>
+<span class="normal">387</span>
+<span class="normal">388</span>
+<span class="normal">389</span>
+<span class="normal">390</span>
+<span class="normal">391</span>
+<span class="normal">392</span>
+<span class="normal">393</span>
+<span class="normal">394</span>
+<span class="normal">395</span>
+<span class="normal">396</span>
+<span class="normal">397</span>
+<span class="normal">398</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">laplacian_smoothing_loss</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"uniform"</span><span class="p">,</span> <span class="s2">"cot"</span><span class="p">,</span> <span class="s2">"cotcurv"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"uniform"</span><span class="p">,</span>
@@ -7795,24 +7827,7 @@ scalar type on its device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">398</span>
-<span class="normal">399</span>
-<span class="normal">400</span>
-<span class="normal">401</span>
-<span class="normal">402</span>
-<span class="normal">403</span>
-<span class="normal">404</span>
-<span class="normal">405</span>
-<span class="normal">406</span>
-<span class="normal">407</span>
-<span class="normal">408</span>
-<span class="normal">409</span>
-<span class="normal">410</span>
-<span class="normal">411</span>
-<span class="normal">412</span>
-<span class="normal">413</span>
-<span class="normal">414</span>
-<span class="normal">415</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">415</span>
 <span class="normal">416</span>
 <span class="normal">417</span>
 <span class="normal">418</span>
@@ -7910,7 +7925,24 @@ scalar type on its device.</p>
 <span class="normal">510</span>
 <span class="normal">511</span>
 <span class="normal">512</span>
-<span class="normal">513</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">k_harmonic</span><span class="p">(</span>
+<span class="normal">513</span>
+<span class="normal">514</span>
+<span class="normal">515</span>
+<span class="normal">516</span>
+<span class="normal">517</span>
+<span class="normal">518</span>
+<span class="normal">519</span>
+<span class="normal">520</span>
+<span class="normal">521</span>
+<span class="normal">522</span>
+<span class="normal">523</span>
+<span class="normal">524</span>
+<span class="normal">525</span>
+<span class="normal">526</span>
+<span class="normal">527</span>
+<span class="normal">528</span>
+<span class="normal">529</span>
+<span class="normal">530</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">k_harmonic</span><span class="p">(</span>
     <span class="n">laplacian</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Float</span><span class="p">],</span> <span class="n">mass</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Float</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8251,24 +8283,7 @@ biharmonic operator penalizes it at the boundary:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">579</span>
-<span class="normal">580</span>
-<span class="normal">581</span>
-<span class="normal">582</span>
-<span class="normal">583</span>
-<span class="normal">584</span>
-<span class="normal">585</span>
-<span class="normal">586</span>
-<span class="normal">587</span>
-<span class="normal">588</span>
-<span class="normal">589</span>
-<span class="normal">590</span>
-<span class="normal">591</span>
-<span class="normal">592</span>
-<span class="normal">593</span>
-<span class="normal">594</span>
-<span class="normal">595</span>
-<span class="normal">596</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">596</span>
 <span class="normal">597</span>
 <span class="normal">598</span>
 <span class="normal">599</span>
@@ -8405,7 +8420,24 @@ biharmonic operator penalizes it at the boundary:</p>
 <span class="normal">730</span>
 <span class="normal">731</span>
 <span class="normal">732</span>
-<span class="normal">733</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hessian_energy</span><span class="p">(</span>
+<span class="normal">733</span>
+<span class="normal">734</span>
+<span class="normal">735</span>
+<span class="normal">736</span>
+<span class="normal">737</span>
+<span class="normal">738</span>
+<span class="normal">739</span>
+<span class="normal">740</span>
+<span class="normal">741</span>
+<span class="normal">742</span>
+<span class="normal">743</span>
+<span class="normal">744</span>
+<span class="normal">745</span>
+<span class="normal">746</span>
+<span class="normal">747</span>
+<span class="normal">748</span>
+<span class="normal">749</span>
+<span class="normal">750</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hessian_energy</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span>
@@ -8813,24 +8845,7 @@ device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">736</span>
-<span class="normal">737</span>
-<span class="normal">738</span>
-<span class="normal">739</span>
-<span class="normal">740</span>
-<span class="normal">741</span>
-<span class="normal">742</span>
-<span class="normal">743</span>
-<span class="normal">744</span>
-<span class="normal">745</span>
-<span class="normal">746</span>
-<span class="normal">747</span>
-<span class="normal">748</span>
-<span class="normal">749</span>
-<span class="normal">750</span>
-<span class="normal">751</span>
-<span class="normal">752</span>
-<span class="normal">753</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">753</span>
 <span class="normal">754</span>
 <span class="normal">755</span>
 <span class="normal">756</span>
@@ -8978,7 +8993,24 @@ device.</p>
 <span class="normal">898</span>
 <span class="normal">899</span>
 <span class="normal">900</span>
-<span class="normal">901</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">curved_hessian_energy</span><span class="p">(</span>
+<span class="normal">901</span>
+<span class="normal">902</span>
+<span class="normal">903</span>
+<span class="normal">904</span>
+<span class="normal">905</span>
+<span class="normal">906</span>
+<span class="normal">907</span>
+<span class="normal">908</span>
+<span class="normal">909</span>
+<span class="normal">910</span>
+<span class="normal">911</span>
+<span class="normal">912</span>
+<span class="normal">913</span>
+<span class="normal">914</span>
+<span class="normal">915</span>
+<span class="normal">916</span>
+<span class="normal">917</span>
+<span class="normal">918</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">curved_hessian_energy</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span>
@@ -9411,24 +9443,7 @@ that sum to zero:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 904</span>
-<span class="normal"> 905</span>
-<span class="normal"> 906</span>
-<span class="normal"> 907</span>
-<span class="normal"> 908</span>
-<span class="normal"> 909</span>
-<span class="normal"> 910</span>
-<span class="normal"> 911</span>
-<span class="normal"> 912</span>
-<span class="normal"> 913</span>
-<span class="normal"> 914</span>
-<span class="normal"> 915</span>
-<span class="normal"> 916</span>
-<span class="normal"> 917</span>
-<span class="normal"> 918</span>
-<span class="normal"> 919</span>
-<span class="normal"> 920</span>
-<span class="normal"> 921</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 921</span>
 <span class="normal"> 922</span>
 <span class="normal"> 923</span>
 <span class="normal"> 924</span>
@@ -9552,7 +9567,24 @@ that sum to zero:</p>
 <span class="normal">1042</span>
 <span class="normal">1043</span>
 <span class="normal">1044</span>
-<span class="normal">1045</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crouzeix_raviart_cotmatrix</span><span class="p">(</span>
+<span class="normal">1045</span>
+<span class="normal">1046</span>
+<span class="normal">1047</span>
+<span class="normal">1048</span>
+<span class="normal">1049</span>
+<span class="normal">1050</span>
+<span class="normal">1051</span>
+<span class="normal">1052</span>
+<span class="normal">1053</span>
+<span class="normal">1054</span>
+<span class="normal">1055</span>
+<span class="normal">1056</span>
+<span class="normal">1057</span>
+<span class="normal">1058</span>
+<span class="normal">1059</span>
+<span class="normal">1060</span>
+<span class="normal">1061</span>
+<span class="normal">1062</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crouzeix_raviart_cotmatrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">cot_entries</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -9925,24 +9957,7 @@ follow <a class="autorefs autorefs-internal" title="edges_unique" href="../edges
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1048</span>
-<span class="normal">1049</span>
-<span class="normal">1050</span>
-<span class="normal">1051</span>
-<span class="normal">1052</span>
-<span class="normal">1053</span>
-<span class="normal">1054</span>
-<span class="normal">1055</span>
-<span class="normal">1056</span>
-<span class="normal">1057</span>
-<span class="normal">1058</span>
-<span class="normal">1059</span>
-<span class="normal">1060</span>
-<span class="normal">1061</span>
-<span class="normal">1062</span>
-<span class="normal">1063</span>
-<span class="normal">1064</span>
-<span class="normal">1065</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1065</span>
 <span class="normal">1066</span>
 <span class="normal">1067</span>
 <span class="normal">1068</span>
@@ -10013,7 +10028,24 @@ follow <a class="autorefs autorefs-internal" title="edges_unique" href="../edges
 <span class="normal">1133</span>
 <span class="normal">1134</span>
 <span class="normal">1135</span>
-<span class="normal">1136</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crouzeix_raviart_massmatrix</span><span class="p">(</span>
+<span class="normal">1136</span>
+<span class="normal">1137</span>
+<span class="normal">1138</span>
+<span class="normal">1139</span>
+<span class="normal">1140</span>
+<span class="normal">1141</span>
+<span class="normal">1142</span>
+<span class="normal">1143</span>
+<span class="normal">1144</span>
+<span class="normal">1145</span>
+<span class="normal">1146</span>
+<span class="normal">1147</span>
+<span class="normal">1148</span>
+<span class="normal">1149</span>
+<span class="normal">1150</span>
+<span class="normal">1151</span>
+<span class="normal">1152</span>
+<span class="normal">1153</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crouzeix_raviart_massmatrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
@@ -10330,24 +10362,7 @@ ones to pass.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1166</span>
-<span class="normal">1167</span>
-<span class="normal">1168</span>
-<span class="normal">1169</span>
-<span class="normal">1170</span>
-<span class="normal">1171</span>
-<span class="normal">1172</span>
-<span class="normal">1173</span>
-<span class="normal">1174</span>
-<span class="normal">1175</span>
-<span class="normal">1176</span>
-<span class="normal">1177</span>
-<span class="normal">1178</span>
-<span class="normal">1179</span>
-<span class="normal">1180</span>
-<span class="normal">1181</span>
-<span class="normal">1182</span>
-<span class="normal">1183</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1183</span>
 <span class="normal">1184</span>
 <span class="normal">1185</span>
 <span class="normal">1186</span>
@@ -10478,7 +10493,24 @@ ones to pass.</p>
 <span class="normal">1311</span>
 <span class="normal">1312</span>
 <span class="normal">1313</span>
-<span class="normal">1314</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm_hessian</span><span class="p">(</span>
+<span class="normal">1314</span>
+<span class="normal">1315</span>
+<span class="normal">1316</span>
+<span class="normal">1317</span>
+<span class="normal">1318</span>
+<span class="normal">1319</span>
+<span class="normal">1320</span>
+<span class="normal">1321</span>
+<span class="normal">1322</span>
+<span class="normal">1323</span>
+<span class="normal">1324</span>
+<span class="normal">1325</span>
+<span class="normal">1326</span>
+<span class="normal">1327</span>
+<span class="normal">1328</span>
+<span class="normal">1329</span>
+<span class="normal">1330</span>
+<span class="normal">1331</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm_hessian</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -10811,24 +10843,7 @@ no boundary and an empty matrix:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1317</span>
-<span class="normal">1318</span>
-<span class="normal">1319</span>
-<span class="normal">1320</span>
-<span class="normal">1321</span>
-<span class="normal">1322</span>
-<span class="normal">1323</span>
-<span class="normal">1324</span>
-<span class="normal">1325</span>
-<span class="normal">1326</span>
-<span class="normal">1327</span>
-<span class="normal">1328</span>
-<span class="normal">1329</span>
-<span class="normal">1330</span>
-<span class="normal">1331</span>
-<span class="normal">1332</span>
-<span class="normal">1333</span>
-<span class="normal">1334</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1334</span>
 <span class="normal">1335</span>
 <span class="normal">1336</span>
 <span class="normal">1337</span>
@@ -10897,7 +10912,24 @@ no boundary and an empty matrix:</p>
 <span class="normal">1400</span>
 <span class="normal">1401</span>
 <span class="normal">1402</span>
-<span class="normal">1403</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_area_matrix</span><span class="p">(</span>
+<span class="normal">1403</span>
+<span class="normal">1404</span>
+<span class="normal">1405</span>
+<span class="normal">1406</span>
+<span class="normal">1407</span>
+<span class="normal">1408</span>
+<span class="normal">1409</span>
+<span class="normal">1410</span>
+<span class="normal">1411</span>
+<span class="normal">1412</span>
+<span class="normal">1413</span>
+<span class="normal">1414</span>
+<span class="normal">1415</span>
+<span class="normal">1416</span>
+<span class="normal">1417</span>
+<span class="normal">1418</span>
+<span class="normal">1419</span>
+<span class="normal">1420</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_area_matrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>

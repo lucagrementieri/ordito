@@ -6331,7 +6331,7 @@
               <td><code><a class="autorefs autorefs-internal" title="sum_of_terms (ordito.reduce.sum_of_terms)" href="./#ordito.reduce.sum_of_terms">sum_of_terms</a></code></td>
               <td>
                 <div class="doc-md-description">
-                  <p>Total of <code>n</code> <code>float32</code> terms a block-sum kernel pair forms, left on the device.</p>
+                  <p>Total of <code>n</code> terms a block-sum kernel pair forms, left on the device.</p>
                 </div>
               </td>
             </tr>
@@ -8472,20 +8472,21 @@ rank-2 input.</p>
     <span class="n">inputs</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">object</span><span class="p">],</span>
     <span class="n">n</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
-    <span class="n">out</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">out</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">device</span><span class="p">:</span> <span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>Total of <code>n</code> <code>float32</code> terms a block-sum kernel pair forms, left on the device.</p>
+        <p>Total of <code>n</code> terms a block-sum kernel pair forms, left on the device.</p>
 <p>The device-side form of <a class="autorefs autorefs-internal" title="sum" href="./#ordito.reduce.sum"><code>sum</code></a>: the same blocks, fold tree and determinism
 rule, but the first stage is any <code>ordito.kernels.reduce.TermSum</code> -- <code>sum</code>'s own
 kernels over an array (<code>kernel_reduce.ARRAY_SUM</code>), the weighted sum's
 (<code>kernel_reduce.WEIGHTED_SUM</code>), or a fused term built by
 <code>ordito.kernels.reduce.term_sum_1d</code> that never stores its terms -- and the total
-stays in a one-slot device array instead of being read back. Under
+stays in a one-slot device array instead of being read back. The terms are <code>float32</code>, or the
+<code>dtype</code> the pair was built with (a <code>wp.vec2</code> of two sums formed in one pass). Under
 <a class="autorefs autorefs-internal" title="is_deterministic" href="../config/#ordito.config.is_deterministic"><code>is_deterministic</code></a> (or when <code>kernels.atomic</code> is <code>None</code>)
 every block stores its sum and the partials fold in a fixed tree; otherwise every block adds
 its sum into the total.</p>
@@ -8555,7 +8556,7 @@ its sum into the total.</p>
                 <code>out</code>
             </td>
             <td>
-                  <code><span title="warp.array">array</span>[<span title="warp.float32">float32</span>] | None</code>
+                  <code><span title="warp.array">array</span>[<a class="autorefs autorefs-external" title="typing.Any" href="https://docs.python.org/3/library/typing.html#typing.Any">Any</a>] | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -8709,23 +8710,25 @@ be an array (a <code>@wp.struct</code> input carries no device).</p>
 <span class="normal">618</span>
 <span class="normal">619</span>
 <span class="normal">620</span>
-<span class="normal">621</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sum_of_terms</span><span class="p">(</span>
+<span class="normal">621</span>
+<span class="normal">622</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sum_of_terms</span><span class="p">(</span>
     <span class="n">kernels</span><span class="p">:</span> <span class="n">kernel_reduce</span><span class="o">.</span><span class="n">TermSum</span><span class="p">,</span>
     <span class="n">inputs</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="nb">object</span><span class="p">],</span>
     <span class="n">n</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
-    <span class="n">out</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">out</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">Any</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">Any</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
-<span class="sd">    Total of ``n`` ``float32`` terms a block-sum kernel pair forms, left on the device.</span>
+<span class="sd">    Total of ``n`` terms a block-sum kernel pair forms, left on the device.</span>
 
 <span class="sd">    The device-side form of [`sum`][ordito.reduce.sum]: the same blocks, fold tree and determinism</span>
 <span class="sd">    rule, but the first stage is any ``ordito.kernels.reduce.TermSum`` -- ``sum``'s own</span>
 <span class="sd">    kernels over an array (``kernel_reduce.ARRAY_SUM``), the weighted sum's</span>
 <span class="sd">    (``kernel_reduce.WEIGHTED_SUM``), or a fused term built by</span>
 <span class="sd">    ``ordito.kernels.reduce.term_sum_1d`` that never stores its terms -- and the total</span>
-<span class="sd">    stays in a one-slot device array instead of being read back. Under</span>
+<span class="sd">    stays in a one-slot device array instead of being read back. The terms are ``float32``, or the</span>
+<span class="sd">    ``dtype`` the pair was built with (a ``wp.vec2`` of two sums formed in one pass). Under</span>
 <span class="sd">    [`is_deterministic`][ordito.config.is_deterministic] (or when ``kernels.atomic`` is ``None``)</span>
 <span class="sd">    every block stores its sum and the partials fold in a fixed tree; otherwise every block adds</span>
 <span class="sd">    its sum into the total.</span>
@@ -8774,9 +8777,9 @@ be an array (a <code>@wp.struct</code> input carries no device).</p>
     <span class="k">if</span> <span class="n">device</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">device</span> <span class="o">=</span> <span class="n">out</span><span class="o">.</span><span class="n">device</span> <span class="k">if</span> <span class="n">out</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">cast</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">Any</span><span class="p">],</span> <span class="n">inputs</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span><span class="o">.</span><span class="n">device</span>
     <span class="k">if</span> <span class="n">kernels</span><span class="o">.</span><span class="n">atomic</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">is_deterministic</span><span class="p">():</span>
-        <span class="k">return</span> <span class="n">_sum_in_fixed_order</span><span class="p">(</span><span class="n">kernels</span><span class="o">.</span><span class="n">partials</span><span class="p">,</span> <span class="n">inputs</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">out</span><span class="o">=</span><span class="n">out</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">_sum_in_fixed_order</span><span class="p">(</span><span class="n">kernels</span><span class="o">.</span><span class="n">partials</span><span class="p">,</span> <span class="n">inputs</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">kernels</span><span class="o">.</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">out</span><span class="o">=</span><span class="n">out</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">out</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">out</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">out</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">kernels</span><span class="o">.</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
         <span class="n">kernels</span><span class="o">.</span><span class="n">atomic</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="p">[</span><span class="n">kernel_reduce</span><span class="o">.</span><span class="n">blocks_1d</span><span class="p">(</span><span class="n">n</span><span class="p">)],</span>
@@ -8986,8 +8989,7 @@ negative, or an index lies outside <code>[0, n_groups)</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reduce.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">624</span>
-<span class="normal">625</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">625</span>
 <span class="normal">626</span>
 <span class="normal">627</span>
 <span class="normal">628</span>
@@ -9066,7 +9068,8 @@ negative, or an index lies outside <code>[0, n_groups)</code>.</p>
 <span class="normal">701</span>
 <span class="normal">702</span>
 <span class="normal">703</span>
-<span class="normal">704</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">scatter_sum</span><span class="p">(</span>
+<span class="normal">704</span>
+<span class="normal">705</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">scatter_sum</span><span class="p">(</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">],</span> <span class="n">indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">n_groups</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -9325,8 +9328,7 @@ Obeys <a class="autorefs autorefs-internal" title="is_deterministic" href="../co
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reduce.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">707</span>
-<span class="normal">708</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">708</span>
 <span class="normal">709</span>
 <span class="normal">710</span>
 <span class="normal">711</span>
@@ -9389,7 +9391,8 @@ Obeys <a class="autorefs autorefs-internal" title="is_deterministic" href="../co
 <span class="normal">768</span>
 <span class="normal">769</span>
 <span class="normal">770</span>
-<span class="normal">771</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">segment_sum</span><span class="p">(</span><span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">],</span> <span class="n">offsets</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">]:</span>
+<span class="normal">771</span>
+<span class="normal">772</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">segment_sum</span><span class="p">(</span><span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">],</span> <span class="n">offsets</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Per-segment sums of ``values`` over the contiguous segments ``offsets`` delimits.</span>
 
@@ -9599,8 +9602,7 @@ for rank-2 input with an explicit axis.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reduce.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">803</span>
-<span class="normal">804</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">804</span>
 <span class="normal">805</span>
 <span class="normal">806</span>
 <span class="normal">807</span>
@@ -9642,7 +9644,8 @@ for rank-2 input with an explicit axis.</p>
 <span class="normal">843</span>
 <span class="normal">844</span>
 <span class="normal">845</span>
-<span class="normal">846</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">all</span><span class="p">(</span><span class="n">array</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">axis</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]</span> <span class="o">|</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">846</span>
+<span class="normal">847</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">all</span><span class="p">(</span><span class="n">array</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">axis</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]</span> <span class="o">|</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Reduce a boolean array with logical AND.</span>
 
@@ -9815,8 +9818,7 @@ is always a Python <code>float</code>, regardless of input dtype.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reduce.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">849</span>
-<span class="normal">850</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">850</span>
 <span class="normal">851</span>
 <span class="normal">852</span>
 <span class="normal">853</span>
@@ -9863,7 +9865,8 @@ is always a Python <code>float</code>, regardless of input dtype.</p>
 <span class="normal">894</span>
 <span class="normal">895</span>
 <span class="normal">896</span>
-<span class="normal">897</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">median</span><span class="p">(</span><span class="n">array</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdScalar</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="normal">897</span>
+<span class="normal">898</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">median</span><span class="p">(</span><span class="n">array</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdScalar</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Median of a 1D scalar array (``numpy.median``).</span>
 
