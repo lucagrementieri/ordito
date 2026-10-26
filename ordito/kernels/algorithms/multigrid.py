@@ -766,6 +766,7 @@ def power_row(
 @wp.kernel
 def mis_level_setup(
     seed: wp.int32,
+    l1_smoother: wp.int32,
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float64],
@@ -784,9 +785,16 @@ def mis_level_setup(
     # step from its sign vector (``power_row``, reading the diagonal this thread just wrote), which
     # needs nothing but the row. Independent elementwise writes at one ``dim``; launched apart they
     # were four launches, a fill and a memset. Placed after ``power_row``, which it calls.
+    #
+    # Under ``l1_smoother`` (warp-uniform) the diagonal the smoother, the prolongator and the power
+    # iteration read is the row's absolute sum ``|A_ii| + sum_{j != i} |A_ij|`` instead: the l1
+    # Jacobi scaling, a convergent smoother for any symmetric positive-definite operator, where
+    # plain Jacobi under one global damping over-relaxes the rows a non-M-matrix (a clamped
+    # cotangent Laplacian) leaves far from diagonal dominance. The strength test keeps the true
+    # diagonal.
     i = wp.int32(wp.tid())
-    diagonal, _off_sum = csr_row_diagonal(offsets, columns, values, i)
-    out_diagonal[i] = diagonal
+    diagonal, off_sum = csr_row_diagonal(offsets, columns, values, i)
+    out_diagonal[i] = wp.where(l1_smoother != 0, wp.abs(diagonal) + off_sum, diagonal)
     out_scaled_diagonal[i] = sqrt_abs(diagonal)
     out_priority[i] = element_priority(seed, i)
     out_state[i] = MG_UNDECIDED

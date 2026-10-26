@@ -631,6 +631,10 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # scratch / persistent state
     ("adjacency", "scatter_vertex_faces"): frozenset({"cursor"}),
     ("smoothing", "scatter_incidence_rows"): frozenset({"cursor"}),
+    # ``smooth_region``'s right-hand side, written by ``normal_equations_setup``, is overwritten in
+    # place with the seed on the rows of a component no fixed vertex touches, which the product's
+    # value pass pins to the identity as it writes them.
+    ("smoothing", "normal_equations_values"): frozenset({"atb_x", "atb_y", "atb_z"}),
     # ``descent_paths``' first counting pass flags the paths that stopped short in ``short_paths``
     # (and counts them in its last slot); the completion pass reads the flags back as its mask.
     ("geodesic_walk", "descent_paths"): frozenset({"short_paths"}),

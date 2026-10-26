@@ -766,29 +766,6 @@ def normal_equations_rows(
 
 
 @wp.kernel
-def normal_equations_values(
-    free_mask: wp.array[wp.bool],
-    free_map: wp.array[wp.int32],
-    term_offsets: wp.array[wp.int32],
-    row_columns: wp.array[wp.int32],
-    row_values: wp.array[wp.float64],
-    system_offsets: wp.array[wp.int32],
-    out_columns: wp.array[wp.int32],
-    out_values: wp.array[wp.float64],
-) -> None:
-    # Row ``i`` of ``M^T M`` moved from the head of its term segment into the compact CSR.
-    i = wp.int32(wp.tid())
-    ri = selected_row(free_mask, free_map, i)
-    if ri < 0:
-        return
-    source = term_offsets[ri]
-    start = system_offsets[ri]
-    for s in range(system_offsets[ri + 1] - start):
-        out_columns[start + s] = row_columns[source + s]
-        out_values[start + s] = row_values[source + s]
-
-
-@wp.kernel
 def mark_anchored_components(
     free_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
@@ -811,6 +788,57 @@ def mark_anchored_components(
 
 
 @wp.kernel
+def normal_equations_values(
+    free_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    term_offsets: wp.array[wp.int32],
+    row_columns: wp.array[wp.int32],
+    row_values: wp.array[wp.float64],
+    system_offsets: wp.array[wp.int32],
+    labels: wp.array[wp.int32],
+    anchored: wp.array[wp.int32],
+    atb_x: wp.array[wp.float64],
+    atb_y: wp.array[wp.float64],
+    atb_z: wp.array[wp.float64],
+    sol_x: wp.array[wp.float64],
+    sol_y: wp.array[wp.float64],
+    sol_z: wp.array[wp.float64],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+) -> None:
+    # Row ``i`` of ``M^T M`` moved from the head of its term segment into the compact CSR.
+    #
+    # A row of a free component no fixed vertex touches (``mark_anchored_components``) is written
+    # as the identity instead, with the seed (``sol``) as its right-hand side: the component's
+    # umbrella rows fix it only up to a translation, so the system does not place it, and pinning
+    # it at its seed keeps its block out of the solve -- a residual of zero there from the start,
+    # where its singular block would otherwise stall conjugate gradient under the V-cycle form.
+    # Its columns occur only in its own component's rows, which are all pinned, so the matrix stays
+    # symmetric. A row with no diagonal entry (a vertex no face refers to) is empty and stays so.
+    i = wp.int32(wp.tid())
+    ri = selected_row(free_mask, free_map, i)
+    if ri < 0:
+        return
+    source = term_offsets[ri]
+    start = system_offsets[ri]
+    pinned = anchored[labels[ri]] == 0
+    has_diagonal = wp.bool(False)
+    for s in range(system_offsets[ri + 1] - start):
+        column = row_columns[source + s]
+        out_columns[start + s] = column
+        if pinned:
+            out_values[start + s] = wp.where(column == ri, wp.float64(1.0), wp.float64(0.0))
+            if column == ri:
+                has_diagonal = True
+        else:
+            out_values[start + s] = row_values[source + s]
+    if has_diagonal:
+        atb_x[ri] = sol_x[ri]
+        atb_y[ri] = sol_y[ri]
+        atb_z[ri] = sol_z[ri]
+
+
+@wp.kernel
 def scatter_free_solution(
     free_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
@@ -818,22 +846,13 @@ def scatter_free_solution(
     sol_x: wp.array[wp.float64],
     sol_y: wp.array[wp.float64],
     sol_z: wp.array[wp.float64],
-    labels: wp.array[wp.int32],
-    anchored: wp.array[wp.int32],
     out_points: wp.array[wp.vec3],
 ) -> None:
     # The solved positions: the reduced solve's answer over the free vertices, and the position it
     # arrived with for a pinned one. Every vertex is written, so the result needs no copy of
     # ``points`` first. The inverse of ``gather_free_positions``, which seeds the same solve.
-    # Given ``anchored`` (``mark_anchored_components``; empty for a solve whose every component is
-    # determined), a free vertex of a component no fixed vertex touches keeps its position too: the
-    # least-squares system fixes such a component only up to a translation, and the solve's drift
-    # along it is the preconditioner's, not an answer.
     v = wp.int32(wp.tid())
     i = selected_row(free_mask, free_map, v)
-    if i >= 0 and anchored.shape[0] > 0:
-        if anchored[labels[i]] == 0:
-            i = wp.int32(-1)
     if i >= 0:
         out_points[v] = wp.vec3(wp.float32(sol_x[i]), wp.float32(sol_y[i]), wp.float32(sol_z[i]))
     else:
