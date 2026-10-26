@@ -4396,10 +4396,12 @@ def squared_laplacian_preconditioner(
         How ``M_ff⁻¹`` is approximated. ``"polynomial"`` (the default) is the Chebyshev
         polynomial above, with no setup. ``"multigrid"`` applies ``V D² V`` instead, ``V`` one
         smoothed-aggregation V-cycle on ``L``
-        ([`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner]'s hierarchy): it
-        pays a hierarchy setup, and in exchange its iteration count stays nearly flat as ``n``
-        grows, where the polynomial's grows with ``n`` -- the choice for a system of many
-        thousands of unknowns. ``L`` must then be symmetric. When the coarsening stalls the
+        ([`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner]'s hierarchy, its
+        Jacobi sweeps scaled by each row's absolute sum so that an ``L`` far from diagonal
+        dominance, as clamped cotangent weights make it, is still smoothed): it pays a hierarchy
+        setup, and in exchange its iteration count grows far more slowly with ``n`` than the
+        polynomial's, which grows in proportion -- the choice for a system of many thousands of
+        unknowns. ``L`` must then be symmetric positive-definite. When the coarsening stalls the
         polynomial is returned instead.
 
     Returns
@@ -4560,10 +4562,15 @@ class SquaredLaplacianPreconditioner:
         Build the ``V D² V`` form: a V-cycle hierarchy on ``L`` and ``D²``.
 
         ``M_ff⁻¹ M_ff⁻ᵀ = L⁻¹ D² L⁻¹``, so with ``V ≈ L⁻¹`` one symmetric V-cycle -- its pre- and
-        post-smoothing are the same Jacobi sweeps -- the apply ``V D² V`` is symmetric
+        post-smoothing are the same l1-Jacobi sweeps -- the apply ``V D² V`` is symmetric
         positive-definite, as conjugate gradient needs. ``None`` when the coarsening stalls.
+
+        The l1 scaling (``l1_smoother``) is what lets clamped cotangent weights through: their
+        ``L`` is positive-definite but 45 % of its rows are not diagonally dominant on a scan, and
+        under plain Jacobi the V-cycle was too weak to square (dragon: no convergence in 5 000
+        iterations; with l1-Jacobi, 339).
         """
-        hierarchy = _multigrid_hierarchy(laplacian, 0)
+        hierarchy = _multigrid_hierarchy(laplacian, 0, l1_smoother=True)
         if hierarchy is None:
             return None
         self = cls.__new__(cls)
@@ -4820,7 +4827,7 @@ class _SquaredLaplacianApply(_ChebyshevApply):
         self._polynomial(self._owner._factor, self._middle, destination)  # pyright: ignore[reportPrivateUsage]
 
 
-_SQUARED_MULTIGRID_SWEEPS = 4
+_SQUARED_MULTIGRID_SWEEPS = 8
 
 
 class _SquaredMultigrid(NamedTuple):
@@ -5161,10 +5168,13 @@ class _MultigridLevel:
 
 
 def _multigrid_hierarchy(
-    matrix: odt.BsrMatrix[wp.float64], seed: int
+    matrix: odt.BsrMatrix[wp.float64], seed: int, *, l1_smoother: bool = False
 ) -> tuple[list[_MultigridLevel], odt.ArrayNd] | None:
     """
     Coarsen ``matrix`` until a level is small enough to invert densely.
+
+    ``l1_smoother`` scales every level's Jacobi smoother and prolongator by its rows' absolute sums
+    rather than their diagonal (``kernels/algorithms/multigrid.mis_level_setup``).
 
     ``None`` when no usable hierarchy exists -- the coarsening stalled above the dense cap -- which
     is the one case [`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner] hands back
@@ -5184,7 +5194,7 @@ def _multigrid_hierarchy(
         # The diagonal, read by the aggregation's strength test (``sqrt(|A_ii|)``) and the smoother
         # (``1 / A_ii``), and the power iteration's first step are formed by the aggregation's own
         # setup launch.
-        aggregation = _multigrid_aggregate(operator, seed)
+        aggregation = _multigrid_aggregate(operator, seed, l1_smoother)
         n_aggregates = aggregation.n_aggregates
         if n_aggregates >= _MULTIGRID_MIN_COARSENING * level.n:
             break
@@ -5236,7 +5246,9 @@ class _Aggregation(NamedTuple):
     and scan their contributions in it (``_row_key_assembly``)."""
 
 
-def _multigrid_aggregate(matrix: odt.BsrMatrix[wp.float64], seed: int) -> _Aggregation:
+def _multigrid_aggregate(
+    matrix: odt.BsrMatrix[wp.float64], seed: int, l1_smoother: bool = False
+) -> _Aggregation:
     """
     Aggregate label per row, from a distance-2 maximal independent set on the off-diagonal graph.
 
@@ -5273,7 +5285,7 @@ def _multigrid_aggregate(matrix: odt.BsrMatrix[wp.float64], seed: int) -> _Aggre
     _launch.launch(
         kernel_mg.mis_level_setup,
         dim=n,
-        inputs=[wp.int32(seed), offsets, columns, values],
+        inputs=[wp.int32(seed), wp.int32(l1_smoother), offsets, columns, values],
         outputs=[diagonal, scaled_diagonal, priority, state, power, counts],
         device=device,
     )

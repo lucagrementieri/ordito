@@ -729,19 +729,20 @@ def test_smooth_region(bench_case: BenchCase) -> None:
     row carries the build.
 
     **Two preconditioners, switched by size.** Below ``smoothing._SMOOTH_REGION_MULTIGRID_FROM``
-    free vertices (and for cotangent weights at any size) the normal equations take
-    ``linalg.squared_laplacian_preconditioner``'s Chebyshev polynomial in the free rows' square
-    block ``D^-1 L``, applied as ``B B^T``, with no setup; its degree and interval
-    (``SQUARED_LAPLACIAN_DEGREE``, ``SQUARED_LAPLACIAN_INTERVAL``) move the bunny row. Its
-    iteration count grows with the free count, so from the gate unit weights take
-    ``method="multigrid"``, ``V D^2 V`` with ``V`` a smoothed-aggregation V-cycle on ``L_ff``
-    (``linalg._SQUARED_MULTIGRID_SWEEPS``): dragon 1 035 -> 171 iterations, lucy past 600 s ->
-    43 s. ``linalg._MULTIGRID_THETA`` moves the scan rows.
+    free vertices the normal equations take ``linalg.squared_laplacian_preconditioner``'s Chebyshev
+    polynomial in the free rows' square block ``D^-1 L``, applied as ``B B^T``, with no setup; its
+    degree and interval (``SQUARED_LAPLACIAN_DEGREE``, ``SQUARED_LAPLACIAN_INTERVAL``) move the
+    bunny row. Its iteration count grows in proportion to the free count, so from the gate both
+    weightings take ``method="multigrid"``, ``V D^2 V`` with ``V`` a smoothed-aggregation V-cycle
+    on ``L_ff`` under l1-Jacobi smoothing (``linalg._SQUARED_MULTIGRID_SWEEPS``): unit weights
+    dragon 1 035 -> 99 iterations, lucy past 600 s -> 48 s; the default cotangent weights dragon
+    10 948 -> 339 (6.4 -> 0.58 s), lucy 153 s where the polynomial did not finish.
+    ``linalg._MULTIGRID_THETA`` moves the scan rows.
     """
     skip_larger_than(
         bench_case,
         "happy_buddha",
-        "one ordito round on lucy is 43 s (1 885 CG iterations over 3.5 M free vertices)",
+        "one ordito round on lucy is 48 s (1 181 CG iterations over 3.5 M free vertices)",
     )
     n_vertices = bench_case.n_vertices
     free_np = _free_mask_np(bench_case)

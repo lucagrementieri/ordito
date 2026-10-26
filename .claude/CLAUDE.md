@@ -977,16 +977,11 @@ The sweep (`.benchmarks/merged-2026-10-23-final/incomplete.jsonl`, ordito-cuda r
 with no time on three large-mesh rows; all three are fixed. `ball_pivoting` on happy_buddha (component
 notes, the claim key), `relax_approx` on lucy (streamed geodesic balls,
 `reference/component-status.md`, "k-NN and ball queries") and `smooth_region` on lucy (a V-cycle
-form for large unit-weight regions, `reference/component-status.md`, smoothing). One residue:
-
-- **`smooth_region` with cotangent weights still scales linearly with the region** (dragon 10 948
-  CG iterations, 6.5 s; lucy not finishing). The clamped cotangent weights set the polynomial's
-  Gershgorin bound to 10.5 against a true `λmax(D⁻¹L)` of 2.60 (one near-cancelling row) and leave
-  `L_ff` probably indefinite, so the V-cycle form does not converge on them (dragon: 5 000
-  iterations, residual² 2e-11 against ~1e-20). The exact `L⁻¹D²L⁻¹` preconditioner takes 114-128
-  iterations, so a definite surrogate keeping the true `D` is the lead; `max(w, 0)` is refuted
-  (2 354 at its exact floor), and forcing the bound to 2 or 3 diverged. Raising the polynomial's
-  degree is a cheap 2.6-3x on dragon (degree 96: 494 iterations, 2.2 s) but still linear in `n`.
+form for large regions, `reference/component-status.md`, smoothing). Cotangent weights, which the
+benchmark row does not time, take that form too: dragon 10 948 -> 339 CG iterations (6.4 -> 0.58 s),
+lucy 153 s where the polynomial did not finish. Its iterations still grow with the region (lucy
+3 367; the V-cycle alone stays flat, 127-140 on the `L_ff` solve), probably from the rim rows the
+`L⁻¹D²L⁻¹` model leaves out; unverified.
 
 ### Open items from the 2026-10-22 parity audit
 
