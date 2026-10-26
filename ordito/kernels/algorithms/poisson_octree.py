@@ -573,6 +573,23 @@ def divergence_term(
     m = 1 << data_depth
     shift = d - data_depth
     first = wp.vec3i((node[0] >> shift) - 2, (node[1] >> shift) - 2, (node[2] >> shift) - 2)
+    # The data is a band around the surface, so most nodes' windows hold only zeros: those return
+    # the ``+0.0`` the ``float64`` sum below would (every term a signed zero) without forming it.
+    found = wp.int32(0)
+    for a in range(4):
+        ka = first[0] + a
+        if ka >= 0 and ka < m:
+            for b in range(4):
+                kb = first[1] + b
+                if kb >= 0 and kb < m:
+                    for c in range(4):
+                        kc = first[2] + c
+                        if kc >= 0 and kc < m:
+                            v = data[data_offset + cell_flat(m, wp.vec3i(ka, kb, kc))]
+                            if v[0] != 0.0 or v[1] != 0.0 or v[2] != 0.0:
+                                found = 1
+    if found == 0:
+        return wp.float32(0.0)
     value_x = wp.vec4d()
     slope_x = wp.vec4d()
     value_y = wp.vec4d()
