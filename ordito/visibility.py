@@ -333,8 +333,7 @@ def _morton_order(points: wp.array[wp.vec3]) -> wp.array[wp.int32]:
         inputs=[points, corners],
         device=device,
     )
-    keys = _launch.empty(2 * m, dtype=wp.int32, device=device)
-    order = _launch.empty(2 * m, dtype=wp.int32, device=device)
+    keys, order = _launch.carve(wp.int32, [2 * m, 2 * m], device)
     _launch.launch(
         kernel_visibility.morton_point_order,
         dim=m,
