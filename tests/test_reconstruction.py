@@ -1715,6 +1715,45 @@ def test_ball_pivoting_is_reproducible(device: str):
             assert np.array_equal(first_wp.numpy(), second_wp.numpy())
 
 
+def test_ball_pivoting_seeds_no_triangle_twice(device: str):
+    """
+    Two points seeding with each other as partner must not both commit, on a dense neighbourhood.
+
+    Not a library comparison: the property is internal to the wave loop's claim, which no
+    reference has. ``seed_triangles`` truncates its neighbourhood scan at ``MAX_SEED_NEIGHBORS``,
+    so with a ball several spacings wide (about 200 points within the ``2 * radius`` scan here)
+    two points can each seed with the other as partner. Keyed by the unordered pair, the two
+    proposals tied, both won every vertex claim and both committed, often as the same triangle
+    with the same winding, which ``repair.resolve_duplicated_faces`` then rejects as
+    non-orientable (happy_buddha raised so). With the claim keyed by the ordered pair, seeder
+    first, at most one of them commits.
+
+    Asserted on the wave loop's own soup, before the cleanup's duplicate resolution could hide a
+    pair (a reversed duplicate would cancel silently there), and on the public call, which raised.
+    Every one of ten seeds of this cloud committed a duplicate under the unordered key.
+    """
+    n_points = 400
+    rng = np.random.default_rng(0)
+    points_np = np.column_stack([rng.uniform(0.0, 1.0, (n_points, 2)), np.zeros(n_points)])
+    normals_np = np.tile([0.0, 0.0, 1.0], (n_points, 1))
+    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+    radius = 4.0 / math.sqrt(n_points)
+
+    grid = od.neighbors.hashgrid_from_points(points_wp, radius)
+    bvh = od.neighbors.bvh_from_points(points_wp)
+    state = od.reconstruction._BpaState(  # pyright: ignore[reportPrivateUsage]
+        points_wp, normals_wp, grid, bvh, radius, 0.2, -1.0, 4 * n_points + 16
+    )
+    od.reconstruction._bpa_run(state, 16 * n_points)  # pyright: ignore[reportPrivateUsage]
+    n_faces = int(state.counters.numpy()[kernel_bpa.CNT_FACE])
+    sorted_np = np.sort(state.all_faces.numpy()[: n_faces * 3].reshape(-1, 3), axis=1)
+    assert n_faces > 0
+    assert np.unique(sorted_np, axis=0).shape[0] == n_faces
+
+    _vertices_wp, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
+    assert faces_wp.size > 0
+
+
 def test_ball_pivoting_grows_the_triangle_budget(device: str):
     """
     A budget far below what the mesh needs must grow, not raise or truncate.

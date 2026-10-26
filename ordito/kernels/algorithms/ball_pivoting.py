@@ -659,15 +659,15 @@ def seed_triangles(
                 # Wound so its normal agrees with the point normals (Open3D's ``CreateTriangle``
                 # rule). Every later triangle inherits this winding across the edge it pivots over
                 # (``pivot_front_edges``), whose rotation sense is read off it. Reversed as
-                # ``(a, p, b)`` rather than ``(p, b, a)`` so the ``proposal_key`` pair stays
-                # ``{p, a}``.
+                # ``(p, b, a)``, keeping the seeder first: ``proposal_key`` orders the first two
+                # corners, and the seeder in front is what makes that pair unique in the wave.
                 outward = wp.dot(
                     triangle_normal(points[p], points[a], points[b]),
                     normals[p] + normals[a] + normals[b],
                 )
                 if outward < 0.0:
                     propose_triangle(
-                        a, p, b, front_capacity, counters, out_owner, out_a, out_b, out_c
+                        p, b, a, front_capacity, counters, out_owner, out_a, out_b, out_c
                     )
                 else:
                     propose_triangle(
@@ -1031,27 +1031,29 @@ def proposal_key(a: wp.int32, b: wp.int32, salt: wp.int32) -> wp.uint64:
     # function of GPU scheduling — and the loser's front edge is retried a wave later against
     # mutated state, so the difference compounds into a different mesh rather than a permuted one.
     #
-    # ``a`` and ``b`` are the proposal's *source edge* — the pivoting front edge ``(src, tgt)``, or
-    # a seeding point and its first partner — and that pair is unique among one wave's proposals,
-    # which is what makes this a total order on them:
+    # ``(a, b)`` is the proposal's *ordered source pair* — the pivoting front edge as
+    # ``(tgt, src)``, or a seeding point followed by a partner (``seed_triangles`` writes the seeder
+    # first) — and that ordered pair is unique among one wave's proposals, which is what makes this
+    # a total order on them:
     #
     # * a pivot wave proposes at most once per live front edge, and a front edge *is* one slot of a
     #   table keyed by the undirected pair, so no two share ``{src, tgt}``;
-    # * a seed wave proposes at most once per seeding point ``p``, and ``seed_triangles`` seeds only
-    #   a point that is the lowest-indexed unused point of the neighbourhood it *scanned*, so ``p``
-    #   is the smaller of its pair and distinct seeds give distinct pairs;
+    # * a seed wave proposes at most once per seeding point ``p``, and ``p`` is ``a``, so distinct
+    #   seeds give distinct ordered pairs;
     # * the two never share a wave — ``pivot_front_edges`` proposes nothing while ``CNT_SEEDING``.
     #
-    # The second bullet is exact only while a neighbourhood fits in ``MAX_SEED_NEIGHBORS``; past
-    # that the scan is truncated deliberately (see ``seed_triangles``) and two points can each seed
-    # with the other as partner, giving one key twice. **That degrades rather than corrupting**,
-    # which is what makes the truncation affordable: both proposals win and commit, they share
-    # exactly the edge ``(p1, p2)``, and ``register_face_edge`` folds them correctly —
-    # ``hash_find_or_insert`` publishes through a single ``atomic_cas`` so both threads converge on
-    # one slot, and the ``atomic_add`` hands ``previous == 0`` to one and ``1`` to the other, so the
-    # edge is inserted once, pushed once, and its boundary degree nets to zero. What is *not*
-    # preserved is the per-wave vertex-disjointness ``register_face_edge`` states above; the state
-    # stays consistent because every transition it makes is an atomic read-modify-write.
+    # **The order of the pair is load-bearing for seeds.** ``seed_triangles`` truncates its scan
+    # deliberately at ``MAX_SEED_NEIGHBORS``, so two points can each seed with the other as
+    # partner. Keyed by the *unordered* pair, both proposals tie, both win all three vertex claims
+    # and both commit; when the two scans also pick the same third point, which a dense
+    # neighbourhood makes likely, the same triangle is committed twice with the same winding, a
+    # duplicate ``repair.resolve_duplicated_faces`` cannot orient and rejects (happy_buddha at
+    # ``1.5 x`` the mean edge, two such pairs). The direction bit separates the two seeders, the
+    # lower key takes the shared vertices, and the other loses them as any contested proposal does.
+    #
+    # The direction bit sits *below* the unordered pack (``lo`` is shifted up one bit to make room,
+    # still under 2^32), so it only splits keys the unordered pack tied and leaves every other
+    # comparison as it was.
     #
     # ``salt`` rotates that order **per wave**, which is what keeps the ordering from being global.
     # An order fixed for the whole run starves a high-key front edge — it loses every contested
@@ -1066,7 +1068,8 @@ def proposal_key(a: wp.int32, b: wp.int32, salt: wp.int32) -> wp.uint64:
     # ``uint64`` as a 32-bit shift and reads as the pack it is.
     lo = wp.uint64(wp.uint32(wp.min(a, b) ^ salt))
     hi = wp.uint64(wp.uint32(wp.max(a, b) ^ salt))
-    return hi * wp.uint64(4294967296) + lo
+    descending = wp.where(a > b, wp.uint64(1), wp.uint64(0))
+    return hi * wp.uint64(4294967296) + lo * wp.uint64(2) + descending
 
 
 @wp.kernel(enable_backward=False)

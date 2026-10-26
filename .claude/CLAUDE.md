@@ -961,16 +961,21 @@ The full per-component detail is in `reference/component-status.md`; read the co
 - **Key-sorted CSR everywhere:** structural builds write keys, not triplets; a repeated assembly over fixed faces passes `pattern=`.
 - **Orders ordito reproduces itself:** `edges_unique` rows ascend by `(max, min)` key; collapse lock keys, new-vertex numbering and homology tie-breaks read row indices. Do not change `edges_unique` order casually. This is already trimesh's order (`hashable_rows` packs column 0 into the low bits), so `edges_unique`, `face_adjacency`, `subdivide` and `oriented_boundary_edges` equal trimesh's as returned (`boundary_edges` is trimesh's `edges_sorted` rows). igl has no single order to adopt instead: `unique_edge_map` sorts by `(min, max)` keeping first-seen direction, `upsample` numbers midpoints in face-walk discovery order.
 - **`quadric_decimate`:** memoryless quadrics gathered in ascending face order (reproducible on CUDA), boundary planes added once per edge, relaxed endpoint-only independence, cost-bucketed lock key, default `feature_angle=180`. Thin parts and slits are kept by vetoing a collapse whose endpoints face opposite ways unless it removes a sliver (mean ratio < 0.05); cost ties move a cell's `i2o` and quality up to 1.4x, so judge a change over several tie perturbations.
+- **`ball_pivoting`'s claim key is the *ordered* source pair, seeder first** (`proposal_key`). The
+  seed scan truncates at `MAX_SEED_NEIGHBORS`, so two points can each seed with the other as
+  partner; an unordered key tied them, both won every vertex claim and both committed, often as the
+  same triangle with the same winding, which `resolve_duplicated_faces` rejects (happy_buddha at
+  `1.5 x` mean edge, 142-149 points within `2 r`; a 400-point random plane at `r = 4` spacings, 10
+  of 10 seeds). The direction bit sits below the unordered pack, so pivot priorities are unchanged.
+  `test_ball_pivoting_seeds_no_triangle_twice` asserts on the raw wave-loop soup.
 - **Tuned constants live next to their code and are device-gated** (`_LINK_ON_DEVICE_FROM`, `EAR_ONE_BLOCK_MAX`, `RDP_ONE_BLOCK_MAX`, `_DOWNSAMPLE_DOUBLING_FROM`, `_KNN_DEFER_MIN_POINTS`, `_NEAREST_LEAF_SIZES`, `_GEODESIC_BALL_CHUNK`, `PACK_SEGMENTS_KERNEL_FROM`); re-probe after a Warp upgrade.
 
 ### Open items from the 2026-10-23 uncapped sweep: ordito on large meshes
 
 The sweep (`.benchmarks/merged-2026-10-23-final/incomplete.jsonl`, ordito-cuda rows) left ordito
-with no time on three large-mesh rows. None is attributed yet.
+with no time on three large-mesh rows; `ball_pivoting` on happy_buddha is fixed (component notes,
+the claim key). The other two are not attributed yet.
 
-- **`ball_pivoting` raises on happy_buddha**: `resolve_duplicated_faces` (`ordito/repair.py:745`)
-  finds a non-orientable duplicate face group (group 431165, signed count 2), so the pivoting emits
-  a duplicate pair with equal winding that its own cleanup cannot orient. dragon and lucy pass.
 - **`relax_approx` runs out of device memory on lucy**: `neighbors.geodesic_ball` chunks its walk
   but concatenates every chunk's neighbour list into one buffer (`ordito/neighbors.py:2261`), a
   28.7 GB allocation on a 32 GB card. The chunking bounds the walk, not the output.
