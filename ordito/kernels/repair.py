@@ -449,7 +449,7 @@ def mark_unfolded_faces(
     faces: wp.array[wp.int32],
     face_normals: wp.array[wp.vec3],
     mates: wp.array[wp.int32],
-    max_fold_cos: wp.float32,
+    max_fold_angle: wp.float32,
     out_keep: wp.array[wp.bool],
     out_flags: wp.array[wp.int32],
 ) -> None:
@@ -458,7 +458,7 @@ def mark_unfolded_faces(
     # passes ``face_normals`` as ``None``, so each normal is formed where the fold test reads it.
     f = wp.int32(wp.tid())
     folded = face_defective(
-        vertices, faces, face_normals, mates, f, wp.float32(-1.0), wp.float32(-2.0), max_fold_cos
+        vertices, faces, face_normals, mates, f, wp.float32(-1.0), wp.float32(-2.0), max_fold_angle
     )
     mark_face_fate(faces, f, not folded, out_keep, out_flags)
 

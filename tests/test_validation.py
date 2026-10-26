@@ -1750,10 +1750,13 @@ def test_face_defective_mask_matches_pymeshlab_on_folds(
     """
     Class B (compare detection): MeshLab flips the fold where this deletes it.
 
-    ``compute_selection_bad_faces(select_folded_faces=True)`` is the same dihedral criterion at the
-    same threshold, and it reports a selection rather than editing the mesh — which makes it the
+    ``compute_selection_bad_faces(select_folded_faces=True)`` is a fold criterion at the same
+    nominal threshold, and it reports a selection rather than editing the mesh — which makes it the
     oracle for ``face_defective_mask``'s fold gate even though ``meshing_remove_folded_faces`` and
-    ``remove_folded_faces`` then do different things with the answer.
+    ``remove_folded_faces`` then do different things with the answer. Its angle is not exactly the
+    dihedral (measured on single hinges: a 135 degree pair stays selected up to a threshold of 142,
+    a 126.87 degree one only to 124), so the agreement asserted is on a fold far from the
+    threshold, not at it.
 
     Non-vacuity: only the *culprit* of the fold is flagged (the last face), not the good face on
     the other side of the edge, so the selection is neither empty nor everything.
@@ -1847,8 +1850,9 @@ def test_face_defective_mask_matches_meshlib(
     pass vacuously against any implementation.
 
     Two conventions the fan is shaped around. MeshLib is **inclusive at the threshold** where
-    ordito is exclusive -- a pair at exactly 140 degrees is flagged by MeshLib and not by ordito
-    at ``angle=140`` -- so no fixture angle sits on a threshold used here. And MeshLib's criterion
+    ordito is strict (pinned on exact inputs by
+    ``test_face_defective_mask_fold_gate_is_strict_at_an_exact_threshold``), so no fixture angle
+    sits on a threshold used here. And MeshLib's criterion
     is *proximity plus antiparallel normals*, not adjacency: on the three-face
     ``folded_patch`` it flags all three faces because the folded apex triangle lies over both quad
     halves, where ordito flags only the one face whose dihedral exceeds the threshold. That
@@ -1887,6 +1891,59 @@ def test_face_defective_mask_matches_meshlib(
     )
     assert int(patch_wp.sum()) == 1
     assert int(patch_ml.sum()) == 3
+
+
+@pytest.mark.parametrize(
+    ("apex", "threshold", "folded_wp", "folded_ml"),
+    [
+        pytest.param((0.5, 1.0, 0.0), 180.0, False, True, id="180-at"),
+        pytest.param((0.5, 1.0, 0.0), 179.99, True, True, id="180-below"),
+        pytest.param((0.5, 0.0, -1.0), 90.0, False, True, id="90-at"),
+    ],
+)
+def test_face_defective_mask_fold_gate_is_strict_at_an_exact_threshold(
+    device: str,
+    apex: tuple[float, float, float],
+    threshold: float,
+    folded_wp: bool,
+    folded_ml: bool,
+) -> None:
+    """
+    Class D (a convention, measured): at a dihedral sitting exactly on the threshold MeshLib flags.
+
+    Only two thresholds survive the degrees-to-cosine conversion exactly: 180 (``cos(pi) == -1``,
+    a pair folded flat back over itself, whose ``atan2`` angle is exactly pi in ``float32``) and 90
+    (axis-aligned normals, dot exactly 0). On both MeshLib's ``findOverlappingTris``
+    (``maxNormalDot = cos(threshold)``) flags the pair: its test is ``dot <= maxNormalDot``.
+    Ordito's is a strict ``angle > threshold``, which is what its docstring says ("more than"),
+    and the only other library with a dihedral fold threshold agrees at 180: pymeshlab's
+    ``compute_selection_bad_faces(folded_faces_angle_threshold=)`` selects the flat fold at every
+    threshold up to 179 and at 180 not. (pymeshlab is no witness elsewhere: its fold angle is not
+    the dihedral -- a 135 degree hinge stays selected up to a threshold of 142, a 126.87 degree one
+    only to 124, a 90 degree one never -- and trimesh has no fold test, only
+    ``face_adjacency_angles``.) At 90 ordito's second half, "this face faces against its
+    neighbourhood", is ``0 < 0`` and also refuses, so the 90 case is MeshLib's inclusivity alone.
+
+    The 179.99 case is the regression: the gate was on the angle's ``float32`` cosine, flat at pi,
+    so every threshold above ~179.98 degrees rounded to ``-1`` and the flat fold was flagged by
+    MeshLib and pymeshlab and by nothing here.
+    """
+    vertices_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 1.0, 0.0], apex])
+    faces_np = np.array([[0, 1, 2], [1, 0, 3]], dtype=np.int32)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    mask_wp = od.validation.face_defective_mask(
+        vertices_wp, faces_wp, min_quality=None, max_fold_angle=threshold
+    ).numpy()
+
+    settings_ml = mm.FindOverlappingSettings()
+    settings_ml.maxNormalDot = float(np.cos(np.radians(threshold)))
+    mask_ml = meshlib_bitset_to_numpy(
+        mm.findOverlappingTris(mm.MeshPart(numpy_to_meshlib(vertices_np, faces_np)), settings_ml),
+        faces_np.shape[0],
+    )
+    # Two faces, each the other's whole neighbourhood: a fold flags both or neither.
+    assert np.array_equal(mask_wp, np.full(2, folded_wp))
+    assert np.array_equal(mask_ml, np.full(2, folded_ml))
 
 
 @pytest.mark.parametrize(

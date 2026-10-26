@@ -322,43 +322,104 @@ def _heat_geodesic_igl(
     return np.asarray(igl.heat_geodesics_solve(data, sources_np))
 
 
-@pytest.mark.parametrize(
-    ("mesh_name", "bound"), [("sphere_irregular", 3.3e-2), ("saddle_graded", 7.1e-3)]
-)
+def _heat_geodesic_igl_port(
+    vertices_np: np.ndarray,
+    faces_np: np.ndarray,
+    sources_np: np.ndarray,
+    mass: igl.MassMatrixType,
+    average_boundary: bool,
+) -> np.ndarray:
+    # ``igl::heat_geodesics_precompute`` / ``_solve`` transcribed onto SciPy direct solves from
+    # igl's own operators, with its two choices made parameters: the lumped ``mass`` type (igl
+    # fixes ``MASSMATRIX_TYPE_DEFAULT``, i.e. Voronoi) and whether the heat is averaged with the
+    # solution pinned to zero on the boundary (igl does; ordito keeps the Neumann one alone).
+    n_vertices = vertices_np.shape[0]
+    cot = igl.cotmatrix(vertices_np, faces_np)
+    mass_matrix = igl.massmatrix(vertices_np, faces_np, mass)
+    grad = igl.grad(vertices_np, faces_np)
+    double_area = igl.doublearea(vertices_np, faces_np)
+    t = igl.avg_edge_length(vertices_np, faces_np) ** 2
+    heat_system = (mass_matrix - sp.diags(np.full(n_vertices, t)) @ cot).tocsc()
+    indicator = np.zeros(n_vertices)
+    indicator[sources_np] = 1.0
+    heat = spla.spsolve(heat_system, indicator)
+    boundary = np.unique(np.asarray(igl.boundary_facets(faces_np)[0]))
+    if average_boundary and boundary.size > 0:
+        interior = np.setdiff1d(np.arange(n_vertices), boundary)
+        pinned = np.zeros(n_vertices)
+        pinned[interior] = spla.spsolve(
+            heat_system[interior][:, interior].tocsc(), indicator[interior]
+        )
+        heat = 0.5 * (heat + pinned)
+    gradient = np.asarray(grad @ heat).reshape(3, -1).T
+    norm = np.linalg.norm(gradient, axis=1, keepdims=True)
+    field = np.divide(gradient, norm, out=np.zeros_like(gradient), where=norm > 0.0)
+    # igl's ``Div`` is ``-G^T diag(area) / 2`` and its Poisson system ``-L phi / 2 = -Div X``.
+    # igl fixes the free constant by ``sum(M phi) = 0`` and then shifts the field to zero at the
+    # sources, so pinning the first source instead lands on the same field.
+    divergence = np.asarray(grad.T @ (np.tile(double_area, 3) * field.T.ravel())) * 0.25
+    free = np.setdiff1d(np.arange(n_vertices), sources_np[:1])
+    distance = np.zeros(n_vertices)
+    distance[free] = spla.spsolve(cot.tocsc()[free][:, free], -2.0 * divergence[free])
+    distance -= distance[sources_np].mean()
+    return -distance if distance.mean() < 0.0 else distance
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parametrize("source", ["first", "middle"])
 @pytest.mark.parity("heat_geodesic", "igl")
 @pytest.mark.parity("heat_geodesic_conditioning", "igl")
 def test_heat_geodesic_matches_igl(
-    request: pytest.FixtureRequest, mesh_name: str, bound: float
+    request: pytest.FixtureRequest, mesh_name: str, source: str
 ) -> None:
     """
-    Class C (the worst error against the range): the same method on a different mass matrix.
+    Class B (igl's algorithm with its two discretization choices swapped): the mass and boundary.
 
-    Both are Crane et al. on the identical triangulation with ``t = h^2``, but
-    ``igl::heat_geodesics_precompute`` lumps the mass with ``MASSMATRIX_TYPE_DEFAULT``, which is
-    **Voronoi**, where ordito -- like geometry-central and MeshLab, which it matches to 1e-5 of the
-    diameter in ``test_heat_geodesic_matches_potpourri3d_plain_and_pymeshlab`` -- lumps it
-    barycentrically. That is a discretization choice, not a convention to align, so no
-    element-wise tolerance follows from the method and the comparison is a bound.
+    Both are Crane et al. on the identical triangulation with ``t = h^2``, and they part on two
+    choices, neither a convention to align: ``igl::heat_geodesics_precompute`` lumps the mass with
+    ``MASSMATRIX_TYPE_DEFAULT``, which is **Voronoi**, where ordito -- like geometry-central and
+    MeshLab, which it matches in ``test_heat_geodesic_matches_potpourri3d_plain_and_pymeshlab``
+    -- lumps it barycentrically; and igl averages the Neumann heat with the one pinned to zero on
+    the boundary, where ordito keeps the Neumann one (the more accurate, see ``_heat_geodesic``).
+    So the transform is ``_heat_geodesic_igl_port``: igl's ``heat_geodesics_solve`` transcribed
+    onto SciPy from igl's own ``cotmatrix``, ``massmatrix`` and ``grad``, with both choices as
+    parameters. It is first held to igl itself at igl's choices (measured 2.3e-14 to 7.8e-13 of the
+    range), then at ordito's choices to ordito at ``1e-5`` of the range (measured 1.4e-8 to 9.6e-7,
+    both devices).
 
-    Measured, both devices: worst error **1.11e-02** of the range on ``sphere_irregular`` (72 %
-    obtuse faces, where the two lumpings part most) and **2.36e-03** on ``saddle_graded``; the
-    bounds are 3x those. Mutation probes: a field scaled by 1.05 scores 5.9e-02 / 4.9e-02 (1.8x /
-    6.9x past) and one scaled by 1.02 fails the saddle row (1.9e-02, 2.7x past), while a timestep
-    off by 20-25 % lands only 1.0-1.3x past -- the Voronoi gap is the same size as that error, so
-    this pair is the weak oracle for the timestep and the potpourri3d pair the strong one. The
-    multi-source form is compared in ``test_heat_geodesic_matches_igl_far_from_the_sources``.
+    Both choices are visible here, so neither half is vacuous: the raw gap to igl is 1.1-1.5 % of
+    the range on ``sphere_irregular`` (72 % obtuse faces, where the lumpings part most), 0.24 % on
+    ``saddle_graded`` from its corner and 4.6 % from its middle, where the boundary average is
+    the larger part (3.3e-3 is the mass alone). From the corner the average is a no-op -- the
+    source is on the rim, so the pinned solution is zero -- which is why the middle source is
+    here. Mutation probes, worst error against the range: the port at igl's Voronoi mass is
+    1.1e-2 / 2.4e-3 off ordito (rim source), at igl's boundary average 4.5e-2 (saddle, middle
+    source); a diffusion time 20 % long is 2.7e-2 / 6.6e-3 off, and even the field scaled by
+    1.0001 is 1.0e-4 off, 10x the tolerance. This pair, not potpourri3d, is now the strong oracle
+    for the timestep: the previous Class C bound let a 20-25 % timestep error through.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
+    # The coordinates ordito reads, so the operators of both sides are built on the same numbers.
+    vertices_np = np.asarray(mesh_wp.points.numpy(), dtype=np.float64)
     faces_np = np.array(mesh_tm.faces, dtype=np.int64)
-    sources_np = np.array([0], dtype=np.int64)
+    n_vertices = vertices_np.shape[0]
+    sources_np = np.array([0 if source == "first" else n_vertices // 2 + 17], dtype=np.int64)
     sources_wp = wp.array(sources_np.astype(np.int32), dtype=wp.int32, device=mesh_wp.device)
 
     distance_igl = _heat_geodesic_igl(vertices_np, faces_np, sources_np)
+    port_igl = _heat_geodesic_igl_port(
+        vertices_np, faces_np, sources_np, igl.MASSMATRIX_TYPE_VORONOI, average_boundary=True
+    )
+    port_ordito = _heat_geodesic_igl_port(
+        vertices_np, faces_np, sources_np, igl.MASSMATRIX_TYPE_BARYCENTRIC, average_boundary=False
+    )
     distance_wp = od.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, sources_wp)
 
-    assert np.ptp(distance_igl) > 1.0  # non-vacuity: the reference propagated
-    assert np.abs(distance_wp.numpy() - distance_igl).max() < bound * np.ptp(distance_igl)
+    scale = np.ptp(distance_igl)
+    assert scale > 1.0  # non-vacuity: the reference propagated
+    assert np.abs(port_igl - distance_igl).max() < 1e-10 * scale  # the port is igl's algorithm
+    assert np.abs(distance_wp.numpy() - distance_igl).max() > 1e-3 * scale  # the swap matters
+    assert np.abs(distance_wp.numpy() - port_ordito).max() < 1e-5 * scale
 
 
 @pytest.mark.parity(
@@ -1567,10 +1628,18 @@ def test_log_map_matches_potpourri3d(request: pytest.FixtureRequest, mesh_name: 
     Class C because the two are different constructions past the gauge: potpourri3d's radial
     direction comes from a second vector-heat solve and its radius from that field, where ordito
     reads both off ``heat_geodesic``'s distance. The angles differ by a median **13.2** degrees
-    (90th percentile 21.3), varying with direction, and expressing ordito's radial direction
+    (90th percentile 21.3), varying with direction, and no convention closes it (measured): the
+    source rotation taken as the Euclidean angle between the two ``basis_x`` instead of the
+    intrinsic offset gives 13.19, mirroring 64.6, and expressing ordito's radial direction
     intrinsically (each face's gradient rotated into the vertex's normalized-angle coordinates)
-    instead of by projection onto the vertex frame was measured to change that by under 0.1 degree
-    -- so it is not a coordinate mix-up on ordito's side. Measured median error **10.56 %** of the
+    instead of by projection onto the vertex frame changes it by under 0.1. Against the radial
+    direction of the *exact* polyhedral distance (``igl.exact_geodesic``, read the way ordito
+    reads its own, so with ordito's transported reference) ordito's angles are a median 4.5 degrees
+    off and potpourri3d's 11.0 from this source; 6.6-9.5 against 12.7-18.4 from two sources on
+    ``sphere_irregular``; and from the saddle's middle, where the two agree to 2.5, 2.4 against
+    0.4. So the gap is the two radial directions, each a discretization error, and potpourri3d's
+    is usually the larger -- a class C comparison by construction, not a missed transform.
+    Measured median error **10.56 %** of the
     diagonal on both devices, against the 15 % bar (1.4x; not tightened to 3x because the gap is
     the reference's construction, and its radius is the less accurate one, below). **Mutation
     probes**, median error: leaving the gauge rotation out scores **88 %**, mirroring ordito's map

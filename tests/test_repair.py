@@ -2719,10 +2719,15 @@ def test_fix_degeneracies_matches_meshlib(
 
     Both grow a region three rings around the degenerate faces, flip toward Delaunay within the
     deviation and angle bounds, and collapse every region edge up to ``maxDeviation`` into an
-    endpoint, shortest first. MeshLib runs one serial queue; ordito commits conflict-free batches
-    ranked by length within each neighbourhood, so where many edges tie (the saddle's graded rows)
-    the two keep different vertices: 986 and 1 020 of 1 156, with no edge under the bound left in
-    either. Asserted:
+    endpoint. MeshLib runs one serial shortest-first queue; ordito commits conflict-free batches,
+    each neighbourhood's winner by a hashed key (ranking it by length picks the same collapses
+    here, ``kernels/remesh.collapse_candidates``), so the two keep different vertices: MeshLib 986
+    and ordito 1 020 of 1 156, with no edge under the bound left in either. Most of the count gap
+    is exact ties on the saddle's mirror-symmetric rows, where the endpoint-cost comparison keeps
+    its first endpoint: jittering the input by 1e-7 / 1e-6 / 1e-5 of the diagonal gives 990 / 994
+    / 999 against MeshLib's 986 / 986 / 1 000. The kept sets still differ by 59-62 vertices there
+    (face overlap 0.86-0.87), which is the order itself and not reproducible without MeshLib's
+    queue. Asserted:
 
     - every output vertex is an input vertex, and the two outputs share at least ``min_overlap``
       of their faces (intersection over union; measured 0.839 on the saddle, 0.996 on the sphere);
@@ -4093,10 +4098,8 @@ def test_remove_t_vertices_matches_pymeshlab(
 
     ``saddle_graded`` at ``threshold=20`` is the hard-fixture case: its graded rows of needles
     make both sides replace the **same 128** faces, on both devices. That is as far as the
-    agreement goes, and it is not a tolerance away from holding elsewhere. MeshLab walks one serial
-    queue where ordito commits independent sets of flips per pass, so on meshes whose slivers
-    neighbour each other the two pick different flips (faces changed by MeshLab / by ordito /
-    differing between them, measured on both devices):
+    agreement goes on the irregular fixtures (faces changed by MeshLab / by ordito / differing
+    between them, measured on both devices):
 
     | fixture | threshold 40 | threshold 20 |
     |---|---|---|
@@ -4104,9 +4107,23 @@ def test_remove_t_vertices_matches_pymeshlab(
     | ``torus_irregular`` | 16 / 70 / 130 | 79 / 135 / 196 |
     | ``saddle_graded`` | 128 / 64 / 128 | 128 / 128 / **0** |
 
-    Order-dependence is not a convention ordito could adopt without giving up the parallel passes,
-    and MeshLab's queue is GPL source ordito may not derive from, so those cases are recorded here
-    and not asserted.
+    The gap is the rule, not the order. MeshLab's filter documentation says it flips "the opposite
+    edge on the degenerate face if the triangulation quality improves", and its ``threshold`` is a
+    *base over height* ratio: probed on a single sliver, it flips exactly while the longest edge
+    over the height onto it is at least the threshold (base/height 40, 20 and 100 against
+    ``aspect_ratio`` 200.6, 50.6 and 1 050.8). ordito's threshold is ``aspect_ratio``
+    (``(base / height)^2 / 8`` on a sliver, so 40 here is base/height ~18) and any edge of a sliver
+    is a candidate. A NumPy prototype of the documented rule -- flag by longest edge over height,
+    flip that longest edge when the worse longest-over-height of the pair drops -- run in parallel
+    rounds won by the lowest edge key, which is ordito's claim order, reproduces MeshLab face for
+    face on four of the six cells (both thresholds on the saddle, 40 on the sphere and torus) and
+    differs by 38 and 6 faces at threshold 20 on the sphere and torus; a serial ascending-face sweep
+    does no better on the sphere (32). In the kernel, with ordito's convexity guard kept, the same
+    rule differs by 4 and 36 faces on the sphere, 0 and 6 on the torus and 0 and 0 on the saddle
+    (thresholds 40 and 20): the sphere's 4 are two MeshLab flips of non-convex quads, which fold
+    it to a 178.3 degree dihedral (169.0 with the guard; without it the counts are 0 and 38).
+    Adopting the rule changes what ``threshold`` means for every caller, so it is the owner's
+    call; until then those cells are recorded here and not asserted.
     """
     if mesh_kind == "t_vertex_patch":
         vertices_np, faces_np = t_vertex_patch

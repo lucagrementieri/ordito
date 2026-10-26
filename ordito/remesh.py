@@ -3302,8 +3302,9 @@ def flip_by_objective(
         whose default ``'area/max side'`` is this one.
     aspect_threshold
         Sliver threshold for ``objective="t_vertex"``: only a quad whose worse triangle has an
-        ``aspect_ratio`` above this is eligible. MeshLab's ``meshing_remove_t_vertices`` threshold,
-        whose default of ``40`` is this one. Must be positive.
+        ``aspect_ratio`` above this is eligible. MeshLab's ``meshing_remove_t_vertices`` has the
+        same default of ``40`` for another ratio, the longest edge over the height onto it (see
+        [`flip_t_vertices`][ordito.repair.flip_t_vertices]). Must be positive.
     max_iter
         Maximum number of parallel flip passes. Each pass commits a conflict-free independent set,
         so a mesh needing many local rewrites needs several.

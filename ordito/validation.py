@@ -1811,8 +1811,9 @@ def face_defective_mask(
         face_normals = None
         mates = None
 
-    # -2 is unreachable for a cosine and -1 for the normalized quality, so a disabled criterion
-    # simply never fires and the kernel needs no per-criterion flag.
+    # -2 is unreachable for a cosine, -1 for the normalized quality and ``FOLD_ANGLE_OFF`` (past
+    # pi) for a dihedral, so a disabled criterion simply never fires and the kernel needs no
+    # per-criterion flag.
     _launch.launch(
         kernel_validation.face_defective_mask,
         dim=n_faces,
@@ -1825,9 +1826,9 @@ def face_defective_mask(
             wp.float32(
                 math.cos(math.radians(max_normal_angle)) if max_normal_angle is not None else -2.0
             ),
-            wp.float32(
-                math.cos(math.radians(max_fold_angle)) if max_fold_angle is not None else -2.0
-            ),
+            wp.float32(math.radians(max_fold_angle))
+            if max_fold_angle is not None
+            else kernel_validation.FOLD_ANGLE_OFF,
             out_bad,
         ],
         device=device,

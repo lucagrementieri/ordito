@@ -518,8 +518,9 @@ def polyline_upsample(
     """
     Upsample a polyline to an approximately uniform step size.
 
-    Each segment is split into ``max(floor(length / step_size), 1)`` equal pieces. The final
-    endpoint of the polyline is not emitted (matching the source implementation).
+    Each segment is split into ``max(floor(length / step_size), 1)`` equal pieces, so on a
+    segment longer than ``step_size`` the spacing is at least ``step_size`` (under twice it), not
+    capped by it. The final endpoint of the polyline is not emitted.
 
     Parameters
     ----------
