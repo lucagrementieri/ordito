@@ -44,7 +44,6 @@ Shelving decisions that are not obvious from the section titles:
     * [MeshLab / PyMeshLab](migrating-from/meshlab.md)
     * [potpourri3d](migrating-from/potpourri3d.md)
     * [PyTorch3D](migrating-from/pytorch3d.md)
-* [Performance](performance.md)
 * [Benchmarks](benchmarks/index.md)
     * Primitives & creation
         * [creation](benchmarks/creation.md)

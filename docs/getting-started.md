@@ -38,6 +38,15 @@ The untested row is a statement about coverage, not a warning — if ordito work
 you on Windows, a short [issue](https://github.com/lucagrementieri/ordito/issues) saying so is
 what would move it up the table.
 
+### The first call compiles
+
+Warp compiles each kernel module to native code the first time a function needs it on a device,
+and caches the result on disk (`~/.cache/warp` by default; `wp.config.kernel_cache_dir` moves it).
+Right after installing or upgrading, the first call of a function takes about a second for each
+kernel module it touches; every later call, in this process or any later one, loads the cached
+binary. When you time something, time the second call. In a service or a container, warm the cache
+at build time by running the pipeline on a small input, and keep the cache directory.
+
 ## The five-minute mental model
 
 ordito has no scene graph, no viewer, and no mandatory mesh object. A mesh is two

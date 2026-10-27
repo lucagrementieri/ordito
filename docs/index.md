@@ -111,8 +111,6 @@ repair-then-remesh pipeline on a realistically broken mesh), or jump straight to
   repair, voxels, queries, cutting, point clouds, reconstruction and registration.
 - **[Migrating from another library](migrating-from/index.md)** — already know trimesh, libigl,
   Open3D, MeshLab, potpourri3d, or PyTorch3D? Start here.
-- **[Performance](performance.md)** — why the GPU path is fast, and how to check any number
-  yourself.
 - **[Benchmarks](benchmarks/index.md)** — a curated set of ordito-vs-reference comparisons, rendered as
   charts, each library named by its own logo.
 

@@ -100,8 +100,7 @@ potpourri3d, PyTorch3D, SciPy or NumPy), a test compares ordito's output with it
 not just its shape. Where libraries define a quantity differently (Chamfer distance squared or
 not, a signed distance negative inside or outside), the docstring says which convention ordito
 follows and how to get the other. Performance changes land with a before/after measurement;
-[Performance](performance.md) and [Benchmarks](benchmarks/index.md) show how to reproduce any published
-number.
+[Benchmarks](benchmarks/index.md) shows how to reproduce any published number.
 
 ## Where to next
 

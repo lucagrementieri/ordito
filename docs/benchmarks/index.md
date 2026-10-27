@@ -453,5 +453,11 @@ done
 uv run python -m benchmarks.tools.render_docs results
 ```
 
-The last command redraws every chart on this page and on the module pages from your own run. Absolute times depend on the hardware; the ratios are what carries over. See
-[Performance](../performance.md) for how to read a speed claim.
+The last command redraws every chart on this page and on the module pages from your own run.
+Absolute times depend on the hardware; the ratios are what carries over.
+
+A ratio holds only for the library, the input and the hardware it was measured on: besides its
+size, a mesh's number of components, boundary length and triangle shapes move it. A few functions
+have little parallel work at realistic sizes (a sequential pass over one small boundary loop), and
+a fast single-threaded C++ implementation beats them; the module pages show those cases beside
+the others.
