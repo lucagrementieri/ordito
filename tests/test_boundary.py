@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 from collections import Counter
+from typing import Any, Literal, cast
 
 import igl
 import numpy as np
@@ -23,6 +24,7 @@ from tests.comparisons import (
 )
 from tests.conftest import BOUNDARY_MESHES, open_cylinder_arrays, touching_holes_grid_arrays
 from tests.conversions import (
+    numpy_to_meshlib,
     numpy_to_warp,
     pyvista_edges_to_indices,
     trimesh_to_meshlib,
@@ -626,6 +628,57 @@ def test_boundary_loops_cut_a_pinched_loop_into_simple_cycles(device: str) -> No
         (loop[i], loop[(i + 1) % len(loop)]) for loop in loops for i in range(len(loop))
     )
     assert walked == Counter(map(tuple, boundary_np.tolist()))
+
+
+@pytest.mark.parity("boundary_loops", "meshlib")
+def test_boundary_loops_crossing_pinch_gaps_match_meshlib_holes(device: str) -> None:
+    """
+    Class B (reversed and rotated to start at the smallest vertex): ``pinches="gap"`` is MeshLib.
+
+    MeshLib walks a hole along the empty region (``prev(sym(e))``), so at a vertex where two holes
+    touch it crosses the gap to the other fan. On the touching-holes grid that keeps the two
+    square holes apart; ``"fan"`` joins them into one loop through vertex 12 twice, which is
+    what ``"split"`` then cuts. MeshLib walks each hole the other way round, hence the reversal.
+    """
+    vertices_np, faces_np = touching_holes_grid_arrays()
+    mesh_ml = numpy_to_meshlib(vertices_np, faces_np)
+    holes_ml: list[list[int]] = []
+    for edge_ml in mesh_ml.topology.findHoleRepresentiveEdges():
+        ring: list[int] = []
+        e = edge_ml
+        while True:
+            ring.append(mesh_ml.topology.org(e).get())
+            e = mesh_ml.topology.prev(e.sym())
+            if e == edge_ml:
+                break
+        holes_ml.append(ring)
+    assert sorted(len(ring) for ring in holes_ml) == [4, 4, 16]
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+
+    def canonical(loop: list[int]) -> tuple[int, ...]:
+        start = loop.index(min(loop))
+        return tuple(loop[start:] + loop[:start])
+
+    def loops(pinches: Literal["split", "fan", "gap"]) -> list[list[int]]:
+        flat_wp, offsets_wp = od.boundary.boundary_loops_with_offsets(
+            vertices_wp, faces_wp, pinches=pinches
+        )
+        flat_np = flat_wp.numpy()
+        return [flat_np[a:b].tolist() for a, b in itertools.pairwise(offsets_wp.numpy().tolist())]
+
+    gap = loops("gap")
+    assert {canonical(loop[::-1]) for loop in gap} == {canonical(ring) for ring in holes_ml}
+    fan = loops("fan")
+    assert sorted(len(loop) for loop in fan) == [8, 16]
+    assert max(Counter(loop).most_common(1)[0][1] for loop in fan) == 2
+    assert {canonical(loop) for loop in loops("split")} == {canonical(loop) for loop in gap}
+
+
+def test_boundary_loops_reject_an_unknown_pinch_mode(device: str) -> None:
+    vertices_np, faces_np = touching_holes_grid_arrays()
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    with pytest.raises(ValueError, match="pinches"):
+        od.boundary.boundary_loops(vertices_wp, faces_wp, pinches=cast(Any, "cut"))
 
 
 @pytest.mark.parametrize(

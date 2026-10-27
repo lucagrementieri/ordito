@@ -655,6 +655,14 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # scattered edge lands in -- the ``scatter_vertex_faces`` case exactly, under a name that says
     # what it holds. The answer is ``out_neighbors``.
     ("boundary", "scatter_boundary_neighbors"): frozenset({"slot_count"}),
+    # ``next_node`` is the boundary halfedges' successor table, rewritten in place where the walk
+    # crosses a pinch's gap instead of staying in its fan.
+    ("boundary", "cross_pinch_gaps"): frozenset({"next_node"}),
+    # The seed distances grow ring by ring in place, one launch a ring.
+    ("reconstruction", "grow_seed_rings"): frozenset({"distance"}),
+    # The serial builder's half-edge records and its per-round marks are its working state across
+    # the whole assembly; the answer is ``out_state``.
+    ("algorithms.mesh_builder", "build_candidate_mesh"): frozenset({"t", "marked"}),
     # ``table`` is ``voxels._VoxelTable``'s open-addressing cell table: filled with point indices
     # by the insert, rewritten to voxel rows by the ordering pass, then probed by the pooling
     # kernels. Neither an input nor the answer, so it keeps the name of what it holds.

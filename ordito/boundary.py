@@ -23,6 +23,7 @@ pack and delegate, so there is one segmented launch behind each measure rather t
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Literal
 
 import numpy as np
 import warp as wp
@@ -180,6 +181,7 @@ def boundary_loops(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
+    pinches: Literal["split", "fan", "gap"] = "split",
     copy: bool = False,
     mates: wp.array[wp.int32] | None = None,
 ) -> list[wp.array[wp.int32]]:
@@ -210,6 +212,9 @@ def boundary_loops(
         size and the edge-key radix, so every face index must be below it.
     faces
         ``(3 * n_faces,)`` face index buffer.
+    pinches
+        How a loop passes a vertex where the rim meets itself; see
+        [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets].
     copy
         Return independent buffers instead of views into the packed result.
     mates
@@ -227,6 +232,8 @@ def boundary_loops(
 
     Raises
     ------
+    ValueError
+        If ``pinches`` is not ``"split"``, ``"fan"`` or ``"gap"``.
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
     RuntimeError
@@ -235,11 +242,10 @@ def boundary_loops(
     Notes
     -----
     A vertex where the rim meets itself (a non-manifold **pinch** point, as deleting two faces that
-    share only a corner leaves) is walked by halfedge sector rather than by vertex: the loops are
-    the boundary of the surface with that vertex split once per fan, so every boundary edge
-    appears exactly once and every consecutive pair is a real boundary edge -- but a loop can pass
-    through a pinch vertex more than once, where two holes touch there. That needs an
-    edge-manifold mesh; on one that is not, the loops are bounded but unspecified.
+    share only a corner leaves) is walked by halfedge rather than by vertex, so every boundary edge
+    appears exactly once and every consecutive pair is a real boundary edge; ``pinches`` decides
+    which edge the walk leaves such a vertex by. That needs an edge-manifold mesh; on one that is
+    not, the loops are bounded but unspecified.
 
     Orientability is *not* assumed. On a non-orientable surface the winding cannot orient the
     boundary globally -- at the seam two boundary edges leave the same vertex -- so the loops are
@@ -275,7 +281,7 @@ def boundary_loops(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, mates=mates)
-    flat_loops, offsets = boundary_loops_with_offsets(vertices, faces, mates=mates)
+    flat_loops, offsets = boundary_loops_with_offsets(vertices, faces, pinches=pinches, mates=mates)
     # The offsets' length is host metadata: with one loop they are ``[0, len(flat_loops)]``, and the
     # split needs no readback of them.
     host_offsets = [0, flat_loops.size] if offsets.size == 2 else offsets
@@ -286,6 +292,7 @@ def boundary_loops_with_offsets(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
+    pinches: Literal["split", "fan", "gap"] = "split",
     mates: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
@@ -301,11 +308,22 @@ def boundary_loops_with_offsets(
     [`successor_cycles_from_table`][ordito.graph.successor_cycles_from_table] straight off the
     boundary's successor table.
 
-    Every loop is simple. Where two holes touch at one vertex (a *pinch*), walking the boundary one
-    fan of faces at a time can make the two holes one loop passing that vertex twice; such a loop is
-    cut into cycles at the vertices it passes twice, which are the loops a hole filler closes (a
-    triangulation of a loop that repeats a vertex is not a surface). That cut costs one readback of
-    the boundary, and only a pinched boundary pays it.
+    Where two holes touch at one vertex (a *pinch*), the boundary halfedges into that vertex have
+    two ways out, and ``pinches`` picks the loops:
+
+    - ``"split"`` (default): every loop is simple. The walk of ``"fan"`` is cut into cycles at the
+      vertices a loop passes twice, which are the loops a hole filler closes one by one (a
+      triangulation of a loop that repeats a vertex is not a surface). The cut costs one readback
+      of the boundary, and only a pinched boundary pays it.
+    - ``"fan"``: the walk stays in the fan of faces it arrived along, which is the boundary of the
+      surface with the pinch vertex split once per fan; two holes touching at a vertex can come
+      back as one loop passing it twice.
+    - ``"gap"``: the walk crosses the gap to the other fan: each loop is the rim of one empty
+      region, so two holes touching at a vertex stay two loops, and a loop passes a vertex twice
+      only where one hole meets itself there. At a vertex with three fans or more the walk stays
+      in its fan, as ``"fan"`` does.
+
+    On a boundary with no pinch the three agree.
 
     Parameters
     ----------
@@ -314,6 +332,9 @@ def boundary_loops_with_offsets(
         size and the edge-key radix, so every face index must be below it.
     faces
         ``(3 * n_faces,)`` face index buffer.
+    pinches
+        ``"split"`` (default), ``"fan"`` or ``"gap"``: how a loop leaves a pinch vertex, as
+        described above.
     mates
         ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
         [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
@@ -332,6 +353,8 @@ def boundary_loops_with_offsets(
 
     Raises
     ------
+    ValueError
+        If ``pinches`` is not ``"split"``, ``"fan"`` or ``"gap"``.
     RuntimeError
         If ``vertices`` and ``faces`` are not on one device.
     RuntimeError
@@ -365,6 +388,8 @@ def boundary_loops_with_offsets(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, mates=mates)
+    if pinches not in ("split", "fan", "gap"):
+        raise ValueError(f"pinches must be 'split', 'fan' or 'gap', got {pinches!r}")
     n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
@@ -378,7 +403,9 @@ def boundary_loops_with_offsets(
     if boundary.count() == 0:
         return _launch.empty_packed(wp.int32, device)
     if has_pinch:
-        return _split_at_pinches(*_pinched_boundary_cycles(boundary))
+        if pinches == "split":
+            return _split_at_pinches(*_pinched_boundary_cycles(boundary, n_vertices))
+        return _pinched_boundary_cycles(boundary, n_vertices, cross_gaps=pinches == "gap")
     if has_seam:
         return _unoriented_boundary_cycles(boundary.edges(sort_pair=True), n_vertices)
     # With neither defect no boundary vertex has two boundary edges out or three incident, so the
@@ -470,7 +497,7 @@ def _boundary_defects(boundary: _BoundaryHalfedges, n_vertices: int) -> tuple[bo
 
 
 def _pinched_boundary_cycles(
-    boundary: _BoundaryHalfedges,
+    boundary: _BoundaryHalfedges, n_vertices: int, *, cross_gaps: bool = False
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Boundary cycles of a rim that meets itself at a vertex: walk the boundary *halfedges* instead.
@@ -491,6 +518,10 @@ def _pinched_boundary_cycles(
     bounded and in range, just not meaningful). There a rotation can dead-end on a halfedge that is
     not a boundary one, and the chain it leaves is dropped rather than ranked (see
     ``kernels/graph.closed_cycle_windows``), so every returned pair is still a boundary edge.
+
+    ``cross_gaps`` swaps the successor at a vertex with two out-halfedges for the other one, which
+    crosses the gap between the fans (``kernels/boundary.cross_pinch_gaps``); the map stays a
+    bijection, as each swap exchanges the two halfedges leaving one vertex.
     """
     faces = boundary.faces
     # ``halfedge_twins(faces, n_vertices=n_vertices, validate=False)``, read off the boundary
@@ -505,6 +536,21 @@ def _pinched_boundary_cycles(
         device=device,
     )
     tails, next_node = boundary.successors(n, twins=twins)
+    if cross_gaps:
+        counts = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+        slots = _launch.empty(2 * n_vertices, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_boundary.record_pinch_out_halfedges,
+            dim=tails.size,
+            inputs=[tails, faces, counts, slots],
+            device=device,
+        )
+        _launch.launch(
+            kernel_boundary.cross_pinch_gaps,
+            dim=tails.size,
+            inputs=[tails, faces, counts, slots, next_node],
+            device=device,
+        )
     return successor_cycles_from_table(tails, next_node, node_values=faces)
 
 

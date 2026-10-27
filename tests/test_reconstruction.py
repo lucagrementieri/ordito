@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 import warnings
 from collections.abc import Callable
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 import igl
 import numpy as np
@@ -46,7 +46,9 @@ from tests.comparisons import (
 from tests.conftest import CLOSED_MESHES, ROUND_FRAME_SCALE, ROUND_FRAME_SHIFT, saddle_graded_arrays
 from tests.conversions import (
     meshlib_to_trimesh,
+    meshlib_triangulation_to_numpy,
     numpy_to_meshlib,
+    numpy_to_meshlib_triangulation,
     numpy_to_warp,
     open3d_to_trimesh,
     points_to_meshlib,
@@ -470,6 +472,137 @@ def test_graded_open_cloud_matches_meshlib_reference(device: str):
     assert abs(len(faces_wp_set) - len(faces_ml_set)) <= 0.01 * len(faces_ml_set)
 
 
+def _saddle_cloud(seed: int, graded: bool) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return a random saddle sheet's points and normals.
+
+    ``graded`` packs them toward the centre and perturbs the heights and the normals, which leaves
+    pinches the builder must delete.
+    """
+    rng = np.random.default_rng(seed)
+    uv = rng.uniform(-1.0, 1.0, size=(1200 if graded else 1500, 2))
+    if graded:
+        uv = np.sign(uv) * np.abs(uv) ** 1.8
+    heights = 0.3 * (uv[:, 0] ** 2 - uv[:, 1] ** 2)
+    normals = np.c_[-0.6 * uv[:, 0], 0.6 * uv[:, 1], np.ones(uv.shape[0])]
+    if graded:
+        heights += rng.normal(scale=0.01, size=uv.shape[0])
+        normals += rng.normal(scale=0.15, size=normals.shape)
+    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+    return np.c_[uv, heights].astype(np.float32), normals.astype(np.float32)
+
+
+def _meshlib_candidates(
+    points_np: np.ndarray, normals_np: np.ndarray, num_neighbours: int
+) -> tuple[np.ndarray, int]:
+    """Return MeshLib's candidate triangles in its builder's order, and the ``t3`` count."""
+    cloud_ml = points_to_meshlib(points_np.astype(np.float64), normals_np.astype(np.float64))
+    settings = mm.TriangulationHelpersSettings()
+    settings.numNeis = num_neighbours
+    settings.critAngle = math.pi / 2.0
+    settings.boundaryAngle = 0.9 * math.pi
+    settings.orientedNormals = cloud_ml.normals
+    settings.automaticRadiusIncrease = True
+    fans_ml = mm.buildUnitedLocalTriangulations(cloud_ml, settings)
+    rep3_ml, rep2_ml = mm.Triangulation(), mm.Triangulation()
+    mm.findRepeatedOrientedTriangles(fans_ml, rep3_ml, rep2_ml)
+    rep3, rep2 = meshlib_triangulation_to_numpy(rep3_ml), meshlib_triangulation_to_numpy(rep2_ml)
+    rows = np.concatenate([lexsort_rows(rep3), lexsort_rows(rep2)]).astype(np.int32)
+    return rows, rep3.shape[0]
+
+
+def _valid_meshlib_faces(mesh_ml: mm.Mesh) -> np.ndarray:
+    """Return the faces of an unpacked MeshLib mesh, its unused face slots dropped."""
+    faces_ml = np.asarray(mn.getNumpyFaces(mesh_ml.topology))
+    valid_ml = mesh_ml.topology.getValidFaces()
+    return faces_ml[[valid_ml.test(mm.FaceId(f)) for f in range(faces_ml.shape[0])]]
+
+
+@pytest.mark.parametrize("seed", [1, 3])
+@pytest.mark.parity("triangulate_point_cloud", "meshlib")
+def test_contested_cloud_matches_meshlib(device: str, seed: int):
+    """
+    Class B (``canonical_winding`` + ``lexsort_rows``): the same faces where candidates conflict.
+
+    A random saddle cloud whose candidate triangles conflict: two of them share a directed edge, so
+    the result depends on the order MeshLib's builder adds them in, and on these seeds ordito's
+    candidates equal MeshLib's (asserted, so a drift in the fans fails here, not as a builder
+    difference). ordito keeps the referenced points only, in order; the faces are mapped back to
+    the input points by position.
+    """
+    points_np, normals_np = _saddle_cloud(seed, graded=False)
+    rows_ml, _ = _meshlib_candidates(points_np, normals_np, 16)
+    edges = np.concatenate([rows_ml[:, [0, 1]], rows_ml[:, [1, 2]], rows_ml[:, [2, 0]]])
+    assert np.unique(edges, axis=0).shape[0] < edges.shape[0], "the candidates must conflict"
+    mesh_ml = mm.triangulatePointCloud(
+        points_to_meshlib(points_np.astype(np.float64), normals_np.astype(np.float64)),
+        mm.TriangulationParameters(),
+    )
+    faces_ml = _valid_meshlib_faces(mesh_ml)
+
+    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(
+        points_wp, normals_wp, num_neighbours=16
+    )
+    distance, input_index = cKDTree(points_np).query(vertices_wp.numpy())
+    assert np.all(distance == 0.0)
+    faces_wp_np = np.asarray(input_index)[faces_wp.numpy().reshape(-1, 3)]
+
+    assert faces_ml.shape[0] > 0
+    assert np.array_equal(
+        lexsort_rows(canonical_winding(faces_wp_np)), lexsort_rows(canonical_winding(faces_ml))
+    )
+
+
+def test_contested_rows_kept_match_meshlib_builder(device: str):
+    """
+    Class A: the candidate rows the builder keeps are MeshLib's ``MeshBuilder`` faces, by id.
+
+    MeshLib's own candidates, handed to both sides in MeshLib's order, so the comparison isolates
+    the assembly from the fans. MeshLib's side is ``triangulatePointCloud``'s ``makeMesh_`` stage
+    by stage: ``addTriangles`` over the ``t3`` rows, then over those left and the ``t2`` rows, then
+    up to three rounds of deleting ``findHoleComplicatingFaces`` and adding again. Its face ids are
+    the row indices, so the kept faces in id order are the rows ordito keeps, in its order. The
+    graded noisy saddle leaves pinches, and the test asserts a delete round ran.
+    """
+    points_np, normals_np = _saddle_cloud(0, graded=True)
+    rows_ml, n_rep3 = _meshlib_candidates(points_np, normals_np, 16)
+    mesh_ml = mm.Mesh()
+    mesh_ml.points = points_to_meshlib(points_np.astype(np.float64)).points
+    triangulation_ml = numpy_to_meshlib_triangulation(rows_ml)
+    region_ml = mm.FaceBitSet(rows_ml.shape[0])
+    for f in range(n_rep3):
+        region_ml.set(mm.FaceId(f), True)
+    rest_ml = mm.FaceBitSet(rows_ml.shape[0])
+    for f in range(n_rep3, rows_ml.shape[0]):
+        rest_ml.set(mm.FaceId(f), True)
+    settings_ml = mm.MeshBuilder.BuildSettings()
+    settings_ml.region = region_ml
+    settings_ml.allowNonManifoldEdge = False
+    mm.MeshBuilder.addTriangles(mesh_ml.topology, triangulation_ml, settings_ml)
+    region_ml |= rest_ml
+    mm.MeshBuilder.addTriangles(mesh_ml.topology, triangulation_ml, settings_ml)
+    deleted = 0
+    for _ in range(3):
+        complicating_ml = mm.findHoleComplicatingFaces(mesh_ml)
+        if complicating_ml.count() == 0:
+            break
+        deleted += complicating_ml.count()
+        mesh_ml.deleteFaces(complicating_ml)
+        if mm.MeshBuilder.addTriangles(mesh_ml.topology, triangulation_ml, settings_ml) == 0:
+            break
+    assert deleted > 0, "the fixture must exercise a delete round"
+    valid_ml = mesh_ml.topology.getValidFaces()
+    kept_ml = rows_ml[[valid_ml.test(mm.FaceId(f)) for f in range(rows_ml.shape[0])]]
+
+    kept_wp = od.reconstruction._contested_rows_kept(  # pyright: ignore[reportPrivateUsage]
+        wp.array(points_np, dtype=wp.vec3, device=device),
+        cast(Any, wp.array(rows_ml, dtype=wp.int32, device=device)),
+        n_rep3,
+    )
+    assert np.array_equal(kept_wp.numpy().reshape(-1, 3), kept_ml)
+
+
 @pytest.mark.parity("triangulate_point_cloud_unoriented", "meshlib")
 def test_torus_without_normals_matches_meshlib_reference(device: str):
     """
@@ -576,17 +709,17 @@ def test_open_hemisphere_keeps_single_boundary(device: str):
     assert od.validation.is_edge_manifold(faces_wp)
     # The intended equator rim is one large boundary loop, not filled and not fragmented. The
     # rim's fans search twice as far (MeshLib's automatic radius increase), which can leave small
-    # gaps beside the rim: slivers between it and a chord across three of its points, or a notch
-    # touching it at a vertex, which is its own loop. MeshLib leaves one sliver here (rim
-    # perimeter 6.27, sliver 0.69); ordito two slivers and a 4-vertex notch.
+    # gaps beside the rim: chords across a few of its points, and notches beside it. MeshLib's rim
+    # here has 50 of the 64 equator points and one 5-vertex notch; ordito's 52 and two 4-vertex
+    # notches, from the fans (16 of MeshLib's candidates and 6 of ordito's are not the other's).
     loops = sorted(od.boundary.boundary_loops(vertices_wp, faces_wp), key=lambda loop: -loop.size)
     heights = np.abs(vertices_wp.numpy()[:, 2])
     n_equator = int(np.count_nonzero(np.abs(points_np[:, 2]) < 1e-6))
     rim_np = loops[0].numpy()
-    assert rim_np.size >= 0.85 * n_equator
+    assert rim_np.size >= 0.75 * n_equator
     assert (heights[rim_np] < 1e-6).all()
     for gap in loops[1:]:
-        assert gap.size <= 4
+        assert gap.size <= 5
         assert heights[gap.numpy()].max() < 0.08  # within one edge of the rim
 
 

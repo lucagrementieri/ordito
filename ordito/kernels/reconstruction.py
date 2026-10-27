@@ -879,6 +879,298 @@ def emit_repeated_triangles(
 
 
 # --------------------------------------------------------------------------------------
+# Oriented candidate classes and the contested regions of the serial builder
+# --------------------------------------------------------------------------------------
+# A triangle three fans agree on in one winding, or two; ``classify_oriented_repeats``' codes.
+REPEAT_NONE = wp.constant(0)
+REPEAT_THREE = wp.constant(1)
+REPEAT_TWO = wp.constant(2)
+# A vertex no seed reaches within the rings grown so far.
+FAR_FROM_SEEDS = wp.constant(2147483647)
+
+
+@wp.func
+def winding_flipped(a: wp.int32, b: wp.int32, c: wp.int32) -> wp.bool:
+    # Whether sorting ``(a, b, c)`` takes an odd number of swaps, the
+    # test of a fan triangle's winding against its sorted triple.
+    flipped = wp.bool(False)
+    if a > b:
+        flipped = not flipped
+        a, b = b, a
+    if a > c:
+        flipped = not flipped
+        a, c = c, a
+    if b > c:
+        flipped = not flipped
+    return flipped
+
+
+@wp.kernel
+def classify_oriented_repeats(
+    sorted_keys: wp.array[wp.uint64],
+    sorted_slots: wp.array[wp.int32],
+    tris: wp.array2d[wp.int32],
+    n: wp.int32,
+    out_flags: wp.array[wp.int32],
+    out_codes: wp.array[wp.int32],
+) -> None:
+    # The classes at the start of each run of equal unoriented keys:
+    # three fans in the sorted triple's winding, or three in the other, is a ``t3`` triangle in
+    # that winding; else two in one winding a ``t2`` one. One fan, or two disagreeing, is neither.
+    # ``out_codes`` holds the class times two plus the flip bit, ``out_flags`` the scan's ones.
+    i = wp.int32(wp.tid())
+    code = wp.int32(0)
+    if sorted_run_start(sorted_keys, i):
+        key = sorted_keys[i]
+        same = wp.int32(0)
+        opposite = wp.int32(0)
+        for j in range(3):
+            if i + j < n:
+                if sorted_keys[i + j] == key:
+                    slot = sorted_slots[i + j]
+                    if winding_flipped(tris[slot, 0], tris[slot, 1], tris[slot, 2]):
+                        opposite += 1
+                    else:
+                        same += 1
+        if same == 3:
+            code = 2 * REPEAT_THREE
+        elif opposite == 3:
+            code = 2 * REPEAT_THREE + 1
+        elif same == 2:
+            code = 2 * REPEAT_TWO
+        elif opposite == 2:
+            code = 2 * REPEAT_TWO + 1
+    out_codes[i] = code
+    out_flags[i] = wp.where(code != 0, 1, 0)
+
+
+@wp.kernel
+def emit_oriented_repeats(
+    inclusive_flags: wp.array[wp.int32],
+    codes: wp.array[wp.int32],
+    sorted_slots: wp.array[wp.int32],
+    tris: wp.array2d[wp.int32],
+    radix: wp.uint64,
+    out_rows: wp.array2d[wp.int32],
+    out_low_keys: wp.array[wp.uint64],
+    out_high_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+    out_rep3: wp.array[wp.int32],
+) -> None:
+    # Each classified triangle stored lowest vertex first: ``(a, b, c)`` sorted,
+    # or ``(a, c, b)`` in the other winding. Its keys order the rows as the builder adds them,
+    # the ``t3`` triangles before the ``t2`` ones and each class lexicographically: the second and
+    # third vertex in the low key, the class and the first vertex in the high one, for two stable
+    # sorts. ``out_rep3`` (arriving zeroed) counts the ``t3`` rows.
+    i = wp.int32(wp.tid())
+    row, flag = scanned_count(inclusive_flags, i)
+    if flag == 0:
+        return
+    code = codes[i]
+    slot = sorted_slots[i]
+    a, b, c = sort3(tris[slot, 0], tris[slot, 1], tris[slot, 2])
+    if code % 2 == 1:
+        b, c = c, b
+    out_rows[row, 0] = a
+    out_rows[row, 1] = b
+    out_rows[row, 2] = c
+    group = code // 2 - REPEAT_THREE
+    out_low_keys[row] = wp.uint64(b) * radix + wp.uint64(c)
+    out_high_keys[row] = wp.uint64(group) * radix + wp.uint64(a)
+    out_order[row] = row
+    if group == 0:
+        wp.atomic_add(out_rep3, 0, 1)
+
+
+@wp.kernel
+def directed_edge_keys(
+    rows: wp.array2d[wp.int32],
+    radix: wp.uint64,
+    out_keys: wp.array[wp.uint64],
+    out_rows: wp.array[wp.int32],
+) -> None:
+    # Launched over ``(n_rows, 3)``: corner ``k``'s directed edge to the next corner, keyed
+    # ``tail * radix + head``, with its row as the payload.
+    f, k = wp.tid()
+    m = rows.shape[0]
+    out_keys[k * m + f] = wp.uint64(rows[f, k]) * radix + wp.uint64(rows[f, (k + 1) % 3])
+    out_rows[k * m + f] = f
+
+
+@wp.kernel
+def mark_shared_directed_edges(
+    sorted_keys: wp.array[wp.uint64],
+    sorted_rows: wp.array[wp.int32],
+    n: wp.int32,
+    out_conflict: wp.array[wp.int32],
+) -> None:
+    # A row with a directed edge another row has too: the builder keeps at most one of them.
+    # ``out_conflict`` arrives zeroed; every writer writes 1.
+    i = wp.int32(wp.tid())
+    key = sorted_keys[i]
+    shared = wp.bool(False)
+    if i > 0:
+        if sorted_keys[i - 1] == key:
+            shared = True
+    if i + 1 < n:
+        if sorted_keys[i + 1] == key:
+            shared = True
+    if shared:
+        out_conflict[sorted_rows[i]] = 1
+
+
+@wp.func
+def star_link(rows: wp.array2d[wp.int32], f: wp.int32, v: wp.int32) -> wp.vec2i:
+    # The edge of row ``f`` opposite ``v``, in the row's winding seen from ``v``.
+    k = wp.int32(0)
+    if rows[f, 1] == v:
+        k = 1
+    elif rows[f, 2] == v:
+        k = 2
+    return wp.vec2i(rows[f, (k + 1) % 3], rows[f, (k + 2) % 3])
+
+
+@wp.kernel
+def classify_candidate_stars(
+    rows: wp.array2d[wp.int32],
+    vertex_rows: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    conflict: wp.array[wp.int32],
+    out_distance: wp.array[wp.int32],
+    out_hole_next: wp.array[wp.int32],
+) -> None:
+    # One thread per vertex. Its candidate rows are *clean* when none shares a directed edge and
+    # their opposite edges chain into one path or one cycle: one fan, which the builder adds
+    # whole whatever the order. Any other vertex seeds a contested region (distance 0). A clean
+    # path's last vertex is where the hole leaves the vertex (its next hole vertex).
+    v = wp.int32(wp.tid())
+    start = offsets[v]
+    degree = offsets[v + 1] - start
+    out_hole_next[v] = -1
+    out_distance[v] = FAR_FROM_SEEDS
+    if degree == 0:
+        return
+    seed = wp.bool(False)
+    for j in range(degree):
+        if conflict[vertex_rows[start + j]] != 0:
+            seed = True
+    first = wp.int32(0)
+    starts = wp.int32(0)
+    tail = wp.int32(-1)
+    if not seed:
+        for j in range(degree):
+            link = star_link(rows, vertex_rows[start + j], v)
+            entered = wp.bool(False)
+            left = wp.bool(False)
+            for m in range(degree):
+                other = star_link(rows, vertex_rows[start + m], v)
+                if other[1] == link[0]:
+                    entered = True
+                if other[0] == link[1]:
+                    left = True
+            if not entered:
+                starts += 1
+                first = j
+            if not left:
+                tail = link[1]
+        if starts > 1:
+            seed = True
+    if not seed:
+        # Walk the chain from its start (or from any row of a cycle) and count the rows it meets.
+        current = star_link(rows, vertex_rows[start + first], v)
+        steps = wp.int32(1)
+        for _ in range(degree):
+            found = wp.int32(-1)
+            for m in range(degree):
+                other = star_link(rows, vertex_rows[start + m], v)
+                if other[0] == current[1]:
+                    found = m
+            if found < 0 or found == first:
+                break
+            current = star_link(rows, vertex_rows[start + found], v)
+            steps += 1
+        if steps != degree:
+            seed = True
+    if seed:
+        out_distance[v] = 0
+    elif starts == 1:
+        out_hole_next[v] = tail
+
+
+@wp.kernel
+def grow_seed_rings(
+    rows: wp.array2d[wp.int32], ring: wp.int32, distance: wp.array[wp.int32]
+) -> None:
+    # One ring further from the seeds: a row touching ring ``ring - 1`` puts its other corners at
+    # ``ring`` at most. In place; a corner is lowered by ``atomic_min`` only.
+    f = wp.int32(wp.tid())
+    nearest = wp.min(wp.min(distance[rows[f, 0]], distance[rows[f, 1]]), distance[rows[f, 2]])
+    if nearest == ring - 1:
+        for k in range(3):
+            wp.atomic_min(distance, rows[f, k], ring)
+
+
+@wp.kernel
+def mark_contested_rows(
+    rows: wp.array2d[wp.int32],
+    distance: wp.array[wp.int32],
+    rings: wp.int32,
+    out_row_flags: wp.array[wp.int32],
+    out_vertex_flags: wp.array[wp.int32],
+) -> None:
+    # The rows within ``rings`` of a seed, and every vertex they touch. ``out_vertex_flags``
+    # arrives zeroed.
+    f = wp.int32(wp.tid())
+    nearest = wp.min(wp.min(distance[rows[f, 0]], distance[rows[f, 1]]), distance[rows[f, 2]])
+    contested = nearest <= rings
+    out_row_flags[f] = wp.where(contested, 1, 0)
+    if contested:
+        for k in range(3):
+            out_vertex_flags[rows[f, k]] = 1
+
+
+@wp.kernel
+def localize_contested_vertices(
+    used: wp.array[wp.int32],
+    distance: wp.array[wp.int32],
+    rings: wp.int32,
+    out_global_to_local: wp.array[wp.int32],
+    out_complete: wp.array[wp.int32],
+) -> None:
+    # Renumber the contested rows' vertices from 0 in ascending order, and flag those whose whole
+    # star is among the rows (within ``rings`` of a seed). ``out_global_to_local`` arrives ``-1``.
+    i = wp.int32(wp.tid())
+    v = used[i]
+    out_global_to_local[v] = i
+    out_complete[i] = wp.where(distance[v] <= rings, 1, 0)
+
+
+@wp.kernel
+def localize_rows(
+    contested: wp.array[wp.int32],
+    rows: wp.array2d[wp.int32],
+    global_to_local: wp.array[wp.int32],
+    out_local_rows: wp.array2d[wp.int32],
+) -> None:
+    i = wp.int32(wp.tid())
+    f = contested[i]
+    for k in range(3):
+        out_local_rows[i, k] = global_to_local[rows[f, k]]
+
+
+@wp.kernel
+def apply_builder_state(
+    contested: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    added: wp.int32,
+    out_keep: wp.array[wp.int32],
+) -> None:
+    # ``out_keep`` arrives all ones: a contested row stays only where the builder added it.
+    i = wp.int32(wp.tid())
+    out_keep[contested[i]] = wp.where(state[i] == added, 1, 0)
+
+
+# --------------------------------------------------------------------------------------
 # Orientation without normals: each component faces away from the bounding-box centre at its
 # corner farthest from it
 # --------------------------------------------------------------------------------------

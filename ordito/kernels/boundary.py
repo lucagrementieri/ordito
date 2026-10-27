@@ -391,6 +391,42 @@ def emit_boundary_successors(
         out_next[a] = b
 
 
+@wp.kernel
+def record_pinch_out_halfedges(
+    tails: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_slots: wp.array[wp.int32],
+) -> None:
+    # Each boundary halfedge registers at its origin: the first two of a vertex in its slots, the
+    # count beside them. ``out_counts`` arrives zeroed; only a pinch reaches two.
+    h = tails[wp.int32(wp.tid())]
+    v = faces[h]
+    slot = wp.atomic_add(out_counts, v, 1)
+    if slot < 2:
+        out_slots[2 * v + slot] = h
+
+
+@wp.kernel
+def cross_pinch_gaps(
+    tails: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    counts: wp.array[wp.int32],
+    slots: wp.array[wp.int32],
+    next_node: wp.array[wp.int32],
+) -> None:
+    # In place over ``emit_boundary_successors``' halfedge table: at a vertex with two fans the
+    # walk leaves by the other fan's boundary halfedge, crossing the gap rather than staying in its
+    # own fan, so a loop follows the empty region. With two out-halfedges the swap is the whole
+    # rule; each thread rewrites only its own entry. A vertex with more fans keeps the in-fan
+    # successor.
+    h = tails[wp.int32(wp.tid())]
+    s = next_node[h]
+    v = faces[s]
+    if counts[v] == 2:
+        next_node[h] = wp.where(slots[2 * v] == s, slots[2 * v + 1], slots[2 * v])
+
+
 @wp.func
 def add_rim_edge_length(
     out_perimeter: wp.array[wp.float32], ell: wp.int32, a: wp.vec3, c: wp.vec3

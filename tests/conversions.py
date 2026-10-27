@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Protocol, SupportsIndex, TypeVar, cast
 
@@ -530,6 +531,31 @@ def points_to_meshlib(points_np: np.ndarray, normals_np: np.ndarray | None = Non
         return mn.pointCloudFromPoints(points_ml)
     return mn.pointCloudFromPoints(points_ml, cast("Buffer", np.ascontiguousarray(normals_np)))
 
+
+
+def meshlib_triangulation_to_numpy(triangulation_ml: mm.Triangulation) -> np.ndarray:
+    """
+    Read a ``meshlib.mrmeshpy.Triangulation`` (a vector of vertex triples) as ``(n, 3)`` ``int32``.
+
+    The binding exposes no array view of it, only the vector's data pointer; each triple is three
+    ``int32`` vertex ids, packed.
+    """
+    n = triangulation_ml.vec_.size()
+    if n == 0:
+        return np.zeros((0, 3), dtype=np.int32)
+    buffer = (ctypes.c_int32 * (3 * n)).from_address(triangulation_ml.vec_.data_pointer())
+    return np.ctypeslib.as_array(buffer).reshape(n, 3).copy()
+
+
+def numpy_to_meshlib_triangulation(rows_np: np.ndarray) -> mm.Triangulation:
+    """Build a ``meshlib.mrmeshpy.Triangulation`` from ``(n, 3)`` vertex triples."""
+    rows = np.ascontiguousarray(rows_np, dtype=np.int32).reshape(-1)
+    triangulation_ml = mm.Triangulation()
+    triangulation_ml.resize(rows.size // 3)
+    if rows.size > 0:
+        buffer = (ctypes.c_int32 * rows.size).from_address(triangulation_ml.vec_.data_pointer())
+        np.ctypeslib.as_array(buffer)[:] = rows
+    return triangulation_ml
 
 def numpy_to_meshlib_bitset(flags_np: np.ndarray) -> mm.BitSet:
     """

@@ -1414,6 +1414,9 @@ def _fill_small(
     *,
     mates: wp.array[wp.int32] | None = None,
     n_vertices: int | None = None,
+    metric: str = "plane_normalized",
+    pinches: Literal["split", "gap"] = "split",
+    all_or_nothing: bool = False,
 ) -> wp.array[wp.int32]:
     """
     [`fill_small`][ordito.holes.fill_small]'s answer, ``faces`` itself where nothing is filled.
@@ -1422,8 +1425,10 @@ def _fill_small(
     halfedge mates when the caller holds them (a ``-2`` code need not name the lowest halfedge),
     which the boundary walk then reads rather than pairing the halfedges again. ``n_vertices`` is
     as in [`fill_small`][ordito.holes.fill_small]. Exactly one threshold, unchecked.
+    ``pinches`` is [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]';
+    ``all_or_nothing`` leaves a hole no triangulation closes whole rather than part-filled.
     """
-    packed = _hole_loops(vertices, faces, mates=mates)
+    packed = _hole_loops(vertices, faces, pinches=pinches, mates=mates)
     if packed is None:
         return faces
 
@@ -1438,7 +1443,14 @@ def _fill_small(
     if not small_np.all():
         packed = _compact_packed_loops(packed.flat_loops, packed.sizes_np, small_np)
     return _fill_packed_loops(
-        vertices, faces, packed, "plane_normalized", True, True, n_vertices=n_vertices
+        vertices,
+        faces,
+        packed,
+        metric,
+        True,
+        True,
+        n_vertices=n_vertices,
+        all_or_nothing=all_or_nothing,
     )
 
 
@@ -4385,6 +4397,7 @@ def _hole_loops(
     faces: wp.array[wp.int32],
     preserve_largest_hole: bool = False,
     *,
+    pinches: Literal["split", "gap"] = "split",
     mates: wp.array[wp.int32] | None = None,
 ) -> _PackedLoops | None:
     """
@@ -4392,7 +4405,8 @@ def _hole_loops(
 
     Returns ``None`` when there is no fillable boundary loop. Costs **one** host readback (the loop
     offsets, which the ragged indexing needs anyway), plus a second one only under
-    ``preserve_largest_hole``. ``mates`` are ``faces``' halfedge mates when the caller holds them.
+    ``preserve_largest_hole``. ``mates`` are ``faces``' halfedge mates when the caller holds them;
+    ``pinches`` is [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]'.
 
     That second readback stays on the host on purpose, and not because the argmax could not run on
     the device: what the host needs is the resulting *mask*, to build the ragged gather index that
@@ -4406,7 +4420,7 @@ def _hole_loops(
     [`polyline_length`][ordito.polyline.polyline_length] call per loop (two synchronizations
     each).
     """
-    packed = _boundary_loops_packed(vertices, faces, mates=mates)
+    packed = _boundary_loops_packed(vertices, faces, pinches=pinches, mates=mates)
     if packed is None:
         return None
 
@@ -4446,19 +4460,23 @@ def _boundary_loops_packed(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
+    pinches: Literal["split", "gap"] = "split",
     mates: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.int32], np.ndarray, wp.array[wp.int32]] | None:
     """
     Every boundary loop of a mesh as one packed buffer, its host sizes and its device offsets.
 
-    ``None`` if there is none. ``mates`` are ``faces``' halfedge mates when the caller holds them.
+    ``None`` if there is none. ``mates`` are ``faces``' halfedge mates when the caller holds them;
+    ``pinches`` is [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]'.
 
     The packed buffer is
     [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]' own, handed on
     unsplit; the sizes come from the single offsets readback the
     ragged indexing needs anyway, or with one loop from the buffer's own length.
     """
-    flat_loops, offsets = od.boundary.boundary_loops_with_offsets(vertices, faces, mates=mates)
+    flat_loops, offsets = od.boundary.boundary_loops_with_offsets(
+        vertices, faces, pinches=pinches, mates=mates
+    )
     if offsets.size == 1:
         return None
     if offsets.size == 2:

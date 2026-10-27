@@ -55,6 +55,7 @@ from ordito.kernels import repair as kernel_repair
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels.algorithms import ball_pivoting as kernel_bpa
 from ordito.kernels.algorithms import conjugate_gradient as kernel_cg
+from ordito.kernels.algorithms import mesh_builder as kernel_mesh_builder
 from ordito.kernels.algorithms import poisson_band as kernel_poisson_band
 from ordito.kernels.algorithms import poisson_octree as kernel_octree
 
@@ -416,6 +417,8 @@ def triangulate_point_cloud(
     if n_candidates == 0:
         return _launch.clone(points), _launch.empty(0, dtype=wp.int32, device=device)
 
+    if oriented:
+        return _assemble_trusted_fans(points, out_tris, fan_counts, n_candidates, crit_hole_length)
     faces = _repeated_oriented_triangles(points, out_tris, fan_counts, n_candidates)
     if faces.size == 0:
         return _launch.clone(points), faces
@@ -426,10 +429,6 @@ def triangulate_point_cloud(
     # have no sign to keep, so the mesh is oriented instead (each fan was wound by its own center's
     # normal, and the representative faces disagree wherever those signs did): away from the box
     # centre at each component's farthest corner.
-    if oriented:
-        return _clean_reconstruction(
-            points, faces, crit_hole_length, orient=False, deduplicate=False, nondegenerate=True
-        )
     return _clean_reconstruction(
         points,
         faces,
@@ -497,6 +496,261 @@ def _box_center(bounds: tuple[wp.vec3, wp.vec3]) -> wp.vec3:
     return wp.vec3(*(np.float32(0.5) * (lower + upper)))
 
 
+def _assemble_trusted_fans(
+    points: wp.array[wp.vec3],
+    tris: odt.ArrayNdInt32,
+    inclusive_counts: wp.array[wp.int32],
+    n_candidates: int,
+    crit_hole_length: float,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Assemble the fans of a cloud with trusted normals into a mesh.
+
+    The candidates are the triangles two or three fans agree on in one winding, sorted
+    ([`_oriented_candidate_rows`][ordito.reconstruction._oriented_candidate_rows]). They are added
+    one at a time in that order, the first of any two that conflict kept; where every candidate
+    around a vertex forms one fan the order changes nothing, so only the rows near a conflict go
+    through the serial builder
+    ([`_contested_rows_kept`][ordito.reconstruction._contested_rows_kept]). The small holes left
+    are filled by the gap at a pinch, with the circumscribed-circle metric, a hole no
+    triangulation closes left open.
+    """
+    device = points.device
+    rows, n_rep3 = _oriented_candidate_rows(points, tris, inclusive_counts, n_candidates)
+    if rows.shape[0] == 0:
+        return _launch.clone(points), _launch.empty(0, dtype=wp.int32, device=device)
+    faces = _contested_rows_kept(points, rows, n_rep3)
+    vertices, faces, _ = od.repair.remove_unreferenced_vertices(points, faces)
+    if crit_hole_length != 0.0 and faces.size > 0:
+        faces = od.holes._fill_small(  # pyright: ignore[reportPrivateUsage]
+            vertices,
+            faces,
+            crit_hole_length,
+            n_vertices=vertices.size,
+            metric="circumscribed",
+            pinches="gap",
+            all_or_nothing=True,
+        )
+    return vertices, faces
+
+
+def _oriented_candidate_rows(
+    points: wp.array[wp.vec3],
+    tris: odt.ArrayNdInt32,
+    inclusive_counts: wp.array[wp.int32],
+    n_candidates: int,
+) -> tuple[odt.Array2dInt32, int]:
+    """
+    Return the candidate triangles as rows in the order the builder adds them, and the ``t3`` count.
+
+    A triangle three fans agree on in one winding (``t3``), else two (``t2``); a degenerate one is
+    kept, as the builder rejects only a repeated vertex. Each row is stored lowest vertex
+    first and the rows ascend lexicographically, the ``t3`` rows first, by two stable sorts.
+    """
+    device = tris.device
+    n = points.size
+    keys, slots = _sorted_candidate_keys(tris, inclusive_counts, n_candidates, n)
+    fan_rows = tris.reshape((-1, 3))
+    # The flags and the codes in the payload's upper half and a buffer of their own.
+    flags = _launch.view(slots, n_candidates, 2 * n_candidates)
+    codes = _launch.empty(n_candidates, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_reconstruction.classify_oriented_repeats,
+        dim=n_candidates,
+        inputs=[keys, slots, fan_rows, wp.int32(n_candidates)],
+        outputs=[flags, codes],
+        device=device,
+    )
+    _launch.array_scan(flags, out_array=flags, inclusive=True)
+    rep3 = _launch.zeros(1, dtype=wp.int32, device=device)
+    # Readback: the candidate count sizes the rows, and its sort.
+    m = int(read_scalar(flags))
+    rows = odt.empty_2d((m, 3), wp.int32, device=device)
+    if m == 0:
+        return rows, 0
+    low = _launch.empty(2 * m, dtype=wp.uint64, device=device)
+    high = _launch.empty(2 * m, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * m, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_reconstruction.emit_oriented_repeats,
+        dim=n_candidates,
+        inputs=[flags, codes, slots, fan_rows, wp.uint64(n)],
+        outputs=[rows, low, high, order, rep3],
+        device=device,
+    )
+    # Least significant key first: the stable second sort keeps the first one's order on ties.
+    _launch.radix_sort_pairs(low, order, count=m, end_bit=max(1, (n * n - 1).bit_length()))
+    high_sorted = _launch.empty(2 * m, dtype=wp.uint64, device=device)
+    _launch.copy(high_sorted, od.array.gather(_launch.view(high, 0, m), _launch.view(order, 0, m)))
+    _launch.radix_sort_pairs(high_sorted, order, count=m, end_bit=max(1, (2 * n - 1).bit_length()))
+    ordered = od.array.gather(rows, _launch.view(order, 0, m))
+    # Readback: the class boundary is the builder's first-call region, read on the host.
+    return odt.as_array2d(ordered, wp.int32), int(read_scalar(rep3, index=0))
+
+
+# How far from a conflict the builder runs: the rows that touch a vertex within this many rings
+# of one. One ring makes every vertex a deleted face touches keep its whole star in the builder,
+# and each delete-and-add round can reach one ring further.
+_CONTESTED_RINGS = 1 + kernel_mesh_builder.COMPLICATING_ROUNDS
+
+
+def _contested_rows_kept(
+    points: wp.array[wp.vec3], rows: odt.Array2dInt32, n_rep3: int
+) -> wp.array[wp.int32]:
+    """
+    Return the candidate rows the builder keeps, flat, in their order.
+
+    A vertex is *clean* when its rows share no directed edge and chain into one fan: the builder
+    adds such rows whatever its order. Every other vertex seeds a contested region, and only the
+    rows within ``_CONTESTED_RINGS`` of a seed run through the serial builder, in their global
+    order (``kernels/algorithms/mesh_builder``). Its decisions near the seeds read only rings that
+    are complete in the region, and the hole walk of its delete rounds continues past them along
+    the clean vertices' single hole edges.
+
+    The builder is one thread. It runs on the CPU device whatever the input's: a CUDA thread
+    chasing the rings measured about 16x slower, and the contested rows are a few hundred to a
+    few thousand.
+    """
+    device = rows.device
+    m = rows.shape[0]
+    n = points.size
+    keys = _launch.empty(6 * m, dtype=wp.uint64, device=device)
+    edge_rows = _launch.empty(6 * m, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_reconstruction.directed_edge_keys,
+        dim=(m, 3),
+        inputs=[rows, wp.uint64(n)],
+        outputs=[keys, edge_rows],
+        device=device,
+    )
+    _launch.radix_sort_pairs(keys, edge_rows, count=3 * m, end_bit=max(1, (n * n - 1).bit_length()))
+    conflict = _launch.zeros(m, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_reconstruction.mark_shared_directed_edges,
+        dim=3 * m,
+        inputs=[keys, edge_rows, wp.int32(3 * m)],
+        outputs=[conflict],
+        device=device,
+    )
+    flat_rows = cast(wp.array[wp.int32], rows.flatten())
+    vertex_rows, offsets = od.adjacency.vertex_face_adjacency(flat_rows, n_vertices=n)
+    distance = _launch.empty(n, dtype=wp.int32, device=device)
+    hole_next = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_reconstruction.classify_candidate_stars,
+        dim=n,
+        inputs=[rows, vertex_rows, offsets, conflict],
+        outputs=[distance, hole_next],
+        device=device,
+    )
+    # One ring past the region, so its outermost vertices know their stars are not complete.
+    for ring in range(1, _CONTESTED_RINGS + 2):
+        _launch.launch(
+            kernel_reconstruction.grow_seed_rings,
+            dim=m,
+            inputs=[rows, wp.int32(ring), distance],
+            device=device,
+        )
+    row_flags = _launch.empty(m, dtype=wp.int32, device=device)
+    vertex_flags = _launch.zeros(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_reconstruction.mark_contested_rows,
+        dim=m,
+        inputs=[rows, distance, wp.int32(_CONTESTED_RINGS)],
+        outputs=[row_flags, vertex_flags],
+        device=device,
+    )
+    contested = od.array.flatnonzero_in_place(row_flags)
+    if contested.size == 0:
+        return flat_rows
+    used = od.array.flatnonzero_in_place(vertex_flags)
+    global_to_local = _launch.full(n, -1, dtype=wp.int32, device=device)
+    complete = _launch.empty(used.size, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_reconstruction.localize_contested_vertices,
+        dim=used.size,
+        inputs=[used, distance, wp.int32(_CONTESTED_RINGS)],
+        outputs=[global_to_local, complete],
+        device=device,
+    )
+    local_rows = odt.empty_2d((contested.size, 3), wp.int32, device=device)
+    _launch.launch(
+        kernel_reconstruction.localize_rows,
+        dim=contested.size,
+        inputs=[contested, rows, global_to_local],
+        outputs=[local_rows],
+        device=device,
+    )
+    # Readback: the region's rows below the class boundary are the builder's first call; the
+    # contested rows ascend, so it is one search of them on the host.
+    contested_np = contested.numpy()
+    n_rep3_local = int(np.searchsorted(contested_np, n_rep3))
+    state = _run_mesh_builder(
+        od.array.gather(points, used),
+        local_rows,
+        n_rep3_local,
+        complete,
+        used,
+        global_to_local,
+        hole_next,
+    )
+    keep = _launch.ones(m, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_reconstruction.apply_builder_state,
+        dim=contested.size,
+        inputs=[contested, _launch.clone(state, device=device), kernel_mesh_builder.FACE_ADDED],
+        outputs=[keep],
+        device=device,
+    )
+    kept = od.array.flatnonzero_in_place(keep)
+    return cast(wp.array[wp.int32], od.array.gather(rows, kept).flatten())
+
+
+def _run_mesh_builder(
+    points: wp.array[wp.vec3],
+    rows: odt.Array2dInt32,
+    n_rep3: int,
+    complete: wp.array[wp.int32],
+    local_to_global: wp.array[wp.int32],
+    global_to_local: wp.array[wp.int32],
+    hole_next: wp.array[wp.int32],
+) -> wp.array[wp.int32]:
+    """Run ``mesh_builder.build_candidate_mesh`` on the CPU device; return each row's state."""
+    host = "cpu"
+    n_rows = rows.shape[0]
+    capacity = 6 * n_rows
+    topology = kernel_mesh_builder.HalfEdges()
+    records = _launch.empty(4 * capacity, dtype=wp.int32, device=host)
+    topology.next = _launch.view(records, 0, capacity)
+    topology.prev = _launch.view(records, capacity, 2 * capacity)
+    topology.org = _launch.view(records, 2 * capacity, 3 * capacity)
+    topology.left = _launch.view(records, 3 * capacity, 4 * capacity)
+    topology.edge_per_vertex = _launch.empty(points.size, dtype=wp.int32, device=host)
+    topology.edge_per_face = _launch.empty(n_rows, dtype=wp.int32, device=host)
+    topology.count = _launch.empty(1, dtype=wp.int32, device=host)
+    state = _launch.empty(n_rows, dtype=wp.int32, device=host)
+    _launch.launch(
+        kernel_mesh_builder.build_candidate_mesh,
+        dim=1,
+        inputs=[
+            _launch.clone(points, device=host),
+            _launch.clone(rows, device=host),
+            wp.int32(n_rep3),
+            _launch.clone(complete, device=host),
+            _launch.clone(local_to_global, device=host),
+            _launch.clone(global_to_local, device=host),
+            _launch.clone(hole_next, device=host),
+            topology,
+            _launch.empty(n_rows, dtype=wp.int32, device=host),
+            _launch.empty(n_rows, dtype=wp.int32, device=host),
+            _launch.empty(capacity // 2, dtype=wp.int32, device=host),
+        ],
+        outputs=[state],
+        device=host,
+    )
+    return state
+
+
 def _repeated_oriented_triangles(
     points: wp.array[wp.vec3],
     tris: odt.ArrayNdInt32,
@@ -520,20 +774,7 @@ def _repeated_oriented_triangles(
     """
     device = tris.device
     n = points.size
-    # Double-width, as ``warp.utils.radix_sort_pairs`` wants: the upper halves are its scratch.
-    keys = _launch.empty(2 * n_candidates, dtype=wp.uint64, device=device)
-    slots = _launch.empty(2 * n_candidates, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_reconstruction.candidate_triangle_keys,
-        dim=(int(tris.shape[0]), int(tris.shape[1])),
-        inputs=[tris, inclusive_counts, wp.uint64(n), keys, slots],
-        device=device,
-    )
-    # Three indices below ``n`` pack below ``n ** 3``, so the sort orders only those low bits.
-    _launch.radix_sort_pairs(
-        keys, slots, count=n_candidates, end_bit=min(64, max(1, (n**3 - 1).bit_length()))
-    )
-
+    keys, slots = _sorted_candidate_keys(tris, inclusive_counts, n_candidates, n)
     rows = tris.reshape((-1, 3))
     # The run flags live in the payload's upper half, the sort's scratch and free once it ran.
     flags = _launch.view(slots, n_candidates, 2 * n_candidates)
@@ -555,6 +796,32 @@ def _repeated_oriented_triangles(
             device=device,
         )
     return faces
+
+
+def _sorted_candidate_keys(
+    tris: odt.ArrayNdInt32, inclusive_counts: wp.array[wp.int32], n_candidates: int, n: int
+) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
+    """
+    Sort the fan slots by their triangle's unoriented key, the slot as payload.
+
+    Both candidate selections group the fans' triangles by vertex set this way: the plain one of
+    the unoriented clouds and the oriented classes of the trusted ones. The buffers are
+    double-width, the radix sort's scratch in their upper halves, which the callers reuse.
+    """
+    device = tris.device
+    keys = _launch.empty(2 * n_candidates, dtype=wp.uint64, device=device)
+    slots = _launch.empty(2 * n_candidates, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_reconstruction.candidate_triangle_keys,
+        dim=(int(tris.shape[0]), int(tris.shape[1])),
+        inputs=[tris, inclusive_counts, wp.uint64(n), keys, slots],
+        device=device,
+    )
+    # Three indices below ``n`` pack below ``n ** 3``, so the sort orders only those low bits.
+    _launch.radix_sort_pairs(
+        keys, slots, count=n_candidates, end_bit=min(64, max(1, (n**3 - 1).bit_length()))
+    )
+    return keys, slots
 
 
 def screened_poisson(
