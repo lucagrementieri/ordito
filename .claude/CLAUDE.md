@@ -987,6 +987,22 @@ since the constraints phase then sets the peak; it pays once the solve is sparse
 on byte-identical output against the dense form (CPU hash A/B at depths 6-8, the sphere at depth 8
 pairs 16 vertices) and on time at depth 8.
 
+### Open item from the 2026-10-27 triangulation port: the unoriented path
+
+`triangulate_point_cloud` with trusted normals now assembles its fans as MeshLib's
+`triangulatePointCloud` does (oriented candidate classes in its order, the serial builder on the
+contested rows, `findHoleComplicatingFaces` rounds, holes by the gap; `4cef27d6`,
+`reference/component-status.md`). **Without normals it is unchanged**: runs of two or three fans
+whatever their winding, `remove_non_manifold_faces` dropping both of two conflicting faces, then
+`_face_away_from` winding each component. MeshLib orients the *fans* first
+(`autoOrientLocalTriangulations`: fans face away from the box centre, then a heap flood from the
+farthest points flips each neighbour fan to agree) and only then takes the oriented classes and
+runs the same builder. **Proposed:** port that orientation, then route the unoriented path through
+`_assemble_trusted_fans`. The flood is a priority-ordered serial walk, so price it like the builder
+(serial only where fans disagree, or on the CPU device), and gate on
+`test_torus_without_normals_matches_meshlib_reference` / `test_open_cloud_without_normals_faces_like_meshlib`
+tightening from Class C toward face-set equality.
+
 ### Open items from the 2026-10-23 uncapped sweep: ordito on large meshes
 
 The sweep (`.benchmarks/merged-2026-10-23-final/incomplete.jsonl`, ordito-cuda rows) left ordito
