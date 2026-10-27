@@ -1016,14 +1016,20 @@ def query_hashgrid_nearest_neighbors(
     defer: wp.int32,
     start_mode: wp.int32,
     start_histogram: wp.array[wp.int32],
+    lanes: wp.int32,
     out_deferred: wp.array[wp.int32],
     out_indices: wp.array2d[wp.int32],
     out_distances: wp.array2d[wp.float32],
 ) -> None:
     # ``defer`` and ``start_mode`` are the register-row twin's switches (see there); this
     # global-row form serves only ``k`` above the largest bucket, where no caller defers or samples
-    # a start radius, so it takes the arguments and ignores them.
-    tid = wp.int32(wp.tid())
+    # a start radius, so it takes the arguments and ignores them. It launches ``lanes`` threads a
+    # query, the first doing the work: a few long walks then do not share a warp, where they
+    # would run one after the other.
+    thread = wp.int32(wp.tid())
+    if thread % lanes != 0:
+        return
+    tid = thread // lanes
     q = queries[tid]
     out_indices_row = out_indices[tid]
     out_distances_row = out_distances[tid]

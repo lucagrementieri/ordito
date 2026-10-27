@@ -1552,6 +1552,21 @@ def clone(src: ArrayT, device: wp.DeviceLike = None, **kwargs: Any) -> ArrayT:
     return cast("ArrayT", dst)  # ``src``'s own dtype and shape
 
 
+def walk_lanes(m: int) -> int:
+    """
+    Threads an item for a serial per-item walk launched over ``m`` items: a power of two up to 32.
+
+    The kernel's first thread of each group works and the rest return. Few long walks of
+    different lengths then each own a warp instead of running one after the other in a shared
+    one; the groups shrink as ``m`` fills the device, keeping the launch within about ``1 << 17``
+    threads (``reconstruction``'s grown fans and the global-row k-NN measure the trade).
+    """
+    lanes = 1
+    while lanes < 32 and 2 * lanes * m <= 1 << 17:
+        lanes *= 2
+    return lanes
+
+
 def view(src: ArrayT, start: int, stop: int) -> ArrayT:
     """
     ``src[start:stop]`` of a contiguous 1-D array, stamped without ``wp.array.__getitem__``.

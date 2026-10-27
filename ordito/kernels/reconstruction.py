@@ -69,6 +69,11 @@ CRITICAL_ASPECT_RATIO = wp.constant(wp.float32(1e3))
 # Neighbour filter: drop a neighbour whose oriented normal opposes the center normal.
 NORMAL_FILTER_DOT = wp.constant(wp.float32(-0.3))
 
+# ``local_fan``'s cached-weight markers: a slot to recompute, and a stable one. A removal weight is
+# a finite sum of bounded terms or ``+inf``, so it is never ``-inf`` nor the lowest finite float.
+FAN_WEIGHT_DIRTY = wp.constant(wp.float32(-FLOAT32_INF_CONSTANT))
+FAN_WEIGHT_STABLE = wp.constant(wp.float32(-3.4028234663852886e38))
+
 # ``build_local_triangulations``' selector: the normals are trusted (oriented) or carry an
 # arbitrary sign per point (unoriented).
 NORMALS_UNORIENTED = wp.int32(0)
@@ -323,7 +328,10 @@ def cycle_step(nbr: wp.array[wp.int32], m: wp.int32, i: wp.int32, step: wp.int32
     # an ordinary point cloud the walk is not hitting long dead-slot runs and the doubly-linked
     # rewrite would buy little. `m` is capped at `MAX_NEIGHBOURS` regardless, bounding the absolute
     # worst case. Declined; re-measure before reopening this if a future caller's removal pattern
-    # looks different (e.g. a very anisotropic or highly clustered cloud).
+    # looks different (e.g. a very anisotropic or highly clustered cloud). Re-measured once the
+    # removal weights were cached (2026-10-27, crown clouds' grown fans of ~55 neighbours): a
+    # linked ring took ``rebuild_grown_local_triangulations`` 6.7 -> 6.1 ms (CUDA 13.4) and
+    # 20.0 -> 19.2 ms (CUDA 12.9), identical output; still declined for the extra scratch row.
     j = i
     for _ in range(m):
         j = j + step
@@ -538,14 +546,15 @@ def local_fan(
     oriented: wp.int32,
     nbr: wp.array[wp.int32],
     ang: wp.array[wp.float32],
+    weights: wp.array[wp.float32],
     capacity: wp.int32,
     out_tris: wp.array3d[wp.int32],
 ) -> tuple[wp.int32, wp.float32]:
     # Point ``v``'s fan over the neighbours in row ``row`` of the neighbour table that lie within
-    # ``radius`` (any distance when it is zero), into ``out_tris[v, 0 : count]``, with ``nbr`` and
-    # ``ang`` the caller's ``capacity``-slot scratch rows. Returns the triangle count and the
-    # radius the automatic radius increase grows this fan's search to (``grown_radius``), or
-    # zero when it would not grow.
+    # ``radius`` (any distance when it is zero), into ``out_tris[v, 0 : count]``, with ``nbr``,
+    # ``ang`` and ``weights`` the caller's ``capacity``-slot scratch rows. Returns the triangle
+    # count and the radius the automatic radius increase grows this fan's search to
+    # (``grown_radius``), or zero when it would not grow.
     k = neighbor_idx.shape[1]
     cap = out_tris.shape[1]
     base_radius = search_radius(neighbor_dist, row, radius)
@@ -652,6 +661,13 @@ def local_fan(
         return wp.int32(0), doubled_radius
 
     # --- greedy fan optimisation (linear-scan replacement of the priority queue) ---
+    # A slot's weight reads only the slot, its live neighbours on either side and ``border``, so a
+    # removal changes exactly the weights of the two slots beside it (``border`` moves only onto
+    # the one before it): the weights are cached and those two marked for recomputation, which
+    # takes the loop from ``m`` weights a step to two. One call site computes every weight, so
+    # the cached values are the ones the full rescan computed, and the argmax ties fall the same.
+    for i in range(m):
+        weights[i] = FAN_WEIGHT_DIRTY
     current = m  # inherits m's dynamic-variable type (m is already mutable)
     for _step in range(m):
         best_w = wp.float32(-FLOAT32_INF_CONSTANT)  # the constructor keeps this mutable
@@ -659,12 +675,14 @@ def local_fan(
         for i in range(m):
             if nbr[i] < 0:
                 continue
-            res = edge_removal_weight(
-                v, i, m, border, crit_angle, normalizer_sq, nbr, ang, points, normals, oriented
-            )
-            if res[1] > 0.5:
+            if weights[i] == FAN_WEIGHT_DIRTY:
+                res = edge_removal_weight(
+                    v, i, m, border, crit_angle, normalizer_sq, nbr, ang, points, normals, oriented
+                )
+                weights[i] = wp.where(res[1] > 0.5, FAN_WEIGHT_STABLE, res[0])
+            if weights[i] == FAN_WEIGHT_STABLE:
                 continue  # stable, cannot remove
-            update_argmax(best_w, best_pos, res[0], i)
+            update_argmax(best_w, best_pos, weights[i], i)
         if best_pos < 0:
             break
         old = nbr[best_pos]
@@ -673,6 +691,8 @@ def local_fan(
         current -= 1
         if old == border:
             border = nbr[prv]
+        weights[prv] = FAN_WEIGHT_DIRTY
+        weights[cycle_next(nbr, m, prv)] = FAN_WEIGHT_DIRTY
         if current < 2:
             for i in range(m):
                 nbr[i] = -1
@@ -745,6 +765,7 @@ def build_local_triangulations(
     # codegen, and for type hints" -- it *is* the codegen type of a kernel-scope ``wp.zeros``.
     nbr = wp.zeros(shape=MAX_NEIGHBOURS, dtype=wp.int32)
     ang = wp.zeros(shape=MAX_NEIGHBOURS, dtype=wp.float32)
+    weights = wp.zeros(shape=MAX_NEIGHBOURS, dtype=wp.float32)
     count, grown = local_fan(
         v,
         v,
@@ -758,6 +779,7 @@ def build_local_triangulations(
         oriented,
         nbr,
         ang,
+        weights,
         wp.int32(MAX_NEIGHBOURS),
         out_tris,
     )
@@ -777,15 +799,23 @@ def rebuild_grown_local_triangulations(
     crit_angle: wp.float32,
     boundary_angle: wp.float32,
     oriented: wp.int32,
+    lanes: wp.int32,
     out_tris: wp.array3d[wp.int32],
     out_counts: wp.array[wp.int32],
 ) -> None:
     # The second fan of a point whose first one grew its radius: the same ``local_fan`` over row
     # ``t`` of the grown neighbour table, cut at the grown radius, into the point's own slots.
-    t = wp.int32(wp.tid())
+    # Launched with ``lanes`` threads a fan, of which the first does the work: when the fans are
+    # few their serial optimizations, which take different paths, would run one after the other
+    # in a warp of fans.
+    tid = wp.int32(wp.tid())
+    if tid % lanes != 0:
+        return
+    t = tid // lanes
     v = grown_points[t]
     nbr = wp.zeros(shape=GROWN_NEIGHBOURS, dtype=wp.int32)
     ang = wp.zeros(shape=GROWN_NEIGHBOURS, dtype=wp.float32)
+    weights = wp.zeros(shape=GROWN_NEIGHBOURS, dtype=wp.float32)
     count, _grown = local_fan(
         v,
         t,
@@ -799,6 +829,7 @@ def rebuild_grown_local_triangulations(
         oriented,
         nbr,
         ang,
+        weights,
         wp.int32(GROWN_NEIGHBOURS),
         out_tris,
     )

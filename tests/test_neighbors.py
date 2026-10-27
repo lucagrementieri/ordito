@@ -1071,6 +1071,7 @@ def test_knn_sorted_insert_rejects_nan_instead_of_writing_past_its_row(device: s
             wp.int32(0),  # no deferral: this global-row kernel serves k above every bucket
             kernel_neighbors.START_OFF,
             None,
+            wp.int32(1),  # one thread for the one query
             wp.zeros(1, dtype=wp.int32, device=device),
             indices_wp,
             distances_wp,

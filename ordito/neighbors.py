@@ -1420,9 +1420,17 @@ def query_nearest(
         )
     elif defer:
         deferred = _launch.zeros(counters, dtype=wp.int32, device=device)
+    kernel = kernel_neighbors.hashgrid_nearest_kernel(k)
+    # The global-row kernel (``k`` past the register buckets) spreads few queries a warp apiece:
+    # 182 queries at ``k = 101`` (a crown cloud's grown fans) 4.5 -> 0.9 ms on CUDA.
+    lanes = (
+        []
+        if kernel is not kernel_neighbors.query_hashgrid_nearest_neighbors
+        else [wp.int32(_launch.walk_lanes(m))]
+    )
     _launch.launch(
-        kernel_neighbors.hashgrid_nearest_kernel(k),
-        dim=m,
+        kernel,
+        dim=m * (int(lanes[0]) if lanes else 1),
         inputs=[
             *search,
             grid.id,
@@ -1435,6 +1443,7 @@ def query_nearest(
             if start_histogram is None
             else kernel_neighbors.START_SCALED,
             start_histogram,
+            *lanes,
             deferred,
             *outputs,
         ],
