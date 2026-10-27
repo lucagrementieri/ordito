@@ -240,6 +240,28 @@ def test_clone_and_likes_match_warp(device: str) -> None:
     assert not _launch.zeros_like(src).numpy().any()
 
 
+@pytest.mark.parametrize("limit", [1 << 20, 64])
+def test_carve_splits_tables_past_the_largest_array(
+    device: str, monkeypatch: pytest.MonkeyPatch, limit: int
+) -> None:
+    """
+    ``carve`` shares one buffer below Warp's array limit and allocates each table above it.
+
+    The limit is lowered so the split branch runs on a small input (lucy's ball-pivoting tables
+    summed past ``2**31`` elements, which only the CPU's ``wp.empty`` refused). Both branches
+    return zeroed tables of the requested sizes; only the shared one has a common base pointer.
+    """
+    monkeypatch.setattr(_launch, "_CARVE_MAX_ELEMENTS", limit)
+    sizes = [40, 0, 7]
+    tables = _launch.carve(wp.int32, sizes, device, zeroed=True)
+    assert [table.size for table in tables] == sizes
+    assert all(not table.numpy().any() for table in tables)
+    first, last = tables[0].ptr, tables[2].ptr
+    assert first is not None
+    assert last is not None
+    assert (last - first == 64 * 4) == (limit > 64)
+
+
 @pytest.mark.parametrize("inclusive", [True, False])
 @pytest.mark.parametrize("dtype", [np.int32, np.float64])
 def test_array_scan_matches_warp(device: str, inclusive: bool, dtype: type) -> None:

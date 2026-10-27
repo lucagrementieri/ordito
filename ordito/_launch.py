@@ -1604,6 +1604,9 @@ def view(src: ArrayT, start: int, stop: int) -> ArrayT:
 # Each view ``carve`` cuts starts on a multiple of this many elements, at least 128 bytes for every
 # dtype, so a carved table is aligned as a fresh allocation of its own would be for any vector load.
 _CARVE_ALIGN = 32
+# Warp refuses an array of this many elements or more (``check_array_shape``); the stamped CUDA
+# ``empty`` does not check, so a carve past it would succeed on CUDA and raise on the CPU.
+_CARVE_MAX_ELEMENTS = 2**31
 
 
 def carve(
@@ -1615,13 +1618,16 @@ def carve(
     For a call's same-dtype tables that live and die together: one allocation (and at most one
     memset) where each table took its own, at the cost of a [`view`][ordito._launch.view] each.
     Any view holds the whole buffer alive, so a table that outlives the call (a return) does not
-    belong in one. A zero size gets its own zero-length array.
+    belong in one. A zero size gets its own zero-length array. Tables whose sum reaches Warp's
+    largest array take an allocation each instead.
     """
     starts: list[int] = []
     total = 0
     for size in sizes:
         starts.append(total)
         total += -(-size // _CARVE_ALIGN) * _CARVE_ALIGN
+    if total >= _CARVE_MAX_ELEMENTS:
+        return [(zeros if zeroed else empty)(size, dtype=dtype, device=device) for size in sizes]
     buffer = (zeros if zeroed else empty)(total, dtype=dtype, device=device)
     return [
         view(buffer, start, start + size) if size > 0 else empty(0, dtype=dtype, device=device)
