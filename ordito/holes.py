@@ -126,6 +126,8 @@ class _PackedLoops:
         self._tables: tuple[wp.array[wp.int32], ...] | None = None
         # The perimeters a fill measured in its rim pass, with the positions it measured them on.
         self.measured_perimeters: tuple[wp.array[wp.vec3], wp.array[wp.float32]] | None = None
+        # The loops an all-or-nothing traceback left whole because no triangulation covers them.
+        self.blocked_np: np.ndarray = np.empty(0, dtype=np.int64)
 
     @property
     def offsets(self) -> wp.array[wp.int32]:
@@ -212,6 +214,17 @@ class _PackedLoops:
         if self.n_loops <= _FEW_LOOPS:
             return np.asarray(read_values(perimeters, 0, self.n_loops), dtype=np.float32)
         return perimeters.numpy()
+
+    def subset(self, selected_np: np.ndarray) -> _PackedLoops:
+        """Pack the loops ``selected_np`` names, in that order, into loops of their own."""
+        positions_np = np.concatenate(
+            [
+                np.arange(int(self.starts_np[ell]), int(self.starts_np[ell] + self.sizes_np[ell]))
+                for ell in selected_np
+            ]
+        )
+        positions = _launch.array(positions_np.astype(np.int32), dtype=wp.int32, device=self.device)
+        return _PackedLoops(od.array.gather(self.flat_loops, positions), self.sizes_np[selected_np])
 
 
 # Loop counts up to which ``_PackedLoops.perimeters`` reads back through ``read_values``, whose
@@ -412,39 +425,13 @@ def fill_cone(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, mates=mates)
-    device = faces.device
     n_faces = faces.size // 3
     packed = (
         _hole_loops(vertices, faces, preserve_largest_hole, mates=mates) if n_faces > 0 else None
     )
     if packed is None:
         return _launch.clone(vertices), _launch.clone(faces)
-
-    flat_loops, loop_offsets = packed.flat_loops, packed.offsets
-    n_loops, total = packed.n_loops, packed.total
-    n_vertices = vertices.size
-
-    # The centroids and the cone triangles are written straight into the tails of the returned
-    # buffers, behind copies of ``vertices`` and ``faces``.
-    new_vertices = _launch.empty(n_vertices + n_loops, dtype=wp.vec3, device=device)
-    new_faces = _launch.empty(faces.size + 3 * total, dtype=wp.int32, device=device)
-    if n_vertices > 0:
-        _launch.copy(new_vertices, vertices, count=n_vertices)
-    _launch.copy(new_faces, faces, count=faces.size)
-    _launch.launch(
-        kernel_holes.cone_fill,
-        dim=n_loops,
-        inputs=[
-            vertices,
-            flat_loops,
-            loop_offsets,
-            wp.int32(n_vertices),
-            odt.as_dense(new_vertices[n_vertices:]),
-            odt.as_dense(new_faces[faces.size :]),
-        ],
-        device=device,
-    )
-    return new_vertices, new_faces
+    return _cone_packed_loops(vertices, faces, packed)
 
 
 # Fill-metric name -> kernel selector (must match the METRIC_* constants in
@@ -871,6 +858,7 @@ def _fill_packed_loops(
     *,
     n_vertices: int | None = None,
     measure_perimeters: bool = False,
+    all_or_nothing: bool = False,
 ) -> wp.array[wp.int32]:
     """
     Min-weight-triangulate every packed loop **together** and append the fill faces.
@@ -884,7 +872,8 @@ def _fill_packed_loops(
     metric, and whether the traceback fell short of a full triangulation anywhere. ``n_vertices``
     is [`_EdgeTable`][ordito.holes._EdgeTable]'s. ``measure_perimeters`` has the rim pass also
     measure every loop's perimeter into ``loops.measured_perimeters``, for a caller that derives a
-    target from them.
+    target from them. ``all_or_nothing`` leaves a loop no triangulation covers without any fill
+    triangles and records it in ``loops.blocked_np``, for a caller that closes it another way.
     """
     device = faces.device
     # The retry flag, the traceback's shortfall and the face range flag, read back at two different
@@ -1048,7 +1037,9 @@ def _fill_packed_loops(
             )
 
     counts = _launch.view(prev_and_counts, loops.dp_total, loops.dp_total + 2 * n_loops)
-    return _traceback_fill_faces(faces, loops, prev, state, edge_table.n_vertices, counts)
+    return _traceback_fill_faces(
+        faces, loops, prev, state, edge_table.n_vertices, counts, all_or_nothing
+    )
 
 
 def _traceback_fill_faces(
@@ -1058,6 +1049,7 @@ def _traceback_fill_faces(
     state: wp.array[wp.int32],
     n_vertices: int,
     counts_scratch: wp.array[wp.int32],
+    all_or_nothing: bool,
 ) -> wp.array[wp.int32]:
     """
     Walk every loop's DP predecessor table into fill faces, returned appended to ``faces``.
@@ -1074,6 +1066,7 @@ def _traceback_fill_faces(
     scan place the compacted blocks and a second buffer receive them. The same read carries the
     rim-edge passes' face range flag, which raises for ``faces`` indexing outside
     ``[0, n_vertices)``. ``counts_scratch`` is ``(2 * n_loops,)``: the counts, then their scan.
+    ``all_or_nothing`` is [`_fill_packed_loops`][ordito.holes._fill_packed_loops]'s.
     """
     device = loops.device
     triangle_sizes_np = np.maximum(loops.sizes_np - 2, 0)
@@ -1099,6 +1092,7 @@ def _traceback_fill_faces(
             loops.dp_offsets,
             triangle_offsets,
             prev,
+            int(all_or_nothing),
             stack,
             counts,
             padded,
@@ -1112,6 +1106,10 @@ def _traceback_fill_faces(
         _raise_face_range(faces, n_vertices, "faces")
     if shortfall == 0:
         return filled
+    if all_or_nothing:
+        # Readback: which loops the walk left whole decides the loops the caller cones, on the host.
+        counts_np = counts.numpy()
+        loops.blocked_np = np.flatnonzero((counts_np == 0) & (triangle_sizes_np > 0))
     n_triangles = n_padded - shortfall
     if n_triangles == 0:
         return _launch.clone(faces)
@@ -1532,7 +1530,8 @@ def fill_smooth(
         [`fill_min_weight`][ordito.holes.fill_min_weight].
     triangulate_only
         When ``True``, only fill (no subdivision or smoothing) — equivalent to
-        [`fill_min_weight`][ordito.holes.fill_min_weight].
+        [`fill_min_weight`][ordito.holes.fill_min_weight], except for the cone a blocked hole
+        receives (see ``Notes``).
     max_edge
         Target maximum patch edge length. ``None`` (default) derives it from the mean rim edge
         length of the holes being filled; a sequential budget target has no parallel analogue.
@@ -1604,6 +1603,11 @@ def fill_smooth(
     The three stages are: minimum-weight fill, refine the patch to the target edge length, then
     smooth its new interior vertices into the surrounding surface.
 
+    A hole that no triangulation over its rim can close -- under ``resolve_multiple_edges``, one
+    whose every triangulation repeats an existing edge -- is coned onto a new vertex at its rim's
+    centroid instead, as in [`fill_cone`][ordito.holes.fill_cone], so every hole is closed; the
+    cone is then refined and smoothed like any other patch.
+
     Winding is consistent with the surrounding faces only for a consistently wound input.
 
     Examples
@@ -1655,17 +1659,23 @@ def fill_smooth(
         smooth_boundary,
         n_vertices=n_vertices,
         measure_perimeters=max_edge is None and not triangulate_only,
+        all_or_nothing=True,
     )
+    vertices_filled = vertices
+    if packed.blocked_np.size > 0:
+        vertices_filled, faces_filled = _cone_packed_loops(
+            vertices, faces_filled, packed.subset(packed.blocked_np)
+        )
     n_faces_after = faces_filled.size // 3
     patch_mask = _patch_mask(n_faces_before, n_faces_after, device)
 
     if triangulate_only:
-        result = (_launch.clone(vertices), faces_filled)
+        result = (_launch.clone(vertices_filled), faces_filled)
         return (*result, patch_mask) if return_patch else result
 
     target_edge = max_edge if max_edge is not None else _mean_rim_edge_length(vertices, packed)
     new_vertices, new_faces, out_patch = od.smoothing.refine_and_smooth_region(
-        vertices,
+        vertices_filled,
         faces_filled,
         n_vertices_before,
         patch_mask,
@@ -1679,6 +1689,35 @@ def fill_smooth(
         refine=refine,
     )
     return (new_vertices, new_faces, out_patch) if return_patch else (new_vertices, new_faces)
+
+
+def _cone_packed_loops(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], packed: _PackedLoops
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """Cone every packed loop onto a new centroid vertex, appended behind ``vertices``."""
+    device = faces.device
+    n_vertices = vertices.size
+    # The centroids and the cone triangles are written straight into the tails of the returned
+    # buffers, behind copies of ``vertices`` and ``faces``.
+    new_vertices = _launch.empty(n_vertices + packed.n_loops, dtype=wp.vec3, device=device)
+    new_faces = _launch.empty(faces.size + 3 * packed.total, dtype=wp.int32, device=device)
+    if n_vertices > 0:
+        _launch.copy(new_vertices, vertices, count=n_vertices)
+    _launch.copy(new_faces, faces, count=faces.size)
+    _launch.launch(
+        kernel_holes.cone_fill,
+        dim=packed.n_loops,
+        inputs=[
+            vertices,
+            packed.flat_loops,
+            packed.offsets,
+            wp.int32(n_vertices),
+            odt.as_dense(new_vertices[n_vertices:]),
+            odt.as_dense(new_faces[faces.size :]),
+        ],
+        device=device,
+    )
+    return new_vertices, new_faces
 
 
 @overload

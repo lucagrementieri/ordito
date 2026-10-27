@@ -1869,6 +1869,58 @@ def test_fill_smooth_triangulate_only(saddle_graded: tuple[tm.Trimesh, wp.Mesh])
     assert np.array_equal(new_vertices.numpy(), mesh_wp.points.numpy())
 
 
+def test_fill_smooth_cones_a_blocked_hole_like_meshlib(device: str) -> None:
+    """
+    Class B (``canonical_winding`` + ``lexsort_rows``): a blocked hole is coned as MeshLib's.
+
+    The seven-vertex torus (Csaszar's triangulation, faces ``(i, i + 1, i + 3)`` and
+    ``(i, i + 3, i + 2)`` mod 7) joins every pair of its vertices by an edge, so deleting the star
+    of vertex 0 opens a hexagonal hole all nine of whose diagonals are mesh edges: every
+    triangulation of it repeats one. MeshLib's ``fillHole`` then fills it trivially
+    (``fillHoleTrivially``: one vertex at the rim's centroid, one triangle per rim edge), and
+    ``fill_smooth(triangulate_only=True)`` must append the same vertex and the same wound
+    triangles, where ``fill_min_weight`` leaves the hole open. Both append the new vertex behind
+    the input's (vertex 0, unreferenced now, is kept by both), so the indices agree without a map.
+    The cross-cap fixture above would be the
+    smaller case, but MeshLib's halfedge structure cannot hold a non-orientable surface.
+    """
+    ring = np.arange(7)
+    faces_np = np.concatenate(
+        [
+            np.stack([ring, (ring + 1) % 7, (ring + 3) % 7], axis=1),
+            np.stack([ring, (ring + 3) % 7, (ring + 2) % 7], axis=1),
+        ]
+    ).astype(np.int32)
+    faces_np = faces_np[~(faces_np == 0).any(axis=1)]
+    angle = 2.0 * np.pi * ring / 7.0
+    tube = 2.0 + np.cos(3.0 * angle)
+    vertices_np = np.stack(
+        [tube * np.cos(angle), tube * np.sin(angle), np.sin(3.0 * angle)], axis=1
+    )
+    mesh_ml = numpy_to_meshlib(vertices_np, faces_np)
+    holes_ml = mesh_ml.topology.findHoleRepresentiveEdges()
+    assert len(holes_ml) == 1
+    mm.fillHole(mesh_ml, holes_ml[0], mm.FillHoleParams())
+    # Unpacked: vertex 0 lost every face with its star, and packing would renumber the rest.
+    filled_ml = meshlib_to_trimesh(mesh_ml, pack=False)
+    assert filled_ml.vertices.shape[0] == 8, "MeshLib must cone the hexagon"
+
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    assert np.array_equal(
+        od.holes.fill_min_weight(vertices_wp, faces_wp).numpy(), faces_np.reshape(-1)
+    ), "the minimum-weight fill must find the hole blocked"
+    filled_vertices_wp, filled_faces_wp = od.holes.fill_smooth(
+        vertices_wp, faces_wp, triangulate_only=True
+    )
+
+    assert np.allclose(filled_vertices_wp.numpy(), filled_ml.vertices, rtol=1e-5, atol=1e-5)
+    assert np.array_equal(
+        lexsort_rows(canonical_winding(filled_faces_wp.numpy())),
+        lexsort_rows(canonical_winding(filled_ml.faces)),
+    )
+    assert od.boundary.boundary_loops(filled_vertices_wp, filled_faces_wp) == []
+
+
 def test_fill_smooth_hints_change_no_answer(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Ordito against ordito: ``n_vertices=`` and ``mates=`` only spare work.

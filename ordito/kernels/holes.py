@@ -885,6 +885,7 @@ def traceback_fill_triangles(
     dp_offsets: wp.array[wp.int32],
     triangle_offsets: wp.array[wp.int32],
     prev: wp.array[wp.int32],
+    all_or_nothing: wp.int32,
     stack: wp.array[wp.vec2i],
     out_counts: wp.array[wp.int32],
     out_triangles: wp.array2d[wp.int32],
@@ -897,7 +898,9 @@ def traceback_fill_triangles(
     # *at most* ``B - 2`` triangles and the caller compacts on ``out_counts``. The triangles a loop
     # falls short by are added to ``out_state[FILL_STATE_SHORTFALL]`` (arriving zeroed), so the
     # caller's "is the padded buffer already the answer" test is one 4-byte read, and the scan
-    # that places the compacted blocks runs only when some loop did fall short.
+    # that places the compacted blocks runs only when some loop did fall short. Under
+    # ``all_or_nothing`` a loop that falls short reports no triangles at all, which leaves its rim
+    # whole for the caller to close another way (the cone ``holes.fill_smooth`` puts there).
     #
     # The walk is depth-first with ``(k, j)`` taken before ``(i, k)``, which is what fixes the
     # emitted order -- the same order for the same table on either device.
@@ -932,9 +935,10 @@ def traceback_fill_triangles(
                 top += 1
                 stack[o + top] = wp.vec2i(k, j)
                 top += 1
-    out_counts[ell] = n
     if n < b - 2:
+        n = wp.where(all_or_nothing != 0, 0, n)
         wp.atomic_add(out_state, FILL_STATE_SHORTFALL, b - 2 - n)
+    out_counts[ell] = n
 
 
 @wp.kernel
