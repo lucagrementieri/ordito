@@ -680,6 +680,35 @@ def test_boundary_loops_never_invent_an_edge(device: str, extra_faces: list[list
     assert len(pairs) == len(set(pairs))
 
 
+def test_boundary_loops_of_only_dropped_chains_are_empty(device: str) -> None:
+    """
+    Class B, against trimesh's boundary edges: a pinched rim whose every chain dead-ends is no loop.
+
+    The bowtie of ``test_boundary_loops_never_invent_an_edge`` with a fin on each wing's pinch
+    edge, so both wings' rotations dead-end and the pinch walk drops every chain. The cut into
+    simple cycles then has nothing to cut and must return the empty packed pair, not raise (lucy's
+    100 non-manifold boundary edges are this case).
+    """
+    vertices_np = np.array(
+        [[0, 0, 0], [1, 0, 0], [1, 1, 0], [-1, 0, 0], [-1, -1, 0], [0.5, 0, 1], [-0.5, 0, 1]],
+        dtype=np.float64,
+    )
+    faces_np = np.array([[0, 1, 2], [0, 3, 4], [0, 1, 5], [0, 3, 6]])
+    mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+    # Non-vacuity: the mesh has boundary edges, and vertex 0 is a pinch on them.
+    boundary_np = mesh_tm.edges_sorted[
+        tm_grouping.group_rows(mesh_tm.edges_sorted, require_count=1)
+    ]
+    assert Counter(boundary_np.ravel().tolist())[0] > 2
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+
+    flat_wp, offsets_wp = od.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp)
+
+    assert flat_wp.numpy().size == 0
+    assert np.array_equal(offsets_wp.numpy(), [0])
+    assert od.boundary.boundary_loops(vertices_wp, faces_wp) == []
+
+
 @pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 def test_boundary_loop(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """

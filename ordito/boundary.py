@@ -419,6 +419,9 @@ def _split_at_pinches(
                 path.append(vertex)
         cycles.append(np.asarray(path, dtype=np.int32))
     cycles = [np.roll(cycle, -int(np.argmin(cycle))) for cycle in cycles if cycle.size > 0]
+    if not cycles:
+        # A boundary that is not edge-manifold can leave only chains, which the walk drops.
+        return _launch.empty_packed(wp.int32, device)
     cycles.sort(key=lambda cycle: (int(cycle[0]), int(cycle[1]) if cycle.size > 1 else -1))
     sizes = np.array([cycle.size for cycle in cycles], dtype=np.int32)
     new_offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int32)
