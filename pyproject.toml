@@ -68,7 +68,12 @@ bench = [
     "pytest-benchmark>=5.1",
     { include-group = "test" },
 ]
-dev = ["basedpyright>=1.39", "ruff>=0.9", "scipy-stubs>=1.17.1.5"]
+dev = [
+    "basedpyright>=1.39",
+    "pre-commit>=4.7.0",
+    "ruff>=0.9",
+    "scipy-stubs>=1.17.1.5",
+]
 # Zensical is the builder; ``mkdocs.yml`` stays the config file, which it reads natively.
 # ``mkdocs``, ``mkdocs-material``, ``mkdocs-literate-nav`` and ``mkdocs-section-index`` are all
 # gone: Zensical implements the latter two itself -- measured, the built site is byte-identical

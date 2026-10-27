@@ -1,0 +1,18 @@
+# Mirrors the `lint` job of `.github/workflows/test.yml`. Hooks are local and run through `uv run`,
+# so they use the ruff version pinned in `uv.lock`, not a second pin here that could drift.
+# Install once: `uv sync --all-groups && uv run pre-commit install`.
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format --check ordito tests benchmarks
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check ordito tests benchmarks
+        language: system
+        types: [python]
+        pass_filenames: false
