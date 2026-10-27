@@ -54,9 +54,21 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      # `stable` is the only version for now. Once releases get their own versions, deploy
-      # `${GITHUB_REF_NAME#v}` with `--update-aliases ... stable` on tags and keep `main` as `dev`.
+      # A release tag deploys its minor version (`v0.1.2` -> `0.1`, so patches overwrite their
+      # minor's docs) and moves the `stable` alias, which the site root redirects to; `main`
+      # deploys `dev`, so unreleased docs never overwrite a release's. `stable` was once a version
+      # of its own, and mike refuses an alias that names a version, so a leftover one is deleted
+      # first.
       - name: Deploy docs
         run: |
-          uv run mike deploy --push stable
-          uv run mike set-default --push --allow-empty stable
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            if git show origin/gh-pages:versions.json \
+                | jq -e 'any(.[]; .version == "stable")' > /dev/null; then
+              uv run mike delete --push stable
+            fi
+            uv run mike deploy --push --update-aliases "${version%.*}" stable
+            uv run mike set-default --push --allow-empty stable
+          else
+            uv run mike deploy --push dev
+          fi

@@ -8,13 +8,13 @@ Run once (or after touching a source, ``raster/``, ``SIZE`` or ``MAX_ASPECT``):
 ``registry.py`` and ``tools/render_docs.py`` only read the PNGs this writes, so ``cairosvg`` is
 needed only to regenerate them.
 
-Most vendored marks are SVG (a project's own icon-only mark, read from ``svg/``); a project that
-publishes none (MeshLab) has a pre-rasterized source under ``raster/``, loaded with Pillow. Each
+Most vendored marks are SVG (a project's own icon-only mark, read from ``svg/``); a project whose
+usable mark is a PNG (MeshLab, PyTorch3D) has a pre-rasterized source under ``raster/``, loaded with Pillow. Each
 mark is cropped to its visible pixels and scaled to ``SIZE`` tall at its own aspect ratio (at most
 ``MAX_ASPECT`` times as wide), so the docs' inline SVG charts draw every logo at one height and a
 wordmark such as PyVista's keeps a readable width. The page theme decides the background, and
-``docs/stylesheets/extra.css`` recolours the two marks that need it (PyTorch3D's white one on the
-light theme, Open3D's black one on the dark theme).
+``docs/stylesheets/extra.css`` recolours the one mark that needs it (Open3D's black one on the dark
+theme).
 """
 
 from __future__ import annotations

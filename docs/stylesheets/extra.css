@@ -172,11 +172,7 @@
 .bench-chart g:hover rect {
   opacity: 0.8;
 }
-/* Logos are transparent; two marks need a tint to show on one of the themes. PyTorch3D's is pure
-   white, Open3D's mostly black. */
-[data-md-color-scheme="default"] .bench-chart .bench-logo-pytorch3d {
-  filter: invert(0.75);
-}
+/* Logos are transparent; Open3D's mostly black mark needs a tint to show on the dark theme. */
 [data-md-color-scheme="slate"] .bench-chart .bench-logo-open3d {
   filter: invert(1);
 }

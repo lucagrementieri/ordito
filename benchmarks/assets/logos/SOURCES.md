@@ -11,10 +11,10 @@ licensing/trademark statement these vendored marks are subject to.
 | `open3d.svg` | `reference/Open3D/cpp/apps/Open3DViewer/icon.svg` (Open3D's own repository) | The desktop viewer app icon — square, unlike the docs' horizontal wordmark |
 | `pyvista.svg` | `reference/pyvista/logo/pyvista_sq.svg` (PyVista's own repository) | The square variant PyVista itself ships alongside a wordmark one |
 | `meshlib.svg` | `reference/MeshLib/wasm/logo.svg` (MeshLib's own repository) | |
-| `pytorch3d.svg` | `reference/pytorch3d/website/static/img/pytorch3dicon.svg` (PyTorch3D's own repository) | The icon variant, not `pytorch3dlogo(white)?.svg` |
 | `numpy.svg` | <https://numpy.org/images/logo.svg> (NumPy's own site) | Fetched directly; NumPy publishes this for reuse |
 | `scipy.svg` | <https://scipy.org/images/logo.svg> (SciPy's own site) | Fetched directly; SciPy publishes this for reuse |
 | `ordito.png` | `docs/assets/logo.svg` (this repository), rendered directly | ordito's own mark, for the subject bars; there is no copy under `svg/` |
+| `raster/pytorch3d.png` | <https://pytorch3d.org/img/pytorch3dfavicon.png> (PyTorch3D's own site) | The site's favicon: the coloured mark, not the all-white `pytorch3dicon.svg` |
 | `raster/meshlab.png` | <https://www.meshlab.net/img/meshlabLogo.png> (MeshLab's own site) | Used for the `pymeshlab` row — MeshLab publishes no SVG, only this PNG; see `registry.py` for why MeshLab's mark (not a separate PyMeshLab one) is the right choice there |
 
 Three benchmarked libraries have no entry here and render as a text-only bar instead — see the
