@@ -972,6 +972,21 @@ The full per-component detail is in `reference/component-status.md`; read the co
   `test_ball_pivoting_seeds_no_triangle_twice` asserts on the raw wave-loop soup.
 - **Tuned constants live next to their code and are device-gated** (`_LINK_ON_DEVICE_FROM`, `EAR_ONE_BLOCK_MAX`, `RDP_ONE_BLOCK_MAX`, `_DOWNSAMPLE_DOUBLING_FROM`, `_KNN_DEFER_MIN_POINTS`, `_NEAREST_LEAF_SIZES`, `_GEODESIC_BALL_CHUNK`, `PACK_SEGMENTS_KERNEL_FROM`); re-probe after a Warp upgrade.
 
+### Open item from the 2026-10-27 octree memory work: a sparse solve
+
+`screened_poisson(method="octree")` at depth 8 now peaks at 484 MiB, down from 2 036 (`7498cad1`
+to `59e49998`: `created` a bitset, `int8` corner sources, per-cell passes over the surface band,
+`partners` per vertex, the solve's buffers released before the extraction; bit-identical on both
+devices, 0.99-1.13x faster). The peak by phase is splat 341, constraints 443, cascade 367,
+extraction 484 MiB. **Proposed: make the solve sparse, then the extraction's `owners`.** The
+constraints phase is the solver's own dense storage: a normal field over every cell of every depth
+(219 MiB) plus the per-depth lattices; storing them over the occupied cells only is a solver
+redesign, not an extraction change. The last dense extraction table, the per-edge `owners`
+(222 MiB), would take the extraction to about 260 MiB, but alone it buys only about 40 MiB (8 %),
+since the constraints phase then sets the peak; it pays once the solve is sparse. Gate either step
+on byte-identical output against the dense form (CPU hash A/B at depths 6-8, the sphere at depth 8
+pairs 16 vertices) and on time at depth 8.
+
 ### Open items from the 2026-10-23 uncapped sweep: ordito on large meshes
 
 The sweep (`.benchmarks/merged-2026-10-23-final/incomplete.jsonl`, ordito-cuda rows) left ordito
