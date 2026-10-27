@@ -532,7 +532,6 @@ def points_to_meshlib(points_np: np.ndarray, normals_np: np.ndarray | None = Non
     return mn.pointCloudFromPoints(points_ml, cast("Buffer", np.ascontiguousarray(normals_np)))
 
 
-
 def meshlib_triangulation_to_numpy(triangulation_ml: mm.Triangulation) -> np.ndarray:
     """
     Read a ``meshlib.mrmeshpy.Triangulation`` (a vector of vertex triples) as ``(n, 3)`` ``int32``.
@@ -556,6 +555,7 @@ def numpy_to_meshlib_triangulation(rows_np: np.ndarray) -> mm.Triangulation:
         buffer = (ctypes.c_int32 * rows.size).from_address(triangulation_ml.vec_.data_pointer())
         np.ctypeslib.as_array(buffer)[:] = rows
     return triangulation_ml
+
 
 def numpy_to_meshlib_bitset(flags_np: np.ndarray) -> mm.BitSet:
     """

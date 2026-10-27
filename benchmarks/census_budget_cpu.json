@@ -5282,18 +5282,20 @@
  },
  "benchmarks/test_remesh.py::test_isotropic_remesh[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 208,
-   "alloc": 177,
-   "readback": 57,
+   "launch": 205,
+   "alloc": 96,
+   "h2h": 3,
+   "readback": 45,
    "scan": 64,
    "sort": 22
   }
  },
  "benchmarks/test_remesh.py::test_isotropic_remesh[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 245,
-   "alloc": 185,
-   "readback": 68,
+   "launch": 242,
+   "alloc": 104,
+   "h2h": 3,
+   "readback": 56,
    "scan": 67,
    "sort": 23
   }
@@ -5468,8 +5470,9 @@
  "benchmarks/test_repair.py::test_fix_degeneracies[saddle_graded-ordito-cpu]": {
   "counts": {
    "launch": 252,
-   "alloc": 207,
-   "readback": 52,
+   "alloc": 51,
+   "h2h": 3,
+   "readback": 31,
    "scan": 66,
    "sort": 24
   }

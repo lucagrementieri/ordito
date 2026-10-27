@@ -97,16 +97,6 @@ class _EdgeIncidence(NamedTuple):
     counts are kept rather than the codes: every reader applies
     ``kernel_remesh.finalize_vertex_codes`` as it loads one, so no pass rewrites the table.
     """
-    sort_buffers: tuple[wp.array[wp.uint64], wp.array[wp.int32]] | None = None
-    """
-    The double-width key and payload buffers the topology build sorted, when it grouped the faces
-    itself: free scratch once it returns, which a collapse pass's compaction fills with the next
-    pass's keys.
-    """
-    spare: wp.array[wp.int32] | None = None
-    """The unfilled ``int32`` entries the topology build was asked to carve for its caller."""
-    spare_zeroed: wp.array[wp.int32] | None = None
-    """The zeroed ``int32`` entries the topology build was asked to carve for its caller."""
 
 
 # Backstop on the independent-set rounds per geometry rebuild in ``quadric_decimate``.
@@ -127,12 +117,12 @@ _QUADRIC_ROUNDS = 8
 _DECIMATION_RECAPTURE = 0.5
 _DECIMATION_RECAPTURE_FACES = 250_000
 
-# Rounds of ``_flip_interior_edges`` issued before the round is recorded and replayed. Recording
-# and instantiating a round costs more than issuing it, so a call whose first round finds nothing
-# to flip -- a mesh already at the fixpoint -- is cheapest never recording. One issued round is all
-# it takes to learn that, and a later threshold only moves the recording's cost around rather than
-# removing it: calls that flip at all run a handful of rounds, and the replays repay it.
-_FLIP_CAPTURE_FROM_ROUND = 1
+# Rounds of ``_flip_interior_edges`` issued before the round is recorded and replayed. A replay
+# saves only the host's share of a round, and recording one costs more than issuing it, so a loop
+# that reaches its fixpoint within a handful of rounds -- ``isotropic_remesh``'s valence flips, a
+# ``flip_to_delaunay`` of a scanned mesh -- is cheapest never recording, and only a long loop on a
+# small mesh (``reconstruction.delaunay_triangulation``) repays it.
+_FLIP_CAPTURE_FROM_ROUND = 5
 
 # The claim table's value at an unclaimed vertex (``kernel_remesh.UNCLAIMED_KEY``), for the host's
 # reset between ``_collapse_pass`` rounds.
@@ -576,8 +566,6 @@ def _edge_incidence(
     ring: bool = False,
     keys: tuple[wp.array[wp.uint64], wp.array[wp.int32], int] | None = None,
     presorted: bool = False,
-    spare: tuple[int, int] = (0, 0),
-    spare_zeroed: int = 0,
 ) -> _EdgeIncidence:
     """
     Group a triangulation's edge rows once, into unique edges and their incident faces.
@@ -597,12 +585,7 @@ def _edge_incidence(
     that grouping's emit (``kernels/remesh.emit_edge_topology``): the same rows, corner map and
     tables. ``keys``, ``(keys, order, base)``, are that sort's double-width buffers already holding
     every corner's key packed against ``base`` (at least ``n_vertices``) and the identity payload,
-    as a collapse pass's compaction writes them, and with ``presorted`` already sorted
-    (``_FlipTopology.sorted_corner_keys``).
-
-    ``spare``, ``(per_edge, fixed)``, carves ``per_edge * m + fixed`` more unfilled ``int32``
-    entries into the topology's allocation for the caller (``_EdgeIncidence.spare``), and
-    ``spare_zeroed`` that many zeroed ones (``_EdgeIncidence.spare_zeroed``).
+    with ``presorted`` already sorted (``_FlipTopology.sorted_corner_keys``).
     """
     device = faces.device
     n_faces = faces.size // 3
@@ -632,24 +615,20 @@ def _edge_incidence(
         sort_buffers = (key_buffer, order)
     # One zeroed buffer: the two CSRs' counts, the edge face counts and the feature counts.
     n_features = 0 if feature is None else n_vertices
-    counts, face_count, feature_view, zeroed_view = _split_buffer(
-        _launch.zeros(
-            2 * n_vertices + m + n_features + spare_zeroed, dtype=wp.int32, device=device
-        ),
+    counts, face_count, feature_view = _split_buffer(
+        _launch.zeros(2 * n_vertices + m + n_features, dtype=wp.int32, device=device),
         2 * n_vertices,
         m,
         n_features,
-        spare_zeroed,
     )
     feature_count = feature_view if feature is not None else None
     # And one unfilled one: the edge face table, the two CSRs' offsets and their columns, then the
-    # unique edges and corner map of a grouping built here, then the caller's spare entries.
+    # unique edges and corner map of a grouping built here.
     n_columns = (2 * m if ring else 0) + n
     built = grouping is None
-    n_spare = spare[0] * m + spare[1]
     widths = [2 * m, 2 * n_vertices + 1, n_columns, 2 * m if built else 0, n if built else 0]
-    edge_rows, offsets, columns, unique_rows, inverse_view, spare_view = _split_buffer(
-        _launch.empty(sum(widths) + n_spare, dtype=wp.int32, device=device), *widths, n_spare
+    edge_rows, offsets, columns, unique_rows, inverse_view = _split_buffer(
+        _launch.empty(sum(widths), dtype=wp.int32, device=device), *widths
     )
     edge_faces = odt.as_array2d(edge_rows.reshape((m, 2)), wp.int32)
     ring_flag = wp.int32(1 if ring else 0)
@@ -671,8 +650,8 @@ def _edge_incidence(
         _launch.launch(
             kernel_remesh.emit_edge_topology,
             dim=n,
-            inputs=[faces, key_buffer, order, _launch.view(order, n, 2 * n), ring_flag],
-            outputs=[unique_edges, inverse, face_count, edge_faces, counts, offsets],
+            inputs=[faces, key_buffer, order, _launch.view(order, n, 2 * n), ring_flag, None],
+            outputs=[unique_edges, inverse, face_count, edge_faces, counts, offsets, None],
             device=device,
         )
     # Deliberately no readback: both totals (``2 m`` and ``3 n_faces``) are known on the host.
@@ -689,6 +668,7 @@ def _edge_incidence(
             offsets,
             wp.float32(0.0) if feature is None else feature,
             ring_flag,
+            None,
             counts,
         ],
         outputs=[columns, feature_count],
@@ -702,9 +682,6 @@ def _edge_incidence(
         (columns, odt.as_dense(offsets[n_vertices:])),
         (columns, odt.as_dense(offsets[: n_vertices + 1])) if ring else None,
         feature_count,
-        sort_buffers,
-        spare_view if n_spare > 0 else None,
-        zeroed_view if spare_zeroed > 0 else None,
     )
 
 
@@ -738,182 +715,435 @@ def _collapse_pass(
     it stopped on a pass that committed nothing, so the faces it grouped are the ones it returns --
     and ``None`` otherwise, so the next stage can classify the same faces without regrouping them.
     ``grouping`` is ``edges_unique``'s ``(unique_edges, inverse)`` of ``faces`` on entry, when the
-    caller has it. The fourth is ``low``'s table compacted onto the returned vertices (``None``
-    for a scalar).
+    caller has it: the first pass takes it instead of grouping the faces, and its edge count sizes
+    the loop's per-edge buffers, which ``3 * n_faces`` bounds otherwise. The fourth is ``low``'s
+    table compacted onto the returned vertices (``None`` for a scalar). A loop whose first pass
+    commits nothing returns its inputs themselves; otherwise every return is a view of the loop's
+    own buffers.
 
     ``rounds`` is the count of independent sets committed per topology rebuild: a rebuild is most
     of a pass, so a caller whose passes commit few collapses each trades it for cheap rounds.
     """
-    device = vertices.device
-    # A uniform band reaches the kernels as its scalar and a null table, which they read in place
-    # of the per-vertex one.
-    low_bands = low if isinstance(low, wp.array) else None
-    high_bands = high if isinstance(high, wp.array) else None
-    low_uniform = wp.float32(0.0 if isinstance(low, wp.array) else low)
-    high_uniform = wp.float32(0.0 if isinstance(high, wp.array) else high)
-    select = (
-        kernel_remesh.COLLAPSE_SELECT_LENGTH
-        if degeneracy is None
-        else kernel_remesh.COLLAPSE_SELECT_DEGENERATE
-    )
-    degeneracy = wp.vec3() if degeneracy is None else degeneracy
-    # Slot 0 is one commit counter for the whole loop, never reset: it accumulates across passes and
-    # a pass committed nothing exactly when it did not move. Slots 1-2 are the pass's compaction
-    # counts (``_compact_remapped_faces``), so the pass reads all three in one copy.
-    state = _launch.zeros(3, dtype=wp.int32, device=device)
-    count = odt.as_dense(state[:1])
-    committed = 0
-    current: _EdgeIncidence | None = None
-    # The sort buffers the last compaction wrote this pass's corner keys into, with their base.
-    pending_keys: tuple[wp.array[wp.uint64], wp.array[wp.int32], int] | None = None
-    for pass_index in range(max_passes):
-        current = None
-        n_vertices = vertices.size
-        n_faces = faces.size // 3
-        if n_faces == 0:
-            break
+    n_faces = faces.size // 3
+    if n_faces == 0 or max_passes <= 0:
+        return vertices, faces, None, low if isinstance(low, wp.array) else None
+    return _CollapseBuffers(
+        vertices, faces, low, high, feature, grouping, degeneracy=degeneracy, rounds=rounds
+    ).run(max_passes)
 
-        # One edge grouping per pass, and the whole topology the candidate scoring reads built from
-        # it in one count, one scan and one fill; the first pass's grouping may come from the stage
-        # before (``grouping``).
-        #
+
+class _CollapseBuffers:
+    """
+    The whole working set of [`_collapse_pass`][ordito.remesh._collapse_pass], allocated once.
+
+    A collapse never adds a face, a vertex or a unique edge, so the loop's entry sizes bound every
+    pass, and every buffer a pass touches is allocated here at that width: a pass allocates
+    nothing, and its one readback is the stop decision. The live sizes are kept in ``state`` on the
+    device (``kernels/remesh.py``'s ``COLLAPSE_PASS_*`` slots) and each kernel stops at the live
+    prefix it reads there, while the corner sort runs over the whole width with its dead tail keyed
+    to sort last (``kernel_remesh.compact_surviving_faces``). So the edge count the sort finds is
+    never read back to size what follows.
+
+    The mesh moves between two sets of buffers, each pass compacting out of one into the other,
+    starting from the caller's own arrays: a pass that committed nothing leaves its input as the
+    loop's result, and the compaction it ran into the other set is simply not taken. The first
+    pass groups the faces by the caller's grouping when there is one
+    (``kernel_remesh.count_edge_topology``), and every other by the corner sort, whose keys the
+    pass before wrote as it compacted the faces (``kernel_remesh.emit_edge_topology``).
+
+    A pass is that topology build with ``_edge_incidence``'s scan and fill, the candidate, claim
+    and commit launches, and a compaction: one marking launch, one scan over the face flags and
+    the target marks together, and one launch that moves faces and targets, writes the next pass's
+    sort keys and publishes both counts.
+
+    Attributes
+    ----------
+    state : wp.array[wp.int32]
+        ``[n_edges, n_vertices, n_faces, commits]``: the pass's unique-edge count, the live sizes
+        (the next pass's, once the pass has run) and the pass's commit count. The one array the
+        host reads.
+    """
+
+    def __init__(
+        self,
+        vertices: wp.array[wp.vec3],
+        faces: wp.array[wp.int32],
+        low: float | wp.array[wp.float32],
+        high: float | wp.array[wp.float32],
+        feature: wp.float32,
+        grouping: tuple[odt.Array2dInt32, wp.array[wp.int32]] | None,
+        *,
+        degeneracy: wp.vec3 | None,
+        rounds: int,
+    ) -> None:
+        """Allocate at the loop's entry sizes and seed the live counts."""
+        device = cast("wp.Device", faces.device)
+        self._device = device
+        self._feature = feature
+        self._rounds = rounds
+        self._grouping = grouping
+        f_cap = faces.size // 3
+        v_cap = vertices.size
+        e_cap = 3 * f_cap if grouping is None else int(grouping[0].shape[0])
+        self.n_faces, self.n_vertices, self.n_edges = f_cap, v_cap, e_cap
+        n = 3 * f_cap
+        # The corner keys pack an edge as ``min + max * v_cap``, so the sort need only order the
+        # bits below ``v_cap ** 2``.
+        self._key_base = wp.uint64(v_cap)
+        self._key_bits = min(64, max(1, (v_cap * v_cap - 1).bit_length()))
+        # A uniform band reaches the kernels as its scalar and a null table, which they read in
+        # place of the per-vertex one.
+        self._low_uniform = wp.float32(0.0 if isinstance(low, wp.array) else low)
+        self._high_uniform = wp.float32(0.0 if isinstance(high, wp.array) else high)
+        self._select = (
+            kernel_remesh.COLLAPSE_SELECT_LENGTH
+            if degeneracy is None
+            else kernel_remesh.COLLAPSE_SELECT_DEGENERATE
+        )
+        self._degeneracy = wp.vec3() if degeneracy is None else degeneracy
+        # Allocated holding its seed: a grouping in hand gives the first pass its edge count, which
+        # the corner sort's emit publishes otherwise.
+        self.state = _launch.array(
+            [0 if grouping is None else e_cap, v_cap, f_cap, 0], dtype=wp.int32, device=device
+        )
+        self._totals = _launch.view(
+            self.state,
+            int(kernel_remesh.COLLAPSE_PASS_VERTICES),
+            int(kernel_remesh.COLLAPSE_PASS_FACES) + 1,
+        )
+        self._commits = _launch.view(
+            self.state,
+            int(kernel_remesh.COLLAPSE_PASS_COMMITS),
+            int(kernel_remesh.COLLAPSE_PASS_COMMITS) + 1,
+        )
+
+        # Every table a pass counts or marks into, zeroed together at the start of each pass: the
+        # two CSRs' counts, the edge face counts, the feature counts, the compaction's marks behind
+        # their leading zero, and the round locks.
+        zeroed_widths = [2 * v_cap, e_cap, v_cap, 1 + f_cap + v_cap, v_cap if rounds > 1 else 0]
+        self._zeroed = _launch.zeros(sum(zeroed_widths), dtype=wp.int32, device=device)
+        self._counts, self._face_count, self._feature_count, marks, locked = _split_buffer(
+            self._zeroed, *zeroed_widths
+        )
+        self._locked = locked if rounds > 1 else None
+        # Behind the marks' leading zero: the face flags, then the target marks, so one inclusive
+        # scan of the tail makes each half an exclusive scan ending in its running total.
+        self._mark_tail = _launch.view(marks, 1, marks.size)
+        self._face_scan = _launch.view(marks, 0, f_cap + 1)
+        self._target_scan = _launch.view(marks, f_cap, marks.size)
+        # Every unfilled ``int32`` table: the two face buffers, the corner map, the sort's
+        # double-width payload (whose upper half holds the run ranks), the unique edges and their
+        # faces, the two CSRs' offsets and columns, each edge's survivor and removed endpoint, and
+        # the vertex remap.
+        int_widths = [n, n, n, 2 * n, 2 * e_cap, 2 * e_cap, 2 * v_cap + 1, 2 * e_cap + n]
+        int_widths += [e_cap, e_cap, v_cap]
+        (
+            faces_b,
+            faces_c,
+            self._inverse,
+            self._order,
+            self._unique_rows,
+            self._edge_rows,
+            self._offsets,
+            self._columns,
+            self._survivor,
+            self._removed,
+            self._remap,
+        ) = _split_buffer(
+            _launch.empty(sum(int_widths), dtype=wp.int32, device=device), *int_widths
+        )
+        self._unique_edges = odt.as_array2d(self._unique_rows.reshape((e_cap, 2)), wp.int32)
+        self._edge_faces = odt.as_array2d(self._edge_rows.reshape((e_cap, 2)), wp.int32)
+        self._ranks = _launch.view(self._order, n, 2 * n)
+        self._offset_tail = _launch.view(self._offsets, 1, 2 * v_cap + 1)
+        self._ring_offsets = _launch.view(self._offsets, 0, v_cap + 1)
+        self._face_offsets = _launch.view(self._offsets, v_cap, 2 * v_cap + 1)
+        # The two position buffers, the working positions the commits move, and each edge's target
+        # position.
+        vertices_b, vertices_c, self._positions, self._target_pos = _split_buffer(
+            _launch.empty(3 * v_cap + e_cap, dtype=wp.vec3, device=device),
+            v_cap,
+            v_cap,
+            v_cap,
+            e_cap,
+        )
+        self._keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+        # Seeded by ``collapse_candidates`` every pass: unclaimed keys (64-bit, because the lock key
+        # is -- see ``kernel_remesh.scramble_index`` for why it has to be injective).
+        self._claim = _launch.empty(v_cap, dtype=wp.int64, device=device)
+        # Two buffers for each band that is a per-vertex table.
+        tables = [band if isinstance(band, wp.array) else None for band in (low, high)]
+        band_store = _launch.empty(
+            2 * v_cap * sum(table is not None for table in tables), dtype=wp.float32, device=device
+        )
+        bands: list[list[wp.array[wp.float32] | None]] = [[], []]
+        start = 0
+        for table in tables:
+            for side in bands:
+                side.append(
+                    None if table is None else _launch.view(band_store, start, start + v_cap)
+                )
+                start += 0 if table is None else v_cap
+        self._meshes = [
+            _CollapseMesh(faces, vertices, tables[0], tables[1]),
+            _CollapseMesh(faces_b, vertices_b, bands[0][0], bands[0][1]),
+            _CollapseMesh(faces_c, vertices_c, bands[1][0], bands[1][1]),
+        ]
+
+    def run(
+        self, max_passes: int
+    ) -> tuple[
+        wp.array[wp.vec3], wp.array[wp.int32], _EdgeIncidence | None, wp.array[wp.float32] | None
+    ]:
+        """
+        Run up to ``max_passes`` passes, stopping after one that commits nothing.
+
+        Returns ``_collapse_pass``'s four values.
+        """
+        source, n_vertices, n_faces = 0, self.n_vertices, self.n_faces
+        incidence = None
+        for pass_index in range(max_passes):
+            target = 2 if source == 1 else 1
+            self._pass(pass_index, self._meshes[source], self._meshes[target])
+            # The stop decision and the next pass's sizes, in one copy.
+            n_edges, kept, surviving, commits = (
+                int(value) for value in read_values(self.state, 0, 4)
+            )
+            if commits == 0:
+                # The pass's input is the result, and the topology it built is the result's.
+                incidence = self._incidence(pass_index, n_faces, n_vertices, n_edges)
+                break
+            source, n_vertices, n_faces = target, kept, surviving
+            if n_faces == 0:
+                break
+        mesh = self._meshes[source]
+        if source == 0:
+            return mesh.vertices, mesh.faces, incidence, mesh.low
+        return (
+            _live_prefix(mesh.vertices, n_vertices),
+            _live_prefix(mesh.faces, 3 * n_faces),
+            incidence,
+            None if mesh.low is None else _live_prefix(mesh.low, n_vertices),
+        )
+
+    def _pass(self, pass_index: int, mesh: _CollapseMesh, out: _CollapseMesh) -> None:
+        """Issue every launch of one pass, from ``mesh`` into ``out``."""
+        device = self._device
+        f_cap, v_cap, e_cap = self.n_faces, self.n_vertices, self.n_edges
+        n = 3 * f_cap
+        ring = wp.int32(1)
+        unique_edges, _inverse = self._topology(pass_index)
+        _launch.zero_(self._zeroed)
+        if pass_index == 0 and self._grouping is not None:
+            _launch.launch(
+                kernel_remesh.count_edge_topology,
+                dim=n,
+                inputs=[self._grouping[1], mesh.faces, unique_edges, ring],
+                outputs=[self._face_count, self._edge_faces, self._counts, self._offsets],
+                device=device,
+            )
+        else:
+            if pass_index == 0:
+                _launch.launch(
+                    kernel_adjacency.face_edge_keys_and_order,
+                    dim=f_cap,
+                    inputs=[mesh.faces, self._key_base, self._keys, self._order],
+                    device=device,
+                )
+            # The sort, run ranks and emit ``_edge_incidence`` issues for a grouping it builds.
+            _launch.radix_sort_pairs(self._keys, self._order, count=n, end_bit=self._key_bits)
+            _launch.launch(
+                kernel_grouping.MARK_SORTED_RUN_STARTS[wp.uint64],
+                dim=n,
+                inputs=[self._keys, self._ranks],
+                device=device,
+            )
+            _launch.array_scan(self._ranks, self._ranks, inclusive=True)
+            _launch.launch(
+                kernel_remesh.emit_edge_topology,
+                dim=n,
+                inputs=[mesh.faces, self._keys, self._order, self._ranks, ring, self.state],
+                outputs=[
+                    self._unique_edges,
+                    self._inverse,
+                    self._face_count,
+                    self._edge_faces,
+                    self._counts,
+                    self._offsets,
+                    self.state,
+                ],
+                device=device,
+            )
+        _launch.array_scan(self._counts, out_array=self._offset_tail, inclusive=True)
+        _launch.launch(
+            kernel_remesh.fill_edge_topology,
+            dim=max(e_cap, f_cap),
+            inputs=[
+                mesh.vertices,
+                mesh.faces,
+                unique_edges,
+                self._face_count,
+                self._edge_faces,
+                self._offsets,
+                self._feature,
+                ring,
+                self.state,
+                self._counts,
+            ],
+            outputs=[self._columns, self._feature_count],
+            device=device,
+        )
         # The vertex-face rows exist only for ``collapse_candidates``' fold veto, which needs the
         # faces incident to a vertex where the rings have only its neighbours. Only the neighbour
         # *sets* are read -- the link condition counts shared neighbours, the band walks and the
         # ring locks exit or take a minimum over a whole row, the veto exits on a fold -- so neither
         # CSR needs an order.
-        #
-        # The topology's allocations also carve the pass's own ``int32`` tables: each edge's
-        # survivor and removed endpoint and the vertex remap (``spare``), and the compaction's
-        # zeroed marks (``spare_zeroed``).
-        incidence = _edge_incidence(
-            faces,
-            n_vertices,
-            grouping,
-            vertices=vertices,
-            feature=feature,
-            ring=True,
-            keys=pending_keys,
-            spare=(2, n_vertices),
-            spare_zeroed=1 + n_faces + n_vertices,
-        )
-        grouping = None
-        pending_keys = None
-        unique_edges = incidence.unique_edges
-        m = int(unique_edges.shape[0])
-        if m == 0:
-            break
-        assert incidence.vertex_faces is not None
-        assert incidence.ring is not None
-        assert incidence.feature_count is not None
-        vertex_faces, face_offsets = incidence.vertex_faces
-        ring_neighbors, ring_offsets = incidence.ring
-        feature_count = incidence.feature_count
-
-        assert incidence.spare is not None
-        survivor, removed, remap = _split_buffer(incidence.spare, m, m, n_vertices)
-        # Each edge's target position, then the working positions. The compacted faces and
-        # positions are allocations of their own: they are the next pass's mesh, and the last
-        # pass's become the caller's.
-        target_pos, positions = _split_buffer(
-            _launch.empty(m + n_vertices, dtype=wp.vec3, device=device), m, n_vertices
-        )
-        compacted = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-        kept_positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
-        # Seeded by ``collapse_candidates``: unclaimed keys (64-bit, because the lock key is -- see
-        # ``kernel_remesh.scramble_index`` for why it has to be injective), the identity map and the
-        # working positions.
-        claim = _launch.empty(n_vertices, dtype=wp.int64, device=device)
         _launch.launch(
             kernel_remesh.collapse_candidates,
-            dim=m,
+            dim=e_cap,
             inputs=[
                 unique_edges,
-                vertices,
-                faces,
-                feature_count,
-                incidence.face_count,
-                incidence.faces,
-                ring_offsets,
-                ring_neighbors,
-                face_offsets,
-                vertex_faces,
-                low_bands,
-                high_bands,
-                low_uniform,
-                high_uniform,
-                select,
-                degeneracy,
-                survivor,
-                removed,
-                target_pos,
-                claim,
-                remap,
-                positions,
+                mesh.vertices,
+                mesh.faces,
+                self._feature_count,
+                self._face_count,
+                self._edge_faces,
+                self._ring_offsets,
+                self._columns,
+                self._face_offsets,
+                self._columns,
+                mesh.low,
+                mesh.high,
+                self._low_uniform,
+                self._high_uniform,
+                self._select,
+                self._degeneracy,
+                self.state,
+                self._survivor,
+                self._removed,
+                self._target_pos,
+                self._claim,
+                self._remap,
+                self._positions,
+                self.state,
             ],
             device=device,
         )
-
-        # **Folding this launch into the candidate kernel above is declined**, on the same
+        # **Folding the claim into the candidate kernel above is declined**, on the same
         # measurement as the flip engine's equivalent in ``_flip_interior_edges``: the claim reads
         # ``survivor[k]`` / ``removed[k]`` at its own thread and its claim table is seeded by the
         # candidate kernel itself, so it would fuse -- but a pass is a topology rebuild plus a
-        # handful of launches around one readback, and this is one of them. The claim/commit pair
-        # after it is not fusible at all.
+        # handful of launches, and this is one of them. The claim/commit pair after it is not
+        # fusible at all.
         # ``rounds`` independent sets per rebuild, the later ones re-claiming the candidates the
         # earlier commits left untouched (``kernel_remesh.claim_collapse_key``'s ``locked``); one
         # round needs no lock table.
-        locked = _launch.zeros(n_vertices, dtype=wp.int32, device=device) if rounds > 1 else None
-        for round_index in range(rounds):
+        for round_index in range(self._rounds):
             if round_index > 0:
-                _launch.fill_(claim, _UNCLAIMED_KEY)
+                _launch.fill_(self._claim, _UNCLAIMED_KEY)
             _launch.launch(
                 kernel_remesh.claim_collapse_key,
-                dim=m,
-                inputs=[survivor, removed, ring_offsets, ring_neighbors, locked, claim],
+                dim=e_cap,
+                inputs=[
+                    self._survivor,
+                    self._removed,
+                    self._ring_offsets,
+                    self._columns,
+                    self._locked,
+                    self._claim,
+                ],
                 device=device,
             )
             _launch.launch(
                 kernel_remesh.commit_collapses,
-                dim=m,
-                inputs=[survivor, removed, target_pos, claim, ring_offsets, ring_neighbors],
-                outputs=[remap, positions, count, locked],
+                dim=e_cap,
+                inputs=[
+                    self._survivor,
+                    self._removed,
+                    self._target_pos,
+                    self._claim,
+                    self._ring_offsets,
+                    self._columns,
+                ],
+                outputs=[self._remap, self._positions, self._commits, self._locked],
                 device=device,
             )
-        # Drop the faces the collapses degenerated and the vertices no face names any more, in one
-        # scan and one compaction: the positions and both length bands are compacted together, so
-        # neither band is re-sampled. Issued before the commit count is read, so one copy carries
-        # the loop's decision and the sizes, and the outputs are sized for every input and kept as
-        # their live prefixes; a pass that committed nothing discards a compaction of an identity
-        # remap. A pass that grouped its faces itself has its sort buffers free by now, and the
-        # compaction writes the next pass's corner keys into them as it moves the faces.
-        next_keys = None
-        if incidence.sort_buffers is not None and pass_index + 1 < max_passes:
-            next_keys = (*incidence.sort_buffers, n_vertices)
-        kept_low, kept_high = _compact_remapped_faces(
-            faces,
-            remap,
-            positions,
-            low_bands,
-            high_bands,
-            odt.as_dense(state[1:]),
-            compacted,
-            kept_positions,
-            next_keys,
-            incidence.spare_zeroed,
+        # Drop the faces the collapses degenerated and the vertices no face names any more: a face
+        # survives when its three remapped corners are distinct, and the targets kept are those a
+        # surviving face names, in target order -- a face-mask ``submesh`` followed by
+        # ``repair.remove_unreferenced_vertices``. The positions and both length bands are
+        # compacted together, so neither band is re-sampled. Issued before the commit count is
+        # read, so one copy carries the loop's decision and the sizes.
+        _launch.launch(
+            kernel_remesh.mark_surviving_faces,
+            dim=f_cap,
+            inputs=[mesh.faces, self._remap, self.state],
+            outputs=[self._mark_tail],
+            device=device,
         )
-        total, n_kept, n_surviving = (int(value) for value in read_values(state, 0, 3))
-        if total == committed:
-            current = incidence
-            break
-        committed = total
-        pending_keys = next_keys
-        faces = _live_prefix(compacted, 3 * n_surviving)
-        vertices = _live_prefix(kept_positions, n_kept)
-        low_bands = None if kept_low is None else _live_prefix(kept_low, n_kept)
-        high_bands = None if kept_high is None else _live_prefix(kept_high, n_kept)
+        _launch.array_scan(self._mark_tail, self._mark_tail, inclusive=True)
+        _launch.launch(
+            kernel_remesh.compact_surviving_faces,
+            dim=max(f_cap, v_cap),
+            inputs=[
+                mesh.faces,
+                self._remap,
+                self._face_scan,
+                self._target_scan,
+                self._positions,
+                mesh.low,
+                mesh.high,
+                self._key_base,
+            ],
+            outputs=[
+                out.faces,
+                self._totals,
+                out.vertices,
+                out.low,
+                out.high,
+                self._keys,
+                self._order,
+            ],
+            device=device,
+        )
 
-    return vertices, faces, current, low_bands
+    def _topology(self, pass_index: int) -> tuple[odt.Array2dInt32, wp.array[wp.int32]]:
+        """Return the unique edges and corner map pass ``pass_index`` groups its faces into."""
+        if pass_index == 0 and self._grouping is not None:
+            return self._grouping
+        return self._unique_edges, self._inverse
+
+    def _incidence(
+        self, pass_index: int, n_faces: int, n_vertices: int, n_edges: int
+    ) -> _EdgeIncidence:
+        """Return the topology pass ``pass_index`` built, cut to the live sizes it was built for."""
+        v_cap = self.n_vertices
+        unique_edges, inverse = self._topology(pass_index)
+        if unique_edges is self._unique_edges:
+            unique_edges = odt.as_array2d(
+                _launch.view(self._unique_rows, 0, 2 * n_edges).reshape((n_edges, 2)), wp.int32
+            )
+            inverse = _launch.view(inverse, 0, 3 * n_faces)
+        return _EdgeIncidence(
+            unique_edges,
+            inverse,
+            _launch.view(self._face_count, 0, n_edges),
+            odt.as_array2d(
+                _launch.view(self._edge_rows, 0, 2 * n_edges).reshape((n_edges, 2)), wp.int32
+            ),
+            (self._columns, _launch.view(self._offsets, v_cap, v_cap + n_vertices + 1)),
+            (self._columns, _launch.view(self._offsets, 0, n_vertices + 1)),
+            _launch.view(self._feature_count, 0, n_vertices),
+        )
+
+
+class _CollapseMesh(NamedTuple):
+    """One of the buffer sets ``_CollapseBuffers`` moves the mesh between."""
+
+    faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3]
+    low: wp.array[wp.float32] | None
+    high: wp.array[wp.float32] | None
 
 
 def _live_prefix(buffer: wp.array[odt.DType], count: int) -> wp.array[odt.DType]:
@@ -1262,14 +1492,11 @@ def _flip_interior_edges(
     round_index = 0
     while round_index < max_iter:
         if graph is not None:
-            # Several replays a readback, as many as the key set's headroom allows: a round flips
-            # at most one edge per two faces, so this many rounds cannot overfill it before the
-            # rebuild ``flipped`` decides on. A replay past the fixpoint flips nothing and changes
-            # nothing, so the faces and the total are the per-round loop's.
-            batch = min(max_iter - round_index, topology.replay_headroom())
-            for _ in range(batch):
-                wp.capture_launch(graph)
-            round_index += batch
+            # One replay a readback. Replaying several between readbacks saves no device time, and
+            # the batch that finds the fixpoint runs whole: on a mesh whose rounds are device-bound
+            # those idle rounds cost as much as the ones that flipped.
+            wp.capture_launch(graph)
+            round_index += 1
         elif capturable and round_index >= _FLIP_CAPTURE_FROM_ROUND:
             # Every round is the same launch sequence over the same buffers -- only the face
             # buffer's contents change -- so a long call records one round and replays it, and a
@@ -1635,18 +1862,6 @@ class _FlipTopology:
     def active_edge_set_mask(self) -> int:
         """``edge_set_mask`` once an incremental build seeded the key set, else ``-1``."""
         return self.edge_set_mask if self.incremental else -1
-
-    def replay_headroom(self) -> int:
-        """
-        Count the rounds that may run before the next ``flipped`` with the key set still safe.
-
-        ``flipped`` rebuilds once the flips since the last build pass the budget, so a round may
-        start anywhere up to it; a round flips at most one edge per two faces (each flip claims
-        both of its own), so this many back-to-back rounds end no further past the budget than
-        one round can.
-        """
-        per_round = max(1, self._n_faces // 2)
-        return max(1, (self._flip_budget - self._flips_since_build) // per_round + 1)
 
     def flipped(self, count: int) -> None:
         """
@@ -2071,76 +2286,6 @@ def _cluster_sorted_means(
             device=device,
             block_dim=kernel_remesh.CLUSTER_HEAVY_BLOCK_DIM,
         )
-
-
-def _compact_remapped_faces(
-    faces: wp.array[wp.int32],
-    remap: wp.array[wp.int32],
-    positions: wp.array[wp.vec3],
-    low: wp.array[wp.float32] | None,
-    high: wp.array[wp.float32] | None,
-    totals: wp.array[wp.int32],
-    out_faces: wp.array[wp.int32],
-    out_positions: wp.array[wp.vec3],
-    keys: tuple[wp.array[wp.uint64], wp.array[wp.int32], int] | None = None,
-    scan: wp.array[wp.int32] | None = None,
-) -> tuple[wp.array[wp.float32] | None, wp.array[wp.float32] | None]:
-    """
-    Faces pushed through a vertex remap, with the collapsed ones dropped and the targets compacted.
-
-    Writes ``out_faces`` (``3 * n_faces`` entries) and ``out_positions`` (one per target), returns
-    the compacted ``(low, high)`` (``None`` in, ``None`` out) and writes ``totals = [n_kept,
-    n_surviving]`` on the device: the caller reads them with whatever else it reads. A face
-    survives when its three remapped corners are distinct; the targets kept are those a surviving
-    face names, in target order, and the first ``3 * n_surviving`` entries of ``out_faces``
-    hold the surviving faces in input order renumbered onto them -- a face-mask ``submesh``
-    followed by ``repair.remove_unreferenced_vertices`` -- while the first ``n_kept`` of the
-    position and band outputs hold the kept targets'. ``keys``, ``(keys, order, base)``, are sort
-    buffers of at least ``6 * n_faces`` entries that also receive the surviving faces' corner
-    keys packed against ``base`` and the identity payload, for ``_edge_incidence(keys=)``.
-    ``scan``, when given, is the zeroed ``1 + n_faces + n_targets`` marks buffer to scan in.
-
-    One marking launch, one scan over the face flags and the target marks together, and one
-    compaction that moves faces and targets and publishes both counts. Every output is sized for
-    every input so that launch can publish the counts before the host knows them.
-    """
-    device = faces.device
-    n_faces = faces.size // 3
-    n_targets = positions.size
-    # Behind a leading zero: the face flags, then the target marks, so one inclusive scan of the
-    # tail makes each half an exclusive scan ending in its running total.
-    if scan is None:
-        scan = _launch.zeros(1 + n_faces + n_targets, dtype=wp.int32, device=device)
-    marks = scan[1:]
-    _launch.launch(
-        kernel_remesh.mark_surviving_faces, dim=n_faces, inputs=[faces, remap, marks], device=device
-    )
-    _launch.array_scan(marks, marks, inclusive=True)
-    bands = _launch.empty(
-        (0 if low is None else n_targets) + (0 if high is None else n_targets),
-        dtype=wp.float32,
-        device=device,
-    )
-    kept_low = None if low is None else _launch.view(bands, 0, n_targets)
-    kept_high = None if high is None else _launch.view(bands, bands.size - n_targets, bands.size)
-    key_buffer, order, base = (None, None, 0) if keys is None else keys
-    _launch.launch(
-        kernel_remesh.compact_surviving_faces,
-        dim=max(n_faces, n_targets),
-        inputs=[
-            faces,
-            remap,
-            scan[: n_faces + 1],
-            scan[n_faces:],
-            positions,
-            low,
-            high,
-            wp.uint64(base),
-        ],
-        outputs=[out_faces, totals, out_positions, kept_low, kept_high, key_buffer, order],
-        device=device,
-    )
-    return kept_low, kept_high
 
 
 @overload

@@ -691,6 +691,63 @@ def test_collapse_pass_vetoes_a_collapse_that_would_fold_a_face(device: str) -> 
     assert not (np.any(projected_np > 0.0) and np.any(projected_np < 0.0))
 
 
+def test_collapse_pass_hands_over_the_topology_of_the_faces_it_returns(device: str) -> None:
+    """
+    A collapse loop that stops hands over its last pass's topology, cut to the returned mesh.
+
+    Class A: the unique edges and the corner map equal trimesh's ``edges_unique`` and
+    ``edges_unique_inverse`` of the returned faces as returned (ordito's rows are trimesh's order),
+    and each edge's face count is the number of corners naming it. The loop runs on buffers sized
+    for its input, its corner sort over the whole width with a padded tail, so a live prefix cut at
+    the wrong count, or a padded key sorted into the live rows, shows here as rows that are not the
+    returned faces' edges. The grid at twice its mean edge runs committing passes before the one
+    that stops the loop, so the topology handed over is not the input's. Mutation probes: padding
+    the dead corners with key 0 sorts one into the first row, and cutting at the capacity hands
+    over 5 766 rows for 774 edges; the row comparison fails on both.
+    """
+    vertices_wp, faces_wp = od.creation.grid(count=(32, 32), extents=(1.0, 1.0), device=device)
+    target = 2.0 * od.edges.mean_edge_length(vertices_wp, faces_wp)
+    low, high = od.remesh._length_bands(None, target, vertices_wp.size, device)
+
+    out_vertices, out_faces, incidence, _low = od.remesh._collapse_pass(
+        vertices_wp, faces_wp, low, high, wp.float32(math.radians(30.0)), max_passes=20
+    )
+
+    assert out_faces.size < faces_wp.size
+    assert incidence is not None
+    mesh_tm = warp_to_trimesh(out_vertices, out_faces)
+    assert np.array_equal(incidence.unique_edges.numpy(), mesh_tm.edges_unique)
+    assert np.array_equal(incidence.inverse.numpy(), mesh_tm.edges_unique_inverse)
+    counts_np = np.bincount(mesh_tm.edges_unique_inverse, minlength=len(mesh_tm.edges_unique))
+    assert np.array_equal(incidence.face_count.numpy(), counts_np)
+
+
+def test_collapse_pass_that_commits_nothing_returns_its_input(device: str) -> None:
+    """
+    A collapse loop whose first pass commits nothing returns its input, unreferenced vertex kept.
+
+    Not a library comparison: this is a claim about the loop's stopping rule, and no reference
+    exposes one. Every pass ends in a compaction that drops the vertices no face names, and a pass
+    that committed nothing must discard it: the loop's result is then its input exactly. The
+    unreferenced vertex is what tells the two apart, since compacting an identity remap keeps
+    every other vertex where it was. Mutation probe: a pass that always takes its compaction fails
+    the vertex comparison.
+    """
+    vertices_wp, faces_wp = od.creation.grid(count=(8, 8), extents=(1.0, 1.0), device=device)
+    vertices_np = np.vstack([vertices_wp.numpy(), [[5.0, 5.0, 5.0]]]).astype(np.float32)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_wp.numpy(), device)
+    target = 0.01 * od.edges.mean_edge_length(vertices_wp, faces_wp)
+    low, high = od.remesh._length_bands(None, target, vertices_wp.size, device)
+
+    out_vertices, out_faces, incidence, _low = od.remesh._collapse_pass(
+        vertices_wp, faces_wp, low, high, wp.float32(math.radians(30.0))
+    )
+
+    assert incidence is not None
+    assert np.array_equal(out_vertices.numpy(), vertices_np)
+    assert np.array_equal(out_faces.numpy(), faces_wp.numpy())
+
+
 def test_remesh_adaptive_sizing_field_grades_the_result(device: str) -> None:
     """
     A graded sizing field produces a graded mesh: achieved edge length tracks the requested one.

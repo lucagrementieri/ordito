@@ -1909,6 +1909,18 @@ def is_feature_edge(
 # the layout ``_DecimationBuffers`` builds for the quadric pass. Rows are in arrival order: every
 # reader counts, exits on a hit or takes a minimum over a whole row (the link condition, the band
 # walks, the ring locks, both fold vetoes), and the deterministic smoothing ring sorts its rows.
+#
+# ``remesh._CollapseBuffers`` runs the same launches at fixed widths, the collapse loop's entry
+# sizes, and keeps the live sizes in a ``state`` buffer: every kernel that takes ``state`` stops at
+# the live prefix it reads there, and one launched with an empty one runs over its whole arrays.
+# Slots: the pass's unique edges (``emit_edge_topology``), the live vertices and faces (which
+# ``compact_surviving_faces`` overwrites with the next pass's, in its ``out_totals`` order), and
+# the pass's commits (zeroed by ``collapse_candidates``).
+COLLAPSE_PASS_EDGES = wp.int32(0)
+COLLAPSE_PASS_VERTICES = wp.int32(1)
+COLLAPSE_PASS_FACES = wp.int32(2)
+COLLAPSE_PASS_COMMITS = wp.int32(3)
+COLLAPSE_PASS_STATE_SIZE = 4
 
 
 @wp.func
@@ -1971,19 +1983,33 @@ def emit_edge_topology(
     order: wp.array[wp.int32],
     ranks: wp.array[wp.int32],
     ring: wp.int32,
+    state: wp.array[wp.int32],
     out_unique_edges: wp.array2d[wp.int32],
     out_inverse: wp.array[wp.int32],
     out_edge_face_count: wp.array[wp.int32],
     out_edge_faces: wp.array2d[wp.int32],
     out_counts: wp.array[wp.int32],
     out_offsets: wp.array[wp.int32],
+    out_state: wp.array[wp.int32],
 ) -> None:
     # ``edges.emit_sorted_unique_edges`` and ``count_edge_topology`` in one pass over the sorted
     # corners: each position emits its corner's inverse entry (and the run start its edge's row),
     # then counts the corner as ``count_edge_topology`` does, the run start counting the degrees.
     # Within a run the stable sort keeps the corners ascending, so the CPU device fills each edge's
     # face slots in the corner order ``count_edge_topology`` does.
+    #
+    # With a ``state`` (the same buffer as ``out_state``) the sort ran over a fixed width whose
+    # dead corners hold ``EDGE_KEY_PAD`` (``compact_surviving_faces``) and so sorted last: only the
+    # live positions emit, and the last of them publishes the unique-edge count, which is its rank.
     i = wp.int32(wp.tid())
+    if state.shape[0] > 0:
+        live = 3 * state[COLLAPSE_PASS_FACES]
+        if i >= live:
+            if i == 0:
+                out_state[COLLAPSE_PASS_EDGES] = 0
+            return
+        if i + 1 == live:
+            out_state[COLLAPSE_PASS_EDGES] = ranks[i]
     corner, e, start = emit_sorted_unique_edge(
         faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse
     )
@@ -2005,6 +2031,7 @@ def fill_edge_topology(
     offsets: wp.array[wp.int32],
     feature_angle: wp.float32,
     ring: wp.int32,
+    state: wp.array[wp.int32],
     cursor: wp.array[wp.int32],
     out_columns: wp.array[wp.int32],
     out_feature_count: wp.array[wp.int32],
@@ -2015,10 +2042,16 @@ def fill_edge_topology(
     # ``out_feature_count`` skips it), and face
     # ``t`` writes itself into its three
     # vertices' face rows. ``cursor`` is the spent count buffer, counting each row's free slots down
-    # as in ``graph.scatter_neighbor_lists`` and ``adjacency.scatter_vertex_faces``.
+    # as in ``graph.scatter_neighbor_lists`` and ``adjacency.scatter_vertex_faces``. A ``state``
+    # holds the live edge and face counts of fixed-width arrays (``emit_edge_topology``).
     t = wp.int32(wp.tid())
     n_vertices = cursor.shape[0] // 2
-    if t < unique_edges.shape[0]:
+    n_edges = unique_edges.shape[0]
+    n_faces = faces.shape[0] // 3
+    if state.shape[0] > 0:
+        n_edges = state[COLLAPSE_PASS_EDGES]
+        n_faces = state[COLLAPSE_PASS_FACES]
+    if t < n_edges:
         u = unique_edges[t, 0]
         v = unique_edges[t, 1]
         if ring != 0:
@@ -2029,7 +2062,7 @@ def fill_edge_topology(
         ):
             wp.atomic_add(out_feature_count, u, 1)
             wp.atomic_add(out_feature_count, v, 1)
-    if t < faces.shape[0] // 3:
+    if t < n_faces:
         for k in range(3):
             row = n_vertices + faces[t * 3 + k]
             out_columns[offsets[row + 1] - wp.atomic_add(cursor, row, -1)] = t
@@ -2342,12 +2375,14 @@ def collapse_candidates(
     high_uniform: wp.float32,
     select: wp.int32,
     degeneracy: wp.vec3,
+    state: wp.array[wp.int32],
     out_survivor: wp.array[wp.int32],
     out_removed: wp.array[wp.int32],
     out_pos: wp.array[wp.vec3],
     out_claim: wp.array[wp.int64],
     out_remap: wp.array[wp.int32],
     out_positions: wp.array[wp.vec3],
+    out_state: wp.array[wp.int32],
 ) -> None:
     # ``select`` picks the candidates: ``COLLAPSE_SELECT_LENGTH`` reads the length bands below,
     # ``COLLAPSE_SELECT_DEGENERATE`` reads ``degeneracy`` = ``(tiny_edge_length, max_length,
@@ -2365,12 +2400,22 @@ def collapse_candidates(
     # unclaimed keys, the identity collapse map and the working positions -- striding over the
     # vertices: this kernel reads none of it, and the next two launches are its only readers. That
     # is a fill, an ``arange`` and a clone fewer per pass.
+    #
+    # Over fixed-width arrays (a ``state``, ``emit_edge_topology``) every thread seeds and retires
+    # its slot, and only the live edges go on: the claim and the commit skip a retired slot. Thread
+    # 0 also zeroes the pass's commit count, which ``commit_collapses`` counts into and nothing
+    # reads before.
     k = wp.int32(wp.tid())
     for t in range(k, out_remap.shape[0], unique_edges.shape[0]):
         out_claim[t] = UNCLAIMED_KEY
         out_remap[t] = t
         out_positions[t] = vertices[t]
     out_survivor[k] = -1
+    if state.shape[0] > 0:
+        if k == 0:
+            out_state[COLLAPSE_PASS_COMMITS] = 0
+        if k >= state[COLLAPSE_PASS_EDGES]:
+            return
     u = unique_edges[k, 0]
     v = unique_edges[k, 1]
     length = unique_edge_length(vertices, unique_edges, k)
@@ -3640,14 +3685,23 @@ def mark_surviving_face(
 
 @wp.kernel
 def mark_surviving_faces(
-    faces: wp.array[wp.int32], remap: wp.array[wp.int32], out_flags: wp.array[wp.int32]
+    faces: wp.array[wp.int32],
+    remap: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    out_flags: wp.array[wp.int32],
 ) -> None:
     # Which faces survive a vertex remap (vertex clustering's cell labels, an edge collapse's
     # survivor map) and which targets they still name, so both compactions are one scan of
     # ``out_flags`` rather than a face gather and a sort-based dedup of the corners. The remapped
     # corners are not stored: ``compact_surviving_faces`` re-reads them through ``remap`` for the
     # faces that survive. ``remap_and_mark_faces`` is the same marking with the corners written.
-    mark_surviving_face(faces, remap, wp.int32(wp.tid()), out_flags)
+    # A ``state`` holds the live face count of a fixed-width face buffer, whose dead rows keep the
+    # zeroed flags they arrive with (``emit_edge_topology``).
+    f = wp.int32(wp.tid())
+    if state.shape[0] > 0:
+        if f >= state[COLLAPSE_PASS_FACES]:
+            return
+    mark_surviving_face(faces, remap, f, out_flags)
 
 
 @wp.kernel
@@ -3685,7 +3739,10 @@ def compact_surviving_faces(
     #   count; the caller keeps their live prefix.
     # - With ``out_keys`` (empty skips it), a surviving face also writes its edge keys packed
     #   against ``key_base`` and their identity payload into the next pass's sort buffers
-    #   (``adjacency.write_face_edge_keys_and_order``), the launch that pass would open with.
+    #   (``adjacency.write_face_edge_keys_and_order``), the launch that pass would open with, and
+    #   every face row past the survivors writes ``EDGE_KEY_PAD``, which sorts after every real
+    #   key: the next sort runs over the whole width, and its live prefix is exactly the sort of
+    #   the live corners.
     t = wp.int32(wp.tid())
     n_faces = face_offsets.shape[0] - 1
     if t < ranks.shape[0] - 1:
@@ -3701,6 +3758,10 @@ def compact_surviving_faces(
     if t == n_faces - 1:
         out_totals[0] = ranks[ranks.shape[0] - 1] - ranks[0]
         out_totals[1] = face_offsets[n_faces]
+    if out_keys.shape[0] > 0 and t >= face_offsets[n_faces]:
+        for k in range(3):
+            out_keys[3 * t + k] = EDGE_KEY_PAD
+            out_order[3 * t + k] = 3 * t + k
     row, survived = scanned_slot(face_offsets, t)
     if not survived:
         return
