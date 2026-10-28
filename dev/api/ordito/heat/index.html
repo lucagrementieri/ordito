@@ -3695,6 +3695,8 @@
       
         
       
+        
+      
     
     
     
@@ -3973,6 +3975,33 @@
     
   
   validation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../equality/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  equality
 
     
   </span>
@@ -5351,6 +5380,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ordito.heat.HeatMethod" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        HeatMethod
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ordito.heat.VectorHeatOperators" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -5389,6 +5429,17 @@
     <span class="md-ellipsis">
       <span class="md-typeset">
         use_robust
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ordito.heat.HeatSolver.method" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        method
       </span>
     </span>
   </a>
@@ -5499,6 +5550,17 @@
     <span class="md-ellipsis">
       <span class="md-typeset">
         solve_poisson
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ordito.heat.HeatSolver.diffuse_pinned" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        diffuse_pinned
       </span>
     </span>
   </a>
@@ -6172,6 +6234,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ordito.heat.HeatMethod" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        HeatMethod
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ordito.heat.VectorHeatOperators" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -6210,6 +6283,17 @@
     <span class="md-ellipsis">
       <span class="md-typeset">
         use_robust
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ordito.heat.HeatSolver.method" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        method
       </span>
     </span>
   </a>
@@ -6320,6 +6404,17 @@
     <span class="md-ellipsis">
       <span class="md-typeset">
         solve_poisson
+      </span>
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ordito.heat.HeatSolver.diffuse_pinned" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        diffuse_pinned
       </span>
     </span>
   </a>
@@ -6468,8 +6563,7 @@ it diffuses and how it reads the result back:</p>
 <ul>
 <li><strong>Geodesic distance.</strong> <a class="autorefs autorefs-internal" title="heat_geodesic" href="./#ordito.heat.heat_geodesic"><code>heat_geodesic</code></a> diffuses a scalar indicator
   from source vertices, normalizes its gradient, and integrates that unit field back with a Poisson
-  solve. The heat method of Crane et al. (<code>igl::heat_geodesics</code>,
-  <code>potpourri3d.MeshHeatMethodDistanceSolver</code>).</li>
+  solve. The heat method of Crane et al., as MeshLab or <code>igl::heat_geodesics</code> discretize it.</li>
 <li><strong>Signed distance to curves.</strong> <a class="autorefs autorefs-internal" title="heat_signed_distance" href="./#ordito.heat.heat_signed_distance"><code>heat_signed_distance</code></a>
   diffuses the normals of a set of oriented curves, then solves a Poisson problem against that field
   to get a <em>signed</em> distance whose zero set is the curves (<code>potpourri3d.MeshSignedHeatSolver</code>).</li>
@@ -6487,7 +6581,8 @@ it diffuses and how it reads the result back:</p>
   
       module-attribute
   " href="./#ordito.heat.VectorHeatOperators"><code>VectorHeatOperators</code></a> embeds the scalar method's operator tuple,
-and <a class="autorefs autorefs-internal" title="log_map" href="./#ordito.heat.log_map"><code>log_map</code></a>'s radius <em>is</em> <code>heat_geodesic</code>'s answer.</p>
+and <a class="autorefs autorefs-internal" title="log_map" href="./#ordito.heat.log_map"><code>log_map</code></a>'s radius <em>is</em> <code>heat_geodesic</code>'s answer at the vector
+method's diffusion time.</p>
 <p>All three run in <code>float64</code>, because the diffused field decays exponentially and underflows
 <code>float32</code>. They run on either device.</p>
 <p>Every solver takes the mesh as an <a class="autorefs autorefs-internal" title="Trimesh" href="../mesh/#ordito.mesh.Trimesh"><code>ordito.mesh.Trimesh</code></a> or as its
@@ -6680,6 +6775,37 @@ solves.</p>
 
 
 
+<h2 id="ordito.heat.HeatMethod" class="doc doc-heading">
+            <span class="doc doc-object-name doc-attribute-name">HeatMethod</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-module-attribute"><code>module-attribute</code></small>
+  </span>
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="n">HeatMethod</span> <span class="o">=</span> <span class="n">Literal</span><span class="p">[</span><span class="s1">'geometry_central'</span><span class="p">,</span> <span class="s1">'meshlab'</span><span class="p">,</span> <span class="s1">'igl'</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>The heat method discretizations ordito assembles, named for the library each reproduces.</p>
+
+          
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Used by 1 place</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.heat_operators">heat_operators</a></span></p>
+    </details>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
 <h2 id="ordito.heat.VectorHeatOperators" class="doc doc-heading">
             <span class="doc doc-object-name doc-attribute-name">VectorHeatOperators</span>
 
@@ -6734,6 +6860,7 @@ vector system's own Jacobi preconditioner.</p>
     <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">use_robust</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">HeatMethod</span> <span class="o">=</span> <span class="s2">"geometry_central"</span><span class="p">,</span>
 <span class="p">)</span>
 </code></pre></div>
 
@@ -6802,6 +6929,23 @@ Each decision is logged at <code>DEBUG</code> on the <code>ordito.heat</code> lo
               </div>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td><code><a class="autorefs autorefs-internal" title="method
+
+
+  
+      instance-attribute
+   (ordito.heat.HeatSolver.method)" href="./#ordito.heat.HeatSolver.method">method</a></code></td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#str">str</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Whose discretization the operators follow, <code>"geometry_central"</code>, <code>"meshlab"</code> or
+<code>"igl"</code> (see <a class="autorefs autorefs-internal" title="heat_operators" href="./#ordito.heat.heat_operators"><code>heat_operators</code></a>).</p>
+              </div>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -6835,7 +6979,7 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 
 <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">icosphere</span><span class="p">(</span><span class="n">subdivisions</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
 <span class="n">mesh</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">mesh</span><span class="o">.</span><span class="n">Trimesh</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-<span class="n">solver</span> <span class="o">=</span> <span class="n">mesh</span><span class="o">.</span><span class="n">heat_solver</span><span class="p">()</span>
+<span class="n">solver</span> <span class="o">=</span> <span class="n">mesh</span><span class="o">.</span><span class="n">heat_solver</span><span class="p">(</span><span class="n">method</span><span class="o">=</span><span class="s2">"meshlab"</span><span class="p">)</span>  <span class="c1"># the one heat_geodesic's default runs on</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">solver</span><span class="o">.</span><span class="n">nbytes</span><span class="p">)</span>  <span class="c1"># 0</span>
 <span class="k">for</span> <span class="n">source</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">):</span>
     <span class="n">od</span><span class="o">.</span><span class="n">heat</span><span class="o">.</span><span class="n">heat_geodesic</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">sources</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="n">source</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">))</span>
@@ -6845,6 +6989,29 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 </code></pre></div>
 
         <p>Bind a solver to <code>mesh</code> at <code>t</code>; nothing is assembled until first use.</p>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>method</code> is not <code>"geometry_central"</code>, <code>"meshlab"</code> or <code>"igl"</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
@@ -6919,26 +7086,71 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
                 </div>
               </td>
             </tr>
+            <tr class="doc-section-item">
+              <td><code><a class="autorefs autorefs-internal" title="diffuse_pinned (ordito.heat.HeatSolver.diffuse_pinned)" href="./#ordito.heat.HeatSolver.diffuse_pinned">diffuse_pinned</a></code></td>
+              <td>
+                <div class="doc-md-description">
+                  <p>Diffuse a scalar field with the heat pinned to zero on the mesh's rim.</p>
+                </div>
+              </td>
+            </tr>
       </tbody>
     </table>
 
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/heat.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2301</span>
-<span class="normal">2302</span>
-<span class="normal">2303</span>
-<span class="normal">2304</span>
-<span class="normal">2305</span>
-<span class="normal">2306</span>
-<span class="normal">2307</span>
-<span class="normal">2308</span>
-<span class="normal">2309</span>
-<span class="normal">2310</span>
-<span class="normal">2311</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">,</span> <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">use_robust</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">"""Bind a solver to ``mesh`` at ``t``; nothing is assembled until first use."""</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2396</span>
+<span class="normal">2397</span>
+<span class="normal">2398</span>
+<span class="normal">2399</span>
+<span class="normal">2400</span>
+<span class="normal">2401</span>
+<span class="normal">2402</span>
+<span class="normal">2403</span>
+<span class="normal">2404</span>
+<span class="normal">2405</span>
+<span class="normal">2406</span>
+<span class="normal">2407</span>
+<span class="normal">2408</span>
+<span class="normal">2409</span>
+<span class="normal">2410</span>
+<span class="normal">2411</span>
+<span class="normal">2412</span>
+<span class="normal">2413</span>
+<span class="normal">2414</span>
+<span class="normal">2415</span>
+<span class="normal">2416</span>
+<span class="normal">2417</span>
+<span class="normal">2418</span>
+<span class="normal">2419</span>
+<span class="normal">2420</span>
+<span class="normal">2421</span>
+<span class="normal">2422</span>
+<span class="normal">2423</span>
+<span class="normal">2424</span>
+<span class="normal">2425</span>
+<span class="normal">2426</span>
+<span class="normal">2427</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+    <span class="bp">self</span><span class="p">,</span>
+    <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span><span class="p">,</span>
+    <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">use_robust</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">HeatMethod</span> <span class="o">=</span> <span class="s2">"geometry_central"</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Bind a solver to ``mesh`` at ``t``; nothing is assembled until first use.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If ``method`` is not ``"geometry_central"``, ``"meshlab"`` or ``"igl"``.</span>
+<span class="sd">    """</span>
+    <span class="n">_heat_method_choices</span><span class="p">(</span><span class="n">method</span><span class="p">)</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">t</span> <span class="o">=</span> <span class="kc">None</span> <span class="k">if</span> <span class="n">t</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="nb">float</span><span class="p">(</span><span class="n">t</span><span class="p">)</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">use_robust</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">use_robust</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">method</span><span class="p">:</span> <span class="n">HeatMethod</span> <span class="o">=</span> <span class="n">method</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_mesh</span> <span class="o">=</span> <span class="n">weakref</span><span class="o">.</span><span class="n">ref</span><span class="p">(</span><span class="n">mesh</span><span class="p">)</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_operators</span><span class="p">:</span> <span class="n">HeatOperators</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_vector_operators</span><span class="p">:</span> <span class="n">VectorHeatOperators</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
@@ -6946,6 +7158,11 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
     <span class="c1"># Set once a settled iterate of this mesh's systems fails its backward-error check: the</span>
     <span class="c1"># operators are ill-conditioned in places, so the Poisson solve is factored at once too.</span>
     <span class="bp">self</span><span class="o">.</span><span class="n">_ill_conditioned</span> <span class="o">=</span> <span class="kc">False</span>
+    <span class="c1"># The heat system pinned to zero on the rim, its preconditioner and rim mask, once built;</span>
+    <span class="c1"># ``()`` for a mesh with no rim, which has no pinned solve to run.</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_pinned</span><span class="p">:</span> <span class="p">(</span>
+        <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">SparseMatrix</span><span class="p">,</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[()]</span> <span class="o">|</span> <span class="kc">None</span>
+    <span class="p">)</span> <span class="o">=</span> <span class="kc">None</span>
 </code></pre></div></td></tr></table></div>
                   </details>
 
@@ -6996,6 +7213,29 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
 
 </h3>
 <div class="doc-signature highlight"><pre><span></span><code><span class="n">use_robust</span> <span class="o">=</span> <span class="nb">bool</span><span class="p">(</span><span class="n">use_robust</span><span class="p">)</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+          
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="ordito.heat.HeatSolver.method" class="doc doc-heading">
+            <span class="doc doc-object-name doc-attribute-name">method</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-instance-attribute"><code>instance-attribute</code></small>
+  </span>
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><span class="n">method</span><span class="p">:</span> <span class="n">HeatMethod</span> <span class="o">=</span> <span class="n">method</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -7078,8 +7318,8 @@ refers to its mesh weakly and is unusable once the mesh is gone.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If this solver was built with <code>use_robust</code>: the connection Laplacian has no mollified
-counterpart.</p>
+                <p>If this solver was built with <code>use_robust</code> or a <code>method</code> other than
+<code>"geometry_central"</code>, the discretization the vector heat method is defined on.</p>
               </div>
             </td>
           </tr>
@@ -7189,17 +7429,17 @@ on an ill-conditioned mesh is still factored at once rather than iterated first.
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2380</span>
-<span class="normal">2381</span>
-<span class="normal">2382</span>
-<span class="normal">2383</span>
-<span class="normal">2384</span>
-<span class="normal">2385</span>
-<span class="normal">2386</span>
-<span class="normal">2387</span>
-<span class="normal">2388</span>
-<span class="normal">2389</span>
-<span class="normal">2390</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2505</span>
+<span class="normal">2506</span>
+<span class="normal">2507</span>
+<span class="normal">2508</span>
+<span class="normal">2509</span>
+<span class="normal">2510</span>
+<span class="normal">2511</span>
+<span class="normal">2512</span>
+<span class="normal">2513</span>
+<span class="normal">2514</span>
+<span class="normal">2515</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">release</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Drop every kept factorization and forget the solve counts.</span>
 
@@ -7266,7 +7506,9 @@ keep iterating.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 1 place</summary>
+      <summary>Referenced by 2 places</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.heat_geodesic">heat_geodesic</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/geodesics/#geodesics-and-tangent-fields">Geodesics and tangent fields</a> › <a href="../../../examples/geodesics/#g5">Extending values from a few points (geodesic Voronoi cells)</a></span></p>
     </details>
@@ -7274,32 +7516,32 @@ keep iterating.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2392</span>
-<span class="normal">2393</span>
-<span class="normal">2394</span>
-<span class="normal">2395</span>
-<span class="normal">2396</span>
-<span class="normal">2397</span>
-<span class="normal">2398</span>
-<span class="normal">2399</span>
-<span class="normal">2400</span>
-<span class="normal">2401</span>
-<span class="normal">2402</span>
-<span class="normal">2403</span>
-<span class="normal">2404</span>
-<span class="normal">2405</span>
-<span class="normal">2406</span>
-<span class="normal">2407</span>
-<span class="normal">2408</span>
-<span class="normal">2409</span>
-<span class="normal">2410</span>
-<span class="normal">2411</span>
-<span class="normal">2412</span>
-<span class="normal">2413</span>
-<span class="normal">2414</span>
-<span class="normal">2415</span>
-<span class="normal">2416</span>
-<span class="normal">2417</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2517</span>
+<span class="normal">2518</span>
+<span class="normal">2519</span>
+<span class="normal">2520</span>
+<span class="normal">2521</span>
+<span class="normal">2522</span>
+<span class="normal">2523</span>
+<span class="normal">2524</span>
+<span class="normal">2525</span>
+<span class="normal">2526</span>
+<span class="normal">2527</span>
+<span class="normal">2528</span>
+<span class="normal">2529</span>
+<span class="normal">2530</span>
+<span class="normal">2531</span>
+<span class="normal">2532</span>
+<span class="normal">2533</span>
+<span class="normal">2534</span>
+<span class="normal">2535</span>
+<span class="normal">2536</span>
+<span class="normal">2537</span>
+<span class="normal">2538</span>
+<span class="normal">2539</span>
+<span class="normal">2540</span>
+<span class="normal">2541</span>
+<span class="normal">2542</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">factor</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Factor the heat and Poisson systems now, before any solve.</span>
 
@@ -7439,34 +7681,40 @@ shaped as <code>rhs</code>.</p>
     </table>
 
           
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 1 place</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="./#ordito.heat.HeatSolver">HeatSolver</a> › <a href="./#ordito.heat.HeatSolver.diffuse_pinned">diffuse_pinned</a></span></p>
+    </details>
+
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2419</span>
-<span class="normal">2420</span>
-<span class="normal">2421</span>
-<span class="normal">2422</span>
-<span class="normal">2423</span>
-<span class="normal">2424</span>
-<span class="normal">2425</span>
-<span class="normal">2426</span>
-<span class="normal">2427</span>
-<span class="normal">2428</span>
-<span class="normal">2429</span>
-<span class="normal">2430</span>
-<span class="normal">2431</span>
-<span class="normal">2432</span>
-<span class="normal">2433</span>
-<span class="normal">2434</span>
-<span class="normal">2435</span>
-<span class="normal">2436</span>
-<span class="normal">2437</span>
-<span class="normal">2438</span>
-<span class="normal">2439</span>
-<span class="normal">2440</span>
-<span class="normal">2441</span>
-<span class="normal">2442</span>
-<span class="normal">2443</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">solution</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2544</span>
+<span class="normal">2545</span>
+<span class="normal">2546</span>
+<span class="normal">2547</span>
+<span class="normal">2548</span>
+<span class="normal">2549</span>
+<span class="normal">2550</span>
+<span class="normal">2551</span>
+<span class="normal">2552</span>
+<span class="normal">2553</span>
+<span class="normal">2554</span>
+<span class="normal">2555</span>
+<span class="normal">2556</span>
+<span class="normal">2557</span>
+<span class="normal">2558</span>
+<span class="normal">2559</span>
+<span class="normal">2560</span>
+<span class="normal">2561</span>
+<span class="normal">2562</span>
+<span class="normal">2563</span>
+<span class="normal">2564</span>
+<span class="normal">2565</span>
+<span class="normal">2566</span>
+<span class="normal">2567</span>
+<span class="normal">2568</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">solution</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Diffuse scalar fields: solve the heat system ``(M - t L) u = rhs`` to settled entries.</span>
 
@@ -7599,28 +7847,28 @@ hold one vector per vertex.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2445</span>
-<span class="normal">2446</span>
-<span class="normal">2447</span>
-<span class="normal">2448</span>
-<span class="normal">2449</span>
-<span class="normal">2450</span>
-<span class="normal">2451</span>
-<span class="normal">2452</span>
-<span class="normal">2453</span>
-<span class="normal">2454</span>
-<span class="normal">2455</span>
-<span class="normal">2456</span>
-<span class="normal">2457</span>
-<span class="normal">2458</span>
-<span class="normal">2459</span>
-<span class="normal">2460</span>
-<span class="normal">2461</span>
-<span class="normal">2462</span>
-<span class="normal">2463</span>
-<span class="normal">2464</span>
-<span class="normal">2465</span>
-<span class="normal">2466</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_tangent</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2570</span>
+<span class="normal">2571</span>
+<span class="normal">2572</span>
+<span class="normal">2573</span>
+<span class="normal">2574</span>
+<span class="normal">2575</span>
+<span class="normal">2576</span>
+<span class="normal">2577</span>
+<span class="normal">2578</span>
+<span class="normal">2579</span>
+<span class="normal">2580</span>
+<span class="normal">2581</span>
+<span class="normal">2582</span>
+<span class="normal">2583</span>
+<span class="normal">2584</span>
+<span class="normal">2585</span>
+<span class="normal">2586</span>
+<span class="normal">2587</span>
+<span class="normal">2588</span>
+<span class="normal">2589</span>
+<span class="normal">2590</span>
+<span class="normal">2591</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_tangent</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Diffuse a tangent field: solve the vector heat system ``(M + t L_connection) X = rhs``.</span>
 
@@ -7772,53 +8020,53 @@ hold <code>(2 + n_scalars) * n_vertices</code> entries.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2468</span>
-<span class="normal">2469</span>
-<span class="normal">2470</span>
-<span class="normal">2471</span>
-<span class="normal">2472</span>
-<span class="normal">2473</span>
-<span class="normal">2474</span>
-<span class="normal">2475</span>
-<span class="normal">2476</span>
-<span class="normal">2477</span>
-<span class="normal">2478</span>
-<span class="normal">2479</span>
-<span class="normal">2480</span>
-<span class="normal">2481</span>
-<span class="normal">2482</span>
-<span class="normal">2483</span>
-<span class="normal">2484</span>
-<span class="normal">2485</span>
-<span class="normal">2486</span>
-<span class="normal">2487</span>
-<span class="normal">2488</span>
-<span class="normal">2489</span>
-<span class="normal">2490</span>
-<span class="normal">2491</span>
-<span class="normal">2492</span>
-<span class="normal">2493</span>
-<span class="normal">2494</span>
-<span class="normal">2495</span>
-<span class="normal">2496</span>
-<span class="normal">2497</span>
-<span class="normal">2498</span>
-<span class="normal">2499</span>
-<span class="normal">2500</span>
-<span class="normal">2501</span>
-<span class="normal">2502</span>
-<span class="normal">2503</span>
-<span class="normal">2504</span>
-<span class="normal">2505</span>
-<span class="normal">2506</span>
-<span class="normal">2507</span>
-<span class="normal">2508</span>
-<span class="normal">2509</span>
-<span class="normal">2510</span>
-<span class="normal">2511</span>
-<span class="normal">2512</span>
-<span class="normal">2513</span>
-<span class="normal">2514</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_stacked</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2593</span>
+<span class="normal">2594</span>
+<span class="normal">2595</span>
+<span class="normal">2596</span>
+<span class="normal">2597</span>
+<span class="normal">2598</span>
+<span class="normal">2599</span>
+<span class="normal">2600</span>
+<span class="normal">2601</span>
+<span class="normal">2602</span>
+<span class="normal">2603</span>
+<span class="normal">2604</span>
+<span class="normal">2605</span>
+<span class="normal">2606</span>
+<span class="normal">2607</span>
+<span class="normal">2608</span>
+<span class="normal">2609</span>
+<span class="normal">2610</span>
+<span class="normal">2611</span>
+<span class="normal">2612</span>
+<span class="normal">2613</span>
+<span class="normal">2614</span>
+<span class="normal">2615</span>
+<span class="normal">2616</span>
+<span class="normal">2617</span>
+<span class="normal">2618</span>
+<span class="normal">2619</span>
+<span class="normal">2620</span>
+<span class="normal">2621</span>
+<span class="normal">2622</span>
+<span class="normal">2623</span>
+<span class="normal">2624</span>
+<span class="normal">2625</span>
+<span class="normal">2626</span>
+<span class="normal">2627</span>
+<span class="normal">2628</span>
+<span class="normal">2629</span>
+<span class="normal">2630</span>
+<span class="normal">2631</span>
+<span class="normal">2632</span>
+<span class="normal">2633</span>
+<span class="normal">2634</span>
+<span class="normal">2635</span>
+<span class="normal">2636</span>
+<span class="normal">2637</span>
+<span class="normal">2638</span>
+<span class="normal">2639</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_stacked</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">n_scalars</span><span class="p">:</span> <span class="nb">int</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7974,43 +8222,43 @@ constant per component.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2516</span>
-<span class="normal">2517</span>
-<span class="normal">2518</span>
-<span class="normal">2519</span>
-<span class="normal">2520</span>
-<span class="normal">2521</span>
-<span class="normal">2522</span>
-<span class="normal">2523</span>
-<span class="normal">2524</span>
-<span class="normal">2525</span>
-<span class="normal">2526</span>
-<span class="normal">2527</span>
-<span class="normal">2528</span>
-<span class="normal">2529</span>
-<span class="normal">2530</span>
-<span class="normal">2531</span>
-<span class="normal">2532</span>
-<span class="normal">2533</span>
-<span class="normal">2534</span>
-<span class="normal">2535</span>
-<span class="normal">2536</span>
-<span class="normal">2537</span>
-<span class="normal">2538</span>
-<span class="normal">2539</span>
-<span class="normal">2540</span>
-<span class="normal">2541</span>
-<span class="normal">2542</span>
-<span class="normal">2543</span>
-<span class="normal">2544</span>
-<span class="normal">2545</span>
-<span class="normal">2546</span>
-<span class="normal">2547</span>
-<span class="normal">2548</span>
-<span class="normal">2549</span>
-<span class="normal">2550</span>
-<span class="normal">2551</span>
-<span class="normal">2552</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve_poisson</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2641</span>
+<span class="normal">2642</span>
+<span class="normal">2643</span>
+<span class="normal">2644</span>
+<span class="normal">2645</span>
+<span class="normal">2646</span>
+<span class="normal">2647</span>
+<span class="normal">2648</span>
+<span class="normal">2649</span>
+<span class="normal">2650</span>
+<span class="normal">2651</span>
+<span class="normal">2652</span>
+<span class="normal">2653</span>
+<span class="normal">2654</span>
+<span class="normal">2655</span>
+<span class="normal">2656</span>
+<span class="normal">2657</span>
+<span class="normal">2658</span>
+<span class="normal">2659</span>
+<span class="normal">2660</span>
+<span class="normal">2661</span>
+<span class="normal">2662</span>
+<span class="normal">2663</span>
+<span class="normal">2664</span>
+<span class="normal">2665</span>
+<span class="normal">2666</span>
+<span class="normal">2667</span>
+<span class="normal">2668</span>
+<span class="normal">2669</span>
+<span class="normal">2670</span>
+<span class="normal">2671</span>
+<span class="normal">2672</span>
+<span class="normal">2673</span>
+<span class="normal">2674</span>
+<span class="normal">2675</span>
+<span class="normal">2676</span>
+<span class="normal">2677</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">solve_poisson</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Solve the Poisson system ``-L phi = rhs`` to the heat method's tolerance.</span>
 
@@ -8053,6 +8301,224 @@ constant per component.</p>
 
 </div>
 
+<div class="doc doc-object doc-function">
+
+
+<h3 id="ordito.heat.HeatSolver.diffuse_pinned" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">diffuse_pinned</span>
+
+
+</h3>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">diffuse_pinned</span><span class="p">(</span>
+    <span class="n">rhs</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">float64</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">float64</span><span class="p">]</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Diffuse a scalar field with the heat pinned to zero on the mesh's rim.</p>
+<p>The Dirichlet counterpart of <a class="autorefs autorefs-internal" title="diffuse" href="./#ordito.heat.HeatSolver.diffuse"><code>diffuse</code></a>: <code>(M - t L) u =
+rhs</code> on the interior vertices, <code>u = 0</code> on every vertex with an edge on a single face,
+settled the same way. <code>igl::heat_geodesics</code> averages this with the Neumann solution
+(<a class="autorefs autorefs-internal" title="heat_geodesic" href="./#ordito.heat.heat_geodesic"><code>heat_geodesic</code></a> at <code>boundary="average"</code>). The pinned
+system and the rim are built on first use and kept; a mesh without a rim has nothing to
+pin, and <code>solution</code> is then left as it was.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>rhs</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.float64">float64</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_vertices,)</code> right-hand side, <code>float64</code>; its rim entries are ignored.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>solution</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.float64">float64</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_vertices,)</code> initial guess, overwritten with the pinned field.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Whether the mesh has a rim, i.e. whether <code>solution</code> was solved for.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>rhs</code> does not hold <code>n_vertices</code> entries, or <code>solution</code> is not shaped as
+<code>rhs</code>.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#RuntimeError">RuntimeError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>rhs</code>, <code>solution</code> and the mesh are not all on one device.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+          
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/heat.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2679</span>
+<span class="normal">2680</span>
+<span class="normal">2681</span>
+<span class="normal">2682</span>
+<span class="normal">2683</span>
+<span class="normal">2684</span>
+<span class="normal">2685</span>
+<span class="normal">2686</span>
+<span class="normal">2687</span>
+<span class="normal">2688</span>
+<span class="normal">2689</span>
+<span class="normal">2690</span>
+<span class="normal">2691</span>
+<span class="normal">2692</span>
+<span class="normal">2693</span>
+<span class="normal">2694</span>
+<span class="normal">2695</span>
+<span class="normal">2696</span>
+<span class="normal">2697</span>
+<span class="normal">2698</span>
+<span class="normal">2699</span>
+<span class="normal">2700</span>
+<span class="normal">2701</span>
+<span class="normal">2702</span>
+<span class="normal">2703</span>
+<span class="normal">2704</span>
+<span class="normal">2705</span>
+<span class="normal">2706</span>
+<span class="normal">2707</span>
+<span class="normal">2708</span>
+<span class="normal">2709</span>
+<span class="normal">2710</span>
+<span class="normal">2711</span>
+<span class="normal">2712</span>
+<span class="normal">2713</span>
+<span class="normal">2714</span>
+<span class="normal">2715</span>
+<span class="normal">2716</span>
+<span class="normal">2717</span>
+<span class="normal">2718</span>
+<span class="normal">2719</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_pinned</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">rhs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">solution</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Diffuse a scalar field with the heat pinned to zero on the mesh's rim.</span>
+
+<span class="sd">    The Dirichlet counterpart of [`diffuse`][ordito.heat.HeatSolver.diffuse]: ``(M - t L) u =</span>
+<span class="sd">    rhs`` on the interior vertices, ``u = 0`` on every vertex with an edge on a single face,</span>
+<span class="sd">    settled the same way. ``igl::heat_geodesics`` averages this with the Neumann solution</span>
+<span class="sd">    ([`heat_geodesic`][ordito.heat.heat_geodesic] at ``boundary="average"``). The pinned</span>
+<span class="sd">    system and the rim are built on first use and kept; a mesh without a rim has nothing to</span>
+<span class="sd">    pin, and ``solution`` is then left as it was.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    rhs</span>
+<span class="sd">        ``(n_vertices,)`` right-hand side, ``float64``; its rim entries are ignored.</span>
+<span class="sd">    solution</span>
+<span class="sd">        ``(n_vertices,)`` initial guess, overwritten with the pinned field.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    bool</span>
+<span class="sd">        Whether the mesh has a rim, i.e. whether ``solution`` was solved for.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If ``rhs`` does not hold ``n_vertices`` entries, or ``solution`` is not shaped as</span>
+<span class="sd">        ``rhs``.</span>
+<span class="sd">    RuntimeError</span>
+<span class="sd">        If ``rhs``, ``solution`` and the mesh are not all on one device.</span>
+<span class="sd">    """</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_require_fields</span><span class="p">(</span><span class="s2">"HeatSolver.diffuse_pinned"</span><span class="p">,</span> <span class="n">rhs</span><span class="p">,</span> <span class="n">solution</span><span class="p">,</span> <span class="n">rhs</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">],</span> <span class="mi">1</span><span class="p">)</span>
+    <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_pinned</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">_pinned</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_pinned_system</span><span class="p">()</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="bp">self</span><span class="o">.</span><span class="n">_pinned</span><span class="p">:</span>
+        <span class="k">return</span> <span class="kc">False</span>
+    <span class="n">system</span><span class="p">,</span> <span class="n">preconditioner</span><span class="p">,</span> <span class="n">rim</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_pinned</span>
+    <span class="n">pinned_rhs</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">rhs</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">rhs</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">map</span><span class="p">(</span><span class="n">kernel_heat</span><span class="o">.</span><span class="n">off_rim</span><span class="p">,</span> <span class="n">rhs</span><span class="p">,</span> <span class="n">rim</span><span class="p">,</span> <span class="n">out</span><span class="o">=</span><span class="n">pinned_rhs</span><span class="p">)</span>
+    <span class="bp">self</span><span class="o">.</span><span class="n">_settle</span><span class="p">(</span><span class="s2">"pinned"</span><span class="p">,</span> <span class="n">system</span><span class="p">,</span> <span class="n">pinned_rhs</span><span class="p">,</span> <span class="n">solution</span><span class="p">,</span> <span class="n">preconditioner</span><span class="o">=</span><span class="n">preconditioner</span><span class="p">)</span>
+    <span class="k">return</span> <span class="kc">True</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
 
 
   </div>
@@ -8078,6 +8544,7 @@ constant per component.</p>
     <span class="n">use_robust</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">cot_entries</span><span class="p">:</span> <span class="n">Array2dFloat</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">pattern</span><span class="p">:</span> <span class="n">MeshOperatorPattern</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">HeatMethod</span> <span class="o">=</span> <span class="s2">"geometry_central"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">HeatOperators</span>
 </code></pre></div>
 
@@ -8223,6 +8690,37 @@ The returned matrices share its <code>offsets</code> and <code>columns</code>.</
             </td>
             <td>
                   <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>method</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="HeatMethod
+
+
+  
+      module-attribute
+   (ordito.heat.HeatMethod)" href="./#ordito.heat.HeatMethod">HeatMethod</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Whose discretization of the heat system to assemble -- the lumped mass <code>M</code> and the mean
+edge length <code>h</code> of the default <code>t = h ** 2</code>:</p>
+<ul>
+<li><code>"geometry_central"</code> (default): each vertex a third of its faces' areas, <code>h</code> over the
+  unique edges. What <code>potpourri3d</code>'s solvers assemble, and what the vector heat method
+  (<a class="autorefs autorefs-internal" title="vector_heat_operators" href="./#ordito.heat.vector_heat_operators"><code>vector_heat_operators</code></a>) builds on.</li>
+<li><code>"meshlab"</code>: the same mass, <code>h</code> over every face's three edges (an interior edge
+  twice, a rim edge once; the same on a closed mesh).</li>
+<li><code>"igl"</code>: Meyer et al.'s mixed Voronoi area per vertex (an obtuse face's obtuse corner
+  takes half the face), <code>h</code> over the unique edges, <code>igl::heat_geodesics</code>' choices.</li>
+</ul>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;geometry_central&#39;</code>
             </td>
           </tr>
       </tbody>
@@ -8374,7 +8872,8 @@ Poisson system — handing it a right-hand side runs CG to its iteration cap.</p
               <div class="doc-md-description">
                 <p>If both <code>cot_entries</code> and <code>use_robust</code> are given: <code>use_robust</code> exists to build that
 very table from mollified edge lengths, so the two ask for different weights. Or if
-<code>pattern</code> was built for another operator or vertex count.</p>
+<code>pattern</code> was built for another operator or vertex count, or <code>method</code> is not one of
+the three names above.</p>
               </div>
             </td>
           </tr>
@@ -8420,11 +8919,7 @@ very table from mollified edge lengths, so the two ask for different weights. Or
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">144</span>
-<span class="normal">145</span>
-<span class="normal">146</span>
-<span class="normal">147</span>
-<span class="normal">148</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">148</span>
 <span class="normal">149</span>
 <span class="normal">150</span>
 <span class="normal">151</span>
@@ -8565,7 +9060,32 @@ very table from mollified edge lengths, so the two ask for different weights. Or
 <span class="normal">286</span>
 <span class="normal">287</span>
 <span class="normal">288</span>
-<span class="normal">289</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">heat_operators</span><span class="p">(</span>
+<span class="normal">289</span>
+<span class="normal">290</span>
+<span class="normal">291</span>
+<span class="normal">292</span>
+<span class="normal">293</span>
+<span class="normal">294</span>
+<span class="normal">295</span>
+<span class="normal">296</span>
+<span class="normal">297</span>
+<span class="normal">298</span>
+<span class="normal">299</span>
+<span class="normal">300</span>
+<span class="normal">301</span>
+<span class="normal">302</span>
+<span class="normal">303</span>
+<span class="normal">304</span>
+<span class="normal">305</span>
+<span class="normal">306</span>
+<span class="normal">307</span>
+<span class="normal">308</span>
+<span class="normal">309</span>
+<span class="normal">310</span>
+<span class="normal">311</span>
+<span class="normal">312</span>
+<span class="normal">313</span>
+<span class="normal">314</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">heat_operators</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8573,6 +9093,7 @@ very table from mollified edge lengths, so the two ask for different weights. Or
     <span class="n">use_robust</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">cot_entries</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">pattern</span><span class="p">:</span> <span class="n">MeshOperatorPattern</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">HeatMethod</span> <span class="o">=</span> <span class="s2">"geometry_central"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">HeatOperators</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Assemble the source-independent operators the heat method solves against.</span>
@@ -8620,6 +9141,17 @@ very table from mollified edge lengths, so the two ask for different weights. Or
 <span class="sd">        caller assembling these operators again reuses it --</span>
 <span class="sd">        [`Trimesh.mesh_operator_pattern`][ordito.mesh.Trimesh.mesh_operator_pattern] has it cached.</span>
 <span class="sd">        The returned matrices share its ``offsets`` and ``columns``.</span>
+<span class="sd">    method</span>
+<span class="sd">        Whose discretization of the heat system to assemble -- the lumped mass ``M`` and the mean</span>
+<span class="sd">        edge length ``h`` of the default ``t = h ** 2``:</span>
+
+<span class="sd">        - ``"geometry_central"`` (default): each vertex a third of its faces' areas, ``h`` over the</span>
+<span class="sd">          unique edges. What ``potpourri3d``'s solvers assemble, and what the vector heat method</span>
+<span class="sd">          ([`vector_heat_operators`][ordito.heat.vector_heat_operators]) builds on.</span>
+<span class="sd">        - ``"meshlab"``: the same mass, ``h`` over every face's three edges (an interior edge</span>
+<span class="sd">          twice, a rim edge once; the same on a closed mesh).</span>
+<span class="sd">        - ``"igl"``: Meyer et al.'s mixed Voronoi area per vertex (an obtuse face's obtuse corner</span>
+<span class="sd">          takes half the face), ``h`` over the unique edges, ``igl::heat_geodesics``' choices.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -8673,7 +9205,8 @@ very table from mollified edge lengths, so the two ask for different weights. Or
 <span class="sd">    ValueError</span>
 <span class="sd">        If both ``cot_entries`` and ``use_robust`` are given: ``use_robust`` exists to build that</span>
 <span class="sd">        very table from mollified edge lengths, so the two ask for different weights. Or if</span>
-<span class="sd">        ``pattern`` was built for another operator or vertex count.</span>
+<span class="sd">        ``pattern`` was built for another operator or vertex count, or ``method`` is not one of</span>
+<span class="sd">        the three names above.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices``, ``faces``, ``cot_entries`` and ``pattern`` are not all on one device.</span>
 
@@ -8708,8 +9241,16 @@ very table from mollified edge lengths, so the two ask for different weights. Or
             <span class="s2">"half-cotangent table from mollified edge lengths."</span>
         <span class="p">)</span>
     <span class="n">_require_cotmatrix_pattern</span><span class="p">(</span><span class="n">pattern</span><span class="p">,</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span><span class="p">)</span>
+    <span class="n">mass</span><span class="p">,</span> <span class="n">timestep</span> <span class="o">=</span> <span class="n">_heat_method_choices</span><span class="p">(</span><span class="n">method</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">_heat_operators</span><span class="p">(</span>
-        <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">t</span><span class="p">,</span> <span class="n">use_robust</span><span class="o">=</span><span class="n">use_robust</span><span class="p">,</span> <span class="n">cot_entries</span><span class="o">=</span><span class="n">cot_entries</span><span class="p">,</span> <span class="n">pattern</span><span class="o">=</span><span class="n">pattern</span>
+        <span class="n">vertices</span><span class="p">,</span>
+        <span class="n">faces</span><span class="p">,</span>
+        <span class="n">t</span><span class="p">,</span>
+        <span class="n">use_robust</span><span class="o">=</span><span class="n">use_robust</span><span class="p">,</span>
+        <span class="n">cot_entries</span><span class="o">=</span><span class="n">cot_entries</span><span class="p">,</span>
+        <span class="n">pattern</span><span class="o">=</span><span class="n">pattern</span><span class="p">,</span>
+        <span class="n">mass</span><span class="o">=</span><span class="n">mass</span><span class="p">,</span>
+        <span class="n">timestep</span><span class="o">=</span><span class="n">timestep</span><span class="p">,</span>
     <span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -8733,6 +9274,7 @@ very table from mollified edge lengths, so the two ask for different weights. Or
     <span class="o">*</span><span class="p">,</span>
     <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">use_robust</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"meshlab"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"meshlab"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span>
 </code></pre></div><div class="doc-signature highlight"><pre><span></span><code><span class="nf">heat_geodesic</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
@@ -8742,6 +9284,7 @@ very table from mollified edge lengths, so the two ask for different weights. Or
     <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">use_robust</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"meshlab"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"meshlab"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span>
 </code></pre></div>          </div>
 <div class="doc-signature highlight"><pre><span></span><code><span class="nf">heat_geodesic</span><span class="p">(</span>
@@ -8752,6 +9295,7 @@ very table from mollified edge lengths, so the two ask for different weights. Or
     <span class="o">*</span><span class="p">,</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">use_robust</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"meshlab"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"meshlab"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span>
 </code></pre></div>
 
@@ -8765,7 +9309,22 @@ distance field by solving a Poisson problem. Both solves are sparse, symmetric p
 Cholesky factorization where one is held or needed, as <a class="autorefs autorefs-internal" title="HeatSolver" href="./#ordito.heat.HeatSolver"><code>HeatSolver</code></a>
 decides: once a system is solved a second time on a <code>Trimesh</code>, and at once for both when the
 heat solve's iterate fails its accuracy check. The result is an <em>approximation</em> of the true
-geodesic distance (typically a few percent error), matching <code>igl::heat_geodesics</code>.</p>
+geodesic distance (typically a few percent error).</p>
+<p>The method leaves three discretization choices open, and <code>method</code> makes them as one of two
+libraries does, so the field is that library's up to its direct solves' rounding:</p>
+<ul>
+<li><code>"meshlab"</code> (default), MeshLab's <code>compute_scalar_by_heat_geodesic_distance_from_selection
+  _per_vertex</code>: the barycentric lumped mass, Neumann boundary conditions, and
+  <code>t = h ** 2</code> with <code>h</code> the mean over every face's three edges.</li>
+<li><code>"igl"</code>, <code>igl::heat_geodesics</code>: the Voronoi lumped mass, the mean of the Neumann heat and
+  the heat pinned to zero on the rim (a second heat solve on a mesh with a rim), and <code>h</code> the
+  mean over the unique edges.</li>
+</ul>
+<p>Against exact polyhedral geodesics MeshLab's Neumann boundary is the more accurate of the two:
+equal on a hemisphere, and 0.93 % against 1.15 % mean error (3.1 % against 4.9 % worst) of the
+distance range on a half torus. geometry-central (<code>potpourri3d</code>) makes MeshLab's mass and
+boundary choices but regularizes its Poisson solve with <code>1e-6</code> times the identity, which
+stops the method converging on fine meshes; ordito leaves that out.</p>
 <p>The computation runs in <code>float64</code>: the diffused heat decays exponentially away from the
 source and would underflow <code>float32</code>, collapsing the far field.</p>
 <p>Takes the mesh as an <a class="autorefs autorefs-internal" title="Trimesh" href="../mesh/#ordito.mesh.Trimesh"><code>ordito.mesh.Trimesh</code></a> or as its <code>vertices</code> and
@@ -8862,8 +9421,8 @@ the nearest source and is zero at the source set.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Diffusion time. When <code>None</code>, defaults to the squared mean edge length (the
-<code>igl::heat_geodesics</code> default), which balances accuracy and smoothing.</p>
+                <p>Diffusion time. When <code>None</code>, the squared mean edge length <code>method</code> names, which
+balances accuracy and smoothing.</p>
               </div>
             </td>
             <td>
@@ -8883,12 +9442,29 @@ the nearest source and is zero at the source set.</p>
 from mollified edge lengths, which is what makes the solves survive degenerate triangles.
 On a mesh with none it changes nothing. <code>potpourri3d.MeshHeatMethodDistanceSolver</code>'s
 flag of the same name does more -- it also solves on an intrinsic Delaunay triangulation
--- and defaults to <code>True</code>; this defaults to <code>False</code> so the plain call stays exactly
-<code>igl::heat_geodesics</code>.</p>
+-- and defaults to <code>True</code>; this defaults to <code>False</code>.</p>
               </div>
             </td>
             <td>
                   <code>False</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>method</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;meshlab&#39;, &#39;igl&#39;]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>"meshlab"</code> (default) or <code>"igl"</code>: whose discretization to reproduce (above). The two
+part most on obtuse triangles (the mass) and from a source inside an open mesh (the
+boundary).</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;meshlab&#39;</code>
             </td>
           </tr>
       </tbody>
@@ -8933,7 +9509,8 @@ flag of the same name does more -- it also solves on an intrinsic Delaunay trian
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If an entry of <code>sources</code> is not a vertex index in <code>[0, n_vertices)</code>.</p>
+                <p>If an entry of <code>sources</code> is not a vertex index in <code>[0, n_vertices)</code>, or <code>method</code> is
+not <code>"meshlab"</code> or <code>"igl"</code>.</p>
               </div>
             </td>
           </tr>
@@ -8955,7 +9532,9 @@ flag of the same name does more -- it also solves on an intrinsic Delaunay trian
   <summary>Notes</summary>
   <p>The <code>vertices, faces</code> form logs at <code>INFO</code> on the <code>ordito.heat</code> logger when it built a
 factorization it is about to drop (the heat solve's verification failed on an ill-conditioned
-mesh), since the <code>Trimesh</code> form would have kept it for the next call.</p>
+mesh), since the <code>Trimesh</code> form would have kept it for the next call. That form runs on
+<code>mesh.heat_solver(t, use_robust=use_robust, method=method)</code>, the solver to
+<a class="autorefs autorefs-internal" title="factor" href="./#ordito.heat.HeatSolver.factor"><code>factor</code></a> ahead of the calls.</p>
 </details>
 
 <details class="see-also" open>
@@ -8985,9 +9564,9 @@ few per cent of it:</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 30 places</summary>
+      <summary>Referenced by 32 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../graph/#ordito.graph">graph</a> › <a href="../graph/#ordito.graph.shortest_path_envelope">shortest_path_envelope</a></span> · <span class="ordito-backlink"><a href="../geodesic_walk/#ordito.geodesic_walk">geodesic_walk</a></span> · <span class="ordito-backlink"><a href="../geodesic_walk/#ordito.geodesic_walk">geodesic_walk</a> › <a href="../geodesic_walk/#ordito.geodesic_walk.geodesic_path">geodesic_path</a></span> · <span class="ordito-backlink"><a href="../geodesic_walk/#ordito.geodesic_walk">geodesic_walk</a> › <a href="../geodesic_walk/#ordito.geodesic_walk.trace_from_vertex">trace_from_vertex</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.HeatSolver">HeatSolver</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat.HeatSolver">HeatSolver</a> › <a href="./#ordito.heat.HeatSolver.factor">factor</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.extend_scalar">extend_scalar</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.heat_operators">heat_operators</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.heat_signed_distance">heat_signed_distance</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.log_map">log_map</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.transport_tangent_vectors">transport_tangent_vectors</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.vector_heat_operators">vector_heat_operators</a></span> · <span class="ordito-backlink"><a href="../edges/#ordito.edges">edges</a> › <a href="../edges/#ordito.edges.mean_unique_edge_length">mean_unique_edge_length</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.heat_operators">heat_operators</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.vector_heat_operators">vector_heat_operators</a></span> · <span class="ordito-backlink"><a href="../laplacian/#ordito.laplacian">laplacian</a> › <a href="../laplacian/#ordito.laplacian.robust_laplacian">robust_laplacian</a></span> · <span class="ordito-backlink"><a href="../linalg/#ordito.linalg">linalg</a></span> · <span class="ordito-backlink"><a href="../intersection/#ordito.intersection">intersection</a> › <a href="../intersection/#ordito.intersection.clip_mesh_with_field">clip_mesh_with_field</a></span> · <span class="ordito-backlink"><a href="../intersection/#ordito.intersection">intersection</a> › <a href="../intersection/#ordito.intersection.marching_triangles">marching_triangles</a></span> · <span class="ordito-backlink"><a href="../intersection/#ordito.intersection">intersection</a> › <a href="../intersection/#ordito.intersection.marching_triangles_with_offsets">marching_triangles_with_offsets</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../graph/#ordito.graph">graph</a> › <a href="../graph/#ordito.graph.shortest_path_envelope">shortest_path_envelope</a></span> · <span class="ordito-backlink"><a href="../geodesic_walk/#ordito.geodesic_walk">geodesic_walk</a></span> · <span class="ordito-backlink"><a href="../geodesic_walk/#ordito.geodesic_walk">geodesic_walk</a> › <a href="../geodesic_walk/#ordito.geodesic_walk.geodesic_path">geodesic_path</a></span> · <span class="ordito-backlink"><a href="../geodesic_walk/#ordito.geodesic_walk">geodesic_walk</a> › <a href="../geodesic_walk/#ordito.geodesic_walk.trace_from_vertex">trace_from_vertex</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.HeatSolver">HeatSolver</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat.HeatSolver">HeatSolver</a> › <a href="./#ordito.heat.HeatSolver.diffuse_pinned">diffuse_pinned</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat.HeatSolver">HeatSolver</a> › <a href="./#ordito.heat.HeatSolver.factor">factor</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.extend_scalar">extend_scalar</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.heat_operators">heat_operators</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.heat_signed_distance">heat_signed_distance</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.log_map">log_map</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.transport_tangent_vectors">transport_tangent_vectors</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.vector_heat_operators">vector_heat_operators</a></span> · <span class="ordito-backlink"><a href="../edges/#ordito.edges">edges</a> › <a href="../edges/#ordito.edges.mean_unique_edge_length">mean_unique_edge_length</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.heat_operators">heat_operators</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.heat_solver">heat_solver</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.vector_heat_operators">vector_heat_operators</a></span> · <span class="ordito-backlink"><a href="../laplacian/#ordito.laplacian">laplacian</a> › <a href="../laplacian/#ordito.laplacian.robust_laplacian">robust_laplacian</a></span> · <span class="ordito-backlink"><a href="../linalg/#ordito.linalg">linalg</a></span> · <span class="ordito-backlink"><a href="../intersection/#ordito.intersection">intersection</a> › <a href="../intersection/#ordito.intersection.clip_mesh_with_field">clip_mesh_with_field</a></span> · <span class="ordito-backlink"><a href="../intersection/#ordito.intersection">intersection</a> › <a href="../intersection/#ordito.intersection.marching_triangles">marching_triangles</a></span> · <span class="ordito-backlink"><a href="../intersection/#ordito.intersection">intersection</a> › <a href="../intersection/#ordito.intersection.marching_triangles_with_offsets">marching_triangles_with_offsets</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/differential/#curvature-and-differential-operators">Curvature and differential operators</a> › <a href="../../../examples/differential/#d7">Isolines of a scalar field</a></span> · <span class="ordito-backlink"><a href="../../../examples/cutting/#cutting-slicing-and-selection">Cutting, slicing and selection</a> › <a href="../../../examples/cutting/#x3">Clipping with a scalar field</a></span> · <span class="ordito-backlink"><a href="../../../examples/geodesics/#geodesics-and-tangent-fields">Geodesics and tangent fields</a> › <a href="../../../examples/geodesics/#g1">Geodesic distance with the heat method</a></span> · <span class="ordito-backlink"><a href="../../../examples/geodesics/#geodesics-and-tangent-fields">Geodesics and tangent fields</a> › <a href="../../../examples/geodesics/#g4">Signed distance to curves on the surface</a></span> · <span class="ordito-backlink"><a href="../../../examples/trimesh-object/#the-trimesh-object">The Trimesh object</a> › <a href="../../../examples/trimesh-object/#t7">Reusing cached operators</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -8997,34 +9576,7 @@ few per cent of it:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">311</span>
-<span class="normal">312</span>
-<span class="normal">313</span>
-<span class="normal">314</span>
-<span class="normal">315</span>
-<span class="normal">316</span>
-<span class="normal">317</span>
-<span class="normal">318</span>
-<span class="normal">319</span>
-<span class="normal">320</span>
-<span class="normal">321</span>
-<span class="normal">322</span>
-<span class="normal">323</span>
-<span class="normal">324</span>
-<span class="normal">325</span>
-<span class="normal">326</span>
-<span class="normal">327</span>
-<span class="normal">328</span>
-<span class="normal">329</span>
-<span class="normal">330</span>
-<span class="normal">331</span>
-<span class="normal">332</span>
-<span class="normal">333</span>
-<span class="normal">334</span>
-<span class="normal">335</span>
-<span class="normal">336</span>
-<span class="normal">337</span>
-<span class="normal">338</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">338</span>
 <span class="normal">339</span>
 <span class="normal">340</span>
 <span class="normal">341</span>
@@ -9105,7 +9657,60 @@ few per cent of it:</p>
 <span class="normal">416</span>
 <span class="normal">417</span>
 <span class="normal">418</span>
-<span class="normal">419</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">heat_geodesic</span><span class="p">(</span>
+<span class="normal">419</span>
+<span class="normal">420</span>
+<span class="normal">421</span>
+<span class="normal">422</span>
+<span class="normal">423</span>
+<span class="normal">424</span>
+<span class="normal">425</span>
+<span class="normal">426</span>
+<span class="normal">427</span>
+<span class="normal">428</span>
+<span class="normal">429</span>
+<span class="normal">430</span>
+<span class="normal">431</span>
+<span class="normal">432</span>
+<span class="normal">433</span>
+<span class="normal">434</span>
+<span class="normal">435</span>
+<span class="normal">436</span>
+<span class="normal">437</span>
+<span class="normal">438</span>
+<span class="normal">439</span>
+<span class="normal">440</span>
+<span class="normal">441</span>
+<span class="normal">442</span>
+<span class="normal">443</span>
+<span class="normal">444</span>
+<span class="normal">445</span>
+<span class="normal">446</span>
+<span class="normal">447</span>
+<span class="normal">448</span>
+<span class="normal">449</span>
+<span class="normal">450</span>
+<span class="normal">451</span>
+<span class="normal">452</span>
+<span class="normal">453</span>
+<span class="normal">454</span>
+<span class="normal">455</span>
+<span class="normal">456</span>
+<span class="normal">457</span>
+<span class="normal">458</span>
+<span class="normal">459</span>
+<span class="normal">460</span>
+<span class="normal">461</span>
+<span class="normal">462</span>
+<span class="normal">463</span>
+<span class="normal">464</span>
+<span class="normal">465</span>
+<span class="normal">466</span>
+<span class="normal">467</span>
+<span class="normal">468</span>
+<span class="normal">469</span>
+<span class="normal">470</span>
+<span class="normal">471</span>
+<span class="normal">472</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">heat_geodesic</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">sources</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -9113,6 +9718,7 @@ few per cent of it:</p>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">use_robust</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"meshlab"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"meshlab"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Approximate geodesic distance to the nearest source vertex (Crane et al. heat method).</span>
@@ -9124,7 +9730,23 @@ few per cent of it:</p>
 <span class="sd">    Cholesky factorization where one is held or needed, as [`HeatSolver`][ordito.heat.HeatSolver]</span>
 <span class="sd">    decides: once a system is solved a second time on a `Trimesh`, and at once for both when the</span>
 <span class="sd">    heat solve's iterate fails its accuracy check. The result is an *approximation* of the true</span>
-<span class="sd">    geodesic distance (typically a few percent error), matching ``igl::heat_geodesics``.</span>
+<span class="sd">    geodesic distance (typically a few percent error).</span>
+
+<span class="sd">    The method leaves three discretization choices open, and ``method`` makes them as one of two</span>
+<span class="sd">    libraries does, so the field is that library's up to its direct solves' rounding:</span>
+
+<span class="sd">    - ``"meshlab"`` (default), MeshLab's ``compute_scalar_by_heat_geodesic_distance_from_selection</span>
+<span class="sd">      _per_vertex``: the barycentric lumped mass, Neumann boundary conditions, and</span>
+<span class="sd">      ``t = h ** 2`` with ``h`` the mean over every face's three edges.</span>
+<span class="sd">    - ``"igl"``, ``igl::heat_geodesics``: the Voronoi lumped mass, the mean of the Neumann heat and</span>
+<span class="sd">      the heat pinned to zero on the rim (a second heat solve on a mesh with a rim), and ``h`` the</span>
+<span class="sd">      mean over the unique edges.</span>
+
+<span class="sd">    Against exact polyhedral geodesics MeshLab's Neumann boundary is the more accurate of the two:</span>
+<span class="sd">    equal on a hemisphere, and 0.93 % against 1.15 % mean error (3.1 % against 4.9 % worst) of the</span>
+<span class="sd">    distance range on a half torus. geometry-central (``potpourri3d``) makes MeshLab's mass and</span>
+<span class="sd">    boundary choices but regularizes its Poisson solve with ``1e-6`` times the identity, which</span>
+<span class="sd">    stops the method converging on fine meshes; ordito leaves that out.</span>
 
 <span class="sd">    The computation runs in ``float64``: the diffused heat decays exponentially away from the</span>
 <span class="sd">    source and would underflow ``float32``, collapsing the far field.</span>
@@ -9149,15 +9771,18 @@ few per cent of it:</p>
 <span class="sd">        ``(n_sources,)`` source vertex indices. The returned distance is measured to</span>
 <span class="sd">        the nearest source and is zero at the source set.</span>
 <span class="sd">    t</span>
-<span class="sd">        Diffusion time. When ``None``, defaults to the squared mean edge length (the</span>
-<span class="sd">        ``igl::heat_geodesics`` default), which balances accuracy and smoothing.</span>
+<span class="sd">        Diffusion time. When ``None``, the squared mean edge length ``method`` names, which</span>
+<span class="sd">        balances accuracy and smoothing.</span>
 <span class="sd">    use_robust</span>
 <span class="sd">        Forwarded to [`heat_operators`][ordito.heat.heat_operators]: build the Laplacian</span>
 <span class="sd">        from mollified edge lengths, which is what makes the solves survive degenerate triangles.</span>
 <span class="sd">        On a mesh with none it changes nothing. ``potpourri3d.MeshHeatMethodDistanceSolver``'s</span>
 <span class="sd">        flag of the same name does more -- it also solves on an intrinsic Delaunay triangulation</span>
-<span class="sd">        -- and defaults to ``True``; this defaults to ``False`` so the plain call stays exactly</span>
-<span class="sd">        ``igl::heat_geodesics``.</span>
+<span class="sd">        -- and defaults to ``True``; this defaults to ``False``.</span>
+<span class="sd">    method</span>
+<span class="sd">        ``"meshlab"`` (default) or ``"igl"``: whose discretization to reproduce (above). The two</span>
+<span class="sd">        part most on obtuse triangles (the mass) and from a source inside an open mesh (the</span>
+<span class="sd">        boundary).</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -9167,7 +9792,8 @@ few per cent of it:</p>
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If an entry of ``sources`` is not a vertex index in ``[0, n_vertices)``.</span>
+<span class="sd">        If an entry of ``sources`` is not a vertex index in ``[0, n_vertices)``, or ``method`` is</span>
+<span class="sd">        not ``"meshlab"`` or ``"igl"``.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices``, ``faces`` and ``sources`` are not all on one device.</span>
 
@@ -9175,7 +9801,9 @@ few per cent of it:</p>
 <span class="sd">    -----</span>
 <span class="sd">    The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a</span>
 <span class="sd">    factorization it is about to drop (the heat solve's verification failed on an ill-conditioned</span>
-<span class="sd">    mesh), since the `Trimesh` form would have kept it for the next call.</span>
+<span class="sd">    mesh), since the `Trimesh` form would have kept it for the next call. That form runs on</span>
+<span class="sd">    ``mesh.heat_solver(t, use_robust=use_robust, method=method)``, the solver to</span>
+<span class="sd">    [`factor`][ordito.heat.HeatSolver.factor] ahead of the calls.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -9204,6 +9832,8 @@ few per cent of it:</p>
 <span class="sd">    print(f"{distance.numpy()[south]:.2f}")  # 3.09</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"meshlab"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method must be 'meshlab' or 'igl', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
     <span class="n">bound</span><span class="p">,</span> <span class="n">owned</span><span class="p">,</span> <span class="n">arguments</span> <span class="o">=</span> <span class="n">mesh_arguments</span><span class="p">(</span>
         <span class="s2">"heat_geodesic"</span><span class="p">,</span> <span class="n">mesh</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="p">(</span><span class="n">sources</span><span class="p">,</span> <span class="n">t</span><span class="p">),</span> <span class="mi">1</span>
     <span class="p">)</span>
@@ -9213,6 +9843,7 @@ few per cent of it:</p>
         <span class="n">cast</span><span class="p">(</span><span class="s2">"wp.array[wp.int32]"</span><span class="p">,</span> <span class="n">arguments</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span>
         <span class="n">cast</span><span class="p">(</span><span class="s2">"float | None"</span><span class="p">,</span> <span class="n">arguments</span><span class="p">[</span><span class="mi">1</span><span class="p">]),</span>
         <span class="n">use_robust</span><span class="p">,</span>
+        <span class="n">method</span><span class="p">,</span>
     <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -9544,66 +10175,7 @@ the grid's corner lies outside:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">493</span>
-<span class="normal">494</span>
-<span class="normal">495</span>
-<span class="normal">496</span>
-<span class="normal">497</span>
-<span class="normal">498</span>
-<span class="normal">499</span>
-<span class="normal">500</span>
-<span class="normal">501</span>
-<span class="normal">502</span>
-<span class="normal">503</span>
-<span class="normal">504</span>
-<span class="normal">505</span>
-<span class="normal">506</span>
-<span class="normal">507</span>
-<span class="normal">508</span>
-<span class="normal">509</span>
-<span class="normal">510</span>
-<span class="normal">511</span>
-<span class="normal">512</span>
-<span class="normal">513</span>
-<span class="normal">514</span>
-<span class="normal">515</span>
-<span class="normal">516</span>
-<span class="normal">517</span>
-<span class="normal">518</span>
-<span class="normal">519</span>
-<span class="normal">520</span>
-<span class="normal">521</span>
-<span class="normal">522</span>
-<span class="normal">523</span>
-<span class="normal">524</span>
-<span class="normal">525</span>
-<span class="normal">526</span>
-<span class="normal">527</span>
-<span class="normal">528</span>
-<span class="normal">529</span>
-<span class="normal">530</span>
-<span class="normal">531</span>
-<span class="normal">532</span>
-<span class="normal">533</span>
-<span class="normal">534</span>
-<span class="normal">535</span>
-<span class="normal">536</span>
-<span class="normal">537</span>
-<span class="normal">538</span>
-<span class="normal">539</span>
-<span class="normal">540</span>
-<span class="normal">541</span>
-<span class="normal">542</span>
-<span class="normal">543</span>
-<span class="normal">544</span>
-<span class="normal">545</span>
-<span class="normal">546</span>
-<span class="normal">547</span>
-<span class="normal">548</span>
-<span class="normal">549</span>
-<span class="normal">550</span>
-<span class="normal">551</span>
-<span class="normal">552</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">552</span>
 <span class="normal">553</span>
 <span class="normal">554</span>
 <span class="normal">555</span>
@@ -9665,7 +10237,66 @@ the grid's corner lies outside:</p>
 <span class="normal">611</span>
 <span class="normal">612</span>
 <span class="normal">613</span>
-<span class="normal">614</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">heat_signed_distance</span><span class="p">(</span>
+<span class="normal">614</span>
+<span class="normal">615</span>
+<span class="normal">616</span>
+<span class="normal">617</span>
+<span class="normal">618</span>
+<span class="normal">619</span>
+<span class="normal">620</span>
+<span class="normal">621</span>
+<span class="normal">622</span>
+<span class="normal">623</span>
+<span class="normal">624</span>
+<span class="normal">625</span>
+<span class="normal">626</span>
+<span class="normal">627</span>
+<span class="normal">628</span>
+<span class="normal">629</span>
+<span class="normal">630</span>
+<span class="normal">631</span>
+<span class="normal">632</span>
+<span class="normal">633</span>
+<span class="normal">634</span>
+<span class="normal">635</span>
+<span class="normal">636</span>
+<span class="normal">637</span>
+<span class="normal">638</span>
+<span class="normal">639</span>
+<span class="normal">640</span>
+<span class="normal">641</span>
+<span class="normal">642</span>
+<span class="normal">643</span>
+<span class="normal">644</span>
+<span class="normal">645</span>
+<span class="normal">646</span>
+<span class="normal">647</span>
+<span class="normal">648</span>
+<span class="normal">649</span>
+<span class="normal">650</span>
+<span class="normal">651</span>
+<span class="normal">652</span>
+<span class="normal">653</span>
+<span class="normal">654</span>
+<span class="normal">655</span>
+<span class="normal">656</span>
+<span class="normal">657</span>
+<span class="normal">658</span>
+<span class="normal">659</span>
+<span class="normal">660</span>
+<span class="normal">661</span>
+<span class="normal">662</span>
+<span class="normal">663</span>
+<span class="normal">664</span>
+<span class="normal">665</span>
+<span class="normal">666</span>
+<span class="normal">667</span>
+<span class="normal">668</span>
+<span class="normal">669</span>
+<span class="normal">670</span>
+<span class="normal">671</span>
+<span class="normal">672</span>
+<span class="normal">673</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">heat_signed_distance</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">curve_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10073,9 +10704,9 @@ one device.</p>
 <details class="note" open>
   <summary>Notes</summary>
   <p>The vector and scalar systems must share <code>t</code>: <a class="autorefs autorefs-internal" title="log_map" href="./#ordito.heat.log_map"><code>log_map</code></a>'s
-radius is asserted to <em>be</em> the <a class="autorefs autorefs-internal" title="heat_geodesic" href="./#ordito.heat.heat_geodesic"><code>heat_geodesic</code></a> distance,
-so two diffusion times would split a quantity that is supposed to be one number. That is why
-<code>scalar_operators</code> is the one argument here that cannot be validated.</p>
+radius is asserted to <em>be</em> the <a class="autorefs autorefs-internal" title="heat_geodesic" href="./#ordito.heat.heat_geodesic"><code>heat_geodesic</code></a> distance at that
+<code>t</code>, so two diffusion times would split a quantity that is supposed to be one number. That
+is why <code>scalar_operators</code> is the one argument here that cannot be validated.</p>
 </details>
 
 <details class="see-also" open>
@@ -10097,9 +10728,9 @@ so two diffusion times would split a quantity that is supposed to be one number.
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 8 places</summary>
+      <summary>Referenced by 9 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.HeatSolver">HeatSolver</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat.HeatSolver">HeatSolver</a> › <a href="./#ordito.heat.HeatSolver.vector_operators">vector_operators</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.VectorHeatOperators">VectorHeatOperators</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.diffuse_tangent_field">diffuse_tangent_field</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.heat_signed_distance">heat_signed_distance</a></span> · <span class="ordito-backlink"><a href="../edges/#ordito.edges">edges</a> › <a href="../edges/#ordito.edges.mean_unique_edge_length">mean_unique_edge_length</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.vector_heat_operators">vector_heat_operators</a></span></p>
+<span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.HeatSolver">HeatSolver</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat.HeatSolver">HeatSolver</a> › <a href="./#ordito.heat.HeatSolver.vector_operators">vector_operators</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.VectorHeatOperators">VectorHeatOperators</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.diffuse_tangent_field">diffuse_tangent_field</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.heat_operators">heat_operators</a></span> · <span class="ordito-backlink"><a href="./#ordito.heat">heat</a> › <a href="./#ordito.heat.heat_signed_distance">heat_signed_distance</a></span> · <span class="ordito-backlink"><a href="../edges/#ordito.edges">edges</a> › <a href="../edges/#ordito.edges.mean_unique_edge_length">mean_unique_edge_length</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.vector_heat_operators">vector_heat_operators</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/geodesics/#geodesics-and-tangent-fields">Geodesics and tangent fields</a> › <a href="../../../examples/geodesics/#g7">Smoothing a tangent vector field</a></span></p>
     </details>
@@ -10107,66 +10738,7 @@ so two diffusion times would split a quantity that is supposed to be one number.
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 843</span>
-<span class="normal"> 844</span>
-<span class="normal"> 845</span>
-<span class="normal"> 846</span>
-<span class="normal"> 847</span>
-<span class="normal"> 848</span>
-<span class="normal"> 849</span>
-<span class="normal"> 850</span>
-<span class="normal"> 851</span>
-<span class="normal"> 852</span>
-<span class="normal"> 853</span>
-<span class="normal"> 854</span>
-<span class="normal"> 855</span>
-<span class="normal"> 856</span>
-<span class="normal"> 857</span>
-<span class="normal"> 858</span>
-<span class="normal"> 859</span>
-<span class="normal"> 860</span>
-<span class="normal"> 861</span>
-<span class="normal"> 862</span>
-<span class="normal"> 863</span>
-<span class="normal"> 864</span>
-<span class="normal"> 865</span>
-<span class="normal"> 866</span>
-<span class="normal"> 867</span>
-<span class="normal"> 868</span>
-<span class="normal"> 869</span>
-<span class="normal"> 870</span>
-<span class="normal"> 871</span>
-<span class="normal"> 872</span>
-<span class="normal"> 873</span>
-<span class="normal"> 874</span>
-<span class="normal"> 875</span>
-<span class="normal"> 876</span>
-<span class="normal"> 877</span>
-<span class="normal"> 878</span>
-<span class="normal"> 879</span>
-<span class="normal"> 880</span>
-<span class="normal"> 881</span>
-<span class="normal"> 882</span>
-<span class="normal"> 883</span>
-<span class="normal"> 884</span>
-<span class="normal"> 885</span>
-<span class="normal"> 886</span>
-<span class="normal"> 887</span>
-<span class="normal"> 888</span>
-<span class="normal"> 889</span>
-<span class="normal"> 890</span>
-<span class="normal"> 891</span>
-<span class="normal"> 892</span>
-<span class="normal"> 893</span>
-<span class="normal"> 894</span>
-<span class="normal"> 895</span>
-<span class="normal"> 896</span>
-<span class="normal"> 897</span>
-<span class="normal"> 898</span>
-<span class="normal"> 899</span>
-<span class="normal"> 900</span>
-<span class="normal"> 901</span>
-<span class="normal"> 902</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 902</span>
 <span class="normal"> 903</span>
 <span class="normal"> 904</span>
 <span class="normal"> 905</span>
@@ -10305,7 +10877,66 @@ so two diffusion times would split a quantity that is supposed to be one number.
 <span class="normal">1038</span>
 <span class="normal">1039</span>
 <span class="normal">1040</span>
-<span class="normal">1041</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_heat_operators</span><span class="p">(</span>
+<span class="normal">1041</span>
+<span class="normal">1042</span>
+<span class="normal">1043</span>
+<span class="normal">1044</span>
+<span class="normal">1045</span>
+<span class="normal">1046</span>
+<span class="normal">1047</span>
+<span class="normal">1048</span>
+<span class="normal">1049</span>
+<span class="normal">1050</span>
+<span class="normal">1051</span>
+<span class="normal">1052</span>
+<span class="normal">1053</span>
+<span class="normal">1054</span>
+<span class="normal">1055</span>
+<span class="normal">1056</span>
+<span class="normal">1057</span>
+<span class="normal">1058</span>
+<span class="normal">1059</span>
+<span class="normal">1060</span>
+<span class="normal">1061</span>
+<span class="normal">1062</span>
+<span class="normal">1063</span>
+<span class="normal">1064</span>
+<span class="normal">1065</span>
+<span class="normal">1066</span>
+<span class="normal">1067</span>
+<span class="normal">1068</span>
+<span class="normal">1069</span>
+<span class="normal">1070</span>
+<span class="normal">1071</span>
+<span class="normal">1072</span>
+<span class="normal">1073</span>
+<span class="normal">1074</span>
+<span class="normal">1075</span>
+<span class="normal">1076</span>
+<span class="normal">1077</span>
+<span class="normal">1078</span>
+<span class="normal">1079</span>
+<span class="normal">1080</span>
+<span class="normal">1081</span>
+<span class="normal">1082</span>
+<span class="normal">1083</span>
+<span class="normal">1084</span>
+<span class="normal">1085</span>
+<span class="normal">1086</span>
+<span class="normal">1087</span>
+<span class="normal">1088</span>
+<span class="normal">1089</span>
+<span class="normal">1090</span>
+<span class="normal">1091</span>
+<span class="normal">1092</span>
+<span class="normal">1093</span>
+<span class="normal">1094</span>
+<span class="normal">1095</span>
+<span class="normal">1096</span>
+<span class="normal">1097</span>
+<span class="normal">1098</span>
+<span class="normal">1099</span>
+<span class="normal">1100</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_heat_operators</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10390,9 +11021,9 @@ so two diffusion times would split a quantity that is supposed to be one number.
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
 <span class="sd">    The vector and scalar systems must share ``t``: [`log_map`][ordito.heat.log_map]'s</span>
-<span class="sd">    radius is asserted to *be* the [`heat_geodesic`][ordito.heat.heat_geodesic] distance,</span>
-<span class="sd">    so two diffusion times would split a quantity that is supposed to be one number. That is why</span>
-<span class="sd">    ``scalar_operators`` is the one argument here that cannot be validated.</span>
+<span class="sd">    radius is asserted to *be* the [`heat_geodesic`][ordito.heat.heat_geodesic] distance at that</span>
+<span class="sd">    ``t``, so two diffusion times would split a quantity that is supposed to be one number. That</span>
+<span class="sd">    is why ``scalar_operators`` is the one argument here that cannot be validated.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -10434,13 +11065,13 @@ so two diffusion times would split a quantity that is supposed to be one number.
     <span class="n">built</span> <span class="o">=</span> <span class="kc">None</span> <span class="k">if</span> <span class="n">scalar_operators</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">_SCALAR_BUILDS</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">scalar_operators</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
     <span class="n">edge_sums</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="k">if</span> <span class="n">t</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="c1"># Shares the scalar solver's timestep convention -- the unique-edge mean, matching</span>
-        <span class="c1"># ``igl::heat_geodesics``. The two solvers must agree: ``log_map``'s radius is asserted to</span>
-        <span class="c1"># *be* the ``heat_geodesic`` distance, so giving them different diffusion times would split</span>
-        <span class="c1"># a quantity that is supposed to be one number. They do by construction: the mean is read</span>
-        <span class="c1"># off the shared sparsity, twelve triplets per face and nothing pruned, and the scalar</span>
-        <span class="c1"># bundle built here takes these very sums (a prebuilt one already holds its own). Both</span>
-        <span class="c1"># systems square it on the device, so nothing is read back.</span>
+        <span class="c1"># Shares the scalar solver's timestep convention -- the unique-edge mean,</span>
+        <span class="c1"># geometry-central's. The two solvers must agree: ``log_map``'s radius is asserted to *be*</span>
+        <span class="c1"># the ``heat_geodesic`` distance at that timestep, so giving them different diffusion</span>
+        <span class="c1"># times would split a quantity that is supposed to be one number. They do by construction:</span>
+        <span class="c1"># the mean is read off the shared sparsity, twelve triplets per face and nothing pruned,</span>
+        <span class="c1"># and the scalar bundle built here takes these very sums (a prebuilt one already holds its</span>
+        <span class="c1"># own). Both systems square it on the device, so nothing is read back.</span>
         <span class="k">if</span> <span class="n">built</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">built</span><span class="o">.</span><span class="n">edge_sums</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
             <span class="n">edge_sums</span> <span class="o">=</span> <span class="n">built</span><span class="o">.</span><span class="n">edge_sums</span>
         <span class="k">else</span><span class="p">:</span>
@@ -10800,98 +11431,7 @@ pole's value, away from the equator where the two blend:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1305</span>
-<span class="normal">1306</span>
-<span class="normal">1307</span>
-<span class="normal">1308</span>
-<span class="normal">1309</span>
-<span class="normal">1310</span>
-<span class="normal">1311</span>
-<span class="normal">1312</span>
-<span class="normal">1313</span>
-<span class="normal">1314</span>
-<span class="normal">1315</span>
-<span class="normal">1316</span>
-<span class="normal">1317</span>
-<span class="normal">1318</span>
-<span class="normal">1319</span>
-<span class="normal">1320</span>
-<span class="normal">1321</span>
-<span class="normal">1322</span>
-<span class="normal">1323</span>
-<span class="normal">1324</span>
-<span class="normal">1325</span>
-<span class="normal">1326</span>
-<span class="normal">1327</span>
-<span class="normal">1328</span>
-<span class="normal">1329</span>
-<span class="normal">1330</span>
-<span class="normal">1331</span>
-<span class="normal">1332</span>
-<span class="normal">1333</span>
-<span class="normal">1334</span>
-<span class="normal">1335</span>
-<span class="normal">1336</span>
-<span class="normal">1337</span>
-<span class="normal">1338</span>
-<span class="normal">1339</span>
-<span class="normal">1340</span>
-<span class="normal">1341</span>
-<span class="normal">1342</span>
-<span class="normal">1343</span>
-<span class="normal">1344</span>
-<span class="normal">1345</span>
-<span class="normal">1346</span>
-<span class="normal">1347</span>
-<span class="normal">1348</span>
-<span class="normal">1349</span>
-<span class="normal">1350</span>
-<span class="normal">1351</span>
-<span class="normal">1352</span>
-<span class="normal">1353</span>
-<span class="normal">1354</span>
-<span class="normal">1355</span>
-<span class="normal">1356</span>
-<span class="normal">1357</span>
-<span class="normal">1358</span>
-<span class="normal">1359</span>
-<span class="normal">1360</span>
-<span class="normal">1361</span>
-<span class="normal">1362</span>
-<span class="normal">1363</span>
-<span class="normal">1364</span>
-<span class="normal">1365</span>
-<span class="normal">1366</span>
-<span class="normal">1367</span>
-<span class="normal">1368</span>
-<span class="normal">1369</span>
-<span class="normal">1370</span>
-<span class="normal">1371</span>
-<span class="normal">1372</span>
-<span class="normal">1373</span>
-<span class="normal">1374</span>
-<span class="normal">1375</span>
-<span class="normal">1376</span>
-<span class="normal">1377</span>
-<span class="normal">1378</span>
-<span class="normal">1379</span>
-<span class="normal">1380</span>
-<span class="normal">1381</span>
-<span class="normal">1382</span>
-<span class="normal">1383</span>
-<span class="normal">1384</span>
-<span class="normal">1385</span>
-<span class="normal">1386</span>
-<span class="normal">1387</span>
-<span class="normal">1388</span>
-<span class="normal">1389</span>
-<span class="normal">1390</span>
-<span class="normal">1391</span>
-<span class="normal">1392</span>
-<span class="normal">1393</span>
-<span class="normal">1394</span>
-<span class="normal">1395</span>
-<span class="normal">1396</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1396</span>
 <span class="normal">1397</span>
 <span class="normal">1398</span>
 <span class="normal">1399</span>
@@ -10901,7 +11441,98 @@ pole's value, away from the equator where the two blend:</p>
 <span class="normal">1403</span>
 <span class="normal">1404</span>
 <span class="normal">1405</span>
-<span class="normal">1406</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">extend_scalar</span><span class="p">(</span>
+<span class="normal">1406</span>
+<span class="normal">1407</span>
+<span class="normal">1408</span>
+<span class="normal">1409</span>
+<span class="normal">1410</span>
+<span class="normal">1411</span>
+<span class="normal">1412</span>
+<span class="normal">1413</span>
+<span class="normal">1414</span>
+<span class="normal">1415</span>
+<span class="normal">1416</span>
+<span class="normal">1417</span>
+<span class="normal">1418</span>
+<span class="normal">1419</span>
+<span class="normal">1420</span>
+<span class="normal">1421</span>
+<span class="normal">1422</span>
+<span class="normal">1423</span>
+<span class="normal">1424</span>
+<span class="normal">1425</span>
+<span class="normal">1426</span>
+<span class="normal">1427</span>
+<span class="normal">1428</span>
+<span class="normal">1429</span>
+<span class="normal">1430</span>
+<span class="normal">1431</span>
+<span class="normal">1432</span>
+<span class="normal">1433</span>
+<span class="normal">1434</span>
+<span class="normal">1435</span>
+<span class="normal">1436</span>
+<span class="normal">1437</span>
+<span class="normal">1438</span>
+<span class="normal">1439</span>
+<span class="normal">1440</span>
+<span class="normal">1441</span>
+<span class="normal">1442</span>
+<span class="normal">1443</span>
+<span class="normal">1444</span>
+<span class="normal">1445</span>
+<span class="normal">1446</span>
+<span class="normal">1447</span>
+<span class="normal">1448</span>
+<span class="normal">1449</span>
+<span class="normal">1450</span>
+<span class="normal">1451</span>
+<span class="normal">1452</span>
+<span class="normal">1453</span>
+<span class="normal">1454</span>
+<span class="normal">1455</span>
+<span class="normal">1456</span>
+<span class="normal">1457</span>
+<span class="normal">1458</span>
+<span class="normal">1459</span>
+<span class="normal">1460</span>
+<span class="normal">1461</span>
+<span class="normal">1462</span>
+<span class="normal">1463</span>
+<span class="normal">1464</span>
+<span class="normal">1465</span>
+<span class="normal">1466</span>
+<span class="normal">1467</span>
+<span class="normal">1468</span>
+<span class="normal">1469</span>
+<span class="normal">1470</span>
+<span class="normal">1471</span>
+<span class="normal">1472</span>
+<span class="normal">1473</span>
+<span class="normal">1474</span>
+<span class="normal">1475</span>
+<span class="normal">1476</span>
+<span class="normal">1477</span>
+<span class="normal">1478</span>
+<span class="normal">1479</span>
+<span class="normal">1480</span>
+<span class="normal">1481</span>
+<span class="normal">1482</span>
+<span class="normal">1483</span>
+<span class="normal">1484</span>
+<span class="normal">1485</span>
+<span class="normal">1486</span>
+<span class="normal">1487</span>
+<span class="normal">1488</span>
+<span class="normal">1489</span>
+<span class="normal">1490</span>
+<span class="normal">1491</span>
+<span class="normal">1492</span>
+<span class="normal">1493</span>
+<span class="normal">1494</span>
+<span class="normal">1495</span>
+<span class="normal">1496</span>
+<span class="normal">1497</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">extend_scalar</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">sources</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -11316,98 +11947,7 @@ from the centre to an interior vertex is the source vector again:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1502</span>
-<span class="normal">1503</span>
-<span class="normal">1504</span>
-<span class="normal">1505</span>
-<span class="normal">1506</span>
-<span class="normal">1507</span>
-<span class="normal">1508</span>
-<span class="normal">1509</span>
-<span class="normal">1510</span>
-<span class="normal">1511</span>
-<span class="normal">1512</span>
-<span class="normal">1513</span>
-<span class="normal">1514</span>
-<span class="normal">1515</span>
-<span class="normal">1516</span>
-<span class="normal">1517</span>
-<span class="normal">1518</span>
-<span class="normal">1519</span>
-<span class="normal">1520</span>
-<span class="normal">1521</span>
-<span class="normal">1522</span>
-<span class="normal">1523</span>
-<span class="normal">1524</span>
-<span class="normal">1525</span>
-<span class="normal">1526</span>
-<span class="normal">1527</span>
-<span class="normal">1528</span>
-<span class="normal">1529</span>
-<span class="normal">1530</span>
-<span class="normal">1531</span>
-<span class="normal">1532</span>
-<span class="normal">1533</span>
-<span class="normal">1534</span>
-<span class="normal">1535</span>
-<span class="normal">1536</span>
-<span class="normal">1537</span>
-<span class="normal">1538</span>
-<span class="normal">1539</span>
-<span class="normal">1540</span>
-<span class="normal">1541</span>
-<span class="normal">1542</span>
-<span class="normal">1543</span>
-<span class="normal">1544</span>
-<span class="normal">1545</span>
-<span class="normal">1546</span>
-<span class="normal">1547</span>
-<span class="normal">1548</span>
-<span class="normal">1549</span>
-<span class="normal">1550</span>
-<span class="normal">1551</span>
-<span class="normal">1552</span>
-<span class="normal">1553</span>
-<span class="normal">1554</span>
-<span class="normal">1555</span>
-<span class="normal">1556</span>
-<span class="normal">1557</span>
-<span class="normal">1558</span>
-<span class="normal">1559</span>
-<span class="normal">1560</span>
-<span class="normal">1561</span>
-<span class="normal">1562</span>
-<span class="normal">1563</span>
-<span class="normal">1564</span>
-<span class="normal">1565</span>
-<span class="normal">1566</span>
-<span class="normal">1567</span>
-<span class="normal">1568</span>
-<span class="normal">1569</span>
-<span class="normal">1570</span>
-<span class="normal">1571</span>
-<span class="normal">1572</span>
-<span class="normal">1573</span>
-<span class="normal">1574</span>
-<span class="normal">1575</span>
-<span class="normal">1576</span>
-<span class="normal">1577</span>
-<span class="normal">1578</span>
-<span class="normal">1579</span>
-<span class="normal">1580</span>
-<span class="normal">1581</span>
-<span class="normal">1582</span>
-<span class="normal">1583</span>
-<span class="normal">1584</span>
-<span class="normal">1585</span>
-<span class="normal">1586</span>
-<span class="normal">1587</span>
-<span class="normal">1588</span>
-<span class="normal">1589</span>
-<span class="normal">1590</span>
-<span class="normal">1591</span>
-<span class="normal">1592</span>
-<span class="normal">1593</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1593</span>
 <span class="normal">1594</span>
 <span class="normal">1595</span>
 <span class="normal">1596</span>
@@ -11442,7 +11982,98 @@ from the centre to an interior vertex is the source vector again:</p>
 <span class="normal">1625</span>
 <span class="normal">1626</span>
 <span class="normal">1627</span>
-<span class="normal">1628</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transport_tangent_vectors</span><span class="p">(</span>
+<span class="normal">1628</span>
+<span class="normal">1629</span>
+<span class="normal">1630</span>
+<span class="normal">1631</span>
+<span class="normal">1632</span>
+<span class="normal">1633</span>
+<span class="normal">1634</span>
+<span class="normal">1635</span>
+<span class="normal">1636</span>
+<span class="normal">1637</span>
+<span class="normal">1638</span>
+<span class="normal">1639</span>
+<span class="normal">1640</span>
+<span class="normal">1641</span>
+<span class="normal">1642</span>
+<span class="normal">1643</span>
+<span class="normal">1644</span>
+<span class="normal">1645</span>
+<span class="normal">1646</span>
+<span class="normal">1647</span>
+<span class="normal">1648</span>
+<span class="normal">1649</span>
+<span class="normal">1650</span>
+<span class="normal">1651</span>
+<span class="normal">1652</span>
+<span class="normal">1653</span>
+<span class="normal">1654</span>
+<span class="normal">1655</span>
+<span class="normal">1656</span>
+<span class="normal">1657</span>
+<span class="normal">1658</span>
+<span class="normal">1659</span>
+<span class="normal">1660</span>
+<span class="normal">1661</span>
+<span class="normal">1662</span>
+<span class="normal">1663</span>
+<span class="normal">1664</span>
+<span class="normal">1665</span>
+<span class="normal">1666</span>
+<span class="normal">1667</span>
+<span class="normal">1668</span>
+<span class="normal">1669</span>
+<span class="normal">1670</span>
+<span class="normal">1671</span>
+<span class="normal">1672</span>
+<span class="normal">1673</span>
+<span class="normal">1674</span>
+<span class="normal">1675</span>
+<span class="normal">1676</span>
+<span class="normal">1677</span>
+<span class="normal">1678</span>
+<span class="normal">1679</span>
+<span class="normal">1680</span>
+<span class="normal">1681</span>
+<span class="normal">1682</span>
+<span class="normal">1683</span>
+<span class="normal">1684</span>
+<span class="normal">1685</span>
+<span class="normal">1686</span>
+<span class="normal">1687</span>
+<span class="normal">1688</span>
+<span class="normal">1689</span>
+<span class="normal">1690</span>
+<span class="normal">1691</span>
+<span class="normal">1692</span>
+<span class="normal">1693</span>
+<span class="normal">1694</span>
+<span class="normal">1695</span>
+<span class="normal">1696</span>
+<span class="normal">1697</span>
+<span class="normal">1698</span>
+<span class="normal">1699</span>
+<span class="normal">1700</span>
+<span class="normal">1701</span>
+<span class="normal">1702</span>
+<span class="normal">1703</span>
+<span class="normal">1704</span>
+<span class="normal">1705</span>
+<span class="normal">1706</span>
+<span class="normal">1707</span>
+<span class="normal">1708</span>
+<span class="normal">1709</span>
+<span class="normal">1710</span>
+<span class="normal">1711</span>
+<span class="normal">1712</span>
+<span class="normal">1713</span>
+<span class="normal">1714</span>
+<span class="normal">1715</span>
+<span class="normal">1716</span>
+<span class="normal">1717</span>
+<span class="normal">1718</span>
+<span class="normal">1719</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transport_tangent_vectors</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">sources</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -11614,7 +12245,8 @@ distance to <code>v</code>, and whose direction is the initial direction of the 
 <a class="autorefs autorefs-internal" title="trace_from_vertex" href="../geodesic_walk/#ordito.geodesic_walk.trace_from_vertex"><code>trace_from_vertex</code></a>
 computes, and the standard way to lay out a local coordinate patch around a point.</p>
 <p>Assembled from two fields that are each cheap: the distance to the source
-(<a class="autorefs autorefs-internal" title="heat_geodesic" href="./#ordito.heat.heat_geodesic"><code>heat_geodesic</code></a>) gives the radius, and the source's
+(<a class="autorefs autorefs-internal" title="heat_geodesic" href="./#ordito.heat.heat_geodesic"><code>heat_geodesic</code></a> with <code>t</code> the squared unique-edge mean, the
+vector heat method's own) gives the radius, and the source's
 reference direction parallel-transported outwards gives the angle — at any vertex the angle
 between that transported direction and the outward radial direction is exactly the angle at
 which the connecting geodesic left the source, because transport along that geodesic preserves
@@ -11825,97 +12457,98 @@ in the centre's tangent frame:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1704</span>
-<span class="normal">1705</span>
-<span class="normal">1706</span>
-<span class="normal">1707</span>
-<span class="normal">1708</span>
-<span class="normal">1709</span>
-<span class="normal">1710</span>
-<span class="normal">1711</span>
-<span class="normal">1712</span>
-<span class="normal">1713</span>
-<span class="normal">1714</span>
-<span class="normal">1715</span>
-<span class="normal">1716</span>
-<span class="normal">1717</span>
-<span class="normal">1718</span>
-<span class="normal">1719</span>
-<span class="normal">1720</span>
-<span class="normal">1721</span>
-<span class="normal">1722</span>
-<span class="normal">1723</span>
-<span class="normal">1724</span>
-<span class="normal">1725</span>
-<span class="normal">1726</span>
-<span class="normal">1727</span>
-<span class="normal">1728</span>
-<span class="normal">1729</span>
-<span class="normal">1730</span>
-<span class="normal">1731</span>
-<span class="normal">1732</span>
-<span class="normal">1733</span>
-<span class="normal">1734</span>
-<span class="normal">1735</span>
-<span class="normal">1736</span>
-<span class="normal">1737</span>
-<span class="normal">1738</span>
-<span class="normal">1739</span>
-<span class="normal">1740</span>
-<span class="normal">1741</span>
-<span class="normal">1742</span>
-<span class="normal">1743</span>
-<span class="normal">1744</span>
-<span class="normal">1745</span>
-<span class="normal">1746</span>
-<span class="normal">1747</span>
-<span class="normal">1748</span>
-<span class="normal">1749</span>
-<span class="normal">1750</span>
-<span class="normal">1751</span>
-<span class="normal">1752</span>
-<span class="normal">1753</span>
-<span class="normal">1754</span>
-<span class="normal">1755</span>
-<span class="normal">1756</span>
-<span class="normal">1757</span>
-<span class="normal">1758</span>
-<span class="normal">1759</span>
-<span class="normal">1760</span>
-<span class="normal">1761</span>
-<span class="normal">1762</span>
-<span class="normal">1763</span>
-<span class="normal">1764</span>
-<span class="normal">1765</span>
-<span class="normal">1766</span>
-<span class="normal">1767</span>
-<span class="normal">1768</span>
-<span class="normal">1769</span>
-<span class="normal">1770</span>
-<span class="normal">1771</span>
-<span class="normal">1772</span>
-<span class="normal">1773</span>
-<span class="normal">1774</span>
-<span class="normal">1775</span>
-<span class="normal">1776</span>
-<span class="normal">1777</span>
-<span class="normal">1778</span>
-<span class="normal">1779</span>
-<span class="normal">1780</span>
-<span class="normal">1781</span>
-<span class="normal">1782</span>
-<span class="normal">1783</span>
-<span class="normal">1784</span>
-<span class="normal">1785</span>
-<span class="normal">1786</span>
-<span class="normal">1787</span>
-<span class="normal">1788</span>
-<span class="normal">1789</span>
-<span class="normal">1790</span>
-<span class="normal">1791</span>
-<span class="normal">1792</span>
-<span class="normal">1793</span>
-<span class="normal">1794</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">log_map</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1795</span>
+<span class="normal">1796</span>
+<span class="normal">1797</span>
+<span class="normal">1798</span>
+<span class="normal">1799</span>
+<span class="normal">1800</span>
+<span class="normal">1801</span>
+<span class="normal">1802</span>
+<span class="normal">1803</span>
+<span class="normal">1804</span>
+<span class="normal">1805</span>
+<span class="normal">1806</span>
+<span class="normal">1807</span>
+<span class="normal">1808</span>
+<span class="normal">1809</span>
+<span class="normal">1810</span>
+<span class="normal">1811</span>
+<span class="normal">1812</span>
+<span class="normal">1813</span>
+<span class="normal">1814</span>
+<span class="normal">1815</span>
+<span class="normal">1816</span>
+<span class="normal">1817</span>
+<span class="normal">1818</span>
+<span class="normal">1819</span>
+<span class="normal">1820</span>
+<span class="normal">1821</span>
+<span class="normal">1822</span>
+<span class="normal">1823</span>
+<span class="normal">1824</span>
+<span class="normal">1825</span>
+<span class="normal">1826</span>
+<span class="normal">1827</span>
+<span class="normal">1828</span>
+<span class="normal">1829</span>
+<span class="normal">1830</span>
+<span class="normal">1831</span>
+<span class="normal">1832</span>
+<span class="normal">1833</span>
+<span class="normal">1834</span>
+<span class="normal">1835</span>
+<span class="normal">1836</span>
+<span class="normal">1837</span>
+<span class="normal">1838</span>
+<span class="normal">1839</span>
+<span class="normal">1840</span>
+<span class="normal">1841</span>
+<span class="normal">1842</span>
+<span class="normal">1843</span>
+<span class="normal">1844</span>
+<span class="normal">1845</span>
+<span class="normal">1846</span>
+<span class="normal">1847</span>
+<span class="normal">1848</span>
+<span class="normal">1849</span>
+<span class="normal">1850</span>
+<span class="normal">1851</span>
+<span class="normal">1852</span>
+<span class="normal">1853</span>
+<span class="normal">1854</span>
+<span class="normal">1855</span>
+<span class="normal">1856</span>
+<span class="normal">1857</span>
+<span class="normal">1858</span>
+<span class="normal">1859</span>
+<span class="normal">1860</span>
+<span class="normal">1861</span>
+<span class="normal">1862</span>
+<span class="normal">1863</span>
+<span class="normal">1864</span>
+<span class="normal">1865</span>
+<span class="normal">1866</span>
+<span class="normal">1867</span>
+<span class="normal">1868</span>
+<span class="normal">1869</span>
+<span class="normal">1870</span>
+<span class="normal">1871</span>
+<span class="normal">1872</span>
+<span class="normal">1873</span>
+<span class="normal">1874</span>
+<span class="normal">1875</span>
+<span class="normal">1876</span>
+<span class="normal">1877</span>
+<span class="normal">1878</span>
+<span class="normal">1879</span>
+<span class="normal">1880</span>
+<span class="normal">1881</span>
+<span class="normal">1882</span>
+<span class="normal">1883</span>
+<span class="normal">1884</span>
+<span class="normal">1885</span>
+<span class="normal">1886</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">log_map</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">source</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -11933,7 +12566,8 @@ in the centre's tangent frame:</p>
 <span class="sd">    computes, and the standard way to lay out a local coordinate patch around a point.</span>
 
 <span class="sd">    Assembled from two fields that are each cheap: the distance to the source</span>
-<span class="sd">    ([`heat_geodesic`][ordito.heat.heat_geodesic]) gives the radius, and the source's</span>
+<span class="sd">    ([`heat_geodesic`][ordito.heat.heat_geodesic] with ``t`` the squared unique-edge mean, the</span>
+<span class="sd">    vector heat method's own) gives the radius, and the source's</span>
 <span class="sd">    reference direction parallel-transported outwards gives the angle — at any vertex the angle</span>
 <span class="sd">    between that transported direction and the outward radial direction is exactly the angle at</span>
 <span class="sd">    which the connecting geodesic left the source, because transport along that geodesic preserves</span>
@@ -12178,60 +12812,60 @@ vector either way.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2019</span>
-<span class="normal">2020</span>
-<span class="normal">2021</span>
-<span class="normal">2022</span>
-<span class="normal">2023</span>
-<span class="normal">2024</span>
-<span class="normal">2025</span>
-<span class="normal">2026</span>
-<span class="normal">2027</span>
-<span class="normal">2028</span>
-<span class="normal">2029</span>
-<span class="normal">2030</span>
-<span class="normal">2031</span>
-<span class="normal">2032</span>
-<span class="normal">2033</span>
-<span class="normal">2034</span>
-<span class="normal">2035</span>
-<span class="normal">2036</span>
-<span class="normal">2037</span>
-<span class="normal">2038</span>
-<span class="normal">2039</span>
-<span class="normal">2040</span>
-<span class="normal">2041</span>
-<span class="normal">2042</span>
-<span class="normal">2043</span>
-<span class="normal">2044</span>
-<span class="normal">2045</span>
-<span class="normal">2046</span>
-<span class="normal">2047</span>
-<span class="normal">2048</span>
-<span class="normal">2049</span>
-<span class="normal">2050</span>
-<span class="normal">2051</span>
-<span class="normal">2052</span>
-<span class="normal">2053</span>
-<span class="normal">2054</span>
-<span class="normal">2055</span>
-<span class="normal">2056</span>
-<span class="normal">2057</span>
-<span class="normal">2058</span>
-<span class="normal">2059</span>
-<span class="normal">2060</span>
-<span class="normal">2061</span>
-<span class="normal">2062</span>
-<span class="normal">2063</span>
-<span class="normal">2064</span>
-<span class="normal">2065</span>
-<span class="normal">2066</span>
-<span class="normal">2067</span>
-<span class="normal">2068</span>
-<span class="normal">2069</span>
-<span class="normal">2070</span>
-<span class="normal">2071</span>
-<span class="normal">2072</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">tangent_to_world</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2111</span>
+<span class="normal">2112</span>
+<span class="normal">2113</span>
+<span class="normal">2114</span>
+<span class="normal">2115</span>
+<span class="normal">2116</span>
+<span class="normal">2117</span>
+<span class="normal">2118</span>
+<span class="normal">2119</span>
+<span class="normal">2120</span>
+<span class="normal">2121</span>
+<span class="normal">2122</span>
+<span class="normal">2123</span>
+<span class="normal">2124</span>
+<span class="normal">2125</span>
+<span class="normal">2126</span>
+<span class="normal">2127</span>
+<span class="normal">2128</span>
+<span class="normal">2129</span>
+<span class="normal">2130</span>
+<span class="normal">2131</span>
+<span class="normal">2132</span>
+<span class="normal">2133</span>
+<span class="normal">2134</span>
+<span class="normal">2135</span>
+<span class="normal">2136</span>
+<span class="normal">2137</span>
+<span class="normal">2138</span>
+<span class="normal">2139</span>
+<span class="normal">2140</span>
+<span class="normal">2141</span>
+<span class="normal">2142</span>
+<span class="normal">2143</span>
+<span class="normal">2144</span>
+<span class="normal">2145</span>
+<span class="normal">2146</span>
+<span class="normal">2147</span>
+<span class="normal">2148</span>
+<span class="normal">2149</span>
+<span class="normal">2150</span>
+<span class="normal">2151</span>
+<span class="normal">2152</span>
+<span class="normal">2153</span>
+<span class="normal">2154</span>
+<span class="normal">2155</span>
+<span class="normal">2156</span>
+<span class="normal">2157</span>
+<span class="normal">2158</span>
+<span class="normal">2159</span>
+<span class="normal">2160</span>
+<span class="normal">2161</span>
+<span class="normal">2162</span>
+<span class="normal">2163</span>
+<span class="normal">2164</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">tangent_to_world</span><span class="p">(</span>
     <span class="n">tangent</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">basis_x</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">basis_y</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -12559,99 +13193,7 @@ would have kept.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/heat.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2087</span>
-<span class="normal">2088</span>
-<span class="normal">2089</span>
-<span class="normal">2090</span>
-<span class="normal">2091</span>
-<span class="normal">2092</span>
-<span class="normal">2093</span>
-<span class="normal">2094</span>
-<span class="normal">2095</span>
-<span class="normal">2096</span>
-<span class="normal">2097</span>
-<span class="normal">2098</span>
-<span class="normal">2099</span>
-<span class="normal">2100</span>
-<span class="normal">2101</span>
-<span class="normal">2102</span>
-<span class="normal">2103</span>
-<span class="normal">2104</span>
-<span class="normal">2105</span>
-<span class="normal">2106</span>
-<span class="normal">2107</span>
-<span class="normal">2108</span>
-<span class="normal">2109</span>
-<span class="normal">2110</span>
-<span class="normal">2111</span>
-<span class="normal">2112</span>
-<span class="normal">2113</span>
-<span class="normal">2114</span>
-<span class="normal">2115</span>
-<span class="normal">2116</span>
-<span class="normal">2117</span>
-<span class="normal">2118</span>
-<span class="normal">2119</span>
-<span class="normal">2120</span>
-<span class="normal">2121</span>
-<span class="normal">2122</span>
-<span class="normal">2123</span>
-<span class="normal">2124</span>
-<span class="normal">2125</span>
-<span class="normal">2126</span>
-<span class="normal">2127</span>
-<span class="normal">2128</span>
-<span class="normal">2129</span>
-<span class="normal">2130</span>
-<span class="normal">2131</span>
-<span class="normal">2132</span>
-<span class="normal">2133</span>
-<span class="normal">2134</span>
-<span class="normal">2135</span>
-<span class="normal">2136</span>
-<span class="normal">2137</span>
-<span class="normal">2138</span>
-<span class="normal">2139</span>
-<span class="normal">2140</span>
-<span class="normal">2141</span>
-<span class="normal">2142</span>
-<span class="normal">2143</span>
-<span class="normal">2144</span>
-<span class="normal">2145</span>
-<span class="normal">2146</span>
-<span class="normal">2147</span>
-<span class="normal">2148</span>
-<span class="normal">2149</span>
-<span class="normal">2150</span>
-<span class="normal">2151</span>
-<span class="normal">2152</span>
-<span class="normal">2153</span>
-<span class="normal">2154</span>
-<span class="normal">2155</span>
-<span class="normal">2156</span>
-<span class="normal">2157</span>
-<span class="normal">2158</span>
-<span class="normal">2159</span>
-<span class="normal">2160</span>
-<span class="normal">2161</span>
-<span class="normal">2162</span>
-<span class="normal">2163</span>
-<span class="normal">2164</span>
-<span class="normal">2165</span>
-<span class="normal">2166</span>
-<span class="normal">2167</span>
-<span class="normal">2168</span>
-<span class="normal">2169</span>
-<span class="normal">2170</span>
-<span class="normal">2171</span>
-<span class="normal">2172</span>
-<span class="normal">2173</span>
-<span class="normal">2174</span>
-<span class="normal">2175</span>
-<span class="normal">2176</span>
-<span class="normal">2177</span>
-<span class="normal">2178</span>
-<span class="normal">2179</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2179</span>
 <span class="normal">2180</span>
 <span class="normal">2181</span>
 <span class="normal">2182</span>
@@ -12661,7 +13203,99 @@ would have kept.</p>
 <span class="normal">2186</span>
 <span class="normal">2187</span>
 <span class="normal">2188</span>
-<span class="normal">2189</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_tangent_field</span><span class="p">(</span>
+<span class="normal">2189</span>
+<span class="normal">2190</span>
+<span class="normal">2191</span>
+<span class="normal">2192</span>
+<span class="normal">2193</span>
+<span class="normal">2194</span>
+<span class="normal">2195</span>
+<span class="normal">2196</span>
+<span class="normal">2197</span>
+<span class="normal">2198</span>
+<span class="normal">2199</span>
+<span class="normal">2200</span>
+<span class="normal">2201</span>
+<span class="normal">2202</span>
+<span class="normal">2203</span>
+<span class="normal">2204</span>
+<span class="normal">2205</span>
+<span class="normal">2206</span>
+<span class="normal">2207</span>
+<span class="normal">2208</span>
+<span class="normal">2209</span>
+<span class="normal">2210</span>
+<span class="normal">2211</span>
+<span class="normal">2212</span>
+<span class="normal">2213</span>
+<span class="normal">2214</span>
+<span class="normal">2215</span>
+<span class="normal">2216</span>
+<span class="normal">2217</span>
+<span class="normal">2218</span>
+<span class="normal">2219</span>
+<span class="normal">2220</span>
+<span class="normal">2221</span>
+<span class="normal">2222</span>
+<span class="normal">2223</span>
+<span class="normal">2224</span>
+<span class="normal">2225</span>
+<span class="normal">2226</span>
+<span class="normal">2227</span>
+<span class="normal">2228</span>
+<span class="normal">2229</span>
+<span class="normal">2230</span>
+<span class="normal">2231</span>
+<span class="normal">2232</span>
+<span class="normal">2233</span>
+<span class="normal">2234</span>
+<span class="normal">2235</span>
+<span class="normal">2236</span>
+<span class="normal">2237</span>
+<span class="normal">2238</span>
+<span class="normal">2239</span>
+<span class="normal">2240</span>
+<span class="normal">2241</span>
+<span class="normal">2242</span>
+<span class="normal">2243</span>
+<span class="normal">2244</span>
+<span class="normal">2245</span>
+<span class="normal">2246</span>
+<span class="normal">2247</span>
+<span class="normal">2248</span>
+<span class="normal">2249</span>
+<span class="normal">2250</span>
+<span class="normal">2251</span>
+<span class="normal">2252</span>
+<span class="normal">2253</span>
+<span class="normal">2254</span>
+<span class="normal">2255</span>
+<span class="normal">2256</span>
+<span class="normal">2257</span>
+<span class="normal">2258</span>
+<span class="normal">2259</span>
+<span class="normal">2260</span>
+<span class="normal">2261</span>
+<span class="normal">2262</span>
+<span class="normal">2263</span>
+<span class="normal">2264</span>
+<span class="normal">2265</span>
+<span class="normal">2266</span>
+<span class="normal">2267</span>
+<span class="normal">2268</span>
+<span class="normal">2269</span>
+<span class="normal">2270</span>
+<span class="normal">2271</span>
+<span class="normal">2272</span>
+<span class="normal">2273</span>
+<span class="normal">2274</span>
+<span class="normal">2275</span>
+<span class="normal">2276</span>
+<span class="normal">2277</span>
+<span class="normal">2278</span>
+<span class="normal">2279</span>
+<span class="normal">2280</span>
+<span class="normal">2281</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">diffuse_tangent_field</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">odt</span><span class="o">.</span><span class="n">SparseMatrix</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">source</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2d</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>

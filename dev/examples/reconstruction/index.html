@@ -3816,6 +3816,8 @@
       
         
       
+        
+      
     
     
     
@@ -4091,6 +4093,33 @@
     
   
   validation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/equality/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  equality
 
     
   </span>
@@ -6255,7 +6284,7 @@ ball falls through, while the same number of points spread evenly by
 
 <span class="k">def</span><span class="w"> </span><span class="nf">normals_of</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
     <span class="n">neighbours</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">query_nearest</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">16</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">estimate_normals</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">neighbours</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">estimate_normals</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">neighbours</span><span class="p">,</span> <span class="n">orientation</span><span class="o">=</span><span class="s2">"centroid"</span><span class="p">)</span>
 
 <span class="n">poisson</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">reconstruction</span><span class="o">.</span><span class="n">screened_poisson</span><span class="p">(</span><span class="n">random_points</span><span class="p">,</span> <span class="n">normals_of</span><span class="p">(</span><span class="n">random_points</span><span class="p">),</span> <span class="n">depth</span><span class="o">=</span><span class="mi">7</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"screened Poisson: </span><span class="si">{</span><span class="n">poisson</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="w"> </span><span class="o">//</span><span class="w"> </span><span class="mi">3</span><span class="si">}</span><span class="s2"> faces"</span><span class="p">)</span>
@@ -6273,9 +6302,11 @@ ball pivoting, random sample of 20000: 1238 holes
 ball pivoting, even sample of 19918: 26 holes
 </code></pre></div>
 <p><a class="glightbox" data-type="image" href="../../assets/examples/rr7.webp"><img alt="From a bare scan: normals, then Poisson or ball pivoting" src="../../assets/examples/rr7.webp" /></a></p>
-<p><strong>Orienting normals on a real scan.</strong> A plane fit fixes each normal's line, not its sign. By
-default every normal points away from the cloud's centroid, which is right for a closed,
-roughly convex object and wrong in deep concavities (<a href="../points/#pc3">PC3</a> shows where).
+<p><strong>Orienting normals on a real scan.</strong> A plane fit fixes each normal's line, not its sign. The
+default sign only agrees between neighbours, so a reconstruction asks for
+<code>orientation="centroid"</code>: every normal points away from the cloud's centroid, which is right
+for a closed, roughly convex object and wrong in deep concavities (<a href="../points/#pc3">PC3</a> shows
+where).
 <code>camera_location=wp.vec3(...)</code> points every normal toward the scanner, the right choice for a
 single-view scan; <code>orient_reference=wp.vec3(...)</code> points them along one direction (<code>+z</code> for
 terrain). <code>k=16</code> neighbours is a common default: raise it for noisy data, lower it where the

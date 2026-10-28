@@ -3697,6 +3697,8 @@
       
         
       
+        
+      
     
     
     
@@ -3975,6 +3977,33 @@
     
   
   validation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../equality/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  equality
 
     
   </span>
@@ -6024,9 +6053,10 @@ around the vertex.</p>
 <li><a class="autorefs autorefs-internal" title="halfedge_transport_angles" href="./#ordito.tangent_space.halfedge_transport_angles"><code>halfedge_transport_angles</code></a> — the rotation
    that carries a tangent vector across an edge, the off-diagonal phase of the connection Laplacian.</li>
 </ol>
-<p>Frames are only defined up to a rotation within the tangent plane, so they are <em>not</em> comparable
-across libraries element-wise; the transport angles inherit that gauge freedom and are comparable
-only through gauge-invariant combinations such as the holonomy around a face.</p>
+<p>Frames are only defined up to a rotation within the tangent plane (the <em>gauge</em>), and every tangent
+quantity inherits that choice. ordito takes geometry-central's: polar angle <code>0</code> at the vertex's
+reference halfedge, with <code>basis_x</code> fitted to the whole fan, so frames, transport angles and
+every 2D tangent vector built on them agree with potpourri3d's element for element.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
@@ -6126,15 +6156,19 @@ only through gauge-invariant combinations such as the holonomy around a face.</p
         <p>Orthonormal tangent frame at every vertex as <code>(basis_x, basis_y, normal)</code>.</p>
 <p><code>normal</code> is the angle-weighted vertex normal
 (<a class="autorefs autorefs-internal" title="vertex_normals" href="../vertices/#ordito.vertices.vertex_normals"><code>vertex_normals</code></a> at <code>weighting="angle"</code>);
-<code>basis_x</code> is the first halfedge of the vertex's counter-clockwise ring, projected into the
-tangent plane and normalized; <code>basis_y = normal x basis_x</code> completes a right-handed frame. A
-tangent vector <code>(a, b)</code> in these coordinates is <code>a * basis_x + b * basis_y</code> in world space.</p>
-<p>Because <code>basis_x</code> follows the ring's first halfedge, it is the direction that
-<a class="autorefs autorefs-internal" title="halfedge_tangent_angles" href="./#ordito.tangent_space.halfedge_tangent_angles"><code>halfedge_tangent_angles</code></a> assigns polar angle
-<code>0</code>: the two functions describe one coordinate system, not two. Which halfedge that is depends
-on the face ordering, so a frame agrees with another library's only up to a rotation about the
-normal. A vertex with no incident faces has no tangent plane; it gets the fixed frame <code>((1, 0,
-0), (0, 1, 0))</code> so that downstream normalizations see unit vectors rather than NaN.</p>
+<code>basis_x</code> is where <a class="autorefs autorefs-internal" title="halfedge_tangent_angles" href="./#ordito.tangent_space.halfedge_tangent_angles"><code>halfedge_tangent_angles</code></a>
+puts polar angle <code>0</code>, fitted to the whole fan: each incident edge, projected into the tangent
+plane and rotated back by its polar angle, summed and normalized (a boundary vertex adds its
+closing rim edge at half a turn). <code>basis_y = normal x basis_x</code> completes a right-handed frame.
+A tangent vector <code>(a, b)</code> in these coordinates is <code>a * basis_x + b * basis_y</code> in world
+space, and the two functions describe one coordinate system, not two.</p>
+<p>The convention is geometry-central's, so the frame equals
+<code>potpourri3d.MeshVectorHeatSolver.get_tangent_frames</code>' rather than a rotation of it. Polar
+angles start at the vertex's reference halfedge: its outgoing boundary halfedge on a rim, and
+otherwise the outgoing halfedge of its highest-index face, so the frame depends on the face
+ordering. <code>basis_x</code> lies along that halfedge only where the fan is flat. A vertex with no
+incident faces has no tangent plane; it gets the fixed frame <code>((1, 0, 0), (0, 1, 0))</code> so that
+downstream normalizations see unit vectors rather than NaN.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -6301,8 +6335,7 @@ here.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/tangent_space.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 38</span>
-<span class="normal"> 39</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 39</span>
 <span class="normal"> 40</span>
 <span class="normal"> 41</span>
 <span class="normal"> 42</span>
@@ -6414,7 +6447,21 @@ here.</p>
 <span class="normal">148</span>
 <span class="normal">149</span>
 <span class="normal">150</span>
-<span class="normal">151</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_tangent_frames</span><span class="p">(</span>
+<span class="normal">151</span>
+<span class="normal">152</span>
+<span class="normal">153</span>
+<span class="normal">154</span>
+<span class="normal">155</span>
+<span class="normal">156</span>
+<span class="normal">157</span>
+<span class="normal">158</span>
+<span class="normal">159</span>
+<span class="normal">160</span>
+<span class="normal">161</span>
+<span class="normal">162</span>
+<span class="normal">163</span>
+<span class="normal">164</span>
+<span class="normal">165</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_tangent_frames</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -6425,16 +6472,20 @@ here.</p>
 
 <span class="sd">    ``normal`` is the angle-weighted vertex normal</span>
 <span class="sd">    ([`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="angle"``);</span>
-<span class="sd">    ``basis_x`` is the first halfedge of the vertex's counter-clockwise ring, projected into the</span>
-<span class="sd">    tangent plane and normalized; ``basis_y = normal x basis_x`` completes a right-handed frame. A</span>
-<span class="sd">    tangent vector ``(a, b)`` in these coordinates is ``a * basis_x + b * basis_y`` in world space.</span>
+<span class="sd">    ``basis_x`` is where [`halfedge_tangent_angles`][ordito.tangent_space.halfedge_tangent_angles]</span>
+<span class="sd">    puts polar angle ``0``, fitted to the whole fan: each incident edge, projected into the tangent</span>
+<span class="sd">    plane and rotated back by its polar angle, summed and normalized (a boundary vertex adds its</span>
+<span class="sd">    closing rim edge at half a turn). ``basis_y = normal x basis_x`` completes a right-handed frame.</span>
+<span class="sd">    A tangent vector ``(a, b)`` in these coordinates is ``a * basis_x + b * basis_y`` in world</span>
+<span class="sd">    space, and the two functions describe one coordinate system, not two.</span>
 
-<span class="sd">    Because ``basis_x`` follows the ring's first halfedge, it is the direction that</span>
-<span class="sd">    [`halfedge_tangent_angles`][ordito.tangent_space.halfedge_tangent_angles] assigns polar angle</span>
-<span class="sd">    ``0``: the two functions describe one coordinate system, not two. Which halfedge that is depends</span>
-<span class="sd">    on the face ordering, so a frame agrees with another library's only up to a rotation about the</span>
-<span class="sd">    normal. A vertex with no incident faces has no tangent plane; it gets the fixed frame ``((1, 0,</span>
-<span class="sd">    0), (0, 1, 0))`` so that downstream normalizations see unit vectors rather than NaN.</span>
+<span class="sd">    The convention is geometry-central's, so the frame equals</span>
+<span class="sd">    ``potpourri3d.MeshVectorHeatSolver.get_tangent_frames``' rather than a rotation of it. Polar</span>
+<span class="sd">    angles start at the vertex's reference halfedge: its outgoing boundary halfedge on a rim, and</span>
+<span class="sd">    otherwise the outgoing halfedge of its highest-index face, so the frame depends on the face</span>
+<span class="sd">    ordering. ``basis_x`` lies along that halfedge only where the fan is flat. A vertex with no</span>
+<span class="sd">    incident faces has no tangent plane; it gets the fixed frame ``((1, 0, 0), (0, 1, 0))`` so that</span>
+<span class="sd">    downstream normalizations see unit vectors rather than NaN.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -6496,13 +6547,22 @@ here.</p>
 
     <span class="k">if</span> <span class="n">rings</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">rings</span> <span class="o">=</span> <span class="n">vertex_one_rings</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n</span><span class="p">)</span>
-    <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">rings</span>
+    <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">is_boundary</span> <span class="o">=</span> <span class="n">rings</span>
 
     <span class="k">if</span> <span class="n">normals</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">vertex_tangent_frames</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">n</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">normals</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">basis_x</span><span class="p">,</span> <span class="n">basis_y</span><span class="p">],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
+                <span class="n">vertices</span><span class="p">,</span>
+                <span class="n">faces</span><span class="p">,</span>
+                <span class="n">normals</span><span class="p">,</span>
+                <span class="n">ring_offsets</span><span class="p">,</span>
+                <span class="n">ring_halfedges</span><span class="p">,</span>
+                <span class="n">is_boundary</span><span class="p">,</span>
+                <span class="n">basis_x</span><span class="p">,</span>
+                <span class="n">basis_y</span><span class="p">,</span>
+            <span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="k">return</span> <span class="n">basis_x</span><span class="p">,</span> <span class="n">basis_y</span><span class="p">,</span> <span class="n">normals</span>
@@ -6523,7 +6583,7 @@ here.</p>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_tangent_space</span><span class="o">.</span><span class="n">vertex_tangent_frames_from_sums</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">normal_sums</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_halfedges</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">normal_sums</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">is_boundary</span><span class="p">],</span>
         <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">basis_x</span><span class="p">,</span> <span class="n">basis_y</span><span class="p">,</span> <span class="n">normals</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
@@ -6703,21 +6763,7 @@ compare all three vectors element-wise instead of through an invariant.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/tangent_space.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">154</span>
-<span class="normal">155</span>
-<span class="normal">156</span>
-<span class="normal">157</span>
-<span class="normal">158</span>
-<span class="normal">159</span>
-<span class="normal">160</span>
-<span class="normal">161</span>
-<span class="normal">162</span>
-<span class="normal">163</span>
-<span class="normal">164</span>
-<span class="normal">165</span>
-<span class="normal">166</span>
-<span class="normal">167</span>
-<span class="normal">168</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">168</span>
 <span class="normal">169</span>
 <span class="normal">170</span>
 <span class="normal">171</span>
@@ -6789,7 +6835,21 @@ compare all three vectors element-wise instead of through an invariant.</p>
 <span class="normal">237</span>
 <span class="normal">238</span>
 <span class="normal">239</span>
-<span class="normal">240</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_tangent_frames</span><span class="p">(</span>
+<span class="normal">240</span>
+<span class="normal">241</span>
+<span class="normal">242</span>
+<span class="normal">243</span>
+<span class="normal">244</span>
+<span class="normal">245</span>
+<span class="normal">246</span>
+<span class="normal">247</span>
+<span class="normal">248</span>
+<span class="normal">249</span>
+<span class="normal">250</span>
+<span class="normal">251</span>
+<span class="normal">252</span>
+<span class="normal">253</span>
+<span class="normal">254</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_tangent_frames</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6902,12 +6962,14 @@ compare all three vectors element-wise instead of through an invariant.</p>
     <div class="doc doc-contents ">
 
         <p>Polar angle of every outgoing halfedge in its origin vertex's tangent plane.</p>
-<p>Walking a vertex's counter-clockwise ring, halfedge <code>k</code> sits at
+<p>Walking a vertex's counter-clockwise ring from its reference halfedge, halfedge <code>k</code> sits at
 <code>theta_k = s * sum(alpha_j for j &lt; k)</code> where <code>alpha_j</code> are the incident corner angles and
 <code>s = 2 * pi / Theta</code> scales the total angle <code>Theta</code> to a full turn — <code>s = pi / Theta</code> at a
-boundary vertex, whose fan covers a half-disk. The first halfedge of each ring therefore has
-angle <code>0</code>, aligning this coordinate system with <code>basis_x</code> from
-<a class="autorefs autorefs-internal" title="vertex_tangent_frames" href="./#ordito.tangent_space.vertex_tangent_frames"><code>vertex_tangent_frames</code></a>.</p>
+boundary vertex, whose fan covers a half-disk. The reference halfedge, at angle <code>0</code>, is the
+outgoing boundary halfedge of a rim vertex and otherwise the outgoing halfedge of the vertex's
+highest-index face: geometry-central's <code>vertex.halfedge()</code>, so these are its angles too. The
+coordinate system is the one
+<a class="autorefs autorefs-internal" title="vertex_tangent_frames" href="./#ordito.tangent_space.vertex_tangent_frames"><code>vertex_tangent_frames</code></a> embeds.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -7051,7 +7113,7 @@ angle <code>0</code>, aligning this coordinate system with <code>basis_x</code> 
 </details>
 
 <p><span class="doc-section-title">Examples:</span></p>
-    <p>Every vertex's first ring halfedge sits at angle <code>0</code>, so a closed mesh has one zero per
+    <p>Every vertex's reference halfedge sits at angle <code>0</code>, so a closed mesh has one zero per
 vertex, and every angle stays below a full turn:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
 
@@ -7072,21 +7134,7 @@ vertex, and every angle stays below a full turn:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/tangent_space.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">243</span>
-<span class="normal">244</span>
-<span class="normal">245</span>
-<span class="normal">246</span>
-<span class="normal">247</span>
-<span class="normal">248</span>
-<span class="normal">249</span>
-<span class="normal">250</span>
-<span class="normal">251</span>
-<span class="normal">252</span>
-<span class="normal">253</span>
-<span class="normal">254</span>
-<span class="normal">255</span>
-<span class="normal">256</span>
-<span class="normal">257</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">257</span>
 <span class="normal">258</span>
 <span class="normal">259</span>
 <span class="normal">260</span>
@@ -7160,7 +7208,23 @@ vertex, and every angle stays below a full turn:</p>
 <span class="normal">328</span>
 <span class="normal">329</span>
 <span class="normal">330</span>
-<span class="normal">331</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_tangent_angles</span><span class="p">(</span>
+<span class="normal">331</span>
+<span class="normal">332</span>
+<span class="normal">333</span>
+<span class="normal">334</span>
+<span class="normal">335</span>
+<span class="normal">336</span>
+<span class="normal">337</span>
+<span class="normal">338</span>
+<span class="normal">339</span>
+<span class="normal">340</span>
+<span class="normal">341</span>
+<span class="normal">342</span>
+<span class="normal">343</span>
+<span class="normal">344</span>
+<span class="normal">345</span>
+<span class="normal">346</span>
+<span class="normal">347</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_tangent_angles</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">face_angles</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7169,12 +7233,14 @@ vertex, and every angle stays below a full turn:</p>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Polar angle of every outgoing halfedge in its origin vertex's tangent plane.</span>
 
-<span class="sd">    Walking a vertex's counter-clockwise ring, halfedge ``k`` sits at</span>
+<span class="sd">    Walking a vertex's counter-clockwise ring from its reference halfedge, halfedge ``k`` sits at</span>
 <span class="sd">    ``theta_k = s * sum(alpha_j for j &lt; k)`` where ``alpha_j`` are the incident corner angles and</span>
 <span class="sd">    ``s = 2 * pi / Theta`` scales the total angle ``Theta`` to a full turn — ``s = pi / Theta`` at a</span>
-<span class="sd">    boundary vertex, whose fan covers a half-disk. The first halfedge of each ring therefore has</span>
-<span class="sd">    angle ``0``, aligning this coordinate system with ``basis_x`` from</span>
-<span class="sd">    [`vertex_tangent_frames`][ordito.tangent_space.vertex_tangent_frames].</span>
+<span class="sd">    boundary vertex, whose fan covers a half-disk. The reference halfedge, at angle ``0``, is the</span>
+<span class="sd">    outgoing boundary halfedge of a rim vertex and otherwise the outgoing halfedge of the vertex's</span>
+<span class="sd">    highest-index face: geometry-central's ``vertex.halfedge()``, so these are its angles too. The</span>
+<span class="sd">    coordinate system is the one</span>
+<span class="sd">    [`vertex_tangent_frames`][ordito.tangent_space.vertex_tangent_frames] embeds.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -7208,7 +7274,7 @@ vertex, and every angle stays below a full turn:</p>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
-<span class="sd">    Every vertex's first ring halfedge sits at angle ``0``, so a closed mesh has one zero per</span>
+<span class="sd">    Every vertex's reference halfedge sits at angle ``0``, so a closed mesh has one zero per</span>
 <span class="sd">    vertex, and every angle stays below a full turn:</span>
 
 <span class="sd">    ```python</span>
@@ -7459,23 +7525,7 @@ modulo a full turn:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/tangent_space.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">334</span>
-<span class="normal">335</span>
-<span class="normal">336</span>
-<span class="normal">337</span>
-<span class="normal">338</span>
-<span class="normal">339</span>
-<span class="normal">340</span>
-<span class="normal">341</span>
-<span class="normal">342</span>
-<span class="normal">343</span>
-<span class="normal">344</span>
-<span class="normal">345</span>
-<span class="normal">346</span>
-<span class="normal">347</span>
-<span class="normal">348</span>
-<span class="normal">349</span>
-<span class="normal">350</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">350</span>
 <span class="normal">351</span>
 <span class="normal">352</span>
 <span class="normal">353</span>
@@ -7562,7 +7612,23 @@ modulo a full turn:</p>
 <span class="normal">434</span>
 <span class="normal">435</span>
 <span class="normal">436</span>
-<span class="normal">437</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_transport_angles</span><span class="p">(</span>
+<span class="normal">437</span>
+<span class="normal">438</span>
+<span class="normal">439</span>
+<span class="normal">440</span>
+<span class="normal">441</span>
+<span class="normal">442</span>
+<span class="normal">443</span>
+<span class="normal">444</span>
+<span class="normal">445</span>
+<span class="normal">446</span>
+<span class="normal">447</span>
+<span class="normal">448</span>
+<span class="normal">449</span>
+<span class="normal">450</span>
+<span class="normal">451</span>
+<span class="normal">452</span>
+<span class="normal">453</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_transport_angles</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">twins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>

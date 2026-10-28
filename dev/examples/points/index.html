@@ -3838,6 +3838,8 @@
       
         
       
+        
+      
     
     
     
@@ -4113,6 +4115,33 @@
     
   
   validation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/equality/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  equality
 
     
   </span>
@@ -6143,9 +6172,12 @@ hard minimum spacing matters.</p>
 <p>A bare point cloud has no normals; <a class="autorefs autorefs-internal" title="estimate_normals" href="../../api/ordito/points/#ordito.points.estimate_normals"><code>estimate_normals</code></a> fits
 a plane to each point's neighbourhood (here its 16 nearest neighbours from
 <a class="autorefs autorefs-internal" title="query_nearest" href="../../api/ordito/neighbors/#ordito.neighbors.query_nearest"><code>query_nearest</code></a>) and takes the plane's normal. The sign is
-a convention, not a measurement: by default each normal is turned away from the cloud's
-centroid, which is right on most of the bunny and wrong where the surface folds back towards
-the centre (red, compared with the exact normals of the surface the cloud was sampled from).</p>
+a convention, not a measurement. By default it follows the neighbours (pytorch3d's rule: each
+normal points to the side its neighbourhood bulges toward), which agrees locally but not
+across the cloud; here <code>orientation="centroid"</code> turns each normal away from the cloud's
+centroid instead, which is right on most of the bunny and wrong where the surface folds back
+towards the centre (red, compared with the exact normals of the surface the cloud was sampled
+from).</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
 
 <span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
@@ -6153,7 +6185,7 @@ the centre (red, compared with the exact normals of the surface the cloud was sa
 
 <span class="n">points</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load_points</span><span class="p">(</span><span class="s2">"bunny_cloud"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
 <span class="n">neighbours</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">query_nearest</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">points</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">16</span><span class="p">)</span>
-<span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">estimate_normals</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">neighbours</span><span class="p">)</span>
+<span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">estimate_normals</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">neighbours</span><span class="p">,</span> <span class="n">orientation</span><span class="o">=</span><span class="s2">"centroid"</span><span class="p">)</span>
 
 <span class="c1"># Compare with the exact normals of the surface the cloud was sampled from.</span>
 <span class="n">cosine</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">normals</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span> <span class="o">*</span> <span class="n">data</span><span class="o">.</span><span class="n">cloud_normals</span><span class="p">(</span><span class="s2">"bunny_cloud"</span><span class="p">),</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>

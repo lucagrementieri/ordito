@@ -3695,6 +3695,8 @@
       
         
       
+        
+      
     
     
     
@@ -3973,6 +3975,33 @@
     
   
   validation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../equality/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  equality
 
     
   </span>
@@ -7131,7 +7160,7 @@ than about that radius, so a hole that small closes whatever <code>crit_hole_len
 
     <span class="n">oriented</span> <span class="o">=</span> <span class="n">normals</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
     <span class="k">if</span> <span class="n">normals</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">estimate_normals</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">neighbor_idx</span><span class="p">)</span>
+        <span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">estimate_normals</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">neighbor_idx</span><span class="p">,</span> <span class="n">orientation</span><span class="o">=</span><span class="s2">"centroid"</span><span class="p">)</span>
 
     <span class="c1"># Per-point local fan triangulation: point ``v``'s fan fills ``out_tris[v, :count]``. The fans,</span>
     <span class="c1"># their counts and the grown points' flags in one allocation.</span>
@@ -7630,9 +7659,9 @@ taken from it.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 12 places</summary>
+      <summary>Referenced by 13 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../config/#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="../levelset/#ordito.levelset">levelset</a></span> · <span class="ordito-backlink"><a href="../levelset/#ordito.levelset">levelset</a> › <a href="../levelset/#ordito.levelset.marching_cubes">marching_cubes</a></span> · <span class="ordito-backlink"><a href="./#ordito.reconstruction">reconstruction</a></span> · <span class="ordito-backlink"><a href="./#ordito.reconstruction">reconstruction</a> › <a href="./#ordito.reconstruction.ball_pivoting">ball_pivoting</a></span> · <span class="ordito-backlink"><a href="../neighbors/#ordito.neighbors">neighbors</a> › <a href="../neighbors/#ordito.neighbors.nearest_neighbor_distance">nearest_neighbor_distance</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../config/#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="../levelset/#ordito.levelset">levelset</a></span> · <span class="ordito-backlink"><a href="../levelset/#ordito.levelset">levelset</a> › <a href="../levelset/#ordito.levelset.marching_cubes">marching_cubes</a></span> · <span class="ordito-backlink"><a href="../points/#ordito.points">points</a> › <a href="../points/#ordito.points.estimate_normals">estimate_normals</a></span> · <span class="ordito-backlink"><a href="./#ordito.reconstruction">reconstruction</a></span> · <span class="ordito-backlink"><a href="./#ordito.reconstruction">reconstruction</a> › <a href="./#ordito.reconstruction.ball_pivoting">ball_pivoting</a></span> · <span class="ordito-backlink"><a href="../neighbors/#ordito.neighbors">neighbors</a> › <a href="../neighbors/#ordito.neighbors.nearest_neighbor_distance">nearest_neighbor_distance</a></span></p>
         <p><span class="ordito-backlinks-section">Concepts</span>
 <span class="ordito-backlink"><a href="../../../reproducibility/#reproducible-results">Reproducible results</a> › <a href="../../../reproducibility/#what-it-governs">What it governs</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
@@ -9352,7 +9381,7 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
         <span class="n">mean_spacing</span> <span class="o">=</span> <span class="n">_mean_positive_finite</span><span class="p">(</span><span class="n">neighbor_dist</span><span class="o">.</span><span class="n">flatten</span><span class="p">())</span>
         <span class="n">radius</span> <span class="o">=</span> <span class="mf">1.5</span> <span class="o">*</span> <span class="p">(</span><span class="n">mean_spacing</span> <span class="k">if</span> <span class="n">mean_spacing</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="mf">1.0</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">normals</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">estimate_normals</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">neighbor_idx</span><span class="p">)</span>
+        <span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">estimate_normals</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">neighbor_idx</span><span class="p">,</span> <span class="n">orientation</span><span class="o">=</span><span class="s2">"centroid"</span><span class="p">)</span>
 
     <span class="c1"># Cell width equal to the ball radius, not to the ``2 * radius`` neighbourhood the pivot</span>
     <span class="c1"># searches: the inner empty-ball test is by far the most frequent query, and a cell twice its</span>

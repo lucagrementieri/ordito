@@ -3695,6 +3695,8 @@
       
         
       
+        
+      
     
     
     
@@ -3973,6 +3975,33 @@
     
   
   validation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../equality/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  equality
 
     
   </span>
@@ -6243,7 +6272,7 @@
               <td><code><a class="autorefs autorefs-internal" title="cluster_decimate (ordito.remesh.cluster_decimate)" href="./#ordito.remesh.cluster_decimate">cluster_decimate</a></code></td>
               <td>
                 <div class="doc-md-description">
-                  <p>Decimate by snapping vertices to a uniform voxel grid and welding each cell to one vertex.</p>
+                  <p>Decimate by snapping vertices to a voxel grid and welding each cell to one vertex.</p>
                 </div>
               </td>
             </tr>
@@ -6267,7 +6296,7 @@
               <td><code><a class="autorefs autorefs-internal" title="flip_by_objective (ordito.remesh.flip_by_objective)" href="./#ordito.remesh.flip_by_objective">flip_by_objective</a></code></td>
               <td>
                 <div class="doc-md-description">
-                  <p>Flip interior edges to optimize triangle shape or surface flatness, instead of the Delone test.</p>
+                  <p>Flip interior edges to optimize triangle shape, instead of the Delone test.</p>
                 </div>
               </td>
             </tr>
@@ -7547,21 +7576,30 @@ near the target:</p>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">contraction</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"average"</span><span class="p">,</span> <span class="s2">"closest"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"average"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"open3d"</span><span class="p">,</span> <span class="s2">"meshlab"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"open3d"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
 
-        <p>Decimate by snapping vertices to a uniform voxel grid and welding each cell to one vertex.</p>
+        <p>Decimate by snapping vertices to a voxel grid and welding each cell to one vertex.</p>
 <p>The one decimation scheme that is <em>naturally</em> parallel: there is no priority queue and no
 sequential dependence anywhere, so the whole thing is a handful of kernel launches whatever the
 mesh size. Every vertex is binned into a cell of width <code>voxel_size</code>, each occupied cell
 becomes a single output vertex, faces are remapped onto those, and the faces that collapsed
-(two or three corners in the same cell) or duplicated are dropped.</p>
-<p>Ports MeshLab's <code>meshing_decimation_clustering</code> and Open3D's <code>simplify_vertex_clustering</code>;
-the grid is anchored half a cell below the bounding box, which is Open3D's convention, so both
-libraries produce the same cell assignment for the same <code>voxel_size</code>. The vertex output alone
-is also MeshLab's <code>generate_sampling_clustered_vertex</code>.</p>
+(two or three corners in the same cell) or repeat another face with the same winding are
+dropped. A face and its reversed twin are both kept, as both libraries keep them.</p>
+<p><code>method</code> names the library whose grid and mean are reproduced:</p>
+<ul>
+<li><code>"open3d"</code> (default) is Open3D's <code>simplify_vertex_clustering</code>: cells of exactly
+  <code>voxel_size</code>, anchored half a cell below the bounding box, and a cell's mean over its
+  vertices.</li>
+<li><code>"meshlab"</code> is MeshLab's <code>meshing_decimation_clustering</code>: the bounding box grown by one
+  <code>voxel_size</code> on every side and split into <code>floor(extent / voxel_size)</code> cells per axis, so
+  each cell is stretched a little to fit it, and a cell's mean over its face corners (a vertex
+  counts once per face on it). Its vertices alone are MeshLab's
+  <code>generate_sampling_clustered_vertex</code> with the same <code>contraction</code>.</li>
+</ul>
 <div class="admonition warning">
 <p class="admonition-title">This does not preserve topology</p>
 <p>Two sheets of the surface that pass within <code>voxel_size</code> of each other get welded
@@ -7644,17 +7682,35 @@ non-manifold even when the input is not. Use
               <div class="doc-md-description">
                 <p>How each cell picks its output position:</p>
 <ul>
-<li><code>"average"</code> (default) — the mean of the cell's vertices, which is Open3D's
-  <code>SimplificationContraction.Average</code>. Smooths slightly and cannot land off the input's
-  convex hull.</li>
+<li><code>"average"</code> (default) — the cell's mean, which is Open3D's
+  <code>SimplificationContraction.Average</code> and MeshLab's <code>'Average'</code>. Smooths slightly and
+  cannot land off the input's convex hull.</li>
 <li><code>"closest"</code> — the input vertex nearest the cell centre, which is MeshLab's
-  <code>'Closest to center'</code> sampling. Keeps every output vertex <em>on</em> the input surface, so it
-  is the right choice when the positions must stay exact (ties break to the lowest index).</li>
+  <code>'Closest to center'</code>. Keeps every output vertex <em>on</em> the input surface, so it is the
+  right choice when the positions must stay exact (ties break to the lowest index). Under
+  <code>method="meshlab"</code> only vertices on a face are candidates, as in MeshLab.</li>
 </ul>
+<p>The contraction moves vertices only: the cells, and so the faces, are the same for both.</p>
               </div>
             </td>
             <td>
                   <code>&#39;average&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>method</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;open3d&#39;, &#39;meshlab&#39;]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>"open3d"</code> or <code>"meshlab"</code>: which library's grid and mean, as above.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;open3d&#39;</code>
             </td>
           </tr>
       </tbody>
@@ -7710,7 +7766,8 @@ from index zero.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>voxel_size</code> is not positive, or <code>contraction</code> is not one of the two names.</p>
+                <p>If <code>voxel_size</code> is not positive, or <code>contraction</code> or <code>method</code> is not one of its two
+names.</p>
               </div>
             </td>
           </tr>
@@ -7741,14 +7798,16 @@ from index zero.</p>
 
 <details class="note" open>
   <summary>Notes</summary>
-  <p>Cells whose every face collapsed are dropped from the output, where Open3D keeps them as
-unreferenced vertices. So the face counts agree exactly and the vertex counts can differ by the
+  <p>Cells whose every face collapsed are dropped from the output, where both libraries keep them
+as unreferenced vertices. So the faces agree exactly and the vertex counts can differ by the
 number of such cells — usually zero, and never in a way that changes the surface.</p>
-<p>The binning is <a class="autorefs autorefs-internal" title="cell_indices" href="../voxels/#ordito.voxels.cell_indices"><code>ordito.voxels.cell_indices</code></a>' cell assignment.
-Output vertices are numbered in the order of their packed cell keys -- the order
-<a class="autorefs autorefs-internal" title="unique_1d" href="../grouping/#ordito.grouping.unique_1d"><code>ordito.grouping.unique_1d</code></a> would sort them in -- rather than a
-NanoVDB grid's leaf-major order, and the faces come out in
-<a class="autorefs autorefs-internal" title="unique_faces" href="../grouping/#ordito.grouping.unique_faces"><code>ordito.grouping.unique_faces</code></a>' order over them.</p>
+<p>Under <code>method="open3d"</code> the binning is
+<a class="autorefs autorefs-internal" title="cell_indices" href="../voxels/#ordito.voxels.cell_indices"><code>ordito.voxels.cell_indices</code></a>' cell assignment. Output vertices
+are numbered in the order of their packed cell keys -- the order
+<a class="autorefs autorefs-internal" title="unique_1d" href="../grouping/#ordito.grouping.unique_1d"><code>ordito.grouping.unique_1d</code></a> would sort them in -- and each face
+is written rotated to start at its smallest vertex, as Open3D writes it; the faces come out
+in the order of those rows packed as one key. Both libraries return vertices and faces in hash
+order, which no parallel build reproduces.</p>
 <p>The cell means of <code>contraction="average"</code> follow the
 <a class="autorefs autorefs-internal" title="deterministic" href="../config/#ordito.config.deterministic"><code>deterministic</code></a> setting: with it on they are added in one fixed
 order and repeat bit for bit on CUDA; with it off they are added in arrival order, which can
@@ -8047,26 +8106,52 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
 <span class="normal">2232</span>
 <span class="normal">2233</span>
 <span class="normal">2234</span>
-<span class="normal">2235</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cluster_decimate</span><span class="p">(</span>
+<span class="normal">2235</span>
+<span class="normal">2236</span>
+<span class="normal">2237</span>
+<span class="normal">2238</span>
+<span class="normal">2239</span>
+<span class="normal">2240</span>
+<span class="normal">2241</span>
+<span class="normal">2242</span>
+<span class="normal">2243</span>
+<span class="normal">2244</span>
+<span class="normal">2245</span>
+<span class="normal">2246</span>
+<span class="normal">2247</span>
+<span class="normal">2248</span>
+<span class="normal">2249</span>
+<span class="normal">2250</span>
+<span class="normal">2251</span>
+<span class="normal">2252</span>
+<span class="normal">2253</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cluster_decimate</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">contraction</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"average"</span><span class="p">,</span> <span class="s2">"closest"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"average"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"open3d"</span><span class="p">,</span> <span class="s2">"meshlab"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"open3d"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
-<span class="sd">    Decimate by snapping vertices to a uniform voxel grid and welding each cell to one vertex.</span>
+<span class="sd">    Decimate by snapping vertices to a voxel grid and welding each cell to one vertex.</span>
 
 <span class="sd">    The one decimation scheme that is *naturally* parallel: there is no priority queue and no</span>
 <span class="sd">    sequential dependence anywhere, so the whole thing is a handful of kernel launches whatever the</span>
 <span class="sd">    mesh size. Every vertex is binned into a cell of width ``voxel_size``, each occupied cell</span>
 <span class="sd">    becomes a single output vertex, faces are remapped onto those, and the faces that collapsed</span>
-<span class="sd">    (two or three corners in the same cell) or duplicated are dropped.</span>
+<span class="sd">    (two or three corners in the same cell) or repeat another face with the same winding are</span>
+<span class="sd">    dropped. A face and its reversed twin are both kept, as both libraries keep them.</span>
 
-<span class="sd">    Ports MeshLab's ``meshing_decimation_clustering`` and Open3D's ``simplify_vertex_clustering``;</span>
-<span class="sd">    the grid is anchored half a cell below the bounding box, which is Open3D's convention, so both</span>
-<span class="sd">    libraries produce the same cell assignment for the same ``voxel_size``. The vertex output alone</span>
-<span class="sd">    is also MeshLab's ``generate_sampling_clustered_vertex``.</span>
+<span class="sd">    ``method`` names the library whose grid and mean are reproduced:</span>
+
+<span class="sd">    - ``"open3d"`` (default) is Open3D's ``simplify_vertex_clustering``: cells of exactly</span>
+<span class="sd">      ``voxel_size``, anchored half a cell below the bounding box, and a cell's mean over its</span>
+<span class="sd">      vertices.</span>
+<span class="sd">    - ``"meshlab"`` is MeshLab's ``meshing_decimation_clustering``: the bounding box grown by one</span>
+<span class="sd">      ``voxel_size`` on every side and split into ``floor(extent / voxel_size)`` cells per axis, so</span>
+<span class="sd">      each cell is stretched a little to fit it, and a cell's mean over its face corners (a vertex</span>
+<span class="sd">      counts once per face on it). Its vertices alone are MeshLab's</span>
+<span class="sd">      ``generate_sampling_clustered_vertex`` with the same ``contraction``.</span>
 
 <span class="sd">    !!! warning "This does not preserve topology"</span>
 <span class="sd">        Two sheets of the surface that pass within ``voxel_size`` of each other get welded</span>
@@ -8088,12 +8173,17 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
 <span class="sd">    contraction</span>
 <span class="sd">        How each cell picks its output position:</span>
 
-<span class="sd">        - ``"average"`` (default) — the mean of the cell's vertices, which is Open3D's</span>
-<span class="sd">          ``SimplificationContraction.Average``. Smooths slightly and cannot land off the input's</span>
-<span class="sd">          convex hull.</span>
+<span class="sd">        - ``"average"`` (default) — the cell's mean, which is Open3D's</span>
+<span class="sd">          ``SimplificationContraction.Average`` and MeshLab's ``'Average'``. Smooths slightly and</span>
+<span class="sd">          cannot land off the input's convex hull.</span>
 <span class="sd">        - ``"closest"`` — the input vertex nearest the cell centre, which is MeshLab's</span>
-<span class="sd">          ``'Closest to center'`` sampling. Keeps every output vertex *on* the input surface, so it</span>
-<span class="sd">          is the right choice when the positions must stay exact (ties break to the lowest index).</span>
+<span class="sd">          ``'Closest to center'``. Keeps every output vertex *on* the input surface, so it is the</span>
+<span class="sd">          right choice when the positions must stay exact (ties break to the lowest index). Under</span>
+<span class="sd">          ``method="meshlab"`` only vertices on a face are candidates, as in MeshLab.</span>
+
+<span class="sd">        The contraction moves vertices only: the cells, and so the faces, are the same for both.</span>
+<span class="sd">    method</span>
+<span class="sd">        ``"open3d"`` or ``"meshlab"``: which library's grid and mean, as above.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -8106,7 +8196,8 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If ``voxel_size`` is not positive, or ``contraction`` is not one of the two names.</span>
+<span class="sd">        If ``voxel_size`` is not positive, or ``contraction`` or ``method`` is not one of its two</span>
+<span class="sd">        names.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices`` and ``faces`` are not all on one device.</span>
 
@@ -8122,15 +8213,17 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
 
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
-<span class="sd">    Cells whose every face collapsed are dropped from the output, where Open3D keeps them as</span>
-<span class="sd">    unreferenced vertices. So the face counts agree exactly and the vertex counts can differ by the</span>
+<span class="sd">    Cells whose every face collapsed are dropped from the output, where both libraries keep them</span>
+<span class="sd">    as unreferenced vertices. So the faces agree exactly and the vertex counts can differ by the</span>
 <span class="sd">    number of such cells — usually zero, and never in a way that changes the surface.</span>
 
-<span class="sd">    The binning is [`ordito.voxels.cell_indices`][ordito.voxels.cell_indices]' cell assignment.</span>
-<span class="sd">    Output vertices are numbered in the order of their packed cell keys -- the order</span>
-<span class="sd">    [`ordito.grouping.unique_1d`][ordito.grouping.unique_1d] would sort them in -- rather than a</span>
-<span class="sd">    NanoVDB grid's leaf-major order, and the faces come out in</span>
-<span class="sd">    [`ordito.grouping.unique_faces`][ordito.grouping.unique_faces]' order over them.</span>
+<span class="sd">    Under ``method="open3d"`` the binning is</span>
+<span class="sd">    [`ordito.voxels.cell_indices`][ordito.voxels.cell_indices]' cell assignment. Output vertices</span>
+<span class="sd">    are numbered in the order of their packed cell keys -- the order</span>
+<span class="sd">    [`ordito.grouping.unique_1d`][ordito.grouping.unique_1d] would sort them in -- and each face</span>
+<span class="sd">    is written rotated to start at its smallest vertex, as Open3D writes it; the faces come out</span>
+<span class="sd">    in the order of those rows packed as one key. Both libraries return vertices and faces in hash</span>
+<span class="sd">    order, which no parallel build reproduces.</span>
 
 <span class="sd">    The cell means of ``contraction="average"`` follow the</span>
 <span class="sd">    [`deterministic`][ordito.config.deterministic] setting: with it on they are added in one fixed</span>
@@ -8152,6 +8245,8 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">contraction</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"average"</span><span class="p">,</span> <span class="s2">"closest"</span><span class="p">):</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"contraction must be 'average' or 'closest', got </span><span class="si">{</span><span class="n">contraction</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"open3d"</span><span class="p">,</span> <span class="s2">"meshlab"</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method must be 'open3d' or 'meshlab', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
 
     <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
@@ -8159,14 +8254,8 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
     <span class="k">if</span> <span class="n">n_vertices</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">n_faces</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">clone</span><span class="p">(</span><span class="n">vertices</span><span class="p">),</span> <span class="n">_launch</span><span class="o">.</span><span class="n">clone</span><span class="p">(</span><span class="n">faces</span><span class="p">)</span>
 
-    <span class="c1"># One definition of "the default voxel grid for these points", shared with ``ordito.voxels``</span>
-    <span class="c1"># so the two modules cannot drift on the cell size or on Open3D's half-cell anchor.</span>
-    <span class="c1"># The origin is always derived here, so every cell coordinate is non-negative and below the</span>
-    <span class="c1"># bound the grid reports, which is the radix the cell keys are packed in.</span>
-    <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">,</span> <span class="n">cell_bound</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">voxels</span><span class="o">.</span><span class="n">resolve_voxel_grid</span><span class="p">(</span>
-        <span class="n">vertices</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">caller</span><span class="o">=</span><span class="s2">"cluster_decimate"</span><span class="p">,</span> <span class="n">return_cell_bound</span><span class="o">=</span><span class="kc">True</span>
-    <span class="p">)</span>
-    <span class="n">inverse_size</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="mf">1.0</span> <span class="o">/</span> <span class="n">voxel_size</span><span class="p">)</span>
+    <span class="n">origin</span><span class="p">,</span> <span class="n">cell_widths</span><span class="p">,</span> <span class="n">cell_bound</span> <span class="o">=</span> <span class="n">_cluster_grid</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">method</span><span class="p">)</span>
+    <span class="n">inverse_size</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="o">*</span><span class="p">(</span><span class="mf">1.0</span> <span class="o">/</span> <span class="n">width</span> <span class="k">for</span> <span class="n">width</span> <span class="ow">in</span> <span class="n">cell_widths</span><span class="p">))</span>
     <span class="n">bound</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">(</span><span class="n">cell_bound</span><span class="p">)</span>
     <span class="n">cell_mask</span> <span class="o">=</span> <span class="n">kernel_grouping</span><span class="o">.</span><span class="n">hash_table_mask</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">)</span>
     <span class="n">face_mask</span> <span class="o">=</span> <span class="n">kernel_grouping</span><span class="o">.</span><span class="n">hash_table_mask</span><span class="p">(</span><span class="n">n_faces</span><span class="p">)</span>
@@ -8187,7 +8276,11 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
     <span class="c1"># The kept clusters' cell keys, at the sort's double width.</span>
     <span class="n">sort_keys</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">average</span> <span class="o">=</span> <span class="n">contraction</span> <span class="o">==</span> <span class="s2">"average"</span>
-    <span class="c1"># Under the deterministic setting the mean is not scattered: each vertex is staged with its</span>
+    <span class="c1"># What a cell's representative is taken over: its vertices (Open3D), or the face corners in it</span>
+    <span class="c1"># (MeshLab's mean weighs a vertex by its faces, and its closest vertex is one on a face).</span>
+    <span class="n">corner_items</span> <span class="o">=</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"meshlab"</span>
+    <span class="n">n_items</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="k">if</span> <span class="n">corner_items</span> <span class="k">else</span> <span class="n">n_vertices</span>
+    <span class="c1"># Under the deterministic setting the mean is not scattered: each item is staged with its</span>
     <span class="c1"># output vertex for a stable sort, and every cell's run is added in one fixed order</span>
     <span class="c1"># (``_cluster_sorted_means``, whose count of long runs rides behind the two counts).</span>
     <span class="n">ordered</span> <span class="o">=</span> <span class="n">average</span> <span class="ow">and</span> <span class="n">is_deterministic</span><span class="p">()</span>
@@ -8248,7 +8341,7 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
     <span class="n">scattered</span> <span class="o">=</span> <span class="n">average</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">ordered</span>
     <span class="n">sums</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_kept</span> <span class="k">if</span> <span class="n">scattered</span> <span class="k">else</span> <span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">counts</span> <span class="o">=</span> <span class="p">(</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">4</span> <span class="o">*</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">4</span> <span class="o">*</span> <span class="n">n_items</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">ordered</span>
         <span class="k">else</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_kept</span> <span class="k">if</span> <span class="n">average</span> <span class="k">else</span> <span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="p">)</span>
@@ -8260,24 +8353,26 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
         <span class="k">if</span> <span class="n">average</span>
         <span class="k">else</span> <span class="n">kernel_remesh</span><span class="o">.</span><span class="n">CLUSTER_CLOSEST</span>
     <span class="p">)</span>
-    <span class="c1"># The distinct surviving faces come out in ``grouping.unique_faces``' order: the order of the</span>
-    <span class="c1"># sorted output-vertex triple packed in radix ``n_kept``, each face in its first occurrence's</span>
-    <span class="c1"># winding. The kept-cluster sort's buffers are free by now and serve the face sort whenever they</span>
-    <span class="c1"># are wide enough, which they are unless almost nothing merged.</span>
+    <span class="c1"># The distinct surviving faces come out in the order of their output-vertex triple rotated to</span>
+    <span class="c1"># start at its smallest, packed in radix ``n_kept``. The kept-cluster sort's buffers are free</span>
+    <span class="c1"># by now and serve the face sort whenever they are wide enough, which they are unless almost</span>
+    <span class="c1"># nothing merged.</span>
     <span class="k">if</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n_unique</span> <span class="o">&gt;</span> <span class="n">sort_keys</span><span class="o">.</span><span class="n">size</span><span class="p">:</span>
         <span class="n">sort_keys</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_unique</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="n">kept_cells</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_unique</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_remesh</span><span class="o">.</span><span class="n">cluster_gather_and_face_keys</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_unique</span><span class="p">),</span>
+        <span class="n">dim</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="n">n_items</span><span class="p">,</span> <span class="n">n_unique</span><span class="p">),</span>
         <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
             <span class="n">faces</span><span class="p">,</span>
             <span class="n">vertex_cell</span><span class="p">,</span>
             <span class="n">cell_rank</span><span class="p">,</span>
             <span class="n">vertices</span><span class="p">,</span>
             <span class="n">origin</span><span class="p">,</span>
-            <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">voxel_size</span><span class="p">),</span>
+            <span class="n">inverse_size</span><span class="p">,</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="o">*</span><span class="n">cell_widths</span><span class="p">),</span>
             <span class="n">mode</span><span class="p">,</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">corner_items</span><span class="p">),</span>
             <span class="n">face_table</span><span class="p">,</span>
             <span class="n">face_slots</span><span class="p">,</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_unique</span><span class="p">),</span>
@@ -8286,7 +8381,7 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
         <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">sums</span><span class="p">,</span> <span class="n">counts</span><span class="p">,</span> <span class="n">closest</span><span class="p">,</span> <span class="n">sort_keys</span><span class="p">,</span> <span class="n">kept_cells</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="c1"># Three sorted indices below ``n_kept`` pack below ``n_kept ** 3``.</span>
+    <span class="c1"># Three indices below ``n_kept`` pack below ``n_kept ** 3``.</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">radix_sort_pairs</span><span class="p">(</span>
         <span class="n">sort_keys</span><span class="p">,</span>
         <span class="n">kept_cells</span><span class="p">,</span>
@@ -8715,57 +8810,7 @@ evaluated when the pass is <em>issued</em>, so the captured graph does not conta
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2313</span>
-<span class="normal">2314</span>
-<span class="normal">2315</span>
-<span class="normal">2316</span>
-<span class="normal">2317</span>
-<span class="normal">2318</span>
-<span class="normal">2319</span>
-<span class="normal">2320</span>
-<span class="normal">2321</span>
-<span class="normal">2322</span>
-<span class="normal">2323</span>
-<span class="normal">2324</span>
-<span class="normal">2325</span>
-<span class="normal">2326</span>
-<span class="normal">2327</span>
-<span class="normal">2328</span>
-<span class="normal">2329</span>
-<span class="normal">2330</span>
-<span class="normal">2331</span>
-<span class="normal">2332</span>
-<span class="normal">2333</span>
-<span class="normal">2334</span>
-<span class="normal">2335</span>
-<span class="normal">2336</span>
-<span class="normal">2337</span>
-<span class="normal">2338</span>
-<span class="normal">2339</span>
-<span class="normal">2340</span>
-<span class="normal">2341</span>
-<span class="normal">2342</span>
-<span class="normal">2343</span>
-<span class="normal">2344</span>
-<span class="normal">2345</span>
-<span class="normal">2346</span>
-<span class="normal">2347</span>
-<span class="normal">2348</span>
-<span class="normal">2349</span>
-<span class="normal">2350</span>
-<span class="normal">2351</span>
-<span class="normal">2352</span>
-<span class="normal">2353</span>
-<span class="normal">2354</span>
-<span class="normal">2355</span>
-<span class="normal">2356</span>
-<span class="normal">2357</span>
-<span class="normal">2358</span>
-<span class="normal">2359</span>
-<span class="normal">2360</span>
-<span class="normal">2361</span>
-<span class="normal">2362</span>
-<span class="normal">2363</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2363</span>
 <span class="normal">2364</span>
 <span class="normal">2365</span>
 <span class="normal">2366</span>
@@ -8906,7 +8951,57 @@ evaluated when the pass is <em>issued</em>, so the captured graph does not conta
 <span class="normal">2501</span>
 <span class="normal">2502</span>
 <span class="normal">2503</span>
-<span class="normal">2504</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">quadric_decimate</span><span class="p">(</span>
+<span class="normal">2504</span>
+<span class="normal">2505</span>
+<span class="normal">2506</span>
+<span class="normal">2507</span>
+<span class="normal">2508</span>
+<span class="normal">2509</span>
+<span class="normal">2510</span>
+<span class="normal">2511</span>
+<span class="normal">2512</span>
+<span class="normal">2513</span>
+<span class="normal">2514</span>
+<span class="normal">2515</span>
+<span class="normal">2516</span>
+<span class="normal">2517</span>
+<span class="normal">2518</span>
+<span class="normal">2519</span>
+<span class="normal">2520</span>
+<span class="normal">2521</span>
+<span class="normal">2522</span>
+<span class="normal">2523</span>
+<span class="normal">2524</span>
+<span class="normal">2525</span>
+<span class="normal">2526</span>
+<span class="normal">2527</span>
+<span class="normal">2528</span>
+<span class="normal">2529</span>
+<span class="normal">2530</span>
+<span class="normal">2531</span>
+<span class="normal">2532</span>
+<span class="normal">2533</span>
+<span class="normal">2534</span>
+<span class="normal">2535</span>
+<span class="normal">2536</span>
+<span class="normal">2537</span>
+<span class="normal">2538</span>
+<span class="normal">2539</span>
+<span class="normal">2540</span>
+<span class="normal">2541</span>
+<span class="normal">2542</span>
+<span class="normal">2543</span>
+<span class="normal">2544</span>
+<span class="normal">2545</span>
+<span class="normal">2546</span>
+<span class="normal">2547</span>
+<span class="normal">2548</span>
+<span class="normal">2549</span>
+<span class="normal">2550</span>
+<span class="normal">2551</span>
+<span class="normal">2552</span>
+<span class="normal">2553</span>
+<span class="normal">2554</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">quadric_decimate</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -9358,57 +9453,7 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3299</span>
-<span class="normal">3300</span>
-<span class="normal">3301</span>
-<span class="normal">3302</span>
-<span class="normal">3303</span>
-<span class="normal">3304</span>
-<span class="normal">3305</span>
-<span class="normal">3306</span>
-<span class="normal">3307</span>
-<span class="normal">3308</span>
-<span class="normal">3309</span>
-<span class="normal">3310</span>
-<span class="normal">3311</span>
-<span class="normal">3312</span>
-<span class="normal">3313</span>
-<span class="normal">3314</span>
-<span class="normal">3315</span>
-<span class="normal">3316</span>
-<span class="normal">3317</span>
-<span class="normal">3318</span>
-<span class="normal">3319</span>
-<span class="normal">3320</span>
-<span class="normal">3321</span>
-<span class="normal">3322</span>
-<span class="normal">3323</span>
-<span class="normal">3324</span>
-<span class="normal">3325</span>
-<span class="normal">3326</span>
-<span class="normal">3327</span>
-<span class="normal">3328</span>
-<span class="normal">3329</span>
-<span class="normal">3330</span>
-<span class="normal">3331</span>
-<span class="normal">3332</span>
-<span class="normal">3333</span>
-<span class="normal">3334</span>
-<span class="normal">3335</span>
-<span class="normal">3336</span>
-<span class="normal">3337</span>
-<span class="normal">3338</span>
-<span class="normal">3339</span>
-<span class="normal">3340</span>
-<span class="normal">3341</span>
-<span class="normal">3342</span>
-<span class="normal">3343</span>
-<span class="normal">3344</span>
-<span class="normal">3345</span>
-<span class="normal">3346</span>
-<span class="normal">3347</span>
-<span class="normal">3348</span>
-<span class="normal">3349</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3349</span>
 <span class="normal">3350</span>
 <span class="normal">3351</span>
 <span class="normal">3352</span>
@@ -9480,7 +9525,57 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="normal">3418</span>
 <span class="normal">3419</span>
 <span class="normal">3420</span>
-<span class="normal">3421</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_to_delaunay</span><span class="p">(</span>
+<span class="normal">3421</span>
+<span class="normal">3422</span>
+<span class="normal">3423</span>
+<span class="normal">3424</span>
+<span class="normal">3425</span>
+<span class="normal">3426</span>
+<span class="normal">3427</span>
+<span class="normal">3428</span>
+<span class="normal">3429</span>
+<span class="normal">3430</span>
+<span class="normal">3431</span>
+<span class="normal">3432</span>
+<span class="normal">3433</span>
+<span class="normal">3434</span>
+<span class="normal">3435</span>
+<span class="normal">3436</span>
+<span class="normal">3437</span>
+<span class="normal">3438</span>
+<span class="normal">3439</span>
+<span class="normal">3440</span>
+<span class="normal">3441</span>
+<span class="normal">3442</span>
+<span class="normal">3443</span>
+<span class="normal">3444</span>
+<span class="normal">3445</span>
+<span class="normal">3446</span>
+<span class="normal">3447</span>
+<span class="normal">3448</span>
+<span class="normal">3449</span>
+<span class="normal">3450</span>
+<span class="normal">3451</span>
+<span class="normal">3452</span>
+<span class="normal">3453</span>
+<span class="normal">3454</span>
+<span class="normal">3455</span>
+<span class="normal">3456</span>
+<span class="normal">3457</span>
+<span class="normal">3458</span>
+<span class="normal">3459</span>
+<span class="normal">3460</span>
+<span class="normal">3461</span>
+<span class="normal">3462</span>
+<span class="normal">3463</span>
+<span class="normal">3464</span>
+<span class="normal">3465</span>
+<span class="normal">3466</span>
+<span class="normal">3467</span>
+<span class="normal">3468</span>
+<span class="normal">3469</span>
+<span class="normal">3470</span>
+<span class="normal">3471</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_to_delaunay</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -9622,7 +9717,7 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
     <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">objective</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span>
-        <span class="s2">"planarity"</span><span class="p">,</span> <span class="s2">"curvature"</span><span class="p">,</span> <span class="s2">"t_vertex"</span>
+        <span class="s2">"planarity"</span><span class="p">,</span> <span class="s2">"t_vertex"</span>
     <span class="p">]</span> <span class="o">=</span> <span class="s2">"planarity"</span><span class="p">,</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="nb">bool</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">planar_angle</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
@@ -9636,12 +9731,11 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 
     <div class="doc doc-contents ">
 
-        <p>Flip interior edges to optimize triangle shape or surface flatness, instead of the Delone test.</p>
+        <p>Flip interior edges to optimize triangle shape, instead of the Delone test.</p>
 <p>Runs the same parallel flip engine as <a class="autorefs autorefs-internal" title="flip_to_delaunay" href="./#ordito.remesh.flip_to_delaunay"><code>flip_to_delaunay</code></a> —
 independent-set selection over the face adjacency, iterated until no edge is a candidate — with
-a different predicate at the front. That is the whole port: the machinery was already there, and
-these two objectives are what MeshLab's <code>meshing_edge_flip_by_planar_optimization</code> and
-<code>meshing_edge_flip_by_curvature_optimization</code> put in front of it.</p>
+a different predicate at the front: MeshLab's <code>meshing_edge_flip_by_planar_optimization</code> and
+<code>meshing_remove_t_vertices</code> rules.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -9692,7 +9786,7 @@ these two objectives are what MeshLab's <code>meshing_edge_flip_by_planar_optimi
                 <code>objective</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;planarity&#39;, &#39;curvature&#39;, &#39;t_vertex&#39;]</code>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;planarity&#39;, &#39;t_vertex&#39;]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -9703,11 +9797,6 @@ these two objectives are what MeshLab's <code>meshing_edge_flip_by_planar_optimi
   so raises the <code>metric</code> score of the <em>worse</em> of the two triangles. Because the quad is
   near-planar to begin with, the rewrite is a retriangulation and not a deformation. This is
   the one to reach for after any operation that leaves thin triangles across a flat region.</li>
-<li><code>"curvature"</code> — <strong>flatness, surface changed.</strong> The diagonal is flipped whenever the
-  other one bends less, i.e. whenever the dihedral angle across it is smaller. This <em>does</em>
-  move the surface (it chooses between two interpolations of the same four points) and is
-  what makes a coarse triangulation of a curved shape follow its principal directions.
-  <code>planar_angle</code> and <code>metric</code> are ignored.</li>
 <li><code>"t_vertex"</code> — <strong>slivers only.</strong> A quad is eligible only when one of its two triangles
   is a sliver whose longest edge is the diagonal: that edge over the height onto it exceeds
   <code>aspect_threshold</code>; the diagonal is then flipped if that raises the worse
@@ -9915,57 +10004,7 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3427</span>
-<span class="normal">3428</span>
-<span class="normal">3429</span>
-<span class="normal">3430</span>
-<span class="normal">3431</span>
-<span class="normal">3432</span>
-<span class="normal">3433</span>
-<span class="normal">3434</span>
-<span class="normal">3435</span>
-<span class="normal">3436</span>
-<span class="normal">3437</span>
-<span class="normal">3438</span>
-<span class="normal">3439</span>
-<span class="normal">3440</span>
-<span class="normal">3441</span>
-<span class="normal">3442</span>
-<span class="normal">3443</span>
-<span class="normal">3444</span>
-<span class="normal">3445</span>
-<span class="normal">3446</span>
-<span class="normal">3447</span>
-<span class="normal">3448</span>
-<span class="normal">3449</span>
-<span class="normal">3450</span>
-<span class="normal">3451</span>
-<span class="normal">3452</span>
-<span class="normal">3453</span>
-<span class="normal">3454</span>
-<span class="normal">3455</span>
-<span class="normal">3456</span>
-<span class="normal">3457</span>
-<span class="normal">3458</span>
-<span class="normal">3459</span>
-<span class="normal">3460</span>
-<span class="normal">3461</span>
-<span class="normal">3462</span>
-<span class="normal">3463</span>
-<span class="normal">3464</span>
-<span class="normal">3465</span>
-<span class="normal">3466</span>
-<span class="normal">3467</span>
-<span class="normal">3468</span>
-<span class="normal">3469</span>
-<span class="normal">3470</span>
-<span class="normal">3471</span>
-<span class="normal">3472</span>
-<span class="normal">3473</span>
-<span class="normal">3474</span>
-<span class="normal">3475</span>
-<span class="normal">3476</span>
-<span class="normal">3477</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3477</span>
 <span class="normal">3478</span>
 <span class="normal">3479</span>
 <span class="normal">3480</span>
@@ -10093,11 +10132,52 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="normal">3602</span>
 <span class="normal">3603</span>
 <span class="normal">3604</span>
-<span class="normal">3605</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_by_objective</span><span class="p">(</span>
+<span class="normal">3605</span>
+<span class="normal">3606</span>
+<span class="normal">3607</span>
+<span class="normal">3608</span>
+<span class="normal">3609</span>
+<span class="normal">3610</span>
+<span class="normal">3611</span>
+<span class="normal">3612</span>
+<span class="normal">3613</span>
+<span class="normal">3614</span>
+<span class="normal">3615</span>
+<span class="normal">3616</span>
+<span class="normal">3617</span>
+<span class="normal">3618</span>
+<span class="normal">3619</span>
+<span class="normal">3620</span>
+<span class="normal">3621</span>
+<span class="normal">3622</span>
+<span class="normal">3623</span>
+<span class="normal">3624</span>
+<span class="normal">3625</span>
+<span class="normal">3626</span>
+<span class="normal">3627</span>
+<span class="normal">3628</span>
+<span class="normal">3629</span>
+<span class="normal">3630</span>
+<span class="normal">3631</span>
+<span class="normal">3632</span>
+<span class="normal">3633</span>
+<span class="normal">3634</span>
+<span class="normal">3635</span>
+<span class="normal">3636</span>
+<span class="normal">3637</span>
+<span class="normal">3638</span>
+<span class="normal">3639</span>
+<span class="normal">3640</span>
+<span class="normal">3641</span>
+<span class="normal">3642</span>
+<span class="normal">3643</span>
+<span class="normal">3644</span>
+<span class="normal">3645</span>
+<span class="normal">3646</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_by_objective</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
-    <span class="n">objective</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"planarity"</span><span class="p">,</span> <span class="s2">"curvature"</span><span class="p">,</span> <span class="s2">"t_vertex"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"planarity"</span><span class="p">,</span>
+    <span class="n">objective</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"planarity"</span><span class="p">,</span> <span class="s2">"t_vertex"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"planarity"</span><span class="p">,</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">planar_angle</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
     <span class="n">metric</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"radius_ratio"</span><span class="p">,</span> <span class="s2">"area_max_side"</span><span class="p">,</span> <span class="s2">"mean_ratio"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"area_max_side"</span><span class="p">,</span>
@@ -10105,13 +10185,12 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
     <span class="n">max_iter</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">100</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
-<span class="sd">    Flip interior edges to optimize triangle shape or surface flatness, instead of the Delone test.</span>
+<span class="sd">    Flip interior edges to optimize triangle shape, instead of the Delone test.</span>
 
 <span class="sd">    Runs the same parallel flip engine as [`flip_to_delaunay`][ordito.remesh.flip_to_delaunay] —</span>
 <span class="sd">    independent-set selection over the face adjacency, iterated until no edge is a candidate — with</span>
-<span class="sd">    a different predicate at the front. That is the whole port: the machinery was already there, and</span>
-<span class="sd">    these two objectives are what MeshLab's ``meshing_edge_flip_by_planar_optimization`` and</span>
-<span class="sd">    ``meshing_edge_flip_by_curvature_optimization`` put in front of it.</span>
+<span class="sd">    a different predicate at the front: MeshLab's ``meshing_edge_flip_by_planar_optimization`` and</span>
+<span class="sd">    ``meshing_remove_t_vertices`` rules.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -10127,11 +10206,6 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="sd">          so raises the ``metric`` score of the *worse* of the two triangles. Because the quad is</span>
 <span class="sd">          near-planar to begin with, the rewrite is a retriangulation and not a deformation. This is</span>
 <span class="sd">          the one to reach for after any operation that leaves thin triangles across a flat region.</span>
-<span class="sd">        - ``"curvature"`` — **flatness, surface changed.** The diagonal is flipped whenever the</span>
-<span class="sd">          other one bends less, i.e. whenever the dihedral angle across it is smaller. This *does*</span>
-<span class="sd">          move the surface (it chooses between two interpolations of the same four points) and is</span>
-<span class="sd">          what makes a coarse triangulation of a curved shape follow its principal directions.</span>
-<span class="sd">          ``planar_angle`` and ``metric`` are ignored.</span>
 <span class="sd">        - ``"t_vertex"`` — **slivers only.** A quad is eligible only when one of its two triangles</span>
 <span class="sd">          is a sliver whose longest edge is the diagonal: that edge over the height onto it exceeds</span>
 <span class="sd">          ``aspect_threshold``; the diagonal is then flipped if that raises the worse</span>
@@ -10207,10 +10281,8 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">region</span><span class="o">=</span><span class="n">region</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">objective</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"planarity"</span><span class="p">,</span> <span class="s2">"curvature"</span><span class="p">,</span> <span class="s2">"t_vertex"</span><span class="p">):</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
-            <span class="sa">f</span><span class="s2">"objective must be 'planarity', 'curvature' or 't_vertex', got </span><span class="si">{</span><span class="n">objective</span><span class="si">!r}</span><span class="s2">"</span>
-        <span class="p">)</span>
+    <span class="k">if</span> <span class="n">objective</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"planarity"</span><span class="p">,</span> <span class="s2">"t_vertex"</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"objective must be 'planarity' or 't_vertex', got </span><span class="si">{</span><span class="n">objective</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">aspect_threshold</span> <span class="o">&lt;=</span> <span class="mf">0.0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"aspect_threshold must be positive, got </span><span class="si">{</span><span class="n">aspect_threshold</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">metric</span> <span class="ow">not</span> <span class="ow">in</span> <span class="n">_OBJECTIVE_QUALITY_METRICS</span><span class="p">:</span>
@@ -10228,7 +10300,6 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 
     <span class="n">objective_flag</span> <span class="o">=</span> <span class="p">{</span>
         <span class="s2">"planarity"</span><span class="p">:</span> <span class="n">kernel_remesh</span><span class="o">.</span><span class="n">OBJECTIVE_PLANARITY</span><span class="p">,</span>
-        <span class="s2">"curvature"</span><span class="p">:</span> <span class="n">kernel_remesh</span><span class="o">.</span><span class="n">OBJECTIVE_CURVATURE</span><span class="p">,</span>
         <span class="s2">"t_vertex"</span><span class="p">:</span> <span class="n">kernel_remesh</span><span class="o">.</span><span class="n">OBJECTIVE_T_VERTEX</span><span class="p">,</span>
     <span class="p">}[</span><span class="n">objective</span><span class="p">]</span>
     <span class="n">metric_flag</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">_QUALITY_METRICS</span><span class="p">[</span><span class="n">metric</span><span class="p">]</span>  <span class="c1"># pyright: ignore[reportPrivateUsage]</span>
@@ -10535,48 +10606,7 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3649</span>
-<span class="normal">3650</span>
-<span class="normal">3651</span>
-<span class="normal">3652</span>
-<span class="normal">3653</span>
-<span class="normal">3654</span>
-<span class="normal">3655</span>
-<span class="normal">3656</span>
-<span class="normal">3657</span>
-<span class="normal">3658</span>
-<span class="normal">3659</span>
-<span class="normal">3660</span>
-<span class="normal">3661</span>
-<span class="normal">3662</span>
-<span class="normal">3663</span>
-<span class="normal">3664</span>
-<span class="normal">3665</span>
-<span class="normal">3666</span>
-<span class="normal">3667</span>
-<span class="normal">3668</span>
-<span class="normal">3669</span>
-<span class="normal">3670</span>
-<span class="normal">3671</span>
-<span class="normal">3672</span>
-<span class="normal">3673</span>
-<span class="normal">3674</span>
-<span class="normal">3675</span>
-<span class="normal">3676</span>
-<span class="normal">3677</span>
-<span class="normal">3678</span>
-<span class="normal">3679</span>
-<span class="normal">3680</span>
-<span class="normal">3681</span>
-<span class="normal">3682</span>
-<span class="normal">3683</span>
-<span class="normal">3684</span>
-<span class="normal">3685</span>
-<span class="normal">3686</span>
-<span class="normal">3687</span>
-<span class="normal">3688</span>
-<span class="normal">3689</span>
-<span class="normal">3690</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3690</span>
 <span class="normal">3691</span>
 <span class="normal">3692</span>
 <span class="normal">3693</span>
@@ -10715,7 +10745,48 @@ moves the diagonal to the short one, <code>1-3</code>:</p>
 <span class="normal">3826</span>
 <span class="normal">3827</span>
 <span class="normal">3828</span>
-<span class="normal">3829</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intrinsic_delaunay</span><span class="p">(</span>
+<span class="normal">3829</span>
+<span class="normal">3830</span>
+<span class="normal">3831</span>
+<span class="normal">3832</span>
+<span class="normal">3833</span>
+<span class="normal">3834</span>
+<span class="normal">3835</span>
+<span class="normal">3836</span>
+<span class="normal">3837</span>
+<span class="normal">3838</span>
+<span class="normal">3839</span>
+<span class="normal">3840</span>
+<span class="normal">3841</span>
+<span class="normal">3842</span>
+<span class="normal">3843</span>
+<span class="normal">3844</span>
+<span class="normal">3845</span>
+<span class="normal">3846</span>
+<span class="normal">3847</span>
+<span class="normal">3848</span>
+<span class="normal">3849</span>
+<span class="normal">3850</span>
+<span class="normal">3851</span>
+<span class="normal">3852</span>
+<span class="normal">3853</span>
+<span class="normal">3854</span>
+<span class="normal">3855</span>
+<span class="normal">3856</span>
+<span class="normal">3857</span>
+<span class="normal">3858</span>
+<span class="normal">3859</span>
+<span class="normal">3860</span>
+<span class="normal">3861</span>
+<span class="normal">3862</span>
+<span class="normal">3863</span>
+<span class="normal">3864</span>
+<span class="normal">3865</span>
+<span class="normal">3866</span>
+<span class="normal">3867</span>
+<span class="normal">3868</span>
+<span class="normal">3869</span>
+<span class="normal">3870</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">intrinsic_delaunay</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">epsilon</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="n">TOLERANCE_MOLLIFY</span><span class="p">,</span>
@@ -11101,48 +11172,7 @@ rebuilds them.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3832</span>
-<span class="normal">3833</span>
-<span class="normal">3834</span>
-<span class="normal">3835</span>
-<span class="normal">3836</span>
-<span class="normal">3837</span>
-<span class="normal">3838</span>
-<span class="normal">3839</span>
-<span class="normal">3840</span>
-<span class="normal">3841</span>
-<span class="normal">3842</span>
-<span class="normal">3843</span>
-<span class="normal">3844</span>
-<span class="normal">3845</span>
-<span class="normal">3846</span>
-<span class="normal">3847</span>
-<span class="normal">3848</span>
-<span class="normal">3849</span>
-<span class="normal">3850</span>
-<span class="normal">3851</span>
-<span class="normal">3852</span>
-<span class="normal">3853</span>
-<span class="normal">3854</span>
-<span class="normal">3855</span>
-<span class="normal">3856</span>
-<span class="normal">3857</span>
-<span class="normal">3858</span>
-<span class="normal">3859</span>
-<span class="normal">3860</span>
-<span class="normal">3861</span>
-<span class="normal">3862</span>
-<span class="normal">3863</span>
-<span class="normal">3864</span>
-<span class="normal">3865</span>
-<span class="normal">3866</span>
-<span class="normal">3867</span>
-<span class="normal">3868</span>
-<span class="normal">3869</span>
-<span class="normal">3870</span>
-<span class="normal">3871</span>
-<span class="normal">3872</span>
-<span class="normal">3873</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3873</span>
 <span class="normal">3874</span>
 <span class="normal">3875</span>
 <span class="normal">3876</span>
@@ -11183,7 +11213,48 @@ rebuilds them.</p>
 <span class="normal">3911</span>
 <span class="normal">3912</span>
 <span class="normal">3913</span>
-<span class="normal">3914</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide</span><span class="p">(</span>
+<span class="normal">3914</span>
+<span class="normal">3915</span>
+<span class="normal">3916</span>
+<span class="normal">3917</span>
+<span class="normal">3918</span>
+<span class="normal">3919</span>
+<span class="normal">3920</span>
+<span class="normal">3921</span>
+<span class="normal">3922</span>
+<span class="normal">3923</span>
+<span class="normal">3924</span>
+<span class="normal">3925</span>
+<span class="normal">3926</span>
+<span class="normal">3927</span>
+<span class="normal">3928</span>
+<span class="normal">3929</span>
+<span class="normal">3930</span>
+<span class="normal">3931</span>
+<span class="normal">3932</span>
+<span class="normal">3933</span>
+<span class="normal">3934</span>
+<span class="normal">3935</span>
+<span class="normal">3936</span>
+<span class="normal">3937</span>
+<span class="normal">3938</span>
+<span class="normal">3939</span>
+<span class="normal">3940</span>
+<span class="normal">3941</span>
+<span class="normal">3942</span>
+<span class="normal">3943</span>
+<span class="normal">3944</span>
+<span class="normal">3945</span>
+<span class="normal">3946</span>
+<span class="normal">3947</span>
+<span class="normal">3948</span>
+<span class="normal">3949</span>
+<span class="normal">3950</span>
+<span class="normal">3951</span>
+<span class="normal">3952</span>
+<span class="normal">3953</span>
+<span class="normal">3954</span>
+<span class="normal">3955</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -11593,48 +11664,7 @@ toward its smooth limit; the operator maps the 12 input vertices to the 42 outpu
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3935</span>
-<span class="normal">3936</span>
-<span class="normal">3937</span>
-<span class="normal">3938</span>
-<span class="normal">3939</span>
-<span class="normal">3940</span>
-<span class="normal">3941</span>
-<span class="normal">3942</span>
-<span class="normal">3943</span>
-<span class="normal">3944</span>
-<span class="normal">3945</span>
-<span class="normal">3946</span>
-<span class="normal">3947</span>
-<span class="normal">3948</span>
-<span class="normal">3949</span>
-<span class="normal">3950</span>
-<span class="normal">3951</span>
-<span class="normal">3952</span>
-<span class="normal">3953</span>
-<span class="normal">3954</span>
-<span class="normal">3955</span>
-<span class="normal">3956</span>
-<span class="normal">3957</span>
-<span class="normal">3958</span>
-<span class="normal">3959</span>
-<span class="normal">3960</span>
-<span class="normal">3961</span>
-<span class="normal">3962</span>
-<span class="normal">3963</span>
-<span class="normal">3964</span>
-<span class="normal">3965</span>
-<span class="normal">3966</span>
-<span class="normal">3967</span>
-<span class="normal">3968</span>
-<span class="normal">3969</span>
-<span class="normal">3970</span>
-<span class="normal">3971</span>
-<span class="normal">3972</span>
-<span class="normal">3973</span>
-<span class="normal">3974</span>
-<span class="normal">3975</span>
-<span class="normal">3976</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3976</span>
 <span class="normal">3977</span>
 <span class="normal">3978</span>
 <span class="normal">3979</span>
@@ -11820,7 +11850,48 @@ toward its smooth limit; the operator maps the 12 input vertices to the 42 outpu
 <span class="normal">4159</span>
 <span class="normal">4160</span>
 <span class="normal">4161</span>
-<span class="normal">4162</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_loop</span><span class="p">(</span>
+<span class="normal">4162</span>
+<span class="normal">4163</span>
+<span class="normal">4164</span>
+<span class="normal">4165</span>
+<span class="normal">4166</span>
+<span class="normal">4167</span>
+<span class="normal">4168</span>
+<span class="normal">4169</span>
+<span class="normal">4170</span>
+<span class="normal">4171</span>
+<span class="normal">4172</span>
+<span class="normal">4173</span>
+<span class="normal">4174</span>
+<span class="normal">4175</span>
+<span class="normal">4176</span>
+<span class="normal">4177</span>
+<span class="normal">4178</span>
+<span class="normal">4179</span>
+<span class="normal">4180</span>
+<span class="normal">4181</span>
+<span class="normal">4182</span>
+<span class="normal">4183</span>
+<span class="normal">4184</span>
+<span class="normal">4185</span>
+<span class="normal">4186</span>
+<span class="normal">4187</span>
+<span class="normal">4188</span>
+<span class="normal">4189</span>
+<span class="normal">4190</span>
+<span class="normal">4191</span>
+<span class="normal">4192</span>
+<span class="normal">4193</span>
+<span class="normal">4194</span>
+<span class="normal">4195</span>
+<span class="normal">4196</span>
+<span class="normal">4197</span>
+<span class="normal">4198</span>
+<span class="normal">4199</span>
+<span class="normal">4200</span>
+<span class="normal">4201</span>
+<span class="normal">4202</span>
+<span class="normal">4203</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_loop</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -12321,48 +12392,7 @@ returned when <code>return_index</code> is <code>True</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4246</span>
-<span class="normal">4247</span>
-<span class="normal">4248</span>
-<span class="normal">4249</span>
-<span class="normal">4250</span>
-<span class="normal">4251</span>
-<span class="normal">4252</span>
-<span class="normal">4253</span>
-<span class="normal">4254</span>
-<span class="normal">4255</span>
-<span class="normal">4256</span>
-<span class="normal">4257</span>
-<span class="normal">4258</span>
-<span class="normal">4259</span>
-<span class="normal">4260</span>
-<span class="normal">4261</span>
-<span class="normal">4262</span>
-<span class="normal">4263</span>
-<span class="normal">4264</span>
-<span class="normal">4265</span>
-<span class="normal">4266</span>
-<span class="normal">4267</span>
-<span class="normal">4268</span>
-<span class="normal">4269</span>
-<span class="normal">4270</span>
-<span class="normal">4271</span>
-<span class="normal">4272</span>
-<span class="normal">4273</span>
-<span class="normal">4274</span>
-<span class="normal">4275</span>
-<span class="normal">4276</span>
-<span class="normal">4277</span>
-<span class="normal">4278</span>
-<span class="normal">4279</span>
-<span class="normal">4280</span>
-<span class="normal">4281</span>
-<span class="normal">4282</span>
-<span class="normal">4283</span>
-<span class="normal">4284</span>
-<span class="normal">4285</span>
-<span class="normal">4286</span>
-<span class="normal">4287</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4287</span>
 <span class="normal">4288</span>
 <span class="normal">4289</span>
 <span class="normal">4290</span>
@@ -12404,7 +12434,48 @@ returned when <code>return_index</code> is <code>True</code>.</p>
 <span class="normal">4326</span>
 <span class="normal">4327</span>
 <span class="normal">4328</span>
-<span class="normal">4329</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_to_size</span><span class="p">(</span>
+<span class="normal">4329</span>
+<span class="normal">4330</span>
+<span class="normal">4331</span>
+<span class="normal">4332</span>
+<span class="normal">4333</span>
+<span class="normal">4334</span>
+<span class="normal">4335</span>
+<span class="normal">4336</span>
+<span class="normal">4337</span>
+<span class="normal">4338</span>
+<span class="normal">4339</span>
+<span class="normal">4340</span>
+<span class="normal">4341</span>
+<span class="normal">4342</span>
+<span class="normal">4343</span>
+<span class="normal">4344</span>
+<span class="normal">4345</span>
+<span class="normal">4346</span>
+<span class="normal">4347</span>
+<span class="normal">4348</span>
+<span class="normal">4349</span>
+<span class="normal">4350</span>
+<span class="normal">4351</span>
+<span class="normal">4352</span>
+<span class="normal">4353</span>
+<span class="normal">4354</span>
+<span class="normal">4355</span>
+<span class="normal">4356</span>
+<span class="normal">4357</span>
+<span class="normal">4358</span>
+<span class="normal">4359</span>
+<span class="normal">4360</span>
+<span class="normal">4361</span>
+<span class="normal">4362</span>
+<span class="normal">4363</span>
+<span class="normal">4364</span>
+<span class="normal">4365</span>
+<span class="normal">4366</span>
+<span class="normal">4367</span>
+<span class="normal">4368</span>
+<span class="normal">4369</span>
+<span class="normal">4370</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_to_size</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">max_edge</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span>
@@ -12903,48 +12974,7 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4613</span>
-<span class="normal">4614</span>
-<span class="normal">4615</span>
-<span class="normal">4616</span>
-<span class="normal">4617</span>
-<span class="normal">4618</span>
-<span class="normal">4619</span>
-<span class="normal">4620</span>
-<span class="normal">4621</span>
-<span class="normal">4622</span>
-<span class="normal">4623</span>
-<span class="normal">4624</span>
-<span class="normal">4625</span>
-<span class="normal">4626</span>
-<span class="normal">4627</span>
-<span class="normal">4628</span>
-<span class="normal">4629</span>
-<span class="normal">4630</span>
-<span class="normal">4631</span>
-<span class="normal">4632</span>
-<span class="normal">4633</span>
-<span class="normal">4634</span>
-<span class="normal">4635</span>
-<span class="normal">4636</span>
-<span class="normal">4637</span>
-<span class="normal">4638</span>
-<span class="normal">4639</span>
-<span class="normal">4640</span>
-<span class="normal">4641</span>
-<span class="normal">4642</span>
-<span class="normal">4643</span>
-<span class="normal">4644</span>
-<span class="normal">4645</span>
-<span class="normal">4646</span>
-<span class="normal">4647</span>
-<span class="normal">4648</span>
-<span class="normal">4649</span>
-<span class="normal">4650</span>
-<span class="normal">4651</span>
-<span class="normal">4652</span>
-<span class="normal">4653</span>
-<span class="normal">4654</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4654</span>
 <span class="normal">4655</span>
 <span class="normal">4656</span>
 <span class="normal">4657</span>
@@ -13170,7 +13200,48 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 <span class="normal">4877</span>
 <span class="normal">4878</span>
 <span class="normal">4879</span>
-<span class="normal">4880</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_region_to_size</span><span class="p">(</span>
+<span class="normal">4880</span>
+<span class="normal">4881</span>
+<span class="normal">4882</span>
+<span class="normal">4883</span>
+<span class="normal">4884</span>
+<span class="normal">4885</span>
+<span class="normal">4886</span>
+<span class="normal">4887</span>
+<span class="normal">4888</span>
+<span class="normal">4889</span>
+<span class="normal">4890</span>
+<span class="normal">4891</span>
+<span class="normal">4892</span>
+<span class="normal">4893</span>
+<span class="normal">4894</span>
+<span class="normal">4895</span>
+<span class="normal">4896</span>
+<span class="normal">4897</span>
+<span class="normal">4898</span>
+<span class="normal">4899</span>
+<span class="normal">4900</span>
+<span class="normal">4901</span>
+<span class="normal">4902</span>
+<span class="normal">4903</span>
+<span class="normal">4904</span>
+<span class="normal">4905</span>
+<span class="normal">4906</span>
+<span class="normal">4907</span>
+<span class="normal">4908</span>
+<span class="normal">4909</span>
+<span class="normal">4910</span>
+<span class="normal">4911</span>
+<span class="normal">4912</span>
+<span class="normal">4913</span>
+<span class="normal">4914</span>
+<span class="normal">4915</span>
+<span class="normal">4916</span>
+<span class="normal">4917</span>
+<span class="normal">4918</span>
+<span class="normal">4919</span>
+<span class="normal">4920</span>
+<span class="normal">4921</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_region_to_size</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -13768,48 +13839,7 @@ already split) is refined until it matches its surroundings:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4935</span>
-<span class="normal">4936</span>
-<span class="normal">4937</span>
-<span class="normal">4938</span>
-<span class="normal">4939</span>
-<span class="normal">4940</span>
-<span class="normal">4941</span>
-<span class="normal">4942</span>
-<span class="normal">4943</span>
-<span class="normal">4944</span>
-<span class="normal">4945</span>
-<span class="normal">4946</span>
-<span class="normal">4947</span>
-<span class="normal">4948</span>
-<span class="normal">4949</span>
-<span class="normal">4950</span>
-<span class="normal">4951</span>
-<span class="normal">4952</span>
-<span class="normal">4953</span>
-<span class="normal">4954</span>
-<span class="normal">4955</span>
-<span class="normal">4956</span>
-<span class="normal">4957</span>
-<span class="normal">4958</span>
-<span class="normal">4959</span>
-<span class="normal">4960</span>
-<span class="normal">4961</span>
-<span class="normal">4962</span>
-<span class="normal">4963</span>
-<span class="normal">4964</span>
-<span class="normal">4965</span>
-<span class="normal">4966</span>
-<span class="normal">4967</span>
-<span class="normal">4968</span>
-<span class="normal">4969</span>
-<span class="normal">4970</span>
-<span class="normal">4971</span>
-<span class="normal">4972</span>
-<span class="normal">4973</span>
-<span class="normal">4974</span>
-<span class="normal">4975</span>
-<span class="normal">4976</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4976</span>
 <span class="normal">4977</span>
 <span class="normal">4978</span>
 <span class="normal">4979</span>
@@ -13967,7 +13997,48 @@ already split) is refined until it matches its surroundings:</p>
 <span class="normal">5131</span>
 <span class="normal">5132</span>
 <span class="normal">5133</span>
-<span class="normal">5134</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
+<span class="normal">5134</span>
+<span class="normal">5135</span>
+<span class="normal">5136</span>
+<span class="normal">5137</span>
+<span class="normal">5138</span>
+<span class="normal">5139</span>
+<span class="normal">5140</span>
+<span class="normal">5141</span>
+<span class="normal">5142</span>
+<span class="normal">5143</span>
+<span class="normal">5144</span>
+<span class="normal">5145</span>
+<span class="normal">5146</span>
+<span class="normal">5147</span>
+<span class="normal">5148</span>
+<span class="normal">5149</span>
+<span class="normal">5150</span>
+<span class="normal">5151</span>
+<span class="normal">5152</span>
+<span class="normal">5153</span>
+<span class="normal">5154</span>
+<span class="normal">5155</span>
+<span class="normal">5156</span>
+<span class="normal">5157</span>
+<span class="normal">5158</span>
+<span class="normal">5159</span>
+<span class="normal">5160</span>
+<span class="normal">5161</span>
+<span class="normal">5162</span>
+<span class="normal">5163</span>
+<span class="normal">5164</span>
+<span class="normal">5165</span>
+<span class="normal">5166</span>
+<span class="normal">5167</span>
+<span class="normal">5168</span>
+<span class="normal">5169</span>
+<span class="normal">5170</span>
+<span class="normal">5171</span>
+<span class="normal">5172</span>
+<span class="normal">5173</span>
+<span class="normal">5174</span>
+<span class="normal">5175</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -14543,48 +14614,7 @@ splits just the two faces sharing that edge:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5235</span>
-<span class="normal">5236</span>
-<span class="normal">5237</span>
-<span class="normal">5238</span>
-<span class="normal">5239</span>
-<span class="normal">5240</span>
-<span class="normal">5241</span>
-<span class="normal">5242</span>
-<span class="normal">5243</span>
-<span class="normal">5244</span>
-<span class="normal">5245</span>
-<span class="normal">5246</span>
-<span class="normal">5247</span>
-<span class="normal">5248</span>
-<span class="normal">5249</span>
-<span class="normal">5250</span>
-<span class="normal">5251</span>
-<span class="normal">5252</span>
-<span class="normal">5253</span>
-<span class="normal">5254</span>
-<span class="normal">5255</span>
-<span class="normal">5256</span>
-<span class="normal">5257</span>
-<span class="normal">5258</span>
-<span class="normal">5259</span>
-<span class="normal">5260</span>
-<span class="normal">5261</span>
-<span class="normal">5262</span>
-<span class="normal">5263</span>
-<span class="normal">5264</span>
-<span class="normal">5265</span>
-<span class="normal">5266</span>
-<span class="normal">5267</span>
-<span class="normal">5268</span>
-<span class="normal">5269</span>
-<span class="normal">5270</span>
-<span class="normal">5271</span>
-<span class="normal">5272</span>
-<span class="normal">5273</span>
-<span class="normal">5274</span>
-<span class="normal">5275</span>
-<span class="normal">5276</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5276</span>
 <span class="normal">5277</span>
 <span class="normal">5278</span>
 <span class="normal">5279</span>
@@ -14725,7 +14755,48 @@ splits just the two faces sharing that edge:</p>
 <span class="normal">5414</span>
 <span class="normal">5415</span>
 <span class="normal">5416</span>
-<span class="normal">5417</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
+<span class="normal">5417</span>
+<span class="normal">5418</span>
+<span class="normal">5419</span>
+<span class="normal">5420</span>
+<span class="normal">5421</span>
+<span class="normal">5422</span>
+<span class="normal">5423</span>
+<span class="normal">5424</span>
+<span class="normal">5425</span>
+<span class="normal">5426</span>
+<span class="normal">5427</span>
+<span class="normal">5428</span>
+<span class="normal">5429</span>
+<span class="normal">5430</span>
+<span class="normal">5431</span>
+<span class="normal">5432</span>
+<span class="normal">5433</span>
+<span class="normal">5434</span>
+<span class="normal">5435</span>
+<span class="normal">5436</span>
+<span class="normal">5437</span>
+<span class="normal">5438</span>
+<span class="normal">5439</span>
+<span class="normal">5440</span>
+<span class="normal">5441</span>
+<span class="normal">5442</span>
+<span class="normal">5443</span>
+<span class="normal">5444</span>
+<span class="normal">5445</span>
+<span class="normal">5446</span>
+<span class="normal">5447</span>
+<span class="normal">5448</span>
+<span class="normal">5449</span>
+<span class="normal">5450</span>
+<span class="normal">5451</span>
+<span class="normal">5452</span>
+<span class="normal">5453</span>
+<span class="normal">5454</span>
+<span class="normal">5455</span>
+<span class="normal">5456</span>
+<span class="normal">5457</span>
+<span class="normal">5458</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">split_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
