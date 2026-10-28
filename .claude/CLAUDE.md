@@ -1307,7 +1307,8 @@ as it stands; an upgrade means adding the reference's own algorithm as an option
 
 - `heat_geodesic` against `igl.exact_geodesic` (the heat method's own error), MeshLib's
   `computeSurfaceDistances` (fast marching) and pyvista's Dijkstra edge distance (a two-sided
-  bound): an upgrade is a fast-marching option (MeshLib, MeshLab and potpourri3d time one).
+  bound). MeshLib's front is now ported (`Closed 2026-10-28: fast marching as parallel rounds`);
+  MeshLab's and potpourri3d's fronts remain upgrades.
 - `geodesic_path`: an inequality against `igl.exact_geodesic` and a per-cent of potpourri3d's
   `EdgeFlipGeodesicSolver` on a sphere; an upgrade is an edge-flip shortening option.
 - `trace_from_vertex` (a trimesh distance bound, no oracle); `shorten_loop` against MeshLib's
@@ -1403,6 +1404,22 @@ The rounds run as one conditional graph on CUDA: the flood costs 4.7 ms on bunny
 dragon, the whole call 1.8x the old mesh-level winding (still 3.5x faster than MeshLib's).
 Detail, the measured schedules and each optimization step: `reference/component-status.md`,
 reconstruction.
+
+### Closed 2026-10-28: fast marching as parallel rounds
+
+`heat.fast_marching_distance(method="meshlib")` is MeshLib's `computeSurfaceDistances` front (edge
+offer `d(a) + |ac|`, the two-corner planar face update with its squared-cosine rejection tests,
+every offer strictly past its origin) relaxed as a Jacobi fixpoint: one face pass a round, an exact
+`float32` `atomic_min` per corner, the envelope's captured round loop. **The uncapped serial front
+reaches the same fixpoint**: against `maxVertUpdates=255` the CPU device is bit-identical on every
+fixture and source tried and CUDA within 2.9e-6 of the range (FMA), Class A. MeshLib's default cap
+of 3 re-openings leaves stale distances in queue order (up to 2.9 % of the range on
+`torus_irregular_holes`; the cap does not change MeshLib's cost), so the parity test passes 255.
+Rounds track the diameter in edges; on CUDA 4.4x / 7.3x faster than MeshLib at 41 k / 164 k
+vertices, 1.2x slower at 10 k (launch-bound). The front is a poor geodesic on needles (12.5 % of
+the range from `igl.exact_geodesic` on `sphere_irregular`, vcg's front 4.5 %): it is a
+reproduction, not a better distance. A frontier-restricted pass (only faces touching last round's changes) is the
+unpriced lever for large meshes.
 
 ### Open items from the 2026-10-23 uncapped sweep: ordito on large meshes
 

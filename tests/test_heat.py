@@ -59,6 +59,7 @@ from tests.conftest import (
 from tests.conversions import (
     bsr_to_dense,
     meshlib_scalars_to_numpy,
+    numpy_to_meshlib_bitset,
     numpy_to_warp,
     points_to_warp,
     points_to_warp_uv,
@@ -481,7 +482,8 @@ def test_heat_geodesic_matches_igl(
     "front where ordito solves two sparse systems -- so its row belongs in the "
     "fast_marching_distance group beside potpourri3d, pymeshlab and igl's exact_geodesic, and that "
     "is where it is timed. Putting it in heat_geodesic would price a different algorithm under "
-    "that group's name. The values are nonetheless comparable, which is what this test checks.",
+    "that group's name; there ordito's fast_marching_distance reproduces it (Class A). The values "
+    "are nonetheless comparable with the heat method's, which is what this test checks.",
 )
 def test_heat_geodesic_matches_meshlib(
     device: str, sphere_round: tuple[tm.Trimesh, wp.Mesh]
@@ -934,6 +936,141 @@ def _distance_pp(
             [[(int(vertex), []) for vertex in closed]], level_set_constraint=level_set_constraint
         )
     )
+
+
+# ---------------------------------------------------------------------------
+# fast_marching_distance
+# ---------------------------------------------------------------------------
+
+_FLT_MAX = float(np.finfo(np.float32).max)
+"""``computeSurfaceDistances``' "unreached": its default ``maxDist`` too, so no cut-off."""
+
+
+def _surface_distances_meshlib(mesh_tm: tm.Trimesh, sources: list[int], updates: int) -> np.ndarray:
+    """``computeSurfaceDistances`` from ``sources``, uncut, ``updates`` re-openings a vertex."""
+    mesh_ml = trimesh_to_meshlib(mesh_tm)
+    flags_np = np.zeros(len(mesh_tm.vertices), dtype=bool)
+    flags_np[sources] = True
+    starts_ml = mm.VertBitSet(numpy_to_meshlib_bitset(flags_np))
+    return meshlib_scalars_to_numpy(
+        mm.computeSurfaceDistances(mesh_ml, starts_ml, maxVertUpdates=updates)
+    )
+
+
+@pytest.mark.parametrize("sources", ["first", "middle", "three"])
+@pytest.mark.parametrize("mesh_name", [*MESHES, "torus_irregular_holes"])
+@pytest.mark.parity("fast_marching_distance", "meshlib")
+def test_fast_marching_distance_matches_meshlib(
+    request: pytest.FixtureRequest, mesh_name: str, sources: str
+) -> None:
+    """
+    Class A: MeshLib's ``computeSurfaceDistances`` run with ``maxVertUpdates=255``.
+
+    Both answer the fixpoint of the same edge and face updates, MeshLib by a serial queue and
+    ordito by parallel rounds; uncapped, the queue reaches it. Measured on the CPU device the two
+    fields are equal bit for bit on every case here; on CUDA within 2.9e-6 of the range (fused
+    multiply-adds). The three fixtures are the needles and obtuse faces where the face update's
+    rejection tests decide most, and the holed torus adds several rims. Three sources make the
+    fronts meet.
+
+    The cap is what the default call differs by: at MeshLib's default of three updates a vertex the
+    queue re-opens a fourth time keeps its stale distance (up to 2.9 % of the range on these
+    fixtures), which ``test_fast_marching_distance_is_not_the_capped_front`` pins.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    n_vertices = len(mesh_tm.vertices)
+    chosen = {
+        "first": [0],
+        "middle": [n_vertices // 2],
+        "three": [0, n_vertices // 3, n_vertices // 2],
+    }
+    sources_np = np.array(chosen[sources], dtype=np.int32)
+
+    distance_ml = _surface_distances_meshlib(mesh_tm, sources_np.tolist(), 255)
+    distance_wp = od.heat.fast_marching_distance(
+        mesh_wp.points, mesh_wp.indices, wp.array(sources_np, dtype=wp.int32, device=mesh_wp.device)
+    ).numpy()
+
+    assert np.all(distance_ml < _FLT_MAX)  # every vertex reached: one component
+    assert np.ptp(distance_ml) > 1.0
+    assert np.allclose(distance_wp, distance_ml, rtol=1e-5, atol=1e-5)
+
+
+def test_fast_marching_distance_is_not_the_capped_front(
+    torus_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a parity assert: MeshLib's default re-opening cap leaves a different field.
+
+    The serial front re-opens a vertex each time a face update lowers it after it was popped; at
+    the default ``maxVertUpdates=3`` it stops, keeping a distance a further round would lower, so
+    which vertices keep one depends on the queue's order. Measured from vertex 0 on
+    ``torus_irregular``: up to 5.7e-3 of the range above the uncapped field, never below it.
+    """
+    mesh_tm, mesh_wp = torus_irregular
+    capped_ml = _surface_distances_meshlib(mesh_tm, [0], 3)
+    distance_wp = od.heat.fast_marching_distance(
+        mesh_wp.points, mesh_wp.indices, wp.array([0], dtype=wp.int32, device=mesh_wp.device)
+    ).numpy()
+    gap = capped_ml - distance_wp
+    assert gap.max() > 1e-3 * np.ptp(capped_ml)
+    assert gap.min() > -1e-5 * np.ptp(capped_ml)
+
+
+@pytest.mark.parity("fast_marching_distance", "meshlib")
+def test_fast_marching_distance_leaves_other_components_unreached(
+    sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class B: MeshLib's ``FLT_MAX`` "unreached" read as ``inf``.
+
+    ``sphere_irregular_hollow`` is two shells; a source on one never reaches the other, and the
+    reached shell still agrees to the standard tolerance.
+    """
+    mesh_tm, mesh_wp = sphere_irregular_hollow
+    distance_ml = _surface_distances_meshlib(mesh_tm, [0], 255)
+    distance_wp = od.heat.fast_marching_distance(
+        mesh_wp.points, mesh_wp.indices, wp.array([0], dtype=wp.int32, device=mesh_wp.device)
+    ).numpy()
+
+    unreached_ml = distance_ml == _FLT_MAX
+    assert 0 < unreached_ml.sum() < len(distance_ml)  # both shells present
+    assert np.array_equal(np.isinf(distance_wp), unreached_ml)
+    assert np.allclose(distance_wp[~unreached_ml], distance_ml[~unreached_ml], rtol=1e-5, atol=1e-5)
+
+
+def test_fast_marching_distance_edge_cases(device: str) -> None:
+    """
+    Not a library comparison: the guards, and the degenerate inputs that skip the rounds.
+
+    No source leaves every vertex unreached; a mesh with no faces reaches only its sources; an
+    out-of-range source and an unknown method raise.
+    """
+    mesh_wp = trimesh_to_warp(tm.creation.icosphere(subdivisions=1), device)
+    n_vertices = mesh_wp.points.shape[0]
+    none_wp = warp_empty(0, wp.int32, device)
+    assert np.all(
+        np.isinf(od.heat.fast_marching_distance(mesh_wp.points, mesh_wp.indices, none_wp).numpy())
+    )
+
+    no_faces_wp = warp_empty(0, wp.int32, device)
+    alone_np = od.heat.fast_marching_distance(
+        mesh_wp.points, no_faces_wp, wp.array([2], dtype=wp.int32, device=device)
+    ).numpy()
+    assert alone_np[2] == 0.0
+    assert np.isinf(np.delete(alone_np, 2)).all()
+
+    with pytest.raises(ValueError, match=r"every entry of sources must be a vertex index"):
+        od.heat.fast_marching_distance(
+            mesh_wp.points, mesh_wp.indices, wp.array([n_vertices], dtype=wp.int32, device=device)
+        )
+    with pytest.raises(ValueError, match="method must be 'meshlib'"):
+        od.heat.fast_marching_distance(
+            mesh_wp.points,
+            mesh_wp.indices,
+            none_wp,
+            method="potpourri3d",  # pyright: ignore[reportArgumentType]
+        )
 
 
 # ---------------------------------------------------------------------------

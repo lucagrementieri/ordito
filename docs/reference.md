@@ -78,7 +78,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | **Differential geometry** | |
 | cotangent Laplacian and mass matrix | [`laplacian.cotmatrix`][ordito.laplacian.cotmatrix], [`laplacian.mass_matrix`][ordito.laplacian.mass_matrix] |
 | solve a constrained quadratic (harmonic, biharmonic fields) | [`linalg.min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] |
-| geodesic distance | [`heat.heat_geodesic`][ordito.heat.heat_geodesic] (approximate, fast), [`geodesic_walk.geodesic_path`][ordito.geodesic_walk.geodesic_path] |
+| geodesic distance | [`heat.heat_geodesic`][ordito.heat.heat_geodesic] (approximate, fast), [`heat.fast_marching_distance`][ordito.heat.fast_marching_distance] (first-order front, no solve), [`geodesic_walk.geodesic_path`][ordito.geodesic_walk.geodesic_path] |
 | flatten to the plane (UV parametrization) | [`parametrization`][ordito.parametrization]: [`harmonic`][ordito.parametrization.harmonic], [`lscm`][ordito.parametrization.lscm], [`arap`][ordito.parametrization.arap] |
 | bake or sample textures | [`texture`][ordito.texture] |
 | **Arrays** | |

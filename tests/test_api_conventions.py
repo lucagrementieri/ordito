@@ -788,8 +788,11 @@ def test_uncitable_scan_catches_every_shape_it_has_seen_and_not_circumradius() -
         # The promesh half: the package, and the one function a comment claimed to port.
         "(the Warp port of promesh's ``triangulate_boundaries``)",
         "Mirrors promesh's private helper of the same name.",
+        # One quote does not make the quoted method value: a possessive has its apostrophe after.
+        "MeshLib's surface-distance front",
     ]
     ignored = [
+        'method="meshlib" reproduces it',  # the exempt method value, quoted on both sides
         "circumradius over twice the inradius",  # the \b, under IGNORECASE
         "the mrunning total",  # the scoped (?-i:), under IGNORECASE
         "MeshLab's ``inradius/circumradius``",  # pymeshlab is GPL and may be named

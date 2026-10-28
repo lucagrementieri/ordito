@@ -260,12 +260,11 @@ class BenchmarkScan:
         """
         Every ``(group, library)`` pair that a correctness test could meaningfully cover.
 
-        A group whose ``benchlibs`` has no ``ordito`` entry contributes nothing: it prices two
-        references against each other (``fast_marching_distance`` times potpourri3d against
-        pymeshlab for an algorithm ordito deliberately does not implement), so "ordito agrees with
-        this reference" is not a statement about it. Excluding those here rather than exempting them
-        one by one keeps the rule general -- a group that loses its ordito branch by accident stops
-        demanding coverage instead of silently keeping a stale exemption.
+        A group whose ``benchlibs`` has no ``ordito`` entry contributes nothing: it prices
+        references against each other for an algorithm ordito does not implement, so "ordito
+        agrees with this reference" is not a statement about it. Excluding those here rather than
+        exempting them one by one keeps the rule general -- a group that loses its ordito branch by
+        accident stops demanding coverage instead of silently keeping a stale exemption.
         """
         return {
             (group, library)

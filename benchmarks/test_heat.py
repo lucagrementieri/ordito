@@ -31,8 +31,8 @@ comparison; on a scan mesh ``heat_geodesics_precompute`` raises ``Precomputation
 factors the cotangent and Poisson systems directly. **potpourri3d** (geometry-central) is
 constructed with ``use_robust=False`` so all three sides discretize the same triangulation — its
 default mollifies and flips to an intrinsic Delaunay triangulation first, which is more work and a
-different operator — and it also ships **fast marching**, timed as its own group, which ordito has
-no equivalent of by design. **pymeshlab**'s
+different operator — and it also ships **fast marching**, timed as its own group beside ordito's
+``fast_marching_distance``. **pymeshlab**'s
 ``compute_scalar_by_heat_geodesic_distance_from_selection_per_vertex`` states the two properties
 this module is built around in its own documentation ("very sensitive to triangulation", "first run
 takes longer as factorization has to be built"), so it is the only reference whose amortized row
@@ -110,6 +110,7 @@ fails there, so no group uses that mesh. trimesh, libigl and open3d have no tang
 from __future__ import annotations
 
 import itertools
+import math
 
 import igl
 import numpy as np
@@ -312,26 +313,47 @@ def _mesh_ml(bench_case: BenchCase) -> mm.Mesh:
 
 @pytest.mark.benchmark(group="fast_marching_distance")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("potpourri3d", "pymeshlab", "igl", "meshlib")
+@pytest.mark.benchlibs("ordito", "potpourri3d", "pymeshlab", "igl", "meshlib")
+@pytest.mark.noparity(
+    "potpourri3d",
+    reason="D2 another front: geometry-central's fast marching takes a different face update and "
+    "acceptance order. Measured from vertex 0, 9.4 % (sphere_irregular), 0.44 % (saddle_graded) "
+    "and 6.5 % (torus_irregular) of the range at worst from ordito's field, means 1.8 %, 0.002 % "
+    "and 1.5 %; against igl.exact_geodesic potpourri3d itself is 21 %, 2.7 % and 11 % off.",
+)
+@pytest.mark.noparity(
+    "pymeshlab",
+    reason="D2 another front: vcg's geodesic unfolds a face pair per step, a different update. "
+    "Measured from vertex 0, 11 % (sphere_irregular), 2.6 % (saddle_graded) and 7.4 % "
+    "(torus_irregular) of the range at worst from ordito's field; it is the closer of the two to "
+    "igl.exact_geodesic (4.5 %, 0.14 %, 3.8 % against ordito's 12.5 %, 2.7 %, 6.3 %).",
+)
+@pytest.mark.noparity(
+    "igl",
+    reason="D2 the exact polyhedral distance (MMP windows), not a first-order front: ordito's "
+    "field is 12.5 % (sphere_irregular), 2.7 % (saddle_graded) and 6.3 % (torus_irregular) of the "
+    "range from it at worst, the method's own discretization error.",
+)
 def test_fast_marching_distance(bench_case: BenchCase) -> None:
     """
-    The serial single-source geodesics, for scale against the heat solvers on the same meshes.
+    The serial single-source fronts, for scale against the heat solvers on the same meshes.
 
-    ordito deliberately has no equivalent -- fast marching advances a priority queue one vertex at
-    a time and has no parallel formulation -- so it has no row here. It is here to price that
-    decision: the non-PDE alternatives for the same task, on the same axis and the same meshes, so
-    the numbers can be read next to the ``heat_geodesic`` table. This group therefore contributes no
-    ``parity`` pairs by construction (see ``tests/parity.py``): "ordito agrees" is not a statement
-    about a row ordito does not have.
+    ordito's row is ``heat.fast_marching_distance``: the fixpoint of the label-correcting front's
+    edge and face updates, reached by relaxing every face in parallel rounds instead of popping a
+    queue (``tests/test_heat.py::test_fast_marching_distance_matches_meshlib``, Class A against
+    meshlib's front uncapped). A round is one face pass and the round count follows the mesh's
+    diameter in edges, so its work is ``n_faces`` times that diameter where a serial front's is
+    ``n log n``: the GPU's width against the extra work is what this row prices.
 
-    Four rows, four serial fronts: potpourri3d's fast marching solves the local Eikonal update per
-    triangle, MeshLab's ``compute_scalar_by_geodesic_distance_from_given_point_per_vertex`` advances
-    a Dijkstra-style front over the edge graph, **libigl's ``exact_geodesic``** propagates the MMP
-    exact windows -- the only one that is exact rather than first-order -- and **meshlib's
-    ``computeSurfaceDistances``** is a fourth Eikonal front, the only one of the four that is
-    multi-threaded. Its accuracy is measured against ordito's heat method and against the exact
-    great-circle field in ``tests/test_heat_distance.py``, where it matches ordito's own worst
-    deviation, so this row is a like-for-like cost for a like-for-like answer.
+    Four reference rows, four serial fronts: potpourri3d's fast marching solves the local Eikonal
+    update per triangle, MeshLab's
+    ``compute_scalar_by_geodesic_distance_from_given_point_per_vertex`` advances a Dijkstra-style
+    front unfolding face pairs, **libigl's ``exact_geodesic``** propagates the MMP exact windows --
+    the only one that is exact rather than first-order -- and **meshlib's
+    ``computeSurfaceDistances``** is the front ordito reproduces, the only one of the four that is
+    multi-threaded. meshlib runs at its default ``maxVertUpdates`` of 3, the call a user makes; the
+    cap changes the answer (the parity test runs 255) but not the cost (1.00x either way on a
+    jittered ``icosphere(6)`` and ``icosphere(7)``).
 
     **igl is capped at ``sphere_small`` with ``rounds=1``, and the slope says why.** At one source
     with every vertex as a target it rises by well over an order of magnitude per 4x step, so the
@@ -342,6 +364,15 @@ def test_fast_marching_distance(bench_case: BenchCase) -> None:
     needs **all six** arguments. A four-argument call binds ``vt`` to ``FS`` and returns an *empty
     array* rather than raising, so the two face arrays are passed explicitly empty.
     """
+    if bench_case.kind == "ordito":
+        vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+        sources = _sources_wp(bench_case)
+        distance = bench_case.run(
+            lambda: od.heat.fast_marching_distance(vertices, faces, sources),
+            rounds=_GEODESIC_ROUNDS,
+        )
+        assert distance.shape == (bench_case.n_vertices,)
+        return
     if bench_case.kind == "meshlib":
         # ``startVertices`` is a VertBitSet over the vertex domain -- there is no index-list
         # overload -- and it is the input, so it is built outside the timed callable. The mesh is
@@ -375,14 +406,15 @@ def test_fast_marching_distance(bench_case: BenchCase) -> None:
         assert distance_igl.shape == (bench_case.n_vertices,)
         return
     if bench_case.kind == "pymeshlab":
-        # ``maxdistance=PureValue(0)`` disables the cut-off, so the front covers the whole mesh --
-        # the default 50% of the bbox diagonal would stop early and measure less work.
+        # An infinite ``maxdistance`` lifts the cut-off, so the front covers the whole mesh: the
+        # default 50% of the bbox diagonal stops early, and ``PureValue(0)`` (what this row passed
+        # until 2026-10-28) stops at once and returns zeros, timing no front at all.
         start_np = np.ascontiguousarray(bench_case.vertices_np[int(_SOURCES[0])], dtype=np.float64)
         bench_case.run(
             lambda: (
                 bench_case.new_meshset_pml()
             ).compute_scalar_by_geodesic_distance_from_given_point_per_vertex(
-                startpoint=start_np, maxdistance=ml.PureValue(0.0)
+                startpoint=start_np, maxdistance=ml.PureValue(math.inf)
             ),
             rounds=_GEODESIC_ROUNDS,
         )

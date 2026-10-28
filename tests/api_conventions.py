@@ -2121,9 +2121,11 @@ _UNCITABLE_REFERENCES = re.compile(
     # ``(?-i:)``, so that ``IGNORECASE`` on the rest cannot turn it into "any word starting with
     # mr". The ``\b`` is what keeps ``circumradius`` from matching it either way.
     # The one exception is the quoted method value ``"meshlib"`` (owner decision, 2026-10-28): an
-    # option reproducing that library is named for it, like ``"open3d"`` or ``"meshlab"``, so the
-    # quote marks on either side exempt it; the library in prose stays uncitable.
-    r"(?<![\"'])\bmeshlib\b(?![\"'])|\bmrmesh(py|numpy)\b|(?-i:\bMR[A-Z][A-Za-z]{2,})"
+    # option reproducing that library is named for it, like ``"open3d"`` or ``"meshlab"``, so a
+    # quote mark on *both* sides exempts it; the library in prose stays uncitable. One quote is not
+    # enough: the possessive ``MeshLib's`` has an apostrophe after it, which a pattern exempting
+    # either side alone let through.
+    r"(?<![\"'])\bmeshlib\b|\bmeshlib\b(?![\"'])|\bmrmesh(py|numpy)\b|(?-i:\bMR[A-Z][A-Za-z]{2,})"
     r"|\bFanOptimizer\b|\bbuildLocalTriangulation\b|\bpositionVertsSmoothly"
     r"|\bcalcQueueElement|\bupdateBorderQueueElement"
     r"|\bpromesh\b|\btriangulate_boundaries\b",

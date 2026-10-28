@@ -19,6 +19,10 @@ it diffuses and how it reads the result back:
   *tangent vectors* through the connection Laplacian, which transports each vector into its
   neighbour's frame before differencing (``potpourri3d.MeshVectorHeatSolver``).
 
+Beside them, [`fast_marching_distance`][ordito.heat.fast_marching_distance] answers the first
+task without a diffusion: a front marched across the faces, the serial alternative to the heat
+method, solved here in parallel rounds.
+
 The three are one module because two of them cannot be separated: the vector solvers import
 [`heat_operators`][ordito.heat.heat_operators] and [`heat_geodesic`][ordito.heat.heat_geodesic],
 [`VectorHeatOperators`][ordito.heat.VectorHeatOperators] embeds the scalar method's operator tuple,
@@ -57,11 +61,12 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device, run_device_loop
 from ordito.cholesky import SparseCholesky, held_nbytes
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.halfedge import vertex_one_rings
+from ordito.kernels import array as kernel_array
 from ordito.kernels import heat as kernel_heat
 from ordito.kernels import linalg as kernel_linalg
 from ordito.kernels import reduce as kernel_reduce
@@ -519,6 +524,140 @@ def _heat_geodesic(
     )
     _log_discarded("heat_geodesic", owned, solver)
     return distance
+
+
+def fast_marching_distance(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    sources: wp.array[wp.int32],
+    *,
+    method: Literal["meshlib"] = "meshlib",
+) -> wp.array[wp.float32]:
+    """
+    Geodesic distance to the nearest source vertex, by a front marched across the faces.
+
+    Each vertex's distance is the smallest a front from the sources offers it: along an edge from a
+    reached neighbour, ``d(a) + |a c|``, or across a face whose other two corners ``a`` and ``b``
+    are reached, as the planar wave through them (the first-order Eikonal update of fast marching)
+    where that wave enters the face between ``a c`` and ``b c``. The answer is the fixpoint of the
+    two rules, which a serial front reaches by popping vertices nearest first and the call reaches
+    by relaxing every face against the previous round's distances until nothing moves.
+
+    Unlike [`heat_geodesic`][ordito.heat.heat_geodesic] there is no linear solve and no diffusion
+    time: the field is a first-order approximation of the geodesic distance, within about a per
+    cent on well-shaped meshes and coarser across needles and obtuse faces, where the face update
+    is rejected and the front falls back to edges. It runs in ``float32``.
+
+    ``method`` names whose rules the front reproduces:
+
+    - ``"meshlib"``: that library's surface-distance front, with its edge offer, its face update
+      and the update's rejection tests, and its rule that an offer always lands strictly past its
+      origin. Allowed to re-open a vertex 255 times, its serial front reaches this fixpoint and the
+      two agree to rounding. At its default of three re-openings a vertex is left where its queue
+      happened to stop, up to a few per cent of the range on irregular meshes.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions.
+    faces
+        ``(3 * n_faces,)`` triangle index buffer.
+    sources
+        ``(n_sources,)`` source vertex indices, at distance zero.
+    method
+        ``"meshlib"`` (the only one): whose front to reproduce (above).
+
+    Returns
+    -------
+    wp.array[wp.float32]
+        ``(n_vertices,)`` distance field on the mesh's device; ``inf`` on a vertex no face or edge
+        path connects to a source.
+
+    Raises
+    ------
+    ValueError
+        If an entry of ``sources`` is not a vertex index in ``[0, n_vertices)``, or ``method`` is
+        not ``"meshlib"``.
+    RuntimeError
+        If ``vertices``, ``faces`` and ``sources`` are not all on one device.
+
+    Notes
+    -----
+    One face pass a round, each a pure function of the previous round's distances, so the answer
+    is the same on both devices and under any thread order. A round carries the front about one ring
+    further, so the number of rounds is about the mesh's diameter in edges, plus the rounds a face
+    update takes to undercut an edge path already laid. On CUDA the rounds run as one conditional
+    graph, with no readback between them.
+
+    See Also
+    --------
+    [`heat_geodesic`][ordito.heat.heat_geodesic]
+    [`shortest_path_envelope`][ordito.graph.shortest_path_envelope]
+
+    Examples
+    --------
+    Pole to pole on a unit sphere the true geodesic distance is ``pi``; the front is within a
+    per cent of it:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    heights = vertices.numpy()[:, 2]
+    north, south = int(np.argmax(heights)), int(np.argmin(heights))
+    distance = od.heat.fast_marching_distance(vertices, faces, wp.array([north], dtype=wp.int32))
+    print(distance.numpy()[north])  # 0.0
+    print(f"{distance.numpy()[south]:.2f}")  # 3.11
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces, sources=sources)
+    if method != "meshlib":
+        raise ValueError(f"method must be 'meshlib', got {method!r}")
+    device = vertices.device
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
+    labels = _launch.full(n_vertices, math.inf, dtype=wp.float32, device=device)
+    if sources.size == 0:
+        return labels
+    invalid = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_heat.seed_front_sources,
+        dim=sources.size,
+        inputs=[sources],
+        outputs=[labels, invalid],
+        device=device,
+    )
+    _require_indices_in_range(invalid, n_vertices, "fast_marching_distance", "sources")
+    if n_faces == 0:
+        return labels
+
+    relaxed = _launch.clone(labels)
+    # The shared round-loop word (``kernels/array.py``), its condition seeded non-zero because
+    # ``wp.capture_while`` reads it before the first round. Each round lowers at least one distance
+    # or ends the loop; the cap of ``n_vertices`` rounds is insurance for a captured loop, never
+    # met on a mesh (rounds track the diameter in edges).
+    state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
+    max_rounds = wp.int32(n_vertices)
+
+    def front_round() -> None:
+        # One pass into ``relaxed``, then its answer copied back over ``labels``: a captured body
+        # replays the pointers it recorded, so the two buffers cannot swap names between rounds,
+        # and the pass needs ``relaxed`` to hold ``labels`` on entry.
+        _launch.launch(
+            kernel_heat.fast_marching_pass,
+            dim=n_faces,
+            inputs=[vertices, faces, labels],
+            outputs=[relaxed, state],
+            device=device,
+        )
+        _launch.copy(labels, relaxed)
+        _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)
+
+    run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), front_round)
+    return labels
 
 
 # --------------------------------------------------------------------------------------

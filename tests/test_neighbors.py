@@ -1947,7 +1947,7 @@ def test_geodesic_ball_neighborhoods(mesh_name: str, request: pytest.FixtureRequ
     "over the vertex buffer rather than MeshLib -- the per-element rule. It is nonetheless the "
     "only reference that answers this question at all, and it agrees exactly, which is what "
     "this test "
-    "records; its own timed row is in the heat_geodesic group as a fast-marching front.",
+    "records; its own timed row is in the fast_marching_distance group.",
 )
 def test_geodesic_ball_matches_meshlib(device: str) -> None:
     """

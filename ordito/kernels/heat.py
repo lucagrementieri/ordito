@@ -19,6 +19,7 @@ import warp as wp
 
 from ordito.constants import TOLERANCE_ZERO_CONSTANT
 from ordito.kernels.array import (
+    LOOP_PROGRESS,
     OverloadTable,
     binary_search_index,
     cross2,
@@ -405,6 +406,159 @@ def unit_gradient_divergence(
     f = wp.int32(wp.tid())
     x = face_unit_gradient(vertices, faces, normals, areas, values, f)
     accumulate_face_divergence(vertices, faces, cot_entries, f, x, out_div, out_corner_div)
+
+
+# --------------------------------------------------------------------------------------
+# Fast marching: the label-correcting front, relaxed in parallel rounds
+# --------------------------------------------------------------------------------------
+
+
+@wp.kernel
+def seed_front_sources(
+    sources: wp.array[wp.int32], out_labels: wp.array[wp.float32], out_invalid: wp.array[wp.int32]
+) -> None:
+    # Distance zero at each source (``out_labels`` filled with ``+inf``, "unreached", by the
+    # caller); an out-of-range source writes nothing and raises ``out_invalid[0]``.
+    t = wp.int32(wp.tid())
+    v = sources[t]
+    if flag_out_of_range(v, out_labels.shape[0], out_invalid):
+        return
+    out_labels[v] = wp.float32(0.0)
+
+
+@wp.func
+def next_up(x: wp.float32) -> wp.float32:
+    # The next ``float32`` above a finite non-negative ``x`` (``std::nextafter(x, FLT_MAX)``): one
+    # step of the bit pattern, which orders like the value for non-negative floats.
+    return wp.cast(wp.cast(x, wp.int32) + 1, wp.float32)
+
+
+@wp.func
+def front_past(origin: wp.float32, step: wp.float32) -> wp.float32:
+    # ``origin + step``, kept strictly above ``origin``: a label a vertex hands on is never its own,
+    # even across a zero-length edge or a step below ``origin``'s rounding.
+    reached = origin + step
+    if reached <= origin:
+        reached = next_up(origin)
+    return reached
+
+
+@wp.func
+def front_edge_step(pa: wp.vec3, pc: wp.vec3) -> wp.float32:
+    # The edge's length as the front prices it: the norm of ``pc - pa`` in ``float32``.
+    return wp.sqrt(wp.length_sq(pc - pa))
+
+
+@wp.func
+def front_triangle_step(b: wp.vec3, c: wp.vec3, vb: wp.float32) -> wp.float32:
+    # The planar front's advance from corner ``a`` (the origin, label ``va``) to corner ``c`` of a
+    # triangle whose third corner ``b`` is ``vb >= 0`` further from the sources, or ``-1`` (the
+    # sentinel) where that front does not reach ``c`` through the triangle's interior. ``b`` and
+    # ``c`` are relative to ``a``.
+    #
+    # The front is a plane wave whose unit direction ``n`` makes ``cos^2 = vb^2 / |b|^2`` with
+    # ``b``; it reaches ``c`` at ``|c| cos(angle(n, c))`` past ``a``, with the angle composed from
+    # ``b0c`` and ``(n, b)`` (``cos(x - y)``). Every rejection tests the squared cosines, never an
+    # angle: ``n`` must leave ``a`` between ``b`` and ``c`` (not past the side ``ac``), its gradient
+    # must fit in the edge ``ab`` (``|b| > vb``), and the wave must cross ``bc`` (not run past ``b``
+    # along that side).
+    dot_bc = wp.dot(b, c)
+    if dot_bc <= wp.float32(0.0):
+        return wp.float32(-1.0)
+    b_sq = wp.length_sq(b)
+    vb_sq = vb * vb
+    if b_sq <= vb_sq:
+        return wp.float32(-1.0)
+    cos_n_sq = vb_sq / b_sq
+    c_sq = wp.length_sq(c)
+    bc_sq = b_sq * c_sq
+    if bc_sq <= wp.float32(0.0):
+        return wp.float32(-1.0)
+    cos_b0c_sq = dot_bc * dot_bc / bc_sq
+    if cos_b0c_sq <= cos_n_sq:
+        return wp.float32(-1.0)
+    a = c - b
+    dot_ba = wp.dot(b, a)
+    if dot_ba >= wp.float32(0.0):
+        if dot_ba * dot_ba >= cos_n_sq * b_sq * wp.length_sq(a):
+            return wp.float32(-1.0)
+    cos_b0c_sq = wp.min(cos_b0c_sq, wp.float32(1.0))
+    return wp.sqrt(c_sq) * (
+        wp.sqrt(cos_b0c_sq * cos_n_sq)
+        + wp.sqrt((wp.float32(1.0) - cos_b0c_sq) * (wp.float32(1.0) - cos_n_sq))
+    )
+
+
+@wp.func
+def front_corner_label(
+    pa: wp.vec3, pb: wp.vec3, pc: wp.vec3, va: wp.float32, vb: wp.float32, vc: wp.float32
+) -> wp.float32:
+    # The smallest label the front offers corner ``c`` of one face from its other corners ``a`` and
+    # ``b`` (in the face's order after ``c``), never above ``vc``: along each edge, and across the
+    # face from the nearer of the two once both are reached. On a tie ``a`` is the origin.
+    best = vc
+    if va < wp.inf:
+        best = wp.min(best, front_past(va, front_edge_step(pa, pc)))
+    if vb < wp.inf:
+        best = wp.min(best, front_past(vb, front_edge_step(pb, pc)))
+        if va < wp.inf:
+            if vb < va:
+                step = front_triangle_step(pa - pb, pc - pb, va - vb)
+                if step >= wp.float32(0.0):
+                    best = wp.min(best, front_past(vb, step))
+            else:
+                step = front_triangle_step(pb - pa, pc - pa, vb - va)
+                if step >= wp.float32(0.0):
+                    best = wp.min(best, front_past(va, step))
+    return best
+
+
+@wp.func
+def lower_front_label(
+    labels: wp.array[wp.float32],
+    v: wp.int32,
+    offer: wp.float32,
+    out_labels: wp.array[wp.float32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # Commit an offer below the round's label of ``v``: an ``atomic_min``, exact and independent of
+    # arrival order, and the round's progress flag (a plain store; every writer stores ``1``).
+    if offer < labels[v]:
+        wp.atomic_min(out_labels, v, offer)
+        out_state[LOOP_PROGRESS] = 1
+
+
+@wp.kernel
+def fast_marching_pass(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    labels: wp.array[wp.float32],
+    out_labels: wp.array[wp.float32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # One face's offers to its three corners from the round's ``labels``, lowered into
+    # ``out_labels`` (which holds ``labels`` on entry: the wrapper copies each round's answer
+    # back over its input). Every offer reads the previous round only, so a round is a pure
+    # function of ``labels``, the same on both devices and under any interleaving.
+    #
+    # The serial label-correcting front pops the nearest vertex and offers its neighbours the
+    # same two updates, the triangle one only where the edge one did not lower the neighbour;
+    # run uncapped, its answer is this fixpoint (the triangle offer it skips is never below the
+    # edge offer it made instead). A serial front that caps the times a vertex is re-opened
+    # answers differently, by the order its queue happened to pop in.
+    f = wp.int32(wp.tid())
+    i0 = faces[3 * f]
+    i1 = faces[3 * f + 1]
+    i2 = faces[3 * f + 2]
+    p0 = vertices[i0]
+    p1 = vertices[i1]
+    p2 = vertices[i2]
+    v0 = labels[i0]
+    v1 = labels[i1]
+    v2 = labels[i2]
+    lower_front_label(labels, i0, front_corner_label(p1, p2, p0, v1, v2, v0), out_labels, out_state)
+    lower_front_label(labels, i1, front_corner_label(p2, p0, p1, v2, v0, v1), out_labels, out_state)
+    lower_front_label(labels, i2, front_corner_label(p0, p1, p2, v0, v1, v2), out_labels, out_state)
 
 
 # --------------------------------------------------------------------------------------

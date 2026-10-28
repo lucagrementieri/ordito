@@ -24,6 +24,9 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ### Added
 
+- `heat.fast_marching_distance`: geodesic distance by a front marched across the faces, as
+  MeshLib's `computeSurfaceDistances` computes it with no cap on re-opened vertices, solved in
+  parallel rounds.
 - `curvature.vertex_curvatures`: pointwise mean and Gaussian curvature (Meyer et al.), as MeshLab's
   `compute_scalar_by_discrete_curvature_per_vertex` forms them.
 - `curvature.principal_curvature(method="pyvista")`: VTK's 1-ring extreme curvatures, equal to
