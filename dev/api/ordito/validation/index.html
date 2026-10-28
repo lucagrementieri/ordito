@@ -6675,8 +6675,7 @@ three faces, which is never manifold:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 29</span>
-<span class="normal"> 30</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 30</span>
 <span class="normal"> 31</span>
 <span class="normal"> 32</span>
 <span class="normal"> 33</span>
@@ -6807,7 +6806,8 @@ three faces, which is never manifold:</p>
 <span class="normal">158</span>
 <span class="normal">159</span>
 <span class="normal">160</span>
-<span class="normal">161</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_edge_manifold</span><span class="p">(</span>
+<span class="normal">161</span>
+<span class="normal">162</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_edge_manifold</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">allow_boundary_edges</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7164,8 +7164,7 @@ the halfedges. Not checked against <code>faces</code>.
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">164</span>
-<span class="normal">165</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">165</span>
 <span class="normal">166</span>
 <span class="normal">167</span>
 <span class="normal">168</span>
@@ -7258,7 +7257,8 @@ the halfedges. Not checked against <code>faces</code>.
 <span class="normal">255</span>
 <span class="normal">256</span>
 <span class="normal">257</span>
-<span class="normal">258</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edge_manifold_mask</span><span class="p">(</span>
+<span class="normal">258</span>
+<span class="normal">259</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edge_manifold_mask</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">allow_boundary_edges</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7605,8 +7605,7 @@ sized to a caller-provided vertex buffer.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">279</span>
-<span class="normal">280</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">280</span>
 <span class="normal">281</span>
 <span class="normal">282</span>
 <span class="normal">283</span>
@@ -7722,7 +7721,8 @@ sized to a caller-provided vertex buffer.</p>
 <span class="normal">393</span>
 <span class="normal">394</span>
 <span class="normal">395</span>
-<span class="normal">396</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_vertex_manifold</span><span class="p">(</span>
+<span class="normal">396</span>
+<span class="normal">397</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_vertex_manifold</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">face_adjacency</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8014,8 +8014,7 @@ the halfedges. Not checked against <code>faces</code>.
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">439</span>
-<span class="normal">440</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">440</span>
 <span class="normal">441</span>
 <span class="normal">442</span>
 <span class="normal">443</span>
@@ -8085,7 +8084,8 @@ the halfedges. Not checked against <code>faces</code>.
 <span class="normal">507</span>
 <span class="normal">508</span>
 <span class="normal">509</span>
-<span class="normal">510</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_manifold_mask</span><span class="p">(</span>
+<span class="normal">510</span>
+<span class="normal">511</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_manifold_mask</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -8299,8 +8299,7 @@ meshes with fewer than two faces.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">513</span>
-<span class="normal">514</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">514</span>
 <span class="normal">515</span>
 <span class="normal">516</span>
 <span class="normal">517</span>
@@ -8356,7 +8355,8 @@ meshes with fewer than two faces.</p>
 <span class="normal">567</span>
 <span class="normal">568</span>
 <span class="normal">569</span>
-<span class="normal">570</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_self_intersecting</span><span class="p">(</span><span class="n">mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">max_triangle_collisions</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">32</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">570</span>
+<span class="normal">571</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_self_intersecting</span><span class="p">(</span><span class="n">mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">max_triangle_collisions</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">32</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Whether any two non-adjacent triangles of the mesh intersect.</span>
 
@@ -8624,8 +8624,7 @@ broad phase otherwise pays on every call. Purely an optimization, and not checke
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">573</span>
-<span class="normal">574</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">574</span>
 <span class="normal">575</span>
 <span class="normal">576</span>
 <span class="normal">577</span>
@@ -8706,7 +8705,8 @@ broad phase otherwise pays on every call. Purely an optimization, and not checke
 <span class="normal">652</span>
 <span class="normal">653</span>
 <span class="normal">654</span>
-<span class="normal">655</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_self_intersecting_mask</span><span class="p">(</span>
+<span class="normal">655</span>
+<span class="normal">656</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_self_intersecting_mask</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -8968,8 +8968,7 @@ although flipping one would fix them (see <a class="autorefs autorefs-internal" 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">752</span>
-<span class="normal">753</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">753</span>
 <span class="normal">754</span>
 <span class="normal">755</span>
 <span class="normal">756</span>
@@ -9047,7 +9046,8 @@ although flipping one would fix them (see <a class="autorefs autorefs-internal" 
 <span class="normal">828</span>
 <span class="normal">829</span>
 <span class="normal">830</span>
-<span class="normal">831</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_winding_consistent</span><span class="p">(</span>
+<span class="normal">831</span>
+<span class="normal">832</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_winding_consistent</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -9287,8 +9287,7 @@ entry is <code>True</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">834</span>
-<span class="normal">835</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">835</span>
 <span class="normal">836</span>
 <span class="normal">837</span>
 <span class="normal">838</span>
@@ -9359,7 +9358,8 @@ entry is <code>True</code>.</p>
 <span class="normal">903</span>
 <span class="normal">904</span>
 <span class="normal">905</span>
-<span class="normal">906</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edge_winding_consistent_mask</span><span class="p">(</span>
+<span class="normal">906</span>
+<span class="normal">907</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edge_winding_consistent_mask</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -9704,8 +9704,7 @@ with <code>face_adjacency_edges</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 909</span>
-<span class="normal"> 910</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 910</span>
 <span class="normal"> 911</span>
 <span class="normal"> 912</span>
 <span class="normal"> 913</span>
@@ -9850,7 +9849,8 @@ with <code>face_adjacency_edges</code>.</p>
 <span class="normal">1052</span>
 <span class="normal">1053</span>
 <span class="normal">1054</span>
-<span class="normal">1055</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_orientation_bits</span><span class="p">(</span>
+<span class="normal">1055</span>
+<span class="normal">1056</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_orientation_bits</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10184,8 +10184,7 @@ faces are flipped:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1058</span>
-<span class="normal">1059</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1059</span>
 <span class="normal">1060</span>
 <span class="normal">1061</span>
 <span class="normal">1062</span>
@@ -10268,7 +10267,8 @@ faces are flipped:</p>
 <span class="normal">1139</span>
 <span class="normal">1140</span>
 <span class="normal">1141</span>
-<span class="normal">1142</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_orientable</span><span class="p">(</span>
+<span class="normal">1142</span>
+<span class="normal">1143</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_orientable</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10560,8 +10560,7 @@ them gives a consistent, inward-facing cube:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1145</span>
-<span class="normal">1146</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1146</span>
 <span class="normal">1147</span>
 <span class="normal">1148</span>
 <span class="normal">1149</span>
@@ -10661,7 +10660,8 @@ them gives a consistent, inward-facing cube:</p>
 <span class="normal">1243</span>
 <span class="normal">1244</span>
 <span class="normal">1245</span>
-<span class="normal">1246</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_flip_mask</span><span class="p">(</span>
+<span class="normal">1246</span>
+<span class="normal">1247</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_flip_mask</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10976,8 +10976,7 @@ function. Every other <code>is_*</code> / <code>*_mask</code> pair in this modul
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1418</span>
-<span class="normal">1419</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1419</span>
 <span class="normal">1420</span>
 <span class="normal">1421</span>
 <span class="normal">1422</span>
@@ -11088,7 +11087,8 @@ function. Every other <code>is_*</code> / <code>*_mask</code> pair in this modul
 <span class="normal">1527</span>
 <span class="normal">1528</span>
 <span class="normal">1529</span>
-<span class="normal">1530</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_watertight</span><span class="p">(</span>
+<span class="normal">1530</span>
+<span class="normal">1531</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_watertight</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -11355,8 +11355,7 @@ watertightness (trimesh's <code>broken_faces</code>) are <code>flatnonzero(~face
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1533</span>
-<span class="normal">1534</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1534</span>
 <span class="normal">1535</span>
 <span class="normal">1536</span>
 <span class="normal">1537</span>
@@ -11406,7 +11405,8 @@ watertightness (trimesh's <code>broken_faces</code>) are <code>flatnonzero(~face
 <span class="normal">1581</span>
 <span class="normal">1582</span>
 <span class="normal">1583</span>
-<span class="normal">1584</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_watertight_mask</span><span class="p">(</span>
+<span class="normal">1584</span>
+<span class="normal">1585</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_watertight_mask</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -11669,8 +11669,7 @@ independent of the reference point and its sign encodes the normal orientation.<
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1587</span>
-<span class="normal">1588</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1588</span>
 <span class="normal">1589</span>
 <span class="normal">1590</span>
 <span class="normal">1591</span>
@@ -11755,7 +11754,8 @@ independent of the reference point and its sign encodes the normal orientation.<
 <span class="normal">1670</span>
 <span class="normal">1671</span>
 <span class="normal">1672</span>
-<span class="normal">1673</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_volume</span><span class="p">(</span>
+<span class="normal">1673</span>
+<span class="normal">1674</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">is_volume</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -11865,6 +11865,9 @@ independent of the reference point and its sign encodes the normal orientation.<
     <span class="n">max_fold_angle</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">face_normals</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">mates</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">normal_criterion</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span>
+        <span class="s2">"consensus"</span><span class="p">,</span> <span class="s2">"meshlab"</span>
+    <span class="p">]</span> <span class="o">=</span> <span class="s2">"consensus"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]</span>
 </code></pre></div>
 
@@ -11952,7 +11955,8 @@ of <code>0.02</code> is this one. <code>None</code> disables it.</p>
                 <p>Flag a face whose normal is more than this many <strong>degrees</strong> from the direction of the sum of
 its edge-neighbours' normals — the local consensus. This catches a single face inserted the
 wrong way round in an otherwise consistent patch. Same default (<code>60</code>) as MeshLab's
-<code>nfratio</code> but not the same test (see Notes). <code>None</code> disables it.</p>
+<code>nfratio</code> but not the same test unless <code>normal_criterion="meshlab"</code> (see Notes).
+<code>None</code> disables it.</p>
               </div>
             </td>
             <td>
@@ -12018,6 +12022,27 @@ the halfedges. Not checked against <code>faces</code>.
                   <code>None</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>normal_criterion</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;consensus&#39;, &#39;meshlab&#39;]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>What <code>max_normal_angle</code> compares a face's normal with.</p>
+<ul>
+<li><code>"consensus"</code> (default) — the direction of the sum of its edge-neighbours' normals.</li>
+<li><code>"meshlab"</code> — each edge-neighbour's normal in turn, flagging the face when any one
+  differs by more than the angle: MeshLab's <code>nfratio</code>.</li>
+</ul>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;consensus&#39;</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -12061,7 +12086,8 @@ when every criterion is disabled.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>max_normal_angle</code> or <code>max_fold_angle</code> is outside <code>(0, 180]</code>.</p>
+                <p>If <code>max_normal_angle</code> or <code>max_fold_angle</code> is outside <code>(0, 180]</code>, or
+<code>normal_criterion</code> is not <code>"consensus"</code> or <code>"meshlab"</code>.</p>
               </div>
             </td>
           </tr>
@@ -12082,13 +12108,14 @@ when every criterion is disabled.</p>
 <details class="note" open>
   <summary>Notes</summary>
   <p>The thinness and fold criteria match MeshLab's <code>compute_selection_bad_faces</code> (its <code>aratio</code>
-and <code>folded_faces_angle_threshold</code>). The normal criterion does not match its <code>nfratio</code>:
-MeshLab selects <em>both</em> faces of every edge whose normals differ by more than the angle, so it
-flags a reversed face together with all its neighbours, and every face of a cube at <code>60</code>.
-Comparing each face with its neighbours' consensus instead flags the reversed face alone on a
-smooth surface. The consensus needs neighbours that mostly agree: on a coarse mesh, where a
-face has three neighbours and they meet at sharp angles, a correct face next to a reversed one
-can fail it too (a cube with one triangle reversed flags that triangle and one neighbour).</p>
+and <code>folded_faces_angle_threshold</code>). The default normal criterion does not match its
+<code>nfratio</code>: MeshLab selects <em>both</em> faces of every edge whose normals differ by more than the
+angle (<code>normal_criterion="meshlab"</code>), so it flags a reversed face together with all its
+neighbours, and every face of a cube at <code>60</code>. Comparing each face with its neighbours'
+consensus instead flags the reversed face alone on a smooth surface. The consensus needs
+neighbours that mostly agree: on a coarse mesh, where a face has three neighbours and they meet
+at sharp angles, a correct face next to a reversed one can fail it too (a cube with one
+triangle reversed flags that triangle and one neighbour).</p>
 </details>
 
 <details class="see-also" open>
@@ -12139,8 +12166,7 @@ can fail it too (a cube with one triangle reversed flags that triangle and one n
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/validation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1705</span>
-<span class="normal">1706</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1706</span>
 <span class="normal">1707</span>
 <span class="normal">1708</span>
 <span class="normal">1709</span>
@@ -12302,7 +12328,27 @@ can fail it too (a cube with one triangle reversed flags that triangle and one n
 <span class="normal">1865</span>
 <span class="normal">1866</span>
 <span class="normal">1867</span>
-<span class="normal">1868</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_defective_mask</span><span class="p">(</span>
+<span class="normal">1868</span>
+<span class="normal">1869</span>
+<span class="normal">1870</span>
+<span class="normal">1871</span>
+<span class="normal">1872</span>
+<span class="normal">1873</span>
+<span class="normal">1874</span>
+<span class="normal">1875</span>
+<span class="normal">1876</span>
+<span class="normal">1877</span>
+<span class="normal">1878</span>
+<span class="normal">1879</span>
+<span class="normal">1880</span>
+<span class="normal">1881</span>
+<span class="normal">1882</span>
+<span class="normal">1883</span>
+<span class="normal">1884</span>
+<span class="normal">1885</span>
+<span class="normal">1886</span>
+<span class="normal">1887</span>
+<span class="normal">1888</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">face_defective_mask</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -12311,6 +12357,7 @@ can fail it too (a cube with one triangle reversed flags that triangle and one n
     <span class="n">max_fold_angle</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">face_normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">mates</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">normal_criterion</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"consensus"</span><span class="p">,</span> <span class="s2">"meshlab"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"consensus"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Flag faces that are thin, misoriented relative to their neighbourhood, or folded over it.</span>
@@ -12336,7 +12383,8 @@ can fail it too (a cube with one triangle reversed flags that triangle and one n
 <span class="sd">        Flag a face whose normal is more than this many **degrees** from the direction of the sum of</span>
 <span class="sd">        its edge-neighbours' normals — the local consensus. This catches a single face inserted the</span>
 <span class="sd">        wrong way round in an otherwise consistent patch. Same default (``60``) as MeshLab's</span>
-<span class="sd">        ``nfratio`` but not the same test (see Notes). ``None`` disables it.</span>
+<span class="sd">        ``nfratio`` but not the same test unless ``normal_criterion="meshlab"`` (see Notes).</span>
+<span class="sd">        ``None`` disables it.</span>
 <span class="sd">    max_fold_angle</span>
 <span class="sd">        Flag a face that meets *some* neighbour at more than this many **degrees** — a fold, where</span>
 <span class="sd">        the two triangles lie almost on top of each other with opposing normals. Of the two faces at</span>
@@ -12354,6 +12402,12 @@ can fail it too (a cube with one triangle reversed flags that triangle and one n
 <span class="sd">        [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs</span>
 <span class="sd">        the halfedges. Not checked against ``faces``.</span>
 <span class="sd">        [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.</span>
+<span class="sd">    normal_criterion</span>
+<span class="sd">        What ``max_normal_angle`` compares a face's normal with.</span>
+
+<span class="sd">        - ``"consensus"`` (default) — the direction of the sum of its edge-neighbours' normals.</span>
+<span class="sd">        - ``"meshlab"`` — each edge-neighbour's normal in turn, flagging the face when any one</span>
+<span class="sd">          differs by more than the angle: MeshLab's ``nfratio``.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -12364,20 +12418,22 @@ can fail it too (a cube with one triangle reversed flags that triangle and one n
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If ``max_normal_angle`` or ``max_fold_angle`` is outside ``(0, 180]``.</span>
+<span class="sd">        If ``max_normal_angle`` or ``max_fold_angle`` is outside ``(0, 180]``, or</span>
+<span class="sd">        ``normal_criterion`` is not ``"consensus"`` or ``"meshlab"``.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices``, ``faces``, ``face_normals`` and ``mates`` are not all on one device.</span>
 
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
 <span class="sd">    The thinness and fold criteria match MeshLab's ``compute_selection_bad_faces`` (its ``aratio``</span>
-<span class="sd">    and ``folded_faces_angle_threshold``). The normal criterion does not match its ``nfratio``:</span>
-<span class="sd">    MeshLab selects *both* faces of every edge whose normals differ by more than the angle, so it</span>
-<span class="sd">    flags a reversed face together with all its neighbours, and every face of a cube at ``60``.</span>
-<span class="sd">    Comparing each face with its neighbours' consensus instead flags the reversed face alone on a</span>
-<span class="sd">    smooth surface. The consensus needs neighbours that mostly agree: on a coarse mesh, where a</span>
-<span class="sd">    face has three neighbours and they meet at sharp angles, a correct face next to a reversed one</span>
-<span class="sd">    can fail it too (a cube with one triangle reversed flags that triangle and one neighbour).</span>
+<span class="sd">    and ``folded_faces_angle_threshold``). The default normal criterion does not match its</span>
+<span class="sd">    ``nfratio``: MeshLab selects *both* faces of every edge whose normals differ by more than the</span>
+<span class="sd">    angle (``normal_criterion="meshlab"``), so it flags a reversed face together with all its</span>
+<span class="sd">    neighbours, and every face of a cube at ``60``. Comparing each face with its neighbours'</span>
+<span class="sd">    consensus instead flags the reversed face alone on a smooth surface. The consensus needs</span>
+<span class="sd">    neighbours that mostly agree: on a coarse mesh, where a face has three neighbours and they meet</span>
+<span class="sd">    at sharp angles, a correct face next to a reversed one can fail it too (a cube with one</span>
+<span class="sd">    triangle reversed flags that triangle and one neighbour).</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
@@ -12426,6 +12482,10 @@ can fail it too (a cube with one triangle reversed flags that triangle and one n
     <span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">angle</span> <span class="ow">in</span> <span class="p">((</span><span class="s2">"max_normal_angle"</span><span class="p">,</span> <span class="n">max_normal_angle</span><span class="p">),</span> <span class="p">(</span><span class="s2">"max_fold_angle"</span><span class="p">,</span> <span class="n">max_fold_angle</span><span class="p">)):</span>
         <span class="k">if</span> <span class="n">angle</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="ow">not</span> <span class="mf">0.0</span> <span class="o">&lt;</span> <span class="n">angle</span> <span class="o">&lt;=</span> <span class="mf">180.0</span><span class="p">:</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2"> must be in (0, 180] degrees, got </span><span class="si">{</span><span class="n">angle</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">normal_criterion</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"consensus"</span><span class="p">,</span> <span class="s2">"meshlab"</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"normal_criterion must be 'consensus' or 'meshlab', got </span><span class="si">{</span><span class="n">normal_criterion</span><span class="si">!r}</span><span class="s2">"</span>
+        <span class="p">)</span>
 
     <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n_faces</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span>
@@ -12445,7 +12505,13 @@ can fail it too (a cube with one triangle reversed flags that triangle and one n
 
     <span class="c1"># -2 is unreachable for a cosine, -1 for the normalized quality and ``FOLD_ANGLE_OFF`` (past</span>
     <span class="c1"># pi) for a dihedral, so a disabled criterion simply never fires and the kernel needs no</span>
-    <span class="c1"># per-criterion flag.</span>
+    <span class="c1"># per-criterion flag. The normal criterion is the consensus cosine or the pairwise angle.</span>
+    <span class="n">normal_cos</span> <span class="o">=</span> <span class="o">-</span><span class="mf">2.0</span>
+    <span class="n">pair_angle</span> <span class="o">=</span> <span class="n">kernel_validation</span><span class="o">.</span><span class="n">FOLD_ANGLE_OFF</span>
+    <span class="k">if</span> <span class="n">max_normal_angle</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">normal_criterion</span> <span class="o">==</span> <span class="s2">"meshlab"</span><span class="p">:</span>
+        <span class="n">pair_angle</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="n">max_normal_angle</span><span class="p">))</span>
+    <span class="k">elif</span> <span class="n">max_normal_angle</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">normal_cos</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="n">max_normal_angle</span><span class="p">))</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_validation</span><span class="o">.</span><span class="n">face_defective_mask</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
@@ -12455,9 +12521,8 @@ can fail it too (a cube with one triangle reversed flags that triangle and one n
             <span class="n">face_normals</span><span class="p">,</span>
             <span class="n">mates</span><span class="p">,</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">min_quality</span> <span class="k">if</span> <span class="n">min_quality</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="o">-</span><span class="mf">1.0</span><span class="p">),</span>
-            <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span>
-                <span class="n">math</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="n">max_normal_angle</span><span class="p">))</span> <span class="k">if</span> <span class="n">max_normal_angle</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="o">-</span><span class="mf">2.0</span>
-            <span class="p">),</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">normal_cos</span><span class="p">),</span>
+            <span class="n">pair_angle</span><span class="p">,</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">radians</span><span class="p">(</span><span class="n">max_fold_angle</span><span class="p">))</span>
             <span class="k">if</span> <span class="n">max_fold_angle</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
             <span class="k">else</span> <span class="n">kernel_validation</span><span class="o">.</span><span class="n">FOLD_ANGLE_OFF</span><span class="p">,</span>
