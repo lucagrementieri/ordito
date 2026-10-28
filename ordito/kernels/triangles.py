@@ -118,10 +118,8 @@ def write_corner_triple(
     ``@wp.func`` whose body would be this one's with its parameters permuted (identical code once
     inlined, so the only thing a "reversed" sibling would add is a second name for the same three
     atomics).
-    ``repair.write_face_winding`` and ``levelset.shell_faces`` keep corner 0 and swap only corners 1
-    and 2 -- a *different* reversal, already cross-referenced to each other, and not an adopter of
-    this function: conflating the two conventions behind one flag would be the correctness hazard
-    a duplicated decision rule, not a simplification.
+    ``levelset.shell_face`` swaps corners 0 and 1 instead -- a *different* reversal, and not an
+    adopter of this function.
     """
     out[row * wp.int32(3) + wp.int32(0)] = a
     out[row * wp.int32(3) + wp.int32(1)] = b
@@ -138,7 +136,8 @@ def write_corner_triple_reversible(
     The one decision several face-emitting kernels share -- write a triple forward, or with its
     first and last corners swapped (trimesh's ``np.fliplr``) -- factored once rather than repeated
     at every call site that computes a per-face orientation flag
-    (``creation.revolve_cap_faces``/``offset_cap_faces_both``/``write_prism_face``). Still just
+    (``creation.revolve_cap_faces``/``offset_cap_faces_both``/``write_prism_face``,
+    ``repair.write_face_winding``). Still just
     ``write_corner_triple`` under either branch, so this is not the permuted "reversed" sibling that
     function's own docstring declines to add: the swap happens once here, at the one place a
     *runtime* flag decides which of the two a caller wanted, not as a second three-atomic body.
@@ -227,6 +226,65 @@ def triangle_edges(
     """Return the three edge vectors of face ``face_index``: ``(v1 - v0, v2 - v0, v2 - v1)``."""
     v0, v1, v2 = face_vertices(vertices, faces, face_index)
     return v1 - v0, v2 - v0, v2 - v1
+
+
+@wp.func
+def face_voronoi_areas(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face_index: wp.int32
+) -> tuple[wp.float32, wp.float32, wp.float32]:
+    """
+    Return each corner's share of face ``face_index``'s area under the Voronoi mass lumping.
+
+    Meyer et al.'s mixed areas as ``igl::massmatrix`` forms them at ``MASSMATRIX_TYPE_VORONOI``:
+    a non-obtuse face splits by its circumcentre (each corner the mean of the two circumcentric
+    partials beside it), and an obtuse face gives half its area to the obtuse corner and a quarter
+    to each other. Formed in ``float64`` from the ``float32`` corners, since a needle's cosines lose
+    every digit in ``float32``, and rounded once to ``float32``, so the three always sum to the
+    face's area up to that rounding. A degenerate face (a zero-length edge, or circumcentre weights
+    summing to zero) splits evenly, where igl would divide by zero.
+    """
+    i0, i1, i2 = corner_triple(faces, face_index)
+    p0 = wp.vec3d(vertices[i0])
+    p1 = wp.vec3d(vertices[i1])
+    p2 = wp.vec3d(vertices[i2])
+    l0 = wp.length(p1 - p2)
+    l1 = wp.length(p2 - p0)
+    l2 = wp.length(p0 - p1)
+    area = wp.float64(0.5) * wp.length(wp.cross(p1 - p0, p2 - p0))
+    even = area / wp.float64(3.0)
+    q0 = even
+    q1 = even
+    q2 = even
+    if l0 > wp.float64(0.0) and l1 > wp.float64(0.0) and l2 > wp.float64(0.0):
+        c0 = (l2 * l2 + l1 * l1 - l0 * l0) / (wp.float64(2.0) * l1 * l2)
+        c1 = (l0 * l0 + l2 * l2 - l1 * l1) / (wp.float64(2.0) * l2 * l0)
+        c2 = (l1 * l1 + l0 * l0 - l2 * l2) / (wp.float64(2.0) * l0 * l1)
+        b0 = c0 * l0
+        b1 = c1 * l1
+        b2 = c2 * l2
+        weight = b0 + b1 + b2
+        if weight != wp.float64(0.0):
+            partial0 = b0 / weight * area
+            partial1 = b1 / weight * area
+            partial2 = b2 / weight * area
+            q0 = wp.float64(0.5) * (partial1 + partial2)
+            q1 = wp.float64(0.5) * (partial2 + partial0)
+            q2 = wp.float64(0.5) * (partial0 + partial1)
+        half = wp.float64(0.5) * area
+        quarter = wp.float64(0.25) * area
+        if c0 < wp.float64(0.0):
+            q0 = half
+            q1 = quarter
+            q2 = quarter
+        elif c1 < wp.float64(0.0):
+            q0 = quarter
+            q1 = half
+            q2 = quarter
+        elif c2 < wp.float64(0.0):
+            q0 = quarter
+            q1 = quarter
+            q2 = half
+    return wp.float32(q0), wp.float32(q1), wp.float32(q2)
 
 
 @wp.func

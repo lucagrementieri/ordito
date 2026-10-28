@@ -20,6 +20,7 @@ from ordito.kernels.array import (
     OverloadTable,
     binary_search_index,
     cross2,
+    sorted_run_end,
     to_vec2,
     to_vec2d,
     to_vec3,
@@ -29,6 +30,7 @@ from ordito.kernels.laplacian import (
     connection_offdiagonal,
     cotmatrix_offdiagonal,
     face_half_cotangents,
+    pattern_row_on_rim,
 )
 from ordito.kernels.linalg import shift_factor, shifted_block_entry, shifted_scalar_entry
 from ordito.kernels.predicates import (
@@ -39,7 +41,12 @@ from ordito.kernels.predicates import (
 )
 from ordito.kernels.reduce import block_chunk_1d, store_sum_and_count
 from ordito.kernels.scatter import add_corner_triple, add_or_store_corner_triple
-from ordito.kernels.triangles import face_normals_and_area, face_unit_gradient, face_vertices_vec3d
+from ordito.kernels.triangles import (
+    face_normals_and_area,
+    face_unit_gradient,
+    face_vertices_vec3d,
+    face_voronoi_areas,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -49,6 +56,7 @@ def heat_face_terms(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     write_cot: wp.int32,
+    voronoi_mass: wp.int32,
     out_cot: wp.array2d[wp.float32],
     out_normals: wp.array[wp.vec3],
     out_areas: wp.array[wp.float32],
@@ -59,7 +67,8 @@ def heat_face_terms(
     # caller has its own), the unit normal and area (``triangles.face_normals_and_areas``'), and
     # the area's exact ``float64`` scatter into each corner (``scatter.scatter_face_areas_exact``,
     # the lumped mass before its division by three). Each value is the standalone kernel's bit
-    # for bit.
+    # for bit. With ``voronoi_mass`` set the corners take their Voronoi shares instead
+    # (``triangles.face_voronoi_areas``), the lumped mass itself with no division to follow.
     f = wp.int32(wp.tid())
     if write_cot != 0:
         c0, c1, c2 = face_half_cotangents(vertices, faces, f)
@@ -69,15 +78,23 @@ def heat_face_terms(
     normal, area = face_normals_and_area(vertices, faces, f)
     out_normals[f] = normal
     out_areas[f] = area
-    value = wp.float64(area)
-    add_corner_triple(out_area_sums, faces, f, value, value, value)
+    if voronoi_mass != 0:
+        a0, a1, a2 = face_voronoi_areas(vertices, faces, f)
+        add_corner_triple(out_area_sums, faces, f, wp.float64(a0), wp.float64(a1), wp.float64(a2))
+    else:
+        value = wp.float64(area)
+        add_corner_triple(out_area_sums, faces, f, value, value, value)
 
 
 @wp.kernel
 def upper_edge_length_sum_and_count(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
     vertices: wp.array[wp.vec3],
+    face_edges: wp.int32,
     stride: wp.int32,
     out_sum_and_count: wp.array[wp.float64],
 ) -> None:
@@ -88,6 +105,10 @@ def upper_edge_length_sum_and_count(
     # every edge of the mesh to recover it. Reads the sparsity only, so the scalar and the
     # vector solver get the identical number from their two different operators.
     #
+    # With ``face_edges`` set each edge counts once per face holding it -- its run of sorted keys
+    # in the ``cotmatrix`` pattern -- which is the mean over every face's three edges, MeshLab's
+    # heat-method timestep, where the unique mean is igl's and geometry-central's.
+    #
     # ``reduce``'s mask-shaped block fold over *rows*: lanes stride the block's rows by
     # ``wp.block_dim()`` (right on the CPU device too), and one tile sum per quantity is stored in
     # the block's row (``store_sum_and_count``), added in a fixed order afterwards.
@@ -97,15 +118,19 @@ def upper_edge_length_sum_and_count(
     if remaining <= 0:
         return
     total = wp.float64(0.0)
-    count = wp.float64(0.0)
+    n_edges = wp.float64(0.0)
     for k in range(t, remaining, wp.block_dim()):
         row = base + k
         for entry in range(offsets[row], offsets[row + 1]):
             column = columns[entry]
             if column > row:
-                total += wp.float64(wp.length(vertices[column] - vertices[row]))
-                count += wp.float64(1.0)
-    store_sum_and_count(i, t, total, count, out_sum_and_count, stride)
+                weight = wp.float64(1.0)
+                if face_edges != 0:
+                    weight = wp.float64(sorted_run_end(keys, run_start[entry], count))
+                    weight -= wp.float64(run_start[entry])
+                total += weight * wp.float64(wp.length(vertices[column] - vertices[row]))
+                n_edges += weight
+    store_sum_and_count(i, t, total, n_edges, out_sum_and_count, stride)
 
 
 @wp.kernel
@@ -121,6 +146,7 @@ def heat_system_rows(
     edge_sum_and_count: wp.array[wp.float64],
     from_edges: wp.int32,
     area_sums: wp.array[wp.float64],
+    mass_divisor: wp.float64,
     out_laplacian: wp.array[wp.float64],
     out_heat: wp.array[wp.float64],
     out_poisson: wp.array[wp.float64],
@@ -132,10 +158,11 @@ def heat_system_rows(
     # ``shifted_scalar_entry``, ``factor = -t``) and the Poisson operator ``-L``
     # (``linalg.shifted_system_values``' with ``negate`` set). The three are formed from the one
     # walk, so ``L`` is not read back between them. ``out_mass`` is the lumped mass,
-    # ``heat_face_terms``' exact ``area_sums`` over three (``scatter.scale_face_sums``), and may be
-    # ``area_sums`` itself: each thread reads its own vertex's sum before it writes its mass.
+    # ``heat_face_terms``' exact ``area_sums`` over ``mass_divisor`` -- three for the barycentric
+    # lumping (``scatter.scale_face_sums``), one for the Voronoi shares, already the mass -- and
+    # may be ``area_sums`` itself: each thread reads its own vertex's sum before it writes its mass.
     i = wp.int32(wp.tid())
-    m = area_sums[i] / wp.float64(3.0)
+    m = area_sums[i] / mass_divisor
     out_mass[i] = m
     start = offsets[i]
     end = offsets[i + 1]
@@ -164,6 +191,61 @@ def heat_system_rows(
         # bit of the diagonal.
         out_heat[slot] = shifted_scalar_entry(diagonal, factor, columns[slot] == i, m)
         out_poisson[slot] = -diagonal
+
+
+@wp.kernel
+def rim_vertices(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    out_rim: wp.array[wp.int32],
+    out_n_rim: wp.array[wp.int32],
+) -> None:
+    # 1 where a vertex lies on the rim (``laplacian.pattern_row_on_rim``), and their count in
+    # ``out_n_rim[0]`` (pre-zeroed), for the heat system pinned to zero there.
+    i = wp.int32(wp.tid())
+    rim = pattern_row_on_rim(offsets, columns, run_start, keys, count, i)
+    out_rim[i] = wp.where(rim, 1, 0)
+    if rim:
+        wp.atomic_add(out_n_rim, 0, 1)
+
+
+@wp.kernel
+def pinned_heat_rows(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    rim: wp.array[wp.int32],
+    heat_values: wp.array[wp.float64],
+    out_values: wp.array[wp.float64],
+) -> None:
+    # The heat system ``M - t L`` with the solution pinned to zero on the rim, over its own
+    # pattern: a rim row becomes the identity's and an interior row drops its rim columns. Still
+    # symmetric positive definite, and solved against a right-hand side zero on the rim it is the
+    # interior system's solution padded with the rim's zeros -- ``igl::heat_geodesics``' Dirichlet
+    # solve.
+    i = wp.int32(wp.tid())
+    for k in range(offsets[i], offsets[i + 1]):
+        c = columns[k]
+        value = heat_values[k]
+        if rim[i] != 0:
+            value = wp.where(c == i, wp.float64(1.0), wp.float64(0.0))
+        elif rim[c] != 0:
+            value = wp.float64(0.0)
+        out_values[k] = value
+
+
+@wp.func
+def off_rim(value: wp.float64, rim: wp.int32) -> wp.float64:
+    """``value``, or zero on a rim vertex: the pinned heat solve's right-hand side."""
+    return wp.where(rim != 0, wp.float64(0.0), value)
+
+
+@wp.func
+def average_heat(neumann: wp.float64, pinned: wp.float64) -> wp.float64:
+    """Average the Neumann and the rim-pinned heat, ``igl::heat_geodesics``' boundary rule."""
+    return wp.float64(0.5) * (neumann + pinned)
 
 
 @wp.kernel
@@ -738,7 +820,19 @@ def _register_overloads() -> None:
     HEAT_SYSTEM_ROWS = OverloadTable(
         heat_system_rows,
         {
-            d: [*pattern, wp.array2d[d], wp.float64, f64, wp.int32, f64, f64, f64, f64, f64]
+            d: [
+                *pattern,
+                wp.array2d[d],
+                wp.float64,
+                f64,
+                wp.int32,
+                f64,
+                wp.float64,
+                f64,
+                f64,
+                f64,
+                f64,
+            ]
             for d in (wp.float32, wp.float64)
         },
     )

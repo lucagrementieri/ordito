@@ -21,7 +21,7 @@ from meshlib import mrmeshpy as mm
 import ordito as od
 import ordito.typing as odt
 from ordito.constants import TOLERANCE_MOLLIFY
-from tests.comparisons import assert_nonconstant, sparse_allclose
+from tests.comparisons import assert_nonconstant, meshlab_umbrella, sparse_allclose
 from tests.conftest import MESHES
 from tests.conversions import (
     bsr_to_csr,
@@ -1071,26 +1071,17 @@ def test_connection_laplacian_matches_potpourri3d(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class B (block fold, then gauge invariants): the same operator, up to the tangent-frame gauge.
+    Class A: the same operator, entry for entry, in the same tangent-frame gauge.
 
-    Two named transforms. The first is representational -- ordito stores real ``2 x 2``
-    rotation-scale blocks where potpourri3d stores complex scalars, and ``_connection_complex``
-    folds one into the other (asserted exactly: ``v01 == -v10`` and ``v00 == v11`` to ``0.0``).
-
-    The second is the real content. A connection Laplacian is defined only up to a choice of
-    reference direction per vertex, and the two libraries choose differently, so **individual
-    entries are not comparable** -- the usual rule about tangent-space quantities.
-    What a gauge change cannot touch is a diagonal unitary conjugation's invariants, and two are
-    checked here: the entry **magnitudes** ``|L_ij|``, which are the cotangent weights, and the
-    **whole spectrum**, since ``L`` is Hermitian and conjugation by a unitary preserves eigenvalues.
-
-    That makes this stronger than a correlation bound, which is why it is Class B rather than the
-    Class C the plan projected: measured max abs difference 1.3e-05 on the magnitudes and 1.6e-05 on
-    the eigenvalues (3.2e-08 of the largest) on ``sphere_irregular``, 5.3e-04 and 9.7e-04 on
-    ``saddle_graded`` (1.1e-07 and 9.9e-08 of the largest), i.e. at ordito's float32 vertex
-    floor. The bug class it excludes is a wrong weight, a wrong sparsity pattern, a non-Hermitian
-    assembly, and any phase error large enough to move the spectrum -- a *global* gauge shift is the
-    one thing it cannot see, and that is because a global gauge shift is not an error.
+    ordito stores real ``2 x 2`` rotation-scale blocks where potpourri3d stores complex scalars, and
+    ``_connection_complex`` reads each block as the complex number it multiplies by (the form
+    asserted exactly: ``v01 == -v10`` and ``v00 == v11`` to ``0.0``). A connection Laplacian is
+    defined only up to a reference direction per vertex, and ordito takes geometry-central's (see
+    ``tests/test_tangent_space.py::test_vertex_tangent_frames_match_potpourri3d``), so the entries
+    themselves compare: measured worst ``|L_wp - L_pp|`` of 1.2e-4 on entries up to 279
+    (``sphere_irregular``) and 3.6e-3 up to 4 973 (``saddle_graded``), float32 relative, held to
+    ``1e-5`` relative plus ``1e-5``. Mutation probe: the conjugate operator, every transport angle
+    negated, is 253 and 39 off.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = int(mesh_tm.vertices.shape[0])
@@ -1114,19 +1105,8 @@ def test_connection_laplacian_matches_potpourri3d(
     assert abs(connection_pp).max() > 1e-3
     assert abs(connection_wp - connection_wp.conj().T).max() < 1e-9
 
-    # Gauge-invariant 1: the magnitudes are the cotangent weights, phases removed.
-    assert sparse_allclose(abs(connection_wp), abs(connection_pp), rtol=1e-5, atol=1e-5)
-    # Gauge-invariant 2: the spectrum, since a gauge change is a diagonal unitary conjugation. So is
-    # a principal block's -- the conjugation restricted to it is still diagonal and unitary -- which
-    # keeps the dense eigensolve to the leading 1 024 vertices: on the 68 x 68 ``saddle_graded``
-    # (4 624) the two full spectra cost 11 s on either device.
-    block = slice(0, min(n_vertices, 1024))
-    assert np.allclose(
-        np.linalg.eigvalsh(connection_wp[block, block].toarray()),
-        np.linalg.eigvalsh(connection_pp[block, block].toarray()),
-        rtol=1e-5,
-        atol=1e-5,
-    )
+    assert sparse_allclose(connection_wp, connection_pp, rtol=1e-5, atol=1e-5)
+    assert not sparse_allclose(connection_wp.conj(), connection_pp, rtol=1e-5, atol=1e-5)
 
 
 def test_connection_laplacian_with_zero_transport_is_the_cotangent_laplacian(
@@ -1337,6 +1317,59 @@ def test_laplacian_from_given_edges_matches_trimesh(
         od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=False, edges=edges_wp)
     )
     assert sparse_allclose(operator_wp, operator_coo_tm.tocsr(), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_face_weighted_laplacian_is_meshlabs_stencil(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Not a library comparison: the operator against the stencil fitted to MeshLab's filters.
+
+    MeshLab never returns the matrix, so its own oracle is the output of the two filters that apply
+    it (``tests/test_smoothing.py``, Class A on ``filter_laplacian`` and ``filter_sharpen``); this
+    pins the operator entry for entry against
+    [`meshlab_umbrella`][tests.comparisons.meshlab_umbrella], the stencil solved for from those
+    filters. ``saddle_graded`` carries the rim rows, whose interior edges must be zero and whose
+    diagonal is twice a rim neighbour's weight; both row kinds are asserted present.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    operator_wp = bsr_to_csr(od.laplacian.face_weighted_laplacian(mesh_wp.points, mesh_wp.indices))
+    expected_sp = meshlab_umbrella(np.asarray(mesh_tm.faces), len(mesh_tm.vertices))
+    assert sparse_allclose(operator_wp, expected_sp, rtol=1e-5, atol=1e-6)
+    assert np.allclose(np.asarray(operator_wp.sum(axis=1)).ravel(), 1.0, rtol=1e-5, atol=1e-5)
+    diagonal_np = operator_wp.diagonal()
+    degree_np = np.diff(sp.csr_matrix(abs(expected_sp) > 0).indptr) - 1
+    interior_np = np.isclose(diagonal_np, 1.0 / (2.0 * degree_np + 1.0), rtol=1e-5)
+    assert interior_np.any()
+    assert interior_np.all() == bool(mesh_tm.is_watertight)
+
+
+def test_face_weighted_laplacian_leaves_unreferenced_rows_empty(device: str) -> None:
+    """
+    Not a library comparison: an unreferenced vertex has an empty row, and no faces no rows.
+
+    The filters read an empty row as "stay in place"; a stray diagonal would do the same for the
+    smoothing but not for an operator a caller applies directly. One triangle with a fourth,
+    unreferenced vertex: each corner is a rim vertex (all three edges lie on one face), so each row
+    is ``(2 / 4, 1 / 4, 1 / 4)`` with the half on the diagonal.
+    """
+    vertices_wp = wp.array(
+        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [5, 5, 5]], dtype=np.float32),
+        dtype=wp.vec3,
+        device=device,
+    )
+    faces_wp = wp.array(np.arange(3, dtype=np.int32), dtype=wp.int32, device=device)
+    operator_np = bsr_to_csr(od.laplacian.face_weighted_laplacian(vertices_wp, faces_wp)).toarray()
+    expected_np = np.zeros((4, 4))
+    expected_np[:3, :3] = 0.25 + 0.25 * np.eye(3)
+    assert np.allclose(operator_np, expected_np, rtol=1e-6, atol=1e-7)
+
+    empty = od.laplacian.face_weighted_laplacian(
+        vertices_wp, wp.zeros(0, dtype=wp.int32, device=device)
+    )
+    assert empty.shape == (4, 4)
+    assert empty.nnz_sync() == 0
 
 
 # -----------------------------------------------------------------------------------------

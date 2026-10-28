@@ -1014,7 +1014,7 @@ def shell_face(
 ) -> None:
     # The two layers' triangles of face ``f``: the outer copy verbatim, the inner copy shifted by
     # ``n_vertices`` and **wound backwards**, because it faces into the shell rather than out of it.
-    # Corners 1 and 2 are swapped, which is ``repair.write_face_winding``'s reversal.
+    # Corners 0 and 1 are swapped.
     n_faces = faces.shape[0] // 3
     corner0 = faces[3 * f]
     corner1 = faces[3 * f + 1]
@@ -1023,9 +1023,9 @@ def shell_face(
     out_faces[3 * f + 1] = corner1
     out_faces[3 * f + 2] = corner2
     inner = 3 * (n_faces + f)
-    out_faces[inner] = n_vertices + corner0
-    out_faces[inner + 1] = n_vertices + corner2
-    out_faces[inner + 2] = n_vertices + corner1
+    out_faces[inner] = n_vertices + corner1
+    out_faces[inner + 1] = n_vertices + corner0
+    out_faces[inner + 2] = n_vertices + corner2
 
 
 @wp.func

@@ -584,7 +584,14 @@ marker citing it. Both markers are stackable and take string literals only.
 - Where no reference computes the quantity, an invariant-only test is the honest answer. Its
   docstring says "Not a library comparison: <why none exists>" and what the invariant excludes.
 - Classify every comparison in the docstring, written as `Class A`:
-    - **A**: direct `np.allclose` / `np.array_equal`. The default.
+    - **A**: direct `np.allclose` / `np.array_equal`. The default. An answer equal up to how its
+      elements are numbered is Class A too, compared through `ordito.equality`: `meshes_allclose`
+      (vertex numbering, face order and face rotation), `faces_equal` (face order and rotation
+      over a shared numbering), `points_allclose` (point order), `rows_equal` (row order of an
+      integer table; sort each row first for undirected edges) and `partitions_equal` (label
+      names). Numbering is not part of the answer. Upload the reference with the
+      `tests/conversions` helpers; `atol` is a Euclidean distance and must stay under half the
+      reference's closest point pair (`saddle_graded`: 1.4e-5).
     - **B**: equal after a named transform, still at `1e-5` (index map, unit fix, projection,
       `lexsort`, sign or gauge fix).
     - **C**: a derived scalar, set distance or statistic. Must name the bug class it excludes and
@@ -972,6 +979,91 @@ The full per-component detail is in `reference/component-status.md`; read the co
   `test_ball_pivoting_seeds_no_triangle_twice` asserts on the raw wave-loop soup.
 - **Tuned constants live next to their code and are device-gated** (`_LINK_ON_DEVICE_FROM`, `EAR_ONE_BLOCK_MAX`, `RDP_ONE_BLOCK_MAX`, `_DOWNSAMPLE_DOUBLING_FROM`, `_KNN_DEFER_MIN_POINTS`, `_NEAREST_LEAF_SIZES`, `_GEODESIC_BALL_CHUNK`, `PACK_SEGMENTS_KERNEL_FROM`); re-probe after a Warp upgrade.
 
+### Conventions adopted to turn Class B parity into Class A (2026-10-27)
+
+Each costs nothing measurable unless stated; the tests it freed compare buffers directly.
+
+- **Tangent gauge = geometry-central's.** Polar angle 0 is `vertex.halfedge()`: the outgoing
+  boundary halfedge on a rim, else the outgoing halfedge of the highest-index face (the ring's
+  largest halfedge, `kernels/tangent_space.ring_reference_slot`); `basis_x` is the fan fit
+  `fan_anchor` the geodesic walk already used. Frames, transport angles, the connection Laplacian
+  and transported vectors equal potpourri3d's (6e-7, 1.7e-6 rad, 1.2e-4 on entries up to 279,
+  5e-4°). The old ring-start gauge was 7-76° off in the median. The factorized transport moved
+  from 5.5e-6 to 1.5e-5 of CG's (`test_reused_operators_give_the_same_transport`, bound 5e-5):
+  round-off of the same, unitarily equivalent system.
+- **A per-face flip writes `np.fliplr` of the row** (`kernels/repair.write_face_winding`), as
+  trimesh (`fix_winding`, `fix_normals`) and igl (`bfs_orient`) do: `make_winding_consistent`
+  equals `FF`, `make_normals_outward` equals `fix_normals`. MeshLab's flip swaps a corner pair that
+  varies per face, so its comparison stays Class B. `thicken_mesh`'s inner layer swaps corners 0
+  and 1, MeshLib's: closed shells equal `makeThickMesh` row for row; an open shell's band numbering
+  is MeshLib's half-edge construction and stays a bijection.
+- **`remove_duplicated_vertices` numbers survivors by first occurrence**, the order of Open3D, VTK,
+  MeshLab and MeshLib (and an already-welded mesh comes back unchanged): a flag, a scan and a
+  relabel after the key sort, 1.12-1.20x the key-order weld (flat host cost).
+- **`estimate_normals(orientation="neighbors")`** is pytorch3d's SHOT sign rule (at least half the
+  neighbour offsets project positively), equal to `disambiguate_directions=True` to 3e-6.
+- **Already equal, tests only:** `face_adjacency_angles` / `_projections` / `_convex` and
+  `Trimesh.face_adjacency` (trimesh's row order), `subdivide` (trimesh's buffers), `crop_mesh`
+  (Open3D's), `truncated_prisms` (trimesh's).
+- **Left Class B, by reason:** an output needing more than renumbering (a mesh, point set, row
+  set or partition equal up to numbering is Class A through `ordito.equality`, 2026-10-28); an eigenvector sign (`fit_line`, `fit_plane`,
+  Open3D / MeshLib normals); a serial queue or ear clipper (flips, `sweep_polygon` caps, MeshLab's
+  flip corner); a reference that returns another object (masks, dicts, bitsets).
+- **`laplacian.face_weighted_laplacian`** is MeshLab's coordinate-smoothing stencil (neighbours
+  weighted by the faces on their edge, the vertex once; a rim vertex averages along the rim, itself
+  twice), one row kernel over the `cotmatrix` pattern whose runs are those face counts
+  (`kernels/laplacian.pattern_row_on_rim` is shared with the heat method's pin). As
+  `laplacian_operator=` it makes `filter_laplacian` and `filter_sharpen` equal MeshLab's filters
+  (1.4e-6 at 10 passes). **`filter_sharpen(method="graph_laplacian")`** is Open3D's sharpener
+  (`v + w sum (v - v_j)`, repeated), equal to 2.4e-7 at 3 steps; its benchmark group is
+  `filter_sharpen_graph_laplacian`.
+- **Heat methods are named by library: `method="geometry_central" | "meshlab" | "igl"`** on
+  `heat_operators`, `HeatSolver` and `Trimesh.heat_solver` (default `"geometry_central"`, what the
+  vector heat method and potpourri3d use); `heat_geodesic(method="meshlab" | "igl")`, default
+  `"meshlab"`, runs on `mesh.heat_solver(method=method)`. MeshLab = barycentric mass, Neumann, `h`
+  over every face's edges (`kernels/heat.upper_edge_length_sum_and_count(face_edges=)` weights each
+  unique edge by its run, the faces on it): Class A to 9.5e-7 of the range. igl = Voronoi mass
+  (`kernels/triangles.face_voronoi_areas`, formed in `float64`, rounded to `float32` so the exact
+  corner scatter holds), unique-edge `h`, the Neumann heat averaged with the rim-pinned one
+  (`HeatSolver.diffuse_pinned`: rim rows identity, rim columns zero, its own factorization slot;
+  skipped after one readback on a closed mesh): Class A to 9.1e-7. `log_map`'s radius is the
+  distance at geometry-central's timestep, not the MeshLab default's (they differ on open meshes).
+- **geometry-central's (potpourri3d's) heat geodesic factors `L + 1e-6 I`**, not the singular
+  Laplacian: rebuilt in SciPy with that term it equals potpourri3d to 1e-14, and without it the gap
+  is exactly ordito's (1.9e-5 / 6.7e-5 of the range). The term stops the method converging, since
+  `L`'s smallest non-zero eigenvalue falls with resolution: on unit icospheres, max error against
+  the exact distance, ordito / potpourri3d, 0.051 / 0.051 at 642 vertices, 0.019 / 0.020 at 10 k,
+  0.014 / 0.018 at 41 k, 0.011 / 0.027 at 164 k. Not adopted: that comparison stays Class C.
+- **`filter_sharpen`'s default operator is `face_weighted_laplacian`**, so the default is MeshLab's
+  `apply_coord_unsharp_mask` (Class A); the plain 1-ring mean it used before matched no library.
+- **`estimate_normals` defaults to `orientation="neighbors"`** (pytorch3d's SHOT rule, Class A);
+  `"centroid"` (outward from the centroid, ordito's own, what a reconstruction needs) is explicit at
+  every in-repo caller and in the guides. `camera_location` is MeshLab's `flipflag` toward `viewpos`
+  and `orient_reference` Open3D's `orient_normals_to_align_with_direction`, both Class A.
+- **Dropped as a partial port:** `flip_by_objective(objective="curvature")` (a dihedral rule where
+  MeshLab's filter decides on a vertex-curvature measure, `curvtype`). `polyline_upsample`'s
+  `"floor"` was dropped and then restored by owner decision (2026-10-28): its 2026-10-26 entry
+  below stands.
+- **`cluster_decimate(method="open3d" | "meshlab")`, `contraction="average" | "closest"`
+  (2026-10-28).** Both libraries keep a face and its reversed twin and merge only same-winding
+  repeats; ordito merged by sorted triple, so on a rotated sphere Open3D returned 408 / 94 faces to
+  ordito's 402 / 93 (the unrotated icosphere the old test used never made a twin). The face table
+  now keys the triple rotated to its smallest cell (`kernels/array.rotate_min_first`), faces are
+  written that way (Open3D's rows) and ordered by that key. `"meshlab"` is vcg's
+  `Clustering::Init` grid (box grown by one cell a side, `floor(extent / c)` stretched cells per
+  axis, per-axis `inverse_size`) and its `AverageColorCell` mean over face *corners*; the corner
+  items reuse the vertex scatter and the ordered sort (`corner_items`, `4 * 3 n_faces` staging).
+  Equal to `meshing_decimation_clustering` (faces as sets, vertices 4e-6) and, with `"closest"`, to
+  `generate_sampling_clustered_vertex('Closest to center')` exactly; `"open3d"` equals
+  `simplify_vertex_clustering` (1e-6). Benchmark group `cluster_decimate_meshlab`. Not adopted:
+  keeping cells whose faces all collapsed (both libraries do) and Open3D's first-occurrence vertex
+  numbering; both return faces in hash order, so the face comparison stays Class B.
+- **`oriented_bounding_box` keeps `refine_iterations=8` by default** although `0` is the Class A
+  one (igl's sampled search, the same candidates): unrefined, a turned `1 x 2 x 4` box comes back
+  23 % too large at 4096 rotations; refined it is exact, and on stretched clouds it reaches the
+  hull-face minimizers' volume (trimesh, Open3D) to a few parts in 1e5, the frames differing from
+  Open3D's by about 0.25° (a flat minimum). No library refines; the owner decides the default.
+
 ### Open item from the 2026-10-27 octree memory work: a sparse solve
 
 `screened_poisson(method="octree")` at depth 8 now peaks at 484 MiB, down from 2 036 (`7498cad1`
@@ -1033,7 +1125,7 @@ The audit of every Class B/C/D test (commits `310fb0e8`, `03226107`) left these 
 - **`flip_t_vertices` takes MeshLab's `meshing_remove_t_vertices` rule** (owner decision, 2026-10-26): a face is a sliver when its *longest edge over the height onto it* exceeds `threshold`, and that longest edge is the one flipped, when the flip raises the worse height-over-longest-edge of the pair (`flip_by_objective(objective="t_vertex")`'s `aspect_threshold` likewise). The old `aspect_ratio` gate (about `(base / height)^2 / 8` on a sliver, so its 40 was MeshLab's ~18, any edge of a sliver) was the whole 130-234-face gap; with the edge-key claim order and convexity guard kept the gap is 4 / 36 faces on `sphere_irregular` (thresholds 40 / 20), 0 / 6 on `torus_irregular` and 0 / 0 on `saddle_graded`. The sphere's 4 are MeshLab flips of non-convex quads that fold it to a 178.3° dihedral; the rest is flip order (a serial ascending sweep of the rule does no better). No in-repo caller of the `t_vertex` objective but `flip_t_vertices`; the repair guide's output is unchanged.
 - **`fix_degeneracies` / `collapse_small_triangles` vs MeshLib: confirmed order (2026-10-26).** On the saddle MeshLib keeps 986 vertices and ordito 1020 of 1 156. Most of the count gap is exact ties on the mirror-symmetric rows (the endpoint-cost comparison keeps its first endpoint): jittering the input by 1e-7 / 1e-6 / 1e-5 of the diagonal gives ordito 990 / 994 / 999 against MeshLib 986 / 986 / 1000; not a cap (`max_iter=100` changes nothing). The kept sets still differ by 59-62 vertices (face IoU 0.86-0.87), and ordito's collapse lock key is hashed, not length-ranked (a length rank picked the same collapses on this saddle, `kernels/remesh.collapse_candidates`), so the residual is MeshLib's serial heap order. `collapse_small_triangles` differs by one vertex each way (the `13-45-49` chain); keeping the largest index instead makes it 15, so no survivor convention closes it.
 - **`polyline_upsample(method=)`** (owner decision, 2026-10-26): `"floor"` (default, `max(floor(L / step), 1)` pieces, spacing in `[step, 2 step)`) or `"bisect"` (the smallest power of two whose pieces are at most `step`, MeshLib's `subdividePolyline`): `test_upsample_polyline_bisect_matches_meshlib` is Class A over six steps, and the `polyline_upsample` benchmark row runs `"bisect"` so ordito and MeshLib emit the same points. The old docstring's "matching the source implementation" named an internal PyTorch port (`fd484ce4`), nothing a user could check. `polyline_smooth_upsample` keeps `"floor"` (shared `_upsample` body, `bisect=False`).
-- **`log_map` angles vs potpourri3d differ by a median 13.2°: confirmed Class C (2026-10-26).** Three conventions tested on `saddle_graded`: the source rotation as the Euclidean angle between the two `basis_x` (13.19°; the intrinsic offset 13.18°), mirroring (64.6°), the radial direction expressed intrinsically (<0.1°). Against the radial direction of `igl.exact_geodesic`'s distance, read ordito's way, ordito's angles are a median 4.5° off and potpourri3d's 11.0° from the test's source; 6.6-9.5° against 12.7-18.4° on `sphere_irregular`; 2.4° against 0.4° from the saddle's middle, where the two agree to 2.5°. The gap is two radial-direction discretization errors, potpourri3d's usually the larger.
+- **`log_map` angles vs potpourri3d differ by a median 13.2°: confirmed Class C (2026-10-26).** The tangent gauge is now shared (component notes, "Conventions adopted"), so no source rotation separates the two; it was never the gap. Conventions tested on `saddle_graded`: the source rotation as the Euclidean angle between the two `basis_x` (13.19°; the intrinsic offset 13.18°), mirroring (64.6°), the radial direction expressed intrinsically (<0.1°). Against the radial direction of `igl.exact_geodesic`'s distance, read ordito's way, ordito's angles are a median 4.5° off and potpourri3d's 11.0° from the test's source; 6.6-9.5° against 12.7-18.4° on `sphere_irregular`; 2.4° against 0.4° from the saddle's middle, where the two agree to 2.5°. The gap is two radial-direction discretization errors, potpourri3d's usually the larger.
 - **`split_faces_along_field`'s "high side first" is a mask, not an order**: it returns one mesh and a `values >= isovalue` mask, the side `clip_mesh_with_field` keeps; only the pyvista test pairs VTK's `(below, above)` tuple against it. Inverting the mask would invert that shared convention for no reference's sake. Callers: 0 in `ordito/`, 5 in `tests/test_intersection.py`, 1 benchmark row, 1 guide example (`docs/examples/cutting.md`) and its own docstring.
 - **Boundary loop direction: keep it.** ordito's direction *is* igl's (`boundary_loop`, `boundary_loop_all`: exact `array_equal`); trimesh's outline is direction-agnostic; only MeshLib's `getLeftRing` walks the other way (it walks the hole). Flipping would touch 15 library consumers (every filler, `extend_hole`, the stitchers, `_cap_section_loops`, `map_vertices_to_circle` and the maps chained on it, `heat_signed_distance`, `loop_directed_areas`), 9 docstring outputs, 20 tests and 3 guide pages; 11 consumers, 60 tests and every benchmark are agnostic.
 - **Dense `0..k-1` component labels: priced, not adopted.** igl's label is exactly the rank of ordito's (smallest face / node id), now asserted in both igl tests. A dense output costs a root-flag launch, an `int32` scan and a gather: 1.9x the call at 328 k faces (host-bound), 1.03x at 5.2 M.

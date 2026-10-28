@@ -33,6 +33,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | vertex normals | [`vertices.vertex_normals`][ordito.vertices.vertex_normals] |
 | volume, centre of mass, inertia, Euler characteristic | [`measures`][ordito.measures]: [`volume`][ordito.measures.volume], [`moments`][ordito.measures.moments], [`euler_characteristic`][ordito.measures.euler_characteristic] |
 | is it watertight / manifold / orientable / self-intersecting? | [`validation`][ordito.validation]: [`is_watertight`][ordito.validation.is_watertight], [`is_edge_manifold`][ordito.validation.is_edge_manifold], [`is_orientable`][ordito.validation.is_orientable], [`is_self_intersecting`][ordito.validation.is_self_intersecting] |
+| are two meshes the same up to vertex and face numbering? | [`comparison.meshes_allclose`][ordito.equality.meshes_allclose], [`faces_equal`][ordito.equality.faces_equal] |
 | unique edges and their lengths | [`edges.edges_unique`][ordito.edges.edges_unique], [`edges_unique_length`][ordito.edges.edges_unique_length] |
 | boundary edges and hole rims | [`boundary.boundary_edges`][ordito.boundary.boundary_edges], [`boundary_loops`][ordito.boundary.boundary_loops] |
 | neighbouring faces and connected components | [`adjacency.face_adjacency`][ordito.adjacency.face_adjacency], [`face_connected_component_labels`][ordito.adjacency.face_connected_component_labels], [`combine.split`][ordito.combine.split] |
@@ -106,6 +107,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | [boundary](api/ordito/boundary.md) | Boundary edges, vertices and loops. |
 | [selection](api/ordito/selection.md) | Face-subset extraction and vertex-selection morphology. |
 | [validation](api/ordito/validation.md) | Validity predicates (manifold, watertight, orientable, self-intersecting) and their per-element masks. |
+| [equality](api/ordito/equality.md) | Equality of meshes up to the numbering of their vertices and faces. |
 | [homology](api/ordito/homology.md) | Homology generators: the loops that make a surface's topology. |
 | [tangent_space](api/ordito/tangent_space.md) | Per-vertex and per-face tangent frames, and the angles that transport vectors between them. |
 

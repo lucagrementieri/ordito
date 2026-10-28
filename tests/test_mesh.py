@@ -15,6 +15,7 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
+import ordito.typing as odt
 from ordito.mesh import _ORIENTATION_DEPENDENT_KEYS, _TOPOLOGY_KEYS
 from tests.comparisons import (
     SET_VALUED_CACHE_KEYS,
@@ -23,7 +24,6 @@ from tests.comparisons import (
     bsr_arrays,
     comparable_arrays,
     csr_row_sets,
-    lexsort_rows,
     trimesh_outline_loops,
 )
 from tests.conftest import BOUNDARY_MESHES, CLOSED_MESHES, MESHES, populate_cache
@@ -494,19 +494,23 @@ def test_edges_match_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> 
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_edges_unique_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B (row-set canonicalization): the unique edge *set* matches after a shared lexsort.
+    Class A (``od.equality.rows_equal``): the unique edge set, up to row order.
 
     Here the order genuinely is not defined by either library -- ordito's comes from a parallel
-    hash and trimesh's from a serial scan -- so both sides are sorted. The `inverse` is then checked
-    against ordito's own ``edges_sorted`` rather than trimesh's, because it indexes into ordito's
-    row order and that is the invariant the sort throws away.
+    hash and trimesh's from a serial scan -- so the two are compared as row sets, each pair
+    min-first on both sides. The `inverse` is then checked against ordito's own ``edges_sorted``
+    rather than trimesh's, because it indexes into ordito's row order, which the comparison
+    leaves free.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
     unique_wp = mesh.edges_unique.numpy()
-    unique_tm = mesh_tm.edges_unique
-    assert np.array_equal(lexsort_rows(unique_wp), lexsort_rows(unique_tm))
+    unique_tm = np.ascontiguousarray(mesh_tm.edges_unique, dtype=np.int32)
+    assert od.equality.rows_equal(
+        mesh.edges_unique,
+        odt.as_array2d(wp.array(unique_tm, dtype=wp.int32, device=mesh_wp.device), wp.int32),
+    )
 
     # unique_edges[inverse] must reconstruct edges_sorted, independent of row order.
     reconstructed = unique_wp[mesh.edges_unique_inverse.numpy()]
@@ -517,17 +521,17 @@ def test_edges_unique_matches_trimesh(request: pytest.FixtureRequest, mesh_name:
 @pytest.mark.parity("mesh_face_adjacency", "trimesh")
 def test_face_adjacency_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B, two named transforms: sort within each pair, then lexsort the rows.
+    Class A: the cached property is trimesh's ``face_adjacency`` row for row.
 
-    An adjacency pair is unordered and the list of pairs is unordered, and neither library defines
-    either -- so both have to be canonicalized before the sets can be compared elementwise.
+    Both enumerate the pairs in ``edges_unique`` row order, smaller face first within a pair, so
+    no canonicalization is needed.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
     adjacency_wp = mesh.face_adjacency.numpy()
     adjacency_tm = tm.graph.face_adjacency(mesh=mesh_tm)
-    assert np.array_equal(lexsort_rows(adjacency_wp), lexsort_rows(np.sort(adjacency_tm, axis=1)))
+    assert np.array_equal(adjacency_wp, adjacency_tm)
 
 
 # ---------------------------------------------------------------------------

@@ -9,8 +9,7 @@ it diffuses and how it reads the result back:
 
 - **Geodesic distance.** [`heat_geodesic`][ordito.heat.heat_geodesic] diffuses a scalar indicator
   from source vertices, normalizes its gradient, and integrates that unit field back with a Poisson
-  solve. The heat method of Crane et al. (``igl::heat_geodesics``,
-  ``potpourri3d.MeshHeatMethodDistanceSolver``).
+  solve. The heat method of Crane et al., as MeshLab or ``igl::heat_geodesics`` discretize it.
 - **Signed distance to curves.** [`heat_signed_distance`][ordito.heat.heat_signed_distance]
   diffuses the normals of a set of oriented curves, then solves a Poisson problem against that field
   to get a *signed* distance whose zero set is the curves (``potpourri3d.MeshSignedHeatSolver``).
@@ -23,7 +22,8 @@ it diffuses and how it reads the result back:
 The three are one module because two of them cannot be separated: the vector solvers import
 [`heat_operators`][ordito.heat.heat_operators] and [`heat_geodesic`][ordito.heat.heat_geodesic],
 [`VectorHeatOperators`][ordito.heat.VectorHeatOperators] embeds the scalar method's operator tuple,
-and [`log_map`][ordito.heat.log_map]'s radius *is* ``heat_geodesic``'s answer.
+and [`log_map`][ordito.heat.log_map]'s radius *is* ``heat_geodesic``'s answer at the vector
+method's diffusion time.
 
 All three run in ``float64``, because the diffused field decays exponentially and underflows
 ``float32``. They run on either device.
@@ -48,7 +48,7 @@ import math
 import warnings
 import weakref
 from dataclasses import dataclass
-from typing import Any, TypeVar, cast, overload
+from typing import Any, Literal, TypeVar, cast, overload
 
 import warp as wp
 import warp.optim.linear as wpl
@@ -141,6 +141,10 @@ HeatOperators = tuple[
 solves."""
 
 
+HeatMethod = Literal["geometry_central", "meshlab", "igl"]
+"""The heat method discretizations ordito assembles, named for the library each reproduces."""
+
+
 def heat_operators(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -149,6 +153,7 @@ def heat_operators(
     use_robust: bool = False,
     cot_entries: odt.Array2dFloat | None = None,
     pattern: MeshOperatorPattern | None = None,
+    method: HeatMethod = "geometry_central",
 ) -> HeatOperators:
     """
     Assemble the source-independent operators the heat method solves against.
@@ -196,6 +201,17 @@ def heat_operators(
         caller assembling these operators again reuses it --
         [`Trimesh.mesh_operator_pattern`][ordito.mesh.Trimesh.mesh_operator_pattern] has it cached.
         The returned matrices share its ``offsets`` and ``columns``.
+    method
+        Whose discretization of the heat system to assemble -- the lumped mass ``M`` and the mean
+        edge length ``h`` of the default ``t = h ** 2``:
+
+        - ``"geometry_central"`` (default): each vertex a third of its faces' areas, ``h`` over the
+          unique edges. What ``potpourri3d``'s solvers assemble, and what the vector heat method
+          ([`vector_heat_operators`][ordito.heat.vector_heat_operators]) builds on.
+        - ``"meshlab"``: the same mass, ``h`` over every face's three edges (an interior edge
+          twice, a rim edge once; the same on a closed mesh).
+        - ``"igl"``: Meyer et al.'s mixed Voronoi area per vertex (an obtuse face's obtuse corner
+          takes half the face), ``h`` over the unique edges, ``igl::heat_geodesics``' choices.
 
     Returns
     -------
@@ -249,7 +265,8 @@ def heat_operators(
     ValueError
         If both ``cot_entries`` and ``use_robust`` are given: ``use_robust`` exists to build that
         very table from mollified edge lengths, so the two ask for different weights. Or if
-        ``pattern`` was built for another operator or vertex count.
+        ``pattern`` was built for another operator or vertex count, or ``method`` is not one of
+        the three names above.
     RuntimeError
         If ``vertices``, ``faces``, ``cot_entries`` and ``pattern`` are not all on one device.
 
@@ -284,8 +301,16 @@ def heat_operators(
             "half-cotangent table from mollified edge lengths."
         )
     _require_cotmatrix_pattern(pattern, vertices.size)
+    mass, timestep = _heat_method_choices(method)
     return _heat_operators(
-        vertices, faces, t, use_robust=use_robust, cot_entries=cot_entries, pattern=pattern
+        vertices,
+        faces,
+        t,
+        use_robust=use_robust,
+        cot_entries=cot_entries,
+        pattern=pattern,
+        mass=mass,
+        timestep=timestep,
     )[0]
 
 
@@ -297,6 +322,7 @@ def heat_geodesic(
     *,
     t: float | None = None,
     use_robust: bool = False,
+    method: Literal["meshlab", "igl"] = "meshlab",
 ) -> wp.array[wp.float64]: ...
 @overload
 def heat_geodesic(
@@ -307,6 +333,7 @@ def heat_geodesic(
     t: float | None = None,
     *,
     use_robust: bool = False,
+    method: Literal["meshlab", "igl"] = "meshlab",
 ) -> wp.array[wp.float64]: ...
 def heat_geodesic(
     mesh: Trimesh | wp.array[wp.vec3] | None = None,
@@ -316,6 +343,7 @@ def heat_geodesic(
     *,
     vertices: wp.array[wp.vec3] | None = None,
     use_robust: bool = False,
+    method: Literal["meshlab", "igl"] = "meshlab",
 ) -> wp.array[wp.float64]:
     """
     Approximate geodesic distance to the nearest source vertex (Crane et al. heat method).
@@ -327,7 +355,23 @@ def heat_geodesic(
     Cholesky factorization where one is held or needed, as [`HeatSolver`][ordito.heat.HeatSolver]
     decides: once a system is solved a second time on a `Trimesh`, and at once for both when the
     heat solve's iterate fails its accuracy check. The result is an *approximation* of the true
-    geodesic distance (typically a few percent error), matching ``igl::heat_geodesics``.
+    geodesic distance (typically a few percent error).
+
+    The method leaves three discretization choices open, and ``method`` makes them as one of two
+    libraries does, so the field is that library's up to its direct solves' rounding:
+
+    - ``"meshlab"`` (default), MeshLab's ``compute_scalar_by_heat_geodesic_distance_from_selection
+      _per_vertex``: the barycentric lumped mass, Neumann boundary conditions, and
+      ``t = h ** 2`` with ``h`` the mean over every face's three edges.
+    - ``"igl"``, ``igl::heat_geodesics``: the Voronoi lumped mass, the mean of the Neumann heat and
+      the heat pinned to zero on the rim (a second heat solve on a mesh with a rim), and ``h`` the
+      mean over the unique edges.
+
+    Against exact polyhedral geodesics MeshLab's Neumann boundary is the more accurate of the two:
+    equal on a hemisphere, and 0.93 % against 1.15 % mean error (3.1 % against 4.9 % worst) of the
+    distance range on a half torus. geometry-central (``potpourri3d``) makes MeshLab's mass and
+    boundary choices but regularizes its Poisson solve with ``1e-6`` times the identity, which
+    stops the method converging on fine meshes; ordito leaves that out.
 
     The computation runs in ``float64``: the diffused heat decays exponentially away from the
     source and would underflow ``float32``, collapsing the far field.
@@ -352,15 +396,18 @@ def heat_geodesic(
         ``(n_sources,)`` source vertex indices. The returned distance is measured to
         the nearest source and is zero at the source set.
     t
-        Diffusion time. When ``None``, defaults to the squared mean edge length (the
-        ``igl::heat_geodesics`` default), which balances accuracy and smoothing.
+        Diffusion time. When ``None``, the squared mean edge length ``method`` names, which
+        balances accuracy and smoothing.
     use_robust
         Forwarded to [`heat_operators`][ordito.heat.heat_operators]: build the Laplacian
         from mollified edge lengths, which is what makes the solves survive degenerate triangles.
         On a mesh with none it changes nothing. ``potpourri3d.MeshHeatMethodDistanceSolver``'s
         flag of the same name does more -- it also solves on an intrinsic Delaunay triangulation
-        -- and defaults to ``True``; this defaults to ``False`` so the plain call stays exactly
-        ``igl::heat_geodesics``.
+        -- and defaults to ``True``; this defaults to ``False``.
+    method
+        ``"meshlab"`` (default) or ``"igl"``: whose discretization to reproduce (above). The two
+        part most on obtuse triangles (the mass) and from a source inside an open mesh (the
+        boundary).
 
     Returns
     -------
@@ -370,7 +417,8 @@ def heat_geodesic(
     Raises
     ------
     ValueError
-        If an entry of ``sources`` is not a vertex index in ``[0, n_vertices)``.
+        If an entry of ``sources`` is not a vertex index in ``[0, n_vertices)``, or ``method`` is
+        not ``"meshlab"`` or ``"igl"``.
     RuntimeError
         If ``vertices``, ``faces`` and ``sources`` are not all on one device.
 
@@ -378,7 +426,9 @@ def heat_geodesic(
     -----
     The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
     factorization it is about to drop (the heat solve's verification failed on an ill-conditioned
-    mesh), since the `Trimesh` form would have kept it for the next call.
+    mesh), since the `Trimesh` form would have kept it for the next call. That form runs on
+    ``mesh.heat_solver(t, use_robust=use_robust, method=method)``, the solver to
+    [`factor`][ordito.heat.HeatSolver.factor] ahead of the calls.
 
     See Also
     --------
@@ -407,6 +457,8 @@ def heat_geodesic(
     print(f"{distance.numpy()[south]:.2f}")  # 3.09
     ```
     """
+    if method not in ("meshlab", "igl"):
+        raise ValueError(f"method must be 'meshlab' or 'igl', got {method!r}")
     bound, owned, arguments = mesh_arguments(
         "heat_geodesic", mesh, vertices, faces, (sources, t), 1
     )
@@ -416,11 +468,17 @@ def heat_geodesic(
         cast("wp.array[wp.int32]", arguments[0]),
         cast("float | None", arguments[1]),
         use_robust,
+        method,
     )
 
 
 def _heat_geodesic(
-    mesh: Trimesh, owned: bool, sources: wp.array[wp.int32], t: float | None, use_robust: bool
+    mesh: Trimesh,
+    owned: bool,
+    sources: wp.array[wp.int32],
+    t: float | None,
+    use_robust: bool,
+    method: Literal["meshlab", "igl"],
 ) -> wp.array[wp.float64]:
     """``heat_geodesic`` on a `Trimesh`; ``owned`` is whether the caller passed it."""
     vertices, faces = mesh.vertices, mesh.faces
@@ -432,16 +490,13 @@ def _heat_geodesic(
     if n_vertices == 0 or n_faces == 0 or sources.size == 0:
         return _launch.zeros(n_vertices, dtype=wp.float64, device=device)
 
-    solver = mesh.heat_solver(t, use_robust=use_robust)
+    solver = mesh.heat_solver(t, use_robust=use_robust, method=method)
 
     # Heat solve: (M - t L) u = u0, with u0 the source indicator, run until every vertex's heat has
     # converged relative to its own size (the settle rule at ``_HEAT_CHECK_ROUNDS``) -- not to a
     # residual tolerance, which the far field sits hundreds of orders of magnitude below. Neumann on
-    # a boundary, as geometry-central (``potpourri3d``) and MeshLab take it.
-    # ``igl::heat_geodesics_solve`` averages it with the solution pinned to zero on the boundary
-    # instead, and against exact polyhedral geodesics (``igl.exact_geodesic``) that average is the
-    # less accurate of the two: equal on a hemisphere, and 1.15 % against 0.93 % mean error (4.9 %
-    # against 3.1 % worst) of the distance range on a half torus.
+    # a boundary, as MeshLab takes it, unless the caller asks for ``igl::heat_geodesics_solve``'s
+    # average with the solution pinned to zero on the rim.
     # The indicator, the heat and the divergence's sums: scratch dropped together, one buffer.
     u0, heat, scratch = _zeroed_fields(device, n_vertices, n_vertices, n_vertices)
     invalid = _launch.zeros(1, dtype=wp.int32, device=device)
@@ -455,6 +510,10 @@ def _heat_geodesic(
     _require_indices_in_range(invalid, n_vertices, "heat_geodesic", "sources")
 
     solver.diffuse(u0, heat)
+    if method == "igl":
+        pinned = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+        if solver.diffuse_pinned(u0, pinned):
+            _launch.map(kernel_heat.average_heat, heat, pinned, out=heat)
     distance = _distance_from_heat(
         mesh, solver, sources, heat, _corner_order(mesh, solver), scratch
     )
@@ -925,9 +984,9 @@ def vector_heat_operators(
     Notes
     -----
     The vector and scalar systems must share ``t``: [`log_map`][ordito.heat.log_map]'s
-    radius is asserted to *be* the [`heat_geodesic`][ordito.heat.heat_geodesic] distance,
-    so two diffusion times would split a quantity that is supposed to be one number. That is why
-    ``scalar_operators`` is the one argument here that cannot be validated.
+    radius is asserted to *be* the [`heat_geodesic`][ordito.heat.heat_geodesic] distance at that
+    ``t``, so two diffusion times would split a quantity that is supposed to be one number. That
+    is why ``scalar_operators`` is the one argument here that cannot be validated.
 
     See Also
     --------
@@ -969,13 +1028,13 @@ def vector_heat_operators(
     built = None if scalar_operators is None else _SCALAR_BUILDS.get(scalar_operators[0])
     edge_sums = None
     if t is None:
-        # Shares the scalar solver's timestep convention -- the unique-edge mean, matching
-        # ``igl::heat_geodesics``. The two solvers must agree: ``log_map``'s radius is asserted to
-        # *be* the ``heat_geodesic`` distance, so giving them different diffusion times would split
-        # a quantity that is supposed to be one number. They do by construction: the mean is read
-        # off the shared sparsity, twelve triplets per face and nothing pruned, and the scalar
-        # bundle built here takes these very sums (a prebuilt one already holds its own). Both
-        # systems square it on the device, so nothing is read back.
+        # Shares the scalar solver's timestep convention -- the unique-edge mean,
+        # geometry-central's. The two solvers must agree: ``log_map``'s radius is asserted to *be*
+        # the ``heat_geodesic`` distance at that timestep, so giving them different diffusion
+        # times would split a quantity that is supposed to be one number. They do by construction:
+        # the mean is read off the shared sparsity, twelve triplets per face and nothing pruned,
+        # and the scalar bundle built here takes these very sums (a prebuilt one already holds its
+        # own). Both systems square it on the device, so nothing is read back.
         if built is not None and built.edge_sums is not None:
             edge_sums = built.edge_sums
         else:
@@ -1078,6 +1137,19 @@ def _require_cotmatrix_pattern(pattern: MeshOperatorPattern | None, n_vertices: 
         )
 
 
+def _heat_method_choices(
+    method: str,
+) -> tuple[Literal["barycentric", "voronoi"], Literal["unique_edges", "face_edges"]]:
+    """Return ``method``'s ``(mass, timestep)``, raising unless it names a heat discretization."""
+    if method == "geometry_central":
+        return "barycentric", "unique_edges"
+    if method == "meshlab":
+        return "barycentric", "face_edges"
+    if method == "igl":
+        return "voronoi", "unique_edges"
+    raise ValueError(f"method must be 'geometry_central', 'meshlab' or 'igl', got {method!r}")
+
+
 def _heat_operators(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -1087,6 +1159,8 @@ def _heat_operators(
     cot_entries: odt.Array2dFloat | None = None,
     edge_sums: wp.array[wp.float64] | None = None,
     pattern: MeshOperatorPattern | None = None,
+    mass: Literal["barycentric", "voronoi"] = "barycentric",
+    timestep: Literal["unique_edges", "face_edges"] = "unique_edges",
 ) -> tuple[HeatOperators, wp.array[wp.float64]]:
     """
     ``heat_operators``' assembly, returning the ``float64`` lumped mass it built alongside.
@@ -1119,17 +1193,17 @@ def _heat_operators(
         cot_entries = odt.as_array2d(
             _face_table(face_terms, 4 * n_faces, n_faces, 3).reshape((n_faces, 3)), wp.float32
         )
-    mass = _launch.zeros(vertices.size, dtype=wp.float64, device=device)
+    lumped = _launch.zeros(vertices.size, dtype=wp.float64, device=device)
     if n_faces > 0:
         _launch.launch(
             kernel_heat.heat_face_terms,
             dim=n_faces,
-            inputs=[vertices, faces, wp.int32(write_cot)],
+            inputs=[vertices, faces, wp.int32(write_cot), wp.int32(mass == "voronoi")],
             outputs=[
                 cot_entries if write_cot else odt.empty_2d((0, 3), wp.float32, device=device),
                 normals,
                 areas,
-                mass,
+                lumped,
             ],
             device=device,
         )
@@ -1158,7 +1232,7 @@ def _heat_operators(
             # The unique-edge average, which is what ``igl::heat_geodesics`` uses for its timestep
             # -- read off the Laplacian's own sparsity, which already holds the unique edges, and
             # left on the device for the system's assembly to square.
-            edge_sums = _edge_length_sums(vertices, pattern)
+            edge_sums = _edge_length_sums(vertices, pattern, timestep)
         _, _, offsets, columns, run_start, keys, count, order = pattern
         # The three operators' values in one allocation: the bundle holds all three for as long as
         # any of them.
@@ -1181,10 +1255,11 @@ def _heat_operators(
                 wp.float64(-1.0 if t is None else -t),
                 edge_sums if t is None else None,
                 wp.int32(1 if t is None else 0),
-                mass,
+                lumped,
+                wp.float64(1.0 if mass == "voronoi" else 3.0),
             ],
             # The lumped mass over its own area sums, in place.
-            outputs=[laplacian_values, heat_values, poisson_values, mass],
+            outputs=[laplacian_values, heat_values, poisson_values, lumped],
             device=device,
         )
         laplacian = od.array.bsr_from_csr(
@@ -1211,8 +1286,8 @@ def _heat_operators(
         normals,
         areas,
     )
-    _SCALAR_BUILDS[heat_system] = _ScalarBuild(mass, edge_sums, write_cot and not use_robust)
-    return operators, mass
+    _SCALAR_BUILDS[heat_system] = _ScalarBuild(lumped, edge_sums, write_cot and not use_robust)
+    return operators, lumped
 
 
 def _face_table(
@@ -1255,10 +1330,15 @@ _SCALAR_BUILDS: weakref.WeakKeyDictionary[odt.SparseMatrix, _ScalarBuild] = (
 
 
 def _edge_length_sums(
-    vertices: wp.array[wp.vec3], pattern: MeshOperatorPattern | None
+    vertices: wp.array[wp.vec3],
+    pattern: MeshOperatorPattern | None,
+    timestep: Literal["unique_edges", "face_edges"] = "unique_edges",
 ) -> wp.array[wp.float64]:
     """
     Sum and count of the unique-edge lengths, read off a mesh operator pattern.
+
+    At ``timestep="face_edges"`` each edge counts once per face holding it instead, the sum and
+    count over every face's three edges.
 
     The strict upper triangle of the heat method's operators' pattern is the mesh's unique edge
     set, so the default timestep costs one launch over a pattern that already exists, where
@@ -1271,13 +1351,24 @@ def _edge_length_sums(
     if pattern is None or pattern.n_vertices == 0:
         return _launch.zeros(2, dtype=wp.float64, device=device)
     n_rows = pattern.n_vertices
+    _, _, offsets, columns, run_start, keys, count, _ = pattern
     # Block rows added in a fixed order, so the timestep repeats bit for bit on CUDA.
     blocks = kernel_reduce.blocks_1d(n_rows)
     sum_and_count, stride = _launch.block_partials(blocks, 2, wp.float64, device)
     _launch.launch_tiled(
         kernel_heat.upper_edge_length_sum_and_count,
         dim=[blocks],
-        inputs=[pattern.offsets, pattern.columns, vertices, stride, sum_and_count],
+        inputs=[
+            offsets,
+            columns,
+            run_start,
+            keys,
+            wp.int32(count),
+            vertices,
+            wp.int32(timestep == "face_edges"),
+            stride,
+            sum_and_count,
+        ],
         block_dim=TILE_1D,
         device=device,
     )
@@ -1719,7 +1810,8 @@ def log_map(
     computes, and the standard way to lay out a local coordinate patch around a point.
 
     Assembled from two fields that are each cheap: the distance to the source
-    ([`heat_geodesic`][ordito.heat.heat_geodesic]) gives the radius, and the source's
+    ([`heat_geodesic`][ordito.heat.heat_geodesic] with ``t`` the squared unique-edge mean, the
+    vector heat method's own) gives the radius, and the source's
     reference direction parallel-transported outwards gives the angle — at any vertex the angle
     between that transported direction and the outward radial direction is exactly the angle at
     which the connecting geodesic left the source, because transport along that geodesic preserves
@@ -2262,6 +2354,9 @@ class HeatSolver:
     use_robust : bool
         Whether the scalar operators are built from mollified edge lengths (see
         [`heat_operators`][ordito.heat.heat_operators]).
+    method : str
+        Whose discretization the operators follow, ``"geometry_central"``, ``"meshlab"`` or
+        ``"igl"`` (see [`heat_operators`][ordito.heat.heat_operators]).
 
     Notes
     -----
@@ -2288,7 +2383,7 @@ class HeatSolver:
 
     vertices, faces = od.creation.icosphere(subdivisions=3)
     mesh = od.mesh.Trimesh(vertices, faces)
-    solver = mesh.heat_solver()
+    solver = mesh.heat_solver(method="meshlab")  # the one heat_geodesic's default runs on
     print(solver.nbytes)  # 0
     for source in (0, 1):
         od.heat.heat_geodesic(mesh, sources=wp.array([source], dtype=wp.int32))
@@ -2298,10 +2393,26 @@ class HeatSolver:
     ```
     """
 
-    def __init__(self, mesh: Trimesh, t: float | None = None, *, use_robust: bool = False) -> None:
-        """Bind a solver to ``mesh`` at ``t``; nothing is assembled until first use."""
+    def __init__(
+        self,
+        mesh: Trimesh,
+        t: float | None = None,
+        *,
+        use_robust: bool = False,
+        method: HeatMethod = "geometry_central",
+    ) -> None:
+        """
+        Bind a solver to ``mesh`` at ``t``; nothing is assembled until first use.
+
+        Raises
+        ------
+        ValueError
+            If ``method`` is not ``"geometry_central"``, ``"meshlab"`` or ``"igl"``.
+        """
+        _heat_method_choices(method)
         self.t = None if t is None else float(t)
         self.use_robust = bool(use_robust)
+        self.method: HeatMethod = method
         self._mesh = weakref.ref(mesh)
         self._operators: HeatOperators | None = None
         self._vector_operators: VectorHeatOperators | None = None
@@ -2309,13 +2420,18 @@ class HeatSolver:
         # Set once a settled iterate of this mesh's systems fails its backward-error check: the
         # operators are ill-conditioned in places, so the Poisson solve is factored at once too.
         self._ill_conditioned = False
+        # The heat system pinned to zero on the rim, its preconditioner and rim mask, once built;
+        # ``()`` for a mesh with no rim, which has no pinned solve to run.
+        self._pinned: (
+            tuple[odt.SparseMatrix, wpl.LinearOperator, wp.array[wp.int32]] | tuple[()] | None
+        ) = None
 
     @property
     def operators(self) -> HeatOperators:
         """[`heat_operators`][ordito.heat.heat_operators] for the mesh at ``t``."""
         if self._operators is None:
             mesh = self._bound_mesh()
-            if self.t is None and not self.use_robust:
+            if self._is_default():
                 # The mesh's own cached bundle, so the property and this solver share one assembly.
                 self._operators = mesh.heat_operators
             else:
@@ -2326,6 +2442,7 @@ class HeatSolver:
                     use_robust=self.use_robust,
                     cot_entries=None if self.use_robust else mesh.cotmatrix_entries,
                     pattern=mesh.mesh_operator_pattern,
+                    method=self.method,
                 )
         return self._operators
 
@@ -2339,11 +2456,15 @@ class HeatSolver:
         Raises
         ------
         ValueError
-            If this solver was built with ``use_robust``: the connection Laplacian has no mollified
-            counterpart.
+            If this solver was built with ``use_robust`` or a ``method`` other than
+            ``"geometry_central"``, the discretization the vector heat method is defined on.
         """
         if self.use_robust:
             raise ValueError("HeatSolver: the vector heat operators have no use_robust variant")
+        if self.method != "geometry_central":
+            raise ValueError(
+                f"HeatSolver: the vector heat operators have no method={self.method!r} variant"
+            )
         if self._vector_operators is None:
             mesh = self._bound_mesh()
             if self.t is None:
@@ -2360,6 +2481,10 @@ class HeatSolver:
                 )
             self._operators = self._vector_operators[1]
         return self._vector_operators
+
+    def _is_default(self) -> bool:
+        """Whether this solver's scalar operators are the mesh's own cached bundle."""
+        return self.t is None and not self.use_robust and self.method == "geometry_central"
 
     @property
     def ill_conditioned(self) -> bool:
@@ -2550,6 +2675,81 @@ class HeatSolver:
             kept.factorization.solve(rhs, solution, tol=_CG_TOLERANCE)
             return
         twl.solve_spd(operators[3], rhs, solution, tol=_CG_TOLERANCE, preconditioner=operators[4])
+
+    def diffuse_pinned(self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64]) -> bool:
+        """
+        Diffuse a scalar field with the heat pinned to zero on the mesh's rim.
+
+        The Dirichlet counterpart of [`diffuse`][ordito.heat.HeatSolver.diffuse]: ``(M - t L) u =
+        rhs`` on the interior vertices, ``u = 0`` on every vertex with an edge on a single face,
+        settled the same way. ``igl::heat_geodesics`` averages this with the Neumann solution
+        ([`heat_geodesic`][ordito.heat.heat_geodesic] at ``boundary="average"``). The pinned
+        system and the rim are built on first use and kept; a mesh without a rim has nothing to
+        pin, and ``solution`` is then left as it was.
+
+        Parameters
+        ----------
+        rhs
+            ``(n_vertices,)`` right-hand side, ``float64``; its rim entries are ignored.
+        solution
+            ``(n_vertices,)`` initial guess, overwritten with the pinned field.
+
+        Returns
+        -------
+        bool
+            Whether the mesh has a rim, i.e. whether ``solution`` was solved for.
+
+        Raises
+        ------
+        ValueError
+            If ``rhs`` does not hold ``n_vertices`` entries, or ``solution`` is not shaped as
+            ``rhs``.
+        RuntimeError
+            If ``rhs``, ``solution`` and the mesh are not all on one device.
+        """
+        self._require_fields("HeatSolver.diffuse_pinned", rhs, solution, rhs.shape[-1], 1)
+        if self._pinned is None:
+            self._pinned = self._pinned_system()
+        if not self._pinned:
+            return False
+        system, preconditioner, rim = self._pinned
+        pinned_rhs = _launch.empty(rhs.size, dtype=wp.float64, device=rhs.device)
+        _launch.map(kernel_heat.off_rim, rhs, rim, out=pinned_rhs)
+        self._settle("pinned", system, pinned_rhs, solution, preconditioner=preconditioner)
+        return True
+
+    def _pinned_system(
+        self,
+    ) -> tuple[odt.SparseMatrix, wpl.LinearOperator, wp.array[wp.int32]] | tuple[()]:
+        """Build ``diffuse_pinned``'s system, preconditioner and rim mask; ``()`` with no rim."""
+        mesh = self._bound_mesh()
+        heat_system = self.operators[0]
+        _, _, offsets, columns, run_start, keys, count, _ = mesh.mesh_operator_pattern
+        n_vertices = mesh.vertices.size
+        device = mesh.vertices.device
+        rim = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+        n_rim = _launch.zeros(1, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_heat.rim_vertices,
+            dim=n_vertices,
+            inputs=[offsets, columns, run_start, keys, wp.int32(count)],
+            outputs=[rim, n_rim],
+            device=device,
+        )
+        # Readback: a closed mesh has no rim and so no second solve, which the count decides here
+        # once per solver rather than every call paying a solve that returns the Neumann heat.
+        if read_scalar(n_rim, 0) == 0:
+            return ()
+        values = _launch.empty_like(heat_system.values)
+        _launch.launch(
+            kernel_heat.pinned_heat_rows,
+            dim=n_vertices,
+            inputs=[heat_system.offsets, heat_system.columns, rim, heat_system.values],
+            outputs=[values],
+            device=device,
+        )
+        system = od.array.bsr_with_values(heat_system, values)
+        return system, twl.jacobi_preconditioner(system), rim
 
     def _settle(
         self,

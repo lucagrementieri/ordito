@@ -18,9 +18,10 @@ Three quantities, in the order they build on each other:
 3. [`halfedge_transport_angles`][ordito.tangent_space.halfedge_transport_angles] — the rotation
    that carries a tangent vector across an edge, the off-diagonal phase of the connection Laplacian.
 
-Frames are only defined up to a rotation within the tangent plane, so they are *not* comparable
-across libraries element-wise; the transport angles inherit that gauge freedom and are comparable
-only through gauge-invariant combinations such as the holonomy around a face.
+Frames are only defined up to a rotation within the tangent plane (the *gauge*), and every tangent
+quantity inherits that choice. ordito takes geometry-central's: polar angle ``0`` at the vertex's
+reference halfedge, with ``basis_x`` fitted to the whole fan, so frames, transport angles and
+every 2D tangent vector built on them agree with potpourri3d's element for element.
 """
 
 from __future__ import annotations
@@ -46,16 +47,20 @@ def vertex_tangent_frames(
 
     ``normal`` is the angle-weighted vertex normal
     ([`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="angle"``);
-    ``basis_x`` is the first halfedge of the vertex's counter-clockwise ring, projected into the
-    tangent plane and normalized; ``basis_y = normal x basis_x`` completes a right-handed frame. A
-    tangent vector ``(a, b)`` in these coordinates is ``a * basis_x + b * basis_y`` in world space.
+    ``basis_x`` is where [`halfedge_tangent_angles`][ordito.tangent_space.halfedge_tangent_angles]
+    puts polar angle ``0``, fitted to the whole fan: each incident edge, projected into the tangent
+    plane and rotated back by its polar angle, summed and normalized (a boundary vertex adds its
+    closing rim edge at half a turn). ``basis_y = normal x basis_x`` completes a right-handed frame.
+    A tangent vector ``(a, b)`` in these coordinates is ``a * basis_x + b * basis_y`` in world
+    space, and the two functions describe one coordinate system, not two.
 
-    Because ``basis_x`` follows the ring's first halfedge, it is the direction that
-    [`halfedge_tangent_angles`][ordito.tangent_space.halfedge_tangent_angles] assigns polar angle
-    ``0``: the two functions describe one coordinate system, not two. Which halfedge that is depends
-    on the face ordering, so a frame agrees with another library's only up to a rotation about the
-    normal. A vertex with no incident faces has no tangent plane; it gets the fixed frame ``((1, 0,
-    0), (0, 1, 0))`` so that downstream normalizations see unit vectors rather than NaN.
+    The convention is geometry-central's, so the frame equals
+    ``potpourri3d.MeshVectorHeatSolver.get_tangent_frames``' rather than a rotation of it. Polar
+    angles start at the vertex's reference halfedge: its outgoing boundary halfedge on a rim, and
+    otherwise the outgoing halfedge of its highest-index face, so the frame depends on the face
+    ordering. ``basis_x`` lies along that halfedge only where the fan is flat. A vertex with no
+    incident faces has no tangent plane; it gets the fixed frame ``((1, 0, 0), (0, 1, 0))`` so that
+    downstream normalizations see unit vectors rather than NaN.
 
     Parameters
     ----------
@@ -117,13 +122,22 @@ def vertex_tangent_frames(
 
     if rings is None:
         rings = vertex_one_rings(faces, n_vertices=n)
-    ring_halfedges, ring_offsets, _ = rings
+    ring_halfedges, ring_offsets, is_boundary = rings
 
     if normals is not None:
         _launch.launch(
             kernel_tangent_space.vertex_tangent_frames,
             dim=n,
-            inputs=[vertices, faces, normals, ring_offsets, ring_halfedges, basis_x, basis_y],
+            inputs=[
+                vertices,
+                faces,
+                normals,
+                ring_offsets,
+                ring_halfedges,
+                is_boundary,
+                basis_x,
+                basis_y,
+            ],
             device=device,
         )
         return basis_x, basis_y, normals
@@ -144,7 +158,7 @@ def vertex_tangent_frames(
     _launch.launch(
         kernel_tangent_space.vertex_tangent_frames_from_sums,
         dim=n,
-        inputs=[vertices, faces, normal_sums, ring_offsets, ring_halfedges],
+        inputs=[vertices, faces, normal_sums, ring_offsets, ring_halfedges, is_boundary],
         outputs=[basis_x, basis_y, normals],
         device=device,
     )
@@ -249,12 +263,14 @@ def halfedge_tangent_angles(
     """
     Polar angle of every outgoing halfedge in its origin vertex's tangent plane.
 
-    Walking a vertex's counter-clockwise ring, halfedge ``k`` sits at
+    Walking a vertex's counter-clockwise ring from its reference halfedge, halfedge ``k`` sits at
     ``theta_k = s * sum(alpha_j for j < k)`` where ``alpha_j`` are the incident corner angles and
     ``s = 2 * pi / Theta`` scales the total angle ``Theta`` to a full turn — ``s = pi / Theta`` at a
-    boundary vertex, whose fan covers a half-disk. The first halfedge of each ring therefore has
-    angle ``0``, aligning this coordinate system with ``basis_x`` from
-    [`vertex_tangent_frames`][ordito.tangent_space.vertex_tangent_frames].
+    boundary vertex, whose fan covers a half-disk. The reference halfedge, at angle ``0``, is the
+    outgoing boundary halfedge of a rim vertex and otherwise the outgoing halfedge of the vertex's
+    highest-index face: geometry-central's ``vertex.halfedge()``, so these are its angles too. The
+    coordinate system is the one
+    [`vertex_tangent_frames`][ordito.tangent_space.vertex_tangent_frames] embeds.
 
     Parameters
     ----------
@@ -288,7 +304,7 @@ def halfedge_tangent_angles(
 
     Examples
     --------
-    Every vertex's first ring halfedge sits at angle ``0``, so a closed mesh has one zero per
+    Every vertex's reference halfedge sits at angle ``0``, so a closed mesh has one zero per
     vertex, and every angle stays below a full turn:
 
     ```python

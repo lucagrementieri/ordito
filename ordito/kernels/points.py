@@ -268,6 +268,7 @@ def centered_covariance(
 ORIENT_CENTROID = wp.constant(wp.int32(0))  # outward from the cloud centroid (the default)
 ORIENT_DIRECTION = wp.constant(wp.int32(1))  # align with a fixed direction
 ORIENT_CAMERA = wp.constant(wp.int32(2))  # point toward a camera location
+ORIENT_NEIGHBORS = wp.constant(wp.int32(3))  # toward at least half the neighbours (SHOT)
 
 
 @wp.kernel
@@ -325,6 +326,23 @@ def estimate_point_normals(
 
     u, _sigma, _vt = wp.svd3(cov)
     normal = wp.normalize(mat33_column(u, 2))
+
+    if orient_mode == ORIENT_NEIGHBORS:
+        # Tombari, Salti and Di Stefano's SHOT rule, as pytorch3d's
+        # ``estimate_pointcloud_normals(disambiguate_directions=True)`` applies it: keep the normal
+        # when at least half the neighbourhood's offsets from the point project strictly positively
+        # onto it, so it points to the side the neighbours bulge toward. The point itself, in a
+        # self-query table, counts toward the half and never as positive.
+        positive = wp.float32(0.0)
+        for i in range(k):
+            nb = neighbor_idx[v, i]
+            if nb >= 0:
+                if wp.dot(normal, points[nb] - points[v]) > 0.0:
+                    positive += 1.0
+        if positive < 0.5 * count:
+            normal = -normal
+        out_normals[v] = normal
+        return
 
     # Orientation: flip so the normal points along a per-point reference vector.
     ref = wp.vec3(0.0, 0.0, 0.0)

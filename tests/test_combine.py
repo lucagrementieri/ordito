@@ -211,7 +211,7 @@ def test_split_finds_all_eight_components_of_one_generated_mesh(
 @pytest.mark.parity("split", "open3d", "pymeshlab")
 def test_split_matches_open3d_and_pymeshlab(three_parts: list[MeshPair]) -> None:
     """
-    Class B against both references, each of which returns the components a different way.
+    Class A (``od.equality.meshes_allclose``): each component, up to component order, is theirs.
 
     **Open3D** has no single split call: ``cluster_connected_triangles`` returns the *labelling*, so
     the named transform is the compaction the benchmark also pays -- ``select_by_index`` per label,
@@ -222,7 +222,7 @@ def test_split_matches_open3d_and_pymeshlab(three_parts: list[MeshPair]) -> None
 
     None of the three defines a component order, so all three lists are sorted by face count -- the
     fixtures have 20, 168 and 1 024 faces, so that pairing is unambiguous -- and each paired
-    component is compared by its face-centroid set through a bijective nearest-neighbour match.
+    component is compared as a mesh, up to the numbering of its vertices and faces.
     """
     combined_tm = tm.util.concatenate([mesh_tm for mesh_tm, _ in three_parts])
     assert isinstance(combined_tm, tm.Trimesh)
@@ -252,29 +252,22 @@ def test_split_matches_open3d_and_pymeshlab(three_parts: list[MeshPair]) -> None
             )
         )
 
-    parts_wp = [
-        (vertices_wp.numpy().astype(np.float64), faces_wp.numpy().reshape(-1, 3))
-        for vertices_wp, faces_wp in od.combine.split(concat_vertices_wp, concat_faces_wp)
-    ]
+    parts_wp = od.combine.split(concat_vertices_wp, concat_faces_wp)
     assert len(parts_wp) == len(parts_o3d) == len(parts_pml) == 3
 
-    def by_faces(
-        parts: Sequence[tuple[np.ndarray, np.ndarray]],
-    ) -> list[tuple[np.ndarray, np.ndarray]]:
-        return sorted(parts, key=lambda part: part[1].shape[0])
-
+    device = concat_vertices_wp.device
     reference_parts = [(part.vertices, part.faces) for part in parts_o3d]
-    for part_wp, part_o3d, part_pml in zip(
-        by_faces(parts_wp), by_faces(reference_parts), by_faces(parts_pml), strict=True
+    for (vertices_wp, faces_wp), part_o3d, part_pml in zip(
+        sorted(parts_wp, key=lambda part: part[1].size),
+        sorted(reference_parts, key=lambda part: part[1].shape[0]),
+        sorted(parts_pml, key=lambda part: part[1].shape[0]),
+        strict=True,
     ):
         for vertices_ref, faces_ref in (part_o3d, part_pml):
-            assert part_wp[0].shape[0] == vertices_ref.shape[0]
-            assert part_wp[1].shape[0] == faces_ref.shape[0]
-            centroids_wp = part_wp[0][part_wp[1]].mean(axis=1)
-            centroids_ref = vertices_ref[faces_ref].mean(axis=1)
-            distance_np, match_np = cKDTree(centroids_ref).query(centroids_wp)
-            assert np.max(distance_np) < 1e-5
-            assert len(set(np.asarray(match_np).tolist())) == np.asarray(match_np).size
+            vertices_ref_wp, faces_ref_wp = numpy_to_warp(vertices_ref, faces_ref, device)
+            assert od.equality.meshes_allclose(
+                vertices_wp, faces_wp, vertices_ref_wp, faces_ref_wp, rtol=0.0, atol=1e-5
+            )
 
 
 def test_split_with_offsets_matches_split(three_parts: list[MeshPair]) -> None:

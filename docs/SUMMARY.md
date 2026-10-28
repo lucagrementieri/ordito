@@ -113,6 +113,7 @@ Shelving decisions that are not obvious from the section titles:
         * [boundary](api/ordito/boundary.md)
         * [selection](api/ordito/selection.md)
         * [validation](api/ordito/validation.md)
+        * [equality](api/ordito/equality.md)
         * [homology](api/ordito/homology.md)
         * [tangent_space](api/ordito/tangent_space.md)
     * Measures & shape descriptors

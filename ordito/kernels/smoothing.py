@@ -1798,6 +1798,24 @@ def sharpen_pass(
     out_sharpened[i] = unsharp_step(original[i], smoothed, weight, weight_original)
 
 
+@wp.kernel
+def graph_sharpen_pass(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float32],
+    positions: wp.array[Any],
+    weight: wp.float64,
+    out_next: wp.array[Any],
+) -> None:
+    # Open3D's ``filter_sharpen`` step v' = v + weight * sum_j (v - v_j) over the undirected
+    # 1-ring, read off the graph Laplacian ``G = A - D`` as v - weight * (G.v).
+    # ``diffuse_vec3_pass`` steps toward a row-stochastic average instead; the two share
+    # ``operator_row``.
+    i = wp.int32(wp.tid())
+    gv = operator_row(offsets, columns, values, positions, i)
+    out_next[i] = out_next.dtype(wp.vec3d(positions[i]) - weight * gv)
+
+
 @wp.func
 def step_along_normal(position: wp.vec3, normal: wp.vec3, distance: wp.float32) -> wp.vec3:
     """Move a vertex along its own normal, which is one half of an inflation step."""
@@ -2507,6 +2525,7 @@ def mark_band_vertices(
 # [`OverloadTable`][ordito.kernels.array.OverloadTable]. Filled in by ``_register_overloads``.
 DIFFUSE_VEC3_PASS: OverloadTable
 SHARPEN_PASS: OverloadTable
+GRAPH_SHARPEN_PASS: OverloadTable
 NEIGHBORHOOD_AVERAGE_PASS: OverloadTable
 HUMPHREY_RESIDUAL_PASS: OverloadTable
 HUMPHREY_UPDATE_PASS: OverloadTable
@@ -2518,7 +2537,8 @@ IMPLICIT_LAPLACIAN_STEP: OverloadTable
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global DIFFUSE_VEC3_PASS, NEIGHBORHOOD_AVERAGE_PASS, HUMPHREY_RESIDUAL_PASS
-    global HUMPHREY_UPDATE_PASS, SHARPEN_PASS, MUT_DIF_ADIL_PASS, MUT_DIF_STEP_SCALED
+    global HUMPHREY_UPDATE_PASS, SHARPEN_PASS, GRAPH_SHARPEN_PASS, MUT_DIF_ADIL_PASS
+    global MUT_DIF_STEP_SCALED
     global IMPLICIT_LAPLACIAN_STEP
     vectors = (wp.vec3, wp.vec3d)
     rows = [wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.float32]]
@@ -2583,6 +2603,14 @@ def _register_overloads() -> None:
                 wp.array[wp.vec3],
             ]
             for src in vectors
+        },
+    )
+    GRAPH_SHARPEN_PASS = OverloadTable(
+        graph_sharpen_pass,
+        {
+            (src, dst): [*rows, wp.array[src], wp.float64, wp.array[dst]]
+            for src in vectors
+            for dst in vectors
         },
     )
     NEIGHBORHOOD_AVERAGE_PASS = OverloadTable(

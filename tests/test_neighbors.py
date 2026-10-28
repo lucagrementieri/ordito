@@ -193,10 +193,10 @@ def test_query_ball_count_matches_scipy_and_the_list_form(
 
 def test_query_ball_count_and_offsets_on_their_degenerate_forms(device: str) -> None:
     """
-    Class B against ``scipy.spatial.KDTree.query_ball_point``: one bare query, rows sorted.
+    Class A against ``scipy.spatial.KDTree.query_ball_point`` (``od.equality.rows_equal``).
 
     A bare ``wp.vec3`` query to ``query_ball_with_offsets`` is one row whose index set must equal
-    SciPy's ball (sorted on both sides), with offsets ``[0, count]``. Against an empty cloud every
+    SciPy's ball up to order, with offsets ``[0, count]``. Against an empty cloud every
     query's count is ``0`` (SciPy's empty tree answers empty balls too).
     """
     rng = np.random.default_rng(5)
@@ -210,7 +210,10 @@ def test_query_ball_count_and_offsets_on_their_degenerate_forms(device: str) -> 
     indices_wp, distances_wp, offsets_wp = od.neighbors.query_ball_with_offsets(
         points_wp, wp.vec3(*query_np.tolist()), radius
     )
-    assert np.array_equal(np.sort(indices_wp.numpy()), ball_np)
+    ball_wp = wp.array(ball_np.astype(np.int32).reshape(-1, 1), dtype=wp.int32, device=device)
+    assert od.equality.rows_equal(
+        odt.as_array2d(indices_wp.reshape((-1, 1)), wp.int32), odt.as_array2d(ball_wp, wp.int32)
+    )
     assert offsets_wp.numpy().tolist() == [0, ball_np.size]
     expected_np = np.linalg.norm(points_np[indices_wp.numpy()] - query_np, axis=1)
     assert np.allclose(distances_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)

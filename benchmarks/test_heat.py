@@ -277,6 +277,29 @@ def test_heat_geodesic_conditioning(bench_case: BenchCase) -> None:
     _run_case(bench_case)
 
 
+@pytest.mark.benchmark(group="heat_geodesic_igl")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito", "igl")
+def test_heat_geodesic_igl(bench_case: BenchCase) -> None:
+    """
+    ``heat_geodesic(method="igl")`` -- Voronoi mass, boundary average -- against igl itself.
+
+    The same field on both rows (``tests/test_heat.py::test_heat_geodesic_matches_igl``), setup
+    inside the timed callable. Both quality meshes are open, so ordito pays its second, rim-pinned
+    heat solve here, as igl pays its Dirichlet one.
+    """
+    if bench_case.kind == "ordito":
+        vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+        sources = _sources_wp(bench_case)
+        distance = bench_case.run(
+            lambda: od.heat.heat_geodesic(vertices, faces, sources, method="igl"),
+            rounds=_GEODESIC_ROUNDS,
+        )
+        assert distance.shape == (bench_case.n_vertices,)
+        return
+    _run_case(bench_case)
+
+
 _mesh_ml_cache: dict[str, mm.Mesh] = {}
 
 
@@ -718,6 +741,33 @@ def test_heat_solver_diffuse(bench_case: BenchCase) -> None:
         solution.zero_()
         solver.diffuse(rhs, solution)
 
+    bench_case.run(run)
+    assert np.isfinite(solution.numpy()).all()
+
+
+@pytest.mark.benchmark(group="heat_solver_diffuse_pinned")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_heat_solver_diffuse_pinned(bench_case: BenchCase) -> None:
+    """
+    ``HeatSolver.diffuse_pinned`` from one vertex, the rim-pinned system factored.
+
+    The second solve ``heat_geodesic(boundary="average")`` adds; both quality meshes are open, so
+    the pin is real. Two warm calls first, as for ``heat_solver_diffuse_tangent``: the first builds
+    the pinned system and iterates, the second factors it.
+    """
+    _mesh, solver = _warm_heat_solver(bench_case)
+    rhs_np = np.zeros(bench_case.n_vertices)
+    rhs_np[bench_case.n_vertices // 2] = 1.0
+    rhs = wp.array(rhs_np, dtype=wp.float64, device=bench_case.device)
+    solution = wp.zeros_like(rhs)
+
+    def run() -> None:
+        solution.zero_()
+        assert solver.diffuse_pinned(rhs, solution)
+
+    for _ in range(2):
+        run()
     bench_case.run(run)
     assert np.isfinite(solution.numpy()).all()
 

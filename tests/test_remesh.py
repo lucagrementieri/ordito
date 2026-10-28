@@ -12,6 +12,7 @@ from typing import Any, Literal, TypedDict, cast
 import igl
 import numpy as np
 import numpy.typing as npt
+import open3d as o3d
 import pymeshlab as ml
 import pytest
 import pytorch3d.ops as p3d_ops
@@ -1194,39 +1195,144 @@ def test_subdivide_region_to_size_returns_its_edges(device: str, delaunay: bool)
     assert np.array_equal(given[4].numpy(), inverse_wp.numpy())
 
 
-@pytest.mark.parametrize("voxel_size", [0.1, 0.3])
-@pytest.mark.parametrize("contraction", ["average", "closest"])
-@pytest.mark.parity("cluster_decimate", "open3d")
-def test_cluster_decimate_matches_open3d(
-    device: str, voxel_size: float, contraction: Literal["average", "closest"]
+def _referenced_mesh(
+    vertices_np: np.ndarray, faces_np: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Drop the vertices no face of a reference's output names, renumbering its faces."""
+    used_np, faces_np = np.unique(faces_np, return_inverse=True)
+    return vertices_np[used_np], faces_np.reshape(-1, 3)
+
+
+def _assert_same_clustered_mesh(
+    vertices_wp: wp.array[wp.vec3],
+    faces_wp: wp.array[wp.int32],
+    vertices_ref: np.ndarray,
+    faces_ref: np.ndarray,
 ) -> None:
     """
-    Class A: cell assignment is Open3D's, so the face count matches exactly, not approximately.
+    Assert ``cluster_decimate``'s mesh equals a reference's, vertex for vertex and face for face.
 
-    Open3D's grid anchor is ``min_bound - voxel_size / 2``; this pins that choice, since an anchor
-    at ``min_bound`` splits the vertices on the box face into two cells and the counts diverge.
+    The reference keeps the vertices of cells whose faces all collapsed, which ordito drops, so
+    those are dropped from it first; the rest is
+    [`meshes_allclose`][ordito.equality.meshes_allclose], since both number vertices and list
+    faces in hash order.
     """
-    sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
-    simplified_o3d = trimesh_to_open3d(sphere_tm).simplify_vertex_clustering(voxel_size=voxel_size)
+    vertices_ref, faces_ref = _referenced_mesh(vertices_ref, faces_ref)
+    faces_np = faces_wp.numpy().reshape(-1, 3)
+    # ordito writes each face from its smallest vertex, as Open3D does.
+    assert np.array_equal(canonical_winding(faces_np), faces_np)
+    vertices_ref_wp, faces_ref_wp = numpy_to_warp(vertices_ref, faces_ref, faces_wp.device)
+    assert od.equality.meshes_allclose(
+        vertices_wp, faces_wp, vertices_ref_wp, faces_ref_wp, rtol=0.0, atol=1e-5
+    )
+
+
+@pytest.mark.parametrize("voxel_fraction", [0.03, 0.15])
+@pytest.mark.parity("cluster_decimate", "open3d")
+def test_cluster_decimate_matches_open3d(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], voxel_fraction: float
+) -> None:
+    """
+    Class B (unreferenced cells dropped): the mesh is Open3D's ``simplify_vertex_clustering``.
+
+    The same cells (cells of exactly ``voxel_size`` anchored half a cell below the box), the same
+    mean over each cell's vertices and the same faces: a face survives when its corners fall in
+    three cells, and only a repeat *with the same winding* is merged, so a face and its reversed
+    twin are both kept. Open3D numbers vertices and lists faces in hash order, which
+    ``od.equality.meshes_allclose`` sees through; the named transform is dropping the vertices of
+    cells no face survives in, which Open3D keeps. The vertices match to 1e-6 (float32 sums against
+    Open3D's float64).
+
+    Non-vacuity: the reference holds reversed twins at both sizes (12 and 8 of 725 and 119 faces),
+    asserted below; merging them, the dedup ``cluster_decimate`` used before, fails the face set.
+    ``contraction="closest"`` moves vertices only, so its faces are the average's row for row.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices_np = mesh_wp.points.numpy().astype(np.float64)
+    voxel_size = voxel_fraction * float(np.linalg.norm(np.ptp(vertices_np, axis=0)))
+    mesh_o3d = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(vertices_np), o3d.utility.Vector3iVector(mesh_tm.faces)
+    )
+    simplified_o3d = mesh_o3d.simplify_vertex_clustering(voxel_size=voxel_size)
+    faces_o3d = np.asarray(simplified_o3d.triangles)
+    assert len(np.unique(np.sort(faces_o3d, axis=1), axis=0)) < len(faces_o3d)
 
     decimated_vertices_wp, decimated_faces_wp = od.remesh.cluster_decimate(
-        vertices_wp, faces_wp, voxel_size=voxel_size, contraction=contraction
+        mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size
     )
-    assert decimated_faces_wp.size // 3 == len(simplified_o3d.triangles)
-    assert decimated_vertices_wp.size == len(simplified_o3d.vertices)
+    _assert_same_clustered_mesh(
+        decimated_vertices_wp, decimated_faces_wp, np.asarray(simplified_o3d.vertices), faces_o3d
+    )
 
-    if contraction == "average":
-        # Same cells and the same mean per cell, so the vertex *sets* coincide pointwise.
-        distance_np, _index = KDTree(np.asarray(simplified_o3d.vertices)).query(
-            decimated_vertices_wp.numpy().astype(np.float64)
-        )
-        assert np.max(distance_np) < 1e-5
-    else:
-        # 'Closest to centre' keeps every output vertex on the input surface, exactly.
-        distance_np, _index = KDTree(np.asarray(sphere_tm.vertices)).query(
-            decimated_vertices_wp.numpy().astype(np.float64)
-        )
-        assert np.max(distance_np) < 1e-5
+    _closest_vertices_wp, closest_faces_wp = od.remesh.cluster_decimate(
+        mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, contraction="closest"
+    )
+    assert np.array_equal(closest_faces_wp.numpy(), decimated_faces_wp.numpy())
+
+
+@pytest.mark.parametrize("voxel_fraction", [0.03, 0.15])
+@pytest.mark.parity("cluster_decimate_meshlab", "pymeshlab")
+def test_cluster_decimate_matches_pymeshlab(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], voxel_fraction: float
+) -> None:
+    """
+    Class B (unreferenced cells dropped): ``method="meshlab"`` is MeshLab's clustering.
+
+    ``meshing_decimation_clustering`` grows the box by one cell on every side, divides each axis
+    into ``floor(extent / voxel_size)`` stretched cells, averages each cell over its face corners
+    and keeps reversed twins, as Open3D does. Its vertices and faces come in hash order, the
+    named transform; the vertices match to 4e-6. ``contraction="closest"`` against
+    ``generate_sampling_clustered_vertex(sampling="Closest to center")`` on the same grid is
+    Class A on positions: every input vertex is one of MeshLab's samples or not, so the two sets
+    are equal exactly, up to order.
+
+    Non-vacuity: the two grids differ (MeshLab's face count is not Open3D's at either size), and
+    the reference keeps reversed twins. **Mutation probe, measured:** Open3D's per-vertex mean on
+    MeshLab's grid moves the vertices by up to 0.035 / 0.061 (3 500x the tolerance and more), and
+    Open3D's grid changes the face count at both sizes, asserted below.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices_np = mesh_wp.points.numpy().astype(np.float64)
+    voxel_size = voxel_fraction * float(np.linalg.norm(np.ptp(vertices_np, axis=0)))
+
+    meshset_pml = ml.MeshSet()
+    meshset_pml.add_mesh(ml.Mesh(vertices_np, mesh_tm.faces))
+    meshset_pml.meshing_decimation_clustering(threshold=ml.PureValue(voxel_size))
+    faces_pml = meshset_pml.current_mesh().face_matrix()
+    assert len(np.unique(np.sort(faces_pml, axis=1), axis=0)) < len(faces_pml)
+
+    decimated_vertices_wp, decimated_faces_wp = od.remesh.cluster_decimate(
+        mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, method="meshlab"
+    )
+    _assert_same_clustered_mesh(
+        decimated_vertices_wp,
+        decimated_faces_wp,
+        meshset_pml.current_mesh().vertex_matrix(),
+        faces_pml,
+    )
+    open3d_faces_wp = od.remesh.cluster_decimate(
+        mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size
+    )[1]
+    assert open3d_faces_wp.size != decimated_faces_wp.size
+
+    meshset_pml = ml.MeshSet()
+    meshset_pml.add_mesh(ml.Mesh(vertices_np, mesh_tm.faces))
+    meshset_pml.generate_sampling_clustered_vertex(
+        threshold=ml.PureValue(voxel_size), sampling="Closest to center"
+    )
+    closest_vertices_wp, closest_faces_wp = od.remesh.cluster_decimate(
+        mesh_wp.points,
+        mesh_wp.indices,
+        voxel_size=voxel_size,
+        contraction="closest",
+        method="meshlab",
+    )
+    assert_nearest_bijection(
+        closest_vertices_wp.numpy().astype(np.float64),
+        meshset_pml.current_mesh().vertex_matrix(),
+        0.0,
+    )
+    assert np.array_equal(closest_faces_wp.numpy(), decimated_faces_wp.numpy())
 
 
 @pytest.mark.parametrize("voxel_fraction", [0.02, 0.05])
@@ -1301,22 +1407,28 @@ def test_cluster_decimate_matches_a_numpy_transcription(
     """
     Class A against a NumPy transcription of the definition, pinning the output *numbering*.
 
-    Open3D fixes the counts and the vertex set but not the order, and the order is a contract:
+    Open3D fixes the vertex set and the face set but not their order, and the order is a contract:
     output vertices are the kept cells in packed-cell-key order (``unique_1d``'s), faces are the
-    distinct welded faces in ``unique_faces``' order, each in its first occurrence's winding. The
-    kernel dedups with hash tables whose slots number the cells arbitrarily, so the order is
-    recovered by sorts that this checks against ``np.unique``. The two sizes cover: nothing
-    merging (more distinct faces than vertices, the branch where the face sort cannot reuse the
-    cell sort's buffers), and welding that leaves duplicate faces, asserted below.
+    distinct welded faces, each written from its smallest output vertex, in the order of those rows
+    packed as one key. The kernel dedups with hash tables whose slots number the cells arbitrarily,
+    so the order is recovered by sorts that this checks against ``np.unique``. The two sizes
+    cover: nothing merging (more distinct faces than vertices, the branch where the face sort
+    cannot reuse the cell sort's buffers), and welding that leaves both kinds of repeat, asserted
+    below: same-winding duplicates, merged, and reversed twins, kept. ``"closest"`` is checked
+    against the vertex nearest its cell's centre, the lowest index on a tie.
     """
-    # Two concentric sheets a hair apart, the inner one reversed -- a thin shell. They weld into the
-    # same cells, so their faces map onto the same cluster triples in opposite windings, and the
-    # face dedup has duplicates to remove at every coarse size whose kept winding is observable.
+    # Three concentric sheets a hair apart, the innermost reversed -- a thin shell. They weld into
+    # the same cells, so their faces map onto the same cluster triples, two sheets in one winding
+    # and the third in the other.
     sphere_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
     n_sheet = sphere_tm.vertices.shape[0]
     vertices_wp, faces_wp = numpy_to_warp(
-        np.concatenate((sphere_tm.vertices, 1.002 * sphere_tm.vertices)),
-        np.concatenate((sphere_tm.faces, sphere_tm.faces[:, ::-1] + n_sheet)),
+        np.concatenate(
+            (sphere_tm.vertices, 1.001 * sphere_tm.vertices, 1.002 * sphere_tm.vertices)
+        ),
+        np.concatenate(
+            (sphere_tm.faces, sphere_tm.faces + n_sheet, sphere_tm.faces[:, ::-1] + 2 * n_sheet)
+        ),
         device,
     )
     out_vertices_wp, out_faces_wp = od.remesh.cluster_decimate(
@@ -1340,12 +1452,14 @@ def test_cluster_decimate_matches_a_numpy_transcription(
     kept_np = np.unique(surviving_np)
     ranked_np = np.searchsorted(kept_np, surviving_np)
     n_kept = kept_np.size
-    sorted_np = np.sort(ranked_np, axis=1)
-    face_keys_np = sorted_np[:, 0] + n_kept * (sorted_np[:, 1] + n_kept * sorted_np[:, 2])
+    rotated_np = canonical_winding(ranked_np)
+    face_keys_np = rotated_np[:, 0] + n_kept * (rotated_np[:, 1] + n_kept * rotated_np[:, 2])
     _face_keys, first_np = np.unique(face_keys_np, return_index=True)
-    expected_faces_np = ranked_np[first_np]
+    expected_faces_np = rotated_np[first_np]
     if voxel_size > 0.01:
-        assert first_np.size < surviving_np.shape[0]  # non-vacuity: welding made duplicates
+        # Non-vacuity: welding made same-winding duplicates and reversed twins.
+        assert first_np.size < surviving_np.shape[0]
+        assert np.unique(np.sort(ranked_np, axis=1), axis=0).shape[0] < first_np.size
     else:
         assert first_np.size > len(vertices_np)  # non-vacuity: the wide face sort
     assert np.array_equal(out_faces_wp.numpy().reshape(-1, 3), expected_faces_np)
@@ -1361,15 +1475,25 @@ def test_cluster_decimate_matches_a_numpy_transcription(
             out_vertices_wp.numpy(), sums_np / counts_np[:, None], rtol=1e-5, atol=1e-5
         )
     else:
-        # Every output vertex is an input vertex of its own cluster.
-        _distance, index_np = KDTree(vertices_np).query(out_vertices_wp.numpy())
-        assert np.array_equal(vertex_rank_np[index_np], np.arange(n_kept))
-    assert 2 * n_sheet == len(vertices_np)
+        # The vertex nearest its cell's centre, ties to the lowest index.
+        centres_np = np.array(origin, dtype=np.float32) + (cells_np + 0.5).astype(
+            np.float32
+        ) * np.float32(voxel)
+        distance_np = np.sum((vertices_np - centres_np) ** 2, axis=1)
+        order_np = np.lexsort((np.arange(len(vertices_np)), distance_np, vertex_rank_np))
+        ranks_sorted_np = vertex_rank_np[order_np]
+        first_in_rank_np = order_np[np.searchsorted(ranks_sorted_np, np.arange(n_kept))]
+        assert np.array_equal(out_vertices_wp.numpy(), vertices_np[first_in_rank_np])
+    assert 3 * n_sheet == len(vertices_np)
 
 
+@pytest.mark.parametrize("method", ["open3d", "meshlab"])
 @pytest.mark.parametrize("voxel_fraction", [0.05, 0.35])
 def test_cluster_decimate_average_is_reproducible_when_deterministic(
-    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh], voxel_fraction: float
+    device: str,
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+    voxel_fraction: float,
+    method: Literal["open3d", "meshlab"],
 ) -> None:
     """
     Not a parity assert: under the deterministic setting repeated calls agree bit for bit.
@@ -1379,26 +1503,26 @@ def test_cluster_decimate_average_is_reproducible_when_deterministic(
     ascending vertex order its atomics commit in. Without it every CUDA call returned different
     positions. The fine cells hold up to 23 vertices, each added by one thread; the coarsest cell
     holds 139, past ``kernels/remesh.CLUSTER_SERIAL_MAX``, so a block's strided lanes and fold add
-    it.
+    it. MeshLab's mean adds a cell's face corners, three a face, in the same two forms.
     """
     mesh_tm, mesh_wp = sphere_irregular
     voxel_size = voxel_fraction * float(np.linalg.norm(mesh_tm.extents))
     vertices_np, faces_np = (
         array_wp.numpy()
         for array_wp in od.remesh.cluster_decimate(
-            mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, contraction="average"
+            mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, method=method
         )
     )
     assert 0 < len(vertices_np) < len(mesh_tm.vertices) // 2
     for _ in range(4):
         again_vertices_wp, again_faces_wp = od.remesh.cluster_decimate(
-            mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, contraction="average"
+            mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, method=method
         )
         assert np.array_equal(again_vertices_wp.numpy(), vertices_np)
         assert np.array_equal(again_faces_wp.numpy(), faces_np)
     with od.config.deterministic(False):
         arrival_vertices_wp, arrival_faces_wp = od.remesh.cluster_decimate(
-            mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, contraction="average"
+            mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, method=method
         )
     assert np.array_equal(arrival_faces_wp.numpy(), faces_np)
     if device == "cpu" and not wp.config.enable_cpu_blocks:
@@ -1425,6 +1549,8 @@ def test_cluster_decimate_invalid(device: str) -> None:
         od.remesh.cluster_decimate(vertices_wp, faces_wp, voxel_size=0.0)
     with pytest.raises(ValueError, match="contraction must be"):
         od.remesh.cluster_decimate(vertices_wp, faces_wp, contraction="quadric")  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="method must be 'open3d' or 'meshlab'"):
+        od.remesh.cluster_decimate(vertices_wp, faces_wp, method="vcg")  # pyright: ignore[reportArgumentType]
 
 
 def test_cluster_decimate_collapses_to_nothing(device: str) -> None:
@@ -1433,10 +1559,12 @@ def test_cluster_decimate_collapses_to_nothing(device: str) -> None:
 
     Not a library comparison: Open3D keeps the cluster as an unreferenced vertex (see the
     ``cluster_decimate`` Notes), so no reference returns this answer. It is the one input where no
-    cluster is referenced and no face class survives the dedup.
+    cluster is referenced and no face class survives the dedup. Open3D's grid only:
+    ``method="meshlab"`` divides the grown box into at least two cells per axis, so a cell wall
+    always passes through the box's centre and the faces across it survive, as in MeshLab.
     """
+    _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=2)
     for contraction in ("average", "closest"):
-        _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=2)
         out_vertices_wp, out_faces_wp = od.remesh.cluster_decimate(
             vertices_wp, faces_wp, voxel_size=100.0, contraction=contraction
         )
@@ -2712,33 +2840,12 @@ def _sheared_grid(n: int = 24, shear: float = 4.0) -> tuple[np.ndarray, np.ndarr
     return vertices, _grid_faces(n)
 
 
-def _saddle_grid(n: int = 16, step: float = 0.15) -> tuple[np.ndarray, np.ndarray]:
-    """
-    ``z = x y`` over a square grid: the fixture the curvature objective exists for.
-
-    On a hyperbolic paraboloid the two diagonals of a quad have *opposite* curvature — one runs
-    along a ruling of the surface and is nearly straight, the other bends. So the choice is
-    maximally consequential, and the current diagonal is deliberately the bending one.
-    """
-    i_grid, j_grid = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
-    x_np = (i_grid * step).ravel().astype(np.float64)
-    y_np = (j_grid * step).ravel().astype(np.float64)
-    vertices = np.column_stack([x_np, y_np, x_np * y_np])
-    return vertices, _grid_faces(n)
-
-
 def _min_quality(
     vertices_wp: wp.array[wp.vec3],
     faces_wp: wp.array[wp.int32],
     metric: FaceQualityMetric = "area_max_side",
 ) -> float:
     return float(od.triangles.face_quality(vertices_wp, faces_wp, metric=metric).numpy().min())
-
-
-def _total_bend(vertices_np: np.ndarray, faces_np: np.ndarray) -> float:
-    """Sum of the absolute dihedral angle over every interior edge — the curvature objective."""
-    mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
-    return float(np.abs(mesh_tm.face_adjacency_angles).sum())
 
 
 def test_flip_by_objective_planarity_improves_the_worst_triangle(device: str) -> None:
@@ -2812,35 +2919,6 @@ def test_flip_by_objective_planarity_refuses_a_curved_quad(device: str) -> None:
         vertices_wp, faces_wp, objective="planarity", planar_angle=0.0
     )
     assert np.array_equal(flipped_wp.numpy(), faces_wp.numpy())
-
-
-def test_flip_by_objective_curvature_flattens(device: str) -> None:
-    """The curvature objective must lower the total absolute dihedral angle."""
-    vertices_np, faces_np = _saddle_grid()
-    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    before = _total_bend(vertices_np, faces_np)
-
-    flipped_wp = od.remesh.flip_by_objective(vertices_wp, faces_wp, objective="curvature")
-    after = _total_bend(vertices_np, flipped_wp.numpy().reshape(-1, 3))
-    assert after < before
-    assert flipped_wp.size == faces_wp.size
-    assert od.validation.is_winding_consistent(flipped_wp)
-    assert od.validation.is_edge_manifold(flipped_wp)
-
-
-def test_flip_by_objective_curvature_leaves_a_sphere_alone(device: str) -> None:
-    """
-    An icosphere's diagonals are already the flat ones, so a converged pass changes nothing much.
-
-    Not an equality assertion: the icosphere's quads are close enough to symmetric that a handful
-    genuinely tie, and the relative ``1e-6`` margin is what keeps those from oscillating. What must
-    hold is that the total bend does not *increase*.
-    """
-    sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=3)
-    before = _total_bend(np.asarray(sphere_tm.vertices), np.asarray(sphere_tm.faces))
-    flipped_wp = od.remesh.flip_by_objective(vertices_wp, faces_wp, objective="curvature")
-    after = _total_bend(np.asarray(sphere_tm.vertices), flipped_wp.numpy().reshape(-1, 3))
-    assert after <= before * (1.0 + 1e-6)
 
 
 def test_flip_by_objective_region_gated(device: str) -> None:
@@ -3205,36 +3283,28 @@ def _assert_same_mesh_under_vertex_match(
     """
     Assert two meshes are the same up to vertex numbering: the same points *and* the same faces.
 
-    The class-B transform for two subdivisions that number their new vertices by their own edge
-    tables. The vertices are matched one to one by nearest neighbour
-    ([`assert_nearest_bijection`][tests.comparisons.assert_nearest_bijection]), the reference faces
-    are renumbered through that match, and the two face sets must then be equal row for row after
-    [`canonical_winding`][tests.comparisons.canonical_winding] -- so a child face that is missing,
-    duplicated, wired to the wrong midpoint or wound the other way fails, which a centroid match
-    does not see.
+    For two subdivisions that number their new vertices by their own edge tables:
+    [`meshes_allclose`][ordito.equality.meshes_allclose] within ``max_distance``, so a child face
+    that is missing, duplicated, wired to the wrong midpoint or wound the other way fails, which a
+    centroid match does not see.
     """
-    match = assert_nearest_bijection(
-        vertices_wp.numpy().astype(np.float64), np.asarray(vertices_ref, np.float64), max_distance
+    vertices_ref_wp, faces_ref_wp = numpy_to_warp(
+        np.asarray(vertices_ref), np.asarray(faces_ref), faces_wp.device
     )
-    reference_to_wp = np.argsort(match)
-    faces_ref_in_wp = reference_to_wp[np.asarray(faces_ref).reshape(-1, 3)]
-    assert np.array_equal(
-        lexsort_rows(canonical_winding(faces_wp.numpy().reshape(-1, 3))),
-        lexsort_rows(canonical_winding(faces_ref_in_wp)),
+    assert od.equality.meshes_allclose(
+        vertices_wp, faces_wp, vertices_ref_wp, faces_ref_wp, rtol=0.0, atol=max_distance
     )
 
 
 @pytest.mark.parity("subdivide", "trimesh")
 def test_subdivide(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Class B (vertex numbering): one uniform 1-to-4 pass against ``trimesh.remesh.subdivide``.
+    Class A: one uniform 1-to-4 pass equals ``trimesh.remesh.subdivide`` buffer for buffer.
 
     The reference is computed in ``float64`` and cast down, so the comparison is not measuring
-    ordito's precision against numpy's. The two number their midpoints by their own edge tables,
-    so the named transform is
-    [`_assert_same_mesh_under_vertex_match`][tests.test_remesh._assert_same_mesh_under_vertex_match]:
-    a one-to-one vertex match, then the faces compared row for row with their winding. The
-    original vertices keep their indices on both sides, which is asserted positionally.
+    ordito's precision against numpy's. Both number their midpoints by ``edges_unique`` row, which
+    is the same table on both sides, and emit the four children of a face in the same order, so
+    the vertex and face buffers compare positionally.
     """
     mesh_tm, mesh_wp = sphere_irregular
 
@@ -3246,19 +3316,18 @@ def test_subdivide(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
 
     new_v_wp, new_f_wp = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
 
-    n_original = vertices_np.shape[0]
-    assert np.allclose(new_v_wp.numpy()[:n_original], new_v_tm[:n_original], rtol=1e-5, atol=1e-5)
-    _assert_same_mesh_under_vertex_match(new_v_wp, new_f_wp, new_v_tm, new_f_tm, 1e-5)
+    assert np.allclose(new_v_wp.numpy(), new_v_tm, rtol=1e-5, atol=1e-5)
+    assert np.array_equal(new_f_wp.numpy().reshape(-1, 3), new_f_tm)
 
 
 @pytest.mark.parity("subdivide", "open3d")
 def test_subdivide_matches_open3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Class B (vertex numbering): Open3D's ``subdivide_midpoint`` is the same 1:4 split.
+    Class A (``od.equality.meshes_allclose``): Open3D's ``subdivide_midpoint`` is the same split.
 
     Neither library defines the new vertices' order -- ordito appends one per unique edge in its
-    own edge order, Open3D in its -- so the named transform is
-    [`_assert_same_mesh_under_vertex_match`][tests.test_remesh._assert_same_mesh_under_vertex_match]:
+    own edge order, Open3D in its -- so the meshes are compared up to numbering
+    ([`_assert_same_mesh_under_vertex_match`][tests.test_remesh._assert_same_mesh_under_vertex_match]):
     a one-to-one vertex match, then every child face compared with its winding. A coordinate
     lexsort is not usable: ties that ordito resolves in ``float32`` and Open3D in ``float64`` order
     the rows by rounding noise (measured: a 1.59 spurious mismatch).
@@ -3282,7 +3351,7 @@ def test_subdivide_matches_open3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) 
 @pytest.mark.parity("subdivide", "pytorch3d")
 def test_subdivide_matches_pytorch3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Class B: ``ops.SubdivideMeshes`` is the same 1:4 split, matched by nearest neighbour.
+    Class A (``od.equality.meshes_allclose``): ``ops.SubdivideMeshes`` is the same 1:4 split.
 
     Identical counts (642 vertices, 1 280 faces from 162 / 320) and the matched coordinates agree
     at **0.0** -- exactly, because both sides take the same midpoint of the same float32 edge.
@@ -3291,7 +3360,7 @@ def test_subdivide_matches_pytorch3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh
     row with their winding
     ([`_assert_same_mesh_under_vertex_match`][tests.test_remesh._assert_same_mesh_under_vertex_match]).
 
-    The vertex correspondence is a ``cKDTree`` query plus a bijection check and **not**
+    The vertex correspondence is a nearest-neighbour query plus a bijection check and **not**
     ``lexsort_rows``, which unusable on float coordinates with
     ties: two sides that tie in float32 but differ in the 16th float64 digit order those rows
     differently and the compare then fails by the full coordinate range. It passed here only
@@ -3310,13 +3379,12 @@ def test_subdivide_matches_pytorch3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh
     assert vertices_p3d.shape[0] == 4 * len(mesh_tm.vertices) - 6
     assert faces_p3d.shape[0] == 4 * len(mesh_tm.faces)
     assert vertices_wp.size == vertices_p3d.shape[0]
-    _assert_same_mesh_under_vertex_match(vertices_wp, faces_wp, vertices_p3d, faces_p3d, 1e-6)
-    assert_nearest_bijection(vertices_wp.numpy(), vertices_p3d.astype(np.float32), 0.0)
+    _assert_same_mesh_under_vertex_match(vertices_wp, faces_wp, vertices_p3d, faces_p3d, 0.0)
 
 
 def test_subdivide_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Class B: ``igl.upsample`` is the same 1:4 midpoint split under a different vertex order.
+    Class A (``od.equality.meshes_allclose``): ``igl.upsample`` is the same 1:4 midpoint split.
 
     igl keeps the original vertices in place and appends one per unique edge, exactly as ordito
     does, so the *vertex* arrays agree on their leading ``n_vertices`` rows -- which is asserted
@@ -3367,31 +3435,11 @@ def test_subdivide_edges_change_no_answer(sphere_irregular: tuple[tm.Trimesh, wp
 # --------------------------------------------------------------------------------------
 
 
-def _loop_odd_correspondence(
-    faces_wp_np: np.ndarray, faces_igl: np.ndarray, n_new: int, n_original: int
-) -> np.ndarray:
-    """
-    Map each of ordito's new edge vertices onto igl's, decoded from the two face tables.
-
-    Both libraries emit four children per face in input face order, and one of those children is the
-    central triangle spanning the face's three *new* vertices -- ordito emits it fourth and igl
-    third. Reading that row off both tables therefore pairs the two enumerations corner by corner,
-    which is exact where a coordinate ``lexsort`` would be decided by rounding noise. Returns
-    ``perm`` with ``perm[ordito_index] == igl_index`` over the new vertices.
-    """
-    perm = np.full(n_new, -1, dtype=np.int64)
-    perm[faces_wp_np[3::4].ravel()] = faces_igl[2::4].ravel()
-    new_ids = np.arange(n_original, n_new)
-    assert perm[new_ids].min() >= n_original, "a new vertex was paired with an original one"
-    assert len(set(perm[new_ids].tolist())) == new_ids.size, "the pairing is not a bijection"
-    return perm
-
-
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("subdivide_loop", "igl")
 def test_subdivide_loop_matches_igl(mesh_name: str, request: pytest.FixtureRequest) -> None:
     """
-    Class A on the moved originals, Class B on the new vertices: the same Loop stencils as igl.
+    Class A (by index, then ``od.equality.meshes_allclose``): the same Loop stencils as igl.
 
     Every weight in Loop subdivision is a convention another library may pick differently, and this
     pins all four of them against ``igl.loop`` at ``1e-5``: the interior ``beta`` (**Warren's**
@@ -3400,11 +3448,10 @@ def test_subdivide_loop_matches_igl(mesh_name: str, request: pytest.FixtureReque
     Getting any one of them wrong still yields a smooth-looking surface, so a shape-only assertion
     would not see it.
 
-    The originals correspond by index on both sides -- igl returns them first too -- so that half is
-    Class A and directly comparable. The new vertices are ordered by each library's own edge
-    enumeration, and ``_loop_odd_correspondence`` decodes the exact pairing from the face tables
-    rather than matching coordinates; the faces renumbered through it must then be the same rows
-    with the same winding.
+    The originals correspond by index on both sides -- igl returns them first too -- so they compare
+    directly. The new vertices are ordered by each library's own edge enumeration, so the whole mesh
+    is then compared up to numbering: every vertex matched one to one within ``1e-5`` and the same
+    faces with the same winding.
 
     The fixtures cover what the branches need: two closed meshes (``cave_cube`` supplies valence-3
     and valence-6 corners) and two with a boundary, so the boundary rules are not dead code here --
@@ -3430,27 +3477,15 @@ def test_subdivide_loop_matches_igl(mesh_name: str, request: pytest.FixtureReque
     )
     assert not np.allclose(vertices_new_np[:n_original], mesh_tm.vertices, atol=1e-4)
 
-    perm_np = _loop_odd_correspondence(
-        faces_wp.numpy().reshape(-1, 3), np.asarray(faces_loop_igl), vertices_wp.size, n_original
-    )
-    new_ids = np.arange(n_original, vertices_wp.size)
-    assert np.allclose(
-        vertices_new_np[new_ids], vertices_igl[perm_np[new_ids]], rtol=1e-5, atol=1e-5
-    )
-    # And the same faces, with the same winding, once igl's are renumbered through that pairing.
-    perm_np[:n_original] = np.arange(n_original)  # the originals keep their indices on both sides
-    faces_igl_in_wp = np.argsort(perm_np)[np.asarray(faces_loop_igl)]
-    assert np.array_equal(
-        lexsort_rows(canonical_winding(faces_wp.numpy().reshape(-1, 3))),
-        lexsort_rows(canonical_winding(faces_igl_in_wp)),
-    )
+    # The new vertices and the faces, with their winding, up to igl's own numbering.
+    _assert_same_mesh_under_vertex_match(vertices_wp, faces_wp, vertices_igl, faces_loop_igl, 1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("subdivide_loop", "open3d")
 def test_subdivide_loop_matches_open3d(mesh_name: str, request: pytest.FixtureRequest) -> None:
     """
-    Class B: Open3D's ``subdivide_loop`` is the same variant, under its own new-vertex order.
+    Class A (``od.equality.meshes_allclose``): Open3D's ``subdivide_loop`` is the same variant.
 
     A second oracle beside igl, worth having because it is independent: Open3D agrees with igl to
     **2e-16** on the relocated originals, so the two references corroborate each other on the one
@@ -3804,11 +3839,8 @@ def test_subdivide_to_size_matches_pymeshlab(
     assert len(vertices_np) == vertices_pml.shape[0]
     assert faces_np.shape[0] == faces_pml.shape[0]
 
-    # Same vertex set, then the same faces once ordito's indices are remapped onto MeshLab's.
-    remap_np = assert_nearest_bijection(vertices_np, vertices_pml, 1e-5)
-    mapped_np = np.sort(remap_np[faces_np], axis=1)
-    reference_np = np.sort(faces_pml, axis=1)
-    assert np.array_equal(lexsort_rows(mapped_np), lexsort_rows(reference_np))
+    # Same vertices and the same faces, with their winding, up to numbering.
+    _assert_same_mesh_under_vertex_match(vertices_wp, faces_wp, vertices_pml, faces_pml, 1e-5)
 
 
 def test_subdivide_to_size_reference_mixed(device: str) -> None:
@@ -3827,13 +3859,13 @@ def _assert_matches_trimesh_subdivide_to_size(
     """
     Assert ``subdivide_to_size`` equals trimesh's: vertex set, face set and per-source face count.
 
-    The vertices are matched by nearest-neighbour bijection (identical up to float32 storage), the
-    faces compared as sorted rows through that match, and the ``return_index`` histograms equal.
+    The meshes are equal up to numbering
+    ([`_assert_same_mesh_under_vertex_match`][tests.test_remesh._assert_same_mesh_under_vertex_match],
+    identical up to float32 storage), and the ``return_index`` histograms equal.
     """
     new_v_wp, new_f_wp, index_wp = od.remesh.subdivide_to_size(
         mesh_wp.points, mesh_wp.indices, max_edge, return_index=True, **max_iter
     )
-    new_v_np = new_v_wp.numpy()
     new_f_np = new_f_wp.numpy().reshape(-1, 3)
 
     # ``subdivide_to_size`` returns two values or three depending on ``return_index``, and
@@ -3846,11 +3878,7 @@ def _assert_matches_trimesh_subdivide_to_size(
     )
 
     assert new_f_np.shape[0] == ref_f.shape[0]
-    wp_to_ref = assert_nearest_bijection(new_v_np, ref_v, 1e-4)
-
-    faces_mapped = np.sort(wp_to_ref[new_f_np], axis=1)
-    faces_ref = np.sort(ref_f, axis=1)
-    assert np.array_equal(lexsort_rows(faces_mapped), lexsort_rows(faces_ref))
+    _assert_same_mesh_under_vertex_match(new_v_wp, new_f_wp, ref_v, ref_f, 1e-4)
 
     n_in_faces = mesh_tm.faces.shape[0]
     hist_wp = np.bincount(index_wp.numpy(), minlength=n_in_faces)
@@ -4440,7 +4468,7 @@ def test_split_edges_all_matches_igl_and_open3d(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Class B (vertex numbering): splitting every edge is the regular 1-to-4 subdivision.
+    Class A (``od.equality.meshes_allclose``): splitting every edge is the regular subdivision.
 
     That is the operation both ``igl.upsample`` and open3d's ``subdivide_midpoint(1)`` perform.
 
@@ -4451,8 +4479,8 @@ def test_split_edges_all_matches_igl_and_open3d(
     midpoint and retriangulate each face into four, which is exactly ``split_edges`` with an
     all-``True`` mask.
 
-    The named transform is
-    [`_assert_same_mesh_under_vertex_match`][tests.test_remesh._assert_same_mesh_under_vertex_match],
+    The comparison is up to numbering
+    ([`_assert_same_mesh_under_vertex_match`][tests.test_remesh._assert_same_mesh_under_vertex_match]),
     because the three libraries number the inserted midpoints in three different orders: a
     one-to-one vertex match (measured max distance 5.4e-08 against both, i.e. ordito's float32
     storage), then every child face compared row for row with its winding.

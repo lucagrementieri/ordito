@@ -81,8 +81,9 @@ pass count.
 ``cluster_decimate`` is the other **scan sweep** group and the interesting one to read against
 ``subdivide``: the same shape of work in reverse (bin, remap, dedup — no data dependence, no
 iteration), so if the two do not scale alike something is wrong with one. Both open3d and pymeshlab
-are references, and the open3d one is *exact* — same grid anchor, same cell means, identical face
-count — which is rare enough here to be worth stating. Cell width is a fraction of the mean edge
+are exact references -- same grid, same cell means, the same faces -- open3d in ``cluster_decimate``
+and pymeshlab against ``method="meshlab"`` in ``cluster_decimate_meshlab``, which is rare enough
+here to be worth stating. Cell width is a fraction of the mean edge
 length so the ratio is comparable across meshes.
 
 Caps: ``isotropic_remesh`` stops at ``bunny`` on the scan sweep (it is an order of magnitude dearer
@@ -93,8 +94,6 @@ establish, and the pymeshlab one skips ``sphere_large`` for the same reason.
 """
 
 from __future__ import annotations
-
-from typing import Literal
 
 import igl
 import numpy as np
@@ -648,25 +647,12 @@ def test_intrinsic_delaunay(bench_case: BenchCase) -> None:
 _CLUSTER_FACTORS = [2.0, 6.0]
 
 
-@pytest.mark.noparity(
-    "pymeshlab",
-    oracle="open3d",
-    reason="D2 a differently anchored grid with a different cell representative, and open3d is "
-    "the exact oracle right beside it: meshing_decimation_clustering keeps a per-cell "
-    "representative on a grid whose origin is not open3d's min_bound - voxel_size / 2, so at the "
-    "same threshold it returns measurably different meshes -- 2 792 faces against ordito's 2 768 "
-    "at a 0.1 cell on icosphere(4), then 656 against 768 at 0.2 and 156 against 252 at 0.4, i.e. "
-    "1% to 62% apart and diverging as the cell grows. open3d assigns cells identically and is "
-    "asserted to the exact face and vertex count in "
-    "tests/test_remesh.py::test_cluster_decimate_matches_open3d, which also pins the grid anchor; "
-    "MeshLab cannot be a second oracle for a quantity open3d already fixes exactly.",
-)
 @pytest.mark.benchmark(group="cluster_decimate")
-@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "open3d", "meshlib")
 @pytest.mark.parametrize("cell_factor", _CLUSTER_FACTORS)
 def test_cluster_decimate(bench_case: BenchCase, cell_factor: float) -> None:
     """
-    Bin, remap, dedup: decimation with no priority queue, against two exact-ish references.
+    Bin, remap, dedup: decimation with no priority queue, against Open3D's exact one.
 
     Its axis spans the wrapper floor and the win: the smallest mesh sits at the floor (see
     ``test_creation::test_box``) and loses, while the largest wins by nearly two orders of
@@ -680,20 +666,6 @@ def test_cluster_decimate(bench_case: BenchCase, cell_factor: float) -> None:
         mesh_part_ml = mm.MeshPart(_mesh_ml(bench_case))
         sampled_ml = bench_case.run(lambda: mm.verticesGridSampling(mesh_part_ml, voxel_size))
         assert 0 < sampled_ml.count() <= bench_case.n_vertices
-        return
-    if bench_case.kind == "pymeshlab":
-        # ``meshing_decimation_clustering`` rewrites the topology, so the MeshSet is rebuilt inside
-        # the timed callable. Its ``threshold`` is a length, hence ``PureValue`` fed from the same
-        # ``voxel_size`` both other rows get rather than a percentage of its own bbox diagonal.
-        skip_larger_than(bench_case, "bunny", "MeshLab's clustering is a serial pass over the grid")
-        new_meshset_pml = bench_case.new_meshset_pml
-
-        def cluster_pml() -> int:
-            meshset_pml = new_meshset_pml()
-            meshset_pml.meshing_decimation_clustering(threshold=ml.PureValue(voxel_size))
-            return meshset_pml.current_mesh().face_number()
-
-        assert bench_case.run(cluster_pml) >= 0
         return
     if bench_case.kind == "open3d":
         # Returns a new mesh and never touches its input, so the shared mesh is safe across rounds.
@@ -710,17 +682,44 @@ def test_cluster_decimate(bench_case: BenchCase, cell_factor: float) -> None:
     assert int(decimated_faces.shape[0]) // 3 <= bench_case.n_faces
 
 
+@pytest.mark.benchmark(group="cluster_decimate_meshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+@pytest.mark.parametrize("cell_factor", _CLUSTER_FACTORS)
+def test_cluster_decimate_meshlab(bench_case: BenchCase, cell_factor: float) -> None:
+    """
+    ``method="meshlab"``: MeshLab's box-fitted grid and corner-weighted mean, against MeshLab.
+
+    The same passes as ``cluster_decimate`` with the mean taken over face corners, three items a
+    face where the Open3D row has one a vertex.
+    """
+    voxel_size = cell_factor * bench_case.mean_edge
+    if bench_case.kind == "pymeshlab":
+        # ``meshing_decimation_clustering`` rewrites the topology, so the MeshSet is rebuilt inside
+        # the timed callable. Its ``threshold`` is a length, hence ``PureValue`` fed from the same
+        # ``voxel_size`` the ordito row gets rather than a percentage of its own bbox diagonal.
+        skip_larger_than(bench_case, "bunny", "MeshLab's clustering is a serial pass over the grid")
+        new_meshset_pml = bench_case.new_meshset_pml
+
+        def cluster_pml() -> int:
+            meshset_pml = new_meshset_pml()
+            meshset_pml.meshing_decimation_clustering(threshold=ml.PureValue(voxel_size))
+            return meshset_pml.current_mesh().face_number()
+
+        assert bench_case.run(cluster_pml) >= 0
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _decimated_vertices, decimated_faces = bench_case.run(
+        lambda: od.remesh.cluster_decimate(vertices, faces, voxel_size=voxel_size, method="meshlab")
+    )
+    assert int(decimated_faces.shape[0]) // 3 <= bench_case.n_faces
+
+
 @pytest.mark.benchmark(group="flip_by_objective")
 @pytest.mark.benchaxis("quality")
 @pytest.mark.benchlibs("ordito", "pymeshlab")
-@pytest.mark.parametrize("objective", ["planarity", "curvature"])
-def test_flip_by_objective(
-    bench_case: BenchCase, objective: Literal["planarity", "curvature"]
-) -> None:
+def test_flip_by_objective(bench_case: BenchCase) -> None:
     """The Delone engine with another predicate: the same passes, a different candidate set."""
     if bench_case.kind == "pymeshlab":
-        if objective == "curvature":
-            pytest.skip("MeshLab's curvature flip has no comparable parameterization")
         new_meshset_pml = bench_case.new_meshset_pml
 
         def flip_pml() -> int:
@@ -734,7 +733,7 @@ def test_flip_by_objective(
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     flipped = bench_case.run(
-        lambda: od.remesh.flip_by_objective(vertices, faces, objective=objective), rounds=_ROUNDS
+        lambda: od.remesh.flip_by_objective(vertices, faces, objective="planarity"), rounds=_ROUNDS
     )
     assert flipped.size == faces.size
 

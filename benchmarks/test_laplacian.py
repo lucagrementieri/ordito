@@ -21,7 +21,9 @@ ordito implements). **trimesh** is the reference for the umbrella operator —
 ``trimesh.smoothing.laplacian_calculation`` builds exactly the row-normalized 1-ring averaging
 matrix ``laplacian`` returns, for both ``equal_weight`` settings.
 
-``graph_laplacian`` has no reference: libigl builds ``A - diag(rowsum(A))`` inline inside
+``face_weighted_laplacian`` has no matrix-returning reference either: MeshLab applies it inside
+its smoothing filters, which [`test_smoothing.py`](test_smoothing.py) times. ``graph_laplacian``
+has no reference: libigl builds ``A - diag(rowsum(A))`` inline inside
 ``igl::harmonic`` rather than exposing it, and reassembling it here out of ``igl.adjacency_matrix``
 plus scipy would time a hand-rolled composition rather than a library function. It is timed for
 ordito alone.
@@ -417,6 +419,21 @@ def test_laplacian_inverse_distance(bench_case: BenchCase) -> None:
             )
         )
         assert matrix_tm.shape == (n_vertices, n_vertices)
+
+
+@pytest.mark.benchmark(group="face_weighted_laplacian")
+@pytest.mark.benchlibs("ordito")
+def test_face_weighted_laplacian(bench_case: BenchCase) -> None:
+    """
+    The face-weighted, rim-preserving umbrella, timed for ordito alone.
+
+    MeshLab applies this stencil inside its smoothing filters and never returns the matrix, so
+    its rows live in ``test_smoothing.py``'s ``filter_laplacian_integration`` and
+    ``filter_sharpen`` groups, where ``tests/test_smoothing.py`` pins the outputs to MeshLab's.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    matrix = bench_case.run(lambda: od.laplacian.face_weighted_laplacian(vertices, faces))
+    assert matrix.nrow == bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="graph_laplacian")

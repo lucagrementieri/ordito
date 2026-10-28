@@ -798,6 +798,65 @@ def laplacian_rows(
             out_values[k] = out_values[k] / total
 
 
+@wp.func
+def pattern_row_on_rim(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    i: wp.int32,
+) -> wp.bool:
+    # Whether vertex ``i`` lies on the mesh's rim, read off a ``cotmatrix`` pattern: one of its
+    # off-diagonal entries' runs holds a single key, i.e. that edge lies on one face. Shared by the
+    # face-weighted umbrella and the heat method's boundary-pinned system (``kernels/heat``).
+    rim = wp.bool(False)
+    for k in range(offsets[i], offsets[i + 1]):
+        if columns[k] != i:
+            if sorted_run_end(keys, run_start[k], count) - run_start[k] == 1:
+                rim = True
+    return rim
+
+
+@wp.kernel
+def face_weighted_laplacian_rows(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    out_values: wp.array[wp.Float],
+) -> None:
+    # The face-weighted umbrella over the ``cotmatrix`` pattern (every edge both ways plus every
+    # referenced vertex's diagonal): an edge's run holds one key per face on it, so its length is
+    # the weight a face-by-face accumulation gives that neighbour, and the vertex counts itself
+    # once. A rim vertex -- one of whose edges lies on a single face -- averages along the rim
+    # only: its rim neighbours once each and itself twice, its interior edges explicit zeros. The
+    # row is divided by its sum, in column order. ``laplacian_rows`` is the plain 1-ring mean over
+    # its own pattern; the two differ in the weights and the rim rule.
+    i = wp.int32(wp.tid())
+    start = offsets[i]
+    end = offsets[i + 1]
+    if end == start:
+        return
+    rim = pattern_row_on_rim(offsets, columns, run_start, keys, count, i)
+    total = type(out_values[start])(0.0)
+    for k in range(start, end):
+        value = type(out_values[k])(0.0)
+        if columns[k] == i:
+            value = wp.where(rim, type(value)(2.0), type(value)(1.0))
+        else:
+            faces_on_edge = sorted_run_end(keys, run_start[k], count) - run_start[k]
+            if not rim:
+                value = type(value)(faces_on_edge)
+            elif faces_on_edge == 1:
+                value = type(value)(1.0)
+        out_values[k] = value
+        total += value
+    for k in range(start, end):
+        out_values[k] = out_values[k] / total
+
+
 @wp.kernel
 def graph_laplacian_rows(
     offsets: wp.array[wp.int32], columns: wp.array[wp.int32], out_values: wp.array[wp.Float]
@@ -1005,6 +1064,7 @@ LAPLACIAN_KEYS_DIRECTED: OverloadTable
 COTMATRIX_ROWS: OverloadTable
 LAPLACIAN_ROWS: OverloadTable
 GRAPH_LAPLACIAN_ROWS: OverloadTable
+FACE_WEIGHTED_LAPLACIAN_ROWS: OverloadTable
 CONNECTION_LAPLACIAN_ROWS: OverloadTable
 MASS_DIAGONAL_ROWS: OverloadTable
 
@@ -1016,6 +1076,7 @@ def _register_overloads() -> None:
     global LAPLACIAN_TRIPLETS_SYMMETRIC, LAPLACIAN_TRIPLETS_DIRECTED
     global LAPLACIAN_KEYS_SYMMETRIC, LAPLACIAN_KEYS_DIRECTED
     global COTMATRIX_ROWS, CONNECTION_LAPLACIAN_ROWS, LAPLACIAN_ROWS, GRAPH_LAPLACIAN_ROWS
+    global FACE_WEIGHTED_LAPLACIAN_ROWS
     global MASS_DIAGONAL_ROWS
     COTMATRIX_ENTRIES = OverloadTable(
         cotmatrix_entries,
@@ -1112,6 +1173,20 @@ def _register_overloads() -> None:
     GRAPH_LAPLACIAN_ROWS = OverloadTable(
         graph_laplacian_rows,
         {d: [wp.array[wp.int32], wp.array[wp.int32], wp.array[d]] for d in _MATRIX_DTYPES},
+    )
+    FACE_WEIGHTED_LAPLACIAN_ROWS = OverloadTable(
+        face_weighted_laplacian_rows,
+        {
+            d: [
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.uint64],
+                wp.int32,
+                wp.array[d],
+            ]
+            for d in _MATRIX_DTYPES
+        },
     )
     CONNECTION_LAPLACIAN_ROWS = OverloadTable(
         connection_laplacian_rows,

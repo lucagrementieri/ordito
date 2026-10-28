@@ -15,11 +15,11 @@ from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
 import ordito as od
+import ordito.typing as odt
 from ordito.holes import _non_increasing_indices  # pyright: ignore[reportPrivateUsage]
 from ordito.kernels import holes as kernel_holes
 from tests.comparisons import (
     boundary_loop_sizes,
-    canonical_winding,
     hausdorff_surface_two_sided,
     lexsort_rows,
     same_partition,
@@ -183,10 +183,10 @@ def test_fill_cone_matches_meshlib(request: pytest.FixtureRequest, mesh_name: st
 
     Two conventions are named rather than assumed. The apex is compared at ``1e-6`` because
     MeshLib stores float32 and reads back float64, the same floor ordito's own buffer sets
-    (measured 1.19e-07 here). And the triangles are compared through
-    [`tests.comparisons.canonical_winding`][], which rotates each one onto its lowest index --
-    the two libraries pick different *starting corners* but the same orientation, and rotation
-    cannot hide a flip, so the winding stays under test.
+    (measured 1.19e-07 here). And the triangles are compared with
+    [`faces_equal`][ordito.equality.faces_equal], which ignores face order and the starting
+    corner -- the two libraries pick different *starting corners* but the same orientation, and
+    rotation cannot hide a flip, so the winding stays under test.
 
     MeshLib fills one hole per call, so a multi-rim fixture is looped on that side;
     ``sphere_irregular_band`` exercises that with two rims, which is what makes the loop
@@ -244,9 +244,9 @@ def test_fill_cone_matches_meshlib(request: pytest.FixtureRequest, mesh_name: st
         rtol=1e-6,
         atol=1e-6,
     )
-    assert np.array_equal(
-        lexsort_rows(canonical_winding(filled_faces_wp.numpy()[n_faces:])),
-        lexsort_rows(canonical_winding(faces_ml)),
+    assert od.equality.faces_equal(
+        odt.as_dense(filled_faces_wp[n_faces:]),
+        wp.array(faces_ml.ravel().astype(np.int32), dtype=wp.int32, device=mesh_wp.device),
     )
 
 
@@ -1871,7 +1871,7 @@ def test_fill_smooth_triangulate_only(saddle_graded: tuple[tm.Trimesh, wp.Mesh])
 
 def test_fill_smooth_cones_a_blocked_hole_like_meshlib(device: str) -> None:
     """
-    Class B (``canonical_winding`` + ``lexsort_rows``): a blocked hole is coned as MeshLib's.
+    Class A (``od.equality.faces_equal``): a blocked hole is coned as MeshLib's.
 
     The seven-vertex torus (Csaszar's triangulation, faces ``(i, i + 1, i + 3)`` and
     ``(i, i + 3, i + 2)`` mod 7) joins every pair of its vertices by an edge, so deleting the star
@@ -1914,9 +1914,9 @@ def test_fill_smooth_cones_a_blocked_hole_like_meshlib(device: str) -> None:
     )
 
     assert np.allclose(filled_vertices_wp.numpy(), filled_ml.vertices, rtol=1e-5, atol=1e-5)
-    assert np.array_equal(
-        lexsort_rows(canonical_winding(filled_faces_wp.numpy())),
-        lexsort_rows(canonical_winding(filled_ml.faces)),
+    assert od.equality.faces_equal(
+        filled_faces_wp,
+        wp.array(filled_ml.faces.ravel().astype(np.int32), dtype=wp.int32, device=device),
     )
     assert od.boundary.boundary_loops(filled_vertices_wp, filled_faces_wp) == []
 
@@ -3154,11 +3154,13 @@ def test_bridge_edges_matches_meshlib(
     """
     Class A against ``makeBridge``: the same two triangles, including which diagonal splits them.
 
-    The comparison is on the appended face block as a canonically wound, lexicographically sorted
-    row set -- both libraries add exactly two triangles over the same four existing vertices, so
-    there is nothing to reindex and no tolerance involved. That it agrees on the *diagonal* is the
-    substantive part: the quadrilateral admits two triangulations and only one of them matches, so
-    a patch wound the other way round would fail here rather than merely look different.
+    The comparison is on the appended face block up to face order and starting corner
+    ([`faces_equal`][ordito.equality.faces_equal]) -- both libraries add exactly two triangles
+    over the same four existing vertices, so there is nothing to reindex and no tolerance involved.
+    That it agrees on the *diagonal* is the substantive part: the quadrilateral admits two
+    triangulations and only one of them matches, so a patch wound the other way round would fail
+    here rather than merely look different.
+
 
     The edge pairs are taken at two different separations along one rim, because a bridge between
     nearly opposite edges and one between near neighbours take different branches in meshlib.
@@ -3186,8 +3188,9 @@ def test_bridge_edges_matches_meshlib(
     )
     assert result_ml.newFaces == 2  # non-vacuity: meshlib built the bridge rather than refusing
     patch_ml = np.asarray(meshlib_to_trimesh(mesh_ml).faces)[n_faces:]
-    assert np.array_equal(
-        lexsort_rows(canonical_winding(patch_np)), lexsort_rows(canonical_winding(patch_ml))
+    assert od.equality.faces_equal(
+        odt.as_dense(bridged_faces_wp[3 * n_faces :]),
+        wp.array(patch_ml.ravel().astype(np.int32), dtype=wp.int32, device=mesh_wp.device),
     )
 
 
@@ -3230,8 +3233,9 @@ def test_bridge_edges_shared_vertex_is_one_triangle(
     )
     assert result_ml.newFaces == 1
     patch_ml = np.asarray(meshlib_to_trimesh(mesh_ml).faces)[n_faces:]
-    assert np.array_equal(
-        lexsort_rows(canonical_winding(patch_np)), lexsort_rows(canonical_winding(patch_ml))
+    assert od.equality.faces_equal(
+        odt.as_dense(bridged_faces_wp[3 * n_faces :]),
+        wp.array(patch_ml.ravel().astype(np.int32), dtype=wp.int32, device=mesh_wp.device),
     )
 
 

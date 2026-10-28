@@ -15,9 +15,12 @@ META = Meta(
     A bare point cloud has no normals; [`estimate_normals`][ordito.points.estimate_normals] fits
     a plane to each point's neighbourhood (here its 16 nearest neighbours from
     [`query_nearest`][ordito.neighbors.query_nearest]) and takes the plane's normal. The sign is
-    a convention, not a measurement: by default each normal is turned away from the cloud's
-    centroid, which is right on most of the bunny and wrong where the surface folds back towards
-    the centre (red, compared with the exact normals of the surface the cloud was sampled from).
+    a convention, not a measurement. By default it follows the neighbours (pytorch3d's rule: each
+    normal points to the side its neighbourhood bulges toward), which agrees locally but not
+    across the cloud; here ``orientation="centroid"`` turns each normal away from the cloud's
+    centroid instead, which is right on most of the bunny and wrong where the surface folds back
+    towards the centre (red, compared with the exact normals of the surface the cloud was sampled
+    from).
     """,
     credits=(
         (
@@ -41,7 +44,7 @@ def run(device: str) -> dict[str, Any]:
 
     points = data.load_points("bunny_cloud", device)
     neighbours, _ = od.neighbors.query_nearest(points, points, k=16)
-    normals = od.points.estimate_normals(points, neighbours)
+    normals = od.points.estimate_normals(points, neighbours, orientation="centroid")
 
     # Compare with the exact normals of the surface the cloud was sampled from.
     cosine = np.sum(normals.numpy() * data.cloud_normals("bunny_cloud"), axis=1)

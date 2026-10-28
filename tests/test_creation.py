@@ -340,7 +340,7 @@ def test_primitives_match_meshlib(device: str) -> None:
 @pytest.mark.parity("uv_sphere", "meshlib")
 def test_uv_sphere_matches_meshlib(device: str, sections: int) -> None:
     """
-    Class B (a named parameter mapping), and then the *same mesh* -- vertex for vertex.
+    Class A (`od.equality.points_allclose`) on the vertex set, at a named parameter mapping.
 
     ``makeUVSphere``'s ``verticalResolution`` counts interior latitude **rings** where
     ``uv_sphere``'s ``count[0]`` counts profile points, poles included, while its
@@ -350,10 +350,9 @@ def test_uv_sphere_matches_meshlib(device: str, sections: int) -> None:
 
     At that pairing the two agree far past a count check: measured at 16 / 32 / 64 sections, the
     vertex and face counts are equal, the areas and volumes agree to **1.5e-08 relative**, and a
-    nearest-neighbour match between the two vertex sets is a **bijection** whose worst displacement
-    is **4.7e-07** -- the float32 floor, since MeshLib stores points in float32 too. The positions
-    are matched through a KD-tree rather than sorted, because the two emit their rings in different
-    orders and a ``lexsort`` on float coordinates is not reliable at ties.
+    the two vertex sets are equal up to order, matched one to one with a worst displacement of
+    **4.7e-07** -- the float32 floor, since MeshLib stores points in float32 too. The faces are not
+    compared: the two triangulate the latitude bands differently.
 
     Contrast the open3d pairing below, which needs a *different* mapping (``2 * r`` and ``r``)
     and is only equal in the counts -- its latitude rings sit elsewhere, so its volume differs by up
@@ -373,10 +372,10 @@ def test_uv_sphere_matches_meshlib(device: str, sections: int) -> None:
     assert np.isclose(mesh_wp.area, mesh_ref.area, rtol=1e-6)
     assert np.isclose(mesh_wp.volume, mesh_ref.volume, rtol=1e-6)
 
-    # The same vertex set, matched by proximity: a bijection, at the float32 floor.
-    distance_np, index_np = cKDTree(mesh_ref.vertices).query(mesh_wp.vertices, k=1)
-    assert len(set(np.asarray(index_np).tolist())) == len(np.asarray(index_np))
-    assert np.max(distance_np) < 1e-5
+    # The same vertex set, up to order, at the float32 floor.
+    assert od.equality.points_allclose(
+        vertices_wp, points_to_warp(mesh_ref.vertices, device), rtol=0.0, atol=1e-5
+    )
 
 
 @pytest.mark.parity("revolve", "meshlib")
@@ -1637,11 +1636,12 @@ def _triangle_soup(
 @pytest.mark.parametrize("case", ["z_zero", "plane", "reversed_winding"])
 def test_truncated_prisms(device: str, case: str) -> None:
     """
-    Class B (vertices matched by position): trimesh emits one prism per triangle in its own order.
+    Class A: the prisms are trimesh's buffers, vertex for vertex and face for face.
 
-    Matched by position, the prisms are trimesh's vertex for vertex (measured within 7e-8) and
-    face for face as wound triples, all 40 of them; ``body_count == 5`` is what catches prisms
-    welded together. Three inputs: the default ``z = 0`` plane; an explicit plane,
+    Both lay each prism out as its source triangle then its projection, six vertices a prism in
+    input order, and wind it from the same eight-face template (measured within 5.5e-8, the
+    float64 round trip trimesh takes through the plane's transform); ``body_count == 5`` is what
+    catches prisms welded together. Three inputs: the default ``z = 0`` plane; an explicit plane,
     which changes only where the prisms stop; and every source triangle reversed to face the plane,
     whose prisms need their winding reversed or the bodies come out inside-out with negative volume.
     """
@@ -1665,7 +1665,8 @@ def test_truncated_prisms(device: str, case: str) -> None:
     assert prism_v.size == 6 * 5
     assert prism_f.size // 3 == 8 * 5
     assert prism_tm.volume > 0.0
-    _assert_same_solid(prism_v, prism_f, mesh_tm)
+    assert np.allclose(prism_v.numpy(), mesh_tm.vertices, rtol=1e-5, atol=1e-5)
+    assert np.array_equal(prism_f.numpy().reshape(-1, 3), mesh_tm.faces)
     assert prism_tm.body_count == 5
 
 

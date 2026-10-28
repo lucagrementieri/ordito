@@ -479,7 +479,9 @@ def remove_duplicated_vertices(
     Returns
     -------
     unique_vertices : wp.array[wp.vec3]
-        ``(n_unique,)`` deduplicated vertex positions (first occurrence per equivalence class).
+        ``(n_unique,)`` deduplicated vertex positions (first occurrence per equivalence class), in
+        order of first occurrence -- the order of Open3D's ``remove_duplicated_vertices``, VTK's
+        ``vtkCleanPolyData`` and MeshLab's -- so a mesh with no duplicates comes back unchanged.
     unique_indices : wp.array[wp.int32]
         ``(n_unique,)`` original indices into ``vertices`` for each output row.
     inverse : wp.array[wp.int32]
@@ -607,9 +609,9 @@ def _vertex_classes(
     """
     Return each vertex's coincident-vertex class and each class's first vertex.
 
-    The inverse ``unique_1d`` gives for the vertex keys, and the
-    [`first_occurrence_indices`][ordito.grouping.first_occurrence_indices] of it, whose length is
-    the class count.
+    Classes are numbered by first occurrence, so the first vertices ascend: the inverse
+    ``unique_1d`` gives for the vertex keys, renumbered, and its
+    [`first_occurrence_indices`][ordito.grouping.first_occurrence_indices] in that order.
     """
     device = vertices.device
     n = vertices.size
@@ -640,7 +642,25 @@ def _vertex_classes(
             device=device,
         )
     inverse, first, _counts = _unique_keys_core(keys, order, None, False)
-    return inverse, first
+    # The classes come out in key order; renumber them by first occurrence.
+    ranks = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.flag_class_first_occurrences,
+        dim=n,
+        inputs=[inverse, first, ranks],
+        device=device,
+    )
+    _launch.array_scan(ranks, ranks, inclusive=True)
+    inverse_by_first = _launch.empty(n, dtype=wp.int32, device=device)
+    first_ascending = _launch.empty(first.size, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.renumber_classes_by_first_occurrence,
+        dim=n,
+        inputs=[inverse, first, ranks],
+        outputs=[inverse_by_first, first_ascending],
+        device=device,
+    )
+    return inverse_by_first, first_ascending
 
 
 def resolve_duplicated_faces(
@@ -2513,8 +2533,7 @@ def reverse_winding(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
 
     The corner that stays first is a convention, and this one matches ``np.fliplr`` -- which is
     what ``trimesh.Trimesh.invert`` applies, so the two agree elementwise rather than only up to a
-    rotation of each row. ``kernels.repair.write_face_winding``, which the per-face flippers use,
-    keeps corner 0 instead; both reverse orientation and they differ by a cyclic rotation.
+    rotation of each row. The per-face flippers write the same reversal.
 
     See Also
     --------

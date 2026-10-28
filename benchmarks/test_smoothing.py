@@ -659,20 +659,10 @@ def test_filter_two_step(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="filter_sharpen")
-@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 def test_filter_sharpen(bench_case: BenchCase) -> None:
     """Five Laplacian passes plus one blend: the cheapest thing in the module, on the scan sweep."""
     n_vertices = bench_case.n_vertices
-    if bench_case.kind == "open3d":
-        _skip_pml_beyond_bunny(bench_case)
-        mesh_o3d = bench_case.mesh_o3d
-        # Small strength: its update adds the *unnormalized* residual, degree times ordito's, so it
-        # amplifies noise fast; the one-pass correspondence is test_filter_sharpen_matches_open3d.
-        sharpened_o3d = bench_case.run(
-            lambda: mesh_o3d.filter_sharpen(number_of_iterations=5, strength=0.05)
-        )
-        assert len(sharpened_o3d.vertices) == n_vertices
-        return
     if bench_case.kind == "pymeshlab":
         _skip_pml_beyond_bunny(bench_case)
         new_meshset_pml = bench_case.new_meshset_pml
@@ -685,10 +675,36 @@ def test_filter_sharpen(bench_case: BenchCase) -> None:
         assert bench_case.run(unsharp_pml) == n_vertices
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    operator = _laplacian_operator(bench_case)
+    # The default operator, built inside the call as MeshLab builds its own: the same filter.
+    sharpened = bench_case.run(
+        lambda: od.smoothing.filter_sharpen(vertices, faces, weight=0.3, iterations=5)
+    )
+    assert sharpened.shape == (n_vertices,)
+
+
+@pytest.mark.benchmark(group="filter_sharpen_graph_laplacian")
+@pytest.mark.benchlibs("ordito", "open3d")
+def test_filter_sharpen_graph_laplacian(bench_case: BenchCase) -> None:
+    """
+    Open3D's sharpener: five steps along the unnormalized graph Laplacian, operator included.
+
+    A small strength, since the update adds the *unnormalized* residual, degree times the unsharp
+    mask's, and so amplifies noise fast. Both rows compute the same positions
+    (``tests/test_smoothing.py::test_filter_sharpen_graph_laplacian_matches_open3d``).
+    """
+    n_vertices = bench_case.n_vertices
+    if bench_case.kind == "open3d":
+        _skip_pml_beyond_bunny(bench_case)
+        mesh_o3d = bench_case.mesh_o3d
+        sharpened_o3d = bench_case.run(
+            lambda: mesh_o3d.filter_sharpen(number_of_iterations=5, strength=0.05)
+        )
+        assert len(sharpened_o3d.vertices) == n_vertices
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     sharpened = bench_case.run(
         lambda: od.smoothing.filter_sharpen(
-            vertices, faces, weight=0.3, iterations=5, laplacian_operator=operator
+            vertices, faces, weight=0.05, iterations=5, method="graph_laplacian"
         )
     )
     assert sharpened.shape == (n_vertices,)

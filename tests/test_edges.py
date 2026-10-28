@@ -138,17 +138,15 @@ def test_edges_face(device: str) -> None:
 @pytest.mark.parity("edges_unique_manifold", "potpourri3d")
 def test_edges_unique(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class A against trimesh, Class B (the reference reordered) against pyvista and potpourri3d.
+    Class A against trimesh as returned, against pyvista and potpourri3d up to row order.
 
     trimesh's ``unique_rows`` keys each min-first pair with column 0 in the low bits, so its rows
     ascend by the same ``(max, min)`` key ordito's sort produces: its table is compared with
-    ``array_equal`` against ordito's rows *as returned*, untransformed. pyvista and potpourri3d
-    order their rows by their own constructions, so only their tables are put into ordito's order
-    (``_in_ordito_edge_order``: each pair min-first, rows ascending by ``(max, min)``). Ordito's
-    side never moves, so every arm also pins the row order that ``quadric_decimate``, the lock keys
-    and the new-vertex numbering read; sorting both sides, as this test once did, passed for any
-    permutation of ordito's rows. The inverse that pairs with this set is checked by
-    [`test_edges_unique_inverse`].
+    ``array_equal`` against ordito's rows *as returned*, untransformed, which pins the row order
+    that ``quadric_decimate``, the lock keys and the new-vertex numbering read. pyvista and
+    potpourri3d order their rows by their own constructions, so their tables are compared with
+    ordito's as row sets (``od.equality.rows_equal``), each undirected pair written min-first. The
+    inverse that pairs with this set is checked by [`test_edges_unique_inverse`].
 
     - **trimesh** (``unique_rows`` over the sorted edge table) and **pyvista**
       (``extract_all_edges``, a line-cell ``PolyData``) are called against the form that omits
@@ -186,8 +184,14 @@ def test_edges_unique(request: pytest.FixtureRequest, mesh_name: str) -> None:
 
     assert len(edges_pv) > 0  # non-vacuous: two empty sets would compare equal
     assert np.array_equal(unique_edges_wp_np, unique_edges_tm)
-    assert np.array_equal(unique_edges_wp_np, _in_ordito_edge_order(edges_pv))
-    assert np.array_equal(hinted_edges_wp.numpy(), _in_ordito_edge_order(edges_pp))
+    assert od.equality.rows_equal(unique_edges_wp, _min_first_rows(edges_pv, mesh_wp.device))
+    assert od.equality.rows_equal(hinted_edges_wp, _min_first_rows(edges_pp, mesh_wp.device))
+
+
+def _min_first_rows(edges_np: np.ndarray, device: wp.DeviceLike) -> odt.Array2dInt32:
+    """Upload a reference's undirected edges as an ``(n, 2)`` table, each pair min-first."""
+    pairs_np = np.ascontiguousarray(np.sort(np.asarray(edges_np), axis=1), dtype=np.int32)
+    return odt.as_array2d(wp.array(pairs_np, dtype=wp.int32, device=device), wp.int32)
 
 
 def _in_ordito_edge_order(edges_np: np.ndarray) -> np.ndarray:

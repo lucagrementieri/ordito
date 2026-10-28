@@ -28,6 +28,7 @@ from meshlib import mrmeshpy as mm
 from scipy.spatial import ConvexHull, cKDTree
 
 import ordito as od
+import ordito.typing as odt
 from ordito import _launch
 from ordito.kernels import reconstruction as kernel_reconstruction
 from ordito.kernels.algorithms import ball_pivoting as kernel_bpa
@@ -41,7 +42,6 @@ from tests.comparisons import (
     lexsort_rows,
     oriented_boundary_edges,
     symmetric_surface_distance,
-    undirected_edges,
 )
 from tests.conftest import CLOSED_MESHES, ROUND_FRAME_SCALE, ROUND_FRAME_SHIFT, saddle_graded_arrays
 from tests.conversions import (
@@ -125,8 +125,15 @@ def _cross2(u: np.ndarray, v: np.ndarray) -> np.ndarray:
     return u[..., 0] * v[..., 1] - u[..., 1] * v[..., 0]
 
 
-def _edge_set(faces_flat: np.ndarray) -> np.ndarray:
-    return np.unique(undirected_edges(np.asarray(faces_flat).reshape(-1, 3)), axis=0)
+def _int_rows(rows_np: np.ndarray, device: str) -> odt.Array2dInt32:
+    """Upload host integer rows as a rank-2 ``int32`` array on ``device``."""
+    rows_np = np.ascontiguousarray(rows_np, dtype=np.int32)
+    return odt.as_array2d(wp.array(rows_np, dtype=wp.int32, device=device), wp.int32)
+
+
+def _flat_faces(faces_np: np.ndarray, device: str) -> wp.array[wp.int32]:
+    """Upload host triangle rows as ordito's flat ``int32`` face buffer on ``device``."""
+    return wp.array(np.asarray(faces_np).ravel().astype(np.int32), dtype=wp.int32, device=device)
 
 
 def _incircle_violations(points_np: np.ndarray, faces_flat: np.ndarray) -> int:
@@ -185,11 +192,12 @@ def _perturbed_grid_2d() -> np.ndarray:
 @pytest.mark.parity("delaunay_triangulation", "scipy")
 def test_delaunay_matches_scipy(device: str, make_points: Callable[[], np.ndarray]):
     """
-    Class B: the same triangulation as Qhull's, compared as an undirected edge set.
+    Class A (``od.equality.rows_equal``): the same triangles as Qhull's, up to order and corners.
 
-    Equality with Qhull's edge set implies the empty-circumcircle property and the convex-hull
-    coverage; what an undirected edge set cannot see is orientation, so every triangle is also
-    asserted counter-clockwise. On a uniform random cloud and on a jittered grid, whose
+    Equality with Qhull's triangles implies the empty-circumcircle property and the convex-hull
+    coverage. Qhull's simplices carry no consistent winding, so each triangle's corners are
+    compared sorted, as a set of three points; orientation is asserted separately, every triangle
+    counter-clockwise. On a uniform random cloud and on a jittered grid, whose
     near-cocircular quads are where a sloppy in-circle predicate would pick the other diagonal.
     """
     from scipy.spatial import Delaunay
@@ -200,7 +208,10 @@ def test_delaunay_matches_scipy(device: str, make_points: Callable[[], np.ndarra
     faces_wp = od.reconstruction.delaunay_triangulation(points_wp).numpy()
     faces_sp = Delaunay(points_np.astype(np.float64)).simplices
 
-    assert np.array_equal(_edge_set(faces_wp), _edge_set(faces_sp.reshape(-1)))
+    assert od.equality.rows_equal(
+        _int_rows(np.sort(faces_wp.reshape(-1, 3), axis=1), device),
+        _int_rows(np.sort(faces_sp, axis=1), device),
+    )
     tris = points_np.astype(np.float64)[faces_wp.reshape(-1, 3)]
     assert np.all(_cross2(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0]) > 0.0)
 
@@ -341,11 +352,11 @@ def test_delaunay_collinear_and_too_few(device: str):
 @pytest.mark.parity("triangulate_point_cloud", "meshlib")
 def test_sphere_matches_meshlib_reference(device: str):
     """
-    Class B (unordered rows): on a clean uniform cloud the two triangulations are *identical*.
+    Class A (``od.equality.faces_equal``): on a clean uniform cloud the triangulations are equal.
 
     Not a count bound, which is what this test used to assert. Measured on a 642-point icosphere
-    cloud at ``num_neighbours=18``: both sides return 1 280 faces and the face **sets** are equal
-    row for row after canonicalizing winding and lexsorting -- the greedy fan optimization
+    cloud at ``num_neighbours=18``: both sides return 1 280 faces and the faces are equal up to
+    face order and the corner each starts at, winding included -- the greedy fan optimization
     reproduces MeshLib's local triangulation exactly, not merely to a face count. Both keep the
     input points as their vertices, so the indices are directly comparable with no remap.
 
@@ -374,9 +385,8 @@ def test_sphere_matches_meshlib_reference(device: str):
     # Both index the input cloud, so the face sets are comparable without a vertex remap.
     assert np.allclose(vertices_ml, points_np, rtol=1e-5, atol=1e-5)
     assert np.allclose(vertices_wp.numpy(), points_np, rtol=1e-5, atol=1e-5)
-    assert np.array_equal(
-        lexsort_rows(canonical_winding(faces_wp_np)), lexsort_rows(canonical_winding(faces_ml_np))
-    )
+    faces_ml_wp = wp.array(faces_ml_np.ravel().astype(np.int32), dtype=wp.int32, device=device)
+    assert od.equality.faces_equal(faces_wp, faces_ml_wp, n_vertices=points_np.shape[0])
 
     n_points = points_np.shape[0]
     assert faces_wp_np.shape[0] == 2 * n_points - 4
@@ -522,13 +532,14 @@ def _valid_meshlib_faces(mesh_ml: mm.Mesh) -> np.ndarray:
 @pytest.mark.parity("triangulate_point_cloud", "meshlib")
 def test_contested_cloud_matches_meshlib(device: str, seed: int):
     """
-    Class B (``canonical_winding`` + ``lexsort_rows``): the same faces where candidates conflict.
+    Class A (``od.equality.faces_equal``): the same faces where candidates conflict.
 
     A random saddle cloud whose candidate triangles conflict: two of them share a directed edge, so
     the result depends on the order MeshLib's builder adds them in, and on these seeds ordito's
     candidates equal MeshLib's (asserted, so a drift in the fans fails here, not as a builder
-    difference). ordito keeps the referenced points only, in order; the faces are mapped back to
-    the input points by position.
+    difference). ordito keeps the referenced points only, in order, and MeshLib every input point,
+    so ordito's faces are written in the input's numbering (each kept point found exactly at its
+    input position) and compared over that shared numbering.
     """
     points_np, normals_np = _saddle_cloud(seed, graded=False)
     rows_ml, _ = _meshlib_candidates(points_np, normals_np, 16)
@@ -549,8 +560,10 @@ def test_contested_cloud_matches_meshlib(device: str, seed: int):
     faces_wp_np = np.asarray(input_index)[faces_wp.numpy().reshape(-1, 3)]
 
     assert faces_ml.shape[0] > 0
-    assert np.array_equal(
-        lexsort_rows(canonical_winding(faces_wp_np)), lexsort_rows(canonical_winding(faces_ml))
+    assert od.equality.faces_equal(
+        _flat_faces(faces_wp_np, device),
+        _flat_faces(faces_ml, device),
+        n_vertices=points_np.shape[0],
     )
 
 
@@ -1951,7 +1964,9 @@ def test_resample_uniform_invalid_and_empty(device: str) -> None:
 @pytest.mark.parametrize("normal_sign", [1.0, -1.0], ids=["outward", "inward"])
 def test_ball_pivoting_winds_faces_with_the_normals(device: str, normal_sign: float):
     """
-    Class A against open3d: the same wound triangle set, every face agreeing with the normals.
+    Class A against open3d (``od.equality.meshes_allclose``): the same wound mesh.
+
+    Every face also agrees with the normals.
 
     Open3D winds each triangle so its normal agrees with the point normals (``CreateTriangle``), and
     on this Fibonacci sphere both implementations pivot the identical triangulation, so the
@@ -1991,7 +2006,12 @@ def test_ball_pivoting_winds_faces_with_the_normals(device: str, normal_sign: fl
     )
     faces_o3d = np.asarray(mesh_o3d.triangles)
     assert faces_o3d.shape[0] > 0
-    assert_unordered_rows_equal(canonical_winding(faces_np), canonical_winding(faces_o3d))
+    vertices_o3d_wp, faces_o3d_wp = numpy_to_warp(
+        np.asarray(mesh_o3d.vertices), faces_o3d, vertices_wp.device
+    )
+    assert od.equality.meshes_allclose(
+        vertices_wp, faces_wp, vertices_o3d_wp, faces_o3d_wp, rtol=0.0, atol=1e-6
+    )
 
 
 def test_ball_pivoting_is_reproducible(device: str):
@@ -2463,11 +2483,13 @@ def _assert_grid_triangulation(
 @pytest.mark.parity("ball_pivoting", "pymeshlab", "open3d")
 def test_ball_pivoting_matches_pymeshlab_and_open3d(device: str):
     """
-    Class B (faces matched by input-point index, windings compared): the same triangles.
+    Class A against open3d (``od.equality.meshes_allclose``), Class B against MeshLab.
 
     BPA adds no vertices, so every output vertex of all three is an input sample (Hausdorff
-    3.8e-08) and each face maps to a triple of input indices through a nearest-sample lookup. On
-    the triple sets, measured identically on both devices:
+    3.8e-08). Against open3d the meshes are equal up to vertex numbering, face order and rotation;
+    against MeshLab, whose result is not the whole mesh, each face maps to a triple of input
+    indices through a nearest-sample lookup (the named transform) and the triple sets are compared.
+    Measured identically on both devices:
 
     - **open3d** at radii ``(r, 2r)`` returns the *identical* 1 280 faces with the identical
       winding -- the two fronts advance in different orders and still close the same triangles.
@@ -2524,11 +2546,15 @@ def test_ball_pivoting_matches_pymeshlab_and_open3d(device: str):
         return {tuple(sorted(row)) for row in triples}
 
     triples_wp = wound_triples(mesh_wp.vertices, mesh_wp.faces)
-    triples_o3d = wound_triples(np.asarray(mesh_o3d.vertices), np.asarray(mesh_o3d.triangles))
     triples_pml = wound_triples(vertices_pml, faces_pml)
     assert len(triples_wp) == mesh_wp.faces.shape[0]
 
-    assert triples_wp == triples_o3d
+    vertices_o3d_wp, faces_o3d_wp = numpy_to_warp(
+        np.asarray(mesh_o3d.vertices), np.asarray(mesh_o3d.triangles), device
+    )
+    assert od.equality.meshes_allclose(
+        vertices_wp, faces_wp, vertices_o3d_wp, faces_o3d_wp, rtol=0.0, atol=1e-6
+    )
 
     shared = unwound(triples_wp) & unwound(triples_pml)
     assert len(triples_wp & triples_pml) == len(shared), "every shared face is wound alike"

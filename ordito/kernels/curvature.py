@@ -26,9 +26,9 @@ def _build_reference_frame(
     vertex: wp.vec3, normal: wp.vec3, first_neighbor: wp.vec3
 ) -> tuple[wp.vec3, wp.vec3]:
     """Return (t1, t2) orthonormal tangent frame with t1 pointing toward first_neighbor."""
-    # Same construction as ``tangent_space.vertex_tangent_frames``: the reference direction is the
-    # neighbour projected into the tangent plane, falling back to an arbitrary perpendicular when
-    # that projection vanishes (the neighbour sits on the normal line through the vertex).
+    # The reference direction is the neighbour projected into the tangent plane, falling back to an
+    # arbitrary perpendicular when that projection vanishes (the neighbour sits on the normal line
+    # through the vertex).
     t1 = any_perpendicular(normal)
     tangential, length = unit_tangent(first_neighbor - vertex, normal, TOLERANCE_ZERO_CONSTANT)
     if length > TOLERANCE_ZERO_CONSTANT:

@@ -746,20 +746,25 @@ def oriented_bounding_box(
     refine_iterations: int = 8,
 ) -> tuple[wp.mat33, wp.vec3, wp.vec3]:
     """
-
     Smallest bounding box over sampled orientations, sharpened by local refinement, and its frame.
 
-    The box is searched, not solved, in two phases. The **global phase** scores ``rotations``
-    candidate orientations from the **Super-Fibonacci spiral** [Alexa 2022], a low-discrepancy
-    sampling of ``SO(3)``, with the identity appended as the last candidate, scored in parallel.
-    The **refinement phase** then takes the best-scoring candidates from up to four mutually distant
-    basins and runs ``refine_iterations`` trust-region rounds around each: every round scores a
-    low-discrepancy ball of perturbed frames whose angular radius starts at the global grid's
-    covering radius and shrinks by a factor of 0.4 per round, keeping each chain's best. Refinement
-    is monotone (each
-    chain re-scores its own base), so the answer is never worse than the global phase's and never
-    worse than [`aabb`][ordito.bounds.aabb]; with ``refine_iterations=0`` and ``rotations=1`` it
-    reproduces the axis-aligned box exactly.
+    The box is searched, not solved. The **global phase** scores ``rotations`` candidate
+    orientations from the **Super-Fibonacci spiral** [Alexa 2022], a low-discrepancy sampling of
+    ``SO(3)``, with the identity appended as the last candidate, scored in parallel. Alone
+    (``refine_iterations=0``) it is ``igl::oriented_bounding_box`` with ``n = rotations``: the same
+    candidates and the same three objectives, so the same box. But the sampled optimum sits up to a
+    covering radius from the true one, which costs little on a smooth cloud and a great deal on a
+    box-like one (a turned ``1 x 2 x 4`` box comes back 23 % too large at 4096 rotations).
+
+    The default therefore adds a **refinement phase**, which takes the best-scoring candidates
+    from up to four mutually distant basins and runs that many trust-region rounds around each:
+    every round scores a low-discrepancy ball of perturbed frames whose angular radius starts at the
+    global grid's covering radius and shrinks by a factor of 0.4 per round, keeping each chain's
+    best. Eight rounds reach the minimum-volume box of trimesh's and Open3D's hull-face searches to
+    a few parts in 1e5 of volume (the minimum is flat, so the frames can differ by a fraction of a
+    degree). Refinement is monotone (each chain re-scores its own base), so the answer is never
+    worse than the global phase's and never worse than [`aabb`][ordito.bounds.aabb]; with
+    ``refine_iterations=0`` and ``rotations=1`` it reproduces the axis-aligned box exactly.
 
     Cost is ``rotations * len(points)`` point transforms for the global phase plus
     ``refine_iterations * 512 * len(points)`` for refinement — but past
@@ -775,15 +780,15 @@ def oriented_bounding_box(
     points
         ``(n,)`` positions.
     rotations
-        Number of global candidates to score, ``>= 1``. The refinement default makes raising this
-        past a few thousand pointless: the global phase only needs to land *inside* the optimum's
-        basin, and refinement does the rest.
+        Number of global candidates to score, ``>= 1``. With refinement, raising this past a few
+        thousand is pointless: the global phase only needs to land *inside* the optimum's basin,
+        and refinement does the rest.
     objective
         Which box quantity to minimize: ``"volume"``, ``"surface_area"``, or ``"diagonal"`` (the
         squared diagonal length, which has the same minimizer as the length).
     refine_iterations
-        Trust-region rounds after the global phase, ``>= 0``. ``0`` disables refinement and returns
-        the pure sampled answer.
+        Trust-region rounds after the global phase, ``>= 0``. ``8`` (default) reaches the
+        minimum-volume box to a few parts in 1e5; ``0`` returns the pure sampled answer, igl's.
 
     Returns
     -------
@@ -816,7 +821,7 @@ def oriented_bounding_box(
     events (O'Rourke's rotating-calipers family), and ordito deliberately has no exact convex hull.
     What the sampling-plus-refinement search gives up is the *certificate*, not the volume: the
     global phase lands in the optimum's basin whenever the grid's covering radius resolves it,
-    refinement converges within the basin, and the refined default ties or beats hull-based
+    refinement converges within the basin, and the refined search ties or beats hull-based
     reference methods on volume across a range of test shapes. A pathological cloud whose optimum
     basin is narrower than the covering radius of ``rotations`` samples can still hide its box from
     this search; raise ``rotations`` if the input is a near-symmetric polyhedron far from any

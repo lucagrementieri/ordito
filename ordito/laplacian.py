@@ -810,10 +810,11 @@ def connection_laplacian(
         length ``3 * n_faces``.
 
         There is deliberately no ``frames`` argument. The gauge is fixed by the one-ring
-        flattening — angles are measured from each vertex's first outgoing halfedge, the same
-        convention [`vertex_tangent_frames`][ordito.tangent_space.vertex_tangent_frames] uses to
-        pick ``basis_x`` — so a caller-supplied frame cannot change these angles, and solutions are
-        already consistent with the frames that convention produces.
+        flattening — angles are measured from each vertex's reference halfedge, the coordinate
+        system [`vertex_tangent_frames`][ordito.tangent_space.vertex_tangent_frames] embeds — so a
+        caller-supplied frame cannot change these angles, and solutions are already consistent
+        with the frames that convention produces. It is geometry-central's gauge, so the operator
+        equals potpourri3d's entry for entry.
     pattern
         Optional sparsity from [`mesh_operator_pattern`][ordito.laplacian.mesh_operator_pattern]
         (``operator="cotmatrix"``, the same pattern ``cotmatrix`` takes) built on these same
@@ -1548,6 +1549,89 @@ def _entry_edges(
                 f"got a range of [{lowest}, {highest}]"
             )
     return edges
+
+
+def face_weighted_laplacian(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], dtype: type[odt.Block] = wp.float32
+) -> odt.BsrMatrix[odt.Block]:
+    """
+    Row-normalized averaging operator weighting each neighbour by the faces on its edge.
+
+    The stencil a face-by-face accumulation gives -- MeshLab's coordinate Laplacian smoothing and
+    unsharp mask use it -- as opposed to [`laplacian`][ordito.laplacian.laplacian]'s plain 1-ring
+    mean. Row ``i`` weights each neighbour by the number of faces holding their edge (two on a
+    manifold interior edge) and the vertex itself once, then divides by the sum, so an interior
+    vertex of degree ``d`` keeps ``1 / (2 d + 1)`` of itself and gives ``2 / (2 d + 1)`` to each
+    neighbour. A **rim** vertex, one with an edge on a single face, averages along the rim only:
+    its rim neighbours once each and itself twice, so a boundary is smoothed along itself rather
+    than pulled inward. Its interior edges are stored as explicit zeros.
+
+    Pass it as ``laplacian_operator=`` to [`filter_laplacian`][ordito.smoothing.filter_laplacian]
+    or [`filter_sharpen`][ordito.smoothing.filter_sharpen] to smooth or sharpen as MeshLab's
+    ``apply_coord_laplacian_smoothing`` and ``apply_coord_unsharp_mask`` do.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions; only their count is read.
+    faces
+        ``(3 * n_faces,)`` triangle index buffer.
+    dtype
+        Scalar block type of the assembled matrix: ``wp.float32`` (default) or ``wp.float64``.
+
+    Returns
+    -------
+    warp.sparse.BsrMatrix
+        ``(n_vertices, n_vertices)`` square row-stochastic matrix in 1x1-block BSR form on
+        ``vertices.device``. A vertex no face references has an empty row, so the filters leave it
+        in place.
+
+    Raises
+    ------
+    RuntimeError
+        If ``vertices`` and ``faces`` are not all on one device.
+
+    See Also
+    --------
+    [`laplacian`][ordito.laplacian.laplacian]
+    [`graph_laplacian`][ordito.laplacian.graph_laplacian]
+    [`ordito.smoothing.filter_laplacian`][]
+
+    Examples
+    --------
+    Every vertex of an icosahedron has five neighbours, so it keeps an eleventh of itself; every
+    row still sums to one:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=0)
+    A = od.laplacian.face_weighted_laplacian(vertices, faces)
+    ones = wp.full(A.shape[0], 1.0, dtype=wp.float32)
+    print(np.allclose((A @ ones).numpy(), 1.0))  # True
+    first = wp.array(np.eye(A.shape[0], dtype=np.float32)[0], dtype=wp.float32)
+    print(f"{(A @ first).numpy()[0]:.4f}")  # 0.0909
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    n_vertices = vertices.size
+    device = vertices.device
+    if faces.size == 0:
+        return od.array.empty_square_bsr(n_vertices, dtype, device)
+    # The cotangent operator's pattern: an edge's run of sorted keys holds one key per face on it,
+    # which is the weight, and every referenced vertex has its diagonal slot.
+    offsets, columns, run_start, keys, count, _ = _mesh_operator_pattern(faces, n_vertices)
+    values = _launch.empty(columns.size, dtype=dtype, device=device)
+    _launch.launch(
+        kernel_laplacian.FACE_WEIGHTED_LAPLACIAN_ROWS[dtype],
+        dim=n_vertices,
+        inputs=[offsets, columns, run_start, keys, wp.int32(count), values],
+        device=device,
+    )
+    return od.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values)
 
 
 def graph_laplacian(

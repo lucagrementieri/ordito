@@ -286,7 +286,7 @@ even_points, _ = od.sample.sample_surface_blue_noise(vertices, faces, radius=0.0
 
 def normals_of(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     neighbours, _ = od.neighbors.query_nearest(points, points, k=16)
-    return od.points.estimate_normals(points, neighbours)
+    return od.points.estimate_normals(points, neighbours, orientation="centroid")
 
 poisson = od.reconstruction.screened_poisson(random_points, normals_of(random_points), depth=7)
 print(f"screened Poisson: {poisson[1].shape[0] // 3} faces")
@@ -308,9 +308,11 @@ ball pivoting, even sample of 19918: 26 holes
 
 ![From a bare scan: normals, then Poisson or ball pivoting](../assets/examples/rr7.webp)
 
-**Orienting normals on a real scan.** A plane fit fixes each normal's line, not its sign. By
-default every normal points away from the cloud's centroid, which is right for a closed,
-roughly convex object and wrong in deep concavities ([PC3](points.md#pc3) shows where).
+**Orienting normals on a real scan.** A plane fit fixes each normal's line, not its sign. The
+default sign only agrees between neighbours, so a reconstruction asks for
+`orientation="centroid"`: every normal points away from the cloud's centroid, which is right
+for a closed, roughly convex object and wrong in deep concavities ([PC3](points.md#pc3) shows
+where).
 `camera_location=wp.vec3(...)` points every normal toward the scanner, the right choice for a
 single-view scan; `orient_reference=wp.vec3(...)` points them along one direction (`+z` for
 terrain). `k=16` neighbours is a common default: raise it for noisy data, lower it where the

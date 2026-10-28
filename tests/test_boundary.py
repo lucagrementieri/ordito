@@ -16,6 +16,7 @@ from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
 import ordito as od
+import ordito.typing as odt
 from tests.comparisons import (
     assert_same_loop_set,
     boundary_loop_sizes,
@@ -43,7 +44,7 @@ def test_boundary_edges_match_trimesh_pyvista_and_igl(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class A against trimesh, Class B (reordered) against pyvista and igl.
+    Class A against trimesh and igl (``od.equality.rows_equal``), Class B against pyvista.
 
     - **trimesh**: its multiplicity-1 rows, read from ``edges_sorted`` for the undirected form and
       from ``edges`` for the directed one, are compared with ordito's rows *as returned*. Both sides
@@ -63,14 +64,14 @@ def test_boundary_edges_match_trimesh_pyvista_and_igl(
     - **igl**: ``igl.boundary_facets`` returns the same edge list plus the incident face of each
       edge and that edge's corner index -- strictly more than ordito's two columns, and the
       benchmark reads its row that way. Only the first return is compared. igl's edges come out
-      **oriented** (they carry the incident face's winding), so they are sorted within each row
-      for the undirected set and compared unsorted against
-      [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges], which agrees with igl's
-      orientation vertex for vertex.
+      **oriented** (they carry the incident face's winding) and in its own row order, so they are
+      compared with [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges] up to
+      row order (``od.equality.rows_equal``): each row's direction must agree with igl's. The
+      undirected form is that table with each row sorted, so it adds nothing to compare.
 
-    pyvista and igl order rows by their own constructions, so only their rows are moved, into
-    ordito's ``(max, min)`` key order (``_in_edge_key_order``, which keeps each row's direction),
-    and ordito's side is compared as returned.
+    pyvista orders rows by its own construction and its lines carry no direction, so its rows are
+    sorted within each row and moved into ordito's ``(max, min)`` key order
+    (``_in_edge_key_order``), and ordito's side is compared as returned.
 
     Both fixtures are open, so the references are non-empty by construction -- asserted anyway,
     since running this on a closed mesh would compare two empty sets and pass.
@@ -90,13 +91,19 @@ def test_boundary_edges_match_trimesh_pyvista_and_igl(
     assert len(edges_pv) > 0
 
     boundary_edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).numpy()
-    oriented_wp = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices).numpy()
+    oriented_edges_wp = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
+    oriented_wp = oriented_edges_wp.numpy()
 
     assert np.array_equal(boundary_edges_wp, boundary_edges_tm)
     assert np.array_equal(oriented_wp, oriented_edges_tm)
     assert np.array_equal(boundary_edges_wp, _in_edge_key_order(np.sort(edges_pv, axis=1)))
-    assert np.array_equal(boundary_edges_wp, _in_edge_key_order(np.sort(edges_igl, axis=1)))
-    assert np.array_equal(oriented_wp, _in_edge_key_order(np.asarray(edges_igl)))
+
+    def rows_wp(rows_np: np.ndarray) -> odt.Array2dInt32:
+        return odt.as_array2d(
+            wp.array(np.ascontiguousarray(rows_np, dtype=np.int32), device=mesh_wp.device), wp.int32
+        )
+
+    assert od.equality.rows_equal(oriented_edges_wp, rows_wp(np.asarray(edges_igl)))
 
 
 @pytest.mark.parametrize("mesh_name", [*BOUNDARY_MESHES, "mobius"])

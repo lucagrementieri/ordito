@@ -30,7 +30,6 @@ import ordito.typing as odt
 from tests.comparisons import (
     assert_nearest_bijection,
     assert_unordered_rows_equal,
-    canonical_winding,
     euler_characteristic,
     hausdorff_two_sided,
     open_edge_count,
@@ -87,9 +86,9 @@ def test_marching_cubes_matches_igl_and_pyvista(device: str) -> None:
     five hundred times the 1e-04 tolerance below.
 
     **Bug class excluded:** a case table that emits the right count of the wrong triangles, or
-    winds them the wrong way. Vertex *sets* are matched by nearest neighbour with a bijection check
-    rather than by index, since nothing pins the three libraries to one emission order, and the
-    face sets are then compared through that match with each triangle's winding kept: igl's are
+    winds them the wrong way. The meshes are compared up to vertex numbering, face order and each
+    face's starting corner ([`meshes_allclose`][ordito.equality.meshes_allclose]), since nothing
+    pins the three libraries to one emission order, with each triangle's winding kept: igl's are
     ordito's exactly, VTK's are ordito's with every triangle reversed (its contour filter's own
     winding, the one transform here), measured on both devices.
     """
@@ -139,10 +138,12 @@ def test_marching_cubes_matches_igl_and_pyvista(device: str) -> None:
     ):
         assert reference_np.shape[0] == len(vertices_np)
         assert reference_faces_np.shape[0] == faces_np.shape[0]
-        # The same triangles with the same winding, once the vertices are matched.
-        matched_np = assert_nearest_bijection(reference_np, vertices_np, 1e-5)
-        assert_unordered_rows_equal(
-            canonical_winding(faces_np), canonical_winding(matched_np[reference_faces_np])
+        # The same triangles with the same winding, up to vertex numbering and face order.
+        reference_vertices_wp, reference_faces_wp = numpy_to_warp(
+            reference_np, reference_faces_np, device
+        )
+        assert od.equality.meshes_allclose(
+            vertices_wp, faces_wp, reference_vertices_wp, reference_faces_wp, rtol=0.0, atol=1e-5
         )
         # A half-voxel origin error moves this by 0.065; the tolerance is 1e-04.
         assert np.isclose(
@@ -160,25 +161,27 @@ def test_marching_cubes_matches_igl_and_pyvista(device: str) -> None:
 @pytest.mark.parity("marching_cubes", "meshlib")
 def test_marching_cubes_matches_meshlib(device: str) -> None:
     """
-    Class B, and the transform is half a voxel: ``params.origin`` addresses the voxel **centre**.
+    Class A (``od.equality.meshes_allclose``), once ``params.origin`` is shifted half a voxel.
 
     MeshLib's ``marchingCubes`` marches the same lattice with the same case table, so given the
     identical field the two return the *same mesh* -- 3 744 vertices and 7 484 faces on both sides
     here, agreeing to a two-sided Hausdorff of **1.2e-07**, which is the float32 floor
-    ``getNumpyVerts`` bottoms out at. The transform is the whole content of
-    the comparison and it is load-bearing: where ordito's ``bounds`` lower corner is the position
-    of sample ``[0, 0, 0]``, ``params.origin`` is that sample's *cell* corner, so passing the same
-    number to both leaves the surfaces a rigid half-voxel apart -- measured at 0.0369, exactly the
-    half diagonal ``sqrt(3) * spacing / 2``, and 3e5 times the agreement the shift buys.
+    ``getNumpyVerts`` bottoms out at. ``params.origin`` addresses the voxel **centre**, and that
+    input convention is the whole content of the comparison and load-bearing: where ordito's
+    ``bounds`` lower corner is the position of sample ``[0, 0, 0]``, ``params.origin`` is that
+    sample's *cell* corner, so passing the same number to both leaves the surfaces a rigid
+    half-voxel apart -- measured at 0.0369, exactly the half diagonal ``sqrt(3) * spacing / 2``, and
+    3e5 times the agreement the shift buys.
+
 
     ``lessInside=True`` is the other convention, and it is the winding rather than the geometry:
     with it the extracted volume is ``+0.902`` against ordito's ``+0.902`` (8e-08 relative), and
     with ``lessInside=False`` it is exactly the negation. True is the value that matches ordito's
     outside-positive field convention.
 
-    The comparison is the triangulation, not the point set: the vertices are matched one to one
-    (a nearest-neighbour bijection at 1.2e-07) and through that match the two face sets are equal
-    row for row with each triangle's winding kept. Beside it, both meshes are closed (no boundary
+    The comparison is the triangulation, not the point set: the two meshes are equal up to vertex
+    numbering, face order and each face's starting corner, with every vertex matched one to one
+    (at 1.2e-07) and each triangle's winding kept. Beside it, both meshes are closed (no boundary
     edge) with Euler characteristic 2.
     """
     resolution, radius = 48, 0.6
@@ -208,9 +211,9 @@ def test_marching_cubes_matches_meshlib(device: str) -> None:
     assert vertices_ml_np.shape[0] == len(vertices_np)
     assert faces_ml_np.shape[0] == faces_od_np.shape[0]
     # The same triangles with the same winding, through a vertex bijection at the float32 floor.
-    matched_np = assert_nearest_bijection(vertices_ml_np, vertices_np, 1e-5)
-    assert_unordered_rows_equal(
-        canonical_winding(faces_od_np), canonical_winding(matched_np[faces_ml_np])
+    vertices_ml_wp, faces_ml_wp = numpy_to_warp(vertices_ml_np, faces_ml_np, device)
+    assert od.equality.meshes_allclose(
+        vertices_wp, faces_wp, vertices_ml_wp, faces_ml_wp, rtol=0.0, atol=1e-5
     )
 
     # The transform is the claim, so show the un-shifted call fails by the half diagonal.
@@ -741,8 +744,9 @@ def test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice(
     ``grid_points``, sign it with ``signed_distance_on_mesh``, march it), bit for bit, and the
     sparse path -- forced by lowering its node gate and closing the winding lattice's -- against the
     dense one, on a lattice whose spacing differs
-    per axis, the shape ``reconstruction.resample_uniform`` builds. Vertices are matched by nearest
-    neighbour with a bijection check and faces compared with their winding.
+    per axis, the shape ``reconstruction.resample_uniform`` builds. The two meshes are compared up
+    to vertex numbering, face order and starting corner
+    ([`meshes_allclose`][ordito.equality.meshes_allclose]), with their winding.
     """
     _mesh_tm, mesh_wp = sphere_irregular
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
@@ -769,14 +773,8 @@ def test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice(
     )
     assert dense_vertices_wp.size > 100, "the level set has a surface to compare"
     assert sparse_vertices_wp.size == dense_vertices_wp.size
-    gap_np, to_dense_np = map(
-        np.asarray, cKDTree(dense_vertices_wp.numpy()).query(sparse_vertices_wp.numpy())
-    )
-    assert gap_np.max() < 1e-5
-    assert np.unique(to_dense_np).shape[0] == to_dense_np.shape[0]
-    assert_unordered_rows_equal(
-        canonical_winding(to_dense_np[sparse_faces_wp.numpy().reshape(-1, 3)]),
-        canonical_winding(dense_faces_wp.numpy().reshape(-1, 3)),
+    assert od.equality.meshes_allclose(
+        sparse_vertices_wp, sparse_faces_wp, dense_vertices_wp, dense_faces_wp, rtol=0.0, atol=1e-5
     )
 
 
@@ -806,8 +804,8 @@ def test_signed_distance_level_set_sparse_extraction_matches_the_dense_lattice(
     so a margin keeps the dense path), by lowering the node gate
     to zero (every fixture here is far below the shipped one) and closing the winding lattice's,
     which would otherwise take every winding-signed lattice this size. On a closed, consistently
-    wound input the two must agree vertex for vertex up to the order of the buffers -- matched by
-    nearest neighbour with a bijection check -- and face for face with the same winding. On an open
+    wound input the two must agree vertex for vertex and face for face with the same winding, up
+    to the order of the buffers ([`meshes_allclose`][ordito.equality.meshes_allclose]). On an open
     or non-orientable input the gate must keep the dense lattice, whose winding-signed field jumps
     away from the surface: the sparse extraction measured a fifth of a hemisphere's offset faces
     missing there.
@@ -851,14 +849,13 @@ def test_signed_distance_level_set_sparse_extraction_matches_the_dense_lattice(
 
     assert dense_vertices_wp.size > 100, "the offset has a surface to compare"
     assert sparse_vertices_wp.size == dense_vertices_wp.size
-    gap_np, to_dense_np = map(
-        np.asarray, cKDTree(dense_vertices_wp.numpy()).query(sparse_vertices_wp.numpy())
-    )
-    assert gap_np.max() < 1e-5 * float(mesh_tm.scale)
-    assert np.unique(to_dense_np).shape[0] == to_dense_np.shape[0]
-    assert_unordered_rows_equal(
-        canonical_winding(to_dense_np[sparse_faces_wp.numpy().reshape(-1, 3)]),
-        canonical_winding(dense_faces_wp.numpy().reshape(-1, 3)),
+    assert od.equality.meshes_allclose(
+        sparse_vertices_wp,
+        sparse_faces_wp,
+        dense_vertices_wp,
+        dense_faces_wp,
+        rtol=0.0,
+        atol=1e-5 * float(mesh_tm.scale),
     )
 
 
@@ -1235,20 +1232,25 @@ def test_thicken_mesh_displaces_along_the_angle_weighted_normals(
 @pytest.mark.parity("thicken_mesh", "meshlib")
 def test_thicken_mesh_matches_meshlib(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B: the same shell as ``makeThickMesh``, under a nearest-neighbour vertex bijection.
+    Class A: the same shell as ``makeThickMesh``, row for row when closed, up to numbering open.
 
     MeshLib's thickening is the same construction rather than a different one -- extrude along the
     vertex normals, reverse a copy, band every rim -- and the outputs agree to a degree worth
-    stating: identical counts, a **bijective** nearest-neighbour vertex match, and *identical face
-    sets* once the windings are canonicalized and MeshLib's vertex ids are mapped through that
-    bijection. Run on one long rim (``saddle_graded``), several unequal ones
-    (``torus_irregular_holes``) and none (``sphere_irregular``, two nested closed layers), since
-    the rim band is where the two constructions could part.
+    stating: identical counts, and the same mesh up to vertex numbering, face order and each face's
+    starting corner, winding kept ([`meshes_allclose`][ordito.equality.meshes_allclose]). Run on
+    one long rim (``saddle_graded``), several unequal ones (``torus_irregular_holes``) and none
+    (``sphere_irregular``, two nested closed layers), since the rim band is where the two
+    constructions could part.
 
-    The transform is the bijection, which is what makes this Class B rather than A: neither library
-    promises a vertex order. Measured worst residual over the three, both devices: **2.6e-06**
-    (5e-05 of the thickness, float32 normal normalization), held to 1e-05; shell volumes equal to
-    **1.3e-05** relative (the CPU closed shell; 3e-08 to 5e-06 elsewhere), held to 5e-05.
+
+    On a closed surface the two shells are the same buffers: both lay the outer copy over the input
+    vertices and the inner copy after them, and both reverse an inner face by swapping its corners
+    0 and 1, so vertices and faces compare row for row (Class A). An open surface's band is where
+    they part: MeshLib numbers the inner layer through its half-edge construction of the stitched
+    rims, so there the shells are compared up to that numbering. Measured worst residual over the
+    three, both devices: **2.6e-06** (5e-05 of the thickness, float32 normal normalization), held
+    to 1e-05; shell volumes equal to **1.3e-05** relative (the CPU closed shell; 3e-08 to 5e-06
+    elsewhere), held to 5e-05.
 
     ``ThickenParams`` splits the displacement into ``insideOffset`` and ``outsideOffset``, so the
     single-sided default here is ``(thickness, 0)`` -- passed explicitly, since it is the parameter
@@ -1280,16 +1282,22 @@ def test_thicken_mesh_matches_meshlib(request: pytest.FixtureRequest, mesh_name:
         atol=1e-6,
     )
 
-    # The bijection, then the face sets through it.
     shell_np = shell_vertices_wp.numpy().astype(np.float64)
-    distance_np, match_np = map(np.asarray, cKDTree(np.asarray(shell_ml.vertices)).query(shell_np))
-    assert distance_np.max() < 1e-5
-    assert len(set(match_np.tolist())) == match_np.size
-    inverse_np = np.empty(shell_ml.vertices.shape[0], dtype=np.int64)
-    inverse_np[match_np] = np.arange(len(shell_np))
-    assert_unordered_rows_equal(
-        canonical_winding(shell_faces_wp.numpy().reshape(-1, 3)),
-        canonical_winding(inverse_np[np.asarray(shell_ml.faces)]),
+    if mesh_name in CLOSED_MESHES:
+        assert np.allclose(shell_np, shell_ml.vertices, rtol=1e-5, atol=1e-5)
+        assert np.array_equal(shell_faces_wp.numpy().reshape(-1, 3), shell_ml.faces)
+        return
+
+    shell_ml_vertices_wp, shell_ml_faces_wp = numpy_to_warp(
+        np.asarray(shell_ml.vertices), np.asarray(shell_ml.faces), mesh_wp.device
+    )
+    assert od.equality.meshes_allclose(
+        shell_vertices_wp,
+        shell_faces_wp,
+        shell_ml_vertices_wp,
+        shell_ml_faces_wp,
+        rtol=0.0,
+        atol=1e-5,
     )
 
 

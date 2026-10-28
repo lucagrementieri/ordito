@@ -6,7 +6,7 @@ import logging
 import math
 import weakref
 from collections.abc import Callable
-from typing import Generic, NoReturn, TypeVar, cast, overload
+from typing import Generic, Literal, NoReturn, TypeVar, cast, overload
 
 import warp as wp
 
@@ -140,8 +140,8 @@ _AFFINE_CARRY: frozenset[str] = _TOPOLOGY_KEYS | frozenset(
 # which is why the heaviest object here, the assembled `cotmatrix`, survives a scale.
 #
 # `vertex_tangent_frames` is here rather than one rung up because the gauge is a set of *unit*
-# tangent directions: the reference halfedge scales, the projection into the tangent plane scales
-# with it, and the normalization divides the scale back out, so a similarity leaves the frame where
+# tangent directions: the fan's edges scale, the fit in the tangent plane scales with them, and the
+# normalization divides the scale back out, so a similarity leaves the frame where
 # an isometry does. It is the one entry in this set that `transform` **rotates** rather than
 # carrying verbatim (see the header's note and `_carry_directions`), and membership here is
 # load-bearing twice over: it is also what subjects the frame to the `_ORIENTATION_DEPENDENT_KEYS`
@@ -1958,13 +1958,17 @@ class Trimesh:
         return bundle
 
     def heat_solver(
-        self, t: float | None = None, *, use_robust: bool = False
+        self,
+        t: float | None = None,
+        *,
+        use_robust: bool = False,
+        method: Literal["geometry_central", "meshlab", "igl"] = "geometry_central",
     ) -> od.heat.HeatSolver:
         """
         Return this mesh's [`HeatSolver`][ordito.heat.HeatSolver] at diffusion time ``t``.
 
-        Kept on the mesh, one per ``(t, use_robust)``: the operators the heat solvers assemble and
-        the factorizations they build live there, so the functions of
+        Kept on the mesh, one per ``(t, use_robust, method)``: the operators the heat solvers
+        assemble and the factorizations they build live there, so the functions of
         [`ordito.heat`][ordito.heat] given this mesh reuse them on every later call. At the
         defaults its operators are `heat_operators` and `vector_heat_operators`.
 
@@ -1975,11 +1979,21 @@ class Trimesh:
         use_robust
             Build the scalar operators from mollified edge lengths (see
             [`heat_operators`][ordito.heat.heat_operators]).
+        method
+            Whose discretization the operators follow (see
+            [`heat_operators`][ordito.heat.heat_operators]): ``"geometry_central"`` (default, the
+            vector heat method's), or ``"meshlab"`` / ``"igl"``, what
+            [`heat_geodesic`][ordito.heat.heat_geodesic] runs on at its own ``method``.
 
         Returns
         -------
         HeatSolver
             The kept solver; the same object on every call with the same arguments.
+
+        Raises
+        ------
+        ValueError
+            If ``method`` is not ``"geometry_central"``, ``"meshlab"`` or ``"igl"``.
 
         Notes
         -----
@@ -2003,20 +2017,22 @@ class Trimesh:
         import ordito as od
 
         mesh = od.Trimesh(*od.creation.icosphere(subdivisions=3))
-        solver = mesh.heat_solver()
-        print(mesh.heat_solver() is solver)  # True
+        solver = mesh.heat_solver(method="meshlab")
+        print(mesh.heat_solver(method="meshlab") is solver)  # True
         distances = od.heat.heat_geodesic(mesh, wp.array([0], dtype=wp.int32))
         print(f"{distances.numpy().max():.1f}")  # 3.1
         ```
         """
         solvers = cast(
-            "dict[tuple[float | None, bool], od.heat.HeatSolver]",
+            "dict[tuple[float | None, bool, str], od.heat.HeatSolver]",
             self._cache.setdefault("_heat_solvers", {}),
         )
-        key = (None if t is None else float(t), bool(use_robust))
+        key = (None if t is None else float(t), bool(use_robust), method)
         solver = solvers.get(key)
         if solver is None:
-            solver = solvers[key] = od.heat.HeatSolver(self, t, use_robust=use_robust)
+            solver = solvers[key] = od.heat.HeatSolver(
+                self, t, use_robust=use_robust, method=method
+            )
         return solver
 
     def fixed_vertex_solver(self) -> od.parametrization.FixedVertexSolver:
@@ -2772,7 +2788,7 @@ class Trimesh:
         ```
         """
         solvers = cast(
-            "dict[tuple[float | None, bool], od.heat.HeatSolver]",
+            "dict[tuple[float | None, bool, str], od.heat.HeatSolver]",
             self._cache.pop("_heat_solvers", {}),
         )
         for solver in solvers.values():

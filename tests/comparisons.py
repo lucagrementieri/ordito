@@ -8,7 +8,9 @@ should have one home rather than being re-derived per module.
 
 The classes of comparison, and the bar each has to clear (see below):
 
-- **A** direct ``np.allclose`` / ``np.array_equal``. No helper needed.
+- **A** direct ``np.allclose`` / ``np.array_equal``. No helper needed. A mesh or face set equal
+  up to numbering, face order and face rotation is class A through ``ordito.equality``
+  (``meshes_allclose``, ``faces_equal``), not through the class-B helpers here.
 - **B** equal after a named transform, at full ``1e-5`` tolerance. Most helpers here are class B:
   the transform is exact, so loosening the tolerance to accommodate it means the transform was
   wrong.
@@ -667,12 +669,15 @@ def sparse_allclose(
     The elementwise rule ``|a - e| <= atol + rtol * |e|`` holds trivially wherever both matrices
     store nothing, so it is checked over the union of their patterns only. Densifying a
     ``(2 n, 2 n)`` operator on the 68 x 68 ``saddle_graded`` (``n = 4 624``) was most of those
-    tests' cost. Shapes must match and a ``NaN`` anywhere fails, as in ``np.allclose``.
+    tests' cost. Shapes must match and a ``NaN`` anywhere fails, as in ``np.allclose``. Complex
+    matrices compare by the modulus of the difference, as ``np.allclose`` does; a cast to
+    ``float64`` would drop the imaginary part silently.
     """
     if actual.shape != expected.shape:
         return False
-    actual_csr = actual.tocsr().astype(np.float64)
-    expected_csr = expected.tocsr().astype(np.float64)
+    dtype = np.result_type(actual.dtype, expected.dtype, np.float64)
+    actual_csr = actual.tocsr().astype(dtype)
+    expected_csr = expected.tocsr().astype(dtype)
     if np.isnan(actual_csr.data).any() or np.isnan(expected_csr.data).any():
         return False
     excess = abs(actual_csr - expected_csr) - rtol * abs(expected_csr)
@@ -715,3 +720,48 @@ def csr_row_sets(csr: tuple[wp.array[wp.int32], wp.array[wp.int32]]) -> list[fro
     values, offsets = csr
     flat, bounds = values.numpy(), offsets.numpy()
     return [frozenset(flat[bounds[i] : bounds[i + 1]].tolist()) for i in range(len(bounds) - 1)]
+
+
+def meshlab_umbrella(
+    faces_np: np.ndarray, n_vertices: int, *, taubin: bool = False
+) -> sp.csr_matrix:
+    """
+    Assemble one of MeshLab's two coordinate umbrellas as a row-stochastic SciPy operator.
+
+    Both stencils were solved for rather than read off documentation: one pass of each filter is a
+    linear map, so a least-squares fit of a vertex's weights over random position sets on one
+    connectivity determines them exactly (residual 1e-15; see the comment above
+    ``tests/test_smoothing.py::test_filter_taubin_matches_pymeshlab``).
+
+    * ``taubin=False``, ``apply_coord_laplacian_smoothing`` and ``apply_coord_unsharp_mask``: an
+      interior vertex weights each neighbour by the number of faces their edge shares (2) and
+      itself by 1; a **rim** vertex sees only its two rim neighbours, at 1 each, and itself at 2.
+      ordito builds it as [`face_weighted_laplacian`][ordito.laplacian.face_weighted_laplacian],
+      which this is the oracle for.
+    * ``taubin=True``, ``apply_coord_taubin_smoothing``: an interior vertex takes the plain 1-ring
+      mean (ordito's default operator); a rim vertex the mean of itself and its rim neighbours.
+    """
+    directed_np = faces_np[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2)
+    edges_np, shared_np = np.unique(np.sort(directed_np, axis=1), axis=0, return_counts=True)
+    rim_np = shared_np == 1
+    on_rim_np = np.zeros(n_vertices, dtype=bool)
+    on_rim_np[edges_np[rim_np].ravel()] = True
+
+    rows_np = np.concatenate((edges_np[:, 0], edges_np[:, 1]))
+    columns_np = np.concatenate((edges_np[:, 1], edges_np[:, 0]))
+    weights_np = np.tile(np.ones(shared_np.shape[0]) if taubin else shared_np, 2)
+    keep_np = ~on_rim_np[rows_np] | np.tile(rim_np, 2)  # a rim vertex sees its rim edges only
+    self_np = np.where(on_rim_np, 1.0 if taubin else 2.0, 0.0 if taubin else 1.0)
+    vertex_ids_np = np.arange(n_vertices)
+    weighted_sp = sp.csr_matrix(
+        (
+            np.concatenate((weights_np[keep_np], self_np)).astype(np.float64),
+            (
+                np.concatenate((rows_np[keep_np], vertex_ids_np)),
+                np.concatenate((columns_np[keep_np], vertex_ids_np)),
+            ),
+        ),
+        shape=(n_vertices, n_vertices),
+    )
+    weighted_sp.eliminate_zeros()
+    return sp.csr_matrix(sp.diags(1.0 / np.asarray(weighted_sp.sum(axis=1)).ravel()) @ weighted_sp)

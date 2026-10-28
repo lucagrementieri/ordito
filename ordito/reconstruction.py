@@ -367,7 +367,7 @@ def triangulate_point_cloud(
 
     oriented = normals is not None
     if normals is None:
-        normals = od.points.estimate_normals(points, neighbor_idx)
+        normals = od.points.estimate_normals(points, neighbor_idx, orientation="centroid")
 
     # Per-point local fan triangulation: point ``v``'s fan fills ``out_tris[v, :count]``. The fans,
     # their counts and the grown points' flags in one allocation.
@@ -3572,7 +3572,7 @@ def ball_pivoting(
         mean_spacing = _mean_positive_finite(neighbor_dist.flatten())
         radius = 1.5 * (mean_spacing if mean_spacing is not None else 1.0)
     if normals is None:
-        normals = od.points.estimate_normals(points, neighbor_idx)
+        normals = od.points.estimate_normals(points, neighbor_idx, orientation="centroid")
 
     # Cell width equal to the ball radius, not to the ``2 * radius`` neighbourhood the pivot
     # searches: the inner empty-ball test is by far the most frequent query, and a cell twice its

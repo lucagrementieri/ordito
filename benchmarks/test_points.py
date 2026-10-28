@@ -631,18 +631,16 @@ def test_estimate_normals_knn(bench_case: BenchCase) -> None:
 
     **pytorch3d**'s ``estimate_pointcloud_normals`` is the same search-plus-PCA in one call and the
     only other row with GPU kernels, but its neighbour search is the brute-force pairwise loop, so
-    at this cloud size it prices the search rather than the eigen-solve.
-    ``disambiguate_directions=False`` leaves out the SHOT sign rule ordito has no counterpart for,
-    which is also what the parity test compares at.
+    at this cloud size it prices the search rather than the eigen-solve. It runs at its default
+    ``disambiguate_directions=True``, the SHOT sign rule ordito's default orientation is, so the
+    two rows compute the same normals (the parity test compares them sign included).
     """
     if bench_case.mesh_name == "sphere_large":
         pytest.skip("open3d searches one point at a time; capped at sphere_med")
     if bench_case.kind == "pytorch3d":
         points_p3d = points_torch_from_numpy(bench_case.vertices_np, bench_case.torch_device)
         normals_p3d = bench_case.run(
-            lambda: p3d_ops.estimate_pointcloud_normals(
-                points_p3d, neighborhood_size=_KNN, disambiguate_directions=False
-            )
+            lambda: p3d_ops.estimate_pointcloud_normals(points_p3d, neighborhood_size=_KNN)
         )
         assert normals_p3d.shape == (1, bench_case.n_vertices, 3)
         return

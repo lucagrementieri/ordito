@@ -186,24 +186,24 @@ def test_edges_to_neighbor_lists_from_counts_without_edges(device: str) -> None:
 @pytest.mark.parity("connected_component_labels_from_edges", "igl", "scipy")
 def test_connected_component_labels_matches_igl(device: str, node_count: int, n_edges: int) -> None:
     """
-    Class B (label packing): the partition against ``igl.connected_components`` and scipy's.
+    Class A (``od.equality.partitions_equal``): igl's and scipy's connected-component partition.
 
     The reference worth having here because it takes the *same argument* ordito does -- a
     ``scipy.sparse`` adjacency matrix -- rather than a mesh, which is why
     ``benchmarks/test_graph.py`` used to say no second implementation existed for these two groups.
     It returns ``(n_components, labels, sizes)``, three values, and numbers components ``0..k-1`` in
-    its own traversal order where ordito names each after a representative node, so
-    [`same_partition`][tests.comparisons.same_partition] is the transform exactly as it is for the
-    ``scipy.sparse.csgraph.connected_components`` comparison. igl's traversal starts each component
-    at its smallest unvisited node, so its label also equals the rank of ordito's (the smallest
-    node id) among the distinct labels, which is asserted too.
+    its own traversal order where ordito names each after a representative node, so the two are
+    compared as partitions, up to the names of their labels, exactly as the
+    ``scipy.sparse.csgraph.connected_components`` comparison is. igl's traversal starts each
+    component at its smallest unvisited node, so its label also equals the rank of ordito's (the
+    smallest node id) among the distinct labels, which is asserted too.
 
     Two shapes, and each carries a different half of the claim. The 64-node random graph is what
     exercises the *label packing*, so its edge count is chosen to fragment it: measured on this
     seed, 24 edges give **40** components, **12** of them non-trivial, the largest holding 6 nodes,
     where 200 random edges over 64 nodes give **1** component holding all 64 -- well past the
     giant-component threshold -- and with one component the numbering conventions coincide and the
-    transform under test is the identity. The 2 048-node **path** is deliberately a single
+    comparison could not tell partitions apart. The 2 048-node **path** is deliberately a single
     component: its diameter equals its node count, the most propagation rounds any graph needs,
     which is what the ``*_depth`` group exists to gate; an implementation that stopped propagating
     early would pass the first shape and fail this one, which a random graph of diameter ~4 cannot
@@ -235,12 +235,12 @@ def test_connected_component_labels_matches_igl(device: str, node_count: int, n_
     assert int(np.asarray(sizes_igl).sum()) == node_count  # every node landed in a component
     # Non-vacuous on the random shape: the path is one component by design, see the docstring.
     assert int(n_components_igl) > 1 or n_edges == node_count - 1
-    assert same_partition(labels_wp.numpy(), np.asarray(labels_igl).ravel())
+    assert _partitions_equal(labels_wp, np.asarray(labels_igl).ravel())
     # igl's dense label is the rank of ordito's (each component's smallest node id).
     assert np.array_equal(
         np.unique(labels_wp.numpy(), return_inverse=True)[1], np.ravel(labels_igl)
     )
-    assert same_partition(labels_wp.numpy(), _scipy_component_labels(edges_np, node_count))
+    assert _partitions_equal(labels_wp, _scipy_component_labels(edges_np, node_count))
 
 
 @pytest.mark.parametrize("shape", ["random", "path", "star", "loops_and_duplicates"])
@@ -430,7 +430,7 @@ def test_connected_component_labels_empty_edges(device: str, node_count: int) ->
 
 def test_connected_component_labels_infers_the_node_count(device: str) -> None:
     """
-    Class B (same partition): with ``node_count`` omitted, the labels cover the largest endpoint.
+    Class A (``od.equality.partitions_equal``): with ``node_count`` omitted, labels span the max.
 
     scipy is handed the same bound (largest index plus one), so a node count inferred too small or
     too large changes the label array's length; the edges leave several components and node 3 is
@@ -441,7 +441,7 @@ def test_connected_component_labels_infers_the_node_count(device: str) -> None:
     labels_exp = _scipy_component_labels(edges_np, 8)
     assert np.unique(labels_exp).shape[0] > 1
     assert labels_wp.shape == (8,)
-    assert same_partition(labels_wp.numpy(), labels_exp)
+    assert _partitions_equal(labels_wp, labels_exp)
     with pytest.raises(ValueError, match="node_count must be non-negative, got -1"):
         od.graph.connected_component_labels_from_edges(_edges_wp(edges_np, device), node_count=-1)
 
@@ -476,7 +476,7 @@ def test_connected_component_labels_rejects_a_malformed_adjacency(device: str) -
 @pytest.mark.parametrize("stale_nnz", [0, 1000], ids=["undercounted", "overcounted"])
 def test_connected_component_labels_ignores_a_stale_nnz(device: str, stale_nnz: int) -> None:
     """
-    Class B against scipy (same partition): the labels follow the CSR rows, whatever ``nnz`` says.
+    Class A (``od.equality.partitions_equal``): the labels follow the CSR rows, whatever ``nnz``.
 
     ``BsrMatrix.nnz`` is a cached capacity that only ``nnz_sync()`` repairs, so it can read ``0``
     on a matrix with entries or exceed the entry count of an empty one. Both are set by hand here;
@@ -488,7 +488,7 @@ def test_connected_component_labels_ignores_a_stale_nnz(device: str, stale_nnz: 
         adjacency = od.graph.edges_to_csr(6, _edges_wp(edges, device))
         adjacency.nnz = stale_nnz
         labels_wp = od.graph.connected_component_labels(adjacency)
-        assert same_partition(labels_wp.numpy(), _scipy_component_labels(edges, 6))
+        assert _partitions_equal(labels_wp, _scipy_component_labels(edges, 6))
 
 
 def test_connected_component_parity_random(device: str) -> None:
@@ -620,10 +620,10 @@ def test_connected_component_parity_validates_signs(device: str) -> None:
 
 def test_face_connected_component_labels(request: pytest.FixtureRequest) -> None:
     """
-    Class B: the face-side partition against scipy over ``trimesh.face_adjacency``.
+    Class A (``od.equality.partitions_equal``): the face partition, scipy over trimesh's adjacency.
 
-    Two named transforms, both on the reference side: build the dual graph from trimesh's face
-    adjacency, then compare partitions rather than labels. Three concatenated fixtures make the
+    The reference is built from trimesh's face adjacency as a dual graph, and the two are compared
+    as partitions, up to the names of their labels. Three concatenated fixtures make the
     expected component count three, which is asserted so the comparison cannot pass on one
     blob.
     """
@@ -643,7 +643,8 @@ def test_face_connected_component_labels(request: pytest.FixtureRequest) -> None
     face_labels_wp = od.adjacency.face_connected_component_labels(concat_faces_wp)
     n_faces = concat_tm.faces.shape[0]
     face_labels_tm = _scipy_component_labels(concat_tm.face_adjacency.astype(np.int32), n_faces)
-    assert same_partition(face_labels_wp.numpy(), face_labels_tm)
+    assert np.unique(face_labels_tm).shape[0] == 3
+    assert _partitions_equal(face_labels_wp, face_labels_tm)
 
 
 def _scipy_component_labels(edges: np.ndarray, node_count: int) -> np.ndarray:
@@ -997,3 +998,9 @@ def _edges_wp(edges_np: np.ndarray, device: wp.DeviceLike) -> odt.Array2dInt32:
         wp.array(np.ascontiguousarray(edges_np, dtype=np.int32), dtype=wp.int32, device=device),
         wp.int32,
     )
+
+
+def _partitions_equal(labels_wp: wp.array[wp.int32], labels_np: np.ndarray) -> bool:
+    """Whether ``labels_wp`` and the reference's ``labels_np`` induce the same partition."""
+    reference_wp = wp.array(labels_np.astype(np.int32), dtype=wp.int32, device=labels_wp.device)
+    return od.equality.partitions_equal(labels_wp, reference_wp)

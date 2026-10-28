@@ -537,6 +537,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``neighbors`` is sorted in place: this kernel only orders the two slots each vertex already
     # holds, so it is both the input and the result and ``out_`` would read as write-only.
     ("combine", "offset_packed_faces"): frozenset({"faces"}),
+    # The match's tickets: each ``b`` vertex counts the ``a`` vertices that took it, scratch read
+    # only through ``atomic_add``'s return; the answer is ``out_unequal``.
+    ("equality", "flag_unmatched_vertices"): frozenset({"hits"}),
     # ``holes``' two DP tables are in place, and they ride inside ``HoleFillTables`` rather than in
     # the signature because their pointers are invariant across the whole span sweep and a launch
     # argument is not free (see that struct's docstring). So the bundle itself is the written

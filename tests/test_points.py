@@ -16,6 +16,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito.config as od_config
 import ordito.creation as od_creation
+import ordito.equality as od_equality
 import ordito.grouping as od_grouping
 import ordito.neighbors as od_neighbors
 import ordito.points as od
@@ -24,6 +25,7 @@ from tests.comparisons import assert_same_up_to_sign, lexsort_rows
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_indices_to_numpy,
+    numpy_to_warp,
     points_to_meshlib,
     points_to_open3d,
     points_to_pymeshlab,
@@ -729,7 +731,7 @@ def test_radial_sort_parallel_start_raises(device: str) -> None:
 @pytest.mark.parity("estimate_normals_knn", "open3d", "pymeshlab")
 def test_estimate_normals_matches_open3d(device: str) -> None:
     """
-    Class B against both references: the same search-plus-PCA, with the normal's sign left free.
+    Class B against both references on the unoriented normal, Class A on both oriented forms.
 
     Both fix the smallest-eigenvalue covariance eigenvector and neither fixes its direction, so the
     named transform on all three sides is ``|dot| == 1``. **MeshLab** additionally needs
@@ -741,6 +743,11 @@ def test_estimate_normals_matches_open3d(device: str) -> None:
     ordito's own, as sets, at every point -- the Fibonacci sphere has no exact k-nearest ties, so
     there is nothing for the two searches to break differently -- and the normals then agree to
     ``1 - |dot|`` **7.3e-08** against both references, worst over both devices.
+
+    Once a sign is fixed the comparison is direct (Class A): ``orient_reference`` against Open3D's
+    ``orient_normals_to_align_with_direction`` and ``camera_location`` against MeshLab's
+    ``flipflag`` toward ``viewpos``, each the same rule on the same normal. The direction is
+    generic and the viewpoint inside the sphere, so no normal sits on a sign tie.
     """
     knn = 30
     points_np = _fibonacci_sphere(2000)
@@ -771,38 +778,72 @@ def test_estimate_normals_matches_open3d(device: str) -> None:
     assert_same_up_to_sign(normals_wp.numpy(), normals_o3d, atol=1e-5)
     assert_same_up_to_sign(normals_wp.numpy(), normals_pml, atol=1e-5)
 
+    direction_np = np.array([0.3, -0.5, 0.8]) / np.linalg.norm([0.3, -0.5, 0.8])
+    pcd.orient_normals_to_align_with_direction(direction_np)
+    aligned_wp = od.estimate_normals(
+        points_wp, neighbor_idx_wp, orient_reference=wp.vec3(*direction_np.tolist())
+    )
+    assert np.allclose(aligned_wp.numpy(), np.asarray(pcd.normals), rtol=1e-5, atol=1e-5)
+
+    viewpoint_np = np.array([0.2, -0.1, 0.05])
+    viewed_pml = points_to_pymeshlab(points_np)
+    viewed_pml.compute_normal_for_point_clouds(
+        k=knn, smoothiter=0, flipflag=True, viewpos=viewpoint_np
+    )
+    toward_wp = od.estimate_normals(
+        points_wp, neighbor_idx_wp, camera_location=wp.vec3(*viewpoint_np.tolist())
+    )
+    assert np.allclose(
+        toward_wp.numpy(),
+        np.asarray(viewed_pml.current_mesh().vertex_normal_matrix()),
+        rtol=1e-5,
+        atol=1e-5,
+    )
+
 
 @pytest.mark.parity("estimate_normals_knn", "pytorch3d")
 def test_estimate_normals_matches_pytorch3d(device: str) -> None:
     """
-    Class B: the smallest-eigenvector normal, up to sign (``|dot| == 1``).
+    Class A: the default ``estimate_normals`` is pytorch3d's, sign included.
 
-    ``disambiguate_directions=False`` is not a convenience: with it ``True`` pytorch3d applies the
-    SHOT sign rule, which ordito has no counterpart for, so the two would disagree on a
-    fixture-dependent subset of points for a reason that is not about the eigenvector. Left off,
-    both sides leave the sign free and the comparison is the *subspace* -- measured worst
-    ``1 - |dot|`` **2.4e-07** over 600 points at a 16-neighbour window (both devices), bounded at
-    ``1e-6``.
+    ``disambiguate_directions=True``, pytorch3d's default, applies the SHOT sign rule (Tombari et
+    al.): keep the smallest-eigenvector normal when at least half of the neighbourhood's offsets
+    project strictly positively onto it. The default ``orientation="neighbors"`` is that rule, so
+    the normals compare directly rather than as a subspace: measured worst component difference
+    **1.5e-6** (CUDA) and **2.9e-6** (CPU) over 600 points on the sphere and 800 on a wavy sheet
+    at a 16-neighbour window, every sign agreeing. Two clouds because the rule's answer depends on
+    the curvature's sign: on the sphere every normal points inward (asserted), on the sheet the
+    bumps alternate, so a rule fixed to one side of the cloud fails one of the two.
 
     Both sides get the identical neighbourhood: ordito's k-NN is what
     ``tests/test_neighbors.py::test_query_nearest_matches_pytorch3d`` pins against ``knn_points``,
-    so a disagreement here is in the eigen-decomposition rather than in the gather.
+    so a disagreement here is in the eigen-decomposition or the sign rule rather than in the
+    gather. **Mutation probe:** ``orientation="centroid"`` points every sphere normal the other
+    way.
     """
     rng = np.random.default_rng(13)
-    points_np = rng.normal(size=(600, 3)).astype(np.float32)
-    points_np /= np.linalg.norm(points_np, axis=1, keepdims=True)
-    normals_p3d = p3d_ops.estimate_pointcloud_normals(
-        points_to_torch(points_np, device), neighborhood_size=16, disambiguate_directions=False
-    )[0]
-    points_wp = points_to_warp(points_np, device)
-    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=16)
-    normals_wp = od.estimate_normals(points_wp, neighbor_idx_wp)
+    sphere_np = rng.normal(size=(600, 3)).astype(np.float32)
+    sphere_np /= np.linalg.norm(sphere_np, axis=1, keepdims=True)
+    sheet_np = rng.random((800, 3)).astype(np.float32)
+    sheet_np[:, 2] = 0.05 * np.sin(6.0 * sheet_np[:, 0]) * np.cos(5.0 * sheet_np[:, 1])
+    for points_np in (sphere_np, sheet_np):
+        normals_p3d = p3d_ops.estimate_pointcloud_normals(
+            points_to_torch(points_np, device), neighborhood_size=16
+        )[0]
+        points_wp = points_to_warp(points_np, device)
+        neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=16)
+        normals_wp = od.estimate_normals(points_wp, neighbor_idx_wp)
+        assert np.allclose(normals_wp.numpy(), normals_p3d.cpu().numpy(), rtol=1e-5, atol=1e-5)
+        if points_np is sphere_np:
+            assert np.all(np.einsum("ij,ij->i", normals_wp.numpy(), sphere_np) < 0.0)
 
-    assert normals_p3d.shape == (600, 3)
-    alignment_np = np.abs(
-        np.einsum("ij,ij->i", normals_wp.numpy(), normals_p3d.cpu().numpy().astype(np.float32))
-    )
-    assert float(alignment_np.min()) > 1.0 - 1e-6
+
+def test_estimate_normals_rejects_an_unknown_orientation(device: str) -> None:
+    """Not a library comparison: ``orientation`` is a menu, guarded with its options named."""
+    points_wp = points_to_warp(np.eye(3, dtype=np.float32), device)
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=3)
+    with pytest.raises(ValueError, match="orientation must be 'neighbors' or 'centroid'"):
+        od.estimate_normals(points_wp, neighbor_idx_wp, orientation="shot")  # pyright: ignore[reportArgumentType]
 
 
 @pytest.mark.parity(
@@ -872,9 +913,14 @@ def test_estimate_normals_orientation(device: str) -> None:
     points_wp = points_to_warp(points_np, device)
     neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=20, backend="bvh")
 
-    # Default: outward from the cloud centroid (the reference vector the kernel uses).
+    # Outward from the cloud centroid (the reference vector the kernel uses).
+    normals_centroid = od.estimate_normals(
+        points_wp, neighbor_idx_wp, orientation="centroid"
+    ).numpy()
+    assert np.all(np.einsum("ij,ij->i", normals_centroid, points_np - centroid_np) >= -tol)
+    # The default, the neighbours' side: inward on a convex cloud.
     normals_default = od.estimate_normals(points_wp, neighbor_idx_wp).numpy()
-    assert np.all(np.einsum("ij,ij->i", normals_default, points_np - centroid_np) >= -tol)
+    assert np.all(np.einsum("ij,ij->i", normals_default, points_np - centroid_np) <= tol)
 
     # Align with a fixed direction (Open3D orient_normals_to_align_with_direction).
     reference_np = np.array([0.0, 0.0, 1.0])
@@ -1283,14 +1329,14 @@ def test_point_duplicate_mask_distinct_points_sharing_a_slot(device: str) -> Non
 @pytest.mark.parity("farthest_point_sample", "open3d")
 def test_farthest_point_sample_matches_open3d(device: str) -> None:
     """
-    Class B (order discarded): the same *set* as ``farthest_point_down_sample``, at four counts.
+    Class A (`od.equality.points_allclose`): the same points as ``farthest_point_down_sample``.
 
     Open3D returns the selected points through ``SelectByIndex``, which emits them in ascending
-    index order, so its sequence is not recoverable -- the transform is sorting ordito's sequence,
-    which is compared as an array rather than a set so a repeated index cannot hide. Each
-    reference point maps back onto its input index exactly (``SelectByIndex`` copies), and the
-    reference's order is asserted ascending, which is what makes the sort the right transform. The
-    sequence is pinned separately below, against a transcription of its own loop.
+    index order, so its sequence is not recoverable and only the selected set is comparable: the
+    two point sets must be equal up to order, exactly (``SelectByIndex`` copies), and the match is
+    a bijection, so a repeated selection cannot hide. The reference's order is asserted ascending,
+    which is why order is all that is discarded. The sequence is pinned separately below, against a
+    transcription of its own loop.
     """
     rng = np.random.default_rng(0)
     points_np = rng.random((500, 3)).astype(np.float32).astype(np.float64)
@@ -1306,7 +1352,12 @@ def test_farthest_point_sample_matches_open3d(device: str) -> None:
         assert np.all(np.diff(index_o3d) > 0)
 
         index_wp = od.farthest_point_sample(points_wp, count).numpy()
-        assert np.array_equal(np.sort(index_wp), index_o3d)
+        assert od_equality.points_allclose(
+            points_to_warp(points_np[index_wp], device),
+            points_to_warp(selected_o3d, device),
+            rtol=0.0,
+            atol=0.0,
+        )
 
 
 @pytest.mark.parity("farthest_point_sample", "pytorch3d")
@@ -1537,39 +1588,42 @@ def test_convex_hull_of_a_large_far_cloud_matches_scipy(
 @pytest.mark.parity("convex_hull", "trimesh", "open3d", "pymeshlab")
 def test_convex_hull_matches_the_qhull_mesh_wrappers(device: str) -> None:
     """
-    Class B: the same hull vertices as trimesh's, Open3D's and MeshLab's qhull meshes.
+    Class A (`od.equality.meshes_allclose`): the hull mesh is trimesh's, Open3D's and MeshLab's.
 
-    All three return a compacted mesh, so the named transform maps each wrapper's vertex positions
-    back onto the input cloud's indices (an exact match: qhull copies the coordinates). They all run
-    qhull, so this is three wrappers' bookkeeping checked against one answer, and their face counts
-    against ordito's ``2 * n_vertices - 4``.
+    All three return the hull as a compacted mesh where ordito returns faces over the input cloud,
+    so ordito's faces are read as the mesh over the points they name. On a cloud in general position
+    the hull's triangulation is unique, and each wrapper's mesh must then be ordito's exactly, up to
+    vertex numbering, face order and face rotation: the same vertices (qhull copies the
+    coordinates), the same triangles and the same outward winding. They all run qhull, so this is
+    three wrappers' bookkeeping checked against one answer.
     """
     points_np = _hull_cloud("gaussian", 2000, seed=22).astype(np.float64)
-
-    def hull_indices(hull_vertices_np: np.ndarray) -> set[int]:
-        distance_np, index_np = scipy.spatial.cKDTree(points_np).query(hull_vertices_np)
-        assert np.max(distance_np) == 0.0
-        return set(np.asarray(index_np).tolist())
 
     mesh_tm = tm.PointCloud(points_np).convex_hull
     mesh_o3d, _kept = points_to_open3d(points_np).compute_convex_hull()
     meshset_pml = points_to_pymeshlab(points_np)
     meshset_pml.generate_convex_hull()
     hulls = {
-        "trimesh": (hull_indices(mesh_tm.vertices), len(mesh_tm.faces)),
-        "open3d": (hull_indices(np.asarray(mesh_o3d.vertices)), len(mesh_o3d.triangles)),
+        "trimesh": (mesh_tm.vertices, mesh_tm.faces),
+        "open3d": (np.asarray(mesh_o3d.vertices), np.asarray(mesh_o3d.triangles)),
         "pymeshlab": (
-            hull_indices(meshset_pml.current_mesh().vertex_matrix()),
-            meshset_pml.current_mesh().face_number(),
+            meshset_pml.current_mesh().vertex_matrix(),
+            meshset_pml.current_mesh().face_matrix(),
         ),
     }
 
-    faces_np = od.convex_hull(points_to_warp(points_np, device)).numpy()
-    vertices = set(np.unique(faces_np).tolist())
-    assert len(vertices) > 20
-    for name, (hull_vertices, n_faces) in hulls.items():
-        assert hull_vertices == vertices, name
-        assert n_faces == len(faces_np) // 3, name
+    faces_np = od.convex_hull(points_to_warp(points_np, device)).numpy().reshape(-1, 3)
+    used_np, hull_faces_np = np.unique(faces_np, return_inverse=True)
+    assert len(used_np) > 20
+    hull_vertices_wp, hull_faces_wp = numpy_to_warp(
+        points_np[used_np], hull_faces_np.reshape(-1, 3), device
+    )
+    for name, (vertices_ref, faces_ref) in hulls.items():
+        assert len(faces_ref) == 2 * len(vertices_ref) - 4, name  # non-vacuity: a closed hull
+        vertices_ref_wp, faces_ref_wp = numpy_to_warp(vertices_ref, faces_ref, device)
+        assert od_equality.meshes_allclose(
+            hull_vertices_wp, hull_faces_wp, vertices_ref_wp, faces_ref_wp, rtol=0.0, atol=0.0
+        ), name
 
 
 def _degenerate_hull_cloud(kind: str) -> np.ndarray:

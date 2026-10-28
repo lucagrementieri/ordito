@@ -1,10 +1,9 @@
 """
 Regression tests for ``ordito.tangent_space`` against potpourri3d (CPU reference).
 
-Tangent frames are only defined up to a rotation within the tangent plane — each library picks its
-own reference halfedge — so the comparisons here are the gauge-invariant ones: normals directly,
-frames through the rotation that relates them, and transport angles through the holonomy around each
-face, which is what the connection Laplacian's phases encode independently of any frame choice.
+Tangent frames are only defined up to a rotation within the tangent plane, and ordito takes
+geometry-central's (its reference halfedge and its fan-fitted ``basis_x``), so frames and transport
+angles compare directly against potpourri3d.
 """
 
 from __future__ import annotations
@@ -41,26 +40,20 @@ def test_vertex_tangent_frames_match_potpourri3d(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class B (gauge fix): geometry-central's ``basis_x`` predicted from ordito's frame per vertex.
+    Class A: ordito's frame is geometry-central's, ``basis_x``, ``basis_y`` and normal alike.
 
-    Both libraries pick ``basis_x`` by their own convention, so the frames are first checked to
-    differ by a rotation *about the shared normal* (one angle per vertex, ``basis_y`` following),
-    then that angle is predicted. geometry-central's ``basis_x`` is not an edge direction: it is
-    fitted to the whole fan, ``arg sum_k proj(e_k) exp(-i theta_k)`` with ``theta_k`` the normalized
-    corner angles measured from its reference halfedge ``vertex.halfedge()`` (a boundary vertex
-    adding its closing rim edge at half a turn), so it lies on an edge only where the fan is flat
-    -- 87 of ``sphere_irregular``'s 500 vertices and 1 044 of ``saddle_graded``'s 1 156 within
-    1e-6, which is why "the highest-index face's halfedge" once looked like a rule with a tenth of
-    exceptions. The reference halfedge itself has a rule without exceptions (measured on both
-    fixtures, every vertex): the outgoing halfedge of the vertex's highest-index face at an
-    interior vertex (the last face written wins), the outgoing boundary halfedge at a rim vertex.
-    ``_geometry_central_basis_x`` rebuilds the vector from those two rules and ordito's own
-    ``halfedge_tangent_angles``, and it matches potpourri3d's to 4.8e-7 (componentwise).
+    Both take polar angle 0 at the reference halfedge ``vertex.halfedge()`` -- the outgoing
+    halfedge of the vertex's highest-index face at an interior vertex (the last face written wins),
+    the outgoing boundary halfedge at a rim vertex -- and both fit ``basis_x`` to the whole fan,
+    ``arg sum_k proj(e_k) exp(-i theta_k)`` with ``theta_k`` the normalized corner angles from that
+    halfedge (a boundary vertex adding its closing rim edge at half a turn). So ``basis_x`` lies on
+    an edge only where the fan is flat: 87 of ``sphere_irregular``'s 500 vertices and 1 044 of
+    ``saddle_graded``'s 1 156 within 1e-6.
 
-    Normals and the rotation agree to 1.7e-07 and 1.3e-07 (measured on both fixtures), so every
-    assert is at ``1e-5``. Mutation probe: taking the reference halfedge from the *lowest*-index
-    face instead moves the predicted ``basis_x`` of every interior vertex past 1e-3 (500 of 500 and
-    1 024 of 1 156).
+    Measured worst component difference 6.1e-7 (``sphere_irregular``) and 4.8e-7
+    (``saddle_graded``), ordito's float32 storage; every assert is at ``1e-5``. Mutation probe:
+    taking the reference halfedge from the *lowest*-index face instead moves ``basis_x`` of every
+    interior vertex past 1e-3 (500 of 500 and 1 024 of 1 156).
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     basis_x_wp, basis_y_wp, normal_wp = od.tangent_space.vertex_tangent_frames(
@@ -72,71 +65,13 @@ def test_vertex_tangent_frames_match_potpourri3d(
 
     basis_x, basis_y, normal = basis_x_wp.numpy(), basis_y_wp.numpy(), normal_wp.numpy()
     assert np.allclose(np.linalg.norm(basis_x, axis=1), 1.0, rtol=1e-5, atol=1e-5)
-    assert np.allclose(np.linalg.norm(basis_y, axis=1), 1.0, rtol=1e-5, atol=1e-5)
-    assert np.allclose((basis_x * basis_y).sum(axis=1), 0.0, rtol=1e-5, atol=1e-5)
     assert np.allclose((basis_x * normal).sum(axis=1), 0.0, rtol=1e-5, atol=1e-5)
     # Right-handed: basis_x x basis_y points along the normal.
     assert np.allclose((np.cross(basis_x, basis_y) * normal).sum(axis=1), 1.0, rtol=1e-5, atol=1e-5)
 
-    # Normals are frame-independent, so they must agree outright.
     assert np.allclose(normal, normal_pp, rtol=1e-5, atol=1e-5)
-    # The two tangent bases span the same plane and differ by a rotation about the normal, so the
-    # components of basis_x in potpourri3d's basis are a unit (cos, sin) pair.
-    cosine = (basis_x * basis_x_pp).sum(axis=1)
-    sine = (basis_x * basis_y_pp).sum(axis=1)
-    assert np.allclose(np.hypot(cosine, sine), 1.0, rtol=1e-5, atol=1e-5)
-    # ... and the same rotation carries basis_y onto potpourri3d's, i.e. the frames are right-handed
-    # in the same orientation rather than mirrored.
-    assert np.allclose((basis_y * basis_x_pp).sum(axis=1), -sine, rtol=1e-5, atol=1e-5)
-    assert np.allclose((basis_y * basis_y_pp).sum(axis=1), cosine, rtol=1e-5, atol=1e-5)
-
-    # The rotation itself: geometry-central's basis_x, predicted without consulting it.
-    theta_wp = od.tangent_space.halfedge_tangent_angles(mesh_wp.points, mesh_wp.indices)
-    predicted = _geometry_central_basis_x(
-        np.asarray(mesh_tm.vertices, dtype=np.float64),
-        np.asarray(mesh_tm.faces, dtype=np.int64),
-        basis_x.astype(np.float64),
-        basis_y.astype(np.float64),
-        theta_wp.numpy().astype(np.float64),
-    )
-    assert np.allclose(predicted, basis_x_pp, rtol=1e-5, atol=1e-5)
-
-
-def _geometry_central_basis_x(
-    vertices_np: np.ndarray,
-    faces_np: np.ndarray,
-    basis_x: np.ndarray,
-    basis_y: np.ndarray,
-    theta: np.ndarray,
-) -> np.ndarray:
-    # geometry-central's vertex ``basis_x`` from ordito's frame and halfedge tangent angles. The fit
-    # ``arg sum_k proj(e_k) exp(-i theta_k)`` is taken in ordito's frame with ordito's angles, which
-    # gives geometry-central's direction less its reference halfedge's angle; adding that angle back
-    # is the whole difference between the two conventions.
-    n_vertices = vertices_np.shape[0]
-    origin = faces_np.reshape(-1)
-    target = np.roll(faces_np, -1, axis=1).reshape(-1)
-    edge = vertices_np[target] - vertices_np[origin]
-    projected = (edge * basis_x[origin]).sum(axis=1) + 1j * (edge * basis_y[origin]).sum(axis=1)
-    anchor = np.zeros(n_vertices, dtype=np.complex128)
-    np.add.at(anchor, origin, projected * np.exp(-1j * theta))
-    boundary = ~np.isin(origin * n_vertices + target, target * n_vertices + origin)
-    # A boundary halfedge a -> b: at b the fan's closing edge points to a, at half a turn.
-    at = target[boundary]
-    closing = vertices_np[origin[boundary]] - vertices_np[at]
-    np.add.at(
-        anchor,
-        at,
-        -((closing * basis_x[at]).sum(axis=1) + 1j * (closing * basis_y[at]).sum(axis=1)),
-    )
-
-    # The reference halfedge: the highest-index face's outgoing one, unless the vertex has an
-    # outgoing boundary halfedge. Halfedges ascend by face, so the largest is the highest face's.
-    reference = np.zeros(n_vertices, dtype=np.int64)
-    np.maximum.at(reference, origin, np.arange(origin.size))
-    reference[origin[boundary]] = np.flatnonzero(boundary)
-    angle = np.angle(anchor) + theta[reference]
-    return np.cos(angle)[:, None] * basis_x + np.sin(angle)[:, None] * basis_y
+    assert np.allclose(basis_x, basis_x_pp, rtol=1e-5, atol=1e-5)
+    assert np.allclose(basis_y, basis_y_pp, rtol=1e-5, atol=1e-5)
 
 
 def test_vertex_tangent_frames_isolated_vertex(device: str) -> None:
@@ -252,6 +187,10 @@ def test_halfedge_tangent_angles_span_the_rescaled_disk(
         ring_halfedges = ring[offsets[vertex] : offsets[vertex + 1]]
         if len(ring_halfedges) == 0:
             continue
+        # The reference halfedge (geometry-central's): an open fan's first, otherwise the largest
+        # (the highest-index face's); the ring is read from there.
+        start = 0 if is_boundary[vertex] else int(np.argmax(ring_halfedges))
+        ring_halfedges = np.roll(ring_halfedges, -start)
         ring_angles = angles[ring_halfedges]
         corners = np.array([corner_angles[h // 3, h % 3] for h in ring_halfedges])
         full_turn = np.pi if is_boundary[vertex] else 2 * np.pi
@@ -305,48 +244,42 @@ def test_halfedge_tangent_angles_derived_corner_angles_match_supplied(
     reason="the transport angles are only reachable through get_connection_laplacian, which "
     "builds a whole MeshVectorHeatSolver -- a halfedge mesh, a cotangent Laplacian and a "
     "factorization -- and the phases then have to be divided out of it weight by weight. A row "
-    "would price that solver build under this group's name; the holonomy is still comparable.",
+    "would price that solver build under this group's name; the angles are still comparable.",
 )
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
-def test_halfedge_transport_angle_holonomy_matches_potpourri3d(
+def test_halfedge_transport_angles_match_potpourri3d(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class B (holonomy): a single transport angle is gauge-dependent; the loop product is not.
+    Class A: each halfedge's transport angle against geometry-central's, halfedge for halfedge.
 
-    The reference rotations cancel around a closed loop, so the face holonomy is the only
-    comparable quantity -- extracted from potpourri3d's connection Laplacian by dividing out
-    its real cotangent weights. The comment above records why ``cave_cube`` and ``half_torus``
-    cannot be used at all.
+    Both measure polar angles from the same reference halfedge (see
+    [`test_vertex_tangent_frames_match_potpourri3d`]), so a single transport angle is comparable,
+    not only its holonomy around a face. potpourri3d exposes them only inside its connection
+    Laplacian, whose ``(i, j)`` entry is ``w_ij * exp(-i rho_ij)``: dividing by its real cotangent
+    Laplacian, which carries the same weights (asserted), reads ``-rho`` off each entry. Measured
+    worst angle difference 1.7e-6 on both fixtures. The comment above records why ``cave_cube``
+    and ``half_torus`` cannot be used at all.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     rho = od.tangent_space.halfedge_transport_angles(mesh_wp.points, mesh_wp.indices).numpy()
 
-    # A single transport angle depends on both endpoints' reference directions, but the holonomy
-    # around a face does not — the reference rotations cancel around a closed loop — so that is what
-    # can be compared across libraries. potpourri3d's connection Laplacian holds
-    # ``w_ij * exp(i * rho_ji)``; dividing by its real cotangent Laplacian, which carries the same
-    # weights, leaves the phase (up to one global sign convention, which a triple product cubes).
     faces = np.asarray(mesh_tm.faces)
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
     connection_pp = _vector_heat_solver_pp(mesh_tm).get_connection_laplacian().tocsr()
     cotangent_pp = pp3d.cotan_laplacian(vertices_np, faces_np).tocsr()
 
-    corners = ((faces[:, 0], faces[:, 1]), (faces[:, 1], faces[:, 2]), (faces[:, 2], faces[:, 0]))
-    weights = [np.asarray(cotangent_pp[row, column]).ravel() for row, column in corners]
-    usable = np.logical_and.reduce([np.abs(weight) > 1e-9 for weight in weights])
-    assert usable.any()
+    origin = faces.reshape(-1)
+    target = np.roll(faces, -1, axis=1).reshape(-1)
+    entries = np.asarray(connection_pp[origin, target]).ravel()
+    weights = np.asarray(cotangent_pp[origin, target]).ravel()
+    assert np.allclose(np.abs(entries), np.abs(weights), rtol=1e-9, atol=1e-12)
+    usable = np.abs(weights) > 1e-9
+    assert usable.mean() > 0.95
 
-    phase_pp = np.ones(int(usable.sum()), dtype=complex)
-    for (row, column), weight in zip(corners, weights, strict=True):
-        phase_pp *= np.asarray(connection_pp[row, column]).ravel()[usable] / weight[usable]
-    holonomy_pp = np.angle(phase_pp)
-    holonomy_wp = (rho[0::3] + rho[1::3] + rho[2::3])[usable]
-
-    assert np.allclose(
-        np.angle(np.exp(1j * (holonomy_wp + holonomy_pp))), 0.0, rtol=1e-5, atol=1e-5
-    )
+    rho_pp = -np.angle(entries[usable] / weights[usable])
+    assert np.allclose(np.angle(np.exp(1j * (rho[usable] - rho_pp))), 0.0, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)

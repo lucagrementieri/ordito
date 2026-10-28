@@ -11,7 +11,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
-from tests.comparisons import canonical_winding, undirected_edges
+from tests.comparisons import undirected_edges
 from tests.conftest import CLOSED_MESHES, MESHES, OPEN_MESHES
 from tests.conversions import (
     faces_igl,
@@ -1075,7 +1075,7 @@ def _triangle_ribbon(n_quads: int) -> tuple[np.ndarray, np.ndarray]:
 @pytest.mark.parity("face_flip_mask", "igl")
 def test_face_flip_mask_matches_igl(device: str) -> None:
     """
-    Class B: igl's flip mask is *derived* from its reoriented face table, not returned.
+    Class A on the face table the mask writes; igl's flip mask is read off that table.
 
     ``igl.bfs_orient(F)`` returns ``(FF, C)`` and ``C`` is the per-face **component id** -- all
     zeros on a connected mesh -- which is the trap this test exists to pin: comparing ordito's bits
@@ -1087,9 +1087,8 @@ def test_face_flip_mask_matches_igl(device: str) -> None:
     With that mask recovered the two agree **exactly, with no global sign fix**: both libraries
     anchor each component on its lowest-numbered face, so the answer is unique rather than
     determined up to a per-component flip. The second half of the test pins the same statement one
-    level up, on the repaired face table, through
-    [`tests.comparisons.canonical_winding`][] -- a flip is emitted as a rotation of the reversed
-    triangle, so the rows are compared cyclically.
+    level up: the face table the mask writes equals ``FF`` element for element, since both write a
+    flipped face as the full reversal ``(c, b, a)``.
     """
     vertices_np, faces_np = _triangle_ribbon(1024)
     rng = np.random.default_rng(11)
@@ -1109,7 +1108,7 @@ def test_face_flip_mask_matches_igl(device: str) -> None:
     repaired_np = od.repair.make_winding_consistent(faces_wp).numpy().reshape(-1, 3)
 
     assert np.array_equal(mask_wp, ~unchanged_igl)
-    assert np.array_equal(canonical_winding(repaired_np), canonical_winding(oriented_igl))
+    assert np.array_equal(repaired_np, oriented_igl)
 
 
 @pytest.mark.parity("face_orientation_bits", "trimesh")
@@ -1124,13 +1123,12 @@ def test_face_flip_mask_long_path(device: str) -> None:
     answer is unique because the component representative is the smallest face id, so face 0 keeps
     its winding and every other face is determined relative to it.
 
-    Class B against ``trimesh.repair.fix_winding``, the flood fill the benchmark times. Two named
-    transforms. The reference *rewrites the mesh* rather than returning bits, so ordito's bits are
-    applied via [`make_winding_consistent`][ordito.repair.make_winding_consistent] to compare the
-    two rewritten face arrays; and a flip is emitted as a rotation of the reversed triangle, so both
-    go through [`tests.comparisons.canonical_winding`][] -- which is insensitive to the starting
-    corner and still sensitive to the orientation under test. No global sign fix is needed: both
-    libraries anchor on the lowest-numbered face of each component, so the answer is unique.
+    Class A against ``trimesh.repair.fix_winding``, the flood fill the benchmark times. The
+    reference *rewrites the mesh* rather than returning bits, so ordito's bits are applied via
+    [`make_winding_consistent`][ordito.repair.make_winding_consistent] and the two rewritten face
+    arrays compared element for element: both write a flipped face as ``np.fliplr`` of its row. No
+    global sign fix is needed: both libraries anchor on the lowest-numbered face of each component,
+    so the answer is unique.
     """
     vertices_np, faces_np = _triangle_ribbon(4096)
     rng = np.random.default_rng(7)
@@ -1151,21 +1149,18 @@ def test_face_flip_mask_long_path(device: str) -> None:
     assert np.array_equal(mask_np, scrambled_np != scrambled_np[0])
 
     # Applying the mask must reproduce the original strip, up to the global flip face 0 anchors.
-    # Compared as cyclic windings: a flip is emitted as a rotation of the reversed triangle.
     repaired_np = od.repair.make_winding_consistent(faces_wp).numpy().reshape(-1, 3)
     expected_np = faces_np[:, ::-1] if scrambled_np[0] else faces_np
-    assert np.array_equal(canonical_winding(repaired_np), canonical_winding(expected_np))
+    assert np.array_equal(repaired_np, expected_np)
     assert od.validation.is_winding_consistent(faces_wp) is False
 
     # trimesh reference: its fix_winding is a flood fill over the same face-adjacency graph, and
     # agrees face for face (both anchor on the first face of the component).
     mesh_tm = tm.Trimesh(vertices_np, flipped_np, process=False)
     tm.repair.fix_winding(mesh_tm)
-    assert np.array_equal(canonical_winding(mesh_tm.faces), canonical_winding(repaired_np))
+    assert np.array_equal(mesh_tm.faces, repaired_np)
     # ... and so the bits themselves are the faces trimesh chose to flip.
-    assert np.array_equal(
-        mask_np, np.any(canonical_winding(mesh_tm.faces) != canonical_winding(flipped_np), axis=1)
-    )
+    assert np.array_equal(mask_np, np.any(mesh_tm.faces != flipped_np, axis=1))
 
 
 def _minimum_forest_flip_mask(faces_np: np.ndarray) -> np.ndarray:

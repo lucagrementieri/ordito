@@ -416,11 +416,11 @@ def test_voxel_down_sample_matches_open3d(
     sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
 ):
     """
-    Class B: both sides re-keyed by the integer cell before their positions are compared.
+    Class A (``od.equality.points_allclose``): the same cell means, up to the order of the cells.
 
-    The positions themselves are never ``lexsort``ed — two cell means that tie in ``float32`` and
-    differ in the 16th digit in ``float64`` would order differently and fail by the full coordinate
-    range. The integer cell is the correspondence; the positions are then compared in place.
+    Open3D lists its cells in hash order, so the means are matched one to one by nearest position;
+    the occupied integer cells are the same set too (``od.equality.rows_equal``), with Open3D's
+    cells read off its means under ordito's grid anchor.
     """
     mesh_tm, _vertices_wp, _faces_wp = sphere
     points_np, points_wp = _cloud(mesh_tm, device)
@@ -434,14 +434,10 @@ def test_voxel_down_sample_matches_open3d(
 
     assert pooled_o3d.shape[0] > 0
     assert pooled_wp.size == pooled_o3d.shape[0]
-    key_o3d = od.voxels.cell_indices(
-        points_to_warp(pooled_o3d, device), voxel_size, origin=origin
-    ).numpy()
-    key_wp = od.voxels.cells(grid).numpy()
-    order_o3d = np.lexsort(key_o3d.T[::-1])
-    order_wp = np.lexsort(key_wp.T[::-1])
-    assert np.array_equal(key_o3d[order_o3d], key_wp[order_wp])
-    assert np.allclose(pooled_wp.numpy()[order_wp], pooled_o3d[order_o3d], rtol=1e-5, atol=1e-5)
+    pooled_o3d_wp = points_to_warp(pooled_o3d, device)
+    cells_o3d = od.voxels.cell_indices(pooled_o3d_wp, voxel_size, origin=origin)
+    assert od.equality.rows_equal(od.voxels.cells(grid), cells_o3d)
+    assert od.equality.points_allclose(pooled_wp, pooled_o3d_wp, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parity("voxel_down_sample", "meshlib")
@@ -538,7 +534,7 @@ def test_voxel_down_sample_mean_is_reproducible(
 
 def test_voxel_down_sample_spanning_root_tiles_matches_numpy(device: str):
     """
-    Class B: ``voxel_down_sample`` equals a NumPy group-by over floored cells, after ``lexsort``.
+    Class A (``od.equality.points_allclose``): ``voxel_down_sample`` is a NumPy group-by.
 
     The cloud spans more than one 4096-cell NanoVDB root tile (and negative cells) under a
     caller-supplied origin, so the row order takes the second, root-tile sort pass. ``max`` is
@@ -560,8 +556,8 @@ def test_voxel_down_sample_spanning_root_tiles_matches_numpy(device: str):
     pooled_np = _group_reduce_np(keys_np, points_np.astype(np.float64), np.maximum)
     assert np.ptp(keys_np[:, 0]) > 4096  # non-vacuity: more than one root tile
     assert pooled_np.shape[0] > 3
-    assert np.allclose(
-        lexsort_rows(pooled_wp.numpy()), lexsort_rows(pooled_np), rtol=1e-5, atol=1e-5
+    assert od.equality.points_allclose(
+        pooled_wp, points_to_warp(pooled_np, device), rtol=1e-5, atol=1e-5
     )
 
 
@@ -791,9 +787,10 @@ def test_occupancy_at_points_matches_open3d(
 @pytest.mark.parity("grid_points", "igl", "pyvista")
 def test_grid_points_matches_igl(device: str):
     """
-    Class B: ``igl.grid`` and VTK's ``ImageData`` emit the same lattice over the unit cube.
+    Class A: ``igl.grid`` and VTK's ``ImageData`` emit the same lattice over the unit cube.
 
-    Compared as sets against igl, because its flattening order is its own.
+    Compared up to point order against igl (``od.equality.points_allclose``), because its
+    flattening order is its own.
 
     pyvista's is knowable, so it is compared **exactly** through the permutation rather than as a
     set: ``ImageData(...).points`` runs **x fastest** where ordito runs z fastest, so reading
@@ -802,14 +799,15 @@ def test_grid_points_matches_igl(device: str):
     ways -- a set comparison passes for any permutation, including a transposed one.
     """
     shape = (4, 5, 6)
-    lattice_wp = od.voxels.grid_points(
+    grid_wp = od.voxels.grid_points(
         shape, bounds=(wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 1.0, 1.0)), device=device
-    ).numpy()
+    )
+    lattice_wp = grid_wp.numpy()
     lattice_igl = np.asarray(igl.grid(np.array(shape)))
 
     assert lattice_igl.shape == lattice_wp.shape
-    assert np.allclose(
-        lexsort_rows(np.round(lattice_igl, 9)), lexsort_rows(np.round(lattice_wp, 9)), atol=1e-6
+    assert od.equality.points_allclose(
+        grid_wp, points_to_warp(lattice_igl, device), rtol=0.0, atol=1e-6
     )
     # pyvista: x fastest, so its Fortran reading is ordito's C reading, element for element.
     lattice_pv = np.asarray(

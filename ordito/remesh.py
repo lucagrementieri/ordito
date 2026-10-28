@@ -1971,20 +1971,28 @@ def cluster_decimate(
     *,
     voxel_size: float | None = None,
     contraction: Literal["average", "closest"] = "average",
+    method: Literal["open3d", "meshlab"] = "open3d",
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
-    Decimate by snapping vertices to a uniform voxel grid and welding each cell to one vertex.
+    Decimate by snapping vertices to a voxel grid and welding each cell to one vertex.
 
     The one decimation scheme that is *naturally* parallel: there is no priority queue and no
     sequential dependence anywhere, so the whole thing is a handful of kernel launches whatever the
     mesh size. Every vertex is binned into a cell of width ``voxel_size``, each occupied cell
     becomes a single output vertex, faces are remapped onto those, and the faces that collapsed
-    (two or three corners in the same cell) or duplicated are dropped.
+    (two or three corners in the same cell) or repeat another face with the same winding are
+    dropped. A face and its reversed twin are both kept, as both libraries keep them.
 
-    Ports MeshLab's ``meshing_decimation_clustering`` and Open3D's ``simplify_vertex_clustering``;
-    the grid is anchored half a cell below the bounding box, which is Open3D's convention, so both
-    libraries produce the same cell assignment for the same ``voxel_size``. The vertex output alone
-    is also MeshLab's ``generate_sampling_clustered_vertex``.
+    ``method`` names the library whose grid and mean are reproduced:
+
+    - ``"open3d"`` (default) is Open3D's ``simplify_vertex_clustering``: cells of exactly
+      ``voxel_size``, anchored half a cell below the bounding box, and a cell's mean over its
+      vertices.
+    - ``"meshlab"`` is MeshLab's ``meshing_decimation_clustering``: the bounding box grown by one
+      ``voxel_size`` on every side and split into ``floor(extent / voxel_size)`` cells per axis, so
+      each cell is stretched a little to fit it, and a cell's mean over its face corners (a vertex
+      counts once per face on it). Its vertices alone are MeshLab's
+      ``generate_sampling_clustered_vertex`` with the same ``contraction``.
 
     !!! warning "This does not preserve topology"
         Two sheets of the surface that pass within ``voxel_size`` of each other get welded
@@ -2006,12 +2014,17 @@ def cluster_decimate(
     contraction
         How each cell picks its output position:
 
-        - ``"average"`` (default) — the mean of the cell's vertices, which is Open3D's
-          ``SimplificationContraction.Average``. Smooths slightly and cannot land off the input's
-          convex hull.
+        - ``"average"`` (default) — the cell's mean, which is Open3D's
+          ``SimplificationContraction.Average`` and MeshLab's ``'Average'``. Smooths slightly and
+          cannot land off the input's convex hull.
         - ``"closest"`` — the input vertex nearest the cell centre, which is MeshLab's
-          ``'Closest to center'`` sampling. Keeps every output vertex *on* the input surface, so it
-          is the right choice when the positions must stay exact (ties break to the lowest index).
+          ``'Closest to center'``. Keeps every output vertex *on* the input surface, so it is the
+          right choice when the positions must stay exact (ties break to the lowest index). Under
+          ``method="meshlab"`` only vertices on a face are candidates, as in MeshLab.
+
+        The contraction moves vertices only: the cells, and so the faces, are the same for both.
+    method
+        ``"open3d"`` or ``"meshlab"``: which library's grid and mean, as above.
 
     Returns
     -------
@@ -2024,7 +2037,8 @@ def cluster_decimate(
     Raises
     ------
     ValueError
-        If ``voxel_size`` is not positive, or ``contraction`` is not one of the two names.
+        If ``voxel_size`` is not positive, or ``contraction`` or ``method`` is not one of its two
+        names.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -2040,15 +2054,17 @@ def cluster_decimate(
 
     Notes
     -----
-    Cells whose every face collapsed are dropped from the output, where Open3D keeps them as
-    unreferenced vertices. So the face counts agree exactly and the vertex counts can differ by the
+    Cells whose every face collapsed are dropped from the output, where both libraries keep them
+    as unreferenced vertices. So the faces agree exactly and the vertex counts can differ by the
     number of such cells — usually zero, and never in a way that changes the surface.
 
-    The binning is [`ordito.voxels.cell_indices`][ordito.voxels.cell_indices]' cell assignment.
-    Output vertices are numbered in the order of their packed cell keys -- the order
-    [`ordito.grouping.unique_1d`][ordito.grouping.unique_1d] would sort them in -- rather than a
-    NanoVDB grid's leaf-major order, and the faces come out in
-    [`ordito.grouping.unique_faces`][ordito.grouping.unique_faces]' order over them.
+    Under ``method="open3d"`` the binning is
+    [`ordito.voxels.cell_indices`][ordito.voxels.cell_indices]' cell assignment. Output vertices
+    are numbered in the order of their packed cell keys -- the order
+    [`ordito.grouping.unique_1d`][ordito.grouping.unique_1d] would sort them in -- and each face
+    is written rotated to start at its smallest vertex, as Open3D writes it; the faces come out
+    in the order of those rows packed as one key. Both libraries return vertices and faces in hash
+    order, which no parallel build reproduces.
 
     The cell means of ``contraction="average"`` follow the
     [`deterministic`][ordito.config.deterministic] setting: with it on they are added in one fixed
@@ -2070,6 +2086,8 @@ def cluster_decimate(
     require_same_device(vertices=vertices, faces=faces)
     if contraction not in ("average", "closest"):
         raise ValueError(f"contraction must be 'average' or 'closest', got {contraction!r}")
+    if method not in ("open3d", "meshlab"):
+        raise ValueError(f"method must be 'open3d' or 'meshlab', got {method!r}")
 
     device = vertices.device
     n_vertices = vertices.size
@@ -2077,14 +2095,8 @@ def cluster_decimate(
     if n_vertices == 0 or n_faces == 0:
         return _launch.clone(vertices), _launch.clone(faces)
 
-    # One definition of "the default voxel grid for these points", shared with ``ordito.voxels``
-    # so the two modules cannot drift on the cell size or on Open3D's half-cell anchor.
-    # The origin is always derived here, so every cell coordinate is non-negative and below the
-    # bound the grid reports, which is the radix the cell keys are packed in.
-    voxel_size, origin, cell_bound = od.voxels.resolve_voxel_grid(
-        vertices, voxel_size, caller="cluster_decimate", return_cell_bound=True
-    )
-    inverse_size = wp.float32(1.0 / voxel_size)
+    origin, cell_widths, cell_bound = _cluster_grid(vertices, voxel_size, method)
+    inverse_size = wp.vec3(*(1.0 / width for width in cell_widths))
     bound = wp.uint64(cell_bound)
     cell_mask = kernel_grouping.hash_table_mask(n_vertices)
     face_mask = kernel_grouping.hash_table_mask(n_faces)
@@ -2105,7 +2117,11 @@ def cluster_decimate(
     # The kept clusters' cell keys, at the sort's double width.
     sort_keys = _launch.empty(2 * n_vertices, dtype=wp.uint64, device=device)
     average = contraction == "average"
-    # Under the deterministic setting the mean is not scattered: each vertex is staged with its
+    # What a cell's representative is taken over: its vertices (Open3D), or the face corners in it
+    # (MeshLab's mean weighs a vertex by its faces, and its closest vertex is one on a face).
+    corner_items = method == "meshlab"
+    n_items = faces.size if corner_items else n_vertices
+    # Under the deterministic setting the mean is not scattered: each item is staged with its
     # output vertex for a stable sort, and every cell's run is added in one fixed order
     # (``_cluster_sorted_means``, whose count of long runs rides behind the two counts).
     ordered = average and is_deterministic()
@@ -2166,7 +2182,7 @@ def cluster_decimate(
     scattered = average and not ordered
     sums = _launch.zeros(n_kept if scattered else 0, dtype=wp.vec3, device=device)
     counts = (
-        _launch.empty(4 * n_vertices, dtype=wp.int32, device=device)
+        _launch.empty(4 * n_items, dtype=wp.int32, device=device)
         if ordered
         else _launch.zeros(n_kept if average else 0, dtype=wp.int32, device=device)
     )
@@ -2178,24 +2194,26 @@ def cluster_decimate(
         if average
         else kernel_remesh.CLUSTER_CLOSEST
     )
-    # The distinct surviving faces come out in ``grouping.unique_faces``' order: the order of the
-    # sorted output-vertex triple packed in radix ``n_kept``, each face in its first occurrence's
-    # winding. The kept-cluster sort's buffers are free by now and serve the face sort whenever they
-    # are wide enough, which they are unless almost nothing merged.
+    # The distinct surviving faces come out in the order of their output-vertex triple rotated to
+    # start at its smallest, packed in radix ``n_kept``. The kept-cluster sort's buffers are free
+    # by now and serve the face sort whenever they are wide enough, which they are unless almost
+    # nothing merged.
     if 2 * n_unique > sort_keys.size:
         sort_keys = _launch.empty(2 * n_unique, dtype=wp.uint64, device=device)
         kept_cells = _launch.empty(2 * n_unique, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_remesh.cluster_gather_and_face_keys,
-        dim=max(n_vertices, n_unique),
+        dim=max(n_items, n_unique),
         inputs=[
             faces,
             vertex_cell,
             cell_rank,
             vertices,
             origin,
-            wp.float32(voxel_size),
+            inverse_size,
+            wp.vec3(*cell_widths),
             mode,
+            wp.int32(corner_items),
             face_table,
             face_slots,
             wp.int32(n_unique),
@@ -2204,7 +2222,7 @@ def cluster_decimate(
         outputs=[sums, counts, closest, sort_keys, kept_cells],
         device=device,
     )
-    # Three sorted indices below ``n_kept`` pack below ``n_kept ** 3``.
+    # Three indices below ``n_kept`` pack below ``n_kept ** 3``.
     _launch.radix_sort_pairs(
         sort_keys,
         kept_cells,
@@ -2235,6 +2253,37 @@ def cluster_decimate(
     return kept_vertices, out_faces
 
 
+def _cluster_grid(
+    vertices: wp.array[wp.vec3], voxel_size: float | None, method: str
+) -> tuple[wp.vec3, tuple[float, float, float], int]:
+    """
+    ``cluster_decimate``'s grid: its origin, its cell width along each axis and the cell bound.
+
+    The origin is derived, so every cell coordinate is non-negative and below the bound, the
+    radix the cell keys are packed in. Open3D's grid is
+    [`voxels.resolve_voxel_grid`][ordito.voxels.resolve_voxel_grid]'s, the one definition shared
+    with ``ordito.voxels`` so the two modules cannot drift on the cell size or on Open3D's half-cell
+    anchor. MeshLab's grows the bounding box by one cell on every side and divides each axis into
+    ``floor(extent / voxel_size)`` equal cells (vcg's ``Clustering::Init``), so its cells are a
+    little wider than ``voxel_size`` and differ per axis.
+    """
+    if method == "open3d":
+        voxel_size, origin, cell_bound = od.voxels.resolve_voxel_grid(
+            vertices, voxel_size, caller="cluster_decimate", return_cell_bound=True
+        )
+        return origin, (voxel_size, voxel_size, voxel_size), cell_bound
+    lower, upper = od.bounds.aabb(vertices)
+    voxel_size, _origin = od.voxels.resolve_voxel_grid(
+        vertices, voxel_size, bounds=(lower, upper), caller="cluster_decimate"
+    )
+    extents = [float(upper[axis]) - float(lower[axis]) + 2.0 * voxel_size for axis in range(3)]
+    counts = [max(math.floor(extent / voxel_size), 1) for extent in extents]
+    widths = (extents[0] / counts[0], extents[1] / counts[1], extents[2] / counts[2])
+    origin = wp.vec3(*(float(lower[axis]) - voxel_size for axis in range(3)))
+    # One cell of slack over the largest count, for the float32 rounding of the cell kernel.
+    return origin, widths, max(counts) + 1
+
+
 def _cluster_sorted_means(
     vertices: wp.array[wp.vec3],
     staged: wp.array[wp.int32],
@@ -2245,25 +2294,26 @@ def _cluster_sorted_means(
     """
     ``cluster_decimate``'s cell means added in one fixed order, into ``out_vertices``.
 
-    ``staged`` is ``(4 * n_vertices,)``: each vertex's output vertex (``n_kept`` when no face keeps
-    its cell) and then, from ``2 * n_vertices``, its own index, the stable sort's double-width keys
-    and payload. The sort lists every cell's vertices in ascending order; a short run is added by
-    one thread and a long one by a block (``kernel_remesh.cluster_sorted_means``), whose list is
-    kept in the sort's free second half of the keys and counted at ``counters[2]``.
+    ``staged`` is ``(4 * n_items,)``: each item's output vertex (``n_kept`` when no face keeps its
+    cell) and then, from ``2 * n_items``, its vertex, the stable sort's double-width keys and
+    payload. An item is a vertex or a face corner (``cluster_decimate``'s ``method``). The sort
+    lists every cell's items in ascending order; a short run is added by one thread and a long one
+    by a block (``kernel_remesh.cluster_sorted_means``), whose list is kept in the sort's free
+    second half of the keys and counted at ``counters[2]``.
     """
     device = vertices.device
-    n_vertices = vertices.size
+    n_items = staged.size // 4
     # Keys run to ``n_kept``, the unreferenced vertices' sentinel.
     _launch.radix_sort_pairs(
-        odt.as_dense(staged[: 2 * n_vertices]),
-        odt.as_dense(staged[2 * n_vertices :]),
-        count=n_vertices,
+        odt.as_dense(staged[: 2 * n_items]),
+        odt.as_dense(staged[2 * n_items :]),
+        count=n_items,
         end_bit=max(1, n_kept.bit_length()),
     )
-    sorted_clusters = odt.as_dense(staged[:n_vertices])
-    sorted_vertices = odt.as_dense(staged[2 * n_vertices : 3 * n_vertices])
+    sorted_clusters = odt.as_dense(staged[:n_items])
+    sorted_vertices = odt.as_dense(staged[2 * n_items : 3 * n_items])
     heavy_count = odt.as_dense(counters[2:])
-    heavy = odt.as_dense(staged[n_vertices : 2 * n_vertices])
+    heavy = odt.as_dense(staged[n_items : 2 * n_items])
     _launch.launch(
         kernel_remesh.cluster_sorted_means,
         dim=n_kept,
@@ -2274,7 +2324,7 @@ def _cluster_sorted_means(
     # At most this many runs are longer than the serial bound, and a grid this wide strides them.
     n_blocks = min(
         n_kept,
-        n_vertices // (kernel_remesh.CLUSTER_SERIAL_MAX + 1),
+        n_items // (kernel_remesh.CLUSTER_SERIAL_MAX + 1),
         kernel_remesh.CLUSTER_HEAVY_BLOCKS,
     )
     if n_blocks > 0:
@@ -3428,7 +3478,7 @@ def flip_by_objective(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
-    objective: Literal["planarity", "curvature", "t_vertex"] = "planarity",
+    objective: Literal["planarity", "t_vertex"] = "planarity",
     region: wp.array[wp.bool] | None = None,
     planar_angle: float = 1.0,
     metric: Literal["radius_ratio", "area_max_side", "mean_ratio"] = "area_max_side",
@@ -3436,13 +3486,12 @@ def flip_by_objective(
     max_iter: int = 100,
 ) -> wp.array[wp.int32]:
     """
-    Flip interior edges to optimize triangle shape or surface flatness, instead of the Delone test.
+    Flip interior edges to optimize triangle shape, instead of the Delone test.
 
     Runs the same parallel flip engine as [`flip_to_delaunay`][ordito.remesh.flip_to_delaunay] —
     independent-set selection over the face adjacency, iterated until no edge is a candidate — with
-    a different predicate at the front. That is the whole port: the machinery was already there, and
-    these two objectives are what MeshLab's ``meshing_edge_flip_by_planar_optimization`` and
-    ``meshing_edge_flip_by_curvature_optimization`` put in front of it.
+    a different predicate at the front: MeshLab's ``meshing_edge_flip_by_planar_optimization`` and
+    ``meshing_remove_t_vertices`` rules.
 
     Parameters
     ----------
@@ -3458,11 +3507,6 @@ def flip_by_objective(
           so raises the ``metric`` score of the *worse* of the two triangles. Because the quad is
           near-planar to begin with, the rewrite is a retriangulation and not a deformation. This is
           the one to reach for after any operation that leaves thin triangles across a flat region.
-        - ``"curvature"`` — **flatness, surface changed.** The diagonal is flipped whenever the
-          other one bends less, i.e. whenever the dihedral angle across it is smaller. This *does*
-          move the surface (it chooses between two interpolations of the same four points) and is
-          what makes a coarse triangulation of a curved shape follow its principal directions.
-          ``planar_angle`` and ``metric`` are ignored.
         - ``"t_vertex"`` — **slivers only.** A quad is eligible only when one of its two triangles
           is a sliver whose longest edge is the diagonal: that edge over the height onto it exceeds
           ``aspect_threshold``; the diagonal is then flipped if that raises the worse
@@ -3538,10 +3582,8 @@ def flip_by_objective(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, region=region)
-    if objective not in ("planarity", "curvature", "t_vertex"):
-        raise ValueError(
-            f"objective must be 'planarity', 'curvature' or 't_vertex', got {objective!r}"
-        )
+    if objective not in ("planarity", "t_vertex"):
+        raise ValueError(f"objective must be 'planarity' or 't_vertex', got {objective!r}")
     if aspect_threshold <= 0.0:
         raise ValueError(f"aspect_threshold must be positive, got {aspect_threshold}")
     if metric not in _OBJECTIVE_QUALITY_METRICS:
@@ -3559,7 +3601,6 @@ def flip_by_objective(
 
     objective_flag = {
         "planarity": kernel_remesh.OBJECTIVE_PLANARITY,
-        "curvature": kernel_remesh.OBJECTIVE_CURVATURE,
         "t_vertex": kernel_remesh.OBJECTIVE_T_VERTEX,
     }[objective]
     metric_flag = od.triangles._QUALITY_METRICS[metric]  # pyright: ignore[reportPrivateUsage]

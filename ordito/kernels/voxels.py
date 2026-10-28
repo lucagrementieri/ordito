@@ -63,35 +63,41 @@ def voxel_cell(position: wp.vec3, origin: wp.vec3, inverse_size: wp.float32) -> 
 
 
 @wp.func
-def voxel_cell_center(cell: wp.vec3i, origin: wp.vec3, voxel_size: wp.float32) -> wp.vec3:
-    # World position of a cell's centre: the inverse of ``voxel_cell`` above, up to the half-voxel
-    # that names the centre rather than the lower corner.
+def voxel_cell_axes(position: wp.vec3, origin: wp.vec3, inverse_size: wp.vec3) -> wp.vec3i:
+    # ``voxel_cell`` on a grid whose cells have their own width along each axis (a grid stretched
+    # to fit a box, MeshLab's clustering grid). With three equal widths it is ``voxel_cell`` bit for
+    # bit: the same product per component, floored the same way.
+    local = wp.cw_mul(position - origin, inverse_size)
+    return wp.vec3i(
+        wp.int32(wp.floor(local[0])), wp.int32(wp.floor(local[1])), wp.int32(wp.floor(local[2]))
+    )
+
+
+@wp.func
+def voxel_cell_center(cell: wp.vec3i, origin: wp.vec3, voxel_size: wp.vec3) -> wp.vec3:
+    # World position of a cell's centre: the inverse of ``voxel_cell_axes`` above, up to the
+    # half-voxel that names the centre rather than the lower corner.
     #
     # The hand-rolled form rather than ``wp.volume_index_to_world`` (which
     # ``cell_center_positions`` below uses, and which the module docstring names as the convention)
     # because every caller here is *pre-volume*: it holds an origin and a cell width and no
     # ``wp.Volume`` handle to ask. The two agree to 3.58e-07 over 3 929 voxels -- float32 rounding,
     # not a convention difference -- and the measurement is recorded on ``cell_center_positions``.
-    return wp.vec3(
-        origin[0] + (wp.float32(cell[0]) + 0.5) * voxel_size,
-        origin[1] + (wp.float32(cell[1]) + 0.5) * voxel_size,
-        origin[2] + (wp.float32(cell[2]) + 0.5) * voxel_size,
+    return origin + wp.cw_mul(
+        wp.vec3(wp.float32(cell[0]), wp.float32(cell[1]), wp.float32(cell[2])) + wp.vec3(0.5),
+        voxel_size,
     )
 
 
 @wp.func
 def squared_distance_to_own_cell_center(
-    position: wp.vec3, origin: wp.vec3, voxel_size: wp.float32
+    position: wp.vec3, origin: wp.vec3, inverse_size: wp.vec3, voxel_size: wp.vec3
 ) -> wp.float32:
     # How far a point sits from the centre of the voxel it falls in, squared. The quantity a
-    # "closest to the cell centre" cluster representative is chosen by.
-    #
-    # Named because that choice is a *two-pass* argmin -- one kernel reduces the winning distance
-    # per cluster and a second re-tests it to break the tie by lowest index -- and the two passes
-    # agree only while both compute this expression identically. Two copies of it is a silent
-    # correctness hazard rather than a duplication nit: a change to one that rounds differently
-    # leaves clusters with no representative at all.
-    cell = voxel_cell(position, origin, 1.0 / voxel_size)
+    # "closest to the cell centre" cluster representative is chosen by. The cell is found with the
+    # caller's own ``inverse_size``, the one its clusters were binned with, so a point on a cell
+    # wall is measured against the centre of the cell it was binned into.
+    cell = voxel_cell_axes(position, origin, inverse_size)
     return wp.length_sq(position - voxel_cell_center(cell, origin, voxel_size))
 
 

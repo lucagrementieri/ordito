@@ -4049,6 +4049,7 @@ def filter_sharpen(
     weight_original: float = 1.0,
     iterations: int = 5,
     laplacian_operator: odt.BsrMatrix[wp.float32] | None = None,
+    method: Literal["unsharp_mask", "graph_laplacian"] = "unsharp_mask",
 ) -> wp.array[wp.vec3]:
     """
     Sharpen a surface by adding back the detail a smoothing pass removes.
@@ -4057,7 +4058,16 @@ def filter_sharpen(
     Laplacian-smoothed self *is* its high-frequency content, so adding a multiple of that difference
     exaggerates every feature. This is **unsharp masking**, the photographic technique, applied to
     vertex positions instead of pixels — MeshLab spells it ``apply_coord_unsharp_mask`` — and it is
-    the standard way to recover crispness lost to an earlier smoothing or a decimation.
+    the standard way to recover crispness lost to an earlier smoothing or a decimation. With the
+    default operator it is MeshLab's filter: each smoothing pass weights a neighbour by the faces on
+    its edge and keeps a rim vertex on the rim
+    ([`face_weighted_laplacian`][ordito.laplacian.face_weighted_laplacian]).
+
+    ``method="graph_laplacian"`` is the other common sharpener, Open3D's ``filter_sharpen``: each
+    pass pushes every vertex away from its undirected 1-ring by ``weight`` times the *unnormalized*
+    graph Laplacian, ``v + weight * sum_j (v - v_j)``, so a high-degree vertex moves further. It
+    subtracts no smoothed copy, and ``iterations`` repeats the step rather than deepening a
+    smoothing.
 
     The name says what it returns, which is *positions* rather than a mask: the ``*_mask`` family
     in this package is boolean throughout.
@@ -4070,17 +4080,25 @@ def filter_sharpen(
         ``(3 * n_faces,)`` triangle index buffer.
     weight
         How much of the detail to add back. ``0`` leaves the mesh unchanged and large values amplify
-        noise as readily as features. MeshLab's ``weight``, default ``0.3``.
+        noise as readily as features. MeshLab's ``weight``, default ``0.3``; Open3D's ``strength``
+        under ``method="graph_laplacian"``.
     weight_original
         Multiplier on the original position, MeshLab's ``weightorig``. ``1`` (the default) keeps the
         surface where it is and only sharpens; anything else scales the whole mesh about the origin.
+        The unsharp mask's alone: ``method="graph_laplacian"`` has no original-position term.
     iterations
         Laplacian passes used to define "smoothed", so this sets the *scale* of detail that gets
         amplified: more passes remove lower frequencies and therefore sharpen more coarsely.
-        MeshLab's ``iterations``, default ``5``.
+        MeshLab's ``iterations``, default ``5``. Under ``method="graph_laplacian"``, the number of
+        sharpening steps, Open3D's ``number_of_iterations``.
     laplacian_operator
-        ``(n_vertices, n_vertices)`` optional precomputed operator, forwarded to
-        [`filter_laplacian`][ordito.smoothing.filter_laplacian].
+        ``(n_vertices, n_vertices)`` optional precomputed operator: the row-stochastic smoothing
+        operator (MeshLab's, [`face_weighted_laplacian`][ordito.laplacian.face_weighted_laplacian],
+        built here when ``None``), or under ``method="graph_laplacian"`` the graph Laplacian to
+        step through ([`graph_laplacian`][ordito.laplacian.graph_laplacian], built here when
+        ``None``).
+    method
+        ``"unsharp_mask"`` (default) or ``"graph_laplacian"``, the two sharpeners above.
 
     Returns
     -------
@@ -4091,11 +4109,16 @@ def filter_sharpen(
     ------
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
+    ValueError
+        If ``method`` is not ``"unsharp_mask"`` or ``"graph_laplacian"``, or is
+        ``"graph_laplacian"`` with a ``weight_original`` other than ``1``.
 
     See Also
     --------
     [`filter_laplacian`][ordito.smoothing.filter_laplacian]
     [`filter_two_step`][ordito.smoothing.filter_two_step]
+    [`ordito.laplacian.face_weighted_laplacian`][]
+        The unsharp mask's default smoothing operator.
 
     Examples
     --------
@@ -4111,16 +4134,41 @@ def filter_sharpen(
     ```
     """
     require_same_device(vertices=vertices, faces=faces)
+    if method not in ("unsharp_mask", "graph_laplacian"):
+        raise ValueError(f"method must be 'unsharp_mask' or 'graph_laplacian', got {method!r}")
+    if method == "graph_laplacian" and weight_original != 1.0:
+        raise ValueError(
+            f"weight_original applies to the unsharp mask only, got {weight_original} with "
+            "method='graph_laplacian'"
+        )
     device = vertices.device
     n = vertices.size
     out = _launch.empty(n, dtype=wp.vec3, device=device)
     if n == 0:
         return out
+    if method == "graph_laplacian":
+        graph = laplacian_operator
+        if graph is None:
+            graph = laplacian.graph_laplacian(vertices, faces)
+        step = wp.float64(weight)
+
+        def graph_pass(_index: int, src: _Positions, dst: _Positions) -> None:
+            _launch.launch(
+                kernel_smoothing.GRAPH_SHARPEN_PASS[src.dtype, dst.dtype],
+                dim=n,
+                inputs=[graph.offsets, graph.columns, graph.values, src, step],
+                outputs=[dst],
+                device=device,
+            )
+
+        return _vec3_passes(vertices, max(iterations, 0), graph_pass, out=out)
     # No volume constraint on the inner smoothing: its rescaling would leak into the difference and
     # show up as a uniform scaling of the sharpened mesh rather than as detail. The smoothed
     # positions are ``filter_laplacian(lamb=1, volume_constraint=False)``'s, written into ``out``
     # and sharpened there in place.
-    operator = _resolved_operator(vertices, faces, laplacian_operator)
+    operator = laplacian_operator
+    if operator is None:
+        operator = laplacian.face_weighted_laplacian(vertices, faces)
     coeff = wp.float64(1.0)
     if iterations <= 0:
         _launch.map(

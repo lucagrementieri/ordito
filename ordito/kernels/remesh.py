@@ -21,8 +21,8 @@ from ordito.kernels.array import (
     pack_edge_key,
     pack_index_triple,
     popcount32,
+    rotate_min_first,
     scanned_slot,
-    sort3,
     sort_segment,
     sorted_run_start,
     to_vec2d,
@@ -87,7 +87,7 @@ from ordito.kernels.triangles import (
     write_row_triple,
 )
 from ordito.kernels.vertices import add_to_face_corners, normalized_accumulated_row
-from ordito.kernels.voxels import squared_distance_to_own_cell_center, voxel_cell
+from ordito.kernels.voxels import squared_distance_to_own_cell_center, voxel_cell_axes
 
 wp.set_module_options({"enable_backward": False})
 
@@ -3219,14 +3219,15 @@ def fixup_twin_remap(
 
 @wp.func
 def cluster_cell_key(
-    vertex: wp.vec3, origin: wp.vec3, inverse_size: wp.float32, cell_bound: wp.uint64
+    vertex: wp.vec3, origin: wp.vec3, inverse_size: wp.vec3, cell_bound: wp.uint64
 ) -> wp.uint64:
     # A vertex's voxel cell packed into the ``uint64`` key ``remesh.cluster_decimate`` orders its
     # clusters by: ``voxels.cell_indices`` and ``grouping.hash_indices_rows`` in one thread, the
-    # same ``voxel_cell`` and the same packing, so the keys are theirs bit for bit. Pure in its
-    # inputs, which is what lets ``cluster_insert_vertices`` recompute a stored vertex's key rather
-    # than keep a table of keys.
-    cell = voxel_cell(vertex, origin, inverse_size)
+    # same cell (``voxel_cell_axes`` over three equal widths is ``voxel_cell``) and the same
+    # packing, so the keys are theirs bit for bit. ``inverse_size`` is per axis for MeshLab's grid,
+    # whose cells are stretched to fit the box. Pure in its inputs, which is what lets
+    # ``cluster_insert_vertices`` recompute a stored vertex's key rather than keep a table of keys.
+    cell = voxel_cell_axes(vertex, origin, inverse_size)
     return pack_index_triple(cell[0], cell[1], cell[2], cell_bound)
 
 
@@ -3234,7 +3235,7 @@ def cluster_cell_key(
 def cluster_insert_vertices(
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
-    inverse_size: wp.float32,
+    inverse_size: wp.vec3,
     cell_bound: wp.uint64,
     mask: wp.int32,
     out_cell_table: wp.array[wp.int32],
@@ -3265,13 +3266,15 @@ def cluster_insert_vertices(
 
 
 @wp.func
-def sorted_cluster_triple(
+def oriented_cluster_triple(
     faces: wp.array[wp.int32], vertex_cell: wp.array[wp.int32], f: wp.int32
 ) -> tuple[wp.int32, wp.int32, wp.int32, wp.bool]:
-    # Face ``f``'s three clusters in ascending order and whether they are distinct: the face's
-    # orientation-free identity after welding, which ``cluster_mark_faces`` compares exactly.
+    # Face ``f``'s three clusters rotated to start at the smallest, and whether they are distinct:
+    # the face's identity after welding, which ``cluster_mark_faces`` compares exactly. The
+    # rotation keeps the winding, so a face and its reversed twin are two faces, as Open3D and
+    # MeshLab both keep them.
     i0, i1, i2, distinct = remapped_corner_triple(faces, vertex_cell, f)
-    s0, s1, s2 = sort3(i0, i1, i2)
+    s0, s1, s2 = rotate_min_first(i0, i1, i2)
     return s0, s1, s2, distinct
 
 
@@ -3280,7 +3283,7 @@ def claim_kept_cluster(
     cell: wp.int32,
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
-    inverse_size: wp.float32,
+    inverse_size: wp.vec3,
     cell_bound: wp.uint64,
     cell_table: wp.array[wp.int32],
     cell_state: wp.array[wp.int32],
@@ -3307,7 +3310,7 @@ def cluster_mark_faces(
     vertex_cell: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
-    inverse_size: wp.float32,
+    inverse_size: wp.vec3,
     cell_bound: wp.uint64,
     cell_table: wp.array[wp.int32],
     face_mask: wp.int32,
@@ -3322,13 +3325,13 @@ def cluster_mark_faces(
     # the faces: which faces survive the weld (three distinct clusters), which clusters a
     # surviving face keeps (``claim_kept_cluster``), and which surviving faces are duplicates of
     # one another. The last is a second ``point_duplicate_first``-style table, of face indices
-    # keyed on the sorted cluster triple and compared *exactly* by recomputing the stored face's
-    # triple, lowered to the class's smallest face index with ``atomic_min`` -- the first
-    # occurrence, whose winding the output keeps. A face that claims an empty slot appends it at
+    # keyed on the oriented cluster triple and compared *exactly* by recomputing the stored face's
+    # triple, lowered to the class's smallest face index with ``atomic_min``. A face that claims
+    # an empty slot appends it at
     # the second cursor. ``out_cell_state``, ``out_face_table`` and ``out_counters`` arrive
     # initialised by the caller (``-1``, ``-1``, ``0``) and leave holding the answer.
     f = wp.int32(wp.tid())
-    s0, s1, s2, distinct = sorted_cluster_triple(faces, vertex_cell, f)
+    s0, s1, s2, distinct = oriented_cluster_triple(faces, vertex_cell, f)
     if not distinct:
         return
     claim_kept_cluster(
@@ -3379,7 +3382,7 @@ def cluster_mark_faces(
             if prev == wp.int32(-1):
                 out_face_slots[wp.atomic_add(out_counters, 1, wp.int32(1))] = h
                 break
-        t0, t1, t2, _distinct = sorted_cluster_triple(faces, vertex_cell, prev)
+        t0, t1, t2, _distinct = oriented_cluster_triple(faces, vertex_cell, prev)
         if t0 == s0 and t1 == s1 and t2 == s2:
             if f < prev:
                 wp.atomic_min(out_face_table, h, f)
@@ -3436,17 +3439,18 @@ def accumulate_cluster_vertex(
 def stage_cluster_vertex(
     vertex_cell: wp.array[wp.int32],
     cell_rank: wp.array[wp.int32],
+    item: wp.int32,
     v: wp.int32,
     n_kept: wp.int32,
     out_staged: wp.array[wp.int32],
 ) -> None:
-    # Vertex ``v`` as a key and payload of the stable sort ``cluster_sorted_means`` reads: its kept
-    # cluster's output vertex (``n_kept``, past every kept one, when none keeps it) at ``v`` and
-    # ``v`` itself at ``half + v``, the two halves of ``out_staged`` being the sort's double-width
-    # keys and payload.
+    # Item ``item`` (vertex ``v`` itself, or a face corner on it) as a key and payload of the stable
+    # sort ``cluster_sorted_means`` reads: its kept cluster's output vertex (``n_kept``, past every
+    # kept one, when none keeps it) at ``item`` and ``v`` at ``half + item``, the two halves of
+    # ``out_staged`` being the sort's double-width keys and payload.
     r = vertex_cluster_rank(vertex_cell, cell_rank, v)
-    out_staged[v] = wp.where(r >= 0, r, n_kept)
-    out_staged[out_staged.shape[0] // 2 + v] = v
+    out_staged[item] = wp.where(r >= 0, r, n_kept)
+    out_staged[out_staged.shape[0] // 2 + item] = v
 
 
 @wp.func
@@ -3463,7 +3467,8 @@ def pick_closest_cluster_vertex(
     cell_rank: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
-    voxel_size: wp.float32,
+    inverse_size: wp.vec3,
+    voxel_size: wp.vec3,
     v: wp.int32,
     out_closest: wp.array[wp.uint64],
 ) -> None:
@@ -3474,7 +3479,7 @@ def pick_closest_cluster_vertex(
     # whatever the arrival order. ``out_closest`` arrives holding ``UINT64_MAX``.
     r = vertex_cluster_rank(vertex_cell, cell_rank, v)
     if r >= 0:
-        d = squared_distance_to_own_cell_center(vertices[v], origin, voxel_size)
+        d = squared_distance_to_own_cell_center(vertices[v], origin, inverse_size, voxel_size)
         key = (wp.uint64(wp.cast(d, wp.uint32)) << wp.uint64(32)) | wp.uint64(wp.uint32(v))
         wp.atomic_min(out_closest, r, key)
 
@@ -3502,8 +3507,10 @@ def cluster_gather_and_face_keys(
     cell_rank: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
-    voxel_size: wp.float32,
+    inverse_size: wp.vec3,
+    voxel_size: wp.vec3,
     contraction: wp.int32,
+    corner_items: wp.int32,
     face_table: wp.array[wp.int32],
     face_slots: wp.array[wp.int32],
     n_unique: wp.int32,
@@ -3514,30 +3521,34 @@ def cluster_gather_and_face_keys(
     out_keys: wp.array[wp.uint64],
     out_faces: wp.array[wp.int32],
 ) -> None:
-    # Two independent halves of the pass after the clusters are ranked, over ``max(n_vertices,
+    # Two independent halves of the pass after the clusters are ranked, over ``max(n_items,
     # n_unique)`` threads:
     #
-    # - vertex ``t`` into its cluster's representative: ``accumulate_cluster_vertex`` under
-    #   ``CLUSTER_AVERAGE`` (``out_sum`` / ``out_count`` zeroed) or ``pick_closest_cluster_vertex``
-    #   under ``CLUSTER_CLOSEST``; the other contraction's outputs are empty;
+    # - item ``t`` into its cluster's representative: ``accumulate_cluster_vertex`` under
+    #   ``CLUSTER_AVERAGE`` (``out_sum`` / ``out_count`` zeroed), staged for the ordered mean's sort
+    #   under ``CLUSTER_AVERAGE_SORTED``, or ``pick_closest_cluster_vertex`` under
+    #   ``CLUSTER_CLOSEST``; the other contractions' outputs are empty. An item is a vertex
+    #   (Open3D's mean, over every vertex of the cell) or, with ``corner_items`` set, a face corner
+    #   (MeshLab's, over every face corner in the cell, so a vertex counts once per face on it);
     # - unique face ``t < n_unique``: its class representative (the smallest face index,
-    #   ``cluster_mark_faces``) and the key ``grouping.unique_faces`` orders faces by -- the sorted
-    #   output-vertex triple packed in radix ``n_kept`` -- so the sort that follows reproduces that
-    #   function's output order.
+    #   ``cluster_mark_faces``) and its key, the output-vertex triple rotated to start at its
+    #   smallest and packed in radix ``n_kept``, which the sort that follows orders faces by.
     t = wp.int32(wp.tid())
-    if t < vertices.shape[0]:
+    n_items = wp.where(corner_items != 0, faces.shape[0], vertices.shape[0])
+    if t < n_items:
+        v = wp.where(corner_items != 0, faces[t], t)
         if contraction == CLUSTER_AVERAGE:
-            accumulate_cluster_vertex(vertex_cell, cell_rank, vertices, t, out_sum, out_count)
+            accumulate_cluster_vertex(vertex_cell, cell_rank, vertices, v, out_sum, out_count)
         elif contraction == CLUSTER_AVERAGE_SORTED:
-            stage_cluster_vertex(vertex_cell, cell_rank, t, wp.int32(n_kept), out_count)
+            stage_cluster_vertex(vertex_cell, cell_rank, t, v, wp.int32(n_kept), out_count)
         else:
             pick_closest_cluster_vertex(
-                vertex_cell, cell_rank, vertices, origin, voxel_size, t, out_closest
+                vertex_cell, cell_rank, vertices, origin, inverse_size, voxel_size, v, out_closest
             )
     if t < n_unique:
         g = face_table[face_slots[t]]
         r0, r1, r2 = ranked_face_corners(faces, vertex_cell, cell_rank, g)
-        s0, s1, s2 = sort3(r0, r1, r2)
+        s0, s1, s2 = rotate_min_first(r0, r1, r2)
         out_keys[t] = pack_index_triple(s0, s1, s2, n_kept)
         out_faces[t] = g
 
@@ -3559,8 +3570,9 @@ def cluster_emit(
     # The output mesh, over ``max(n_kept, n_unique)`` threads: output vertex ``t`` -- its cluster's
     # mean (``mean_from_sum``) or its representative vertex's own position, the index the low half
     # of ``pick_closest_cluster_vertex``'s key -- and unique face ``t`` in key order, in its
-    # representative's winding. Under ``CLUSTER_AVERAGE_SORTED`` the vertices are
-    # ``cluster_sorted_means``' and only the faces are written here.
+    # representative's winding rotated to start at its smallest output vertex (Open3D's rows).
+    # Under ``CLUSTER_AVERAGE_SORTED`` the vertices are ``cluster_sorted_means``' and only the faces
+    # are written here.
     t = wp.int32(wp.tid())
     if t < out_vertices.shape[0]:
         if contraction == CLUSTER_AVERAGE:
@@ -3569,7 +3581,8 @@ def cluster_emit(
             out_vertices[t] = vertices[wp.int32(closest[t] & wp.uint64(0xFFFFFFFF))]
     if t < sorted_faces.shape[0]:
         r0, r1, r2 = ranked_face_corners(faces, vertex_cell, cell_rank, sorted_faces[t])
-        write_corner_triple(out_faces, t, r0, r1, r2)
+        s0, s1, s2 = rotate_min_first(r0, r1, r2)
+        write_corner_triple(out_faces, t, s0, s1, s2)
 
 
 # How ``cluster_decimate``'s ordered mean splits its runs: a run of at most ``CLUSTER_SERIAL_MAX``
@@ -3590,7 +3603,8 @@ CLUSTER_HEAVY_BLOCKS = 4096
 @wp.func
 def cluster_run(sorted_clusters: wp.array[wp.int32], r: wp.int32) -> tuple[wp.int32, wp.int32]:
     # Output vertex ``r``'s run ``[start, stop)`` in ``stage_cluster_vertex``'s keys once stably
-    # sorted. Every kept cluster holds a vertex, so the run is never empty.
+    # sorted. Every kept cluster holds an item (a face keeps it, so a corner lies in it), so the
+    # run is never empty.
     return binary_search_index_left(sorted_clusters, r), binary_search_index_left(
         sorted_clusters, r + 1
     )
@@ -3777,7 +3791,6 @@ def compact_surviving_faces(
 # Objective for ``objective_flip_candidates``. A warp-uniform kernel argument rather than a
 # ``wp.Function``, so both predicates share one compiled module.
 OBJECTIVE_PLANARITY = wp.constant(wp.int32(0))  # improve triangle shape on a near-planar quad
-OBJECTIVE_CURVATURE = wp.constant(wp.int32(1))  # pick whichever diagonal bends the surface less
 OBJECTIVE_T_VERTEX = wp.constant(wp.int32(2))  # break up a sliver whose apex sits on the far edge
 
 # Relative margin a flip must beat the current diagonal by. Without it a quad whose two diagonals
@@ -3862,30 +3875,13 @@ def objective_flip_candidates(
         out_flip[k] = new_worst > old_worst
         return
 
-    normal_abc = triangle_normal(ap, bp, cp)
-    normal_acd = triangle_normal(ap, cp, dp)
-    normal_abd = triangle_normal(ap, bp, dp)
-    normal_dbc = triangle_normal(dp, bp, cp)
-
-    if objective == OBJECTIVE_PLANARITY:
-        # Only rewrite a quad that is flat enough for the rewrite not to change the surface. The
-        # gate is on the *cosine* of the dihedral so the kernel needs no inverse trigonometry.
-        if wp.dot(normal_abc, normal_acd) < planar_cos:
-            return
-        old_score = wp.min(
-            triangle_quality(ap, bp, cp, metric), triangle_quality(ap, cp, dp, metric)
-        )
-        new_score = wp.min(
-            triangle_quality(ap, bp, dp, metric), triangle_quality(dp, bp, cp, metric)
-        )
-        out_flip[k] = new_score > old_score * (1.0 + OBJECTIVE_EPS)
+    # Planarity: only rewrite a quad that is flat enough for the rewrite not to change the surface.
+    # The gate is on the *cosine* of the dihedral so the kernel needs no inverse trigonometry.
+    if wp.dot(triangle_normal(ap, bp, cp), triangle_normal(ap, cp, dp)) < planar_cos:
         return
-
-    # Curvature: keep whichever diagonal leaves the two triangles closer to coplanar. Unlike the
-    # planarity objective this deliberately *does* change the surface -- that is the point.
-    old_bend = wp.abs(dihedral_angle(normal_abc, normal_acd, cp - ap))
-    new_bend = wp.abs(dihedral_angle(normal_abd, normal_dbc, dp - bp))
-    out_flip[k] = new_bend < old_bend * (1.0 - OBJECTIVE_EPS)
+    old_score = wp.min(triangle_quality(ap, bp, cp, metric), triangle_quality(ap, cp, dp, metric))
+    new_score = wp.min(triangle_quality(ap, bp, dp, metric), triangle_quality(dp, bp, cp, metric))
+    out_flip[k] = new_score > old_score * (1.0 + OBJECTIVE_EPS)
 
 
 # ---------------------------------------------------------------------------

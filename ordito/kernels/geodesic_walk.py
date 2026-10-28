@@ -4,6 +4,7 @@ from ordito.constants import PI, TOLERANCE_ZERO_CONSTANT, TWO_PI
 from ordito.kernels.array import binary_search_index, loop_point, to_vec3, wrap_index
 from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import project_out_normal, unit_tangent, world_to_tangent
+from ordito.kernels.tangent_space import fan_anchor
 from ordito.kernels.triangles import face_normal, halfedge_corner_angle, local_corner
 
 wp.set_module_options({"enable_backward": False})
@@ -326,15 +327,17 @@ def start_direction_at_vertex(
     # The vertex's tangent space is its fan with every corner angle rescaled so the fan spans a full
     # turn (half a turn at a boundary vertex): the normalized polar angle of Polthier and Schmies,
     # the flattening of ``tangent.halfedge_tangent_angles``. A 3D direction is read as such an angle
-    # through a frame fitted to the fan: each incident edge, projected into the tangent plane, is
-    # rotated back by its normalized angle, and the sum of those vectors is where normalized angle 0
-    # lies in the plane. The fit uses every edge, so the result depends on neither the ring's first
-    # halfedge nor ``basis_x`` (any frame of the plane gives the same answer), and it is defined for
-    # every fan, including a saddle's, whose edges fold over one another in projection. It is
-    # geometry-central's vertex tangent basis, so ``potpourri3d.GeodesicTracer`` starts the same
-    # walk. A direction along an edge leaves along it only where the fan is flat; placing directions
-    # between the projected edges that bracket them instead gives every edge exactly, but has no
-    # answer for a folded fan and depended on the frame there.
+    # through a frame fitted to the fan (``tangent_space.fan_anchor``): each incident edge,
+    # projected into the tangent plane, is rotated back by its normalized angle, and the sum of
+    # those vectors is where normalized angle 0 lies in the plane. Angles are measured here from
+    # the ring's first slot, both in the fit and in the walk below; the fit uses every edge, so the
+    # result depends on neither that slot nor ``basis_x`` (any frame of the plane gives the same
+    # answer), and it is defined for every fan, including a saddle's, whose edges fold over one
+    # another in projection. It is geometry-central's vertex tangent basis, so
+    # ``potpourri3d.GeodesicTracer`` starts the same walk. A direction along an edge leaves along it
+    # only where the fan is flat; placing directions between the projected edges that bracket them
+    # instead gives every edge exactly, but has no answer for a folded fan and depended on the
+    # frame there.
     #
     # The corner angles are formed where they are read (``halfedge_corner_angle``), each the entry
     # of ``triangles.face_angles`` it stands for: a ray reads one vertex's ring, not every face.
@@ -352,36 +355,21 @@ def start_direction_at_vertex(
         full_turn = PI
     scale = full_turn / total
 
-    origin = vertices[vertex]
-    anchor_x = wp.float32(0.0)
-    anchor_y = wp.float32(0.0)
-    accumulated = wp.float32(0.0)
-    for j in range(begin, end):
-        h = ring_halfedges[j]
-        f_j = h // wp.int32(3)
-        k = h % wp.int32(3)
-        edge = world_to_tangent(
-            vertices[faces[3 * f_j + (k + 1) % 3]] - origin, basis_x[vertex], basis_y[vertex]
-        )
-        theta = scale * accumulated
-        cos_theta = wp.cos(theta)
-        sin_theta = wp.sin(theta)
-        anchor_x += edge[0] * cos_theta + edge[1] * sin_theta
-        anchor_y += edge[1] * cos_theta - edge[0] * sin_theta
-        accumulated += halfedge_corner_angle(vertices, faces, h)
-    if is_boundary[vertex]:
-        # An open fan has one edge more than wedges: the last wedge's far edge, at half a turn.
-        h = ring_halfedges[end - 1]
-        f_j = h // wp.int32(3)
-        k = h % wp.int32(3)
-        edge = world_to_tangent(
-            vertices[faces[3 * f_j + (k + 2) % 3]] - origin, basis_x[vertex], basis_y[vertex]
-        )
-        anchor_x -= edge[0]
-        anchor_y -= edge[1]
+    anchor = fan_anchor(
+        vertices,
+        faces,
+        ring_offsets,
+        ring_halfedges,
+        is_boundary[vertex],
+        vertex,
+        scale,
+        wp.int32(0),
+        basis_x[vertex],
+        basis_y[vertex],
+    )
 
     tangent = world_to_tangent(direction, basis_x[vertex], basis_y[vertex])
-    angle = wp.atan2(tangent[1], tangent[0]) - wp.atan2(anchor_y, anchor_x)
+    angle = wp.atan2(tangent[1], tangent[0]) - wp.atan2(anchor[1], anchor[0])
     if angle < wp.float32(0.0):
         angle += TWO_PI
     if angle < wp.float32(0.0):

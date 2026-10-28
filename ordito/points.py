@@ -50,7 +50,7 @@ angle between two ``wp.vec3`` arrays, geometry rather than array structure, so
 [`ordito.array`][ordito.array] is no better a home.
 """
 
-from typing import NamedTuple, cast
+from typing import Literal, NamedTuple, cast
 
 import warp as wp
 
@@ -646,6 +646,7 @@ def estimate_normals(
     *,
     orient_reference: wp.vec3 | None = None,
     camera_location: wp.vec3 | None = None,
+    orientation: Literal["neighbors", "centroid"] = "neighbors",
 ) -> wp.array[wp.vec3]:
     """
     Estimate per-point normals by PCA over each point's neighbourhood.
@@ -677,24 +678,33 @@ def estimate_normals(
     camera_location
         When given, normals are flipped to point toward this location
         (``dot(normal, camera_location - point) >= 0``), matching Open3D's
-        ``orient_normals_towards_camera_location``. Mutually exclusive with
-        ``orient_reference``.
+        ``orient_normals_towards_camera_location`` and MeshLab's ``compute_normal_for_point_clouds``
+        flipped toward ``viewpos``. Mutually exclusive with ``orient_reference``.
+    orientation
+        The sign rule when neither ``orient_reference`` nor ``camera_location`` is given.
+        ``"neighbors"`` (default) is the local SHOT rule of Tombari et al., pytorch3d's
+        ``estimate_pointcloud_normals`` default (``disambiguate_directions``): a normal is kept
+        when at least half of its neighbours' offsets from the point project strictly positively
+        onto it and flipped otherwise, so it points to the side its neighbourhood bulges toward
+        (inward on a convex surface). Neighbouring normals agree, but nothing makes the whole
+        cloud face one way. ``"centroid"`` orients each normal outward from the whole-cloud
+        centroid, a global rule valid for star-shaped clouds, which is what a surface
+        reconstruction from the normals needs ([`screened_poisson`]
+        [ordito.reconstruction.screened_poisson]). Ignored when either argument above is given.
 
     Returns
     -------
     wp.array[wp.vec3]
-        ``(n,)`` unit normals on ``points.device``. When neither orientation
-        argument is given, normals are oriented outward from the whole-cloud
-        centroid — a best-effort global orientation valid for star-shaped clouds
-        (Open3D leaves the sign arbitrary instead). Points with fewer than two
-        valid neighbours (or a degenerate neighbourhood) receive a fallback
+        ``(n,)`` unit normals on ``points.device``, signed by ``orientation`` when neither
+        orientation argument is given (Open3D leaves the sign arbitrary instead). Points with
+        fewer than two valid neighbours (or a degenerate neighbourhood) receive a fallback
         ``(0, 0, 1)`` normal.
 
     Raises
     ------
     ValueError
-        If both ``orient_reference`` and ``camera_location`` are given, or if ``neighbor_idx`` does
-        not have one row per point.
+        If both ``orient_reference`` and ``camera_location`` are given, if ``orientation`` is not
+        ``"neighbors"`` or ``"centroid"``, or if ``neighbor_idx`` does not have one row per point.
     RuntimeError
         If ``points`` and ``neighbor_idx`` are not all on one device.
 
@@ -705,7 +715,8 @@ def estimate_normals(
 
     Examples
     --------
-    On a sphere's vertices, the estimated normals point outward along the positions:
+    On a sphere's vertices the default sign points every normal inward, toward the side the
+    neighbours bulge to; ``orientation="centroid"`` points them outward along the positions:
 
     ```python
     import ordito as od
@@ -713,14 +724,17 @@ def estimate_normals(
     vertices, _ = od.creation.icosphere(subdivisions=2)
     neighbor_idx, _ = od.neighbors.query_nearest(vertices, vertices, 8)
     normals = od.points.estimate_normals(vertices, neighbor_idx)
-    alignment = (normals.numpy() * vertices.numpy()).sum(axis=1)
     print(normals.shape)  # (162,)
-    print(bool(alignment.min() > 0.99))  # True
+    print(bool((normals.numpy() * vertices.numpy()).sum(axis=1).max() < -0.99))  # True
+    outward = od.points.estimate_normals(vertices, neighbor_idx, orientation="centroid")
+    print(bool((outward.numpy() * vertices.numpy()).sum(axis=1).min() > 0.99))  # True
     ```
     """
     require_same_device(points=points, neighbor_idx=neighbor_idx)
     if orient_reference is not None and camera_location is not None:
         raise ValueError("pass at most one of orient_reference and camera_location")
+    if orientation not in ("neighbors", "centroid"):
+        raise ValueError(f"orientation must be 'neighbors' or 'centroid', got {orientation!r}")
 
     odt.ensure_ndim(neighbor_idx, 2, dtype=wp.int32)
 
@@ -744,13 +758,16 @@ def estimate_normals(
     elif orient_reference is not None:
         orient_mode = kernel_points.ORIENT_DIRECTION
         reference = orient_reference
+    elif orientation == "neighbors":
+        orient_mode = kernel_points.ORIENT_NEIGHBORS
+        reference = wp.vec3(0.0, 0.0, 0.0)
     else:
         orient_mode = kernel_points.ORIENT_CENTROID
         reference = wp.vec3(0.0, 0.0, 0.0)
 
     # Only the centroid orientation reads the cloud's centroid, as its raw sum divided in the
     # kernel; the other two modes pass a null array and skip the reduction.
-    centroid_mode = camera_location is None and orient_reference is None
+    centroid_mode = orient_mode == kernel_points.ORIENT_CENTROID
     point_sum = _point_sum(points) if centroid_mode else None
     out_normals = _launch.empty(n, dtype=wp.vec3, device=device)
     _launch.launch(

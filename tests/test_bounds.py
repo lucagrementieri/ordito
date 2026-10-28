@@ -12,11 +12,9 @@ import pyvista as pv
 import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
-from scipy.spatial import cKDTree
 
 import ordito as od
 import ordito.typing as odt
-from tests.comparisons import lexsort_rows
 from tests.conversions import (
     numpy_to_warp,
     points_to_warp,
@@ -277,34 +275,6 @@ def _obb_o3d(box_np: np.ndarray, frame_np: np.ndarray) -> o3d.geometry.OrientedB
     )
 
 
-def _original_face_rows(
-    sub_vertices_wp: wp.array[wp.vec3], sub_faces_wp: wp.array[wp.int32], vertices_np: np.ndarray
-) -> np.ndarray:
-    """
-    Canonicalize a submesh's faces back into the *input's* vertex numbering.
-
-    A crop compacts and renumbers its vertices, and two implementations are free to number them
-    differently, so the face buffers are not comparable as returned. Matching each output vertex to
-    the input vertex it came from puts both sides back in one numbering; sorting within each row and
-    then lexsorting the rows drops the winding and the face order, neither of which a containment
-    rule fixes. The row canonicalization is exact because it runs on integers -- the
-    lexsort hazard is about float coordinates, and none survive to here.
-
-    The match is nearest-neighbour with a bijection check rather than an equality, because a crop
-    moves no vertex but ordito *stores* them in ``float32`` where the reference table is trimesh's
-    ``float64``: measured 4.3e-07 at worst on these fixtures, against a vertex spacing of order
-    0.05 on the finest of them, so the 1e-5 bound sits ~20x above the rounding and ~5 000x below
-    the nearest wrong answer. The bijection is what makes the bound safe: two output vertices
-    collapsing onto one input row would fail it even inside the tolerance.
-    """
-    sub_np = sub_vertices_wp.numpy()
-    distance_np, original_np = cKDTree(vertices_np).query(sub_np)
-    assert np.max(distance_np) < 1e-5, "a cropped vertex is not one of the input's"
-    assert np.unique(original_np).size == original_np.size, "the vertex match is not 1:1"
-    rows_np = np.asarray(original_np)[sub_faces_wp.numpy().reshape(-1, 3)]
-    return lexsort_rows(np.sort(rows_np, axis=1))
-
-
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular"])
 @pytest.mark.parity("points_in_aabb", "open3d")
 @pytest.mark.parity("crop_points", "open3d")
@@ -507,11 +477,10 @@ def test_index_crop_and_mask_forms_agree(device: str, oriented: bool) -> None:
 @pytest.mark.parity("crop_mesh", "open3d")
 def test_crop_mesh_matches_open3d(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B: the kept triangles against ``TriangleMesh.crop``, remapped into one vertex numbering.
+    Class A: the cropped vertex and face buffers equal ``TriangleMesh.crop``'s, row for row.
 
-    The transform is ``_original_face_rows``: both crops renumber their compacted vertices in their
-    own order, so the face buffers are pushed back through the input's numbering before being
-    compared as sets. The vertex and face *counts* are class A on top of that, and the invariant --
+    Both keep the surviving faces in input order and renumber the vertices they reference in
+    ascending input order, so the two compacted meshes are the same buffers. The invariant --
     every surviving vertex inside the box -- is what a shared misreading of the containment rule
     could not satisfy, since it is checked against the box rather than against the reference.
     """
@@ -524,20 +493,8 @@ def test_crop_mesh_matches_open3d(request: pytest.FixtureRequest, mesh_name: str
     assert 0 < faces_o3d.shape[0] < mesh_tm.faces.shape[0]
 
     sub_vertices_wp, sub_faces_wp = od.bounds.crop_mesh(vertices_wp, faces_wp, *_corners_wp(box_np))
-    assert sub_faces_wp.size // 3 == faces_o3d.shape[0]
-    assert sub_vertices_wp.size == np.asarray(mesh_o3d.vertices).shape[0]
-    assert np.array_equal(
-        _original_face_rows(sub_vertices_wp, sub_faces_wp, mesh_tm.vertices),
-        _original_face_rows(
-            points_to_warp(np.asarray(mesh_o3d.vertices), mesh_wp.device),
-            wp.array(
-                np.ascontiguousarray(faces_o3d.ravel(), dtype=np.int32),
-                dtype=wp.int32,
-                device=mesh_wp.device,
-            ),
-            mesh_tm.vertices,
-        ),
-    )
+    assert np.allclose(sub_vertices_wp.numpy(), np.asarray(mesh_o3d.vertices), rtol=1e-5, atol=1e-5)
+    assert np.array_equal(sub_faces_wp.numpy().reshape(-1, 3), faces_o3d)
 
     inside_np = od.bounds.points_in_aabb_mask(sub_vertices_wp, *_corners_wp(box_np)).numpy()
     assert inside_np.all(), "a cropped vertex lies outside the box"
@@ -756,6 +713,11 @@ def test_oriented_bounding_box_volume_bands(
     """
     Class C: one refined 32 768-candidate box against three other boxes, by volume.
 
+    ``refine_iterations=8``, the default, spelled out: the unrefined search is igl's and carries
+    its Class A comparison in ``test_oriented_bounding_box_matches_igl``; refined, it reaches the
+    hull-based minimizers' volume, which is all a flat minimum lets two searches share (the frames
+    differ from Open3D's by a fraction of a degree on these clouds).
+
     A derived scalar -- box volume -- because no correspondence exists between the frames: the
     libraries minimize (or, for pyvista, do not minimize) over *different* candidate sets, and
     different orientations can realise the same volume. The bug class excluded is a search that
@@ -792,7 +754,9 @@ def test_oriented_bounding_box_volume_bands(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np, points_wp = _tilted_cloud(mesh_tm, mesh_wp.device)
 
-    rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(points_wp, 32768)
+    rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(
+        points_wp, 32768, refine_iterations=8
+    )
     volume_wp = float(np.prod(np.ptp(_bounds_np(lower_wp, upper_wp), axis=0)))
     assert np.isclose(
         volume_wp, _achieved_loss(points_np, _frame_np(rotation_wp), "volume"), rtol=1e-5

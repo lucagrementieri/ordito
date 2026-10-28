@@ -2,8 +2,12 @@ import warp as wp
 
 from ordito.constants import PI, TOLERANCE_ZERO_CONSTANT, TWO_PI
 from ordito.kernels.halfedge import halfedge_destination
-from ordito.kernels.predicates import unit_tangent
-from ordito.kernels.triangles import face_corner_angles, face_normals_and_area
+from ordito.kernels.predicates import unit_tangent, world_to_tangent
+from ordito.kernels.triangles import (
+    face_corner_angles,
+    face_normals_and_area,
+    halfedge_corner_angle,
+)
 from ordito.kernels.vertices import normalized_accumulated_row
 
 wp.set_module_options({"enable_backward": False})
@@ -30,6 +34,28 @@ def ring_tangent_scale(total: wp.float32, boundary: wp.bool) -> wp.float32:
     return scale
 
 
+@wp.func
+def ring_reference_slot(
+    ring_halfedges: wp.array[wp.int32], begin: wp.int32, end: wp.int32, boundary: wp.bool
+) -> wp.int32:
+    # The ring slot polar angle 0 is measured from: geometry-central's ``vertex.halfedge()``, so
+    # every tangent-space quantity is in its gauge. An open fan starts at its outgoing boundary
+    # halfedge, which is the ring's first; a closed fan at the outgoing halfedge of the vertex's
+    # highest-index face, which is the ring's largest halfedge since halfedges ascend by face.
+    best = begin
+    if not boundary:
+        for j in range(begin + 1, end):
+            if ring_halfedges[j] > ring_halfedges[best]:
+                best = j
+    return best - begin
+
+
+@wp.func
+def ring_slot(begin: wp.int32, end: wp.int32, start: wp.int32, t: wp.int32) -> wp.int32:
+    # The ``t``-th ring entry counted from slot ``start``, wrapping around the (closed) ring.
+    return begin + (start + t) % (end - begin)
+
+
 @wp.kernel
 def halfedge_tangent_angles(
     face_angles: wp.array2d[wp.float32],
@@ -40,7 +66,8 @@ def halfedge_tangent_angles(
 ) -> None:
     # One thread per vertex, two passes over its counter-clockwise ring: the first sums the corner
     # angles into the total angle Theta_v, the second lays the halfedges out as polar coordinates in
-    # the flattened tangent plane (``ring_tangent_scale``).
+    # the flattened tangent plane (``ring_tangent_scale``), from the reference slot
+    # (``ring_reference_slot``).
     # ``halfedge_tangent_angles_from_positions`` is the same walk forming the corner angles itself.
     v = wp.int32(wp.tid())
     begin = ring_offsets[v]
@@ -52,10 +79,12 @@ def halfedge_tangent_angles(
     for j in range(begin, end):
         total += corner_angle(face_angles, ring_halfedges[j])
 
-    scale = ring_tangent_scale(total, is_boundary[v])
+    boundary = is_boundary[v]
+    scale = ring_tangent_scale(total, boundary)
+    start = ring_reference_slot(ring_halfedges, begin, end, boundary)
     accumulated = wp.float32(0.0)
-    for j in range(begin, end):
-        h = ring_halfedges[j]
+    for t in range(end - begin):
+        h = ring_halfedges[ring_slot(begin, end, start, t)]
         out_angles[h] = scale * accumulated
         accumulated += corner_angle(face_angles, h)
 
@@ -90,10 +119,12 @@ def halfedge_tangent_angles_from_positions(
         out_angles[h] = angle
         total += angle
 
-    scale = ring_tangent_scale(total, is_boundary[v])
+    boundary = is_boundary[v]
+    scale = ring_tangent_scale(total, boundary)
+    start = ring_reference_slot(ring_halfedges, begin, end, boundary)
     accumulated = wp.float32(0.0)
-    for j in range(begin, end):
-        h = ring_halfedges[j]
+    for t in range(end - begin):
+        h = ring_halfedges[ring_slot(begin, end, start, t)]
         angle = out_angles[h]
         out_angles[h] = scale * accumulated
         accumulated += angle
@@ -117,29 +148,98 @@ def any_perpendicular(normal: wp.vec3) -> wp.vec3:
 
 
 @wp.func
+def fan_anchor(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    ring_halfedges: wp.array[wp.int32],
+    boundary: wp.bool,
+    vertex: wp.int32,
+    scale: wp.float32,
+    start: wp.int32,
+    frame_x: wp.vec3,
+    frame_y: wp.vec3,
+) -> wp.vec2:
+    # Where normalized polar angle 0 lies in the plane of ``(frame_x, frame_y)``, fitted to the
+    # whole fan: each incident edge in the frame, rotated back by its normalized angle (``scale``
+    # times the corner angles accumulated from ring slot ``start``), summed. An open fan has one
+    # edge more than wedges: the last wedge's far edge, at half a turn. This is geometry-central's
+    # vertex tangent basis, and it is defined for every fan, including a saddle's, whose edges fold
+    # over one another in projection.
+    begin = ring_offsets[vertex]
+    end = ring_offsets[vertex + 1]
+    origin = vertices[vertex]
+    anchor_x = wp.float32(0.0)
+    anchor_y = wp.float32(0.0)
+    accumulated = wp.float32(0.0)
+    for t in range(end - begin):
+        h = ring_halfedges[ring_slot(begin, end, start, t)]
+        edge = world_to_tangent(vertices[halfedge_destination(faces, h)] - origin, frame_x, frame_y)
+        theta = scale * accumulated
+        cos_theta = wp.cos(theta)
+        sin_theta = wp.sin(theta)
+        anchor_x += edge[0] * cos_theta + edge[1] * sin_theta
+        anchor_y += edge[1] * cos_theta - edge[0] * sin_theta
+        accumulated += halfedge_corner_angle(vertices, faces, h)
+    if boundary:
+        h = ring_halfedges[end - 1]
+        f = h // wp.int32(3)
+        k = h % wp.int32(3)
+        edge = world_to_tangent(vertices[faces[3 * f + (k + 2) % 3]] - origin, frame_x, frame_y)
+        anchor_x -= edge[0]
+        anchor_y -= edge[1]
+    return wp.vec2(anchor_x, anchor_y)
+
+
+@wp.func
 def vertex_tangent_basis(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     normal: wp.vec3,
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
+    boundary: wp.bool,
     v: wp.int32,
 ) -> tuple[wp.vec3, wp.vec3]:
-    # The reference direction is the vertex's first ring halfedge projected into the tangent plane,
-    # which is exactly the halfedge that ``halfedge_tangent_angles`` assigns polar angle 0 -- so the
-    # two functions describe the same coordinate system.
+    # ``basis_x`` is where ``halfedge_tangent_angles`` puts polar angle 0, fitted to the whole fan
+    # (``fan_anchor``) rather than read off the reference halfedge, which it equals only where the
+    # fan is flat -- so the two functions describe one coordinate system, geometry-central's. The
+    # fit is taken in a provisional frame around the reference edge's projection.
     if wp.length(normal) <= TOLERANCE_ZERO_CONSTANT:
         # An unreferenced vertex has no tangent plane at all. Emit a fixed unit frame rather than
         # zero vectors, which would surface downstream as NaN out of a normalization.
         return wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0)
     basis_x = any_perpendicular(normal)
     begin = ring_offsets[v]
-    if ring_offsets[v + 1] > begin:
-        h = ring_halfedges[begin]
+    end = ring_offsets[v + 1]
+    if end > begin:
+        start = ring_reference_slot(ring_halfedges, begin, end, boundary)
+        h = ring_halfedges[begin + start]
         direction = vertices[halfedge_destination(faces, h)] - vertices[v]
         tangential, length = unit_tangent(direction, normal, TOLERANCE_ZERO_CONSTANT)
         if length > TOLERANCE_ZERO_CONSTANT:
             basis_x = tangential
+        total = wp.float32(0.0)
+        for j in range(begin, end):
+            total += halfedge_corner_angle(vertices, faces, ring_halfedges[j])
+        scale = ring_tangent_scale(total, boundary)
+        if scale > wp.float32(0.0):
+            frame_y = wp.cross(normal, basis_x)
+            anchor = fan_anchor(
+                vertices,
+                faces,
+                ring_offsets,
+                ring_halfedges,
+                boundary,
+                v,
+                scale,
+                start,
+                basis_x,
+                frame_y,
+            )
+            norm = wp.length(anchor)
+            if norm > TOLERANCE_ZERO_CONSTANT * length:
+                basis_x = wp.normalize(anchor[0] * basis_x + anchor[1] * frame_y)
     return basis_x, wp.cross(normal, basis_x)
 
 
@@ -150,6 +250,7 @@ def vertex_tangent_frames(
     normals: wp.array[wp.vec3],
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
+    is_boundary: wp.array[wp.bool],
     out_basis_x: wp.array[wp.vec3],
     out_basis_y: wp.array[wp.vec3],
 ) -> None:
@@ -157,7 +258,7 @@ def vertex_tangent_frames(
     # from the angle-weighted accumulator first.
     v = wp.int32(wp.tid())
     basis_x, basis_y = vertex_tangent_basis(
-        vertices, faces, normals[v], ring_offsets, ring_halfedges, v
+        vertices, faces, normals[v], ring_offsets, ring_halfedges, is_boundary[v], v
     )
     out_basis_x[v] = basis_x
     out_basis_y[v] = basis_y
@@ -170,6 +271,7 @@ def vertex_tangent_frames_from_sums(
     normal_sums: wp.array2d[wp.float64],
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
+    is_boundary: wp.array[wp.bool],
     out_basis_x: wp.array[wp.vec3],
     out_basis_y: wp.array[wp.vec3],
     out_normals: wp.array[wp.vec3],
@@ -182,7 +284,7 @@ def vertex_tangent_frames_from_sums(
     normal = normalized_accumulated_row(normal_sums, v)
     out_normals[v] = normal
     basis_x, basis_y = vertex_tangent_basis(
-        vertices, faces, normal, ring_offsets, ring_halfedges, v
+        vertices, faces, normal, ring_offsets, ring_halfedges, is_boundary[v], v
     )
     out_basis_x[v] = basis_x
     out_basis_y[v] = basis_y

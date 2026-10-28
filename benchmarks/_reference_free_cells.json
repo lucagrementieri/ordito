@@ -3332,26 +3332,6 @@
    "rest": []
   },
   {
-   "group": "flip_by_objective",
-   "mesh_name": "saddle",
-   "rest": [
-    [
-     "objective",
-     "curvature"
-    ]
-   ]
-  },
-  {
-   "group": "flip_by_objective",
-   "mesh_name": "saddle_graded",
-   "rest": [
-    [
-     "objective",
-     "curvature"
-    ]
-   ]
-  },
-  {
    "group": "free_coordinates",
    "mesh_name": "saddle",
    "rest": [

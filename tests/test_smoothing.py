@@ -27,6 +27,7 @@ import ordito as od
 import ordito.typing as odt
 from benchmarks.meshes import BUILDERS
 from ordito.kernels import smoothing as kernel_smoothing
+from tests.comparisons import meshlab_umbrella
 from tests.conftest import MESHES, saddle_graded_large_arrays, sphere_irregular_arrays
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -48,55 +49,10 @@ if TYPE_CHECKING:
     from typing_extensions import Buffer
 
 
-def _meshlab_umbrella(
-    mesh_tm: tm.Trimesh, device: str, *, taubin: bool = False
-) -> odt.BsrMatrix[wp.float32]:
-    """
-    Assemble one of MeshLab's two coordinate umbrellas as a row-stochastic operator.
-
-    Both stencils were solved for rather than read off documentation: one pass of each filter is a
-    linear map, so a least-squares fit of a vertex's weights over random position sets on one
-    connectivity determines them exactly (residual 1e-15; see the comment above
-    ``test_filter_taubin_matches_pymeshlab``).
-
-    * ``taubin=False``, ``apply_coord_laplacian_smoothing`` and ``apply_coord_unsharp_mask``: an
-      interior vertex weights each neighbour by the number of faces their edge shares (2) and
-      itself by 1; a **rim** vertex sees only its two rim neighbours, at 1 each, and itself at 2.
-    * ``taubin=True``, ``apply_coord_taubin_smoothing``: an interior vertex takes the plain 1-ring
-      mean (ordito's default operator); a rim vertex the mean of itself and its rim neighbours.
-
-    Feeding this to ordito's ``laplacian_operator=`` parameter is what makes the comparisons Class
-    B rather than exemptions, on closed and open meshes alike.
-    """
-    faces_np = np.asarray(mesh_tm.faces)
-    n_vertices = mesh_tm.vertices.shape[0]
-    directed_np = faces_np[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2)
-    edges_np, shared_np = np.unique(np.sort(directed_np, axis=1), axis=0, return_counts=True)
-    rim_np = shared_np == 1
-    on_rim_np = np.zeros(n_vertices, dtype=bool)
-    on_rim_np[edges_np[rim_np].ravel()] = True
-
-    rows_np = np.concatenate((edges_np[:, 0], edges_np[:, 1]))
-    columns_np = np.concatenate((edges_np[:, 1], edges_np[:, 0]))
-    weights_np = np.tile(np.ones(shared_np.shape[0]) if taubin else shared_np, 2)
-    keep_np = ~on_rim_np[rows_np] | np.tile(rim_np, 2)  # a rim vertex sees its rim edges only
-    self_np = np.where(on_rim_np, 1.0 if taubin else 2.0, 0.0 if taubin else 1.0)
-    vertex_ids_np = np.arange(n_vertices)
-    weighted_sp = sp.csr_matrix(
-        (
-            np.concatenate((weights_np[keep_np], self_np)).astype(np.float64),
-            (
-                np.concatenate((rows_np[keep_np], vertex_ids_np)),
-                np.concatenate((columns_np[keep_np], vertex_ids_np)),
-            ),
-        ),
-        shape=(n_vertices, n_vertices),
-    )
-    weighted_sp.eliminate_zeros()
-    operator_sp = sp.coo_matrix(
-        sp.diags(1.0 / np.asarray(weighted_sp.sum(axis=1)).ravel()) @ weighted_sp
-    )
-    return _bsr_from_scipy(operator_sp, device)
+def _meshlab_taubin_umbrella(mesh_tm: tm.Trimesh, device: str) -> odt.BsrMatrix[wp.float32]:
+    """Upload [`meshlab_umbrella`][tests.comparisons.meshlab_umbrella]'s Taubin form to Warp."""
+    operator_sp = meshlab_umbrella(np.asarray(mesh_tm.faces), len(mesh_tm.vertices), taubin=True)
+    return _bsr_from_scipy(operator_sp.tocoo(), device)
 
 
 def _bsr_from_scipy(matrix_sp: sp.coo_matrix, device: str) -> odt.BsrMatrix[wp.float32]:
@@ -183,14 +139,15 @@ def test_filter_laplacian_matches_pymeshlab(
     request: pytest.FixtureRequest, mesh_name: str, iterations: int
 ) -> None:
     """
-    Class B: exact, once MeshLab's own umbrella is passed through ``laplacian_operator=``.
+    Class A: MeshLab's smoothing, through ordito's own copy of its stencil.
 
-    Three named transforms. ``cotangentweight=False`` selects the uniform scheme (the benchmark
-    passes it too); ``lamb=1.0`` matches MeshLab's full step, which replaces the vertex by the
-    weighted mean rather than interpolating toward it; and the operator is
-    [`_meshlab_umbrella`][tests.test_smoothing._meshlab_umbrella] rather than ordito's default,
-    because MeshLab's uniform Laplacian is *not* the 1-ring mean, and on a rim it is a different
-    stencil again (a rim vertex sees only its rim neighbours).
+    Each side is configured to the same filter. ``cotangentweight=False`` selects MeshLab's uniform
+    scheme (the benchmark passes it too); ``lamb=1.0`` is its full step, which replaces the vertex
+    by the weighted mean rather than interpolating toward it; and the operator is
+    [`face_weighted_laplacian`][ordito.laplacian.face_weighted_laplacian], because MeshLab's
+    uniform Laplacian is *not* the 1-ring mean -- neighbours weigh by the faces on their edge and
+    the vertex counts itself -- and on a rim it is a different stencil again (a rim vertex sees
+    only its rim neighbours).
 
     Measured agreement at 1 / 10 passes, both devices: **3.0e-07 / 1.4e-06** on
     ``sphere_irregular`` and **6.0e-08 / 3.0e-07** on ``saddle_graded``, against **3.7e-02 /
@@ -214,7 +171,7 @@ def test_filter_laplacian_matches_pymeshlab(
         lamb=1.0,
         iterations=iterations,
         volume_constraint=False,
-        laplacian_operator=_meshlab_umbrella(mesh_tm, mesh_wp.device),
+        laplacian_operator=od.laplacian.face_weighted_laplacian(mesh_wp.points, mesh_wp.indices),
     )
     assert np.allclose(smoothed_wp.numpy(), smoothed_pml, rtol=1e-5, atol=1e-5)
 
@@ -1149,8 +1106,9 @@ def test_filter_taubin(request: pytest.FixtureRequest, mesh_name: str) -> None:
 #   * ``apply_coord_laplacian_smoothing`` and ``apply_coord_unsharp_mask`` weight each neighbour by
 #     the number of faces the edge to it shares and count the vertex *itself* once, so on a closed
 #     mesh a degree-d vertex gets ``1 / (2d + 1)`` on itself and ``2 / (2d + 1)`` on each neighbour.
-#     That is `_meshlab_umbrella` below, and it is why these two filters are NOT the plain 1-ring
-#     mean -- the difference is 8% of the displacement, far too large to read as a tolerance.
+#     That is `od.laplacian.face_weighted_laplacian`, and it is why these two filters are NOT the
+#     plain 1-ring mean -- the difference is 8% of the displacement, far too large to read as a
+#     tolerance.
 #   * ``apply_coord_taubin_smoothing`` uses the plain 1-ring mean instead, which is ordito's own
 #     default operator.
 
@@ -1171,7 +1129,7 @@ def test_filter_taubin_matches_pymeshlab(
     one uses the plain 1-ring mean, so ordito's **default** operator is the right one on a closed
     mesh -- which is why ``sphere_irregular`` passes none. On a rim MeshLab averages a vertex with
     its two rim neighbours instead, so the open fixture passes
-    [`_meshlab_umbrella`][tests.test_smoothing._meshlab_umbrella]'s Taubin form, a second named
+    [`meshlab_umbrella`][tests.comparisons.meshlab_umbrella]'s Taubin form, a second named
     transform that touches the rim rows only.
 
     Measured **1.3e-07 / 1.8e-07** at 1 / 3 MeshLab steps on ``sphere_irregular`` and **5.1e-08 /
@@ -1188,9 +1146,7 @@ def test_filter_taubin_matches_pymeshlab(
     smoothed_pml = meshset_pml.current_mesh().vertex_matrix()
     assert np.abs(smoothed_pml - mesh_tm.vertices).max() > 1e-2  # non-vacuity: it moved
 
-    operator = (
-        None if mesh_tm.is_watertight else _meshlab_umbrella(mesh_tm, mesh_wp.device, taubin=True)
-    )
+    operator = None if mesh_tm.is_watertight else _meshlab_taubin_umbrella(mesh_tm, mesh_wp.device)
     smoothed_wp = od.smoothing.filter_taubin(
         mesh_wp.points,
         mesh_wp.indices,
@@ -2959,15 +2915,15 @@ def test_filter_sharpen_matches_pymeshlab(
     request: pytest.FixtureRequest, mesh_name: str, iterations: int
 ) -> None:
     """
-    Class B: exact under the same operator substitution as the Laplacian test above.
-
-    See [`test_filter_laplacian_matches_pymeshlab`]
-    [tests.test_smoothing.test_filter_laplacian_matches_pymeshlab] for how the operator is derived.
+    Class A: the default ``filter_sharpen`` is MeshLab's unsharp mask.
 
     ``apply_coord_unsharp_mask`` takes ``weight`` and ``iterations`` under ordito's own names and
-    meanings, and ``weightorig=1.0`` is its default (the original-position weight ordito fixes at
-    1), so the only transform is passing
-    [`_meshlab_umbrella`][tests.test_smoothing._meshlab_umbrella] as the smoothing operator.
+    meanings, and ``weightorig=1.0`` is its default (ordito's ``weight_original``); the default
+    smoothing operator is MeshLab's,
+    [`face_weighted_laplacian`][ordito.laplacian.face_weighted_laplacian] (see
+    [`test_filter_laplacian_matches_pymeshlab`]
+    [tests.test_smoothing.test_filter_laplacian_matches_pymeshlab]). The plain 1-ring mean
+    ([`laplacian`][ordito.laplacian.laplacian]) is the mutation probe, asserted to miss.
 
     Measured at 1 / 10 iterations, both devices: **1.7e-07 / 5.0e-07** on
     ``sphere_irregular`` and **4.1e-08 / 1.2e-07** on ``saddle_graded``, against **1.1e-02 /
@@ -2982,63 +2938,69 @@ def test_filter_sharpen_matches_pymeshlab(
     assert np.abs(sharpened_pml - mesh_tm.vertices).max() > 1e-3  # non-vacuity: it moved
 
     sharpened_wp = od.smoothing.filter_sharpen(
+        mesh_wp.points, mesh_wp.indices, weight=0.3, iterations=iterations
+    )
+    assert np.allclose(sharpened_wp.numpy(), sharpened_pml, rtol=1e-5, atol=1e-5)
+    one_ring_wp = od.smoothing.filter_sharpen(
         mesh_wp.points,
         mesh_wp.indices,
         weight=0.3,
         iterations=iterations,
-        laplacian_operator=_meshlab_umbrella(mesh_tm, mesh_wp.device),
+        laplacian_operator=od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices),
     )
-    assert np.allclose(sharpened_wp.numpy(), sharpened_pml, rtol=1e-5, atol=1e-5)
+    assert float(np.abs(one_ring_wp.numpy() - sharpened_pml).max()) > 1e-3
 
 
+@pytest.mark.parametrize("iterations", [1, 3])
 @pytest.mark.parametrize("mesh_name", MESHES)
-@pytest.mark.parity("filter_sharpen", "open3d")
-def test_filter_sharpen_matches_open3d(request: pytest.FixtureRequest, mesh_name: str) -> None:
+@pytest.mark.parity("filter_sharpen_graph_laplacian", "open3d")
+def test_filter_sharpen_graph_laplacian_matches_open3d(
+    request: pytest.FixtureRequest, mesh_name: str, iterations: int
+) -> None:
     """
-    Class B: one ``filter_sharpen`` pass is the unsharp mask under the operator ``I - (D - A)``.
+    Class A: ``method="graph_laplacian"`` is Open3D's ``filter_sharpen``, step for step.
 
-    Open3D adds ``strength * (deg(v) * v - sum of neighbours)``: the **unnormalized** graph
-    Laplacian of the undirected 1-ring. ordito's mask is ``p + weight * (p - S p)`` for a smoothing
-    operator ``S``, so ``S = I - (D - A)`` -- a matrix whose rows still sum to one, with diagonal
-    ``1 - deg(v)`` -- reproduces it exactly at one pass, with ``weight = strength``. That operator
-    is the named transform. Open3D's ``number_of_iterations`` then *repeats* the sharpening, where
-    ordito's ``iterations`` deepens the smoothing it subtracts, so the two counts are different
-    parameters and only one pass of each corresponds.
-
-    Measured, both devices: **1.2e-07** on ``sphere_irregular`` and **4.8e-08** on
-    ``saddle_graded``, against **4.2e-01** and **2.6e-02** with ordito's default row-stochastic
-    operator -- the per-vertex degree factor no ``weight`` mapping absorbs on an irregular mesh,
-    which is asserted too.
+    Open3D adds ``strength * (deg(v) * v - sum of neighbours)`` per step, the **unnormalized** graph
+    Laplacian of the undirected 1-ring, and ``number_of_iterations`` repeats the step from the
+    previous positions; ``method="graph_laplacian"`` is that filter, with ``weight`` its
+    ``strength`` and ``iterations`` its step count. Measured, both devices: **1.2e-07 / 2.4e-07**
+    at 1 / 3 steps on ``sphere_irregular`` and **4.8e-08 / 5.5e-08** on ``saddle_graded``.
+    **Mutation probe:** the default unsharp mask at the same weight and one pass is **4.2e-01** and
+    **3.8e-02** off -- the per-vertex degree factor no ``weight`` mapping absorbs on an irregular
+    mesh -- which is asserted too.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    sharpened_o3d = np.asarray(trimesh_to_open3d(mesh_tm).filter_sharpen(1, 0.1).vertices)
+    sharpened_o3d = np.asarray(trimesh_to_open3d(mesh_tm).filter_sharpen(iterations, 0.1).vertices)
     assert np.abs(sharpened_o3d - mesh_tm.vertices).max() > 1e-2  # non-vacuity: it moved
 
-    n_vertices = mesh_tm.vertices.shape[0]
-    edges_np = np.asarray(mesh_tm.edges_unique)
-    adjacency_sp = sp.csr_matrix(
-        (
-            np.ones(2 * edges_np.shape[0]),
-            (
-                np.concatenate((edges_np[:, 0], edges_np[:, 1])),
-                np.concatenate((edges_np[:, 1], edges_np[:, 0])),
-            ),
-        ),
-        shape=(n_vertices, n_vertices),
-    )
-    degree_np = np.asarray(adjacency_sp.sum(axis=1)).ravel()
-    operator = _bsr_from_scipy(
-        sp.coo_matrix(sp.identity(n_vertices) - sp.diags(degree_np) + adjacency_sp), mesh_wp.device
-    )
     sharpened_wp = od.smoothing.filter_sharpen(
-        mesh_wp.points, mesh_wp.indices, weight=0.1, iterations=1, laplacian_operator=operator
+        mesh_wp.points, mesh_wp.indices, weight=0.1, iterations=iterations, method="graph_laplacian"
     )
     assert np.allclose(sharpened_wp.numpy(), sharpened_o3d, rtol=1e-5, atol=1e-5)
 
-    default_wp = od.smoothing.filter_sharpen(
-        mesh_wp.points, mesh_wp.indices, weight=0.1, iterations=1
+    if iterations == 1:
+        default_wp = od.smoothing.filter_sharpen(
+            mesh_wp.points, mesh_wp.indices, weight=0.1, iterations=1
+        )
+        assert float(np.abs(default_wp.numpy() - sharpened_o3d).max()) > 1e-2
+
+
+def test_filter_sharpen_rejects_an_unknown_method(device: str) -> None:
+    """
+    Not a library comparison: ``method`` is a menu, and the graph step has no original term.
+
+    An unknown option names the argument; ``weight_original`` scales the unsharp mask's original
+    position, which the graph Laplacian step does not have, so passing it there would be ignored.
+    """
+    vertices_wp, faces_wp = numpy_to_warp(
+        np.eye(3, dtype=np.float32), np.arange(3, dtype=np.int32), device
     )
-    assert float(np.abs(default_wp.numpy() - sharpened_o3d).max()) > 1e-2
+    with pytest.raises(ValueError, match="method must be 'unsharp_mask' or 'graph_laplacian'"):
+        od.smoothing.filter_sharpen(vertices_wp, faces_wp, method="open3d")  # pyright: ignore[reportArgumentType]
+    with pytest.raises(ValueError, match="weight_original applies to the unsharp mask only"):
+        od.smoothing.filter_sharpen(
+            vertices_wp, faces_wp, weight_original=2.0, method="graph_laplacian"
+        )
 
 
 def test_filter_sharpen_amplifies_detail(
@@ -3054,7 +3016,12 @@ def test_filter_sharpen_amplifies_detail(
 
     smoothed_np = (
         od.smoothing.filter_laplacian(
-            vertices_wp, faces_wp, lamb=1.0, iterations=5, volume_constraint=False
+            vertices_wp,
+            faces_wp,
+            lamb=1.0,
+            iterations=5,
+            volume_constraint=False,
+            laplacian_operator=od.laplacian.face_weighted_laplacian(vertices_wp, faces_wp),
         )
         .numpy()
         .astype(np.float64)

@@ -91,6 +91,19 @@ def sort3(a: wp.Scalar, b: wp.Scalar, c: wp.Scalar) -> tuple[wp.Scalar, wp.Scala
 
 
 @wp.func
+def rotate_min_first(
+    a: wp.Scalar, b: wp.Scalar, c: wp.Scalar
+) -> tuple[wp.Scalar, wp.Scalar, wp.Scalar]:
+    # The cyclic rotation of ``(a, b, c)`` that starts at its smallest entry: ``sort3``'s
+    # counterpart that keeps the winding, so a triangle and its reversed twin stay distinct.
+    if b < a and b < c:
+        return b, c, a
+    if c < a and c < b:
+        return c, a, b
+    return a, b, c
+
+
+@wp.func
 def sign_with_tolerance(value: wp.Float, tolerance: wp.Float) -> wp.int32:
     # Sign of ``value`` with a dead zone of half-width ``tolerance`` around zero, which reads 0.
     #

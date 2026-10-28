@@ -775,10 +775,10 @@ def test_uv_seam_vertex_mask_twins_change_no_answer(
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_uv_seam_edges_matches_igl_port(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B (row-set canonicalization): all three blocks equal the ``igl::seam_edges`` CPU port.
+    Class A (``od.equality.rows_equal``): all three blocks equal the ``igl::seam_edges`` CPU port.
 
-    igl's output order is an ``unordered_set`` walk and ordito's is halfedge order, so both sides
-    are lexsorted first -- exact on integer rows. Run with an explicit ``FTC`` so the *index*
+    igl's output order is an ``unordered_set`` walk and ordito's is halfedge order, so the blocks
+    are compared up to row order. Run with an explicit ``FTC`` so the *index*
     predicate, the one MeshLab cannot express, is the thing under test.
 
     Each block is pinned to a per-fixture count first, because a block that is empty on both sides
@@ -807,9 +807,19 @@ def test_uv_seam_edges_matches_igl_port(request: pytest.FixtureRequest, mesh_nam
     assert seams_igl.shape[0] > 0
     assert foldovers_igl.shape[0] > 0
     assert (boundaries_igl.shape[0] == 0) == mesh_tm.is_watertight
-    assert np.array_equal(lexsort_rows(seams_wp.numpy()), lexsort_rows(seams_igl))
-    assert np.array_equal(lexsort_rows(boundaries_wp.numpy()), lexsort_rows(boundaries_igl))
-    assert np.array_equal(lexsort_rows(foldovers_wp.numpy()), lexsort_rows(foldovers_igl))
+    for rows_wp, rows_igl in (
+        (seams_wp, seams_igl),
+        (boundaries_wp, boundaries_igl),
+        (foldovers_wp, foldovers_igl),
+    ):
+        rows_igl_wp = odt.as_array2d(
+            wp.array(
+                np.ascontiguousarray(rows_igl, dtype=np.int32).reshape(-1, rows_wp.shape[1]),
+                device=str(mesh_wp.device),
+            ),
+            wp.int32,
+        )
+        assert od.equality.rows_equal(rows_wp, rows_igl_wp)
 
 
 def test_uv_seam_edges_match_uv_ignores_duplicate_indices(device: str) -> None:
