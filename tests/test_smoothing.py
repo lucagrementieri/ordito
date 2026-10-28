@@ -30,6 +30,7 @@ from ordito.kernels import smoothing as kernel_smoothing
 from tests.comparisons import meshlab_umbrella
 from tests.conftest import (
     MESHES,
+    OPEN_MESHES,
     saddle_graded_arrays,
     saddle_graded_large_arrays,
     sphere_irregular_arrays,
@@ -179,6 +180,48 @@ def test_filter_laplacian_matches_pymeshlab(
         laplacian_operator=od.laplacian.face_weighted_laplacian(mesh_wp.points, mesh_wp.indices),
     )
     assert np.allclose(smoothed_wp.numpy(), smoothed_pml, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize(("iterations", "force"), [(1, 0.5), (10, 0.5), (5, 0.3)])
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("filter_laplacian_integration", "meshlib")
+def test_filter_laplacian_matches_meshlib_relax(
+    request: pytest.FixtureRequest, mesh_name: str, iterations: int, force: float
+) -> None:
+    """
+    Class A: MeshLib's ``relax`` is the explicit uniform umbrella step, ``force`` its ``lamb``.
+
+    ``relax`` moves each vertex by ``force`` toward the mean of the vertices its outgoing edges
+    reach, all at once (a Jacobi step): ``filter_laplacian`` with the volume constraint off and
+    the symmetric 1-ring operator, the neighbours a half-edge ring gives a rim vertex. The
+    default directed operator, which gives a rim vertex one of its two rim neighbours, is
+    asserted to differ on the open fixture, so ``saddle_graded`` pins the rim.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+
+    mesh_ml = trimesh_to_meshlib(mesh_tm)
+    params_ml = mm.MeshRelaxParams()
+    params_ml.iterations = iterations
+    params_ml.force = force
+    mm.relax(mesh_ml, params_ml)
+    relaxed_ml = cast("np.ndarray", mn.toNumpyArray(mesh_ml.points))
+    assert np.abs(relaxed_ml - np.asarray(mesh_tm.vertices)).max() > 1e-3  # non-vacuity
+
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    relaxed_wp = od.smoothing.filter_laplacian(
+        vertices,
+        faces,
+        lamb=force,
+        iterations=iterations,
+        volume_constraint=False,
+        laplacian_operator=od.laplacian.laplacian(vertices, faces, symmetric=True),
+    )
+    assert np.allclose(relaxed_wp.numpy(), relaxed_ml, rtol=1e-5, atol=1e-5)
+    if mesh_name in OPEN_MESHES:
+        directed_wp = od.smoothing.filter_laplacian(
+            vertices, faces, lamb=force, iterations=iterations, volume_constraint=False
+        )
+        assert not np.allclose(directed_wp.numpy(), relaxed_ml, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize(
@@ -447,15 +490,12 @@ def test_inflate_vertex_faces_change_no_answer(
 @pytest.mark.parity("filter_humphrey", "trimesh")
 def test_filter_humphrey(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class A: HC filtering against trimesh, the only oracle this filter has.
+    Class A: HC filtering against trimesh, the oracle of the default ``method="vollmer"``.
 
-    **pymeshlab is not a second oracle here**, recorded so it is not re-tried:
-    ``apply_coord_hc_laplacian_smoothing`` implements the same Vollmer et al. paper but exposes no
-    parameters at all -- no step count, no ``alpha``, no ``beta`` -- and its single pass matches
-    ``filter_humphrey`` at *none* of the 8 x 11 x 11 ``(iterations, alpha, beta)`` combinations
-    probed (best max-coordinate deviation 0.019 on a mesh carrying 0.016 of noise). It is a
-    different formulation, not this one with other constants, and it is used only as a per-pass
-    timing reference in ``benchmarks/test_smoothing.py``.
+    MeshLab's ``apply_coord_hc_laplacian_smoothing`` matches this update at none of 8 x 11 x 11
+    ``(iterations, alpha, beta)`` combinations, because it adds the neighbours' mean correction
+    where the paper subtracts it; ``method="meshlab"`` reproduces it, in
+    ``test_filter_humphrey_matches_pymeshlab``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
@@ -466,6 +506,55 @@ def test_filter_humphrey(request: pytest.FixtureRequest, mesh_name: str) -> None
     tms.filter_humphrey(mesh_ref, alpha=0.1, beta=0.5, iterations=8)
 
     assert np.allclose(smoothed_wp.numpy(), mesh_ref.vertices, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("iterations", [1, 4])
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("filter_humphrey_meshlab", "pymeshlab")
+def test_filter_humphrey_matches_pymeshlab(
+    request: pytest.FixtureRequest, mesh_name: str, iterations: int
+) -> None:
+    """
+    Class A: ``method="meshlab"`` against MeshLab's HC Laplacian, one filter call a pass.
+
+    MeshLab's filter takes no parameters: it is one pass at ``alpha=0`` and ``beta=0.5`` over the
+    symmetric uniform 1-ring (each neighbour counted once per face on its edge and a rim edge
+    twice, so equally on a manifold mesh), with the sign of the neighbours' term reversed from
+    Vollmer et al.'s. The default ``method="vollmer"`` at the same parameters is asserted to
+    differ, so the sign is what this pins; ``saddle_graded`` pins the rim neighbours, which the
+    default's directed operator would get wrong too.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+
+    meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+    for _ in range(iterations):
+        meshset_pml.apply_coord_hc_laplacian_smoothing()
+    smoothed_pml = meshset_pml.current_mesh().vertex_matrix()
+    assert smoothed_pml.shape == mesh_tm.vertices.shape
+    assert np.abs(smoothed_pml - mesh_tm.vertices).max() > 1e-3  # non-vacuity: it moved
+
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    smoothed_wp = od.smoothing.filter_humphrey(
+        vertices, faces, alpha=0.0, beta=0.5, iterations=iterations, method="meshlab"
+    )
+    vollmer_wp = od.smoothing.filter_humphrey(
+        vertices, faces, alpha=0.0, beta=0.5, iterations=iterations
+    )
+    assert np.allclose(smoothed_wp.numpy(), smoothed_pml, rtol=1e-5, atol=1e-5)
+    assert not np.allclose(vollmer_wp.numpy(), smoothed_pml, rtol=1e-5, atol=1e-5)
+
+
+def test_filter_humphrey_rejects_unknown_method(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Not a parity assert: an unknown ``method`` raises, naming the options."""
+    _, mesh_wp = sphere_irregular
+    with pytest.raises(ValueError, match="'vollmer' or 'meshlab'"):
+        od.smoothing.filter_humphrey(
+            mesh_wp.points,
+            mesh_wp.indices,
+            method="paper",  # pyright: ignore[reportArgumentType]
+        )
 
 
 @pytest.mark.parity("filter_spikes", "meshlib")
@@ -2753,6 +2842,53 @@ def test_filter_normals_are_unit_and_crease_gated(device: str) -> None:
         > np.abs(gated_wp.numpy() - raw_wp.numpy()).max()
     )
     assert clean_np.shape[0] > 0
+
+
+@pytest.mark.parametrize("iterations", [1, 5])
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parity("filter_normals", "pymeshlab")
+def test_filter_normals_matches_pymeshlab(
+    request: pytest.FixtureRequest, mesh_name: str, iterations: int
+) -> None:
+    """
+    Class A on the closed fixture: MeshLab's face normal smoothing is the pass at ``threshold=180``.
+
+    ``apply_normal_smoothing_per_face`` takes no parameters: one pass replacing each face normal
+    by the normalized sum of its own and its three edge-neighbours' area-weighted normals, which
+    is this filter with no gate. Repeated calls are the passes. On a rim MeshLab's neighbour
+    across a boundary edge is the face itself, so a rim face counts its own normal once more per
+    rim edge, where ordito averages the neighbours it has: on the open fixture one pass agrees on
+    every face without a rim edge and differs on nearly all rim faces, which is asserted, so the
+    rule is pinned from both sides.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+
+    meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+    for _ in range(iterations):
+        meshset_pml.apply_normal_smoothing_per_face()
+    normals_pml = meshset_pml.current_mesh().face_normal_matrix()
+    assert np.abs(normals_pml - mesh_tm.face_normals).max() > 1e-2  # non-vacuity: they moved
+
+    normals_wp = od.smoothing.filter_normals(
+        mesh_wp.points, mesh_wp.indices, iterations=iterations, threshold=180.0
+    )
+    if mesh_name not in OPEN_MESHES:
+        assert np.allclose(normals_wp.numpy(), normals_pml, rtol=1e-5, atol=1e-5)
+        return
+    if iterations > 1:
+        pytest.skip("the rim difference spreads one ring a pass; one pass pins the rule")
+    rim_edges = tm.grouping.group_rows(mesh_tm.edges_sorted, require_count=1)
+    on_rim = np.zeros(len(mesh_tm.faces), dtype=bool)
+    on_rim[mesh_tm.edges_face[rim_edges]] = True
+    assert 0 < on_rim.sum() < on_rim.size
+    agree = np.all(
+        np.isclose(normals_wp.numpy(), normals_pml, rtol=1e-5, atol=1e-5), axis=1, keepdims=False
+    ).astype(bool)
+    assert isinstance(agree, np.ndarray)
+    assert agree[~on_rim].all()
+    # 124 of the 130 rim faces differ (both devices); the 6 others sit where the rim is flat
+    # enough that the extra self weight moves the normal by less than the tolerance.
+    assert agree[on_rim].mean() < 0.1
 
 
 def test_filter_normals_supplied_adjacency_matches_derived(

@@ -1353,12 +1353,8 @@ def test_expand_vertex_mask_matches_pymeshlab_dilatation(
     vertex is selected, which on a single-vertex seed is no faces at all and clears the
     selection.
 
-    **Erosion does not map the same way** and is deliberately not checked here: MeshLab's Erode
-    Selection removes a face when any of its vertices is on the boundary of the selection, so
-    reading the vertex selection back gives the vertices of the surviving *faces* -- measured at
-    51 / 39 / 25 vertices after 1 / 2 / 3 erosions where ``shrink_vertex_mask`` gives 19 / 7 / 1.
-    Different operation, not a discrepancy. ``test_vertex_morphology_on_an_irregular_mesh`` keeps
-    the graph-distance oracle, ``test_expand_and_shrink_vertex_mask_match_meshlib`` the library.
+    Erosion maps through the strict transfer instead, in
+    ``test_shrink_vertex_mask_matches_pymeshlab_erosion``.
     """
     if mesh_name == "grid":
         vertices_np, faces_np = _grid_mesh(9)
@@ -1385,6 +1381,51 @@ def test_expand_vertex_mask_matches_pymeshlab_dilatation(
         )
 
 
+@pytest.mark.parametrize("mesh_name", ["grid", "sphere_irregular", "saddle_graded"])
+@pytest.mark.parity("shrink_vertex_mask", "pymeshlab")
+def test_shrink_vertex_mask_matches_pymeshlab_erosion(
+    request: pytest.FixtureRequest, device: str, mesh_name: str
+):
+    """
+    Class A: MeshLab's erosion from a *strict* transfer is ``shrink_vertex_mask``, hop for hop.
+
+    Erode Selection keeps a vertex whose every face is selected, then a face whose every vertex
+    is. Starting from the faces whose three vertices are all in the mask
+    (``compute_selection_transfer_vertex_to_face(inclusive=True)``), the vertices kept by the
+    first step are those whose whole one-ring is in the mask -- one vertex hop -- and every later
+    erosion repeats it, so the vertex selection after ``k`` calls is ``shrink_vertex_mask(mask,
+    k)`` and the face selection the faces it covers. Both are asserted at every hop, on a grid, on
+    ``sphere_irregular`` and on ``saddle_graded``, whose mask meets the rim. Starting from a face
+    selection with any selected vertex (``inclusive=False``) instead lags one hop behind, which
+    is why this pair was once recorded as different operations.
+    """
+    if mesh_name == "grid":
+        vertices_np, faces_np = _grid_mesh(9)
+        mesh_tm = tm.Trimesh(vertices_np, faces_np.reshape(-1, 3), process=False)
+        faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
+    else:
+        mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+        faces_wp = mesh_wp.indices
+    vertices_np = np.asarray(mesh_tm.vertices)
+    centre = vertices_np[0]
+    distance = np.linalg.norm(vertices_np - centre, axis=1)
+    mask_np = distance <= np.quantile(distance, 0.6)
+    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
+
+    meshset_pml = trimesh_to_pymeshlab(mesh_tm, scalars=mask_np.astype(np.float64))
+    meshset_pml.compute_selection_by_condition_per_vertex(condselect="(q > 0.5)")
+    meshset_pml.compute_selection_transfer_vertex_to_face(inclusive=True)
+
+    for hops in (1, 2, 3):
+        meshset_pml.apply_selection_erosion()
+        selected_pml = meshset_pml.current_mesh().vertex_selection_array()
+        faces_pml = meshset_pml.current_mesh().face_selection_array()
+        assert 1 < int(selected_pml.sum()) < int(mask_np.sum())  # non-vacuity: a real erosion
+        shrunk_np = od.selection.shrink_vertex_mask(faces_wp, mask_wp, hops).numpy()
+        assert np.array_equal(shrunk_np, selected_pml)
+        assert np.array_equal(shrunk_np[mesh_tm.faces].all(axis=1), faces_pml)
+
+
 @pytest.mark.parametrize("hops", [1, 3])
 @pytest.mark.parity("expand_vertex_mask", "meshlib")
 @pytest.mark.parity("shrink_vertex_mask", "meshlib")
@@ -1392,11 +1433,10 @@ def test_expand_and_shrink_vertex_mask_match_meshlib(device: str, hops: int) -> 
     """
     Class A on both, and the reference that makes ``shrink_vertex_mask`` comparable at all.
 
-    MeshLab's Erode Selection is a *face* operation and is a documented class-D exemption for the
-    erosion half (measured 51 / 39 / 25 surviving vertices where ordito gives 19 / 7 / 1), which
-    left ``shrink_vertex_mask`` with a numpy oracle and no library to check it against. MeshLib's
-    ``shrink`` takes a ``VertBitSet`` and erodes it by one-ring layers, which is ordito's operation
-    exactly: element-for-element agreement at every hop count here, in both directions.
+    MeshLib's ``shrink`` takes a ``VertBitSet`` and erodes it by one-ring layers, which is ordito's
+    operation exactly: element-for-element agreement at every hop count here, in both directions.
+    MeshLab's face-based erosion reaches the same answer through a strict transfer, in
+    ``test_shrink_vertex_mask_matches_pymeshlab_erosion``.
 
     Two things about the call, both of which fail silently if got wrong. ``expand`` and ``shrink``
     are **overload sets** whose region form returns ``None`` and *mutates* the bitset in place --

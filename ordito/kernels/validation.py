@@ -862,14 +862,15 @@ def face_defective(
     f: wp.int32,
     min_quality: wp.float32,
     max_normal_cos: wp.float32,
+    max_pair_angle: wp.float32,
     max_fold_angle: wp.float32,
 ) -> wp.bool:
-    # Is face ``f`` bad: too thin, too far from its neighbourhood's consensus normal, or folded
-    # back onto its own ring? Each criterion is disabled by passing a cosine of -2 / a quality of
-    # -1 / a fold angle of ``FOLD_ANGLE_OFF`` (radians, past pi), which no real value can reach, so
-    # the three gates compose without a separate flag argument. The decision rule behind
-    # ``face_defective_mask`` and ``repair.remove_folded_faces``' marking pass
-    # (``repair.mark_unfolded_faces``).
+    # Is face ``f`` bad: too thin, too far from its neighbourhood's consensus normal (or, the
+    # pairwise form, from any one neighbour's), or folded back onto its own ring? Each criterion is
+    # disabled by passing a cosine of -2 / a quality of -1 / an angle of ``FOLD_ANGLE_OFF``
+    # (radians, past pi), which no real value can reach, so the gates compose without a separate
+    # flag argument. The decision rule behind ``face_defective_mask`` and
+    # ``repair.remove_folded_faces``' marking pass (``repair.mark_unfolded_faces``).
     #
     # The thinness is ``triangles.face_quality``'s ``radius_ratio`` formed from the corners in
     # registers, and the neighbourhood is gathered through the face's halfedge mates
@@ -881,7 +882,11 @@ def face_defective(
         v0, v1, v2 = face_vertices(vertices, faces, f)
         if triangle_radius_ratio(v0, v1, v2) < min_quality:
             return True
-    if max_normal_cos <= -2.0 and max_fold_angle >= FOLD_ANGLE_OFF:
+    if (
+        max_normal_cos <= -2.0
+        and max_pair_angle >= FOLD_ANGLE_OFF
+        and max_fold_angle >= FOLD_ANGLE_OFF
+    ):
         return False
 
     normal, neighbor_sum, max_angle = neighbor_normals(vertices, faces, face_normals, mates, f)
@@ -891,6 +896,10 @@ def face_defective(
     consensus = wp.normalize(neighbor_sum)
     agreement = wp.dot(normal, consensus)
     if wp.length_sq(consensus) > 0.0 and agreement < max_normal_cos:
+        return True
+    # Pairwise: the sharpest dihedral to any one neighbour, the test MeshLab's ``nfratio`` makes.
+    # It flags both faces of every such edge, so a reversed face drags its neighbours with it.
+    if max_angle > max_pair_angle:
         return True
 
     # Fold: some neighbour meets this face at nearly pi *and* this face is the one facing against
@@ -910,11 +919,20 @@ def face_defective_mask(
     mates: wp.array[wp.int32],
     min_quality: wp.float32,
     max_normal_cos: wp.float32,
+    max_pair_angle: wp.float32,
     max_fold_angle: wp.float32,
     out_bad: wp.array[wp.bool],
 ) -> None:
     # One thread per face does all of ``face_defective``.
     f = wp.int32(wp.tid())
     out_bad[f] = face_defective(
-        vertices, faces, face_normals, mates, f, min_quality, max_normal_cos, max_fold_angle
+        vertices,
+        faces,
+        face_normals,
+        mates,
+        f,
+        min_quality,
+        max_normal_cos,
+        max_pair_angle,
+        max_fold_angle,
     )

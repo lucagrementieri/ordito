@@ -662,11 +662,11 @@ these rows are drawn from. Eight of the groups they land in **had no reference o
 | `test_linalg` | `min_quad_with_fixed` | `compute_scalar_by_scalar_harmonic_field_per_vertex` | its direct solve is **flat** (39.0 / 39.6 ms) across the `quality` axis where ordito's CG goes 33.7 → 83.5, so the whole spread is iteration count |
 | `test_selection` | `expand_vertex_mask` / `shrink_vertex_mask` | `apply_selection_dilatation` / `..._erosion` | slopes of 7.3× and 8.0× over 1 → 8 hops, confirming a hop is constant work |
 | `test_proximity` | `signed_distance_on_mesh` | `compute_scalar_by_distance_from_another_mesh_per_vertex` | its per-query cost **grows** with the face count (20 / 63 / 768 µs) where ordito's BVH does not |
-| `test_smoothing` | `filter_taubin`, `filter_humphrey` (new groups) | `apply_coord_taubin_smoothing`, `apply_coord_hc_laplacian_smoothing` | two ordito filters that were unbenchmarked |
+| `test_smoothing` | `filter_taubin`, `filter_humphrey_meshlab` (new groups) | `apply_coord_taubin_smoothing`, `apply_coord_hc_laplacian_smoothing` | two ordito filters that were unbenchmarked; MeshLab's HC adds the neighbours' mean correction where the paper subtracts it, hence `method="meshlab"` |
 | `test_remesh` | `isotropic_remesh` | `meshing_isotropic_explicit_remeshing` | 3.3× across `quality` against ordito's **flat** 123 ms — the fixed-pass loop is not adapting |
 | `test_reduce` | `median` | `get_scalar_statistics_per_vertex` | six statistics in one call, 2.5 / 11 / 110× |
 | `test_vertices` | `average_onto_vertices` | `compute_scalar_transfer_face_to_vertex` | also *faster* on `fan_hub` — valence is not a hot spot, independently |
-| `test_repair` | `remove_non_manifold_faces` | `meshing_repair_non_manifold_edges` | nothing else in the set removes non-manifold faces at all |
+| `test_repair` | `remove_non_manifold_faces_meshlab` | `meshing_repair_non_manifold_edges` | nothing else in the set removes non-manifold faces at all; it keeps each edge's two largest faces, `method="meshlab"` |
 
 The rest are second or third independent implementations:
 

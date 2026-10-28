@@ -884,7 +884,11 @@ def remove_degenerate_faces(
 
 
 def remove_non_manifold_faces(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], max_iter: int = 3
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_iter: int = 3,
+    *,
+    method: Literal["all", "meshlab"] = "all",
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Remove faces touching a non-manifold (>2-incident) edge, leaving the mesh edge-manifold.
@@ -894,6 +898,15 @@ def remove_non_manifold_faces(
     share count of its own edges, and every edge used three or more times loses all its faces, so
     one pass leaves every edge used at most twice: a further pass would keep every face.
 
+    ``method="meshlab"`` removes fewer faces: visiting the faces on a non-manifold edge from the
+    smallest area up (ties by face index), it deletes a face while one of its edges still has more
+    than two faces, so each such edge keeps its two largest faces where they do not conflict. A
+    duplicated face loses one copy rather than both and its neighbour, and a fin on an edge goes
+    alone. This is MeshLab's ``meshing_repair_non_manifold_edges(method="Remove Faces")``; the
+    visit runs as rounds in which every face whose smaller rivals on its edges have been decided
+    decides at once, so the number of rounds is the longest chain of faces of increasing area
+    linked through shared non-manifold edges, one host readback each.
+
     Parameters
     ----------
     vertices
@@ -902,7 +915,13 @@ def remove_non_manifold_faces(
         ``(3 * n_faces,)`` flat triangle index buffer.
     max_iter
         Maximum number of removal passes. One pass already reaches the fixpoint, so every value
-        from ``1`` gives the same answer; ``0`` removes nothing.
+        from ``1`` gives the same answer; ``0`` removes nothing. Unread under
+        ``method="meshlab"``, which runs until every face on a non-manifold edge is decided.
+    method
+        Which faces go.
+
+        - ``"all"`` (default) — every face on a non-manifold edge.
+        - ``"meshlab"`` — the smallest first, until each edge is manifold (see above).
 
     Returns
     -------
@@ -915,6 +934,8 @@ def remove_non_manifold_faces(
 
     Raises
     ------
+    ValueError
+        If ``method`` is not ``"all"`` or ``"meshlab"``.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -942,8 +963,31 @@ def remove_non_manifold_faces(
     new_vertices, new_faces = od.repair.remove_non_manifold_faces(fin_vertices, fin_faces)
     print(new_faces.shape[0] // 3, od.validation.is_edge_manifold(new_faces))  # 10 True
     ```
+
+    ``method="meshlab"`` deletes the fin alone, the smallest face on that edge:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    a, b = faces.numpy()[:2]
+    fin_vertices = wp.array(np.vstack([vertices.numpy(), [0.0, 0.0, 0.2]]), dtype=wp.vec3)
+    fin_faces = wp.array(np.concatenate([faces.numpy(), [a, b, 8]]), dtype=wp.int32)
+    _, new_faces = od.repair.remove_non_manifold_faces(fin_vertices, fin_faces, method="meshlab")
+    print(new_faces.shape[0] // 3, od.validation.is_edge_manifold(new_faces))  # 12 True
+    ```
     """
     require_same_device(vertices=vertices, faces=faces)
+    if method not in ("all", "meshlab"):
+        raise ValueError(f"method must be 'all' or 'meshlab', got {method!r}")
+    if method == "meshlab":
+        keep = _smallest_first_survivors(vertices, faces)
+        if keep is None:
+            return vertices, faces
+        return od.selection.submesh_from_face_mask(vertices, faces, keep)
     # The radix of the edge keys; any bound above every index groups the edges identically, so the
     # vertex count serves every pass over a subset of the faces, as it does for
     # ``remove_degenerate_and_non_manifold_faces``, with no reduction and readback to infer one.
@@ -951,6 +995,68 @@ def remove_non_manifold_faces(
     if keep is None:
         return vertices, faces
     return od.selection.submesh_from_face_mask(vertices, survivors, keep)
+
+
+def _smallest_first_survivors(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+) -> wp.array[wp.bool] | None:
+    """
+    Return the faces ``method="meshlab"`` keeps, or ``None`` when no edge is non-manifold.
+
+    The halfedges of each non-manifold edge are a run of the sorted key order beginning at the
+    edge's lowest halfedge, which the mates name; each round decides, then commits.
+    """
+    n_faces = faces.size // 3
+    if n_faces == 0:
+        return None
+    device = faces.device
+    mates, key_order = od.halfedge.halfedge_mates(faces, return_key_order=True)
+    assert key_order is not None  # without a vertex bound the pairing sorts
+    positions = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    run_lengths = _launch.zeros(3 * n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.non_manifold_edge_runs,
+        dim=3 * n_faces,
+        inputs=[mates, key_order],
+        outputs=[positions, run_lengths],
+        device=device,
+    )
+    states = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    areas = _launch.empty(n_faces, dtype=wp.float32, device=device)
+    keep = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    undecided = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.mark_non_manifold_candidates,
+        dim=n_faces,
+        inputs=[vertices, faces, mates],
+        outputs=[states, areas, keep, undecided],
+        device=device,
+    )
+    # Readback: a mesh with no face on a non-manifold edge is returned as it came.
+    if read_scalar(undecided) == 0:
+        return None
+    live = _launch.clone(run_lengths)
+    decisions = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    # Each round decides at least the smallest undecided face, so ``n_faces`` rounds bound it.
+    for _ in range(n_faces):
+        _launch.launch(
+            kernel_repair.decide_non_manifold_faces,
+            dim=n_faces,
+            inputs=[mates, key_order, positions, run_lengths, live, states, areas],
+            outputs=[decisions, undecided],
+            device=device,
+        )
+        _launch.launch(
+            kernel_repair.commit_non_manifold_faces,
+            dim=n_faces,
+            inputs=[mates, decisions, states, live, keep],
+            outputs=[undecided],
+            device=device,
+        )
+        # Readback: the faces still waiting decide whether another round runs.
+        if read_scalar(undecided) == 0:
+            break
+    return keep
 
 
 def remove_degenerate_and_non_manifold_faces(

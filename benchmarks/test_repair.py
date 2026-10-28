@@ -362,36 +362,40 @@ def test_remove_small_components(bench_case: BenchCase) -> None:
     assert kept_faces.size // 3 == bench_case.n_faces
 
 
-@pytest.mark.noparity(
-    "pymeshlab",
-    reason="D2 the same idea, greedier: for each non-manifold edge MeshLab iteratively deletes the "
-    "smallest-area incident face until that edge is 2-manifold, where ordito drops every face on "
-    "an over-incident edge and re-tests. Both leave an edge-manifold mesh but they delete "
-    "different faces and different numbers of them, so only the post-condition is shared -- and "
-    "tests/test_repair.py now asserts that post-condition through igl and open3d rather than "
-    "through ordito's own detector, which is the half that was missing.",
-)
 @pytest.mark.benchmark(group="remove_non_manifold_faces")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("ordito", "pymeshlab")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("extra", _NON_MANIFOLD_COUNTS, ids=["clean", "nm1024"])
 def test_remove_non_manifold_faces(bench_case: BenchCase, extra: int) -> None:
     """
     Iterated edge-sort and manifold test: a clean mesh exits in one round, a broken one loops.
 
-    **open3d's ``remove_non_manifold_edges`` is deliberately not a second row.** It uses the same
-    greedier rule MeshLab does -- on a mesh carrying one extra face on an existing edge it deletes
-    that **one** face where ordito drops all three on that edge. Both land edge-manifold, so only
-    the post-condition is shared, and a second
-    incomparable timing row would say nothing the exemption above does not. What open3d *does*
-    supply is that post-condition: it and igl both flip False -> True with ordito on every input in
-    ``tests/test_repair.py``, which is where this group's real coverage now sits -- before that, the
-    contract was asserted with ordito's own ``is_edge_manifold``.
+    Ordito only: no library drops every face on a crowded edge. MeshLab deletes the smallest faces
+    first until each edge is manifold, the rule of ``method="meshlab"``, timed against MeshLab in
+    ``remove_non_manifold_faces_meshlab`` (Open3D does the same edge by edge, in hash order); the
+    post-condition is asserted through igl and open3d in ``tests/test_repair.py``.
+    """
+    vertices = bench_case.vertices_wp
+    faces = _faces_with_non_manifold_wp(bench_case, extra)
+    _kept_vertices, kept_faces = bench_case.run(
+        lambda: od.repair.remove_non_manifold_faces(vertices, faces)
+    )
+    assert kept_faces.size > 0
+
+
+@pytest.mark.benchmark(group="remove_non_manifold_faces_meshlab")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+@pytest.mark.parametrize("extra", _NON_MANIFOLD_COUNTS, ids=["clean", "nm1024"])
+def test_remove_non_manifold_faces_meshlab(bench_case: BenchCase, extra: int) -> None:
+    """
+    Smallest-area-first removal: the rounds of ``method="meshlab"`` against MeshLab's serial visit.
+
+    On ``nm1024`` every appended copy ties its original, so each crowded edge keeps one copy, and
+    the rounds number the longest chain of increasing area through shared crowded edges. The
+    clean row exits after one count readback.
     """
     if bench_case.kind == "pymeshlab":
-        # MeshLab deletes the smallest-area incident face per non-manifold edge until the edge is
-        # 2-manifold; ordito drops every face on an over-incident edge and re-tests. Same goal,
-        # a greedier rule, and the first reference this group has had.
         vertices_np = bench_case.vertices_np
         faces_nm_np = _faces_with_non_manifold_np(bench_case, extra)
         bench_case.run(
@@ -403,7 +407,7 @@ def test_remove_non_manifold_faces(bench_case: BenchCase, extra: int) -> None:
     vertices = bench_case.vertices_wp
     faces = _faces_with_non_manifold_wp(bench_case, extra)
     _kept_vertices, kept_faces = bench_case.run(
-        lambda: od.repair.remove_non_manifold_faces(vertices, faces)
+        lambda: od.repair.remove_non_manifold_faces(vertices, faces, method="meshlab")
     )
     assert kept_faces.size > 0
 

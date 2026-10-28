@@ -1294,12 +1294,16 @@ def humphrey_update_pass(
     lv: wp.array[wp.vec3d],
     b: wp.array[wp.vec3d],
     beta: wp.float64,
+    neighbour_sign: wp.float64,
     out_next: wp.array[Any],
 ) -> None:
-    # v' = L.v - (beta * b + (1 - beta) * L.b), with L.b formed here rather than in a buffer.
+    # v' = L.v - (beta * b + (1 - beta) * s * L.b), with L.b formed here rather than in a buffer.
+    # ``s`` is ``1`` for Vollmer et al.'s update and ``-1`` for MeshLab's, which adds the
+    # neighbours' mean push where the paper subtracts it; ``1 * L.b`` is exact, so the paper's
+    # update keeps its bits.
     i = wp.int32(wp.tid())
     lb = operator_row(offsets, columns, values, b, i)
-    out_next[i] = out_next.dtype(lv[i] - wp.lerp(lb, b[i], beta))
+    out_next[i] = out_next.dtype(lv[i] - wp.lerp(neighbour_sign * lb, b[i], beta))
 
 
 @wp.func
@@ -3059,7 +3063,14 @@ def _register_overloads() -> None:
     HUMPHREY_UPDATE_PASS = OverloadTable(
         humphrey_update_pass,
         {
-            dst: [*rows, wp.array[wp.vec3d], wp.array[wp.vec3d], wp.float64, wp.array[dst]]
+            dst: [
+                *rows,
+                wp.array[wp.vec3d],
+                wp.array[wp.vec3d],
+                wp.float64,
+                wp.float64,
+                wp.array[dst],
+            ]
             for dst in vectors
         },
     )

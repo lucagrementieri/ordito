@@ -42,7 +42,12 @@ from ordito.kernels.triangles import (
     write_corner_triple,
     write_corner_triple_reversible,
 )
-from ordito.kernels.validation import face_defective, face_mates_edge_manifold, face_parity_flip
+from ordito.kernels.validation import (
+    FOLD_ANGLE_OFF,
+    face_defective,
+    face_mates_edge_manifold,
+    face_parity_flip,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -430,6 +435,141 @@ def face_mate_manifold_flags(
     out_flags[f] = wp.where(keep, wp.int32(1), wp.int32(0))
 
 
+# A face's fate under ``remove_non_manifold_faces(method="meshlab")``: smallest area first, a face
+# on a non-manifold edge is deleted while one of its edges still has more than two live faces.
+NON_MANIFOLD_UNDECIDED = wp.int32(0)
+NON_MANIFOLD_KEPT = wp.int32(1)
+NON_MANIFOLD_DELETED = wp.int32(2)
+
+
+@wp.func
+def non_manifold_edge_root(mates: wp.array[wp.int32], h: wp.int32) -> wp.int32:
+    # The lowest halfedge on ``h``'s edge when three or more faces share it (``halfedge_mates``'
+    # ``-2 - lowest`` code), else -1. Keys every per-edge table below, and it is the first
+    # halfedge of the edge's run in the sorted key order (ties sort by index).
+    m = mates[h]
+    return wp.where(m <= -2, -2 - m, -1)
+
+
+@wp.kernel
+def non_manifold_edge_runs(
+    mates: wp.array[wp.int32],
+    key_order: wp.array[wp.int32],
+    out_positions: wp.array[wp.int32],
+    out_run_lengths: wp.array[wp.int32],
+) -> None:
+    # Each halfedge's slot in the key order, and the number of halfedges on each non-manifold edge
+    # (counted at its root, which ``wp.zeros`` started at 0): with the root's slot, the run of
+    # halfedges ``key_order[positions[root] : positions[root] + run_lengths[root]]``.
+    i = wp.int32(wp.tid())
+    h = key_order[i]
+    out_positions[h] = i
+    root = non_manifold_edge_root(mates, h)
+    if root >= 0:
+        wp.atomic_add(out_run_lengths, root, 1)
+
+
+@wp.kernel
+def mark_non_manifold_candidates(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    out_states: wp.array[wp.int32],
+    out_areas: wp.array[wp.float32],
+    out_keep: wp.array[wp.bool],
+    out_undecided: wp.array[wp.int32],
+) -> None:
+    # A face on a non-manifold edge starts undecided and is counted; every other face is kept.
+    f = wp.int32(wp.tid())
+    candidate = wp.bool(False)
+    for k in range(3):
+        if non_manifold_edge_root(mates, 3 * f + k) >= 0:
+            candidate = True
+    out_states[f] = wp.where(candidate, NON_MANIFOLD_UNDECIDED, NON_MANIFOLD_KEPT)
+    # The area of the ascending corner triple, so a face and every copy of it, whatever its
+    # winding or starting corner, tie bit for bit on both devices and the face index decides.
+    i0, i1, i2 = corner_triple(faces, f)
+    a, b, c = sort3(i0, i1, i2)
+    out_areas[f] = 0.5 * wp.length(wp.cross(vertices[b] - vertices[a], vertices[c] - vertices[a]))
+    out_keep[f] = True
+    if candidate:
+        wp.atomic_add(out_undecided, 0, 1)
+
+
+@wp.func
+def removed_before(areas: wp.array[wp.float32], g: wp.int32, f: wp.int32) -> wp.bool:
+    # The visiting order: ascending area, ties by face index.
+    return areas[g] < areas[f] or (areas[g] == areas[f] and g < f)
+
+
+@wp.kernel
+def decide_non_manifold_faces(
+    mates: wp.array[wp.int32],
+    key_order: wp.array[wp.int32],
+    positions: wp.array[wp.int32],
+    run_lengths: wp.array[wp.int32],
+    live: wp.array[wp.int32],
+    states: wp.array[wp.int32],
+    areas: wp.array[wp.float32],
+    out_decisions: wp.array[wp.int32],
+    out_undecided: wp.array[wp.int32],
+) -> None:
+    # One round of the smallest-first deletion, read from the state the last commit left. An
+    # undecided face is decided once no undecided face visited before it shares one of its
+    # non-manifold edges: then every face that could change its edges' live counts has acted, so
+    # it is deleted if one of them still has more than two live faces, as the serial visit would.
+    # Two faces deciding in one round share no such edge (one would wait for the other), so the
+    # commit's decrements never reach a count another decision read.
+    f = wp.int32(wp.tid())
+    if f == 0:
+        out_undecided[0] = 0
+    if states[f] != NON_MANIFOLD_UNDECIDED:
+        return
+    ready = wp.bool(True)
+    crowded = wp.bool(False)
+    for k in range(3):
+        root = non_manifold_edge_root(mates, 3 * f + k)
+        if root >= 0:
+            start = positions[root]
+            for j in range(run_lengths[root]):
+                g = key_order[start + j] // 3
+                if states[g] == NON_MANIFOLD_UNDECIDED and removed_before(areas, g, f):
+                    ready = False
+            if live[root] > 2:
+                crowded = True
+    decision = NON_MANIFOLD_UNDECIDED
+    if ready:
+        decision = wp.where(crowded, NON_MANIFOLD_DELETED, NON_MANIFOLD_KEPT)
+    out_decisions[f] = decision
+
+
+@wp.kernel
+def commit_non_manifold_faces(
+    mates: wp.array[wp.int32],
+    decisions: wp.array[wp.int32],
+    states: wp.array[wp.int32],
+    live: wp.array[wp.int32],
+    keep: wp.array[wp.bool],
+    out_undecided: wp.array[wp.int32],
+) -> None:
+    # ``decide_non_manifold_faces``' decisions written back: a deleted face leaves its
+    # non-manifold edges' live counts, and a face still waiting is counted for the host's stop
+    # test. In place on ``states``, ``live`` and ``keep``.
+    f = wp.int32(wp.tid())
+    if states[f] != NON_MANIFOLD_UNDECIDED:
+        return
+    decision = decisions[f]
+    states[f] = decision
+    if decision == NON_MANIFOLD_DELETED:
+        keep[f] = False
+        for k in range(3):
+            root = non_manifold_edge_root(mates, 3 * f + k)
+            if root >= 0:
+                wp.atomic_sub(live, root, 1)
+    elif decision == NON_MANIFOLD_UNDECIDED:
+        wp.atomic_add(out_undecided, 0, 1)
+
+
 @wp.kernel
 def nondegenerate_face_flags(
     vertices: wp.array[wp.vec3],
@@ -491,7 +631,15 @@ def mark_unfolded_faces(
     # passes ``face_normals`` as ``None``, so each normal is formed where the fold test reads it.
     f = wp.int32(wp.tid())
     folded = face_defective(
-        vertices, faces, face_normals, mates, f, wp.float32(-1.0), wp.float32(-2.0), max_fold_angle
+        vertices,
+        faces,
+        face_normals,
+        mates,
+        f,
+        wp.float32(-1.0),
+        wp.float32(-2.0),
+        FOLD_ANGLE_OFF,
+        max_fold_angle,
     )
     mark_face_fate(faces, f, not folded, out_keep, out_flags)
 

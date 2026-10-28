@@ -5793,6 +5793,24 @@
    "sort": 1
   }
  },
+ "benchmarks/test_repair.py::test_remove_non_manifold_faces_meshlab[sphere_med-ordito-cpu-clean]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 9,
+   "readback": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_non_manifold_faces_meshlab[sphere_med-ordito-cpu-nm1024]": {
+  "counts": {
+   "launch": 21,
+   "alloc": 15,
+   "h2h": 1,
+   "readback": 9,
+   "scan": 1,
+   "sort": 1
+  }
+ },
  "benchmarks/test_repair.py::test_remove_small_components[parts_1024-ordito-cpu]": {
   "counts": {
    "launch": 8,
@@ -6241,6 +6259,12 @@
   }
  },
  "benchmarks/test_smoothing.py::test_filter_humphrey[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 20,
+   "alloc": 5
+  }
+ },
+ "benchmarks/test_smoothing.py::test_filter_humphrey_meshlab[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 20,
    "alloc": 5

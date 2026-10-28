@@ -518,6 +518,10 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``elimination_tree_hook`` finds roots in it, splits its paths and hooks roots onto the
     # round's supernodes, so it is read and written across launches; the tree is ``out_parent``.
     ("cholesky", "elimination_tree_hook"): frozenset({"ancestor"}),
+    # ``remove_non_manifold_faces(method="meshlab")``'s round state, rewritten in place by every
+    # commit: each face's fate, the live face count of each crowded edge, and the kept mask the
+    # survivors are compacted from.
+    ("repair", "commit_non_manifold_faces"): frozenset({"states", "live", "keep"}),
     ("cholesky", "extend_add"): frozenset({"fronts"}),
     ("cholesky", "factor_panel_tiled"): frozenset({"fronts", "scratch", "status"}),
     ("cholesky", "mark_components_and_seed_blocks"): frozenset({"blocks"}),

@@ -36,8 +36,8 @@ Desbrun scale-dependent umbrella as ``filter_mut_dif_laplacian``;
 ``apply_coord_laplacian_smoothing(cotangentweight=False)`` the same uniform explicit loop (MeshLab
 has no implicit variant, so it appears in the ``explicit`` row only);
 ``apply_coord_taubin_smoothing`` the same lambda-mu alternation at MeshLab's ``mu=-0.53`` against
-ordito's ``nu=0.5``; and ``apply_coord_hc_laplacian_smoothing`` Vollmer's HC, but **not
-parameter-comparable**.
+ordito's ``nu=0.5``; and ``apply_coord_hc_laplacian_smoothing`` MeshLab's HC, in its own
+``filter_humphrey_meshlab`` group against ``method="meshlab"``.
 
 Two caveats govern every row:
 
@@ -45,11 +45,10 @@ Two caveats govern every row:
   the row carries the build — about a third of a ten-step Laplacian row on a scan mesh, so subtract
   it before quoting a ratio.
 - **HC Laplacian exposes no parameters at all** — no step count, no ``alpha``/``beta`` — so its row
-  is a *single* filter call against ordito's ten iterations, and its output matches
-  ``filter_humphrey`` at none of the 8 x 11 x 11 ``(iterations, alpha, beta)`` combinations probed.
-  MeshLab's HC is a different formulation of Vollmer's scheme, not ordito's with other constants.
-  It is a per-pass cost reference and deliberately **not** a test oracle; trimesh remains the only
-  HC check.
+  calls the filter once per pass. It matches the default ``filter_humphrey`` at none of 8 x 11 x
+  11 ``(iterations, alpha, beta)`` combinations, because it adds the neighbours' mean correction
+  where Vollmer et al. subtract it; ``method="meshlab"`` is that update, at ``alpha=0`` and
+  ``beta=0.5``.
 
 ``filter_two_step`` is on **quality** for a different reason from ``filter_laplacian``: it is
 *three* nested loops (outer passes x normal diffusion x vertex fitting, 3 x 20 x 20 at MeshLab's
@@ -88,15 +87,19 @@ if TYPE_CHECKING:
 
 _ITERATIONS = 10
 
-_operator_cache: dict[tuple[str, str], odt.BsrMatrix[wp.float32]] = {}
+_operator_cache: dict[tuple[str, str, bool], odt.BsrMatrix[wp.float32]] = {}
 _scalar_cache: dict[tuple[str, str], wp.array[wp.float32]] = {}
 
 
-def _laplacian_operator(bench_case: BenchCase) -> odt.BsrMatrix[wp.float32]:
+def _laplacian_operator(
+    bench_case: BenchCase, *, symmetric: bool = False
+) -> odt.BsrMatrix[wp.float32]:
     """Assemble the uniform Laplacian once per (mesh, device) -- an *input*, not the operation."""
-    key = (bench_case.mesh_name, str(bench_case.device))
+    key = (bench_case.mesh_name, str(bench_case.device), symmetric)
     if key not in _operator_cache:
-        _operator_cache[key] = od.laplacian.laplacian(bench_case.vertices_wp, bench_case.faces_wp)
+        _operator_cache[key] = od.laplacian.laplacian(
+            bench_case.vertices_wp, bench_case.faces_wp, symmetric=symmetric
+        )
     return _operator_cache[key]
 
 
@@ -191,32 +194,15 @@ def test_filter_mut_dif_laplacian(bench_case: BenchCase, volume_constraint: bool
 @pytest.mark.noparity(
     "pyvista",
     oracle="pymeshlab",
-    reason="D2 a different algorithm with a measured disagreement: vtkSmoothPolyDataFilter moves "
-    "each vertex along its incident edge directions under its own convergence test and feature "
-    "handling, not by applying a fixed assembled operator, so it diverges with the iteration count "
-    "rather than differing by a tolerance -- measured max coordinate deviation 0.103 / 0.363 / "
-    "0.581 at 1 / 5 / 10 iterations on an icosphere(2) at relaxation_factor=1.0 with boundary and "
-    "feature smoothing off, which is the closest parameterization to ordito's lamb=1.0. Even the "
-    "single iteration is 1e4 past tolerance, so no mapping of relaxation_factor recovers it. "
-    "MeshLab's apply_coord_laplacian_smoothing is this group's oracle -- it applies the same fixed "
-    "uniform-weight umbrella -- in tests/test_smoothing.py::"
-    "test_filter_laplacian_matches_pymeshlab; trimesh covers the same operator under the "
-    "filter_laplacian group.",
-)
-@pytest.mark.noparity(
-    "meshlib",
-    oracle="pymeshlab",
-    reason="D2 a different algorithm with a measured disagreement: MeshLib's relax is not an "
-    "umbrella-Laplacian step at all. Measured on an icosphere(2) at one iteration, its "
-    "displacement is 0.33 +- 0.19 of ordito's per vertex (range 0.008 to 0.54) and the two "
-    "displacement *directions* disagree -- mean cosine 0.45, minimum -1.0 -- so it is not a "
-    "rescaling of the same step and no value of its force parameter recovers one: the closest pair "
-    "over a 5x5 sweep of force against lamb still leaves a max coordinate difference of 4.5e-03. "
-    "The row is worth having as a cost comparison against a serial relaxation of the same shape; "
-    "MeshLab's apply_coord_laplacian_smoothing stays this group's oracle, in "
-    "tests/test_smoothing.py::test_filter_laplacian_matches_pymeshlab. Note relax IS the operator "
-    "behind smooth_region -- positionVertsSmoothly, a different function -- which is a class-A "
-    "pair in its own group.",
+    reason="D2 a different update order, measured: vtkSmoothPolyDataFilter applies the same "
+    "uniform umbrella step but in place, vertex by vertex in index order (Gauss-Seidel), so each "
+    "vertex reads the neighbours already moved this pass. A serial loop doing exactly that equals "
+    "it to 2e-16 on a noisy icosphere(2) with boundary and feature smoothing off and "
+    "convergence=0, at 1 and 5 iterations, while the Jacobi step ordito applies differs by 0.014 "
+    "at one iteration (relaxation_factor=0.5). The order is serial by construction, so it is not "
+    "reproduced. MeshLab's apply_coord_laplacian_smoothing is this group's oracle, in "
+    "tests/test_smoothing.py::test_filter_laplacian_matches_pymeshlab, and MeshLib's relax, the "
+    "Jacobi step, in test_filter_laplacian_matches_meshlib_relax.",
 )
 @pytest.mark.benchmark(group="filter_laplacian_integration")
 @pytest.mark.benchaxis("quality")
@@ -238,10 +224,10 @@ def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> 
     if bench_case.kind == "meshlib":
         if implicit:
             pytest.skip("relax is an explicit per-iteration pass: no backward-Euler variant")
-        # ``relax`` mutates the mesh and returns a status, so the mesh is rebuilt per round.
-        # ``force`` is left at its own default of 0.5: it is not ordito's ``lamb`` under another
-        # name (see the exemption above), so there is no value that would make the rows compare
-        # outputs -- the row is a cost comparison at each library's own natural setting.
+        # ``relax`` mutates the mesh and returns a status, so the mesh is rebuilt per round. Its
+        # ``force`` is ordito's ``lamb``, both 0.5 by default, so on a closed mesh the two rows
+        # compute the same positions; on these open patches a rim vertex averages both rim
+        # neighbours here and one of them under the ordito row's directed operator.
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
         iterations = _ITERATIONS
 
@@ -407,26 +393,14 @@ def test_filter_neighborhood_average(bench_case: BenchCase) -> None:
     assert smoothed.shape == vertices.shape
 
 
-@pytest.mark.noparity(
-    "pymeshlab",
-    oracle="trimesh",
-    reason="D2 measured disagreement: apply_coord_hc_laplacian_smoothing implements the same "
-    "Vollmer et al. paper but exposes no parameters at all, and its single pass matches "
-    "filter_humphrey at none of the 8 x 11 x 11 (iterations, alpha, beta) combinations probed "
-    "(best max-coordinate deviation 0.019 on a mesh carrying 0.016 of noise). It is a different "
-    "formulation, not this one with other constants; trimesh is the oracle, in "
-    "tests/test_smoothing.py::test_filter_humphrey.",
-)
 @pytest.mark.benchmark(group="filter_humphrey")
-@pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_filter_humphrey(bench_case: BenchCase) -> None:
     """
     HC filtering: a Laplacian pass plus a push-back toward the original positions.
 
-    Read the pymeshlab row as a **per-pass** cost only. MeshLab's HC Laplacian takes no parameters,
-    so it is one filter call here against ten ordito iterations, and the module docstring records
-    that its output matches ``filter_humphrey`` at no parameter setting -- it is a different
-    formulation of the same paper's scheme. trimesh's is the parameter-comparable reference.
+    trimesh is the parameter-comparable reference of the default ``method="vollmer"``; MeshLab's
+    update has the opposite sign on one term and is timed in ``filter_humphrey_meshlab``.
     """
     skip_larger_than(bench_case, "dragon")
     if bench_case.kind == "ordito":
@@ -438,9 +412,6 @@ def test_filter_humphrey(bench_case: BenchCase) -> None:
             )
         )
         assert result.shape == vertices.shape
-    elif bench_case.kind == "pymeshlab":  # one fixed pass, no step count to match
-        _skip_pml_beyond_bunny(bench_case)
-        bench_case.run(lambda: bench_case.new_meshset_pml().apply_coord_hc_laplacian_smoothing())
     else:  # trimesh mutates in place: rebuild inside the timed callable
         _skip_pml_beyond_bunny(bench_case)
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
@@ -451,6 +422,43 @@ def test_filter_humphrey(bench_case: BenchCase) -> None:
             return mesh
 
         assert bench_case.run(run).vertices.shape == vertices.shape
+
+
+@pytest.mark.benchmark(group="filter_humphrey_meshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+def test_filter_humphrey_meshlab(bench_case: BenchCase) -> None:
+    """
+    ``method="meshlab"`` against MeshLab's HC Laplacian, the same number of passes on each side.
+
+    MeshLab's filter is one parameterless pass (``alpha=0``, ``beta=0.5``), so its row calls it
+    ``_ITERATIONS`` times on one MeshSet and the ordito row runs that many passes.
+    """
+    skip_larger_than(bench_case, "dragon")
+    if bench_case.kind == "pymeshlab":
+        _skip_pml_beyond_bunny(bench_case)
+        new_meshset_pml = bench_case.new_meshset_pml
+
+        def hc_pml() -> None:
+            meshset_pml = new_meshset_pml()
+            for _ in range(_ITERATIONS):
+                meshset_pml.apply_coord_hc_laplacian_smoothing()
+
+        bench_case.run(hc_pml)
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    operator = _laplacian_operator(bench_case, symmetric=True)
+    result = bench_case.run(
+        lambda: od.smoothing.filter_humphrey(
+            vertices,
+            faces,
+            alpha=0.0,
+            beta=0.5,
+            iterations=_ITERATIONS,
+            laplacian_operator=operator,
+            method="meshlab",
+        )
+    )
+    assert result.shape == vertices.shape
 
 
 @pytest.mark.benchmark(group="filter_implicit_fairing")
@@ -565,16 +573,6 @@ _TWO_STEP_NORMAL_STEPS = 20
 _TWO_STEP_FIT_STEPS = 20
 
 
-@pytest.mark.noparity(
-    "pymeshlab",
-    reason="D3 neither parameter exists on the reference: apply_normal_smoothing_per_face takes no "
-    "arguments at all -- no iteration count and no crease threshold -- so the two things "
-    "filter_normals is parametrized by cannot be set, and its single unconditional pass is not the "
-    "crease-gated 20-pass diffusion under test. It is a per-pass cost reference only, which is why "
-    "this row's numbers must be read as time-per-pass rather than compared directly. The gated "
-    "diffusion is asserted against MeshLab where MeshLab does expose the parameters, in the "
-    "filter_two_step group, whose 3 x 20 x 20 defaults both sides are given.",
-)
 @pytest.mark.benchmark(group="filter_normals")
 @pytest.mark.benchaxis("quality")
 @pytest.mark.benchlibs("ordito", "pymeshlab", "meshlib")
@@ -604,12 +602,17 @@ def test_filter_normals(bench_case: BenchCase) -> None:
         assert bench_case.run(denoise_ml).size() == n_faces
         return
     if bench_case.kind == "pymeshlab":
-        # ``apply_normal_smoothing_per_face`` exposes no parameters at all -- no step count, no
-        # threshold -- so its row is a *single* pass against ordito's 20 and is a per-pass
-        # reference only. It writes the face normal attribute and leaves the coordinates alone, so
-        # the MeshSet is shared.
+        # ``apply_normal_smoothing_per_face`` is one pass with no crease gate, ordito's pass at
+        # ``threshold=180`` (``tests/test_smoothing.py``), so its row calls it as many times as
+        # the ordito row runs passes; a gated pass costs what an ungated one does. It writes the
+        # face normal attribute and leaves the coordinates alone, so the MeshSet is shared.
         meshset_pml = bench_case.meshset_pml
-        bench_case.run(meshset_pml.apply_normal_smoothing_per_face)
+
+        def smooth_pml() -> None:
+            for _ in range(_TWO_STEP_NORMAL_STEPS):
+                meshset_pml.apply_normal_smoothing_per_face()
+
+        bench_case.run(smooth_pml)
         assert meshset_pml.current_mesh().face_normal_matrix().shape == (n_faces, 3)
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp

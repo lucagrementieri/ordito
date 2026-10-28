@@ -166,16 +166,6 @@ def test_expand_vertex_mask(bench_case: BenchCase, hops: int) -> None:
         assert bench_case.run(dilate_pml) > 0
 
 
-@pytest.mark.noparity(
-    "pymeshlab",
-    reason="D4: MeshLab's Erode Selection removes a face when *any* of its vertices is on the "
-    "selection boundary, so reading the vertex selection back gives the vertices of the "
-    "surviving faces, not an eroded vertex set. Measured on a 9x9 grid: 51 / 39 / 25 vertices "
-    "after 1 / 2 / 3 erosions where shrink_vertex_mask gives 19 / 7 / 1. Dilation does map and is "
-    "covered; erosion is a different operation, and meshlib's shrink -- which erodes a VertBitSet "
-    "by one-ring layers and agrees element for element -- is the oracle for this function, in "
-    "tests/test_selection.py::test_expand_and_shrink_vertex_mask_match_meshlib.",
-)
 @pytest.mark.benchmark(group="shrink_vertex_mask")
 @pytest.mark.benchmeshes("sphere_med")
 @pytest.mark.benchlibs("ordito", "pymeshlab", "meshlib")
@@ -184,10 +174,11 @@ def test_shrink_vertex_mask(bench_case: BenchCase, hops: int) -> None:
     """
     The erosion counterpart, on the same input: should match ``expand`` row for row.
 
-    meshlib is the reference the exemption above says this group lacked: ``shrink`` erodes a
-    ``VertBitSet`` by one-ring layers, which is ordito's operation and not MeshLab's face-based
-    one, and the two agree element for element at every hop count. The mask is pre-grown outside
-    the timed callable on both sides, as the ordito row does, so the rounds erode the same set.
+    meshlib's ``shrink`` erodes a ``VertBitSet`` by one-ring layers, ordito's operation, and the
+    two agree element for element at every hop count. MeshLab's Erode Selection is a face
+    operation that reaches the same vertex set from a strict vertex-to-face transfer
+    (``tests/test_selection.py``). The mask is pre-grown and transferred outside the timed callable
+    on every side, as the ordito row does, so the rounds erode the same set.
     """
     if bench_case.kind == "meshlib":
         mesh_ml = bench_case.new_mesh_ml()
@@ -209,10 +200,20 @@ def test_shrink_vertex_mask(bench_case: BenchCase, hops: int) -> None:
         mask = od.selection.expand_vertex_mask(faces, _seed_mask(bench_case), max(_HOPS))
         shrunk = bench_case.run(lambda: od.selection.shrink_vertex_mask(faces, mask, hops))
         assert shrunk.shape == mask.shape
-    else:  # dilate well past the erosion depth first, so there is something left to erode
-        meshset_pml = _seeded_meshset_pml(bench_case)
-        for _ in range(2 * max(_HOPS)):
-            meshset_pml.apply_selection_dilatation()
+    else:  # the ordito row's grown mask, transferred strictly: the faces it covers entirely
+        grown_np = od.selection.expand_vertex_mask(
+            bench_case.faces_wp, _seed_mask(bench_case), max(_HOPS)
+        ).numpy()
+        meshset_pml = ml.MeshSet()
+        meshset_pml.add_mesh(
+            ml.Mesh(
+                bench_case.vertices_np.astype(np.float64),
+                bench_case.faces_np,
+                v_scalar_array=grown_np.astype(np.float64),
+            )
+        )
+        meshset_pml.compute_selection_by_condition_per_vertex(condselect="(q > 0.5)")
+        meshset_pml.compute_selection_transfer_vertex_to_face(inclusive=True)
 
         def erode_pml() -> None:
             for _ in range(hops):

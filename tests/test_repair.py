@@ -1629,6 +1629,126 @@ def test_remove_non_manifold_faces_matches_a_numpy_oracle(
         assert fixed_o3d
 
 
+def _sphere_with_fins_and_copies_np(
+    mesh_tm: tm.Trimesh, *, reversed_copies: bool
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return ``mesh_tm`` with 20 fins on existing edges and 60 copies of existing faces appended.
+
+    Each fin is a new apex on a random existing edge, so that edge carries three faces of distinct
+    areas; each copy repeats a face, so all three of its edges carry three faces and the copy ties
+    the original's area. ``reversed_copies`` winds half the copies the other way round.
+    """
+    rng = np.random.default_rng(1)
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
+    faces_np = np.asarray(mesh_tm.faces, dtype=np.int32)
+    copied = faces_np[rng.choice(len(faces_np), 60, replace=False)]
+    if reversed_copies:
+        copied[30:] = copied[30:, ::-1]
+    hinges = faces_np[rng.choice(len(faces_np), 20, replace=False), :2]
+    scale = float(np.ptp(vertices_np, axis=0).max())
+    apexes = vertices_np[hinges[:, 0]] + rng.normal(0.0, 0.05 * scale, (20, 3)).astype(np.float32)
+    fins = np.column_stack((hinges, len(vertices_np) + np.arange(20)))
+    return (
+        np.vstack((vertices_np, apexes)).astype(np.float32),
+        np.vstack((faces_np, copied, fins)).astype(np.int32),
+    )
+
+
+@pytest.mark.parity("remove_non_manifold_faces_meshlab", "pymeshlab")
+@pytest.mark.parametrize("reversed_copies", [False, True], ids=["same_winding", "reversed"])
+def test_remove_non_manifold_faces_meshlab_matches_pymeshlab(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str, reversed_copies: bool
+) -> None:
+    """
+    Class A: ``method="meshlab"`` is MeshLab's smallest-area-first face removal.
+
+    MeshLab visits the faces on a non-manifold edge in ascending area and deletes one while an
+    edge of it still has more than two faces. Fins and same-winding copies compare as meshes up
+    to numbering, face order and rotation (``meshes_allclose``). A copy wound the other way ties
+    its original's area, and which of the two MeshLab keeps is its unstable sort's choice, so with
+    reversed copies the comparison is of unordered vertex triples (Class B on that input); ordito
+    breaks the tie by face index, the same on both devices.
+
+    Non-vacuous: the input is not edge-manifold, both outputs are, the meshlab method deletes
+    faces, and fewer than the default, which drops every face on each crowded edge.
+    """
+    mesh_tm, _ = sphere_irregular
+    vertices_np, faces_np = _sphere_with_fins_and_copies_np(
+        mesh_tm, reversed_copies=reversed_copies
+    )
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    assert not od.validation.is_edge_manifold(faces_wp)
+
+    meshset_pml = ml.MeshSet()
+    meshset_pml.add_mesh(ml.Mesh(vertices_np.astype(np.float64), faces_np))
+    meshset_pml.meshing_repair_non_manifold_edges(method="Remove Faces")
+    # MeshLab leaves the deleted fins' apexes behind; ordito compacts them away.
+    meshset_pml.meshing_remove_unreferenced_vertices()
+    vertices_pml = meshset_pml.current_mesh().vertex_matrix()
+    faces_pml = meshset_pml.current_mesh().face_matrix()
+
+    new_vertices_wp, new_faces_wp = od.repair.remove_non_manifold_faces(
+        vertices_wp, faces_wp, method="meshlab"
+    )
+    _, all_faces_wp = od.repair.remove_non_manifold_faces(vertices_wp, faces_wp)
+    n_new = new_faces_wp.size // 3
+    assert all_faces_wp.size // 3 < n_new < len(faces_np)
+    assert n_new == len(faces_pml)
+    assert od.validation.is_edge_manifold(new_faces_wp)
+
+    if not reversed_copies:
+        pml_vertices_wp, pml_faces_wp = numpy_to_warp(vertices_pml, faces_pml, device)
+        assert od.equality.meshes_allclose(
+            new_vertices_wp, new_faces_wp, pml_vertices_wp, pml_faces_wp
+        )
+        return
+    # Exact positions, so both outputs map back to the input's vertex numbering by lookup.
+    index_of = {tuple(point): i for i, point in enumerate(vertices_np.astype(np.float64))}
+    rows_pml = np.array([index_of[tuple(p)] for p in vertices_pml])[faces_pml]
+    new_vertices_np = new_vertices_wp.numpy().astype(np.float64)
+    rows_wp = np.array([index_of[tuple(p)] for p in new_vertices_np])[
+        new_faces_wp.numpy().reshape(-1, 3)
+    ]
+    assert_unordered_rows_equal(np.sort(rows_wp, axis=1), np.sort(rows_pml, axis=1))
+
+
+def test_remove_non_manifold_faces_meshlab_keeps_one_copy_and_drops_the_fin(device: str) -> None:
+    """
+    Not a library comparison: the rule on inputs small enough to state the answer.
+
+    A face given twice keeps one copy (the higher index, since equal areas go in index order),
+    and a fin, the smallest face on its edge, goes alone where the default drops all three faces
+    on that edge. An edge-manifold mesh comes back as the same buffers.
+    """
+    mesh_tm = tm.creation.icosahedron()
+    vertices_np = np.vstack((mesh_tm.vertices, [[0.0, 0.0, 0.0]])).astype(np.float32)
+    a, b = mesh_tm.faces[3][:2]
+    for extra, kept_np in (
+        (mesh_tm.faces[3], np.vstack((np.delete(mesh_tm.faces, 3, axis=0), mesh_tm.faces[3]))),
+        ([a, b, 12], mesh_tm.faces),
+    ):
+        faces_np = np.vstack((mesh_tm.faces, extra)).astype(np.int32)
+        vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+        _, new_faces_wp = od.repair.remove_non_manifold_faces(
+            vertices_wp, faces_wp, method="meshlab"
+        )
+        assert np.array_equal(new_faces_wp.numpy().reshape(-1, 3), kept_np)
+
+    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    same_vertices_wp, same_faces_wp = od.repair.remove_non_manifold_faces(
+        vertices_wp, faces_wp, method="meshlab"
+    )
+    assert same_vertices_wp is vertices_wp
+    assert same_faces_wp is faces_wp
+    with pytest.raises(ValueError, match="'all' or 'meshlab'"):
+        od.repair.remove_non_manifold_faces(
+            vertices_wp,
+            faces_wp,
+            method="smallest",  # pyright: ignore[reportArgumentType]
+        )
+
+
 # --------------------------------------------------------------------------------------
 # remove_degenerate_and_non_manifold_faces
 # --------------------------------------------------------------------------------------

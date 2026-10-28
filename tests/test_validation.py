@@ -1772,36 +1772,70 @@ def test_face_defective_mask_matches_pymeshlab_on_folds(
     assert np.array_equal(folded_np.astype(bool), selected_pml.astype(bool))
 
 
-def test_face_defective_mask_normal_criterion_diverges_from_meshlab(device: str) -> None:
+@pytest.mark.parity("face_defective_mask", "pymeshlab")
+@pytest.mark.parametrize("mesh_name", ["reversed_icosphere", "sphere_irregular", "saddle_graded"])
+def test_face_defective_mask_meshlab_normal_criterion_matches_meshlab(
+    request: pytest.FixtureRequest, device: str, mesh_name: str
+) -> None:
     """
-    Class D (a different algorithm, measured): MeshLab's ``nfratio`` against the consensus test.
+    Class A: ``normal_criterion="meshlab"`` is MeshLab's ``nfratio``, face for face.
 
-    One face of an icosphere is reversed. MeshLab selects both faces of every edge whose normals
-    differ by more than the angle -- the culprit and its three neighbours -- at every threshold
-    tried; the consensus criterion selects the culprit alone. Pinned from both sides, as the
-    docstring states it: ordito's selection is MeshLab's minus the innocent neighbours, so a
-    change on either side (MeshLab adopting a consensus, or ordito a pairwise test) fails here.
+    MeshLab selects a face when the angle to any edge-neighbour exceeds the threshold, so on an
+    icosphere with one face reversed it selects the culprit and its three neighbours at every
+    threshold, where the default consensus criterion selects the culprit alone -- both asserted, so
+    the default's documented difference stays pinned. The irregular fixtures add selections of
+    every size: on ``saddle_graded`` (a rim, whose faces have fewer neighbours) and
+    ``sphere_irregular`` the counts run from a few faces to most of the mesh across the thresholds,
+    and each is asserted non-trivial.
     """
-    sphere_tm = tm.creation.icosphere(subdivisions=3)
-    faces_np = sphere_tm.faces.copy()
-    faces_np[7] = faces_np[7][::-1]
-    vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, faces_np, device)
-    # The culprit and the three faces sharing an edge with it: MeshLab's answer, exactly.
-    adjacency_np = sphere_tm.face_adjacency
-    neighbourhood = {7, *adjacency_np[(adjacency_np == 7).any(axis=1)].ravel().tolist()}
-    assert len(neighbourhood) == 4
-    for angle in (30.0, 60.0, 90.0):
-        meshset_pml = ml.MeshSet()
-        meshset_pml.add_mesh(ml.Mesh(sphere_tm.vertices, np.ascontiguousarray(faces_np)))
+    if mesh_name == "reversed_icosphere":
+        sphere_tm = tm.creation.icosphere(subdivisions=3)
+        faces_np = sphere_tm.faces.copy()
+        faces_np[7] = faces_np[7][::-1]
+        mesh_tm = tm.Trimesh(sphere_tm.vertices, faces_np, process=False)
+        vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_np, device)
+        thresholds = (30.0, 60.0, 90.0)
+    else:
+        mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+        vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+        # Thresholds spanning each fixture's dihedrals: the saddle is smooth (none past 10).
+        thresholds = (2.0, 3.0, 5.0) if mesh_name == "saddle_graded" else (10.0, 20.0, 45.0)
+    n_faces = len(mesh_tm.faces)
+    for angle in thresholds:
+        meshset_pml = trimesh_to_pymeshlab(mesh_tm)
         meshset_pml.compute_selection_bad_faces(usear=False, usenf=True, nfratio=angle)
-        selected_pml = np.flatnonzero(meshset_pml.current_mesh().face_selection_array())
-        selected_wp = np.flatnonzero(
-            od.validation.face_defective_mask(
+        selected_pml = meshset_pml.current_mesh().face_selection_array()
+        assert 0 < selected_pml.sum() < n_faces  # non-vacuity: a partial selection
+        selected_wp = od.validation.face_defective_mask(
+            vertices_wp,
+            faces_wp,
+            min_quality=None,
+            max_normal_angle=angle,
+            normal_criterion="meshlab",
+        ).numpy()
+        assert np.array_equal(selected_wp, selected_pml)
+        if mesh_name == "reversed_icosphere":
+            adjacency_np = mesh_tm.face_adjacency
+            neighbourhood = {7, *adjacency_np[(adjacency_np == 7).any(axis=1)].ravel().tolist()}
+            assert set(np.flatnonzero(selected_pml).tolist()) == neighbourhood
+            consensus_wp = od.validation.face_defective_mask(
                 vertices_wp, faces_wp, min_quality=None, max_normal_angle=angle
             ).numpy()
+            assert np.flatnonzero(consensus_wp).tolist() == [7]
+
+
+def test_face_defective_mask_rejects_unknown_normal_criterion(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Not a parity assert: an unknown ``normal_criterion`` raises, naming the options."""
+    _, mesh_wp = sphere_irregular
+    with pytest.raises(ValueError, match="'consensus' or 'meshlab'"):
+        od.validation.face_defective_mask(
+            mesh_wp.points,
+            mesh_wp.indices,
+            max_normal_angle=60.0,
+            normal_criterion="pairwise",  # pyright: ignore[reportArgumentType]
         )
-        assert selected_wp.tolist() == [7]
-        assert set(selected_pml.tolist()) == neighbourhood
 
 
 def _hinge_fan_np(angles_deg: tuple[float, ...]) -> tuple[np.ndarray, np.ndarray]:

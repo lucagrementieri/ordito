@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
+from typing import Literal
 
 import warp as wp
 
@@ -1711,6 +1712,7 @@ def face_defective_mask(
     max_fold_angle: float | None = None,
     face_normals: wp.array[wp.vec3] | None = None,
     mates: wp.array[wp.int32] | None = None,
+    normal_criterion: Literal["consensus", "meshlab"] = "consensus",
 ) -> wp.array[wp.bool]:
     """
     Flag faces that are thin, misoriented relative to their neighbourhood, or folded over it.
@@ -1736,7 +1738,8 @@ def face_defective_mask(
         Flag a face whose normal is more than this many **degrees** from the direction of the sum of
         its edge-neighbours' normals — the local consensus. This catches a single face inserted the
         wrong way round in an otherwise consistent patch. Same default (``60``) as MeshLab's
-        ``nfratio`` but not the same test (see Notes). ``None`` disables it.
+        ``nfratio`` but not the same test unless ``normal_criterion="meshlab"`` (see Notes).
+        ``None`` disables it.
     max_fold_angle
         Flag a face that meets *some* neighbour at more than this many **degrees** — a fold, where
         the two triangles lie almost on top of each other with opposing normals. Of the two faces at
@@ -1754,6 +1757,12 @@ def face_defective_mask(
         [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs
         the halfedges. Not checked against ``faces``.
         [`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates] is the cached one to pass.
+    normal_criterion
+        What ``max_normal_angle`` compares a face's normal with.
+
+        - ``"consensus"`` (default) — the direction of the sum of its edge-neighbours' normals.
+        - ``"meshlab"`` — each edge-neighbour's normal in turn, flagging the face when any one
+          differs by more than the angle: MeshLab's ``nfratio``.
 
     Returns
     -------
@@ -1764,20 +1773,22 @@ def face_defective_mask(
     Raises
     ------
     ValueError
-        If ``max_normal_angle`` or ``max_fold_angle`` is outside ``(0, 180]``.
+        If ``max_normal_angle`` or ``max_fold_angle`` is outside ``(0, 180]``, or
+        ``normal_criterion`` is not ``"consensus"`` or ``"meshlab"``.
     RuntimeError
         If ``vertices``, ``faces``, ``face_normals`` and ``mates`` are not all on one device.
 
     Notes
     -----
     The thinness and fold criteria match MeshLab's ``compute_selection_bad_faces`` (its ``aratio``
-    and ``folded_faces_angle_threshold``). The normal criterion does not match its ``nfratio``:
-    MeshLab selects *both* faces of every edge whose normals differ by more than the angle, so it
-    flags a reversed face together with all its neighbours, and every face of a cube at ``60``.
-    Comparing each face with its neighbours' consensus instead flags the reversed face alone on a
-    smooth surface. The consensus needs neighbours that mostly agree: on a coarse mesh, where a
-    face has three neighbours and they meet at sharp angles, a correct face next to a reversed one
-    can fail it too (a cube with one triangle reversed flags that triangle and one neighbour).
+    and ``folded_faces_angle_threshold``). The default normal criterion does not match its
+    ``nfratio``: MeshLab selects *both* faces of every edge whose normals differ by more than the
+    angle (``normal_criterion="meshlab"``), so it flags a reversed face together with all its
+    neighbours, and every face of a cube at ``60``. Comparing each face with its neighbours'
+    consensus instead flags the reversed face alone on a smooth surface. The consensus needs
+    neighbours that mostly agree: on a coarse mesh, where a face has three neighbours and they meet
+    at sharp angles, a correct face next to a reversed one can fail it too (a cube with one
+    triangle reversed flags that triangle and one neighbour).
 
     See Also
     --------
@@ -1826,6 +1837,10 @@ def face_defective_mask(
     for name, angle in (("max_normal_angle", max_normal_angle), ("max_fold_angle", max_fold_angle)):
         if angle is not None and not 0.0 < angle <= 180.0:
             raise ValueError(f"{name} must be in (0, 180] degrees, got {angle}")
+    if normal_criterion not in ("consensus", "meshlab"):
+        raise ValueError(
+            f"normal_criterion must be 'consensus' or 'meshlab', got {normal_criterion!r}"
+        )
 
     device = faces.device
     n_faces = faces.size // 3
@@ -1845,7 +1860,13 @@ def face_defective_mask(
 
     # -2 is unreachable for a cosine, -1 for the normalized quality and ``FOLD_ANGLE_OFF`` (past
     # pi) for a dihedral, so a disabled criterion simply never fires and the kernel needs no
-    # per-criterion flag.
+    # per-criterion flag. The normal criterion is the consensus cosine or the pairwise angle.
+    normal_cos = -2.0
+    pair_angle = kernel_validation.FOLD_ANGLE_OFF
+    if max_normal_angle is not None and normal_criterion == "meshlab":
+        pair_angle = wp.float32(math.radians(max_normal_angle))
+    elif max_normal_angle is not None:
+        normal_cos = math.cos(math.radians(max_normal_angle))
     _launch.launch(
         kernel_validation.face_defective_mask,
         dim=n_faces,
@@ -1855,9 +1876,8 @@ def face_defective_mask(
             face_normals,
             mates,
             wp.float32(min_quality if min_quality is not None else -1.0),
-            wp.float32(
-                math.cos(math.radians(max_normal_angle)) if max_normal_angle is not None else -2.0
-            ),
+            wp.float32(normal_cos),
+            pair_angle,
             wp.float32(math.radians(max_fold_angle))
             if max_fold_angle is not None
             else kernel_validation.FOLD_ANGLE_OFF,
