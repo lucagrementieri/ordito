@@ -6076,7 +6076,7 @@ container where each filter mutates <code>current_mesh()</code> in place; ordito
 </tr>
 <tr>
 <td><code>meshing_remove_duplicate_faces</code></td>
-<td><a class="autorefs autorefs-internal" title="resolve_duplicated_faces" href="../../api/ordito/repair/#ordito.repair.resolve_duplicated_faces"><code>repair.resolve_duplicated_faces</code></a></td>
+<td><a class="autorefs autorefs-internal" title="resolve_duplicated_faces" href="../../api/ordito/repair/#ordito.repair.resolve_duplicated_faces"><code>repair.resolve_duplicated_faces(method="meshlab")</code></a> (one face per vertex set; the default instead cancels oppositely wound copies)</td>
 </tr>
 <tr>
 <td><code>meshing_remove_unreferenced_vertices</code></td>
@@ -6115,11 +6115,19 @@ container where each filter mutates <code>current_mesh()</code> in place; ordito
 </tr>
 <tr>
 <td><code>apply_coord_hc_laplacian_smoothing</code></td>
-<td><a class="autorefs autorefs-internal" title="filter_humphrey" href="../../api/ordito/smoothing/#ordito.smoothing.filter_humphrey"><code>smoothing.filter_humphrey</code></a></td>
+<td><a class="autorefs autorefs-internal" title="filter_humphrey" href="../../api/ordito/smoothing/#ordito.smoothing.filter_humphrey"><code>smoothing.filter_humphrey(method="meshlab")</code></a></td>
+</tr>
+<tr>
+<td><code>apply_coord_two_steps_smoothing</code></td>
+<td><a class="autorefs autorefs-internal" title="filter_two_step" href="../../api/ordito/smoothing/#ordito.smoothing.filter_two_step"><code>smoothing.filter_two_step(method="meshlab")</code></a></td>
 </tr>
 <tr>
 <td><code>compute_curvature_principal_directions_per_vertex</code></td>
 <td><a class="autorefs autorefs-internal" title="principal_curvature" href="../../api/ordito/curvature/#ordito.curvature.principal_curvature"><code>curvature.principal_curvature</code></a></td>
+</tr>
+<tr>
+<td><code>compute_scalar_by_discrete_curvature_per_vertex</code> (mean, Gaussian)</td>
+<td><a class="autorefs autorefs-internal" title="vertex_curvatures" href="../../api/ordito/curvature/#ordito.curvature.vertex_curvatures"><code>curvature.vertex_curvatures</code></a></td>
 </tr>
 <tr>
 <td><code>compute_scalar_by_shape_diameter_function_per_vertex</code></td>

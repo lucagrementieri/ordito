@@ -8269,6 +8269,7 @@ taken from it.</p>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">offset</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
     <span class="n">sign_mode</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"parity"</span><span class="p">,</span> <span class="s2">"winding"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"winding"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"padded"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
 </code></pre></div>
 
@@ -8385,6 +8386,27 @@ generalized winding number degrades gracefully.</p>
                   <code>&#39;winding&#39;</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>method</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;padded&#39;, &#39;igl&#39;]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The lattice. <code>"padded"</code> (the default) pads the bounding box by three voxels plus
+<code>offset</code> and keeps every vertex off the lattice nodes, then cleans the extraction (see
+<code>Notes</code>). <code>"igl"</code> is <code>igl.offset_surface</code>'s: <code>round(longest_extent / voxel_size)</code>
+nodes along the box's longest axis, one of them padding at each end, the box grown by
+<code>offset</code>, the lattice centred on it; the extraction is returned as marched, as igl does.
+Its spacing is therefore near <code>voxel_size</code> rather than equal to it.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;padded&#39;</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -8437,7 +8459,8 @@ generalized winding number degrades gracefully.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>voxel_size</code> is not positive.</p>
+                <p>If <code>voxel_size</code> is not positive, if <code>method</code> is not <code>"padded"</code> or <code>"igl"</code>, or if
+under <code>"igl"</code> it leaves fewer than four nodes along the longest axis.</p>
               </div>
             </td>
           </tr>
@@ -8630,13 +8653,30 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="normal">3427</span>
 <span class="normal">3428</span>
 <span class="normal">3429</span>
-<span class="normal">3430</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
+<span class="normal">3430</span>
+<span class="normal">3431</span>
+<span class="normal">3432</span>
+<span class="normal">3433</span>
+<span class="normal">3434</span>
+<span class="normal">3435</span>
+<span class="normal">3436</span>
+<span class="normal">3437</span>
+<span class="normal">3438</span>
+<span class="normal">3439</span>
+<span class="normal">3440</span>
+<span class="normal">3441</span>
+<span class="normal">3442</span>
+<span class="normal">3443</span>
+<span class="normal">3444</span>
+<span class="normal">3445</span>
+<span class="normal">3446</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">offset</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
     <span class="n">sign_mode</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"parity"</span><span class="p">,</span> <span class="s2">"winding"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"winding"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"padded"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Rebuild a mesh by sampling its signed distance field on a uniform grid and re-extracting it.</span>
@@ -8670,6 +8710,13 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="sd">        ``"winding"`` rather than that function's ``"parity"``: resampling is usually applied to a</span>
 <span class="sd">        mesh that is *broken*, and ray parity has no principled answer through a hole, while the</span>
 <span class="sd">        generalized winding number degrades gracefully.</span>
+<span class="sd">    method</span>
+<span class="sd">        The lattice. ``"padded"`` (the default) pads the bounding box by three voxels plus</span>
+<span class="sd">        ``offset`` and keeps every vertex off the lattice nodes, then cleans the extraction (see</span>
+<span class="sd">        ``Notes``). ``"igl"`` is ``igl.offset_surface``'s: ``round(longest_extent / voxel_size)``</span>
+<span class="sd">        nodes along the box's longest axis, one of them padding at each end, the box grown by</span>
+<span class="sd">        ``offset``, the lattice centred on it; the extraction is returned as marched, as igl does.</span>
+<span class="sd">        Its spacing is therefore near ``voxel_size`` rather than equal to it.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -8681,7 +8728,8 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If ``voxel_size`` is not positive.</span>
+<span class="sd">        If ``voxel_size`` is not positive, if ``method`` is not ``"padded"`` or ``"igl"``, or if</span>
+<span class="sd">        under ``"igl"`` it leaves fewer than four nodes along the longest axis.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices`` and ``faces`` are not all on one device.</span>
 
@@ -8731,6 +8779,13 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
         <span class="n">voxel_size</span> <span class="o">=</span> <span class="mf">0.01</span> <span class="o">*</span> <span class="n">diagonal</span>
     <span class="k">if</span> <span class="n">voxel_size</span> <span class="o">&lt;=</span> <span class="mf">0.0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"resample_uniform requires voxel_size &gt; 0, got </span><span class="si">{</span><span class="n">voxel_size</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method must be 'padded' or 'igl', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"igl"</span><span class="p">:</span>
+        <span class="n">shape</span><span class="p">,</span> <span class="n">bounds</span> <span class="o">=</span> <span class="n">_igl_offset_lattice</span><span class="p">(</span><span class="n">lower</span><span class="p">,</span> <span class="n">upper</span><span class="p">,</span> <span class="n">offset</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">levelset</span><span class="o">.</span><span class="n">signed_distance_level_set</span><span class="p">(</span>
+            <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">offset</span><span class="p">,</span> <span class="n">shape</span><span class="p">,</span> <span class="n">bounds</span><span class="o">=</span><span class="n">bounds</span><span class="p">,</span> <span class="n">sign_mode</span><span class="o">=</span><span class="n">sign_mode</span>
+        <span class="p">)</span>
 
     <span class="c1"># Three voxels of slack beyond the box and beyond the offset, so a dilated level set closes</span>
     <span class="c1"># inside the lattice instead of being cut off by it.</span>
@@ -9074,62 +9129,7 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3433</span>
-<span class="normal">3434</span>
-<span class="normal">3435</span>
-<span class="normal">3436</span>
-<span class="normal">3437</span>
-<span class="normal">3438</span>
-<span class="normal">3439</span>
-<span class="normal">3440</span>
-<span class="normal">3441</span>
-<span class="normal">3442</span>
-<span class="normal">3443</span>
-<span class="normal">3444</span>
-<span class="normal">3445</span>
-<span class="normal">3446</span>
-<span class="normal">3447</span>
-<span class="normal">3448</span>
-<span class="normal">3449</span>
-<span class="normal">3450</span>
-<span class="normal">3451</span>
-<span class="normal">3452</span>
-<span class="normal">3453</span>
-<span class="normal">3454</span>
-<span class="normal">3455</span>
-<span class="normal">3456</span>
-<span class="normal">3457</span>
-<span class="normal">3458</span>
-<span class="normal">3459</span>
-<span class="normal">3460</span>
-<span class="normal">3461</span>
-<span class="normal">3462</span>
-<span class="normal">3463</span>
-<span class="normal">3464</span>
-<span class="normal">3465</span>
-<span class="normal">3466</span>
-<span class="normal">3467</span>
-<span class="normal">3468</span>
-<span class="normal">3469</span>
-<span class="normal">3470</span>
-<span class="normal">3471</span>
-<span class="normal">3472</span>
-<span class="normal">3473</span>
-<span class="normal">3474</span>
-<span class="normal">3475</span>
-<span class="normal">3476</span>
-<span class="normal">3477</span>
-<span class="normal">3478</span>
-<span class="normal">3479</span>
-<span class="normal">3480</span>
-<span class="normal">3481</span>
-<span class="normal">3482</span>
-<span class="normal">3483</span>
-<span class="normal">3484</span>
-<span class="normal">3485</span>
-<span class="normal">3486</span>
-<span class="normal">3487</span>
-<span class="normal">3488</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3488</span>
 <span class="normal">3489</span>
 <span class="normal">3490</span>
 <span class="normal">3491</span>
@@ -9239,7 +9239,62 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="normal">3595</span>
 <span class="normal">3596</span>
 <span class="normal">3597</span>
-<span class="normal">3598</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
+<span class="normal">3598</span>
+<span class="normal">3599</span>
+<span class="normal">3600</span>
+<span class="normal">3601</span>
+<span class="normal">3602</span>
+<span class="normal">3603</span>
+<span class="normal">3604</span>
+<span class="normal">3605</span>
+<span class="normal">3606</span>
+<span class="normal">3607</span>
+<span class="normal">3608</span>
+<span class="normal">3609</span>
+<span class="normal">3610</span>
+<span class="normal">3611</span>
+<span class="normal">3612</span>
+<span class="normal">3613</span>
+<span class="normal">3614</span>
+<span class="normal">3615</span>
+<span class="normal">3616</span>
+<span class="normal">3617</span>
+<span class="normal">3618</span>
+<span class="normal">3619</span>
+<span class="normal">3620</span>
+<span class="normal">3621</span>
+<span class="normal">3622</span>
+<span class="normal">3623</span>
+<span class="normal">3624</span>
+<span class="normal">3625</span>
+<span class="normal">3626</span>
+<span class="normal">3627</span>
+<span class="normal">3628</span>
+<span class="normal">3629</span>
+<span class="normal">3630</span>
+<span class="normal">3631</span>
+<span class="normal">3632</span>
+<span class="normal">3633</span>
+<span class="normal">3634</span>
+<span class="normal">3635</span>
+<span class="normal">3636</span>
+<span class="normal">3637</span>
+<span class="normal">3638</span>
+<span class="normal">3639</span>
+<span class="normal">3640</span>
+<span class="normal">3641</span>
+<span class="normal">3642</span>
+<span class="normal">3643</span>
+<span class="normal">3644</span>
+<span class="normal">3645</span>
+<span class="normal">3646</span>
+<span class="normal">3647</span>
+<span class="normal">3648</span>
+<span class="normal">3649</span>
+<span class="normal">3650</span>
+<span class="normal">3651</span>
+<span class="normal">3652</span>
+<span class="normal">3653</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
