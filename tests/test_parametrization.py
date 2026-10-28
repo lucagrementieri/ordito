@@ -22,6 +22,7 @@ from tests.conversions import (
     numpy_to_warp,
     numpy_to_warp_uv,
     points_to_warp_uv,
+    trimesh_to_pymeshlab,
     warp_empty,
 )
 
@@ -250,6 +251,34 @@ def test_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     uv_igl = igl.harmonic(vertices_np, faces_np, boundary_np, boundary_uv_np, 1)
 
     assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
+@pytest.mark.parity("harmonic", "pymeshlab")
+@pytest.mark.parity("harmonic_conditioning", "pymeshlab")
+def test_harmonic_matches_pymeshlab(request: pytest.FixtureRequest, mesh_name: str):
+    """
+    Class A: MeshLab's harmonic parametrization is ordito's circle-pinned harmonic map.
+
+    ``compute_texcoord_parametrization_harmonic`` wraps libigl (MeshLab says so), so this re-checks
+    igl through a second wrapper rather than adding an independent implementation; it pins what
+    MeshLab chooses for the caller. It takes the longest boundary loop from its smallest vertex,
+    maps it onto the unit circle by arc length and solves the Laplacian (``harm_function`` is a
+    no-op in pymeshlab 2025.7), which are ``longest_boundary_loop`` and ``map_vertices_to_circle``:
+    measured 3e-8 on ``saddle_graded``. The per-vertex texture coordinates are compared directly.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+    meshset_pml.compute_texcoord_parametrization_harmonic()
+    uv_pml = meshset_pml.current_mesh().vertex_tex_coord_matrix()
+    assert np.ptp(uv_pml[:, 1]) > 1.0
+
+    boundary_wp, boundary_uv_wp = _circle_boundary(mesh_wp)
+    uv_wp = od.parametrization.harmonic(
+        mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp
+    )
+
+    assert np.allclose(uv_wp.numpy(), uv_pml, rtol=1e-5, atol=1e-5)
 
 
 def _polyharmonic_reference(
@@ -590,6 +619,34 @@ def test_lscm_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     )
 
     assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular_band"])
+@pytest.mark.parity("lscm", "pymeshlab")
+def test_lscm_matches_pymeshlab(request: pytest.FixtureRequest, mesh_name: str):
+    """
+    Class A: MeshLab's least-squares conformal map is ordito's with the tutorial-502 pins.
+
+    ``compute_texcoord_parametrization_least_squares_conformal_maps`` wraps libigl and chooses its
+    own pins: the longest boundary loop's first vertex at ``(0, 0)`` and the vertex half a loop
+    along at ``(1, 0)``, the convention of
+    [`test_lscm_matches_igl`][tests.test_parametrization.test_lscm_matches_igl] (measured 3e-8
+    against ``igl.lscm`` on ``saddle_graded``). Not an independent
+    implementation: it pins what MeshLab picks, through the same pins ordito is handed.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+    meshset_pml.compute_texcoord_parametrization_least_squares_conformal_maps()
+    uv_pml = meshset_pml.current_mesh().vertex_tex_coord_matrix()
+    assert np.ptp(uv_pml[:, 1]) > 0.1
+
+    _, pins_wp = _two_rim_pins(mesh_wp)
+    pins_uv_wp = points_to_warp_uv(
+        np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float32), mesh_wp.device
+    )
+    uv_wp = od.parametrization.lscm(mesh_wp.points, mesh_wp.indices, pins_wp, pins_uv_wp)
+
+    assert np.allclose(uv_wp.numpy(), uv_pml, rtol=1e-5, atol=1e-5)
 
 
 def test_lscm_closed_mesh_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):

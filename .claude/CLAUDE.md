@@ -1077,7 +1077,7 @@ the quoted `"meshlib"` value only), and their kernels describe behaviour, not th
   gives `(-l1, l0, l2)`) and the origins stepped `1e-4` of the scene diagonal; and
   `signed_distance_level_set` on `igl.voxel_grid`'s lattice is `igl.offset_surface`'s mesh
   (levels 0, -0.05; at 0.1 one vertex is 4.8e-5 off, at 0.05 two vertices are closer than the
-  tolerance). `resample_uniform` cannot reach igl's lattice (3-cell padding vs one node).
+  tolerance). `resample_uniform` reaches igl's lattice under `method="igl"` (second pass, below).
 - **`filter_two_step(method="meshlab")`:** MeshLab's normal pass averages each face with the faces
   of *lower index* around its corners (weights `(c - sigma)^2`, `sigma = max(cos, 0)`), so its
   answer depends on face order; that, not the fit, rounds a cube's corners inward (the whole ring
@@ -1160,15 +1160,75 @@ it was read for the rule only, and each kernel implements the rule, not the sour
   (no half shift, one-voxel move) clear it by only 1.2-1.3x. `symmetric_chamfer` at its default
   sample count could not tell these surfaces apart (its floor is the sample spacing):
   `symmetric_surface_distance` measures against the surface.
-- **Stay Class D, by reason:** `smooth_taubin` is windowed sinc; the pymeshlab `harmonic` /
-  `lscm` and pyvista principal-curvature rows wrap the oracle; stochastic (`random_hills`,
-  `icp_mesh` / pymeshlab); serial queues and a gap the row reports (`isotropic_remesh` /
-  pymeshlab); different quantities (`fit_line` / pyvista, `filter_mut_dif_laplacian` / open3d and
-  pymeshlab, `resolve_duplicated_faces` / open3d and pymeshlab: ordito raises on same-winding
-  copies, so the rules agree on no non-trivial input); `vertex_normals` / trimesh is
-  angle-weighted (covered in `test_vertex_normals_angle`). Class D tests kept: igl's arbitrary
-  joined pair in `split_non_manifold_vertices` (ordito's split is order-independent) and MeshLib's
-  inclusive fold threshold at exactly 90 / 180.
+- **Stay Class D, by reason:** stochastic (`random_hills`, `icp_mesh` / pymeshlab); serial
+  queues and a gap the row reports (`isotropic_remesh` / pymeshlab); different quantities
+  (`fit_line` / pyvista: `pv.fit_line_to_points` is the centred principal axis, which
+  `principal_axes` already compares in its own group, so a `fit_line(centered=)` would duplicate
+  it -- declined; `filter_mut_dif_laplacian` / open3d and pymeshlab). Class D tests kept: igl's
+  arbitrary joined pair in `split_non_manifold_vertices` (ordito's split is order-independent) and
+  MeshLib's inclusive fold threshold at exactly 90 / 180.
+
+### Second pass over the non-A pairs (2026-10-28)
+
+- **Double tests of wrappers, now Class A or B:** pymeshlab's harmonic and LSCM filters are igl
+  with the libigl tutorial boundary (the longest loop from its first vertex onto the circle by
+  arc length; pins `loop[0]`, `loop[len // 2]` at `(0, 0)`, `(1, 0)`), 3e-8 on `saddle_graded`:
+  `test_harmonic_matches_pymeshlab`, `test_lscm_matches_pymeshlab` (Class A).
+  `Trimesh.vertex_normals` is `vertex_normals(weighting="angle")` (Class A).
+- **`principal_curvature(method="pyvista")`** is VTK's `curvature("maximum" / "minimum")`:
+  `H +- sqrt(H^2 - K)` (`H` alone where negative) over `vtkCurvatures`' 1-ring `K` (three times
+  the defect over the incident area) and `H` (each edge of exactly two faces adds
+  `3 |e| theta / (A_f + A_g)` to both ends, `theta` signed by `(n_f x n_g) . e` with `e` walked by
+  the lower face, half the mean over the vertex's such edges); zero directions. One thread per
+  vertex over its face row and the halfedge mates, in `float64`: Class A at `1e-5` of the field's
+  scale on every fixture, `saddle_graded` included (2.1e-7; a `float32` composition of ordito's
+  tables lost 0.03 there to a needle's 1e-6 lumped area). Group `principal_curvature_pyvista` (the
+  pyvista row left `principal_curvature`).
+- **`curvature.vertex_curvatures`** (new) is Meyer et al.'s pointwise `(mean, gaussian)` as vcg's
+  `UpdateCurvature::MeanAndGaussian` forms it (MeshLab's
+  `compute_scalar_by_discrete_curvature_per_vertex`): the mixed area (non-obtuse: the cotangent
+  form; obtuse: a quarter of the area at the obtuse corner, an eighth at the others), the defect
+  minus, at a vertex with one rim, the angle between its rim edges, `H = +-|L x| / A` signed by
+  the area-weighted normal, zero where `A <= DBL_EPSILON`; a face with an exactly zero angle keeps
+  its area and nothing else. One thread per vertex in `float64`, no atomics. MeshLab rounds its
+  angles and areas to `float`, which no transcription reproduced (a `float` emulation of the
+  rounding read no closer), so the test is Class B: off the rims `K` to 6.4e-6 and `H` to 3.8e-6
+  of the field's scale; on rims `|H|` to 1.45e-5 (bound 5e-5), its sign a near-tie (the Laplacian
+  lies almost in the tangent plane). `saddle_graded` is excluded: MeshLab's `float` over a needle's
+  1e-6 area moves `H` by 8.5 % of the field. Group `vertex_curvatures`.
+  `principal_curvature(method="meyer")` is the pair those imply (`extreme_curvatures`, the rule
+  VTK's method shares), zero directions, one kernel over the same per-vertex walk
+  (`kernels/curvature.meyer_curvatures`); Class B against MeshLab's `H` and `K` off the rims, where
+  the sign of `H` decides which value is the larger. Group `principal_curvature_meyer` (its pymeshlab row
+  times the `H` / `K` filter, the same work as `vertex_curvatures`').
+- **`resolve_duplicated_faces(method="cancel" | "igl" | "open3d" | "meshlab")`.** The owner's
+  raise stays the default and is the right default: a surplus of two same-winding copies is
+  geometry the caller has duplicated, and igl's release build silently deletes all of it (an
+  assert in debug), opening a hole. `"igl"` drops such a group (Class A with the group planted);
+  `"open3d"` keeps the first face per rotation-invariant, winding-sensitive key in input order
+  (Class A, `remove_duplicated_triangles` row for row); `"meshlab"` keeps the first face per
+  vertex set in input order. MeshLab's survivor is whichever its unstable `std::sort` leaves last
+  (measured: varies group to group on opposite-winding pairs), so that pair stays Class B on sorted
+  rows. Groups `resolve_duplicated_faces_open3d`, `_meshlab`.
+- **`filter_windowed_sinc`** is VTK's `vtkWindowedSincPolyDataFilter` (`pv.smooth_taubin`):
+  Nuttall window, the Newton-searched pass-band offset (warns when it fails, always at one
+  iteration), stencils from the `O1` / `O2` analysis without feature edges (ring; rim pair under
+  `edge_angle`; fixed on a crowded edge, one or more than two rim edges, 255+ faces or
+  unreferenced). A fixed vertex is scaled by the filter's response at zero, as VTK does. Class A
+  (4e-8 / 1.2e-7) on four fixtures, both `rim_smoothing` settings; group `filter_windowed_sinc`
+  (the pyvista row left `filter_taubin`).
+- **`resample_uniform(method="igl")`** builds `igl::voxel_grid(V, offset, s, 1)`'s lattice on the
+  host (`s = round(longest_extent / voxel_size)`) and returns the extraction as marched: Class A
+  against `igl.offset_surface` at offsets 0 and -0.05 through `meshes_allclose`.
+- **`rasterize_attribute` / `rasterize_discrete_attribute(subpixel_bits=)`** snap the UVs to
+  `1 / 2 ** bits` of a pixel (`wp.round`) before rasterizing: at 8 bits the NVIDIA OpenGL image
+  equals ordito's at the standard tolerance (3.9e-7 in NumPy; 6 / 10 bits read 1.8e-3 / 3.4e-4 at
+  64 px). The discrete labels then agree everywhere but exact ties.
+- **`filter_two_step(method="meshlab")` runs in `float64`** (pymeshlab holds `double`): with
+  MeshLab handed the same `float32`-rounded input, 3.0e-8 on the cube and 5.7e-8 on the scrambled
+  icosphere, both devices (was 1.4e-5 on CUDA, a 1.4x margin; the unrounded input alone moves
+  MeshLab 3.8e-6). Price, CUDA, best of 5 against HEAD in a detached worktree: 1.61x at 20 k faces,
+  1.20x at 328 k. The default stays `float32`.
 
 ### Open items from the 2026-10-28 Class C upgrades
 
@@ -1193,9 +1253,6 @@ Each is a measured limit of an option above; re-measure before acting on it.
   bijection. The test runs `0` and `-0.05` only. **Proposed:** trace the 0.1 vertex (interpolation
   order or the field at a node near the level) and compare the 0.05 case by vertex pairing on the
   lattice edge each vertex lies on rather than by nearest neighbour.
-- **`filter_two_step(method="meshlab")` has 1.4x margin on the scrambled icosphere** (1.4e-5 on
-  CUDA, 1.9e-6 on the CPU, inside `1e-5 + 1e-5 |x|`): `float32` over 60 normal passes against
-  MeshLab's `double`. A tighter result needs `float64` normals in that kernel.
 - **`heat_signed_distance(method="potpourri3d")` is ~2.5x the default on CUDA** (ring 25.3 vs
   9.8 ms, band 9.3 vs 5.2) with more launches (CPU census 2448 / 958 vs 1749 / 809): the edge
   system's assembly and a longer settle on a system ~3x larger (the operator is already held per
@@ -1213,6 +1270,76 @@ Each is a measured limit of an option above; re-measure before acting on it.
   against MeshLib (a `float64` DP, MeshLib's triangle-term bits, descending `k` and its start
   vertex; stitch follows its heap order); earcut's serial ear order; MeshLab's Embree ambient
   occlusion (no vendored source).
+
+### Open items from the 2026-10-28 review of the non-A pairs
+
+Each line names the function, the reference and why the comparison is not Class A. The plan is to
+go algorithm by algorithm and match the reference wherever its answer is determined.
+
+**A different quantity, or a check against the true answer (Class C).** The comparison is honest
+as it stands; an upgrade means adding the reference's own algorithm as an option.
+
+- `heat_geodesic` against `igl.exact_geodesic` (the heat method's own error), MeshLib's
+  `computeSurfaceDistances` (fast marching) and pyvista's Dijkstra edge distance (a two-sided
+  bound): an upgrade is a fast-marching option (MeshLib, MeshLab and potpourri3d time one).
+- `geodesic_path`: an inequality against `igl.exact_geodesic` and a per-cent of potpourri3d's
+  `EdgeFlipGeodesicSolver` on a sphere; an upgrade is an edge-flip shortening option.
+- `trace_from_vertex` (a trimesh distance bound, no oracle); `shorten_loop` against MeshLib's
+  `findShortestEquivalentLoops` (a minimum over a different path space).
+- `heat_signed_distance` (default) and its level-set constraint against potpourri3d (correlation
+  plus mean error; `method="potpourri3d"` is Class A); `log_map` angles (median 13.2 degrees, two
+  discretization errors, `Open items from the 2026-10-22 parity audit`); the cut-locus transport
+  (no reference).
+- `ambient_occlusion`, `volumetric_obscurance` and `shape_diameter` against pymeshlab (rank
+  correlations: MeshLab traces Embree / GPU direction sets, not vendored); `shape_diameter`
+  against MeshLib's single ray; `max_tangent_sphere` against MeshLib's shrinking sphere (median
+  relative difference: the same method, a different iteration).
+- `statistical_outlier_mask` against MeshLib's `findOutliers` (a connectivity criterion);
+  `convex_subset_mask` against qhull (soundness plus recall); `voxelize_mesh` against MeshLib's
+  narrow-band distance field; `principal_axes` on a degenerate spectrum (one axis defined).
+- `screened_poisson` (`dense`) against open3d / pymeshlab (Kazhdan's octree; `method="octree"` is
+  the reproduction) and MeshLib's distance volume (another reconstructor).
+- `icp_mesh` against pyvista's `vtkIterativeClosestPointTransform` (landmark subsampling and a
+  mean-distance stop: a candidate for a `method="pyvista"` port); `principal_curvature
+  (frame_independent=True)` against igl (a bound; `False` is Class A).
+- The defaults of `filter_normals` and `filter_two_step` against MeshLib's and MeshLab's crease
+  measures: different algorithms whose library-named methods are Class A.
+- Truth checks with no library answer: `resample_uniform` on a sphere's offset; `sample_volume`'s
+  first moment and containment.
+
+**Same algorithm, small numeric gap.** Each has its own entry: `log_map(method="potpourri3d")`
+(`float32` transport angles) and `relax_approx(method="meshlib")` (planar drift) in
+`Open items from the 2026-10-28 Class C upgrades`; `signed_distance_level_set` against
+`igl.offset_surface` at iso 0.1 and 0.05, same section; `screened_poisson(method="octree")` on an
+open cloud (`test_poisson_octree_matches_open3d_on_an_open_cloud`: far-field vertices at the
+cube's walls, open3d's wall evaluation untraced; on closed clouds the residual ties are open3d's
+own `float32` rounding, `Open defects`); `triangulate_point_cloud` without normals
+(`Open item from the 2026-10-27 triangulation port`). `filter_two_step(method="meshlab")` is
+closed (`float64`, `Second pass over the non-A pairs`).
+
+**Same algorithm, different settings.** `resample_uniform` against pymeshlab
+(`generate_resampled_uniform_mesh`: vcg's resampler, its own grid and sign rule; worst sample 1.69
+voxels against ordito's 0.48) and MeshLib (`rebuildMesh` decimates after marching); `offset_mesh`
+against MeshLib's `offsetMesh` and pymeshlab's uniform resampler at a matched cell size. Each needs
+the reference's grid placement, sign rule and post-processing as an option; igl's is done
+(`resample_uniform(method="igl")`).
+
+**A rule the reference adds.**
+
+- `rasterize_attribute` against OpenGL: closed (`subpixel_bits=8`).
+- MeshLab's pointwise curvature: closed by `curvature.vertex_curvatures` (Class B, its `float`
+  rounding; `Second pass over the non-A pairs`). The ball measures `discrete_gaussian_curvature` /
+  `discrete_mean_curvature` keep their Class C comparison with it.
+- `filter_laplacian` against `vtkSmoothPolyDataFilter`: VTK updates in place, vertex by vertex
+  (Gauss-Seidel in index order), so its answer depends on that order; reproducing it is a serial
+  sweep (Class C at `relaxation_factor=0.01`).
+
+**MeshLib's "nice" operations (Class C, surface or volume statistics).** `fill_smooth` and
+`refill_region`'s refinement against `fillHoleNicely` / `patchMesh`, `stitch_smooth` against
+`stitchHolesNicely`, `bridge_edges_smooth` against `makeSmoothBridge` (a different curve
+construction) and `smooth_region_boundary` against `smoothRegionBoundary`. Each is a
+minimum-weight fill followed by MeshLib's own subdivision schedule (a serial priority queue) and
+Laplacian fairing; a port would follow that schedule.
 
 ### Open item from the 2026-10-27 octree memory work: a sparse solve
 
@@ -1271,7 +1398,7 @@ The audit of every Class B/C/D test (commits `310fb0e8`, `03226107`) left these 
 
 **Re-measured or decided 2026-10-26 (confirmed declines; the public changes are the owner's call):**
 
-- **`resolve_duplicated_faces` keeps raising `ValueError` on a duplicate group it cannot orient** (owner decision, 2026-10-26); igl silently drops the group. `ears`' `ear_opp` keeps igl's meaning with no release note (owner decision).
+- **`resolve_duplicated_faces` keeps raising `ValueError` on a duplicate group it cannot orient** (owner decision, 2026-10-26); igl silently drops the group, and `method="igl"` now does too (2026-10-28, `Second pass over the non-A pairs`). `ears`' `ear_opp` keeps igl's meaning with no release note (owner decision).
 - **`flip_t_vertices` takes MeshLab's `meshing_remove_t_vertices` rule** (owner decision, 2026-10-26): a face is a sliver when its *longest edge over the height onto it* exceeds `threshold`, and that longest edge is the one flipped, when the flip raises the worse height-over-longest-edge of the pair (`flip_by_objective(objective="t_vertex")`'s `aspect_threshold` likewise). The old `aspect_ratio` gate (about `(base / height)^2 / 8` on a sliver, so its 40 was MeshLab's ~18, any edge of a sliver) was the whole 130-234-face gap; with the edge-key claim order and convexity guard kept the gap is 4 / 36 faces on `sphere_irregular` (thresholds 40 / 20), 0 / 6 on `torus_irregular` and 0 / 0 on `saddle_graded`. The sphere's 4 are MeshLab flips of non-convex quads that fold it to a 178.3° dihedral; the rest is flip order (a serial ascending sweep of the rule does no better). No in-repo caller of the `t_vertex` objective but `flip_t_vertices`; the repair guide's output is unchanged.
 - **`fix_degeneracies` / `collapse_small_triangles` vs MeshLib: confirmed order (2026-10-26).** On the saddle MeshLib keeps 986 vertices and ordito 1020 of 1 156. Most of the count gap is exact ties on the mirror-symmetric rows (the endpoint-cost comparison keeps its first endpoint): jittering the input by 1e-7 / 1e-6 / 1e-5 of the diagonal gives ordito 990 / 994 / 999 against MeshLib 986 / 986 / 1000; not a cap (`max_iter=100` changes nothing). The kept sets still differ by 59-62 vertices (face IoU 0.86-0.87), and ordito's collapse lock key is hashed, not length-ranked (a length rank picked the same collapses on this saddle, `kernels/remesh.collapse_candidates`), so the residual is MeshLib's serial heap order. `collapse_small_triangles` differs by one vertex each way (the `13-45-49` chain); keeping the largest index instead makes it 15, so no survivor convention closes it.
 - **`polyline_upsample(method=)`** (owner decision, 2026-10-26): `"floor"` (default, `max(floor(L / step), 1)` pieces, spacing in `[step, 2 step)`) or `"bisect"` (the smallest power of two whose pieces are at most `step`, MeshLib's `subdividePolyline`): `test_upsample_polyline_bisect_matches_meshlib` is Class A over six steps, and the `polyline_upsample` benchmark row runs `"bisect"` so ordito and MeshLib emit the same points. The old docstring's "matching the source implementation" named an internal PyTorch port (`fd484ce4`), nothing a user could check. `polyline_smooth_upsample` keeps `"floor"` (shared `_upsample` body, `bisect=False`).

@@ -153,32 +153,17 @@ def _faces_with_duplicates_wp(bench_case: BenchCase, fraction: float) -> wp.arra
     return _defect_wp_cache[key]
 
 
-@pytest.mark.noparity(
-    "open3d",
-    reason="D2 three different dedup rules: ordito applies a signed-count rule that cancels "
-    "(+1, -1) pairs outright, while open3d hashes orientation-*sensitively* and keeps one "
-    "representative of each duplicate group -- on this deliberately-flipped input it therefore "
-    "removes nothing and returns the face count unchanged. The rows compare dedup machinery, not "
-    "results.",
-)
-@pytest.mark.noparity(
-    "pymeshlab",
-    reason="D2 as above but the other way round: MeshLab's hash is orientation-*insensitive*, so "
-    "it does see the flipped copies, yet it still keeps one representative per group where "
-    "ordito cancels a (+1, -1) pair to nothing. Same input, three different survivor sets by "
-    "design; igl, timed here and compared face for face in tests/test_repair.py, is the "
-    "signed-count rule's own reference.",
-)
 @pytest.mark.benchmark(group="resolve_duplicated_faces")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("ordito", "igl", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "igl")
 @pytest.mark.parametrize("fraction", _DUPLICATE_FRACTIONS, ids=["clean", "dup10pct"])
 def test_resolve_duplicated_faces(bench_case: BenchCase, fraction: float) -> None:
     """
     Sort-based grouping with a signed-count rule: nothing to do, against a tenth of the mesh.
 
     ``igl.resolve_duplicated_faces`` is the same rule and the same output, face for face, so it is
-    the like-for-like row; open3d and pymeshlab de-duplicate by other rules (exempt above).
+    the like-for-like row. Open3D's and MeshLab's first-occurrence rules are timed under their own
+    groups against ``method="open3d"`` / ``"meshlab"``.
     """
     if bench_case.kind == "igl":
         faces_dup_i64 = _faces_with_duplicates_np(bench_case, fraction).astype(np.int64)
@@ -187,34 +172,71 @@ def test_resolve_duplicated_faces(bench_case: BenchCase, fraction: float) -> Non
         )
         assert resolved_igl.shape[0] > 0
         return
-    if bench_case.kind == "pymeshlab":
-        # Orientation-insensitive, so unlike open3d's hash it does see the flipped copies.
-        vertices_np = bench_case.vertices_np
-        faces_dup_np = _faces_with_duplicates_np(bench_case, fraction)
-        bench_case.run(
-            lambda: _new_meshset_pml(vertices_np, faces_dup_np).meshing_remove_duplicate_faces()
-        )
-        return
+    faces_dup = _faces_with_duplicates_wp(bench_case, fraction)
+    resolved, kept = bench_case.run(
+        lambda: od.repair.resolve_duplicated_faces(faces_dup, n_vertices=bench_case.n_vertices)
+    )
+    assert resolved.size == kept.size * 3
+    assert kept.size > 0
+
+
+@pytest.mark.benchmark(group="resolve_duplicated_faces_open3d")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito", "open3d")
+@pytest.mark.parametrize("fraction", _DUPLICATE_FRACTIONS, ids=["clean", "dup10pct"])
+def test_resolve_duplicated_faces_open3d(bench_case: BenchCase, fraction: float) -> None:
+    """
+    First occurrence per winding, in input order: Open3D's ``remove_duplicated_triangles``.
+
+    The flipped copies are distinct keys under this rule, so the duplicated input keeps every face.
+    open3d de-duplicates in place, so its mesh is built inside the timed callable.
+    """
     if bench_case.kind == "ordito":
         faces_dup = _faces_with_duplicates_wp(bench_case, fraction)
         resolved, kept = bench_case.run(
-            lambda: od.repair.resolve_duplicated_faces(faces_dup, n_vertices=bench_case.n_vertices)
+            lambda: od.repair.resolve_duplicated_faces(
+                faces_dup, n_vertices=bench_case.n_vertices, method="open3d"
+            )
         )
         assert resolved.size == kept.size * 3
-        assert kept.size > 0
-    else:
-        # open3d dedups in place and is idempotent: build the mesh inside the timed callable.
-        import open3d as o3d
+        return
+    import open3d as o3d
 
-        vertices = o3d.utility.Vector3dVector(bench_case.vertices_np)
-        faces_dup_np = _faces_with_duplicates_np(bench_case, fraction)
+    vertices = o3d.utility.Vector3dVector(bench_case.vertices_np)
+    faces_dup_np = _faces_with_duplicates_np(bench_case, fraction)
 
-        def run() -> o3d.geometry.TriangleMesh:
-            mesh = o3d.geometry.TriangleMesh(vertices, o3d.utility.Vector3iVector(faces_dup_np))
-            return mesh.remove_duplicated_triangles()
+    def run() -> o3d.geometry.TriangleMesh:
+        mesh = o3d.geometry.TriangleMesh(vertices, o3d.utility.Vector3iVector(faces_dup_np))
+        return mesh.remove_duplicated_triangles()
 
-        deduped = bench_case.run(run)
-        assert 0 < len(deduped.triangles) <= faces_dup_np.shape[0]
+    deduped = bench_case.run(run)
+    assert 0 < len(deduped.triangles) <= faces_dup_np.shape[0]
+
+
+@pytest.mark.benchmark(group="resolve_duplicated_faces_meshlab")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+@pytest.mark.parametrize("fraction", _DUPLICATE_FRACTIONS, ids=["clean", "dup10pct"])
+def test_resolve_duplicated_faces_meshlab(bench_case: BenchCase, fraction: float) -> None:
+    """
+    First occurrence per vertex set, in input order: MeshLab's ``meshing_remove_duplicate_faces``.
+
+    Orientation-insensitive, so the flipped copies are duplicates and one face of each pair stays.
+    """
+    if bench_case.kind == "ordito":
+        faces_dup = _faces_with_duplicates_wp(bench_case, fraction)
+        resolved, kept = bench_case.run(
+            lambda: od.repair.resolve_duplicated_faces(
+                faces_dup, n_vertices=bench_case.n_vertices, method="meshlab"
+            )
+        )
+        assert resolved.size == kept.size * 3
+        return
+    vertices_np = bench_case.vertices_np
+    faces_dup_np = _faces_with_duplicates_np(bench_case, fraction)
+    bench_case.run(
+        lambda: _new_meshset_pml(vertices_np, faces_dup_np).meshing_remove_duplicate_faces()
+    )
 
 
 def _faces_with_non_manifold_np(bench_case: BenchCase, extra: int) -> np.ndarray:

@@ -111,37 +111,18 @@ def _face_angles(bench_case: BenchCase) -> odt.Array2dFloat32:
     return _face_angles_cache[key]
 
 
-@pytest.mark.noparity(
-    "pyvista",
-    oracle="igl",
-    reason="D1 not an independent implementation: VTK's curvature('maximum') and ('minimum') are "
-    "pure algebra on its own Gauss and mean curvature -- measured *exactly* H +- sqrt(H^2 - K), "
-    "max abs "
-    "difference 0.0 in float64 on icosphere(3) -- so they estimate no principal curvature of their "
-    "own and inherit vtkCurvatures' 1-ring stencil. They also go complex where H^2 < K, which is "
-    "300 of 642 vertices on that same sphere, and VTK returns the clamped real part rather than "
-    "raising. igl.principal_curvature(useKring=False) is the quadric fit ordito implements and is "
-    "the oracle, in tests/test_curvature.py::test_principal_curvature_graded.",
-)
 @pytest.mark.benchmark(group="principal_curvature")
 @pytest.mark.benchaxis("scale")
 @pytest.mark.censuskeep(
     "sphere_large", reason="the geodesic ball walks in several chunks only at this size"
 )
-@pytest.mark.benchlibs("ordito", "igl", "pymeshlab", "pyvista")
+@pytest.mark.benchlibs("ordito", "igl", "pymeshlab")
 @pytest.mark.parametrize("radius", _QUADRIC_RADII)
 def test_principal_curvature(bench_case: BenchCase, radius: int) -> None:
     """Per-vertex quadric fit over a geodesic ball: the 5x5 solve in bulk, at two radii."""
     if bench_case.kind == "igl" and bench_case.mesh_name == "sphere_large":
         pytest.skip("igl.principal_curvature is ~2 s a call at this size; capped at sphere_med")
     n_vertices = bench_case.n_vertices
-    if bench_case.kind == "pyvista":
-        if radius != min(_QUADRIC_RADII):
-            pytest.skip("VTK's curvature is a fixed 1-ring stencil: no radius axis")
-        mesh_pv = bench_case.mesh_pv
-        curvature_pv = bench_case.run(lambda: mesh_pv.curvature("maximum"), rounds=_HEAVY_ROUNDS)
-        assert np.asarray(curvature_pv).shape == (n_vertices,)
-        return
     if bench_case.kind == "pymeshlab":
         if radius != min(_QUADRIC_RADII):
             pytest.skip("MeshLab derives the fit neighborhood itself: no radius axis")
@@ -168,6 +149,83 @@ def test_principal_curvature(bench_case: BenchCase, radius: int) -> None:
             rounds=_HEAVY_ROUNDS,
         )
         assert pv1_igl.shape == (n_vertices,)
+
+
+@pytest.mark.benchmark(group="principal_curvature_pyvista")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "pyvista")
+def test_principal_curvature_pyvista(bench_case: BenchCase) -> None:
+    """
+    VTK's 1-ring extreme curvatures: ``principal_curvature(method="pyvista")``, no fit.
+
+    One thread per vertex over its face row and the halfedge mates; VTK's ``vtkCurvatures`` runs
+    its Gaussian and mean passes for each of ``"maximum"`` and ``"minimum"``, so its row times one.
+    """
+    n_vertices = bench_case.n_vertices
+    if bench_case.kind == "pyvista":
+        mesh_pv = bench_case.mesh_pv
+        curvature_pv = bench_case.run(lambda: mesh_pv.curvature("maximum"), rounds=_HEAVY_ROUNDS)
+        assert np.asarray(curvature_pv).shape == (n_vertices,)
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    *_, pv1, _pv2 = bench_case.run(
+        lambda: od.curvature.principal_curvature(vertices, faces, method="pyvista"),
+        rounds=_HEAVY_ROUNDS,
+    )
+    assert pv1.shape == (n_vertices,)
+
+
+@pytest.mark.benchmark(group="principal_curvature_meyer")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+def test_principal_curvature_meyer(bench_case: BenchCase) -> None:
+    """
+    Meyer et al.'s principal pair: ``principal_curvature(method="meyer")``, no fit.
+
+    The ``vertex_curvatures`` walk writing ``H +- sqrt(H^2 - K)`` instead of ``H`` and ``K``.
+    MeshLab exposes no principal values, so its row times the filter that forms ``H`` and ``K``
+    (``compute_scalar_by_discrete_curvature_per_vertex``), the same work as the
+    ``vertex_curvatures`` row; the pair is two operations a vertex on top.
+    """
+    if bench_case.kind == "pymeshlab":
+        bench_case.run(
+            lambda: bench_case.new_meshset_pml().compute_scalar_by_discrete_curvature_per_vertex(
+                curvaturetype="Mean Curvature"
+            ),
+            rounds=_HEAVY_ROUNDS,
+        )
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    *_, pv1, _pv2 = bench_case.run(
+        lambda: od.curvature.principal_curvature(vertices, faces, method="meyer"),
+        rounds=_HEAVY_ROUNDS,
+    )
+    assert pv1.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="vertex_curvatures")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+def test_vertex_curvatures(bench_case: BenchCase) -> None:
+    """
+    Meyer et al.'s pointwise mean and Gaussian curvature, both at once.
+
+    MeshLab's ``compute_scalar_by_discrete_curvature_per_vertex`` forms both and stores one, so
+    its row (``"Mean Curvature"``) does the same work as ordito's call.
+    """
+    if bench_case.kind == "pymeshlab":
+        bench_case.run(
+            lambda: bench_case.new_meshset_pml().compute_scalar_by_discrete_curvature_per_vertex(
+                curvaturetype="Mean Curvature"
+            ),
+            rounds=_HEAVY_ROUNDS,
+        )
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    mean, _gaussian = bench_case.run(
+        lambda: od.curvature.vertex_curvatures(vertices, faces), rounds=_HEAVY_ROUNDS
+    )
+    assert mean.shape == (bench_case.n_vertices,)
 
 
 def _run_discrete_curvature_pml(

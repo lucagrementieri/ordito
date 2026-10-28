@@ -1582,6 +1582,239 @@ def filter_taubin(
     return _vec3_passes(vertices, iterations, taubin_pass)
 
 
+def filter_windowed_sinc(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    iterations: int = 20,
+    pass_band: float = 0.1,
+    *,
+    edge_angle: float = 15.0,
+    rim_smoothing: bool = True,
+) -> wp.array[wp.vec3]:
+    """
+    Windowed-sinc low-pass filter of the vertex positions (Taubin, Zhang and Golub).
+
+    Applies a degree-``iterations`` Chebyshev polynomial of the umbrella Laplacian that
+    approximates an ideal low-pass filter, windowed (Nuttall) to damp its ripple and shifted so
+    the frequency ``pass_band`` passes unchanged. Unlike
+    [`filter_taubin`][ordito.smoothing.filter_taubin], which repeats one shrink-and-inflate pair,
+    the polynomial is designed as a whole, so the shape shrinks very little at any pass count.
+    This is VTK's ``vtkWindowedSincPolyDataFilter`` (``pyvista.PolyData.smooth_taubin``) without
+    feature-edge detection, non-manifold smoothing or coordinate normalization.
+
+    Each vertex averages one stencil: its whole 1-ring; on a rim, its two rim neighbours, unless
+    the rim turns there by more than ``edge_angle`` or ``rim_smoothing`` is off; or nothing, if it
+    lies on an edge of three or more faces, on more than two rim edges, on one rim edge, is shared
+    by 255 faces or more, or is unreferenced.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions.
+    faces
+        ``(3 * n_faces,)`` triangle index buffer.
+    iterations
+        Degree of the filter polynomial, one Laplacian pass each. ``1`` cannot be normalized and
+        scales the shape instead (it warns).
+    pass_band
+        Pass-band frequency in ``(0, 2]``; lower smooths more.
+    edge_angle
+        Largest turn, in degrees, of a rim at a vertex that still slides along it.
+    rim_smoothing
+        Smooth rim vertices along the rim; when off they stay fixed.
+
+    Returns
+    -------
+    wp.array[wp.vec3]
+        ``(n_vertices,)`` smoothed vertex positions on ``vertices.device``.
+
+    Raises
+    ------
+    ValueError
+        If ``iterations`` is negative or ``pass_band`` is outside ``(0, 2]``.
+    RuntimeError
+        If ``vertices`` and ``faces`` are not all on one device.
+
+    Warns
+    -----
+    RuntimeWarning
+        When no offset makes the filter pass ``pass_band`` to within ``1e-3`` (always at
+        ``iterations=1``); the polynomial is then applied unnormalized, as VTK does.
+
+    See Also
+    --------
+    [`filter_taubin`][ordito.smoothing.filter_taubin]
+    [`filter_laplacian`][ordito.smoothing.filter_laplacian]
+
+    Notes
+    -----
+    A fixed vertex is not left in place: its stencil is empty, so the polynomial scales it by the
+    filter's response at frequency zero, which the window makes ``1`` only approximately (a few
+    parts in ``1e4`` at the defaults). VTK behaves the same way.
+
+    Examples
+    --------
+    A jittered sphere loses much of its jitter and keeps its volume to a fraction of a per cent:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=3)
+    rng = np.random.default_rng(0)
+    points = vertices.numpy()
+    noisy = wp.array(points * rng.uniform(0.97, 1.03, (points.shape[0], 1)), dtype=wp.vec3)
+    smoothed = od.smoothing.filter_windowed_sinc(noisy, faces)
+    spread = np.ptp(np.linalg.norm(smoothed.numpy(), axis=1))
+    print(bool(spread < 0.6 * np.ptp(np.linalg.norm(noisy.numpy(), axis=1))))  # True
+    ratio = od.measures.volume(smoothed, faces) / od.measures.volume(vertices, faces)
+    print(abs(ratio - 1) < 0.01)  # True
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    if iterations < 0:
+        raise ValueError(f"iterations must be non-negative, got {iterations}")
+    if not 0.0 < pass_band <= 2.0:
+        raise ValueError(f"pass_band must lie in (0, 2], got {pass_band}")
+    n = vertices.size
+    if n == 0 or iterations == 0:
+        return _launch.clone(vertices)
+    device = vertices.device
+    coefficients, normalized = _windowed_sinc_coefficients(iterations, pass_band)
+    if not normalized:
+        warnings.warn(
+            f"no offset makes the windowed-sinc filter pass {pass_band} at {iterations} "
+            "iterations; it is applied unnormalized",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+
+    neighbors, offsets, classes, rim_pairs = _windowed_sinc_stencils(
+        vertices, faces, edge_angle, rim_smoothing
+    )
+    x0 = od.array.astype(vertices, wp.vec3d)
+    x1 = _launch.empty(n, dtype=wp.vec3d, device=device)
+    x2 = _launch.empty(n, dtype=wp.vec3d, device=device)
+    total = _launch.empty(n, dtype=wp.vec3d, device=device)
+    stencil = [neighbors, offsets, classes, rim_pairs]
+    _launch.launch(
+        kernel_smoothing.windowed_sinc_first_pass,
+        dim=n,
+        inputs=[x0, *stencil, coefficients[0], coefficients[1]],
+        outputs=[x1, total],
+        device=device,
+    )
+    for coefficient in coefficients[2:]:
+        _launch.launch(
+            kernel_smoothing.windowed_sinc_pass,
+            dim=n,
+            inputs=[x0, x1, *stencil, coefficient],
+            outputs=[x2, total],
+            device=device,
+        )
+        x0, x1, x2 = x1, x2, x0
+    return od.array.astype(total, wp.vec3)
+
+
+def _windowed_sinc_coefficients(iterations: int, pass_band: float) -> tuple[list[float], bool]:
+    """
+    Return the filter's Chebyshev coefficients and whether its pass-band offset converged.
+
+    The Nuttall-windowed ideal low-pass filter's coefficients, its cut-off shifted by a Newton
+    search until the filter passes ``pass_band`` to within ``1e-3`` (at most 500 steps); a
+    degree-1 filter has no offset to search. VTK's ``CoefficientsWorker``, term for term.
+    """
+    theta = math.acos(1.0 - 0.5 * pass_band)
+    span = math.pi / (iterations + 1)
+    window = [
+        0.355768
+        + 0.487396 * math.cos(i * span)
+        + 0.144232 * math.cos(2.0 * i * span)
+        + 0.012604 * math.cos(3.0 * i * span)
+        for i in range(iterations + 1)
+    ]
+    cosines = [1.0, 1.0 - 0.5 * pass_band] + [math.cos(i * theta) for i in range(2, iterations + 1)]
+    sigma = 0.0
+    coefficients: list[float] = []
+    response = 0.0
+    for _ in range(500):
+        coefficients = [window[0] * (theta + sigma) / math.pi] + [
+            2.0 * window[i] * math.sin(i * (theta + sigma)) / (i * math.pi)
+            for i in range(1, iterations + 1)
+        ]
+        derivative = [0.0] * (iterations + 1)
+        if iterations > 1:
+            derivative[iterations - 2] = 2.0 * (iterations - 1) * coefficients[iterations - 1]
+        for i in range(iterations - 3, -1, -1):
+            derivative[i] = derivative[i + 2] + 2.0 * (i + 1) * coefficients[i + 1]
+        response = sum(c * t for c, t in zip(coefficients, cosines, strict=True))
+        slope = sum(d * t for d, t in zip(derivative, cosines, strict=True))
+        if iterations == 1 or abs(response - 1.0) < 1e-3:
+            break
+        sigma -= (response - 1.0) / slope
+    return coefficients, abs(response - 1.0) < 1e-3
+
+
+def _windowed_sinc_stencils(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], edge_angle: float, rim_smoothing: bool
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.vec2i]]:
+    """
+    Each vertex's smoothing stencil: its sorted 1-ring, its class and its two rim neighbours.
+
+    A unique edge's face count is how often the edge inverse names it; the tally scatters, per
+    vertex, the corners, rim edges, crowded edges and the first two rim neighbours, and the
+    classification reads them.
+    """
+    n = vertices.size
+    device = vertices.device
+    unique, inverse = od.edges.edges_unique(faces, n_vertices=n)
+    n_edges = unique.shape[0]
+    uses = _launch.zeros(n_edges, dtype=wp.int32, device=device)
+    if inverse.size > 0:
+        _launch.launch(
+            kernel_scatter.count_occurrences,
+            dim=inverse.size,
+            inputs=[inverse],
+            outputs=[uses],
+            device=device,
+        )
+    corners = _launch.zeros(n, dtype=wp.int32, device=device)
+    rim_counts = _launch.zeros(n, dtype=wp.int32, device=device)
+    crowded_counts = _launch.zeros(n, dtype=wp.int32, device=device)
+    rim_pairs = _launch.zeros(n, dtype=wp.vec2i, device=device)
+    if n_edges > 0:
+        _launch.launch(
+            kernel_smoothing.tally_stencil_edges,
+            dim=n_edges,
+            inputs=[unique, uses],
+            outputs=[corners, rim_counts, crowded_counts, rim_pairs],
+            device=device,
+        )
+    classes = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_smoothing.classify_stencil_vertices,
+        dim=n,
+        inputs=[
+            vertices,
+            corners,
+            rim_counts,
+            crowded_counts,
+            rim_pairs,
+            int(rim_smoothing),
+            wp.float64(math.cos(math.radians(edge_angle))),
+        ],
+        outputs=[classes],
+        device=device,
+    )
+    # Ascending rows only when the run must repeat: the ring sums in row order.
+    neighbors, offsets = od.graph.edges_to_neighbor_lists(
+        n, unique, validate=False, sort_rows=is_deterministic()
+    )
+    return neighbors, offsets, classes, rim_pairs
+
+
 def filter_neighborhood_average(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -3974,7 +4207,8 @@ def filter_two_step(
           reaches ``cos(threshold)``, a threshold above 90 degrees acting as 90. **Its answer
           depends on the face order**: MeshLab's vertex walk visits only the faces of lower index
           than the one being filtered, and this reproduces that walk. On a noisy cube it rounds the
-          corners inward, where the default keeps them.
+          corners inward, where the default keeps them. Both steps run in ``float64``, MeshLab's
+          precision.
         - ``"meshlib"`` — Zhang et al., "Mesh Denoising via a Novel Mumford-Shah Framework"
           (2015), both steps: the normals are
           [`filter_normals`][ordito.smoothing.filter_normals]'s ``method="meshlib"`` at
@@ -4071,14 +4305,19 @@ def filter_two_step(
     # MeshLab's normal pass walks the vertex -> face rows too, so it needs no mates.
     vf_offsets, vertex_faces = _incidence_rows(faces, 3, n)
     if method == "meshlab":
-        normal_pass = (
-            kernel_smoothing.smooth_face_normals_meshlab,
-            [faces, vertex_faces, vf_offsets],
+        return _meshlab_two_step(
+            vertices,
+            faces,
+            vertex_faces,
+            vf_offsets,
+            threshold,
+            iterations,
+            normal_iterations,
+            fit_iterations,
         )
-    else:
-        if mates is None:
-            mates = od.halfedge.halfedge_mates(faces, n)
-        normal_pass = (kernel_smoothing.smooth_face_normals_over_mates, [mates])
+    if mates is None:
+        mates = od.halfedge.halfedge_mates(faces, n)
+    normal_pass = (kernel_smoothing.smooth_face_normals_over_mates, [mates])
     # The fit steps ping-pong between two buffers of this call; the input is only ever read.
     positions = vertices
     spare: wp.array[wp.vec3] | None = None
@@ -4118,7 +4357,7 @@ def filter_two_step(
             if spare is None:
                 spare = _launch.empty(n, dtype=wp.vec3, device=device)
             _launch.launch(
-                kernel_smoothing.fit_vertices_to_normals,
+                kernel_smoothing.FIT_VERTICES_TO_NORMALS[wp.vec3],
                 dim=n,
                 inputs=[positions, faces, normals, vertex_faces, vf_offsets],
                 outputs=[spare],
@@ -4126,6 +4365,63 @@ def filter_two_step(
             )
             positions, spare = spare, (None if positions is vertices else positions)
     return _launch.clone(vertices) if positions is vertices else positions
+
+
+def _meshlab_two_step(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    threshold: float,
+    iterations: int,
+    normal_iterations: int,
+    fit_iterations: int,
+) -> wp.array[wp.vec3]:
+    """
+    Run ``filter_two_step(method="meshlab")``: MeshLab's normal passes and the fit, in ``float64``.
+
+    MeshLab smooths in ``double``, and sixty ``float32`` normal passes drift from it by up to
+    ``1e-5`` on a scrambled sphere; carried in ``float64`` from the rounded input to the rounded
+    output, only the output's rounding separates the two. The face field is crossed at corner 0, as
+    vcg forms it.
+    """
+    device = vertices.device
+    n = vertices.size
+    n_faces = faces.size // 3
+    positions = od.array.astype(vertices, wp.vec3d)
+    spare = _launch.empty(n, dtype=wp.vec3d, device=device)
+    field = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
+    spare_field = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
+    no_areas = _launch.empty(0, dtype=wp.float32, device=device)
+    threshold_cos = wp.float64(math.cos(math.radians(threshold)))
+    rows = [faces, vertex_faces, vf_offsets]
+    for _ in range(iterations):
+        _launch.launch(
+            kernel_smoothing.CORNER_CROSS_NORMALS[wp.vec3d],
+            dim=n_faces,
+            inputs=[positions, faces],
+            outputs=[field],
+            device=device,
+        )
+        for _pass in range(normal_iterations):
+            _launch.launch(
+                kernel_smoothing.SMOOTH_FACE_NORMALS_MESHLAB[wp.vec3d],
+                dim=n_faces,
+                inputs=[field, no_areas, *rows, threshold_cos],
+                outputs=[spare_field],
+                device=device,
+            )
+            field, spare_field = spare_field, field
+        for _fit in range(fit_iterations):
+            _launch.launch(
+                kernel_smoothing.FIT_VERTICES_TO_NORMALS[wp.vec3d],
+                dim=n,
+                inputs=[positions, faces, field, vertex_faces, vf_offsets],
+                outputs=[spare],
+                device=device,
+            )
+            positions, spare = spare, positions
+    return od.array.astype(positions, wp.vec3)
 
 
 def _mumford_shah_two_step(

@@ -664,16 +664,30 @@ def _vertex_classes(
 
 
 def resolve_duplicated_faces(
-    faces: wp.array[wp.int32], *, n_vertices: int | None = None
+    faces: wp.array[wp.int32],
+    *,
+    n_vertices: int | None = None,
+    method: Literal["cancel", "igl", "open3d", "meshlab"] = "cancel",
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
-    Resolve duplicated triangles by orientation-aware cancellation rules.
+    Resolve duplicated triangles, by default cancelling oppositely wound copies.
 
-    For each geometric duplicate:
+    A duplicate group is the faces sharing one vertex set. Under ``method="cancel"`` (the default)
+    and ``"igl"`` a face counts ``+1`` when it is wound as the group's first face and ``-1`` when
+    reversed, and the group's signed count decides:
+
     - equal positive and negative counts: remove all copies;
-    - one extra positive copy: keep one positively oriented face;
-    - one extra negative copy: keep one negatively oriented face;
-    - otherwise raise ``ValueError`` when counts are not orientable.
+    - one extra positive copy: keep the first positively oriented face;
+    - one extra negative copy: keep the first negatively oriented face;
+    - otherwise (two or more surplus copies of one winding) the group is not orientable:
+      ``"cancel"`` raises ``ValueError``, ``"igl"`` drops the whole group, as
+      ``igl::resolve_duplicated_faces`` does.
+
+    ``"open3d"`` and ``"meshlab"`` cancel nothing: each keeps one face per group, the first
+    occurrence. Open3D's ``remove_duplicated_triangles`` groups by winding too, so a face and its
+    reversed copy are two groups and both stay; MeshLab's ``meshing_remove_duplicate_faces`` groups
+    by vertex set alone, so one of them stays (MeshLab keeps whichever its unstable sort puts last;
+    this keeps the first).
 
     Parameters
     ----------
@@ -683,21 +697,25 @@ def resolve_duplicated_faces(
         Optional exclusive bound on the vertex indices, typically the vertex count. Trusted, not
         checked: it spares the reduction that otherwise range-checks ``faces`` and infers the
         bound, and its host readback.
+    method
+        ``"cancel"`` (default), ``"igl"``, ``"open3d"`` or ``"meshlab"``: the rule above.
 
     Returns
     -------
     resolved_faces : wp.array[wp.int32]
-        ``(3 * n_kept,)`` flat buffer of kept faces, in libigl's order: one per surviving group,
-        the groups ascending lexicographically by their sorted corner indices.
+        ``(3 * n_kept,)`` flat buffer of kept faces. Under ``"cancel"`` and ``"igl"`` in libigl's
+        order: one per surviving group, the groups ascending lexicographically by their sorted
+        corner indices. Under ``"open3d"`` and ``"meshlab"`` in input order, as both libraries
+        return them.
     kept_indices : wp.array[wp.int32]
         ``(n_kept,)`` original face indices into the input ``faces`` buffer, in the same order.
 
     Raises
     ------
     ValueError
-        If a duplicate group's signed count is not orientable, i.e. its positive and negative
-        copies differ by more than one, or if ``n_vertices`` is ``None`` and a face index is
-        negative.
+        If ``method`` is not one of the four names; under ``"cancel"``, if a duplicate group's
+        signed count is not orientable, i.e. its positive and negative copies differ by more than
+        one; or if ``n_vertices`` is ``None`` and a face index is negative.
 
     Examples
     --------
@@ -719,7 +737,24 @@ def resolve_duplicated_faces(
     resolved, kept = od.repair.resolve_duplicated_faces(tripled)
     print(resolved.shape[0] // 3)  # 12
     ```
+
+    Open3D's rule keeps both windings, MeshLab's one face of the pair:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    rows = faces.numpy().reshape(-1, 3)
+    doubled = wp.array(np.concatenate([rows, rows[:1, ::-1]]).ravel(), dtype=wp.int32)
+    print(od.repair.resolve_duplicated_faces(doubled, method="open3d")[1].shape[0])  # 13
+    print(od.repair.resolve_duplicated_faces(doubled, method="meshlab")[1].shape[0])  # 12
+    ```
     """
+    if method not in ("cancel", "igl", "open3d", "meshlab"):
+        raise ValueError(f"method must be 'cancel', 'igl', 'open3d' or 'meshlab', got {method!r}")
     n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
@@ -732,6 +767,8 @@ def resolve_duplicated_faces(
         if min_index < 0:
             raise ValueError(f"faces must be non-negative, got a minimum of {min_index}")
         n_vertices = max_value + 1
+    if method in ("open3d", "meshlab"):
+        return _first_occurrence_faces(faces, n_vertices, oriented=method == "open3d")
     # Orientation-free keys ordered as the sorted rows are lexicographically, with the identity
     # payload, sorted, and then each run of equal keys -- one duplicate group, its faces in
     # ascending index -- decided by the thread at its start: no unique table, inverse or per-group
@@ -755,7 +792,7 @@ def resolve_duplicated_faces(
     _launch.launch(
         kernel_repair.resolve_duplicate_runs,
         dim=n_faces,
-        inputs=[faces, keys, order, n_faces],
+        inputs=[faces, keys, order, n_faces, int(method == "igl")],
         outputs=[keep, flags],
         device=device,
     )
@@ -778,6 +815,51 @@ def resolve_duplicated_faces(
             device=device,
         )
     return resolved, kept_wp
+
+
+def _first_occurrence_faces(
+    faces: wp.array[wp.int32], n_vertices: int, *, oriented: bool
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Keep the first face of each duplicate group, in input order: Open3D's and MeshLab's rule.
+
+    ``oriented`` groups by winding (the corners rotated to start at the smallest), else by vertex
+    set. The stable sort of the identity puts each group's first occurrence at its run's start; the
+    flag there, scanned in input order, is the kept face's output row.
+    """
+    n_faces = faces.size // 3
+    device = faces.device
+    keys = _launch.empty(2 * n_faces, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.pack_face_keys_and_order,
+        dim=n_faces,
+        inputs=[faces, wp.uint64(n_vertices), int(oriented), keys, order],
+        device=device,
+    )
+    end_bit = max(1, (min(n_vertices**3, 1 << 64) - 1).bit_length())
+    _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=end_bit)
+    ranks = _launch.zeros(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.flag_first_sorted_members,
+        dim=n_faces,
+        inputs=[keys, order],
+        outputs=[ranks],
+        device=device,
+    )
+    _launch.array_scan(ranks, out_array=ranks, inclusive=True)
+    # The kept count sizes both outputs.
+    n_kept = int(read_scalar(ranks, index=-1))
+    resolved = _launch.empty(3 * n_kept, dtype=wp.int32, device=device)
+    kept = _launch.empty(n_kept, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.compact_scanned_faces_and_indices,
+        dim=n_faces,
+        inputs=[ranks, faces],
+        outputs=[resolved, kept],
+        device=device,
+    )
+    return resolved, kept
 
 
 def _raise_duplicate_group(

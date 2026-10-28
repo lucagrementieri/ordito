@@ -148,21 +148,6 @@ def test_weighted_vertex_normals(bench_case: BenchCase) -> None:
     assert result.shape == (n_vertices,)
 
 
-@pytest.mark.noparity(
-    "trimesh",
-    oracle="open3d",
-    reason="D2 a different weighting: Trimesh.vertex_normals is *angle*-weighted, not "
-    "area-weighted -- it matches ordito's vertex_normals(weighting='angle') to 4.3e-7 and "
-    "differs from the area-weighted answer by up to 0.072 on half_torus. trimesh has no "
-    "area-weighted vertex "
-    "normal, so this row prices 'compute vertex normals' generally; open3d and pymeshlab compute "
-    "the same scheme and are the oracles, in tests/test_vertices.py::"
-    "test_vertex_normal_weightings_match_open3d_and_pymeshlab. Now that the weighting is a "
-    "parameter of one function rather than three names, this row could be made comparable by "
-    "timing weighting='angle' -- but that would move the group off the weighting two of its three "
-    "references compute, so the row stays where the majority is and the angle comparison lives in "
-    "test_vertex_normals_angle.",
-)
 @pytest.mark.benchmark(group="vertex_normals")
 @pytest.mark.benchaxis("valence")
 @pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "meshlib", "pytorch3d")

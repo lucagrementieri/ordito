@@ -1371,6 +1371,33 @@
    "sort": 1
   }
  },
+ "benchmarks/test_curvature.py::test_principal_curvature_meyer[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 10,
+   "memset": 4,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_principal_curvature_pyvista[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 10,
+   "memset": 4,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_vertex_curvatures[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 8,
+   "memset": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
  "benchmarks/test_edges.py::test_edge_length_sum[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,
@@ -6430,6 +6457,46 @@
    "sort": 1
   }
  },
+ "benchmarks/test_repair.py::test_resolve_duplicated_faces_meshlab[sphere_med-ordito-cuda-clean]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "memset": 1,
+   "d2h": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_resolve_duplicated_faces_meshlab[sphere_med-ordito-cuda-dup10pct]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "memset": 1,
+   "d2h": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_resolve_duplicated_faces_open3d[sphere_med-ordito-cuda-clean]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "memset": 1,
+   "d2h": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_resolve_duplicated_faces_open3d[sphere_med-ordito-cuda-dup10pct]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "memset": 1,
+   "d2h": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
  "benchmarks/test_repair.py::test_reverse_winding[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,
@@ -6980,7 +7047,7 @@
  },
  "benchmarks/test_smoothing.py::test_filter_two_step_meshlab[saddle-ordito-cuda]": {
   "counts": {
-   "launch": 125,
+   "launch": 127,
    "alloc": 8,
    "memset": 2,
    "scan": 1
@@ -6988,7 +7055,7 @@
  },
  "benchmarks/test_smoothing.py::test_filter_two_step_meshlab[saddle_graded-ordito-cuda]": {
   "counts": {
-   "launch": 125,
+   "launch": 127,
    "alloc": 8,
    "memset": 2,
    "scan": 1
@@ -7014,6 +7081,16 @@
    "d2h": 5,
    "scan": 21,
    "sort": 21
+  }
+ },
+ "benchmarks/test_smoothing.py::test_filter_windowed_sinc[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 30,
+   "alloc": 18,
+   "memset": 8,
+   "d2h": 1,
+   "scan": 2,
+   "sort": 1
   }
  },
  "benchmarks/test_smoothing.py::test_inflate[sphere_small-ordito-cuda]": {

@@ -1545,6 +1545,58 @@ def test_filter_taubin_recompute_matches_open3d(
         )
 
 
+@pytest.mark.parametrize("rim_smoothing", [True, False])
+@pytest.mark.parametrize("iterations", [2, 20])
+@pytest.mark.parametrize("mesh_name", [*MESHES, "torus_irregular_holes"])
+@pytest.mark.parity("filter_windowed_sinc", "pyvista")
+def test_filter_windowed_sinc_matches_pyvista(
+    request: pytest.FixtureRequest, mesh_name: str, iterations: int, rim_smoothing: bool
+) -> None:
+    """
+    Class A: ``pyvista``'s ``smooth_taubin`` is VTK's windowed-sinc filter, position for position.
+
+    Same polynomial (Nuttall window, the Newton-searched pass-band offset), same stencils: the
+    ring, the rim pair under ``edge_angle``, fixed vertices scaled by the filter's response at
+    zero. ``rim_smoothing=False`` is ``boundary_smoothing=False``. The fixtures take every stencil
+    class: ``torus_irregular_holes`` has three rims with corners sharper than the default 15
+    degrees. Measured 4e-8 / 1.2e-7 (the ``float32`` output's rounding) on a graded saddle and a
+    stretched icosphere.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    smoothed_pv = trimesh_to_pyvista(mesh_tm).smooth_taubin(
+        n_iter=iterations, pass_band=0.1, boundary_smoothing=rim_smoothing
+    )
+    smoothed_wp = od.smoothing.filter_windowed_sinc(
+        mesh_wp.points, mesh_wp.indices, iterations, 0.1, rim_smoothing=rim_smoothing
+    )
+
+    # The filter must move the mesh by more than the tolerance (``saddle_graded`` is already smooth:
+    # 4.3e-5 at two passes).
+    points_pv = np.asarray(smoothed_pv.points)
+    assert np.abs(points_pv - mesh_tm.vertices).max() > 3e-5
+    assert np.allclose(smoothed_wp.numpy(), points_pv, rtol=1e-5, atol=1e-5)
+
+
+def test_filter_windowed_sinc_validates_and_warns(device: str) -> None:
+    """
+    Not a library comparison: the argument checks, and VTK's unnormalizable degree-1 filter.
+
+    At one pass no offset can be searched, so the filter is applied as designed and warns, as VTK
+    prints; zero passes return a copy.
+    """
+    vertices_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+    vertices_wp = wp.array(vertices_np, dtype=wp.vec3, device=device)
+    faces_wp = wp.array([0, 1, 2], dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="pass_band"):
+        od.smoothing.filter_windowed_sinc(vertices_wp, faces_wp, 5, 0.0)
+    with pytest.raises(ValueError, match="iterations"):
+        od.smoothing.filter_windowed_sinc(vertices_wp, faces_wp, -1)
+    with pytest.warns(RuntimeWarning, match="unnormalized"):
+        od.smoothing.filter_windowed_sinc(vertices_wp, faces_wp, 1)
+    unchanged_wp = od.smoothing.filter_windowed_sinc(vertices_wp, faces_wp, 0)
+    assert np.array_equal(unchanged_wp.numpy(), vertices_np)
+
+
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 @pytest.mark.parity("filter_neighborhood_average", "open3d")
 def test_filter_neighborhood_average(request: pytest.FixtureRequest, mesh_name: str) -> None:
@@ -3221,10 +3273,11 @@ def test_filter_two_step_meshlab_matches_pymeshlab(
     The normal pass is vcg's ``FaceNormalAngleThreshold`` -- the faces sharing a vertex, weighted
     ``(c - sigma)^2``, ``sigma = max(cos(threshold), 0)`` -- over the lower-index half of the ring
     its vertex walk visits, and the fit is the default's own (``FastFitMesh`` is the same step).
-    Both are Jacobi passes, so the only gap is ``float32`` against MeshLab's ``double``, over 60
-    normal passes: measured max **2.5e-07** on the cube at ``60`` and ``30``, **9.3e-06** at
-    ``120`` and **1.4e-05** on the scrambled icosphere (CUDA; 1.9e-06 on the CPU) -- inside
-    ``allclose``'s ``1e-5 + 1e-5 |x|`` on unit-scale coordinates, the last by 1.4x. The thresholds
+    Both are Jacobi passes, run in ``float64`` as MeshLab runs them, and MeshLab is handed the same
+    ``float32``-rounded input, so only the output's rounding separates the two: measured max
+    **3.0e-08** on the cube at every threshold and **5.7e-08** on the scrambled icosphere, both
+    devices. (In ``float32`` the 60 normal passes had drifted to 1.4e-05 on CUDA, a 1.4x margin;
+    MeshLab handed the unrounded input differs by 3.8e-06 from the rounded one.) The thresholds
     take the clamp (``120`` acts as ``90``) and both sides of it; the scrambled icosphere is where
     the walk's face-order dependence bites. Mutation probe: the default edge-neighbour filter at
     the same parameters is 0.044-0.39 away, against MeshLab moving the input by 0.050-0.43.
@@ -3236,6 +3289,8 @@ def test_filter_two_step_meshlab_matches_pymeshlab(
         rng = np.random.default_rng(1)
         noisy_np = sphere_tm.vertices + rng.normal(scale=0.01, size=sphere_tm.vertices.shape)
         faces_np = sphere_tm.faces[rng.permutation(len(sphere_tm.faces))].astype(np.int32)
+    # MeshLab gets ordito's ``float32`` input: rounding it alone moves the result by 3.8e-06.
+    noisy_np = noisy_np.astype(np.float32).astype(np.float64)
     meshset_pml = ml.MeshSet()
     meshset_pml.add_mesh(ml.Mesh(noisy_np, faces_np))
     meshset_pml.apply_coord_two_steps_smoothing(

@@ -22,6 +22,27 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ## [Unreleased]
 
+### Added
+
+- `curvature.vertex_curvatures`: pointwise mean and Gaussian curvature (Meyer et al.), as MeshLab's
+  `compute_scalar_by_discrete_curvature_per_vertex` forms them.
+- `curvature.principal_curvature(method="pyvista")`: VTK's 1-ring extreme curvatures, equal to
+  `pyvista.PolyData.curvature("maximum")` / `("minimum")`.
+- `curvature.principal_curvature(method="meyer")`: the principal pair implied by Meyer et al.'s
+  pointwise mean and Gaussian curvature.
+- `smoothing.filter_windowed_sinc`: the windowed-sinc low-pass filter of Taubin, Zhang and Golub,
+  equal to `pyvista.PolyData.smooth_taubin` (VTK's `vtkWindowedSincPolyDataFilter`).
+- `repair.resolve_duplicated_faces(method=)`: `"igl"` drops a group no cancellation resolves, as
+  libigl does; `"open3d"` and `"meshlab"` keep the first face of each duplicate group, as
+  `remove_duplicated_triangles` and `meshing_remove_duplicate_faces` do. The default still raises.
+- `reconstruction.resample_uniform(method="igl")`: `igl.offset_surface`'s lattice.
+- `texture.rasterize_attribute` / `rasterize_discrete_attribute(subpixel_bits=)`: snap vertices
+  to a sub-pixel grid as a GPU rasterizer does; `8` reproduces OpenGL.
+
+### Changed
+
+- `smoothing.filter_two_step(method="meshlab")` runs in `float64`, MeshLab's precision.
+
 ## [0.1.0] - 2026-10-27
 
 The first public release.

@@ -1741,14 +1741,27 @@ def smooth_face_normals_over_mates(
 
 
 @wp.kernel
+def corner_cross_normals(
+    vertices: wp.array[Any], faces: wp.array[wp.int32], out_normals: wp.array[Any]
+) -> None:
+    # A face's unit normal as vcg's ``PerFaceNormalized`` forms it, ``(v1 - v0) x (v2 - v0)``
+    # normalized, in the positions' precision: the field MeshLab's two-step normal passes start
+    # from. ``triangles.face_normals_and_area`` crosses at the largest angle in ``float32``, the
+    # default filter's field; the two differ by rounding only.
+    f = wp.int32(wp.tid())
+    a, b, c = corner_triple(faces, f)
+    out_normals[f] = wp.normalize(wp.cross(vertices[b] - vertices[a], vertices[c] - vertices[a]))
+
+
+@wp.kernel
 def smooth_face_normals_meshlab(
-    face_normals: wp.array[wp.vec3],
+    face_normals: wp.array[Any],
     face_areas: wp.array[wp.float32],
     faces: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
     vf_offsets: wp.array[wp.int32],
-    threshold_cos: wp.float32,
-    out_normals: wp.array[wp.vec3],
+    threshold_cos: wp.Float,
+    out_normals: wp.array[Any],
 ) -> None:
     # One normal pass of MeshLab's two-step smoothing, as its output measures: the normalized sum
     # of the vertex-adjacent faces' normals, each weighted ``(c - sigma)^2`` where
@@ -1761,13 +1774,14 @@ def smooth_face_normals_meshlab(
     # and equals averaging face ``f`` with ``f`` itself and the faces of *lower* index around its
     # corners, each counted once. Here: the rows' faces ``g <= f``, skipping a ``g`` that also
     # holds an earlier corner's vertex (already counted there), so the row order does not matter.
-    # A Jacobi pass: ``face_normals`` is read-only throughout.
+    # A Jacobi pass: ``face_normals`` is read-only throughout. Generic over the normals'
+    # precision: ``filter_two_step(method="meshlab")`` runs it in ``float64``, MeshLab's.
     f = wp.int32(wp.tid())
     normal = face_normals[f]
-    sigma = wp.max(threshold_cos, wp.float32(0.0))
+    sigma = wp.max(threshold_cos, type(threshold_cos)(0.0))
     c0, c1, c2 = corner_triple(faces, f)
     corners = wp.vec3i(c0, c1, c2)
-    accumulated = wp.vec3(0.0, 0.0, 0.0)
+    accumulated = normal - normal
     for k in range(3):
         for slot in range(vf_offsets[corners[k]], vf_offsets[corners[k] + 1]):
             g = vertex_faces[slot]
@@ -1777,7 +1791,7 @@ def smooth_face_normals_meshlab(
                     counted = True
             if not counted:
                 other = face_normals[g]
-                c = wp.clamp(wp.dot(other, normal), wp.float32(1e-4), wp.float32(1.0))
+                c = wp.clamp(wp.dot(other, normal), type(sigma)(1e-4), type(sigma)(1.0))
                 if c >= sigma:
                     w = c - sigma
                     accumulated += other * (w * w)
@@ -1786,12 +1800,12 @@ def smooth_face_normals_meshlab(
 
 @wp.kernel
 def fit_vertices_to_normals(
-    vertices: wp.array[wp.vec3],
+    vertices: wp.array[Any],
     faces: wp.array[wp.int32],
-    face_normals: wp.array[wp.vec3],
+    face_normals: wp.array[Any],
     vertex_faces: wp.array[wp.int32],
     vf_offsets: wp.array[wp.int32],
-    out_positions: wp.array[wp.vec3],
+    out_positions: wp.array[Any],
 ) -> None:
     # One gradient step of the vertex-fitting half of two-step smoothing (Ohtake et al.): each
     # incident face wants its corner to lie in the plane through the face centroid with the
@@ -1801,19 +1815,20 @@ def fit_vertices_to_normals(
     # corner reference) and divided by the row's length, which is the step size that makes the
     # iteration a contraction without a tuning constant. ``vertices`` and ``out_positions`` are the
     # caller's two ping-pong buffers, so every correction reads the previous step's positions.
+    # Generic over the precision, positions and normals alike (``float64`` for MeshLab's method).
     v = wp.int32(wp.tid())
     position = vertices[v]
     start = vf_offsets[v]
     end = vf_offsets[v + 1]
-    delta = wp.vec3(0.0, 0.0, 0.0)
+    delta = position - position
     for slot in range(start, end):
         f = vertex_faces[slot]
         i0, i1, i2 = corner_triple(faces, f)
         normal = face_normals[f]
-        centroid = (vertices[i0] + vertices[i1] + vertices[i2]) / 3.0
+        centroid = (vertices[i0] + vertices[i1] + vertices[i2]) / type(position[0])(3.0)
         delta += normal * wp.dot(normal, centroid - position)
     if end > start:
-        position = position + delta / wp.float32(end - start)
+        position = position + delta / type(position[0])(end - start)
     out_positions[v] = position
 
 
@@ -2949,6 +2964,148 @@ def mark_band_vertices(
         out_band[c] = True
 
 
+# ---------------------------------------------------------------------------
+# Windowed-sinc smoothing (Taubin, Zhang and Golub, "Optimal Surface Smoothing as Filter Design")
+# ---------------------------------------------------------------------------
+
+# A vertex's stencil class: it does not move under the Laplacian, averages its whole 1-ring, or
+# averages its two neighbours along the rim.
+STENCIL_FIXED = wp.int32(0)
+STENCIL_RING = wp.int32(1)
+STENCIL_RIM = wp.int32(2)
+# A vertex with this many incident face corners (``2 * 255`` incident directed edges) is held
+# fixed: VTK's bound on a stencil's size.
+STENCIL_MAX_CORNERS = wp.int32(255)
+
+
+@wp.kernel
+def tally_stencil_edges(
+    edges: wp.array2d[wp.int32],
+    uses: wp.array[wp.int32],
+    out_uses: wp.array[wp.int32],
+    out_rim_counts: wp.array[wp.int32],
+    out_crowded_counts: wp.array[wp.int32],
+    out_rim_pairs: wp.array[wp.vec2i],
+) -> None:
+    # Per unique edge, into both endpoints: the face corners it carries (``out_uses``, twice a
+    # vertex's incident faces), whether it is a rim edge (one face; the first two land in
+    # ``out_rim_pairs``, and a third makes the vertex fixed whatever they hold) and whether it is
+    # crowded (three or more faces). Integer atomics; every output arrives zeroed.
+    e = wp.int32(wp.tid())
+    m = uses[e]
+    for side in range(2):
+        v = edges[e, side]
+        other = edges[e, 1 - side]
+        wp.atomic_add(out_uses, v, m)
+        if m == 1:
+            slot = wp.atomic_add(out_rim_counts, v, 1)
+            if slot < 2:
+                out_rim_pairs[v][slot] = other
+        elif m > 2:
+            wp.atomic_add(out_crowded_counts, v, 1)
+
+
+@wp.kernel
+def classify_stencil_vertices(
+    vertices: wp.array[wp.vec3],
+    uses: wp.array[wp.int32],
+    rim_counts: wp.array[wp.int32],
+    crowded_counts: wp.array[wp.int32],
+    rim_pairs: wp.array[wp.vec2i],
+    rim_smoothing: wp.int32,
+    cos_edge_angle: wp.float64,
+    out_classes: wp.array[wp.int32],
+) -> None:
+    # VTK's stencil analysis without feature edges (``vtkWindowedSincPolyDataFilter``'s
+    # ``BuildO1Stencil`` with rim smoothing, ``BuildO2Stencil`` without): an unreferenced vertex, a
+    # hub of ``STENCIL_MAX_CORNERS`` faces or more, and any vertex on a crowded edge are fixed; a
+    # vertex with no rim edge averages its ring; one with exactly two averages them, unless the rim
+    # turns there by more than the edge angle; any other rim count is fixed.
+    v = wp.int32(wp.tid())
+    stencil = STENCIL_FIXED
+    rims = rim_counts[v]
+    if uses[v] > 0 and uses[v] < 2 * STENCIL_MAX_CORNERS and crowded_counts[v] == 0:
+        if rims == 0:
+            stencil = STENCIL_RING
+        elif rims == 2 and rim_smoothing != 0:
+            pair = rim_pairs[v]
+            p = wp.vec3d(vertices[v])
+            incoming = wp.normalize(p - wp.vec3d(vertices[pair[0]]))
+            outgoing = wp.normalize(wp.vec3d(vertices[pair[1]]) - p)
+            if wp.dot(incoming, outgoing) >= cos_edge_angle:
+                stencil = STENCIL_RIM
+    out_classes[v] = stencil
+
+
+@wp.func
+def stencil_laplacian(
+    x: wp.array[wp.vec3d],
+    v: wp.int32,
+    neighbors: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    classes: wp.array[wp.int32],
+    rim_pairs: wp.array[wp.vec2i],
+) -> wp.vec3d:
+    # The negative umbrella Laplacian ``x_v - mean(x_stencil)``, each term divided by the stencil
+    # size before the sum as VTK forms it; zero at a fixed vertex. A ring stencil reads the
+    # vertex's unique neighbours, a rim stencil its two rim neighbours (a two-term sum, so the order
+    # the pair was written in does not round differently).
+    delta = wp.vec3d()
+    stencil = classes[v]
+    if stencil == STENCIL_RING:
+        start = offsets[v]
+        count = offsets[v + 1] - start
+        scale = wp.float64(1.0) / wp.float64(count)
+        for k in range(count):
+            delta += (x[v] - x[neighbors[start + k]]) * scale
+    elif stencil == STENCIL_RIM:
+        pair = rim_pairs[v]
+        delta = (x[v] - x[pair[0]]) * wp.float64(0.5) + (x[v] - x[pair[1]]) * wp.float64(0.5)
+    return delta
+
+
+@wp.kernel
+def windowed_sinc_first_pass(
+    x0: wp.array[wp.vec3d],
+    neighbors: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    classes: wp.array[wp.int32],
+    rim_pairs: wp.array[wp.vec2i],
+    c0: wp.float64,
+    c1: wp.float64,
+    out_x1: wp.array[wp.vec3d],
+    out_sum: wp.array[wp.vec3d],
+) -> None:
+    # The Chebyshev recursion's second term ``x1 = x0 - L x0 / 2`` and the filtered sum
+    # ``c0 x0 + c1 x1``; ``windowed_sinc_pass`` is every later term, and the two differ by that
+    # recurrence and by setting the sum rather than adding to it.
+    v = wp.int32(wp.tid())
+    x1 = x0[v] - stencil_laplacian(x0, v, neighbors, offsets, classes, rim_pairs) * wp.float64(0.5)
+    out_x1[v] = x1
+    out_sum[v] = x0[v] * c0 + x1 * c1
+
+
+@wp.kernel
+def windowed_sinc_pass(
+    x0: wp.array[wp.vec3d],
+    x1: wp.array[wp.vec3d],
+    neighbors: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    classes: wp.array[wp.int32],
+    rim_pairs: wp.array[wp.vec2i],
+    c: wp.float64,
+    out_x2: wp.array[wp.vec3d],
+    out_sum: wp.array[wp.vec3d],
+) -> None:
+    # One later term of the recursion, ``x2 = 2 x1 - x0 - L x1``, added into the filtered sum with
+    # its coefficient.
+    v = wp.int32(wp.tid())
+    delta = stencil_laplacian(x1, v, neighbors, offsets, classes, rim_pairs)
+    x2 = x1[v] - x0[v] + x1[v] - delta
+    out_x2[v] = x2
+    out_sum[v] = out_sum[v] + x2 * c
+
+
 # The concrete handles of the generic pass kernels above, keyed by the dtype of the positions read
 # and of the positions written (``humphrey_*``: the one generic side); see
 # [`OverloadTable`][ordito.kernels.array.OverloadTable]. Filled in by ``_register_overloads``.
@@ -2956,6 +3113,9 @@ DIFFUSE_VEC3_PASS: OverloadTable
 SHARPEN_PASS: OverloadTable
 GRAPH_SHARPEN_PASS: OverloadTable
 NEIGHBORHOOD_AVERAGE_PASS: OverloadTable
+CORNER_CROSS_NORMALS: OverloadTable
+SMOOTH_FACE_NORMALS_MESHLAB: OverloadTable
+FIT_VERTICES_TO_NORMALS: OverloadTable
 HUMPHREY_RESIDUAL_PASS: OverloadTable
 HUMPHREY_UPDATE_PASS: OverloadTable
 MUT_DIF_ADIL_PASS: OverloadTable
@@ -2969,7 +3129,35 @@ def _register_overloads() -> None:
     global HUMPHREY_UPDATE_PASS, SHARPEN_PASS, GRAPH_SHARPEN_PASS, MUT_DIF_ADIL_PASS
     global MUT_DIF_STEP_SCALED
     global IMPLICIT_LAPLACIAN_STEP
+    global CORNER_CROSS_NORMALS, SMOOTH_FACE_NORMALS_MESHLAB, FIT_VERTICES_TO_NORMALS
     vectors = (wp.vec3, wp.vec3d)
+    scalars = {wp.vec3: wp.float32, wp.vec3d: wp.float64}
+    indices = wp.array[wp.int32]
+    CORNER_CROSS_NORMALS = OverloadTable(
+        corner_cross_normals, {vec: [wp.array[vec], indices, wp.array[vec]] for vec in (wp.vec3d,)}
+    )
+    SMOOTH_FACE_NORMALS_MESHLAB = OverloadTable(
+        smooth_face_normals_meshlab,
+        {
+            vec: [
+                wp.array[vec],
+                wp.array[wp.float32],
+                indices,
+                indices,
+                indices,
+                scalars[vec],
+                wp.array[vec],
+            ]
+            for vec in (wp.vec3d,)
+        },
+    )
+    FIT_VERTICES_TO_NORMALS = OverloadTable(
+        fit_vertices_to_normals,
+        {
+            vec: [wp.array[vec], indices, wp.array[vec], indices, indices, wp.array[vec]]
+            for vec in vectors
+        },
+    )
     rows = [wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.float32]]
     IMPLICIT_LAPLACIAN_STEP = OverloadTable(
         implicit_laplacian_step,

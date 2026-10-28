@@ -27,7 +27,7 @@ import ordito as od  # after
 | PyMeshLab | ordito |
 |---|---|
 | `meshing_close_holes(maxholesize=n)` | [`holes.fill_small(max_edges=n - 1)`][ordito.holes.fill_small] (both count boundary edges; MeshLab fills holes *below* `maxholesize`, `max_edges` is inclusive), or [`holes.fill_min_weight`][ordito.holes.fill_min_weight] for every hole regardless of size |
-| `meshing_remove_duplicate_faces` | [`repair.resolve_duplicated_faces`][ordito.repair.resolve_duplicated_faces] |
+| `meshing_remove_duplicate_faces` | [`repair.resolve_duplicated_faces(method="meshlab")`][ordito.repair.resolve_duplicated_faces] (one face per vertex set; the default instead cancels oppositely wound copies) |
 | `meshing_remove_unreferenced_vertices` | [`repair.remove_unreferenced_vertices`][ordito.repair.remove_unreferenced_vertices] |
 | `meshing_remove_connected_component_by_diameter` / `_by_face_number` | [`repair.remove_small_components`][ordito.repair.remove_small_components] |
 | `meshing_snap_mismatched_borders` | [`holes.stitch`][ordito.holes.stitch] / [`holes.stitch_min_weight`][ordito.holes.stitch_min_weight] |
@@ -39,8 +39,10 @@ import ordito as od  # after
 |---|---|
 | `apply_coord_laplacian_smoothing` | [`smoothing.filter_laplacian`][ordito.smoothing.filter_laplacian] (MeshLab weights each neighbour by the number of faces it shares with the vertex and keeps some of the vertex itself, so a pass moves vertices a little differently) |
 | `apply_coord_taubin_smoothing` | [`smoothing.filter_taubin`][ordito.smoothing.filter_taubin] |
-| `apply_coord_hc_laplacian_smoothing` | [`smoothing.filter_humphrey`][ordito.smoothing.filter_humphrey] |
+| `apply_coord_hc_laplacian_smoothing` | [`smoothing.filter_humphrey(method="meshlab")`][ordito.smoothing.filter_humphrey] |
+| `apply_coord_two_steps_smoothing` | [`smoothing.filter_two_step(method="meshlab")`][ordito.smoothing.filter_two_step] |
 | `compute_curvature_principal_directions_per_vertex` | [`curvature.principal_curvature`][ordito.curvature.principal_curvature] |
+| `compute_scalar_by_discrete_curvature_per_vertex` (mean, Gaussian) | [`curvature.vertex_curvatures`][ordito.curvature.vertex_curvatures] |
 | `compute_scalar_by_shape_diameter_function_per_vertex` | [`visibility.shape_diameter`][ordito.visibility.shape_diameter] |
 | `compute_scalar_ambient_occlusion` | [`visibility.ambient_occlusion`][ordito.visibility.ambient_occlusion] |
 

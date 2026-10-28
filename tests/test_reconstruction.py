@@ -1907,6 +1907,47 @@ def test_resample_uniform_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mes
     assert symmetric_surface_distance(out_tm, sphere_tm)[0] < 0.065 * voxel_size
 
 
+@pytest.mark.parametrize("offset", [0.0, -0.05])
+@pytest.mark.parity("resample_uniform", "igl")
+def test_resample_uniform_igl_method_matches_igl_offset_surface(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], offset: float
+) -> None:
+    """
+    Class A (up to numbering): ``method="igl"`` is ``igl.offset_surface``'s mesh.
+
+    The same ``s = round(longest_extent / voxel_size)`` igl is handed, its lattice (one node of
+    padding, the box grown by ``offset``, centred), the field sampled with the default sign mode
+    (``PSEUDONORMAL`` agrees with it, see the test above) and the extraction returned as marched.
+    Compared with [`meshes_allclose`][ordito.equality.meshes_allclose]: the same counts and the
+    same oriented faces under the nearest-vertex map. ``offset`` takes the two levels
+    ``test_signed_distance_level_set_matches_igl_offset_surface`` holds Class A on.
+    """
+    sphere_tm, sphere_wp = sphere_irregular
+    voxel_size = 0.06
+    vertices_np = np.ascontiguousarray(sphere_tm.vertices, dtype=np.float64)
+    faces_np = np.ascontiguousarray(sphere_tm.faces, dtype=np.int64)
+    extent = float((vertices_np.max(axis=0) - vertices_np.min(axis=0)).max())
+    vertices_igl, faces_igl = igl.offset_surface(
+        vertices_np,
+        faces_np,
+        offset,
+        round(extent / voxel_size),
+        igl.SIGNED_DISTANCE_TYPE_PSEUDONORMAL,
+    )[:2]
+
+    out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(
+        sphere_wp.points, sphere_wp.indices, voxel_size=voxel_size, offset=offset, method="igl"
+    )
+    reference_vertices_wp, reference_faces_wp = numpy_to_warp(
+        np.asarray(vertices_igl), np.asarray(faces_igl), sphere_wp.points.device
+    )
+
+    assert np.asarray(faces_igl).shape[0] > 1000
+    assert od.equality.meshes_allclose(
+        out_vertices_wp, out_faces_wp, reference_vertices_wp, reference_faces_wp
+    )
+
+
 @pytest.mark.parity("resample_uniform", "meshlib")
 def test_resample_uniform_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """

@@ -14,6 +14,7 @@ from ordito.kernels.array import (
     pack_edge_key,
     pack_index_triple,
     pack_ranked_key,
+    rotate_min_first,
     scanned_count,
     sort3,
     update_argmin_pair,
@@ -200,6 +201,7 @@ def resolve_duplicate_runs(
     sorted_keys: wp.array[wp.uint64],
     order: wp.array[wp.int32],
     n_faces: wp.int32,
+    drop_unorientable: wp.int32,
     out_keep: wp.array[wp.int32],
     out_flags: wp.array[wp.int32],
 ) -> None:
@@ -213,8 +215,9 @@ def resolve_duplicate_runs(
     # entry is the error word) is ``1`` at a kept group's run start and ``0`` everywhere else, the
     # flag the caller scans in place, so kept groups number in ascending key order. A
     # non-orientable group reports its run start reflected, ``n_faces - i``, by ``atomic_max`` into
-    # the error word, so the smallest such group wins and zero means none. Launched over the sorted
-    # positions; ``out_keep`` is written at run starts only.
+    # the error word, so the smallest such group wins and zero means none; with
+    # ``drop_unorientable`` set it is dropped instead, as libigl's release build does. Launched over
+    # the sorted positions; ``out_keep`` is written at run starts only.
     i = wp.int32(wp.tid())
     if i > 0:
         if sorted_keys[i] == sorted_keys[i - 1]:
@@ -246,7 +249,10 @@ def resolve_duplicate_runs(
         member_count, signed_count, representative, first_positive, first_negative
     )
     if keep == -2:
-        wp.atomic_max(out_flags, n_faces, n_faces - i)
+        if drop_unorientable != 0:
+            keep = wp.int32(-1)
+        else:
+            wp.atomic_max(out_flags, n_faces, n_faces - i)
     out_keep[i] = keep
     out_flags[i] = wp.where(keep >= 0, wp.int32(1), wp.int32(0))
 
@@ -270,6 +276,59 @@ def compact_kept_duplicate_runs(
     out_kept[row] = f
     for k in range(3):
         out_faces[3 * row + k] = faces[3 * f + k]
+
+
+@wp.kernel
+def pack_face_keys_and_order(
+    faces: wp.array[wp.int32],
+    max_index: wp.uint64,
+    oriented: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # The first-occurrence duplicate rules' face key, with the identity payload in the leading
+    # halves of the radix sort's buffers: the corners rotated to start at the smallest
+    # (``oriented``, so a face and its reversed twin differ: Open3D's key) or sorted (MeshLab's).
+    # ``pack_lexicographic_face_keys_and_order`` is the cancelling rule's key, whose digit order
+    # also fixes the output order; here the order is the input's, so any injective packing serves.
+    f = wp.int32(wp.tid())
+    a, b, c = corner_triple(faces, f)
+    k0, k1, k2 = sort3(a, b, c)
+    if oriented != 0:
+        k0, k1, k2 = rotate_min_first(a, b, c)
+    out_keys[f] = pack_index_triple(k0, k1, k2, max_index)
+    out_order[f] = f
+
+
+@wp.kernel
+def flag_first_sorted_members(
+    sorted_keys: wp.array[wp.uint64], order: wp.array[wp.int32], out_flags: wp.array[wp.int32]
+) -> None:
+    # 1 at the input index of each run's first member: ``order`` is the stable sort of the identity,
+    # so that is the class's first occurrence. ``out_flags`` arrives zeroed and is indexed by input
+    # face, so its inclusive scan numbers the kept faces in input order.
+    i = wp.int32(wp.tid())
+    if i > 0:
+        if sorted_keys[i] == sorted_keys[i - 1]:
+            return
+    out_flags[order[i]] = 1
+
+
+@wp.kernel
+def compact_scanned_faces_and_indices(
+    inclusive: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_kept: wp.array[wp.int32],
+) -> None:
+    # ``compact_scanned_faces`` that also writes each kept face's input index, the second output of
+    # ``resolve_duplicated_faces``; the two differ by that one store.
+    f = wp.int32(wp.tid())
+    row, count = scanned_count(inclusive, f)
+    if count != 0:
+        a, b, c = corner_triple(faces, f)
+        write_corner_triple(out_faces, row, a, b, c)
+        out_kept[row] = f
 
 
 @wp.kernel

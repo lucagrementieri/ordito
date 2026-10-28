@@ -41,6 +41,7 @@ import ordito as od  # after
 | `TriangleMesh.simplify_quadric_decimation` | [`remesh.quadric_decimate`][ordito.remesh.quadric_decimate] |
 | `TriangleMesh.filter_smooth_laplacian` | [`smoothing.filter_laplacian`][ordito.smoothing.filter_laplacian] |
 | `TriangleMesh.filter_smooth_taubin` | [`smoothing.filter_taubin`][ordito.smoothing.filter_taubin] |
+| `TriangleMesh.remove_duplicated_triangles` | [`repair.resolve_duplicated_faces(method="open3d")`][ordito.repair.resolve_duplicated_faces] |
 
 ## Ray casting
 

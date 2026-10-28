@@ -37,7 +37,12 @@ _OWNER_SENTINEL = INT32_MAX
 
 
 def rasterize_attribute(
-    uv: wp.array[wp.vec2], faces: wp.array[wp.int32], attribute: odt.ArrayNdFloat32, resolution: int
+    uv: wp.array[wp.vec2],
+    faces: wp.array[wp.int32],
+    attribute: odt.ArrayNdFloat32,
+    resolution: int,
+    *,
+    subpixel_bits: int | None = None,
 ) -> odt.Array3dFloat32:
     """
     Rasterize a per-vertex attribute into a square UV-space texture.
@@ -58,6 +63,11 @@ def rasterize_attribute(
         ``(n_vertices, n_channels)`` per-vertex attribute to interpolate.
     resolution
         Output image size in pixels (square).
+    subpixel_bits
+        When given, every vertex is first snapped to the nearest ``1 / 2 ** subpixel_bits`` of a
+        pixel, as a GPU rasterizer snaps it before testing coverage and interpolating; ``8``
+        reproduces OpenGL on current NVIDIA drivers. ``None`` (the default) rasterizes the UVs as
+        given.
 
     Returns
     -------
@@ -72,7 +82,7 @@ def rasterize_attribute(
         If ``attribute`` is not a rank-2 ``wp.float32`` array.
     ValueError
         If ``resolution`` is not positive, if ``uv`` and ``attribute`` disagree on their row
-        count, or if any finite UV lies outside ``[0, 1]``.
+        count, if any finite UV lies outside ``[0, 1]``, or if ``subpixel_bits`` is negative.
     RuntimeError
         If ``uv``, ``faces`` and ``attribute`` are not all on one device.
 
@@ -103,6 +113,7 @@ def rasterize_attribute(
     odt.ensure_ndim(attribute, 2, dtype=wp.float32)
     n_channels = int(attribute.shape[1])
     _check_rasterize_inputs(uv, int(attribute.shape[0]), resolution)
+    uv = _snapped_uv(uv, resolution, subpixel_bits)
 
     device = uv.device
     owner = _rasterize_owner(uv, faces, resolution, _launch.empty(0, dtype=wp.int32, device=device))
@@ -118,7 +129,12 @@ def rasterize_attribute(
 
 
 def rasterize_discrete_attribute(
-    uv: wp.array[wp.vec2], faces: wp.array[wp.int32], attribute: wp.array[wp.int32], resolution: int
+    uv: wp.array[wp.vec2],
+    faces: wp.array[wp.int32],
+    attribute: wp.array[wp.int32],
+    resolution: int,
+    *,
+    subpixel_bits: int | None = None,
 ) -> odt.Array2dInt32:
     """
     Rasterize a per-vertex discrete label into a square UV-space class image.
@@ -139,6 +155,9 @@ def rasterize_discrete_attribute(
         ``(n_vertices,)`` per-vertex labels, all ``>= 0``.
     resolution
         Output image size in pixels (square).
+    subpixel_bits
+        As in [`rasterize_attribute`][ordito.texture.rasterize_attribute]: snap every vertex to the
+        nearest ``1 / 2 ** subpixel_bits`` of a pixel first.
 
     Returns
     -------
@@ -150,8 +169,8 @@ def rasterize_discrete_attribute(
     ------
     ValueError
         If any entry of ``attribute`` is negative, if ``resolution`` is not positive, if ``uv``
-        and ``attribute`` disagree on their row count, or if any finite UV lies outside
-        ``[0, 1]``.
+        and ``attribute`` disagree on their row count, if any finite UV lies outside ``[0, 1]``,
+        or if ``subpixel_bits`` is negative.
     RuntimeError
         If ``uv``, ``faces`` and ``attribute`` are not all on one device.
 
@@ -182,6 +201,7 @@ def rasterize_discrete_attribute(
     odt.ensure_ndim(attribute, 1, dtype=wp.int32)
     n_vertices = attribute.size
     _check_rasterize_inputs(uv, n_vertices, resolution)
+    uv = _snapped_uv(uv, resolution, subpixel_bits)
 
     device = uv.device
     owner = _rasterize_owner(uv, faces, resolution, attribute)
@@ -194,6 +214,21 @@ def rasterize_discrete_attribute(
         device=device,
     )
     return odt.as_array2d(labels_image, wp.int32)
+
+
+def _snapped_uv(
+    uv: wp.array[wp.vec2], resolution: int, subpixel_bits: int | None
+) -> wp.array[wp.vec2]:
+    """``uv`` itself, or a copy snapped to ``2 ** subpixel_bits`` positions a pixel."""
+    if subpixel_bits is None:
+        return uv
+    if subpixel_bits < 0:
+        raise ValueError(f"subpixel_bits must be non-negative, got {subpixel_bits}")
+    snapped = _launch.empty(uv.size, dtype=wp.vec2, device=uv.device)
+    if uv.size > 0:
+        scale = wp.float32(resolution * 2.0**subpixel_bits)
+        _launch.map(kernel_texture.snap_uv, uv, scale, out=snapped)
+    return snapped
 
 
 def _check_rasterize_inputs(uv: wp.array[wp.vec2], n_vertices: int, resolution: int) -> None:

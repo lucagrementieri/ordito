@@ -1,10 +1,24 @@
 import warp as wp
 
-from ordito.kernels.array import update_argmax_lowest_index
+from ordito.kernels.array import (
+    declare_map_signatures,
+    map_probe,
+    map_probe_single,
+    update_argmax_lowest_index,
+)
 from ordito.kernels.predicates import barycentric_2d
 from ordito.kernels.triangles import corner_triple, face_vertices
 
 wp.set_module_options({"enable_backward": False})
+
+
+@wp.func
+def snap_uv(uv: wp.vec2, scale: wp.float32) -> wp.vec2:
+    # A UV moved to the nearest point of a lattice ``1 / scale`` apart: with ``scale`` the
+    # resolution times ``2 ** subpixel_bits``, the window position a GPU rasterizer snaps a vertex
+    # to before it tests coverage and interpolates (``wp.round``: ties away from zero).
+    return wp.vec2(wp.round(uv[0] * scale) / scale, wp.round(uv[1] * scale) / scale)
+
 
 # NaN payload for vertices whose UV is non-finite (never sampled) and out-of-bounds reads.
 NAN_F32 = wp.constant(wp.float32(float("nan")))
@@ -305,3 +319,22 @@ def sample_class_image(
     row, col = _texel_coordinate(u, w, height, width)
     r, c = _nearest_texel(row, col, height, width)
     out_labels[v] = class_image[r, c]
+
+
+def _declare_map_kernels() -> None:
+    """
+    Pre-declare this module's forking ``wp.map`` signatures so each builds one module, not three.
+
+    See ``kernels/array.py::declare_map_signatures``. ``snap_uv`` is ``wp.map``'d from
+    ``texture.py`` over the UV buffer, which a one-vertex buffer makes a length-1 array.
+    """
+    dense, single = map_probe, map_probe_single
+    declare_map_signatures(
+        [
+            (snap_uv, (dense(wp.vec2), wp.float32(1.0)), wp.vec2),
+            (snap_uv, (single(wp.vec2), wp.float32(1.0)), wp.vec2),
+        ]
+    )
+
+
+_declare_map_kernels()

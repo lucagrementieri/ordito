@@ -806,9 +806,9 @@ def test_signed_distance_level_set_matches_igl_offset_surface(
     agree but one vertex lands 4.8e-05 away (not traced), and at ``0.05`` two vertices of either
     mesh are nearer each other than the tolerance, so the nearest-vertex map is not a bijection (6
     faces map wrongly; the counts and every position still agree to 1.9e-05).
-    [`resample_uniform`][ordito.reconstruction.resample_uniform], which picks its own lattice from
-    a voxel size, keeps its Class C comparison with igl: no voxel size makes its ``3``-cell
-    padding igl's one node at igl's spacing.
+    [`resample_uniform`][ordito.reconstruction.resample_uniform] builds this lattice itself under
+    ``method="igl"`` (``test_resample_uniform_igl_method_matches_igl_offset_surface``); its default
+    ``3``-cell padding keeps a Class C comparison.
 
     Non-vacuity is the surface itself; a lattice one node off on any axis, or the field's sign
     flipped, fails the vertex count.

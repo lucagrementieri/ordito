@@ -1,12 +1,15 @@
 """
 Discrete curvature: principal directions and magnitudes, Gaussian and mean.
 
-Three quantities computed three different ways, because on a mesh "curvature" is not one thing:
+Several quantities computed several ways, because on a mesh "curvature" is not one thing:
 
 - [`principal_curvature`][ordito.curvature.principal_curvature] fits a quadric to a geodesic-ball
   neighbourhood of each vertex and reads the shape operator off it, giving both principal
   directions and magnitudes. This is the extrinsic, neighbourhood-scale answer, and the only one
-  with a ``radius`` to tune (``igl::principal_curvature``).
+  with a ``radius`` to tune (``igl::principal_curvature``). Its ``method="pyvista"`` and
+  ``method="meyer"`` take the 1-ring extremes of VTK's and of Meyer et al.'s curvatures instead.
+- [`vertex_curvatures`][ordito.curvature.vertex_curvatures] is the pointwise mean and Gaussian
+  curvature over one ring (Meyer et al.), per unit mixed area.
 - [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature] is the angle
   defect: purely *intrinsic*, exact rather than fitted, and computable from the angles alone.
 - [`discrete_mean_curvature`][ordito.curvature.discrete_mean_curvature] sums dihedral angle times
@@ -16,6 +19,8 @@ The neighbourhood the first one fits over is a *geodesic* ball
 ([`geodesic_ball`][ordito.neighbors.geodesic_ball]), not a Euclidean one: a spatial query would
 pull in vertices across a fold of the surface and corrupt the fit.
 """
+
+from typing import Literal
 
 import warp as wp
 
@@ -36,6 +41,7 @@ def principal_curvature(
     face_normals: wp.array[wp.vec3] | None = None,
     face_areas: wp.array[wp.float32] | None = None,
     mean_edge_length: float | None = None,
+    method: Literal["quadric", "pyvista", "meyer"] = "quadric",
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.float32]]:
     """
     Principal curvature directions and magnitudes per vertex via quadric fitting.
@@ -78,6 +84,16 @@ def principal_curvature(
         ([`Trimesh.mean_edge_length`][ordito.mesh.Trimesh.mean_edge_length]), which scales
         ``radius``; passing it spares the reduction and readback that measure it. Trusted, not
         checked.
+    method
+        ``"quadric"`` (the default) is the fit above. ``"pyvista"`` is VTK's ``vtkCurvatures``
+        (``pyvista.PolyData.curvature("maximum")`` / ``("minimum")``): no fit, but
+        ``H +- sqrt(H^2 - K)`` over its 1-ring Gaussian curvature ``K`` (three times the angle
+        defect over the incident faces' area) and mean curvature ``H`` (half the mean, over the
+        vertex's interior edges, of ``3 |e| theta / (A_f + A_g)``, ``theta`` the signed dihedral),
+        ``H`` alone where ``H^2 < K``. ``"meyer"`` is the same extremes over Meyer et al.'s
+        pointwise curvatures, [`vertex_curvatures`][ordito.curvature.vertex_curvatures]. Neither
+        1-ring method forms directions, so ``PD1`` and ``PD2`` are zero, and ``radius``,
+        ``frame_independent`` and the face tables are unread.
 
     Returns
     -------
@@ -89,6 +105,8 @@ def principal_curvature(
 
     Raises
     ------
+    ValueError
+        If ``method`` is not ``"quadric"``, ``"pyvista"`` or ``"meyer"``.
     RuntimeError
         If ``vertices``, ``faces``, ``face_normals`` and ``face_areas`` are not all on one device.
 
@@ -124,8 +142,18 @@ def principal_curvature(
     require_same_device(
         vertices=vertices, faces=faces, face_normals=face_normals, face_areas=face_areas
     )
+    if method not in ("quadric", "pyvista", "meyer"):
+        raise ValueError(f"method must be 'quadric', 'pyvista' or 'meyer', got {method!r}")
     device = vertices.device
     n_vertices = vertices.size
+    if method != "quadric":
+        return _one_ring_principal_curvatures(
+            vertices,
+            faces,
+            kernel_curvature.vtk_principal_curvatures
+            if method == "pyvista"
+            else kernel_curvature.meyer_principal_curvatures,
+        )
 
     # Area-weighted vertex normals. The pair is used only when both halves were supplied, which is
     # the documented contract; otherwise ``vertex_normals`` derives both inside its own scatter and
@@ -185,6 +213,108 @@ def principal_curvature(
     walk.warn_clipped()
 
     return pd1, pd2, pv1, pv2
+
+
+def _one_ring_principal_curvatures(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], kernel: odt.Kernel
+) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.float32]]:
+    """Zero directions and ``kernel``'s 1-ring extremes: ``method="pyvista"`` or ``"meyer"``."""
+    device = vertices.device
+    n_vertices = vertices.size
+    vertex_faces, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    mates = od.halfedge.halfedge_mates(faces, n_vertices)
+    pv1 = _launch.empty(n_vertices, dtype=wp.float32, device=device)
+    pv2 = _launch.empty(n_vertices, dtype=wp.float32, device=device)
+    if n_vertices > 0:
+        _launch.launch(
+            kernel,
+            dim=n_vertices,
+            inputs=[vertices, faces, vertex_faces, vf_offsets, mates],
+            outputs=[pv1, pv2],
+            device=device,
+        )
+    directions = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
+    return directions, _launch.zeros(n_vertices, dtype=wp.vec3, device=device), pv1, pv2
+
+
+def vertex_curvatures(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+) -> tuple[wp.array[wp.float32], wp.array[wp.float32]]:
+    """
+    Pointwise mean and Gaussian curvature per vertex (Meyer et al.).
+
+    The discrete operators of Meyer, Desbrun, Schroder and Barr, "Discrete Differential-Geometry
+    Operators for Triangulated 2-Manifolds" (2002), per unit area: the Gaussian curvature is the
+    angle defect over the vertex's mixed (Voronoi) area, and the mean curvature is the length of
+    the cotangent Laplacian of the positions over twice that area, signed positive where it points
+    along the area-weighted vertex normal. This is MeshLab's
+    ``compute_scalar_by_discrete_curvature_per_vertex`` (vcg's ``MeanAndGaussian``), including its
+    rim rule: a vertex on one rim also subtracts the angle between its two rim edges, so a straight
+    flat rim reads zero.
+
+    Where [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature] and
+    [`discrete_mean_curvature`][ordito.curvature.discrete_mean_curvature] integrate over a ball,
+    this reads one ring: its values follow the mesh's resolution and are noisy on irregular
+    meshes, and a vertex whose ring area is tiny (a needle's tip) amplifies rounding.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions.
+    faces
+        ``(3 * n_faces,)`` flat triangle index buffer.
+
+    Returns
+    -------
+    mean : wp.array[wp.float32]
+        ``(n_vertices,)`` mean curvature; zero where the mixed area vanishes.
+    gaussian : wp.array[wp.float32]
+        ``(n_vertices,)`` Gaussian curvature; zero where the mixed area vanishes.
+
+    Raises
+    ------
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+
+    See Also
+    --------
+    [`principal_curvature`][ordito.curvature.principal_curvature]
+        Its ``method="meyer"`` is the principal pair these imply, ``H +- sqrt(H^2 - K)``.
+    [`ordito.vertices.vertex_defects`][ordito.vertices.vertex_defects]
+        The angle defect alone, not divided by an area.
+
+    Examples
+    --------
+    On a sphere of radius 2 both curvatures are close to their exact values, ``1 / 2`` and
+    ``1 / 4``:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    vertices, faces = od.creation.icosphere(subdivisions=4, radius=2.0)
+    mean, gaussian = od.curvature.vertex_curvatures(vertices, faces)
+    print(f"{np.median(mean.numpy()):.3f} {np.median(gaussian.numpy()):.3f}")  # 0.500 0.250
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    device = vertices.device
+    n_vertices = vertices.size
+    mean = _launch.empty(n_vertices, dtype=wp.float32, device=device)
+    gaussian = _launch.empty(n_vertices, dtype=wp.float32, device=device)
+    if n_vertices == 0:
+        return mean, gaussian
+    vertex_faces, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    mates = od.halfedge.halfedge_mates(faces, n_vertices)
+    _launch.launch(
+        kernel_curvature.meyer_vertex_curvatures,
+        dim=n_vertices,
+        inputs=[vertices, faces, vertex_faces, vf_offsets, mates],
+        outputs=[mean, gaussian],
+        device=device,
+    )
+    return mean, gaussian
 
 
 def discrete_gaussian_curvature(

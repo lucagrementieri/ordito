@@ -9,8 +9,8 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from tests.comparisons import assert_nonconstant
-from tests.conftest import ROUND_FRAME_ROTATION, ROUND_FRAME_SHIFT, round_frame_coordinates
-from tests.conversions import points_to_warp, trimesh_to_pymeshlab
+from tests.conftest import MESHES, ROUND_FRAME_ROTATION, ROUND_FRAME_SHIFT, round_frame_coordinates
+from tests.conversions import points_to_warp, trimesh_to_pymeshlab, trimesh_to_pyvista
 
 
 @pytest.mark.parity("principal_curvature", "igl")
@@ -167,6 +167,158 @@ def test_principal_curvature_directions_match_pymeshlab(
     assert first_np.min() > 0.84, f"worst |dot| {first_np.min():.4f}"
     assert np.median(first_np) > 0.99
     assert second_np.min() > 0.95, f"worst |dot| {second_np.min():.4f}"
+
+
+@pytest.mark.parametrize("mesh_name", [*MESHES, "torus_irregular_holes"])
+@pytest.mark.parity("principal_curvature_pyvista", "pyvista")
+def test_principal_curvature_pyvista_method_matches_pyvista(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class A: ``method="pyvista"`` is ``curvature("maximum")`` / ``("minimum")``, vertex for vertex.
+
+    VTK's extremes are ``H +- sqrt(H^2 - K)`` over its 1-ring ``K`` (the angle defect over the
+    lumped area) and ``H`` (each interior edge adds ``3 |e| theta / (A_f + A_g)`` to both ends,
+    ``theta`` the dihedral signed by ``(n_f x n_g) . e``, half the mean over the vertex's interior
+    edges), ``H`` alone where ``H^2 < K``. Formed in ``float64``, so the graded saddle's needles
+    (``K`` up to 9e5) hold too: measured 2.1e-07 of the field's largest magnitude on
+    ``saddle_graded``, 6e-08 on the others, both devices; the tolerance is ``1e-5`` of that
+    magnitude, the field's scale. The directions are zero: VTK forms none.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh_pv = trimesh_to_pyvista(mesh_tm)
+    maximum_pv = np.asarray(mesh_pv.curvature("maximum"))
+    minimum_pv = np.asarray(mesh_pv.curvature("minimum"))
+    pd1_wp, pd2_wp, pv1_wp, pv2_wp = od.curvature.principal_curvature(
+        mesh_wp.points, mesh_wp.indices, method="pyvista"
+    )
+
+    scale = float(np.abs(maximum_pv).max())
+    assert np.ptp(maximum_pv - minimum_pv) > 1e-2
+    assert np.allclose(pv1_wp.numpy(), maximum_pv, rtol=1e-5, atol=1e-5 * scale)
+    assert np.allclose(pv2_wp.numpy(), minimum_pv, rtol=1e-5, atol=1e-5 * scale)
+    assert not pd1_wp.numpy().any()
+    assert not pd2_wp.numpy().any()
+
+
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "torus_irregular_holes", "sphere_irregular_band"]
+)
+@pytest.mark.parity("principal_curvature_meyer", "pymeshlab")
+@pytest.mark.parity("vertex_curvatures", "pymeshlab")
+def test_principal_curvature_meyer_method_matches_pymeshlab(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class B (rim vertices dropped): ``method="meyer"`` is MeshLab's ``H +- sqrt(H^2 - K)``.
+
+    MeshLab exposes Meyer et al.'s mean and Gaussian curvature, not principal values, so the named
+    transform is forming the pair from its two fields, ``H`` alone where ``H^2 < K``. On a rim the
+    sign of MeshLab's ``H`` is its own rounding (see
+    [`test_vertex_curvatures_match_pymeshlab`][tests.test_curvature.test_vertex_curvatures_match_pymeshlab]),
+    and the sign decides which value is the larger, so rim vertices are left out. Tolerance as
+    there, ``1e-5`` of the field's scale; the directions are zero. Ordito against ordito too: the
+    pair must be the one [`vertex_curvatures`][ordito.curvature.vertex_curvatures] implies, to the
+    ``float32`` rounding of its two fields.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    curvatures_pml: dict[str, np.ndarray] = {}
+    for kind in ("Gaussian Curvature", "Mean Curvature"):
+        meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+        meshset_pml.compute_scalar_by_discrete_curvature_per_vertex(curvaturetype=kind)
+        curvatures_pml[kind] = meshset_pml.current_mesh().vertex_scalar_array()
+
+    def extremes(mean: np.ndarray, gaussian: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        spread = np.sqrt(np.maximum(mean * mean - gaussian, 0.0))
+        return mean + spread, mean - spread
+
+    pv1_pml, pv2_pml = extremes(
+        curvatures_pml["Mean Curvature"], curvatures_pml["Gaussian Curvature"]
+    )
+    pd1_wp, pd2_wp, pv1_wp, pv2_wp = od.curvature.principal_curvature(
+        mesh_wp.points, mesh_wp.indices, method="meyer"
+    )
+    mean_wp, gaussian_wp = od.curvature.vertex_curvatures(mesh_wp.points, mesh_wp.indices)
+    pv1_np, pv2_np = extremes(
+        mean_wp.numpy().astype(np.float64), gaussian_wp.numpy().astype(np.float64)
+    )
+
+    interior = ~_rim_vertex_mask(mesh_tm)
+    scale = float(np.abs(pv1_pml).max())
+    assert np.ptp(pv1_pml - pv2_pml) > 1e-2
+    assert np.allclose(pv1_wp.numpy()[interior], pv1_pml[interior], rtol=1e-5, atol=1e-5 * scale)
+    assert np.allclose(pv2_wp.numpy()[interior], pv2_pml[interior], rtol=1e-5, atol=1e-5 * scale)
+    assert np.allclose(pv1_wp.numpy(), pv1_np, rtol=1e-5, atol=1e-5 * scale)
+    assert np.allclose(pv2_wp.numpy(), pv2_np, rtol=1e-5, atol=1e-5 * scale)
+    assert not pd1_wp.numpy().any()
+    assert not pd2_wp.numpy().any()
+
+
+def _rim_vertex_mask(mesh_tm: tm.Trimesh) -> np.ndarray:
+    """``(n_vertices,)`` whether each vertex lies on a boundary edge."""
+    rows, counts = np.unique(mesh_tm.edges_sorted, axis=0, return_counts=True)
+    mask = np.zeros(mesh_tm.vertices.shape[0], dtype=bool)
+    mask[rows[counts == 1].ravel()] = True
+    return mask
+
+
+# ``saddle_graded`` is not here: MeshLab stores its corner angles and mixed areas in ``float``, and
+# over a needle's 1e-6 area that rounding moves ``H`` by 8.5 % of the field and ``K`` by 4.8e-05.
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "torus_irregular_holes", "sphere_irregular_band"]
+)
+@pytest.mark.parity("vertex_curvatures", "pymeshlab")
+def test_vertex_curvatures_match_pymeshlab(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Class B (a rim vertex's sign of ``H`` dropped): MeshLab's pointwise Meyer curvatures.
+
+    ``compute_scalar_by_discrete_curvature_per_vertex`` is vcg's ``MeanAndGaussian``: the defect
+    (minus, on a rim, the angle between the rim edges) over the mixed area, and the cotangent
+    Laplacian's length over it, signed by the area-weighted normal. ordito forms the same in
+    ``float64``; MeshLab rounds its angles and areas to ``float``, so the tolerance is ``1e-5`` of
+    each field's largest magnitude. Measured: off the rims ``K`` to 6.4e-06 and ``H`` to 3.8e-06 of
+    the scale; on the rims ``|H|`` to 1.45e-05 (bound 5e-05), where the Laplacian lies almost in
+    the tangent plane and its sign against the normal is MeshLab's rounding (1 and 2 rim vertices
+    flip on ``torus_irregular_holes`` and an open sphere). The fixtures take a closed surface, three
+    rims and a band. Mutation probe: dividing by the barycentric (lumped) area instead moves ``K``
+    by far more than the bound on these obtuse-heavy meshes (asserted below).
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    curvatures_pml: dict[str, np.ndarray] = {}
+    for kind in ("Gaussian Curvature", "Mean Curvature"):
+        meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+        meshset_pml.compute_scalar_by_discrete_curvature_per_vertex(curvaturetype=kind)
+        curvatures_pml[kind] = meshset_pml.current_mesh().vertex_scalar_array()
+    gaussian_pml = curvatures_pml["Gaussian Curvature"]
+    mean_pml = curvatures_pml["Mean Curvature"]
+    mean_wp, gaussian_wp = od.curvature.vertex_curvatures(mesh_wp.points, mesh_wp.indices)
+    mean_np = mean_wp.numpy()
+    gaussian_np = gaussian_wp.numpy()
+
+    rim = _rim_vertex_mask(mesh_tm)
+    gaussian_scale = float(np.abs(gaussian_pml).max())
+    mean_scale = float(np.abs(mean_pml).max())
+    assert_nonconstant(gaussian_pml, tol=1e-1)
+    assert np.allclose(gaussian_np, gaussian_pml, rtol=1e-5, atol=1e-5 * gaussian_scale)
+    assert np.allclose(mean_np[~rim], mean_pml[~rim], rtol=1e-5, atol=1e-5 * mean_scale)
+    assert np.allclose(
+        np.abs(mean_np[rim]), np.abs(mean_pml[rim]), rtol=1e-5, atol=5e-5 * mean_scale
+    )
+
+    defects_np = od.vertices.vertex_defects(
+        mesh_tm.vertices.shape[0],
+        mesh_wp.indices,
+        od.triangles.face_angles(mesh_wp.points, mesh_wp.indices),
+    ).numpy()
+    lumped_np = np.zeros(mesh_tm.vertices.shape[0])
+    np.add.at(lumped_np, mesh_tm.faces.ravel(), np.repeat(mesh_tm.area_faces / 3.0, 3))
+    interior = ~rim
+    assert not np.allclose(
+        defects_np[interior] / lumped_np[interior],
+        gaussian_pml[interior],
+        rtol=1e-5,
+        atol=1e-5 * gaussian_scale,
+    )
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])

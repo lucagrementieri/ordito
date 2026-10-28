@@ -8,6 +8,7 @@ from typing import TypedDict, cast
 
 import igl
 import numpy as np
+import open3d as o3d
 import pymeshlab as ml
 import pytest
 import trimesh as tm
@@ -762,11 +763,11 @@ def test_resolve_duplicated_faces_matches_igl(
     equal too, since it is what the small-group test below rests on.
 
     The input exercises all four outcomes -- singles, cancelling pairs, positive and negative
-    majorities -- shuffled, on a grid of index triples and on ``sphere_irregular``'s faces. Open3D
-    and pymeshlab de-duplicate by different rules (``benchmarks/test_repair.py`` exempts them), and
-    igl *drops* a non-orientable group where ordito raises
+    majorities -- shuffled, on a grid of index triples and on ``sphere_irregular``'s faces. igl
+    *drops* a non-orientable group where the default raises
     ([`test_resolve_duplicated_faces_raises_on_a_non_orientable_group`]), so no such group is
-    planted here.
+    planted here; ``method="igl"`` drops it too
+    ([`test_resolve_duplicated_faces_igl_method_drops_unorientable_groups`]).
     """
     if source == "index_grid":
         pool = np.stack(np.meshgrid(np.arange(12), np.arange(12, 24), np.arange(24, 36)), -1)
@@ -788,6 +789,109 @@ def test_resolve_duplicated_faces_matches_igl(
     assert np.array_equal(f2_wp.numpy().reshape(-1, 3), f2_igl)
     assert np.array_equal(j_np, j_igl)
     assert np.array_equal(f2_np, f2_igl)
+
+
+def _faces_with_unorientable_groups_np(base_np: np.ndarray, seed: int) -> np.ndarray:
+    """
+    ``_faces_with_duplicate_groups_np`` plus groups no cancellation resolves, shuffled.
+
+    A tenth of the base rows gain a same-winding copy with its corners rotated (signed count 2), and
+    another tenth two reversed copies against none (signed count -2), so the four first-occurrence
+    and cancelling rules all disagree somewhere.
+    """
+    n = base_np.shape[0]
+    faces_np = _faces_with_duplicate_groups_np(base_np, seed)
+    rotated = np.roll(base_np[: n // 10], 1, axis=1)
+    reversed_twice = base_np[n // 10 : n // 5, ::-1]
+    extra = np.vstack([rotated, reversed_twice, reversed_twice])
+    return np.ascontiguousarray(
+        np.random.default_rng(seed + 1).permutation(np.vstack([faces_np, extra]), axis=0)
+    )
+
+
+@pytest.mark.parity("resolve_duplicated_faces", "igl")
+def test_resolve_duplicated_faces_igl_method_drops_unorientable_groups(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class A: ``method="igl"`` is ``igl.resolve_duplicated_faces`` on groups the default rejects.
+
+    The input plants groups of signed count ``+2`` and ``-2``, on which the default raises; libigl's
+    release build drops them, and so does ``"igl"``, the other groups decided as by the default.
+    Both returns compare buffer for buffer.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    faces_np = _faces_with_unorientable_groups_np(np.asarray(mesh_tm.faces, dtype=np.int32), 5)
+    faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=mesh_wp.device)
+
+    with pytest.raises(ValueError, match="signed count"):
+        od.repair.resolve_duplicated_faces(faces_wp)
+    f2_wp, j_wp = od.repair.resolve_duplicated_faces(faces_wp, method="igl")
+    f2_igl, j_igl = igl.resolve_duplicated_faces(faces_np.astype(np.int64))
+
+    assert 0 < np.asarray(j_igl).size < mesh_tm.faces.shape[0]
+    assert np.array_equal(j_wp.numpy(), j_igl)
+    assert np.array_equal(f2_wp.numpy().reshape(-1, 3), f2_igl)
+
+
+@pytest.mark.parity("resolve_duplicated_faces_open3d", "open3d")
+def test_resolve_duplicated_faces_open3d_method_matches_open3d(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class A: ``method="open3d"`` is ``remove_duplicated_triangles``, row for row.
+
+    Open3D keys a face by its corners rotated to start at the smallest, so a rotated copy is a
+    duplicate and a reversed one is not, and it keeps each key's first face, unrotated, in input
+    order. The input has both kinds of copy, so the count sits strictly between the distinct vertex
+    sets and the input.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    faces_np = _faces_with_unorientable_groups_np(np.asarray(mesh_tm.faces, dtype=np.int32), 7)
+    faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=mesh_wp.device)
+
+    mesh_o3d = o3d.geometry.TriangleMesh(
+        o3d.utility.Vector3dVector(np.asarray(mesh_tm.vertices, dtype=np.float64)),
+        o3d.utility.Vector3iVector(faces_np),
+    )
+    mesh_o3d.remove_duplicated_triangles()
+    faces_o3d = np.asarray(mesh_o3d.triangles)
+    f2_wp, j_wp = od.repair.resolve_duplicated_faces(faces_wp, method="open3d")
+
+    assert mesh_tm.faces.shape[0] < faces_o3d.shape[0] < faces_np.shape[0]
+    assert np.array_equal(f2_wp.numpy().reshape(-1, 3), faces_o3d)
+    assert np.array_equal(faces_np[j_wp.numpy()], faces_o3d)
+
+
+@pytest.mark.parity("resolve_duplicated_faces_meshlab", "pymeshlab")
+def test_resolve_duplicated_faces_meshlab_method_matches_pymeshlab(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class B (each face's winding dropped): ``method="meshlab"`` keeps MeshLab's vertex sets.
+
+    ``meshing_remove_duplicate_faces`` groups faces by vertex set and keeps one per group, so its
+    output and ordito's hold the same vertex sets once each, both in input order of their survivor.
+    Which member survives is the one MeshLab's unstable ``std::sort`` leaves last, not a rule (on a
+    pair of opposite windings it varies from group to group), so the comparison is of the sorted
+    rows; ordito keeps the first occurrence.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    faces_np = _faces_with_unorientable_groups_np(np.asarray(mesh_tm.faces, dtype=np.int32), 9)
+    faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=mesh_wp.device)
+
+    meshset_pml = ml.MeshSet()
+    meshset_pml.add_mesh(ml.Mesh(np.asarray(mesh_tm.vertices, dtype=np.float64), faces_np))
+    meshset_pml.meshing_remove_duplicate_faces()
+    faces_pml = meshset_pml.current_mesh().face_matrix()
+    f2_wp, _ = od.repair.resolve_duplicated_faces(faces_wp, method="meshlab")
+    sorted_wp = np.sort(f2_wp.numpy().reshape(-1, 3), axis=1)
+
+    assert faces_pml.shape[0] == mesh_tm.faces.shape[0] < faces_np.shape[0]
+    assert np.unique(sorted_wp, axis=0).shape[0] == sorted_wp.shape[0]
+    assert np.array_equal(
+        np.unique(sorted_wp, axis=0), np.unique(np.sort(faces_pml, axis=1), axis=0)
+    )
 
 
 def _faces_2d(faces_wp: wp.array[wp.int32]) -> np.ndarray:

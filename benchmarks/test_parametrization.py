@@ -170,15 +170,6 @@ def _run_harmonic_pml(bench_case: BenchCase, order: int) -> None:
     )
 
 
-@pytest.mark.noparity(
-    "pymeshlab",
-    oracle="igl",
-    reason="D1 not an independent implementation: MeshLab documents "
-    "compute_texcoord_parametrization_harmonic as using the original code from the libigl "
-    "library, so it wraps the very solver the igl row calls directly. Asserting against it would "
-    "re-check libigl through a second wrapper. Its harm_function parameter is additionally a "
-    "no-op in pymeshlab 2025.7, so the harmonic order axis does not map either.",
-)
 @pytest.mark.benchmark(group="harmonic")
 @pytest.mark.benchaxis("patch")
 @pytest.mark.benchlibs("ordito", "igl", "pymeshlab")
@@ -222,13 +213,6 @@ def test_harmonic(bench_case: BenchCase, order: int) -> None:
         assert uv_igl.shape[0] == vertices_np.shape[0]
 
 
-@pytest.mark.noparity(
-    "pymeshlab",
-    oracle="igl",
-    reason="D1 not an independent implementation: the same libigl-wrapping harmonic filter as the "
-    "harmonic group above, so asserting against it would re-check libigl through a second "
-    "wrapper rather than add evidence. igl is the oracle for the conditioning axis too.",
-)
 @pytest.mark.benchmark(group="harmonic_conditioning")
 @pytest.mark.benchaxis("quality")
 @pytest.mark.benchlibs("ordito", "igl", "pymeshlab")
@@ -326,14 +310,6 @@ def test_arap(bench_case: BenchCase, iterations: int) -> None:
         assert uv_igl.shape[0] == vertices_np.shape[0]
 
 
-@pytest.mark.noparity(
-    "pymeshlab",
-    oracle="igl",
-    reason="D1 not an independent implementation: MeshLab's least-squares conformal maps filter "
-    "also wraps libigl, the same solver the igl row calls. It additionally pins the boundary "
-    "condition itself rather than accepting a pin set, so ordito's two-pin call has nothing to "
-    "match there.",
-)
 @pytest.mark.benchmark(group="lscm")
 @pytest.mark.benchaxis("patch")
 @pytest.mark.benchlibs("ordito", "igl", "pymeshlab")

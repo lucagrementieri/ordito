@@ -199,27 +199,25 @@ def _float_rows(values_np: npt.NDArray[np.float32], device: str) -> odt.Array2dF
     "kernel and read as a throughput number for neither. benchmarks/test_texture.py carries that "
     "decline; moderngl is registered as a test-only reference so this claim is still checked.",
 )
-@pytest.mark.parametrize(("resolution", "value_atol"), [(64, 1e-3), (256, 2.5e-4)])
+@pytest.mark.parametrize(("resolution", "unsnapped_atol"), [(64, 1e-3), (256, 2.5e-4)])
 def test_rasterize_attribute_matches_opengl(
-    gl_context: moderngl.Context, device: str, resolution: int, value_atol: float
+    gl_context: moderngl.Context, device: str, resolution: int, unsnapped_atol: float
 ):
     """
-    Class C (values at a measured bound), with the coverage masks compared exactly.
+    Class A at ``subpixel_bits=8``: OpenGL's image, coverage and values, on NVIDIA's driver.
 
-    The tolerance is not ``1e-5`` because the reference carries a named error, OpenGL's sub-pixel
-    snapping, so this stays Class C; the coverage half is exact.
+    OpenGL snaps every vertex to its sub-pixel grid before it tests coverage and interpolates, and
+    the driver here keeps 8 bits, rounding to nearest: snapped the same way, ordito's image equals
+    it at the standard tolerance (measured 3.9e-07 in a NumPy transcription, both resolutions).
+    Unsnapped, the values carry that position error times the field's gradient, measured max
+    **3.03e-04** at 64 px and **6.84e-05** at 256 px (attributes in ``[1, 2]``), which the second
+    half still bounds, at ``unsnapped_atol`` (3.3x and 3.7x), so the default stays pinned.
 
     The coverage masks are compared with ``array_equal``. OpenGL's top-left fill rule and ordito's
     lowest-face owner only part ways on a pixel centre lying exactly on a *boundary* edge; on a
     shared interior edge both cover the pixel, and the interpolated field is continuous there. This
     fixture puts no pixel centre on its rim, so the masks are equal -- measured, on both devices and
-    at both resolutions -- and the comparison is exact rather than a fraction.
-
-    Values are compared on the covered pixels at an absolute tolerance scaled to the resolution.
-    OpenGL snaps vertices to its sub-pixel grid before interpolating, so its barycentrics carry a
-    position error of a fixed fraction of a pixel, and the value error is that times the field's
-    gradient: measured max **3.03e-04** at 64 px and **6.84e-05** at 256 px (attributes in
-    ``[1, 2]``), identical on CPU and CUDA, against ``1e-3`` and ``2.5e-4`` (3.3x and 3.7x).
+    at both resolutions, snapped or not.
 
     The fixture is a lattice squeezed in ``v`` (``_anisotropic_grid_uv_mesh``) on purpose: the
     square lattice is symmetric under transposition, so a transposed mask scored a perfect
@@ -232,8 +230,9 @@ def test_rasterize_attribute_matches_opengl(
     value error to 2.9e-03 through their gradients, so the test would get looser, not stricter.
 
     The bug class this excludes: a wrong barycentric interpolation, a channel permutation, an
-    off-by-one in the pixel-centre offset, a UV-to-NDC sign error or axis swap, and any coverage
-    rule that differs on a single pixel.
+    off-by-one in the pixel-centre offset, a UV-to-NDC sign error or axis swap, a snapping scale
+    off by a factor of two (6 or 10 bits read 1.8e-03 and 3.4e-04 at 64 px), and any coverage rule
+    that differs on a single pixel.
     """
     n_channels = 5
     rng = np.random.default_rng(20240704 + n_channels)
@@ -249,15 +248,19 @@ def test_rasterize_attribute_matches_opengl(
 
     uv_wp, faces_wp = _upload_uv_mesh(uv_np, faces_np, device)
     attribute_wp = _float_rows(attribute_np, device)
+    snapped_wp = od.texture.rasterize_attribute(
+        uv_wp, faces_wp, attribute_wp, resolution, subpixel_bits=8
+    ).numpy()
     image_wp = od.texture.rasterize_attribute(uv_wp, faces_wp, attribute_wp, resolution).numpy()
 
     covered_gl = image_gl[:, :, 0] > 0.5
-    covered_wp = image_wp[:, :, 0] > 0.5
     # Non-vacuous: both covered and uncovered pixels exist, and the mask is not transpose-symmetric.
     assert 0.2 < covered_gl.mean() < 0.9
     assert not np.array_equal(covered_gl, covered_gl.T)
-    assert np.array_equal(covered_wp, covered_gl)
-    assert np.allclose(image_wp[covered_gl], image_gl[covered_gl], rtol=0.0, atol=value_atol)
+    assert np.array_equal(snapped_wp[:, :, 0] > 0.5, covered_gl)
+    assert np.allclose(snapped_wp, image_gl, rtol=1e-5, atol=1e-5)
+    assert np.array_equal(image_wp[:, :, 0] > 0.5, covered_gl)
+    assert np.allclose(image_wp[covered_gl], image_gl[covered_gl], rtol=0.0, atol=unsnapped_atol)
 
 
 @pytest.mark.parity(
@@ -275,6 +278,10 @@ def test_rasterize_discrete_attribute_matches_opengl(
 ):
     """
     Class B (equal coverage; equal labels outside a named argmax-tie band), via one-hot.
+
+    Snapped as OpenGL snaps (``subpixel_bits=8``, see the continuous test above) the labels are
+    equal at every covered pixel but exact ties, which the reference breaks by its own rounding;
+    the default, unsnapped, is what the rest of this docstring describes.
 
     OpenGL has no per-pixel argmax, so the reference rasterizes the labels **one-hot** as a
     continuous attribute and takes the argmax afterwards. Interpolating a one-hot vector and taking
@@ -326,6 +333,13 @@ def test_rasterize_discrete_attribute_matches_opengl(
     assert decided.sum() > 0.99 * covered_gl.sum()
     assert np.unique(class_gl[decided]).shape[0] == n_classes
     assert np.array_equal(class_wp[decided], class_gl[decided])
+
+    snapped_wp = od.texture.rasterize_discrete_attribute(
+        uv_wp, faces_wp, labels_wp, resolution, subpixel_bits=8
+    ).numpy()
+    tied = covered_gl & (top_two[:, :, 1] - top_two[:, :, 0] < 1e-5)
+    assert np.array_equal(snapped_wp >= 0, covered_gl)
+    assert np.array_equal(snapped_wp[covered_gl & ~tied], class_gl[covered_gl & ~tied])
 
 
 # --------------------------------------------------------------------------------------------

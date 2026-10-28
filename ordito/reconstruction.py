@@ -3303,6 +3303,7 @@ def resample_uniform(
     voxel_size: float | None = None,
     offset: float = 0.0,
     sign_mode: Literal["parity", "winding"] = "winding",
+    method: Literal["padded", "igl"] = "padded",
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Rebuild a mesh by sampling its signed distance field on a uniform grid and re-extracting it.
@@ -3336,6 +3337,13 @@ def resample_uniform(
         ``"winding"`` rather than that function's ``"parity"``: resampling is usually applied to a
         mesh that is *broken*, and ray parity has no principled answer through a hole, while the
         generalized winding number degrades gracefully.
+    method
+        The lattice. ``"padded"`` (the default) pads the bounding box by three voxels plus
+        ``offset`` and keeps every vertex off the lattice nodes, then cleans the extraction (see
+        ``Notes``). ``"igl"`` is ``igl.offset_surface``'s: ``round(longest_extent / voxel_size)``
+        nodes along the box's longest axis, one of them padding at each end, the box grown by
+        ``offset``, the lattice centred on it; the extraction is returned as marched, as igl does.
+        Its spacing is therefore near ``voxel_size`` rather than equal to it.
 
     Returns
     -------
@@ -3347,7 +3355,8 @@ def resample_uniform(
     Raises
     ------
     ValueError
-        If ``voxel_size`` is not positive.
+        If ``voxel_size`` is not positive, if ``method`` is not ``"padded"`` or ``"igl"``, or if
+        under ``"igl"`` it leaves fewer than four nodes along the longest axis.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -3397,6 +3406,13 @@ def resample_uniform(
         voxel_size = 0.01 * diagonal
     if voxel_size <= 0.0:
         raise ValueError(f"resample_uniform requires voxel_size > 0, got {voxel_size}")
+    if method not in ("padded", "igl"):
+        raise ValueError(f"method must be 'padded' or 'igl', got {method!r}")
+    if method == "igl":
+        shape, bounds = _igl_offset_lattice(lower, upper, offset, voxel_size)
+        return od.levelset.signed_distance_level_set(
+            vertices, faces, offset, shape, bounds=bounds, sign_mode=sign_mode
+        )
 
     # Three voxels of slack beyond the box and beyond the offset, so a dilated level set closes
     # inside the lattice instead of being cut off by it.
@@ -3428,6 +3444,45 @@ def resample_uniform(
     # set of a signed field is already closed, so any hole here would be a symptom worth surfacing
     # rather than patching over.
     return _clean_reconstruction(out_vertices, out_faces, 0.0)
+
+
+def _igl_offset_lattice(
+    lower: wp.vec3, upper: wp.vec3, offset: float, voxel_size: float
+) -> tuple[tuple[int, int, int], tuple[wp.vec3, wp.vec3]]:
+    """
+    ``igl::voxel_grid(V, offset, s, 1)``'s node counts and corner nodes, with ``s`` from a spacing.
+
+    ``s = round(longest_extent / voxel_size)`` nodes along the longest axis of the vertex box,
+    which is ``igl.offset_surface``'s ``s`` for that spacing. The box grows by ``offset``; its
+    longest axis takes ``s - 2`` nodes and every other ``ceil`` of its share, one node of padding
+    is added at each end, and the lattice, scaled by the axis that needs the widest spacing, is
+    centred on the box. Host arithmetic in ``float64``, as igl forms it.
+    """
+    low = [component - offset for component in odt.vec3_floats(lower)]
+    high = [component + offset for component in odt.vec3_floats(upper)]
+    extents = [high[axis] - low[axis] for axis in range(3)]
+    longest = max(range(3), key=lambda axis: (extents[axis], -axis))
+    nodes = round(
+        max(odt.vec3_floats(upper)[a] - odt.vec3_floats(lower)[a] for a in range(3)) / voxel_size
+    )
+    if nodes < 4:
+        raise ValueError(
+            f"method='igl' needs at least 4 nodes along the longest axis, got {nodes}; "
+            "pass a smaller voxel_size"
+        )
+    inner = nodes - 2
+    side = [
+        inner if axis == longest else math.ceil(inner * extents[axis] / extents[longest])
+        for axis in range(3)
+    ]
+    side = [count + 2 for count in side]
+    stretch = [extents[axis] / (1.0 - 2.0 / (side[axis] - 1.0)) for axis in range(3)]
+    widest = max(range(3), key=lambda axis: (stretch[axis], -axis))
+    span = [stretch[widest] * (side[axis] - 1.0) / (side[widest] - 1.0) for axis in range(3)]
+    centre = [0.5 * (low[axis] + high[axis]) for axis in range(3)]
+    grid_lower = wp.vec3(*(centre[axis] - 0.5 * span[axis] for axis in range(3)))
+    grid_upper = wp.vec3(*(centre[axis] + 0.5 * span[axis] for axis in range(3)))
+    return (side[0], side[1], side[2]), (grid_lower, grid_upper)
 
 
 def ball_pivoting(

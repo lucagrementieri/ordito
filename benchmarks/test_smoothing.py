@@ -268,20 +268,8 @@ def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> 
     assert result.shape == vertices.shape
 
 
-@pytest.mark.noparity(
-    "pyvista",
-    oracle="trimesh",
-    reason="D2 a different algorithm with a measured disagreement: smooth_taubin is VTK's "
-    "windowed-sinc filter (vtkWindowedSincPolyDataFilter), parameterized by a pass_band that it "
-    "maps to its own kernel weights rather than by lambda / nu, and it warns 'An optimal offset "
-    "for the smoothing filter could not be found' on ordinary input. Measured against ordito at "
-    "pass_band=0.1: max coordinate deviation 0.835 at one iteration -- the whole displacement -- "
-    "then 6.5e-03 and 2.6e-02 at 2 and 5, so it is neither close nor consistently off by a "
-    "factor. Its iteration count is in lambda-mu PAIRS like MeshLab's. trimesh is the oracle for "
-    "this group, in tests/test_smoothing.py::test_filter_taubin.",
-)
 @pytest.mark.benchmark(group="filter_taubin")
-@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "pyvista")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab")
 def test_filter_taubin(bench_case: BenchCase) -> None:
     """
     The lambda-nu alternation: two SpMVs per iteration instead of one.
@@ -313,13 +301,6 @@ def test_filter_taubin(bench_case: BenchCase) -> None:
     ``benchmarked=False`` claim.
     """
     skip_larger_than(bench_case, "dragon")
-    if bench_case.kind == "pyvista":
-        mesh_pv = bench_case.mesh_pv
-        smoothed_pv = bench_case.run(
-            lambda: mesh_pv.smooth_taubin(n_iter=_ITERATIONS // 2, pass_band=0.1)
-        )
-        assert smoothed_pv.n_points == bench_case.n_vertices
-        return
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         operator = _laplacian_operator(bench_case)
@@ -355,6 +336,28 @@ def test_filter_taubin(bench_case: BenchCase) -> None:
             return mesh
 
         assert bench_case.run(run).vertices.shape == vertices.shape
+
+
+@pytest.mark.benchmark(group="filter_windowed_sinc")
+@pytest.mark.benchlibs("ordito", "pyvista")
+def test_filter_windowed_sinc(bench_case: BenchCase) -> None:
+    """
+    VTK's windowed-sinc filter (``pyvista``'s ``smooth_taubin``) at its defaults: 20 passes.
+
+    One umbrella-Laplacian pass per polynomial degree, plus the stencil analysis (a unique-edge
+    sort and the neighbour lists) once per call. VTK's filter is multi-threaded.
+    """
+    skip_larger_than(bench_case, "dragon")
+    if bench_case.kind == "pyvista":
+        mesh_pv = bench_case.mesh_pv
+        smoothed_pv = bench_case.run(lambda: mesh_pv.smooth_taubin(n_iter=20, pass_band=0.1))
+        assert smoothed_pv.n_points == bench_case.n_vertices
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    result = bench_case.run(
+        lambda: od.smoothing.filter_windowed_sinc(vertices, faces, iterations=20, pass_band=0.1)
+    )
+    assert result.shape == vertices.shape
 
 
 @pytest.mark.benchmark(group="filter_neighborhood_average")

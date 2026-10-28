@@ -7,7 +7,7 @@ from ordito.kernels.linalg import solve_normal_equations
 from ordito.kernels.neighbors import in_ball
 from ordito.kernels.predicates import angle_defect, segment_aabb, unit_tangent, vector_angle
 from ordito.kernels.tangent_space import any_perpendicular
-from ordito.kernels.triangles import face_normals_and_area
+from ordito.kernels.triangles import corner_triple, face_normals_and_area, local_corner
 
 wp.set_module_options({"enable_backward": False})
 
@@ -334,6 +334,257 @@ def fit_principal_curvature(
         out_pd2[i] = dir0
         out_pv1[i] = k1
         out_pv2[i] = k0
+
+
+@wp.func
+def corner_positions_d(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], f: wp.int32
+) -> tuple[wp.vec3d, wp.vec3d, wp.vec3d]:
+    # A face's corners in ``float64``, for the 1-ring estimators below: their cotangents and
+    # dihedrals lose every digit of a needle in ``float32``.
+    a, b, c = corner_triple(faces, f)
+    return wp.vec3d(vertices[a]), wp.vec3d(vertices[b]), wp.vec3d(vertices[c])
+
+
+@wp.func
+def corner_at(p0: wp.vec3d, p1: wp.vec3d, p2: wp.vec3d, i: wp.int32) -> wp.vec3d:
+    # Corner ``i`` (taken mod 3) of a face's three positions, for a walk that rotates the corners.
+    j = i % 3
+    if j == 0:
+        return p0
+    if j == 1:
+        return p1
+    return p2
+
+
+@wp.func
+def unsigned_angle_d(u: wp.vec3d, w: wp.vec3d) -> wp.float64:
+    # ``vcg::Angle`` / ``vtkMath::AngleBetweenVectors`` as the 1-ring estimators read it: the
+    # clamped arccosine of the normalized dot product, and ``1`` where an edge has no length (vcg
+    # returns ``-1`` there and every caller takes its absolute value).
+    w2 = wp.length(u) * wp.length(w)
+    if w2 == wp.float64(0.0):
+        return wp.float64(1.0)
+    return wp.acos(wp.clamp(wp.dot(u, w) / w2, wp.float64(-1.0), wp.float64(1.0)))
+
+
+@wp.func
+def extreme_curvatures(mean: wp.float64, gaussian: wp.float64) -> tuple[wp.float64, wp.float64]:
+    # The principal curvatures a mean and a Gaussian curvature imply, ``H +- sqrt(H^2 - K)``, and
+    # ``H`` twice where ``H^2 < K`` (no real pair): VTK's rule and Meyer et al.'s clamp alike.
+    spread = mean * mean - gaussian
+    first = mean
+    second = mean
+    if spread >= wp.float64(0.0):
+        first = mean + wp.sqrt(spread)
+        second = mean - wp.sqrt(spread)
+    return first, second
+
+
+@wp.kernel
+def vtk_principal_curvatures(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    out_pv1: wp.array[wp.float32],
+    out_pv2: wp.array[wp.float32],
+) -> None:
+    # ``vtkCurvatures``' extreme curvatures, ``H +- sqrt(H^2 - K)`` (``H`` alone where that is
+    # negative), over its 1-ring ``K`` and ``H``, gathered per vertex over its face row:
+    # - ``K``: three times the angle defect over the summed incident face areas (no rim term);
+    # - ``H``: every edge shared by exactly two faces adds ``3 |e| theta / (A_f + A_g)`` to both
+    #   ends, ``theta`` the dihedral signed by ``(n_f x n_g) . e`` with ``e`` walked as the lower
+    #   face ``f`` walks it, and a vertex takes half the mean over those edges. Each edge at the
+    #   vertex is met from both its faces; it is counted from the lower one, as VTK counts it.
+    v = wp.int32(wp.tid())
+    angle_sum = wp.float64(0.0)
+    area_sum = wp.float64(0.0)
+    mean_sum = wp.float64(0.0)
+    edge_count = wp.int32(0)
+    for slot in range(vf_offsets[v], vf_offsets[v + 1]):
+        f = vertex_faces[slot]
+        k = local_corner(faces, f, v)
+        p0, p1, p2 = corner_positions_d(vertices, faces, f)
+        here = corner_at(p0, p1, p2, k)
+        after = corner_at(p0, p1, p2, k + 1)
+        before = corner_at(p0, p1, p2, k + 2)
+        angle_sum += unsigned_angle_d(after - here, before - here)
+        cross_f = wp.cross(p1 - p0, p2 - p0)
+        area_f = wp.float64(0.5) * wp.length(cross_f)
+        area_sum += area_f
+        # The two edges at ``v`` in this face: ``k -> k + 1`` and ``k + 2 -> k``.
+        for side in range(2):
+            local = wp.where(side == 0, k, (k + 2) % 3)
+            mate = mates[3 * f + local]
+            if mate >= 0 and mate // 3 > f:
+                g = mate // 3
+                q0, q1, q2 = corner_positions_d(vertices, faces, g)
+                cross_g = wp.cross(q1 - q0, q2 - q0)
+                tail = corner_at(p0, p1, p2, local)
+                head = corner_at(p0, p1, p2, local + 1)
+                direction = head - tail
+                length = wp.length(direction)
+                theta = wp.float64(0.0)
+                normal_f = wp.vec3d()
+                normal_g = wp.vec3d()
+                if wp.length(cross_f) > wp.float64(0.0):
+                    normal_f = wp.normalize(cross_f)
+                if wp.length(cross_g) > wp.float64(0.0):
+                    normal_g = wp.normalize(cross_g)
+                cs = wp.dot(normal_f, normal_g)
+                sn = wp.float64(0.0)
+                if length > wp.float64(0.0):
+                    sn = wp.dot(wp.cross(normal_f, normal_g), direction / length)
+                if sn != wp.float64(0.0) or cs != wp.float64(0.0):
+                    theta = wp.atan2(sn, cs)
+                term = length * theta
+                areas = area_f + wp.float64(0.5) * wp.length(cross_g)
+                if areas != wp.float64(0.0):
+                    term = term / areas * wp.float64(3.0)
+                mean_sum += term
+                edge_count += 1
+    gaussian = wp.float64(0.0)
+    if area_sum > wp.float64(0.0):
+        gaussian = wp.float64(3.0) * (wp.float64(2.0) * wp.float64(wp.pi) - angle_sum) / area_sum
+    mean = wp.float64(0.0)
+    if edge_count > 0:
+        mean = wp.float64(0.5) * mean_sum / wp.float64(edge_count)
+    first, second = extreme_curvatures(mean, gaussian)
+    out_pv1[v] = wp.float32(first)
+    out_pv2[v] = wp.float32(second)
+
+
+@wp.func
+def meyer_corner_terms(
+    p0: wp.vec3d, p1: wp.vec3d, p2: wp.vec3d, k: wp.int32
+) -> tuple[wp.float64, wp.vec3d, wp.float64, wp.bool]:
+    # One face's share at its corner ``k`` of Meyer et al.'s operators, as vcg's
+    # ``UpdateCurvature::MeanAndGaussian`` forms it: the mixed area (a non-obtuse face's
+    # circumcentric part ``(|e_prev|^2 cot a_next + |e_next|^2 cot a_prev) / 8``; an obtuse face's
+    # quarter of its area at the obtuse corner and an eighth at the others), the cotangent
+    # Laplacian's term ``(e_prev cot a_next - e_next cot a_prev) / 4``, the corner's angle, and
+    # whether the face is degenerate (an angle of exactly zero), which keeps its area but no other
+    # term. ``a2 = pi - a0 - a1``, as vcg forms it; ``e_prev`` runs from the previous corner to
+    # ``k``, ``e_next`` from ``k`` to the next.
+    a0 = unsigned_angle_d(p1 - p0, p2 - p0)
+    a1 = unsigned_angle_d(p0 - p1, p2 - p1)
+    a2 = wp.float64(wp.pi) - (a0 + a1)
+    here = corner_at(p0, p1, p2, k)
+    after = corner_at(p0, p1, p2, k + 1)
+    before = corner_at(p0, p1, p2, k + 2)
+    angles = wp.vec3d(a0, a1, a2)
+    a_here = angles[k]
+    a_next = angles[(k + 1) % 3]
+    a_prev = angles[(k + 2) % 3]
+    e_prev = here - before
+    e_next = after - here
+    half = wp.float64(wp.pi) * wp.float64(0.5)
+    double_area = wp.length(wp.cross(p1 - p0, p2 - p0))
+    area = double_area / wp.float64(8.0)
+    if a0 < half and a1 < half and a2 < half:
+        area = (
+            wp.dot(e_prev, e_prev) / wp.tan(a_next) + wp.dot(e_next, e_next) / wp.tan(a_prev)
+        ) / wp.float64(8.0)
+    elif a_here >= half:
+        area = double_area / wp.float64(4.0)
+    degenerate = a0 == wp.float64(0.0) or a1 == wp.float64(0.0) or a2 == wp.float64(0.0)
+    laplacian = wp.vec3d()
+    if not degenerate:
+        laplacian = (e_prev / wp.tan(a_next) - e_next / wp.tan(a_prev)) / wp.float64(4.0)
+    return area, laplacian, a_here, degenerate
+
+
+@wp.func
+def meyer_curvatures(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    v: wp.int32,
+) -> tuple[wp.float64, wp.float64]:
+    # The pointwise curvatures of Meyer et al. as vcg forms them, gathered per vertex over its face
+    # row in ``float64``: ``K = (2 pi - sum of angles - rim angle) / A`` and
+    # ``H = +-|sum of Laplacian terms| / A``, ``A`` the mixed area, the sign that of the terms'
+    # projection on the area-weighted vertex normal (``-`` where it is not positive). The rim
+    # angle is vcg's: at a vertex with one outgoing and one incoming rim edge, the angle between
+    # them (vcg takes it from a non-degenerate face's rim edge). A vertex whose mixed area is at
+    # most ``DBL_EPSILON`` reads zero for both.
+    area = wp.float64(0.0)
+    laplacian = wp.vec3d()
+    gaussian = wp.float64(2.0) * wp.float64(wp.pi)
+    normal = wp.vec3d()
+    rim_out = wp.int32(-1)
+    rim_in = wp.int32(-1)
+    rim_outs = wp.int32(0)
+    for slot in range(vf_offsets[v], vf_offsets[v + 1]):
+        f = vertex_faces[slot]
+        k = local_corner(faces, f, v)
+        p0, p1, p2 = corner_positions_d(vertices, faces, f)
+        corner_area, corner_laplacian, angle, degenerate = meyer_corner_terms(p0, p1, p2, k)
+        area += corner_area
+        normal += wp.cross(p1 - p0, p2 - p0)
+        if not degenerate:
+            laplacian += corner_laplacian
+            gaussian -= angle
+            if mates[3 * f + k] == -1:
+                rim_out = faces[3 * f + (k + 1) % 3]
+                rim_outs += 1
+            if mates[3 * f + (k + 2) % 3] == -1:
+                rim_in = faces[3 * f + (k + 2) % 3]
+    if rim_outs == 1 and rim_in >= 0:
+        here = wp.vec3d(vertices[v])
+        gaussian -= unsigned_angle_d(
+            wp.vec3d(vertices[rim_out]) - here, wp.vec3d(vertices[rim_in]) - here
+        )
+    mean = wp.float64(0.0)
+    if area > wp.float64(2.220446049250313e-16):
+        sign = wp.where(
+            wp.dot(laplacian, normal) > wp.float64(0.0), wp.float64(1.0), wp.float64(-1.0)
+        )
+        mean = sign * wp.length(laplacian) / area
+        gaussian = gaussian / area
+    else:
+        gaussian = wp.float64(0.0)
+    return mean, gaussian
+
+
+@wp.kernel
+def meyer_vertex_curvatures(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    out_mean: wp.array[wp.float32],
+    out_gaussian: wp.array[wp.float32],
+) -> None:
+    # ``curvature.vertex_curvatures``: ``meyer_curvatures`` as they are.
+    # ``meyer_principal_curvatures`` is the same per-vertex walk writing the principal pair instead.
+    v = wp.int32(wp.tid())
+    mean, gaussian = meyer_curvatures(vertices, faces, vertex_faces, vf_offsets, mates, v)
+    out_mean[v] = wp.float32(mean)
+    out_gaussian[v] = wp.float32(gaussian)
+
+
+@wp.kernel
+def meyer_principal_curvatures(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    out_pv1: wp.array[wp.float32],
+    out_pv2: wp.array[wp.float32],
+) -> None:
+    # ``principal_curvature(method="meyer")``: the extremes of ``meyer_curvatures``, rounded once.
+    v = wp.int32(wp.tid())
+    mean, gaussian = meyer_curvatures(vertices, faces, vertex_faces, vf_offsets, mates, v)
+    first, second = extreme_curvatures(mean, gaussian)
+    out_pv1[v] = wp.float32(first)
+    out_pv2[v] = wp.float32(second)
 
 
 @wp.kernel

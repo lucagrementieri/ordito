@@ -40,8 +40,7 @@ def test_vertex_normal_weightings_match_open3d_and_pymeshlab(
     **trimesh is deliberately absent**, and that is the finding worth recording:
     ``Trimesh.vertex_normals`` is *angle*-weighted, not area-weighted. It matches
     ``vertex_normals`` at ``weighting="angle"`` to 4.3e-7 and differs from the area-weighted answer
-    by up to **0.072** on this fixture. The ``vertex_normals`` benchmark group timed it as though it
-    were the same quantity; it is now exempted there with a redirect to open3d.
+    by up to **0.072** on this fixture; ``test_vertex_normals_angle_match_trimesh`` pins that.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_wp.points.size
@@ -69,6 +68,27 @@ def test_vertex_normal_weightings_match_open3d_and_pymeshlab(
 
     # The two weightings are genuinely different, so neither assert above is weightless.
     assert not np.allclose(area_wp.numpy(), mean_wp.numpy(), atol=1e-3)
+
+
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular"])
+@pytest.mark.parity("vertex_normals", "trimesh")
+def test_vertex_normals_angle_match_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Class A: ``Trimesh.vertex_normals`` is ``vertex_normals(weighting="angle")``.
+
+    trimesh weights each incident face normal by the corner angle, so it is compared against that
+    weighting; the benchmark row times the default area weighting, which two of the group's other
+    references compute (``test_vertex_normal_weightings_match_open3d_and_pymeshlab``). The second
+    assert keeps the first a claim about the weighting: the area-weighted answer is measurably
+    elsewhere on both fixtures.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    normals_tm = np.asarray(mesh_tm.vertex_normals)
+    angle_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices, weighting="angle")
+    area_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
+
+    assert np.allclose(angle_wp.numpy(), normals_tm, rtol=1e-5, atol=1e-5)
+    assert not np.allclose(area_wp.numpy(), normals_tm, rtol=1e-5, atol=1e-3)
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
