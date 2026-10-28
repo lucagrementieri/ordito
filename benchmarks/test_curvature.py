@@ -60,8 +60,9 @@ Fitting'`` reproduces plain Quadric Fitting at many times the cost.
 
 ``compute_scalar_by_discrete_curvature_per_vertex`` gives Gaussian and Mean from one filter, but it
 is the Meyer / Desbrun **pointwise 1-ring** operator rather than the Cohen-Steiner / Morvan ball
-measure ordito and trimesh compute. So it has no radius axis and its absolute value is not
-comparable — it is a *throughput* reference for a per-vertex curvature pass over the same mesh,
+measure ordito and trimesh compute. So it has no radius axis, and only the measure over the ball's
+area estimates its value: ``tests/test_curvature.py`` compares the two as a statistic on a fine
+exact torus. Here it is a *throughput* reference for a per-vertex curvature pass over the same mesh,
 which is what makes it useful where trimesh cannot run.
 
 Both mutate only an attribute, but ``compute_curvature_principal_directions_per_vertex`` defaults to
@@ -188,15 +189,6 @@ def _run_discrete_curvature_pml(
     )
 
 
-@pytest.mark.noparity(
-    "pymeshlab",
-    oracle="trimesh",
-    reason="D2 different operator with a measured offset: MeshLab computes the Meyer / Desbrun "
-    "pointwise 1-ring curvature, not the Cohen-Steiner / Morvan ball measure ordito and trimesh "
-    "integrate over a radius, so its absolute value is not comparable and it has no radius axis "
-    "at all. It is a throughput reference; trimesh is the oracle, in "
-    "tests/test_curvature.py::test_discrete_gaussian_curvature.",
-)
 @pytest.mark.benchmark(group="discrete_gaussian_curvature")
 @pytest.mark.benchaxis("scale")
 @pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab")
@@ -233,14 +225,6 @@ def test_discrete_gaussian_curvature(bench_case: BenchCase, radius_scale: float)
         assert curvature_tm.shape == (n_vertices,)
 
 
-@pytest.mark.noparity(
-    "pymeshlab",
-    oracle="trimesh",
-    reason="D2 different operator with a measured offset: the same Meyer / Desbrun pointwise "
-    "1-ring measure as the Gaussian row above, against ordito's Cohen-Steiner / Morvan ball "
-    "integral. Not comparable in absolute value and it exposes no radius; trimesh is the oracle, "
-    "in tests/test_curvature.py::test_discrete_mean_curvature.",
-)
 @pytest.mark.benchmark(group="discrete_mean_curvature")
 @pytest.mark.benchaxis("scale")
 @pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab")

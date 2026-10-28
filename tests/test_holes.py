@@ -729,6 +729,60 @@ def test_fillable_loop_mask_on_the_fixtures(
     assert od.validation.is_edge_manifold(od.holes.fill_min_weight(vertices_wp, faces_wp))
 
 
+@pytest.mark.parity("fill_min_weight", "trimesh")
+def test_fill_min_weight_matches_trimesh_on_small_holes(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class A on a triangle hole, Class B on quad holes: trimesh's ``fill_holes``, hole for hole.
+
+    trimesh fills only holes of three and four edges (``triangulate_quads``, no fan by default)
+    and leaves longer ones open, so this is the input class it answers: ``sphere_irregular`` with
+    one face and two pairs of adjacent faces cut out. A triangle hole has one filling, and both
+    close it with the same face, wound the same way. A quad hole has two; trimesh always splits it
+    along its loop's first diagonal while the minimum-weight fill picks by its metric, and here
+    the two choose differently on both quads. The named transform for those is the merge of each
+    hole's triangles into the vertex set they cover, compared hole by hole, with both results
+    watertight and consistently wound.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    faces_np = np.asarray(mesh_tm.faces)
+    pairs_np = mesh_tm.face_adjacency
+    holes = [[10], pairs_np[200].tolist(), pairs_np[700].tolist()]
+    removed = np.zeros(len(faces_np), dtype=bool)
+    removed[[face for hole in holes for face in hole]] = True
+    assert removed.sum() == 5
+    kept_np = faces_np[~removed]
+
+    filled_tm = tm.Trimesh(mesh_tm.vertices, kept_np, process=False)
+    tm_repair.fill_holes(filled_tm)
+    new_tm = np.asarray(filled_tm.faces)[len(kept_np) :]
+    filled_wp = od.holes.fill_min_weight(
+        mesh_wp.points, wp.array(kept_np.reshape(-1), dtype=wp.int32, device=mesh_wp.device)
+    ).numpy()
+    new_wp = filled_wp.reshape(-1, 3)[len(kept_np) :]
+    assert len(new_tm) == len(new_wp) == 5
+    assert filled_tm.is_watertight
+    assert filled_tm.is_winding_consistent
+    filled_mesh_wp = tm.Trimesh(mesh_tm.vertices, filled_wp.reshape(-1, 3), process=False)
+    assert filled_mesh_wp.is_watertight
+    assert filled_mesh_wp.is_winding_consistent
+
+    def rotated(rows: np.ndarray) -> list[tuple[int, ...]]:
+        return sorted(tuple(np.roll(row, -int(np.argmin(row))).tolist()) for row in rows)
+
+    for hole in holes:
+        corners = set(faces_np[hole].ravel().tolist())
+        hole_tm = new_tm[np.isin(new_tm, list(corners)).all(axis=1)]
+        hole_wp = new_wp[np.isin(new_wp, list(corners)).all(axis=1)]
+        assert len(hole_tm) == len(hole_wp) == len(hole)
+        assert set(hole_tm.ravel().tolist()) == set(hole_wp.ravel().tolist()) == corners
+        if len(hole) == 1:
+            assert rotated(hole_tm) == rotated(hole_wp)
+        else:
+            assert rotated(hole_tm) != rotated(hole_wp)  # the diagonals differ: Class B here
+
+
 @pytest.mark.parity(
     "fill_min_weight_chords",
     "meshlib",

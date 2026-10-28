@@ -46,6 +46,7 @@ from tests.conversions import (
     trimesh_to_open3d,
     trimesh_to_pymeshlab,
     trimesh_to_pytorch3d,
+    trimesh_to_pyvista,
     trimesh_to_warp,
     warp_empty,
     warp_to_trimesh,
@@ -180,6 +181,58 @@ def test_filter_laplacian_matches_pymeshlab(
         laplacian_operator=od.laplacian.face_weighted_laplacian(mesh_wp.points, mesh_wp.indices),
     )
     assert np.allclose(smoothed_wp.numpy(), smoothed_pml, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parity("filter_laplacian_integration", "pyvista")
+@pytest.mark.parametrize("iterations", [1, 3])
+def test_filter_laplacian_matches_pyvista_at_small_relaxation(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], iterations: int
+) -> None:
+    """
+    Class C: VTK's smoother is the same umbrella step applied in place, vertex by vertex.
+
+    ``vtkSmoothPolyDataFilter`` moves each vertex toward the mean of its neighbours by the
+    relaxation factor, reading neighbours it has already moved this pass (Gauss-Seidel, index
+    order); ordito moves all of them at once. The two differ at second order in the factor, so the
+    statistic is the largest position difference over the largest displacement: 0.0040 at
+    ``relaxation_factor=0.01`` and 0.0081 at ``0.02`` on ``sphere_irregular``, both devices and
+    1 or 3 passes -- linear in the factor, the in-place signature, asserted as a ratio. The
+    bound, 0.015, is 3.7x the agreement. Excluded bug class: a wrong stencil. Mutation probe:
+    ordito with ``face_weighted_laplacian`` (MeshLab's weighting) reads 0.070, 4.7x past the bound,
+    and is asserted to fail it. The open fixtures are left out: VTK's rim handling (boundary
+    smoothing on or off) is its own rule, measured several displacements away.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+
+    def relative_gap(relaxation: float, operator: odt.BsrMatrix[wp.float32] | None) -> float:
+        smoothed_pv = np.asarray(
+            trimesh_to_pyvista(mesh_tm)
+            .smooth(
+                n_iter=iterations,
+                relaxation_factor=relaxation,
+                boundary_smoothing=False,
+                feature_smoothing=False,
+                convergence=0.0,
+            )
+            .points
+        )
+        displacement = float(np.abs(smoothed_pv - mesh_tm.vertices).max())
+        assert displacement > 1e-4  # non-vacuity: it moved
+        smoothed_wp = od.smoothing.filter_laplacian(
+            vertices,
+            faces,
+            lamb=relaxation,
+            iterations=iterations,
+            volume_constraint=False,
+            laplacian_operator=operator,
+        )
+        return float(np.abs(smoothed_wp.numpy() - smoothed_pv).max()) / displacement
+
+    gap = relative_gap(0.01, None)
+    assert gap < 0.015
+    assert 1.8 < relative_gap(0.02, None) / gap < 2.2
+    assert relative_gap(0.01, od.laplacian.face_weighted_laplacian(vertices, faces)) > 0.015
 
 
 @pytest.mark.parametrize(("iterations", "force"), [(1, 0.5), (10, 0.5), (5, 0.3)])

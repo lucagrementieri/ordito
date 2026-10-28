@@ -473,16 +473,6 @@ def test_mesh_with_mesh(bench_case: BenchCase, offset_fraction: float) -> None:
     assert lines.shape[1] == 2
 
 
-@pytest.mark.noparity(
-    "pyvista",
-    oracle="meshlib",
-    reason="D2 a different quantity with a measured disagreement: PolyData.collision counts "
-    "contact pairs from VTK's OBB tree rather than the set of crossing triangles, and it "
-    "reports 2 600 hits for a 320-cell mesh against its own copy where 0 triangles cross. "
-    "Its row is a cost "
-    "comparison; meshlib's findCollidingTriangleBitsets is the oracle, in "
-    "tests/test_intersection.py::test_mesh_collision_pairs_matches_meshlib.",
-)
 @pytest.mark.benchmark(group="mesh_collision_pairs")
 @pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
 @pytest.mark.parametrize("offset_fraction", _SELF_OFFSET_FRACTIONS, ids=["deep", "grazing"])
@@ -507,10 +497,10 @@ def test_mesh_collision_pairs(bench_case: BenchCase, offset_fraction: float, set
     assumed cheaper.
 
     meshlib's ``findCollidingTriangleBitsets`` answers the same question and returns the two masks;
-    it is the oracle in ``tests/test_intersection.py``, where the two agree face for face on a
-    sphere-versus-box pair. pyvista's ``collision`` is a *contact* count rather than a crossing set
-    -- it has been seen reporting 2 600 hits for a 320-cell mesh against its own
-    copy -- so its row is a cost comparison only, and the noparity entry says so.
+    pyvista's ``collision`` returns VTK's contact pairs, which are the crossing pairs wherever no
+    two triangles are coplanar, as on these shifted copies. Both agree pair for pair in
+    ``tests/test_intersection.py``; against an identical copy VTK counts every coplanar twin as a
+    contact where nothing crosses.
 
     The ``deep`` / ``grazing`` pair is the fixed-width broad phase showing through. ordito
     allocates a fixed number of candidate slots per query triangle whatever the geometry, so its

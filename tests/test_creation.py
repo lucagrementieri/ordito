@@ -1145,6 +1145,74 @@ def test_annulus(device: str) -> None:
     assert od.measures.euler_characteristic(faces_wp) == 0
 
 
+@pytest.mark.parity("annulus", "pymeshlab")
+@pytest.mark.parametrize("sections", [8, 32])
+def test_annulus_cap_matches_pymeshlab(device: str, sections: int) -> None:
+    """
+    Class B: MeshLab's flat annulus is the top cap of ordito's, quad for quad.
+
+    ``create_annulus`` builds the holed disk alone, at ``z = 0``; ordito's annulus is the solid
+    that disk caps. Lifted to the cap's height, MeshLab's vertices are the cap's to ``float32``
+    rounding and each face is wound the same way (``+z``), but every sector's quad is split along
+    the other diagonal. The named transform is that merge: each side's triangles are grouped by
+    the angular sector they span and compared as the four vertices of its quad. The face counts
+    and winding are asserted directly.
+    """
+    meshset_pml = ml.MeshSet()
+    meshset_pml.create_annulus(internalradius=0.5, externalradius=1.0, sides=sections)
+    disk_vertices_pml = meshset_pml.current_mesh().vertex_matrix()
+    disk_faces_pml = meshset_pml.current_mesh().face_matrix()
+    assert np.ptp(disk_vertices_pml[:, 2]) == 0.0
+
+    vertices_wp, faces_wp = od.creation.annulus(
+        0.5, 1.0, height=1.0, sections=sections, device=device
+    )
+    vertices_np = vertices_wp.numpy()
+    faces_np = faces_wp.numpy().reshape(-1, 3)
+    on_top = np.isclose(vertices_np[:, 2], 0.5)
+    cap_np = faces_np[on_top[faces_np].all(axis=1)]
+    assert len(cap_np) == len(disk_faces_pml) == 2 * sections
+
+    # MeshLab's vertices onto ordito's cap, by position in the plane.
+    top_ids = np.flatnonzero(on_top)
+    distance, nearest = cKDTree(vertices_np[top_ids, :2]).query(disk_vertices_pml[:, :2])
+    assert float(np.max(distance)) < 1e-6
+    assert len(np.unique(nearest)) == len(top_ids) == len(disk_vertices_pml)
+    disk_np = top_ids[nearest][disk_faces_pml]
+
+    def normals_z(rows: np.ndarray) -> np.ndarray:
+        a, b, c = (vertices_np[rows[:, k]] for k in range(3))
+        return np.cross(b - a, c - a)[:, 2]
+
+    assert (normals_z(cap_np) > 0).all()
+    assert (normals_z(disk_np) > 0).all()
+
+    sector = (
+        np.round(
+            np.arctan2(vertices_np[:, 1], vertices_np[:, 0]) / (2.0 * np.pi) * sections
+        ).astype(np.int64)
+        % sections
+    )
+
+    def quads(rows: np.ndarray) -> list[tuple[int, ...]]:
+        # A triangle spans two consecutive sectors; its quad is named by the first of them.
+        spans = np.sort(sector[rows], axis=1)
+        first = np.where(spans[:, 2] - spans[:, 0] > 1, spans[:, 2], spans[:, 0])
+        merged: dict[int, set[int]] = {}
+        for quad, row in zip(first.tolist(), rows.tolist(), strict=True):
+            merged.setdefault(quad, set()).update(row)
+        return sorted(tuple(sorted(corners)) for corners in merged.values())
+
+    quads_wp, quads_pml = quads(cap_np), quads(disk_np)
+    assert len(quads_wp) == sections
+    assert all(len(quad) == 4 for quad in quads_wp)
+    assert quads_wp == quads_pml
+    assert (
+        lexsort_rows(np.sort(cap_np, axis=1)).tolist()
+        != lexsort_rows(np.sort(disk_np, axis=1)).tolist()
+    )  # the diagonals do differ: the transform is not vacuous
+
+
 def test_annulus_zero_inner_radius_is_a_cylinder(device: str) -> None:
     _assert_same_faces(
         *od.creation.annulus(0.0, 1.0, height=2.0, device=device),

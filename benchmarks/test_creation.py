@@ -565,21 +565,13 @@ def test_cone(bench_lib: BenchLibrary, sections: int) -> None:
         assert len(mesh_o3d.triangles) == 2 * sections
 
 
-@pytest.mark.noparity(
-    "pymeshlab",
-    oracle="trimesh",
-    reason="D6 different primitive: MeshLab's create_annulus builds a flat holed *disk* while "
-    "ordito's annulus is an annular *cylinder* with height, so the two do not bound the same "
-    "solid and MeshLab emits fewer faces at the same side count. trimesh is the oracle here and "
-    "is asserted in tests/test_creation.py::test_annulus.",
-)
 @pytest.mark.benchmark(group="annulus")
 @pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab")
 @pytest.mark.parametrize("sections", _SECTIONS)
 def test_annulus(bench_lib: BenchLibrary, sections: int) -> None:
-    # No open3d counterpart: there is no annular-cylinder factory. MeshLab's annulus is a flat holed
-    # disk rather than ordito's annular *cylinder*, so it builds fewer faces at the same section
-    # count -- a floor for this row rather than an equivalent.
+    # No open3d counterpart: there is no annular-cylinder factory. MeshLab's annulus is the flat
+    # holed disk that caps ordito's annular *cylinder* (``tests/test_creation.py`` compares it with
+    # the top cap), a quarter of the faces at the same section count: a floor for this row.
     if bench_lib.kind == "pymeshlab":
 
         def annulus_pml() -> None:

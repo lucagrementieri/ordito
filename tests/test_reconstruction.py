@@ -1336,6 +1336,69 @@ def test_poisson_octree_matches_open3d_on_an_open_cloud(
     assert reproduced > 0.92
 
 
+@pytest.mark.parity("screened_poisson", "meshlib")
+def test_poisson_outer_surface_matches_meshlib_distance_volume(device: str) -> None:
+    """
+    Class C: MeshLib's distance-volume surface and ordito's Poisson surface describe one surface.
+
+    The benchmark's MeshLib row is a different reconstructor -- ``pointsToDistanceVolume``, a
+    Gaussian-weighted distance to the cloud's tangent planes over a fixed lattice, marched by
+    ``gridToMesh`` -- run here exactly as the row runs it, on a turned and shifted
+    ``icosphere(5)`` cloud at depth 6 (a mean spacing of 1.2 voxels, the regime it is built for).
+    It returns two shells: the outer surface and a spurious inner one about 7 voxels inside,
+    asserted, which the Poisson solvers do not produce. ``gridToMesh`` writes lattice coordinates
+    with voxel ``i``'s centre at ``i``, so the named transform is the volume's origin plus half a
+    voxel. The statistic is the worst two-sided distance between the surfaces in voxels: 0.285
+    (mean 0.162) on both devices, bound 0.9 (3.2x). Excluded bug classes: a misplaced, rescaled or
+    partial surface. Mutation probes, both asserted to fail: MeshLib's shell without the half-voxel
+    shift reads 1.09, and ordito's surface moved by one voxel 1.21 (thin margins, 1.2-1.3x, which
+    is why both are kept).
+    """
+    sphere_tm = tm.creation.icosphere(subdivisions=5)
+    sphere_tm.apply_transform(tm.transformations.rotation_matrix(0.4, [1.0, 2.0, 3.0]))
+    sphere_tm.apply_translation([0.3, -0.2, 0.5])
+    points_np = np.asarray(sphere_tm.vertices)
+    normals_np = np.asarray(sphere_tm.vertex_normals)
+    depth = 6
+    lower_np = points_np.min(axis=0)
+    extent_np = points_np.max(axis=0) - lower_np
+    voxel = float(extent_np.max()) / 2**depth
+    origin_np = lower_np - 3.0 * voxel
+    dimensions = np.ceil((extent_np + 6.0 * voxel) / voxel).astype(int) + 1
+
+    params_ml = mm.PointsToDistanceVolumeParams()
+    params_ml.voxelSize = mm.Vector3f(voxel, voxel, voxel)
+    params_ml.sigma = 2.0 * float(sphere_tm.edges_unique_length.mean())
+    params_ml.minWeight = 0.5
+    params_ml.origin = mm.Vector3f(*origin_np.tolist())
+    params_ml.dimensions = mm.Vector3i(*(int(n) for n in dimensions))
+    settings_ml = mm.GridToMeshSettings()
+    settings_ml.voxelSize = mm.Vector3f(voxel, voxel, voxel)
+    volume_ml = mm.pointsToDistanceVolume(points_to_meshlib(points_np, normals_np), params_ml)
+    surface_tm = meshlib_to_trimesh(
+        mm.gridToMesh(mm.simpleVolumeToDenseGrid(volume_ml), settings_ml)
+    )
+    shells_tm = sorted(surface_tm.split(only_watertight=False), key=lambda shell: -shell.area)
+    assert len(shells_tm) == 2
+    for shell_tm in shells_tm:
+        shell_tm.apply_translation(origin_np + 0.5 * voxel)
+    outer_tm, inner_tm = shells_tm
+    assert symmetric_surface_distance(inner_tm, sphere_tm)[0] > 5.0 * voxel
+
+    vertices_wp, faces_wp = od.reconstruction.screened_poisson(
+        points_to_warp(points_np, device), points_to_warp(normals_np, device), depth=depth
+    )
+    poisson_tm = tm.Trimesh(vertices_wp.numpy(), faces_wp.numpy().reshape(-1, 3), process=False)
+    assert symmetric_surface_distance(poisson_tm, outer_tm)[1] < 0.9 * voxel
+
+    unshifted_tm = outer_tm.copy()
+    unshifted_tm.apply_translation([-0.5 * voxel] * 3)
+    assert symmetric_surface_distance(poisson_tm, unshifted_tm)[1] > 0.9 * voxel
+    moved_tm = poisson_tm.copy()
+    moved_tm.apply_translation([voxel, 0.0, 0.0])
+    assert symmetric_surface_distance(moved_tm, outer_tm)[1] > 0.9 * voxel
+
+
 @pytest.mark.parametrize(
     ("n_points", "arguments", "match"),
     [

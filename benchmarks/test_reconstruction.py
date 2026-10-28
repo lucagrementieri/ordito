@@ -389,20 +389,6 @@ def test_ball_pivoting(bench_case: BenchCase) -> None:
         assert len(mesh_bpa.triangles) > 0
 
 
-@pytest.mark.noparity(
-    "meshlib",
-    reason="D2 a different algorithm with a measured disagreement: pointsToDistanceVolume is a "
-    "Gaussian-weighted distance field over a fixed lattice, marched by gridToMesh -- not Kazhdan's "
-    "screened Poisson, which solves for an indicator function. On an icosphere(4) cloud at a 2% "
-    "voxel it returns *two* components: an outer one within 0.095 of the cloud (1.4 voxels, so the "
-    "surface itself is recovered) and an inner shell of 2 652 faces at radius ~0.55 on a unit "
-    "sphere, up to 0.518 from the cloud, which the Poisson solvers do not produce. Its "
-    "parameterization is a lattice (origin, dimensions, voxelSize, sigma) rather than an octree "
-    "depth, so ordito's depth cannot be mapped onto it either; the row is a cost comparison "
-    "against a *fast* implicit reconstructor at a matched cell size. open3d and pymeshlab wrap the "
-    "same Kazhdan solver ordito implements and carry the correctness comparison in "
-    "tests/test_reconstruction.py, at a size a correctness test can afford.",
-)
 @pytest.mark.benchmark(group="screened_poisson")
 @pytest.mark.benchlibs("ordito", "meshlib")
 @pytest.mark.parametrize("depth", _POISSON_DEPTHS)
@@ -417,8 +403,9 @@ def test_screened_poisson(
     # largest cloud. The comparison itself is not lost: it lives in
     # ``tests/test_reconstruction.py``, which still checks both references for agreement at a size a
     # correctness test can afford. What is left here is ordito against meshlib, which is a
-    # *different* implicit reconstructor (see the exemption above) and, unlike the two Kazhdan
-    # wrappers, cheap enough to keep.
+    # *different* implicit reconstructor -- a Gaussian-weighted distance volume, whose outer shell
+    # ``tests/test_reconstruction.py`` compares with ordito's surface as a set distance -- and,
+    # unlike the two Kazhdan wrappers, cheap enough to keep.
     skip_larger_than(
         bench_case, "bunny", "screened Poisson above bunny dominates the suite (93 min at dragon)"
     )

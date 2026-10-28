@@ -153,14 +153,6 @@ def test_fill_cone(bench_case: BenchCase) -> None:
     assert new_vertices.size >= vertices.size
 
 
-@pytest.mark.noparity(
-    "trimesh",
-    reason="D2 a weaker algorithm for the same task: tm.repair.fill_holes fans triangles across "
-    "small holes and gives up on large ones, where fill_min_weight runs the minimum-weight "
-    "interval DP, so the two produce different triangulations by design and trimesh has no "
-    "minimum-weight answer to compare against. meshlib is the oracle for the DP itself, in "
-    "tests/test_holes.py::test_fill_min_weight_matches_meshlib.",
-)
 @pytest.mark.benchmark(group="fill_min_weight")
 @pytest.mark.benchaxis("loops_dp")
 @pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "meshlib")
@@ -201,6 +193,8 @@ def test_fill_min_weight(bench_case: BenchCase) -> None:
         result = bench_case.run(lambda: od.holes.fill_min_weight(vertices, faces), rounds=_ROUNDS)
         assert result.size >= faces.size
     elif bench_case.kind == "trimesh":  # mutates in place: rebuild inside the timed callable
+        # ``fill_holes`` closes only three- and four-edge holes (compared with ordito on those in
+        # tests/test_holes.py) and leaves these long rims open: a lower bound for the row.
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
 
         def run() -> tm.Trimesh:

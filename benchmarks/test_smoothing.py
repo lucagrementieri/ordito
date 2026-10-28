@@ -191,19 +191,6 @@ def test_filter_mut_dif_laplacian(bench_case: BenchCase, volume_constraint: bool
         assert result.vertices.shape == vertices.shape
 
 
-@pytest.mark.noparity(
-    "pyvista",
-    oracle="pymeshlab",
-    reason="D2 a different update order, measured: vtkSmoothPolyDataFilter applies the same "
-    "uniform umbrella step but in place, vertex by vertex in index order (Gauss-Seidel), so each "
-    "vertex reads the neighbours already moved this pass. A serial loop doing exactly that equals "
-    "it to 2e-16 on a noisy icosphere(2) with boundary and feature smoothing off and "
-    "convergence=0, at 1 and 5 iterations, while the Jacobi step ordito applies differs by 0.014 "
-    "at one iteration (relaxation_factor=0.5). The order is serial by construction, so it is not "
-    "reproduced. MeshLab's apply_coord_laplacian_smoothing is this group's oracle, in "
-    "tests/test_smoothing.py::test_filter_laplacian_matches_pymeshlab, and MeshLib's relax, the "
-    "Jacobi step, in test_filter_laplacian_matches_meshlib_relax.",
-)
 @pytest.mark.benchmark(group="filter_laplacian_integration")
 @pytest.mark.benchaxis("quality")
 @pytest.mark.benchlibs("ordito", "pymeshlab", "pyvista", "meshlib")
@@ -243,6 +230,8 @@ def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> 
     if bench_case.kind == "pyvista":
         if implicit:
             pytest.skip("vtkSmoothPolyDataFilter is explicit only: no backward-Euler variant")
+        # The same umbrella step applied in place, vertex by vertex (Gauss-Seidel): a serial
+        # order, compared at small relaxation in ``tests/test_smoothing.py``.
         mesh_pv = bench_case.mesh_pv
         smoothed_pv = bench_case.run(
             lambda: mesh_pv.smooth(

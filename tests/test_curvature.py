@@ -248,8 +248,8 @@ def test_discrete_mean_curvature(
     icosahedron the whole-surface radius gave one value repeated, which could see only a global
     scale error.)
 
-    ``benchmarks/test_curvature.py`` records why pymeshlab cannot be the oracle here (a
-    different operator, 0.982 correlation with a 7 % offset).
+    MeshLab's pointwise curvature is a different operator, compared as a statistic in
+    ``test_discrete_curvatures_match_pymeshlab_pointwise``.
     """
     mesh_tm, mesh_wp = sphere_irregular
     points_tm = mesh_tm.vertices
@@ -286,6 +286,57 @@ def test_discrete_mean_curvature_with_supplied_adjacency(
     )
     assert_nonconstant(mean_curvature_tm, tol=1e-3)
     assert np.allclose(mean_curvature_wp.numpy(), mean_curvature_tm, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parity("discrete_gaussian_curvature", "pymeshlab")
+@pytest.mark.parity("discrete_mean_curvature", "pymeshlab")
+@pytest.mark.parametrize("kind", ["gaussian", "mean"])
+def test_discrete_curvatures_match_pymeshlab_pointwise(device: str, kind: str) -> None:
+    """
+    Class C: the ball measure over the ball's area against MeshLab's pointwise curvature.
+
+    MeshLab's ``compute_scalar_by_discrete_curvature_per_vertex`` is the Meyer et al. 1-ring
+    curvature per unit area; ordito's (trimesh's) is the Cohen-Steiner/Morvan measure integrated
+    over a ball, so the measure divided by ``pi r^2`` estimates the same pointwise value wherever
+    the surface is smooth on the ball's scale. On an exact torus (``R = 1``, ``r = 0.4``, 64 x 32
+    sections, Gaussian curvature from -4.15 to 1.79) at a radius of two mean edges, the median
+    difference is 1.5 % of MeshLab's largest magnitude for both curvatures, both devices; the bound
+    is 5 %, 3.3x that. Excluded bug classes: a measure at the wrong vertex or with the wrong sign,
+    and a wrong scale. Mutation probes, asserted: MeshLab's values shuffled over the vertices read
+    47 % (Gaussian) and 25 % (mean), and the measure over ``2 pi r^2`` (a halved normalization)
+    21 % and 38 %. The irregular fixtures are too coarse for the premise: on the 400-point
+    ``torus_round`` a mean edge is the minor radius and the margin falls to 3-5x.
+    """
+    mesh_tm = tm.creation.torus(1.0, 0.4, major_sections=64, minor_sections=32)
+    meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+    meshset_pml.compute_scalar_by_discrete_curvature_per_vertex(
+        curvaturetype="Gaussian Curvature" if kind == "gaussian" else "Mean Curvature"
+    )
+    curvature_pml = meshset_pml.current_mesh().vertex_scalar_array()
+    scale = float(np.abs(curvature_pml).max())
+    assert_nonconstant(curvature_pml, tol=1e-1)
+
+    vertices_wp = points_to_warp(mesh_tm.vertices, device)
+    faces_wp = wp.array(mesh_tm.faces.reshape(-1).astype(np.int32), dtype=wp.int32, device=device)
+    radius = 2.0 * float(mesh_tm.edges_unique_length.mean())
+    if kind == "gaussian":
+        angles_wp = od.triangles.face_angles(vertices_wp, faces_wp)
+        measure_wp = od.curvature.discrete_gaussian_curvature(
+            vertices_wp, vertices_wp, faces_wp, angles_wp, radius
+        )
+    else:
+        measure_wp = od.curvature.discrete_mean_curvature(
+            vertices_wp, vertices_wp, faces_wp, radius
+        )
+    pointwise_wp = measure_wp.numpy() / (np.pi * radius**2)
+
+    def median_gap(reference: np.ndarray, estimate: np.ndarray) -> float:
+        return float(np.median(np.abs(estimate - reference))) / scale
+
+    assert median_gap(curvature_pml, pointwise_wp) < 0.05
+    shuffled_pml = np.random.default_rng(0).permutation(curvature_pml)
+    assert median_gap(shuffled_pml, pointwise_wp) > 0.05
+    assert median_gap(curvature_pml, 0.5 * pointwise_wp) > 0.05
 
 
 @pytest.mark.parametrize("case", ["no_points", "no_faces", "no_adjacent_pair"])

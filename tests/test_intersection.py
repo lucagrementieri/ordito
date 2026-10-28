@@ -17,12 +17,19 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 from scipy.spatial import KDTree, cKDTree
 from vtkmodules.vtkCommonDataModel import vtkPlane, vtkPlaneCollection
+from vtkmodules.vtkCommonTransforms import vtkTransform
 from vtkmodules.vtkFiltersGeneral import vtkClipClosedSurface
+from vtkmodules.vtkFiltersModeling import vtkCollisionDetectionFilter
 
 import ordito as od
 from ordito.constants import TOLERANCE_MERGE
 from ordito.kernels import graph as kernel_graph
-from tests.comparisons import assert_nearest_bijection, hausdorff_two_sided, lexsort_rows
+from tests.comparisons import (
+    assert_nearest_bijection,
+    assert_unordered_rows_equal,
+    hausdorff_two_sided,
+    lexsort_rows,
+)
 from tests.conftest import MESHES, OPEN_MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -1021,6 +1028,72 @@ def test_mesh_collision_pairs_matches_meshlib(sphere_and_box: SphereAndBox) -> N
     assert pairs_np[:, 1].max() < box_tm.faces.shape[0]
     assert set(pairs_np[:, 0].tolist()) == set(np.flatnonzero(sphere_ml).tolist())
     assert set(pairs_np[:, 1].tolist()) == set(np.flatnonzero(box_ml).tolist())
+
+
+def _vtk_contact_pairs(mesh_a_tm: tm.Trimesh, mesh_b_tm: tm.Trimesh) -> np.ndarray:
+    """Return the ``(n, 2)`` cell pairs ``vtkCollisionDetectionFilter`` reports, every contact."""
+    collision_vtk = vtkCollisionDetectionFilter()
+    collision_vtk.SetInputData(0, trimesh_to_pyvista(mesh_a_tm))
+    collision_vtk.SetInputData(1, trimesh_to_pyvista(mesh_b_tm))
+    collision_vtk.SetTransform(0, vtkTransform())
+    collision_vtk.SetTransform(1, vtkTransform())
+    collision_vtk.SetCollisionModeToAllContacts()
+    collision_vtk.Update()
+    n_contacts = collision_vtk.GetNumberOfContacts()
+    cells = [collision_vtk.GetContactCells(side) for side in (0, 1)]
+    return np.array(
+        [[cells[0].GetValue(i), cells[1].GetValue(i)] for i in range(n_contacts)], dtype=np.int64
+    ).reshape(-1, 2)
+
+
+@pytest.mark.parity("mesh_collision_pairs", "pyvista")
+@pytest.mark.parametrize("configuration", ["shifted_copy", "box"])
+def test_mesh_collision_pairs_matches_pyvista(
+    sphere_and_box: SphereAndBox, device: str, configuration: str
+) -> None:
+    """
+    Class A in general position: VTK's contact pairs are the crossing pairs, pair for pair.
+
+    ``vtkCollisionDetectionFilter`` (behind ``PolyData.collision``) runs a triangle-triangle test
+    on the leaf pairs of two OBB trees and, in all-contacts mode, reports every pair that touches.
+    Where no two triangles are coplanar that is the set of crossing pairs: ``sphere_irregular``
+    against a turned and shifted copy of itself (the benchmark's input) and against a box pushed
+    into its side agree as pair sets, and ``PolyData.collision``'s count and first-mesh cells are
+    the same contacts. Coplanar triangles are where the two part: against an identical copy VTK
+    reports every face touching its twin and more, where no two triangles cross, and ordito
+    returns none -- asserted, so the convention is pinned from both sides.
+    """
+    sphere_tm, sphere_wp, box_tm, box_wp = sphere_and_box
+    if configuration == "box":
+        other_tm, other_wp = box_tm, box_wp
+    else:
+        other_tm = sphere_tm.copy()
+        other_tm.apply_transform(tm.transformations.rotation_matrix(0.3, [1.0, 2.0, 3.0]))
+        other_tm.apply_translation(0.3 * sphere_tm.extents)
+        other_wp = trimesh_to_warp(other_tm, device)
+
+    pairs_vtk = _vtk_contact_pairs(sphere_tm, other_tm)
+    assert len(pairs_vtk) > 0  # non-vacuity: the reference found the collision
+    pairs_wp = od.intersection.mesh_collision_pairs(
+        sphere_wp.points, sphere_wp.indices, other_wp.points, other_wp.indices
+    ).numpy()
+    assert_unordered_rows_equal(pairs_wp.astype(np.int64), pairs_vtk)
+
+    collided_pv, n_contacts_pv = trimesh_to_pyvista(sphere_tm).collision(
+        trimesh_to_pyvista(other_tm), contact_mode=0
+    )
+    assert n_contacts_pv == len(pairs_wp)
+    contact_cells_pv = np.asarray(collided_pv.field_data["ContactCells"])
+    assert np.array_equal(np.sort(contact_cells_pv), np.sort(pairs_wp[:, 0]))
+
+    # An identical copy: every triangle is coplanar with its twin, which VTK counts as contact.
+    assert len(_vtk_contact_pairs(sphere_tm, sphere_tm)) >= len(sphere_tm.faces)
+    assert (
+        od.intersection.mesh_collision_pairs(
+            sphere_wp.points, sphere_wp.indices, sphere_wp.points, sphere_wp.indices
+        ).shape[0]
+        == 0
+    )
 
 
 @pytest.mark.parametrize("box_first", [False, True], ids=["sphere_first", "box_first"])

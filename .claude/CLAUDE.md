@@ -1145,17 +1145,30 @@ it was read for the rule only, and each kernel implements the rule, not the sour
   any edge-neighbour, `max_angle` that `neighbor_normals` already formed: one radians threshold
   on `face_defective`. Equal selections on a reversed icosphere, `sphere_irregular` and
   `saddle_graded` at three thresholds each. The consensus default stays: it finds the culprit.
-- **Stay Class D, by reason:** VTK's `smooth` is Gauss-Seidel in index order (serial loop equal
-  to 2e-16; serial by construction); `smooth_taubin` is windowed sinc; the pymeshlab `harmonic`
-  / `lscm` and pyvista principal-curvature rows wrap the oracle; stochastic (`random_hills`,
-  `icp_mesh` / pymeshlab); serial queues (`isotropic_remesh` / pymeshlab); different quantities
-  (`annulus` disk, `mesh_collision_pairs` / pyvista, MeshLab's pointwise curvatures, MeshLib's
-  distance-volume Poisson, `fit_line` / pyvista, `fill_min_weight` / trimesh,
-  `filter_mut_dif_laplacian` / open3d and pymeshlab, `resolve_duplicated_faces` / open3d and
-  pymeshlab: `unique_faces` is the keep-one rule); `vertex_normals` / trimesh is angle-weighted
-  (covered in `test_vertex_normals_angle`). Class D tests kept: igl's arbitrary joined pair in
-  `split_non_manifold_vertices` (ordito's split is order-independent) and MeshLib's inclusive
-  fold threshold at exactly 90 / 180.
+- **Then to A, B or C, test-only (same day):** `mesh_collision_pairs` / pyvista is Class A in
+  general position (`vtkCollisionDetectionFilter`'s all-contacts pairs are the crossing pairs;
+  the old "2 600 hits" was a mesh against its identical copy, where VTK counts coplanar twins).
+  `annulus` / pymeshlab is Class B: MeshLab's disk is ordito's top cap, vertices to 3e-7, each
+  quad split along the other diagonal. `fill_min_weight` / trimesh: trimesh fills only 3- and
+  4-edge holes; a triangle hole is Class A, quads Class B through the same quad merge. Class C:
+  VTK's in-place smoother at `relaxation_factor=0.01` (gap / displacement 0.0040, linear in the
+  factor, bound 0.015, the face-weighted stencil reads 0.070); MeshLab's pointwise curvatures
+  against the ball measure over `pi r^2` on a 64 x 32 exact torus at two mean edges (median gap
+  1.5 % of the range, bound 5 %; the 400-point `torus_round` is too coarse, 3-5x margin); MeshLib's
+  distance volume on an `icosphere(5)` cloud at depth 6, outer shell after origin plus half a voxel
+  (`gridToMesh` puts voxel centres on integers), worst gap 0.285 voxel, bound 0.9; the mutations
+  (no half shift, one-voxel move) clear it by only 1.2-1.3x. `symmetric_chamfer` at its default
+  sample count could not tell these surfaces apart (its floor is the sample spacing):
+  `symmetric_surface_distance` measures against the surface.
+- **Stay Class D, by reason:** `smooth_taubin` is windowed sinc; the pymeshlab `harmonic` /
+  `lscm` and pyvista principal-curvature rows wrap the oracle; stochastic (`random_hills`,
+  `icp_mesh` / pymeshlab); serial queues and a gap the row reports (`isotropic_remesh` /
+  pymeshlab); different quantities (`fit_line` / pyvista, `filter_mut_dif_laplacian` / open3d and
+  pymeshlab, `resolve_duplicated_faces` / open3d and pymeshlab: ordito raises on same-winding
+  copies, so the rules agree on no non-trivial input); `vertex_normals` / trimesh is
+  angle-weighted (covered in `test_vertex_normals_angle`). Class D tests kept: igl's arbitrary
+  joined pair in `split_non_manifold_vertices` (ordito's split is order-independent) and MeshLib's
+  inclusive fold threshold at exactly 90 / 180.
 
 ### Open items from the 2026-10-28 Class C upgrades
 
