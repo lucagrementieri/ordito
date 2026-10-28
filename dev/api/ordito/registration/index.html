@@ -6719,6 +6719,7 @@ so its <code>R</code> is this matrix's linear block divided by the scale and <em
     <span class="n">reflection</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">translation</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">scale</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"all_points"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"all_points"</span><span class="p">,</span>
     <span class="n">target_index</span><span class="p">:</span> <span class="n">Mesh</span> <span class="o">|</span> <span class="n">Bvh</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="nb">float</span><span class="p">]</span>
 </code></pre></div>
@@ -6850,7 +6851,9 @@ first correspondence search. Identity when <code>None</code>.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Stop when the cost decreases by less than this between iterations.</p>
+                <p>Stop when the cost decreases by less than this between iterations; under
+<code>method="pyvista"</code>, once an iteration moves the landmarks by a root mean square of at
+most this.</p>
               </div>
             </td>
             <td>
@@ -6930,6 +6933,28 @@ similarity transform.</p>
           </tr>
           <tr class="doc-section-item">
             <td>
+                <code>method</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;all_points&#39;, &#39;pyvista&#39;]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>"all_points"</code> matches every point of <em>a</em> each iteration, as described above.
+<code>"pyvista"</code> is <code>vtkIterativeClosestPointTransform</code> as <code>pyvista</code>'s <code>align</code> runs it:
+every <code>n // 100</code>-th point of <em>a</em> is a landmark (every point when <code>n &lt;= 100</code>), <em>a</em> is
+first translated so its centroid lands on the target's (both centroids over every point,
+after <code>initial</code>), and each iteration fits a rigid map of the landmarks onto their
+matches and composes it onto the transform so far. It is rigid only, in <code>float64</code>.
+<code>align</code>'s defaults are <code>max_iterations=500</code> and <code>threshold=1e-5</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;all_points&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                 <code>target_index</code>
             </td>
             <td>
@@ -6989,7 +7014,8 @@ builds itself). Not checked against them: the search answers for the geometry it
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Weighted mean squared correspondence distance at the final iteration.</p>
+                <p>Weighted mean squared correspondence distance at the final iteration; under
+<code>method="pyvista"</code>, over the landmarks.</p>
               </div>
             </td>
           </tr>
@@ -7006,6 +7032,18 @@ builds itself). Not checked against them: the search answers for the geometry it
         </tr>
       </thead>
       <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>method</code> is not <code>"all_points"</code> or <code>"pyvista"</code>, or if <code>method="pyvista"</code> is
+combined with <code>max_distance</code>, <code>reflection=True</code>, <code>translation=False</code> or
+<code>scale=True</code>, which VTK's rigid landmark fit does not have.</p>
+              </div>
+            </td>
+          </tr>
           <tr class="doc-section-item">
             <td>
                   <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#TypeError">TypeError</a></code>
@@ -7315,7 +7353,34 @@ correspondences are given:</p>
 <span class="normal">542</span>
 <span class="normal">543</span>
 <span class="normal">544</span>
-<span class="normal">545</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp</span><span class="p">(</span>
+<span class="normal">545</span>
+<span class="normal">546</span>
+<span class="normal">547</span>
+<span class="normal">548</span>
+<span class="normal">549</span>
+<span class="normal">550</span>
+<span class="normal">551</span>
+<span class="normal">552</span>
+<span class="normal">553</span>
+<span class="normal">554</span>
+<span class="normal">555</span>
+<span class="normal">556</span>
+<span class="normal">557</span>
+<span class="normal">558</span>
+<span class="normal">559</span>
+<span class="normal">560</span>
+<span class="normal">561</span>
+<span class="normal">562</span>
+<span class="normal">563</span>
+<span class="normal">564</span>
+<span class="normal">565</span>
+<span class="normal">566</span>
+<span class="normal">567</span>
+<span class="normal">568</span>
+<span class="normal">569</span>
+<span class="normal">570</span>
+<span class="normal">571</span>
+<span class="normal">572</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7327,6 +7392,7 @@ correspondences are given:</p>
     <span class="n">reflection</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">translation</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
     <span class="n">scale</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"all_points"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"all_points"</span><span class="p">,</span>
     <span class="n">target_index</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">Bvh</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="nb">float</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7370,7 +7436,9 @@ correspondences are given:</p>
 <span class="sd">    max_iterations</span>
 <span class="sd">        Maximum number of ICP iterations.</span>
 <span class="sd">    threshold</span>
-<span class="sd">        Stop when the cost decreases by less than this between iterations.</span>
+<span class="sd">        Stop when the cost decreases by less than this between iterations; under</span>
+<span class="sd">        ``method="pyvista"``, once an iteration moves the landmarks by a root mean square of at</span>
+<span class="sd">        most this.</span>
 <span class="sd">    max_distance</span>
 <span class="sd">        Reject correspondences farther than this (weight ``0``, excluded from the</span>
 <span class="sd">        fit). No rejection when ``None``.</span>
@@ -7378,6 +7446,14 @@ correspondences are given:</p>
 <span class="sd">        Forwarded to [`procrustes`][ordito.registration.procrustes]. Defaults are</span>
 <span class="sd">        rigid (`reflection=False, scale=False`); set ``scale=True`` for a</span>
 <span class="sd">        similarity transform.</span>
+<span class="sd">    method</span>
+<span class="sd">        ``"all_points"`` matches every point of *a* each iteration, as described above.</span>
+<span class="sd">        ``"pyvista"`` is ``vtkIterativeClosestPointTransform`` as ``pyvista``'s ``align`` runs it:</span>
+<span class="sd">        every ``n // 100``-th point of *a* is a landmark (every point when ``n &lt;= 100``), *a* is</span>
+<span class="sd">        first translated so its centroid lands on the target's (both centroids over every point,</span>
+<span class="sd">        after ``initial``), and each iteration fits a rigid map of the landmarks onto their</span>
+<span class="sd">        matches and composes it onto the transform so far. It is rigid only, in ``float64``.</span>
+<span class="sd">        ``align``'s defaults are ``max_iterations=500`` and ``threshold=1e-5``.</span>
 <span class="sd">    target_index</span>
 <span class="sd">        The structure the correspondence search queries, already built, to spare the build each</span>
 <span class="sd">        call otherwise pays (worth it when one target is registered against repeatedly): a</span>
@@ -7394,10 +7470,15 @@ correspondences are given:</p>
 <span class="sd">    transformed</span>
 <span class="sd">        ``(n,)`` image of *a* under *matrix*.</span>
 <span class="sd">    cost</span>
-<span class="sd">        Weighted mean squared correspondence distance at the final iteration.</span>
+<span class="sd">        Weighted mean squared correspondence distance at the final iteration; under</span>
+<span class="sd">        ``method="pyvista"``, over the landmarks.</span>
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If ``method`` is not ``"all_points"`` or ``"pyvista"``, or if ``method="pyvista"`` is</span>
+<span class="sd">        combined with ``max_distance``, ``reflection=True``, ``translation=False`` or</span>
+<span class="sd">        ``scale=True``, which VTK's rigid landmark fit does not have.</span>
 <span class="sd">    TypeError</span>
 <span class="sd">        If ``target_index`` is not a ``wp.Bvh`` for a point-cloud target, or not a ``wp.Mesh`` for</span>
 <span class="sd">        a mesh target.</span>
@@ -7440,6 +7521,13 @@ correspondences are given:</p>
         <span class="n">initial</span><span class="o">=</span><span class="n">initial</span><span class="p">,</span>
         <span class="n">target_index</span><span class="o">=</span><span class="n">target_index</span><span class="p">,</span>
     <span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"all_points"</span><span class="p">,</span> <span class="s2">"pyvista"</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method must be 'all_points' or 'pyvista', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"pyvista"</span> <span class="ow">and</span> <span class="p">(</span><span class="n">max_distance</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">reflection</span> <span class="ow">or</span> <span class="ow">not</span> <span class="n">translation</span> <span class="ow">or</span> <span class="n">scale</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="s2">"method='pyvista' is a rigid fit with no distance gate: it takes no max_distance, "</span>
+            <span class="s2">"reflection, scale or translation=False"</span>
+        <span class="p">)</span>
     <span class="n">device</span> <span class="o">=</span> <span class="n">a</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n</span> <span class="o">=</span> <span class="n">a</span><span class="o">.</span><span class="n">size</span>
 
@@ -7461,6 +7549,10 @@ correspondences are given:</p>
     <span class="p">)</span>
     <span class="n">search_index</span> <span class="o">=</span> <span class="n">mesh</span> <span class="k">if</span> <span class="n">mesh</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">cloud_tree</span>
     <span class="k">assert</span> <span class="n">search_index</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"pyvista"</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_landmark_icp</span><span class="p">(</span>
+            <span class="n">a</span><span class="p">,</span> <span class="n">target_vertices</span><span class="p">,</span> <span class="n">search_index</span><span class="p">,</span> <span class="n">total</span><span class="p">,</span> <span class="n">transformed</span><span class="p">,</span> <span class="n">max_iterations</span><span class="p">,</span> <span class="n">threshold</span>
+        <span class="p">)</span>
 
     <span class="c1"># Every buffer is allocated once and rewritten in place by every round. The fit lands in</span>
     <span class="c1"># ``fitted`` and is kept in ``total`` only once ``close_point_to_point_round`` has seen that it</span>
@@ -7989,85 +8081,7 @@ a mesh target.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/registration.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">567</span>
-<span class="normal">568</span>
-<span class="normal">569</span>
-<span class="normal">570</span>
-<span class="normal">571</span>
-<span class="normal">572</span>
-<span class="normal">573</span>
-<span class="normal">574</span>
-<span class="normal">575</span>
-<span class="normal">576</span>
-<span class="normal">577</span>
-<span class="normal">578</span>
-<span class="normal">579</span>
-<span class="normal">580</span>
-<span class="normal">581</span>
-<span class="normal">582</span>
-<span class="normal">583</span>
-<span class="normal">584</span>
-<span class="normal">585</span>
-<span class="normal">586</span>
-<span class="normal">587</span>
-<span class="normal">588</span>
-<span class="normal">589</span>
-<span class="normal">590</span>
-<span class="normal">591</span>
-<span class="normal">592</span>
-<span class="normal">593</span>
-<span class="normal">594</span>
-<span class="normal">595</span>
-<span class="normal">596</span>
-<span class="normal">597</span>
-<span class="normal">598</span>
-<span class="normal">599</span>
-<span class="normal">600</span>
-<span class="normal">601</span>
-<span class="normal">602</span>
-<span class="normal">603</span>
-<span class="normal">604</span>
-<span class="normal">605</span>
-<span class="normal">606</span>
-<span class="normal">607</span>
-<span class="normal">608</span>
-<span class="normal">609</span>
-<span class="normal">610</span>
-<span class="normal">611</span>
-<span class="normal">612</span>
-<span class="normal">613</span>
-<span class="normal">614</span>
-<span class="normal">615</span>
-<span class="normal">616</span>
-<span class="normal">617</span>
-<span class="normal">618</span>
-<span class="normal">619</span>
-<span class="normal">620</span>
-<span class="normal">621</span>
-<span class="normal">622</span>
-<span class="normal">623</span>
-<span class="normal">624</span>
-<span class="normal">625</span>
-<span class="normal">626</span>
-<span class="normal">627</span>
-<span class="normal">628</span>
-<span class="normal">629</span>
-<span class="normal">630</span>
-<span class="normal">631</span>
-<span class="normal">632</span>
-<span class="normal">633</span>
-<span class="normal">634</span>
-<span class="normal">635</span>
-<span class="normal">636</span>
-<span class="normal">637</span>
-<span class="normal">638</span>
-<span class="normal">639</span>
-<span class="normal">640</span>
-<span class="normal">641</span>
-<span class="normal">642</span>
-<span class="normal">643</span>
-<span class="normal">644</span>
-<span class="normal">645</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">645</span>
 <span class="normal">646</span>
 <span class="normal">647</span>
 <span class="normal">648</span>
@@ -8324,7 +8338,85 @@ a mesh target.</p>
 <span class="normal">899</span>
 <span class="normal">900</span>
 <span class="normal">901</span>
-<span class="normal">902</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
+<span class="normal">902</span>
+<span class="normal">903</span>
+<span class="normal">904</span>
+<span class="normal">905</span>
+<span class="normal">906</span>
+<span class="normal">907</span>
+<span class="normal">908</span>
+<span class="normal">909</span>
+<span class="normal">910</span>
+<span class="normal">911</span>
+<span class="normal">912</span>
+<span class="normal">913</span>
+<span class="normal">914</span>
+<span class="normal">915</span>
+<span class="normal">916</span>
+<span class="normal">917</span>
+<span class="normal">918</span>
+<span class="normal">919</span>
+<span class="normal">920</span>
+<span class="normal">921</span>
+<span class="normal">922</span>
+<span class="normal">923</span>
+<span class="normal">924</span>
+<span class="normal">925</span>
+<span class="normal">926</span>
+<span class="normal">927</span>
+<span class="normal">928</span>
+<span class="normal">929</span>
+<span class="normal">930</span>
+<span class="normal">931</span>
+<span class="normal">932</span>
+<span class="normal">933</span>
+<span class="normal">934</span>
+<span class="normal">935</span>
+<span class="normal">936</span>
+<span class="normal">937</span>
+<span class="normal">938</span>
+<span class="normal">939</span>
+<span class="normal">940</span>
+<span class="normal">941</span>
+<span class="normal">942</span>
+<span class="normal">943</span>
+<span class="normal">944</span>
+<span class="normal">945</span>
+<span class="normal">946</span>
+<span class="normal">947</span>
+<span class="normal">948</span>
+<span class="normal">949</span>
+<span class="normal">950</span>
+<span class="normal">951</span>
+<span class="normal">952</span>
+<span class="normal">953</span>
+<span class="normal">954</span>
+<span class="normal">955</span>
+<span class="normal">956</span>
+<span class="normal">957</span>
+<span class="normal">958</span>
+<span class="normal">959</span>
+<span class="normal">960</span>
+<span class="normal">961</span>
+<span class="normal">962</span>
+<span class="normal">963</span>
+<span class="normal">964</span>
+<span class="normal">965</span>
+<span class="normal">966</span>
+<span class="normal">967</span>
+<span class="normal">968</span>
+<span class="normal">969</span>
+<span class="normal">970</span>
+<span class="normal">971</span>
+<span class="normal">972</span>
+<span class="normal">973</span>
+<span class="normal">974</span>
+<span class="normal">975</span>
+<span class="normal">976</span>
+<span class="normal">977</span>
+<span class="normal">978</span>
+<span class="normal">979</span>
+<span class="normal">980</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
