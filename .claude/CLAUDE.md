@@ -1112,6 +1112,95 @@ the quoted `"meshlib"` value only), and their kernels describe behaviour, not th
   ambient occlusion is Embree with no vendored source. The rest of Class C are independent RNGs,
   serial priority queues, or comparisons against the truth.
 
+### Class D exemptions upgraded, and the ones that stay (2026-10-28)
+
+Seven of the 28 Class D items (25 `noparity` rows, 3 Class D tests) became Class A; four were
+measurement artefacts, so only tests changed. vcglib / MeshLab source is GPL and not vendored:
+it was read for the rule only, and each kernel implements the rule, not the source.
+
+- **Measurement artefacts, test-only:** MeshLib's `relax` is `filter_laplacian(lamb=force,
+  volume_constraint=False)` over `laplacian(symmetric=True)` (6e-8, open and closed); the recorded
+  "cosine 0.45, minimum -1.0" was the volume constraint left on. MeshLab's
+  `apply_normal_smoothing_per_face` is one `filter_normals(threshold=180)` pass (3e-7 closed); a
+  rim face counts its own normal once more per rim edge (MeshLab's neighbour across a boundary
+  edge is the face itself; emulated to 3e-16; the default is unchanged, and the test pins the rim
+  from both sides). MeshLab's erosion is `shrink_vertex_mask` exactly, vertex and face selections
+  at every hop, once the start is `compute_selection_transfer_vertex_to_face(inclusive=True)`;
+  `inclusive=False` lags one hop, which was the recorded 51 / 39 / 25.
+- **`filter_humphrey(method="meshlab")`:** vcg's HC adds the neighbours' mean correction where
+  Vollmer et al. subtract it (`q - beta b + (1 - beta) L b`, `alpha = 0`, `beta = 0.5`, one pass
+  a call, symmetric 1-ring): 2e-16 in NumPy, Class A in ordito. A sign in the existing update kernel
+  (`1 * L b` is exact, so the default keeps its bits). Group `filter_humphrey_meshlab`.
+- **`remove_non_manifold_faces(method="meshlab")`:** vcg's `RemoveNonManifoldFace` visits the
+  faces on a crowded edge in ascending area and deletes one while an edge of it still has more
+  than two live faces. Run as rounds: a face decides once no smaller undecided face shares a
+  crowded edge (deciders in one round share none), two launches and one readback a round, integer
+  atomics only. The key is the area of the *sorted* corner triple, so a face and its copies tie
+  bit for bit on both devices and the index decides (the natural-order area made CUDA and CPU keep
+  different windings). MeshLab's own tie between a face and its reversed copy is its unstable
+  sort's, so that input compares as unordered triples; fins and same-winding copies are Class A
+  after `meshing_remove_unreferenced_vertices` (MeshLab leaves deleted fins' apexes). The default
+  drops every face on a crowded edge, which no library does. Group `remove_non_manifold_faces_meshlab`.
+- **`face_defective_mask(normal_criterion="meshlab")`:** `nfratio` is the largest dihedral to
+  any edge-neighbour, `max_angle` that `neighbor_normals` already formed: one radians threshold
+  on `face_defective`. Equal selections on a reversed icosphere, `sphere_irregular` and
+  `saddle_graded` at three thresholds each. The consensus default stays: it finds the culprit.
+- **Stay Class D, by reason:** VTK's `smooth` is Gauss-Seidel in index order (serial loop equal
+  to 2e-16; serial by construction); `smooth_taubin` is windowed sinc; the pymeshlab `harmonic`
+  / `lscm` and pyvista principal-curvature rows wrap the oracle; stochastic (`random_hills`,
+  `icp_mesh` / pymeshlab); serial queues (`isotropic_remesh` / pymeshlab); different quantities
+  (`annulus` disk, `mesh_collision_pairs` / pyvista, MeshLab's pointwise curvatures, MeshLib's
+  distance-volume Poisson, `fit_line` / pyvista, `fill_min_weight` / trimesh,
+  `filter_mut_dif_laplacian` / open3d and pymeshlab, `resolve_duplicated_faces` / open3d and
+  pymeshlab: `unique_faces` is the keep-one rule); `vertex_normals` / trimesh is angle-weighted
+  (covered in `test_vertex_normals_angle`). Class D tests kept: igl's arbitrary joined pair in
+  `split_non_manifold_vertices` (ordito's split is order-independent) and MeshLib's inclusive
+  fold threshold at exactly 90 / 180.
+
+### Open items from the 2026-10-28 Class C upgrades
+
+Each is a measured limit of an option above; re-measure before acting on it.
+
+- **`log_map(method="potpourri3d")` is Class A only on well-shaped fixtures.** On the needle
+  fixtures it is 6e-5 (`sphere_irregular`, CUDA; 1.8e-4 CPU) and 1.5e-4 (`torus_irregular`) from
+  potpourri3d: the connection Laplacian it shares with the default stores its transport angles in
+  `float32` (rounding only those angles in a `float64` prototype moves the map 4.4e-5).
+  **Proposed:** form the transport in `float64` for both methods, which changes the default's
+  vector system and its parity numbers; price it and re-run every vector-heat comparison.
+- **`relax_approx(method="meshlib")` costs 2.1x the default at 1 pass and 5.2-5.9x at 3**
+  (41 k / 164 k vertices, CUDA): one edge-path walk is about two of the default's breadth-first
+  walks, and it rebuilds every pass where the default walks once. **Proposed:** a cheaper walk
+  (the label-correcting scan is `O(k^2)` per vertex), priced on the benchmark row. Separately,
+  5 planar passes on `torus_irregular_holes` drift 2e-3 from MeshLib though each pass agrees to
+  4.8e-7: one-ulp position differences change the next pass's balls. Not reproducible without
+  MeshLib's own float order; the test excludes that case and says so.
+- **`signed_distance_level_set` against `igl.offset_surface` holds at two of four levels.** At
+  `iso = 0.1` the counts and faces agree but one vertex is 4.8e-5 off (not traced); at `0.05` two
+  vertices of either mesh lie closer than the tolerance, so the nearest-vertex map is not a
+  bijection. The test runs `0` and `-0.05` only. **Proposed:** trace the 0.1 vertex (interpolation
+  order or the field at a node near the level) and compare the 0.05 case by vertex pairing on the
+  lattice edge each vertex lies on rather than by nearest neighbour.
+- **`filter_two_step(method="meshlab")` has 1.4x margin on the scrambled icosphere** (1.4e-5 on
+  CUDA, 1.9e-6 on the CPU, inside `1e-5 + 1e-5 |x|`): `float32` over 60 normal passes against
+  MeshLab's `double`. A tighter result needs `float64` normals in that kernel.
+- **`heat_signed_distance(method="potpourri3d")` is ~2.5x the default on CUDA** (ring 25.3 vs
+  9.8 ms, band 9.3 vs 5.2) with more launches (CPU census 2448 / 958 vs 1749 / 809): the edge
+  system's assembly and a longer settle on a system ~3x larger (the operator is already held per
+  `HeatSolver`). Not yet stage-profiled.
+- **`filter_two_step(method="meshlib")` issues ~410 launches against the default's 127** (CUDA
+  census; 1780-1875 on the CPU), and 21 sorts and scans for the vertex factorization's analysis
+  per call: the face-system CG and 20 vertex solves. Unpriced against MeshLib beyond the small
+  saddles (15 ms vs ~400 ms).
+- **Private access added across a module boundary**, each allowlisted or scoped:
+  `smoothing` reaches `neighbors._EdgePathBallWalk` (check 5 allowlist, plus a scoped
+  `reportUnusedClass` ignore), `log_map` calls `HeatSolver._diffuse_tangent_pair`, and the edge
+  signed heat method reads `solver._settle` / `solver._systems`. **Proposed:** a public (or
+  module-level) entry point for each, then drop the allowlist entries.
+- **Declined, recorded so it is not re-proposed without new evidence:** hole-fill and stitch ties
+  against MeshLib (a `float64` DP, MeshLib's triangle-term bits, descending `k` and its start
+  vertex; stitch follows its heap order); earcut's serial ear order; MeshLab's Embree ambient
+  occlusion (no vendored source).
+
 ### Open item from the 2026-10-27 octree memory work: a sparse solve
 
 `screened_poisson(method="octree")` at depth 8 now peaks at 484 MiB, down from 2 036 (`7498cad1`
