@@ -1338,8 +1338,8 @@ as it stands; an upgrade means adding the reference's own algorithm as an option
 `igl.offset_surface` at iso 0.1 (the lattice's `float32` placement), same section; `screened_poisson(method="octree")` on an
 open cloud (`test_poisson_octree_matches_open3d_on_an_open_cloud`: far-field vertices at the
 cube's walls, open3d's wall evaluation untraced; on closed clouds the residual ties are open3d's
-own `float32` rounding, `Open defects`); `triangulate_point_cloud` without normals
-(`Open item from the 2026-10-27 triangulation port`). `filter_two_step(method="meshlab")` is
+own `float32` rounding, `Open defects`); `triangulate_point_cloud` without normals is closed
+(`Closed 2026-10-28: the unoriented triangulation path`). `filter_two_step(method="meshlab")` is
 closed (`float64`, `Second pass over the non-A pairs`).
 
 **Same algorithm, different settings.** `resample_uniform` against pymeshlab
@@ -1381,21 +1381,19 @@ since the constraints phase then sets the peak; it pays once the solve is sparse
 on byte-identical output against the dense form (CPU hash A/B at depths 6-8, the sphere at depth 8
 pairs 16 vertices) and on time at depth 8.
 
-### Open item from the 2026-10-27 triangulation port: the unoriented path
+### Closed 2026-10-28: the unoriented triangulation path
 
-`triangulate_point_cloud` with trusted normals now assembles its fans as MeshLib's
-`triangulatePointCloud` does (oriented candidate classes in its order, the serial builder on the
-contested rows, `findHoleComplicatingFaces` rounds, holes by the gap; `4cef27d6`,
-`reference/component-status.md`). **Without normals it is unchanged**: runs of two or three fans
-whatever their winding, `remove_non_manifold_faces` dropping both of two conflicting faces, then
-`_face_away_from` winding each component. MeshLib orients the *fans* first
-(`autoOrientLocalTriangulations`: fans face away from the box centre, then a heap flood from the
-farthest points flips each neighbour fan to agree) and only then takes the oriented classes and
-runs the same builder. **Proposed:** port that orientation, then route the unoriented path through
-`_assemble_trusted_fans`. The flood is a priority-ordered serial walk, so price it like the builder
-(serial only where fans disagree, or on the CPU device), and gate on
-`test_torus_without_normals_matches_meshlib_reference` / `test_open_cloud_without_normals_faces_like_meshlib`
-tightening from Class C toward face-set equality.
+`triangulate_point_cloud` without normals now winds its fans by MeshLib's
+`autoOrientLocalTriangulations` run as parallel rounds on the device (owner's choice over an exact
+serial port), then the trusted assembly. Where no two fans sharing a triangle conflict the result
+equals MeshLib's exactly (`test_fan_orientation_matches_meshlib`, Class A on MeshLib's own fans);
+real scans conflict, and there the rounds (decide every fan with margin `>= min(top, 3)`) keep
+MeshLib's seam count with a few hundred rows differing per 100 k
+(`test_conflicting_fan_orientation_near_meshlib`, Class C). Both devices wind bit for bit alike.
+The rounds run as one conditional graph on CUDA: the flood costs 4.7 ms on bunny and 44 ms on
+dragon, the whole call 1.8x the old mesh-level winding (still 3.5x faster than MeshLib's).
+Detail, the measured schedules and each optimization step: `reference/component-status.md`,
+reconstruction.
 
 ### Open items from the 2026-10-23 uncapped sweep: ordito on large meshes
 

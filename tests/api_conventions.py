@@ -273,15 +273,10 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "flip_to_delaunay would re-validate, clone the faces and convert the region mask again "
         "every round"
     ),
-    ("reconstruction", "repair._wound_with_mates"): (
-        "triangulate_point_cloud labels the components of the faces make_winding_consistent "
-        "wound, and reads the halfedge mates the winding fix already paired, moved with each "
-        "flipped face, as make_normals_outward does; the public form returns the faces alone"
-    ),
     ("reconstruction", "holes._fill_small"): (
         "triangulate_point_cloud fills the small holes of faces it owns, so a mesh with none keeps "
-        "them where fill_small documents a copy, and the boundary walk reads the halfedge mates "
-        "its winding fix already moved with each flipped face"
+        "them where fill_small documents a copy, and it takes MeshLib's hole walk and metric, "
+        "which fill_small does not offer"
     ),
     ("smoothing", "neighbors._GeodesicBallWalk"): (
         "relax_approx fits each vertex from its chunk's queue rows as the walk leaves them; "
@@ -678,6 +673,22 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("boundary", "cross_pinch_gaps"): frozenset({"next_node"}),
     # The seed distances grow ring by ring in place, one launch a ring.
     ("reconstruction", "grow_seed_rings"): frozenset({"distance"}),
+    # The fan flood's round state: each fan's winding, votes, margin, staleness and visited,
+    # touched and chosen flags, the two frontiers and the state words (the cursor, the going flag,
+    # the first unvisited position and each round parity's largest margin, seed, frontier count
+    # and largest inert fan), all read and rewritten round after round.
+    ("reconstruction", "count_flood_votes"): frozenset({"votes"}),
+    ("reconstruction", "settle_flood_fans"): frozenset(
+        {"flipped", "stale", "votes", "margin", "state"}
+    ),
+    ("reconstruction", "pick_touched_seed"): frozenset({"state"}),
+    ("reconstruction", "pick_farthest_seed"): frozenset({"state"}),
+    # ``choose_flood_visits`` writes its touched, stale, frontier and state words, and
+    # ``spread_flood_visits`` all of its own, through ``touch_flood_neighbour``, out of this
+    # check's sight.
+    ("reconstruction", "choose_flood_visits"): frozenset({"visited", "chosen"}),
+    # The flood's flips then reverse the fan slots in place.
+    ("reconstruction", "flip_fan_windings"): frozenset({"tris"}),
     # The serial builder's half-edge records and its per-round marks are its working state across
     # the whole assembly; the answer is ``out_state``.
     ("algorithms.mesh_builder", "build_candidate_mesh"): frozenset({"t", "marked"}),

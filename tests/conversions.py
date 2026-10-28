@@ -546,6 +546,43 @@ def meshlib_triangulation_to_numpy(triangulation_ml: mm.Triangulation) -> np.nda
     return np.ctypeslib.as_array(buffer).reshape(n, 3).copy()
 
 
+def meshlib_local_triangulations_to_numpy(
+    fans_ml: mm.AllLocalTriangulations,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Read MeshLib's per-point fans as ordito's fan slots: ``(n, k, 3)`` triangles, ``(n,)`` counts.
+
+    A fan is MeshLib's ring of neighbours (``firstNei`` into ``neighbors``) with one optional
+    ``border`` neighbour, the gap after which holds no triangle. Each other neighbour ``curr`` and
+    the one after it, ``next``, make the triangle ``(v, next, curr)``, in MeshLib's winding; point
+    ``v``'s triangles fill ``tris[v, :counts[v]]`` in ring order and ``k`` is the largest count.
+    The records are read through the vector's data pointer (``border`` and ``firstNei``, two
+    32-bit words each); the neighbour buffer only iterates.
+    """
+    records_ml = fans_ml.fanRecords.vec_
+    n_records = records_ml.size()
+    buffer = (ctypes.c_int32 * (2 * n_records)).from_address(records_ml.data_pointer())
+    records = np.ctypeslib.as_array(buffer).reshape(n_records, 2).copy()
+    border, first = records[:, 0], records[:, 1].astype(np.int64)
+    neighbors = np.fromiter((int(v) for v in fans_ml.neighbors), dtype=np.int64)
+    fans: list[list[tuple[int, int, int]]] = []
+    for v in range(n_records - 1):
+        ring = neighbors[first[v] : first[v + 1]]
+        fans.append(
+            [
+                (v, int(ring[(i + 1) % ring.size]), int(curr))
+                for i, curr in enumerate(ring)
+                if curr != border[v]
+            ]
+        )
+    counts = np.array([len(fan) for fan in fans], dtype=np.int32)
+    tris = np.zeros((len(fans), max(1, int(counts.max(initial=0))), 3), dtype=np.int32)
+    for v, fan in enumerate(fans):
+        if fan:
+            tris[v, : len(fan)] = fan
+    return tris, counts
+
+
 def numpy_to_meshlib_triangulation(rows_np: np.ndarray) -> mm.Triangulation:
     """Build a ``meshlib.mrmeshpy.Triangulation`` from ``(n, 3)`` vertex triples."""
     rows = np.ascontiguousarray(rows_np, dtype=np.int32).reshape(-1)

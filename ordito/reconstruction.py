@@ -51,7 +51,6 @@ from ordito.kernels import levelset as kernel_levelset
 from ordito.kernels import reconstruction as kernel_reconstruction
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import remesh as kernel_remesh
-from ordito.kernels import repair as kernel_repair
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels.algorithms import ball_pivoting as kernel_bpa
 from ordito.kernels.algorithms import conjugate_gradient as kernel_cg
@@ -261,11 +260,13 @@ def triangulate_point_cloud(
 
     Supplied ``normals`` are **trusted**: each face is wound to agree with them, so an
     inward-facing cloud gives an inward-facing mesh. Leave them ``None`` to estimate them by PCA
-    ([`estimate_normals`][ordito.points.estimate_normals]); their signs are then ignored, and each
-    connected component of the assembled mesh is wound consistently and faces away from the
-    cloud's bounding-box centre at its point farthest from that centre. A closed, orientable surface
-    therefore faces outward whatever its shape; an open one, which has no outside, faces the side
-    that convention picks.
+    ([`estimate_normals`][ordito.points.estimate_normals]); their signs are then ignored, and the
+    fans are wound against one another before they are compared. Each first faces away from the
+    cloud's bounding-box centre; then, from the point of each connected part farthest from that
+    centre, the fans are visited one at a time, the next always the one its visited neighbours
+    agree on most, and turned to agree with them. A closed, orientable surface therefore faces
+    outward whatever its shape; an open one, which has no outside, faces away from the centre at
+    its farthest point. Where neighbouring fans conflict, the better-supported winding wins.
 
     Parameters
     ----------
@@ -417,25 +418,13 @@ def triangulate_point_cloud(
     if n_candidates == 0:
         return _launch.clone(points), _launch.empty(0, dtype=wp.int32, device=device)
 
-    if oriented:
-        return _assemble_trusted_fans(points, out_tris, fan_counts, n_candidates, crit_hole_length)
-    faces = _repeated_oriented_triangles(points, out_tris, fan_counts, n_candidates)
-    if faces.size == 0:
-        return _launch.clone(points), faces
-    # Every face carries a distinct vertex set and none is degenerate, so the duplicate-resolution
-    # and degenerate-face stages have nothing to do.
-    # Trusted normals keep their winding (``orient=False``): ``make_normals_outward`` would rewind a
-    # whole inward-normal cloud's mesh outward, silently breaking that contract. Estimated normals
-    # have no sign to keep, so the mesh is oriented instead (each fan was wound by its own center's
-    # normal, and the representative faces disagree wherever those signs did): away from the box
-    # centre at each component's farthest corner.
-    return _clean_reconstruction(
+    return _assemble_fans(
         points,
-        faces,
+        out_tris,
+        fan_counts,
+        n_candidates,
         crit_hole_length,
-        away_from=_box_center(bounds),
-        deduplicate=False,
-        nondegenerate=True,
+        orient_from=None if oriented else bounds,
     )
 
 
@@ -504,24 +493,22 @@ def _rebuild_grown_fans(
     )
 
 
-def _box_center(bounds: tuple[wp.vec3, wp.vec3]) -> wp.vec3:
-    """Centre of a box, from its ``float32`` corners."""
-    lower = np.array(bounds[0], dtype=np.float32)
-    upper = np.array(bounds[1], dtype=np.float32)
-    return wp.vec3(*(np.float32(0.5) * (lower + upper)))
-
-
-def _assemble_trusted_fans(
+def _assemble_fans(
     points: wp.array[wp.vec3],
     tris: odt.ArrayNdInt32,
     inclusive_counts: wp.array[wp.int32],
     n_candidates: int,
     crit_hole_length: float,
+    *,
+    orient_from: tuple[wp.vec3, wp.vec3] | None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
-    Assemble the fans of a cloud with trusted normals into a mesh.
+    Assemble the fans of a cloud into a mesh.
 
-    The candidates are the triangles two or three fans agree on in one winding, sorted
+    Fans built without trusted normals are first wound by the flood from the farthest points of
+    the box ``orient_from`` ([`_orient_fans`][ordito.reconstruction._orient_fans]); trusted ones
+    keep their winding (``orient_from=None``). The candidates are the triangles two or three fans
+    agree on in one winding, sorted
     ([`_oriented_candidate_rows`][ordito.reconstruction._oriented_candidate_rows]). They are added
     one at a time in that order, the first of any two that conflict kept; where every candidate
     around a vertex forms one fan the order changes nothing, so only the rows near a conflict go
@@ -531,7 +518,10 @@ def _assemble_trusted_fans(
     triangulation closes left open.
     """
     device = points.device
-    rows, n_rep3 = _oriented_candidate_rows(points, tris, inclusive_counts, n_candidates)
+    keys, slots = _sorted_candidate_keys(tris, inclusive_counts, n_candidates, points.size)
+    if orient_from is not None:
+        _orient_fans(points, tris, inclusive_counts, keys, slots, n_candidates, orient_from)
+    rows, n_rep3 = _oriented_candidate_rows(points, tris, keys, slots, n_candidates)
     if rows.shape[0] == 0:
         return _launch.clone(points), _launch.empty(0, dtype=wp.int32, device=device)
     faces = _contested_rows_kept(points, rows, n_rep3)
@@ -549,10 +539,215 @@ def _assemble_trusted_fans(
     return vertices, faces
 
 
-def _oriented_candidate_rows(
+# The threads of each CUDA flood launch, striding over the frontier: a launch over every fan costs
+# its width in device time each round, and a frontier is a band of the surface.
+_FLOOD_CUDA_LANES = 16384
+
+
+def _orient_fans(
     points: wp.array[wp.vec3],
     tris: odt.ArrayNdInt32,
     inclusive_counts: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    sorted_slots: wp.array[wp.int32],
+    n_candidates: int,
+    bounds: tuple[wp.vec3, wp.vec3],
+) -> None:
+    """
+    Wind the fans of a cloud without trusted normals consistently, in place.
+
+    Each fan first faces away from the box centre by a majority of its triangles. A flood then
+    visits the fans in rounds from each component's farthest point: every round weighs the fans
+    next to the visited ones by the votes of the visited fans sharing their triangles, turns each
+    to its majority, and visits those whose margin reaches ``min(top, 3)`` (``top`` the round's
+    largest). A round with no positive margin seeds instead: every touched fan that shares no
+    triangle above the largest one that does, else that one, else the farthest unvisited point
+    (``kernels/reconstruction.count_flood_votes`` and the kernels after it). Where no two fans
+    conflict this is the reference's one-at-a-time flood, and where they do it places the seams
+    near where that flood does. A closed surface ends facing outward and an open one away from
+    the centre at its farthest point.
+
+    Each round touches only its frontier, the unvisited fans next to visited ones, one thread a
+    fan row where the work is per row. Every decision is an integer vote, a maximum or an exact
+    sign, so both devices wind alike.
+    """
+    device = points.device
+    n = points.size
+    rows = odt.empty_2d((n_candidates, 3), wp.int32, device=device)
+    partners = _launch.empty(n_candidates, dtype=wp.vec2i, device=device)
+    codes = _launch.empty(n_candidates, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_reconstruction.pack_flood_candidates,
+        dim=n_candidates,
+        inputs=[
+            sorted_keys,
+            sorted_slots,
+            tris.reshape((-1, 3)),
+            inclusive_counts,
+            wp.int32(tris.shape[1]),
+        ],
+        outputs=[rows, partners, codes],
+        device=device,
+    )
+    lower = np.array(bounds[0], dtype=np.float32)
+    upper = np.array(bounds[1], dtype=np.float32)
+    extent = upper - lower
+    # The seed priority's floor: a quarter of the box diagonal squared, widened by a tenth so that
+    # no point's priority is positive, in the same ``float32`` steps as the reference.
+    diagonal_sq = extent[0] * extent[0] + extent[1] * extent[1] + extent[2] * extent[2]
+    max_distance_sq = diagonal_sq / np.float32(4.0) * np.float32(1.1)
+
+    flipped, visited, touched, inert, margin, far_order, frontier = _launch.carve(
+        wp.int32, [n] * 5 + [2 * n, 2 * n], device
+    )
+    stale, chosen, votes = _launch.carve(wp.int32, [n, n, 2 * n], device, zeroed=True)
+    far_keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+    _launch.launch(
+        kernel_reconstruction.start_fan_flood,
+        dim=n,
+        inputs=[
+            points,
+            rows,
+            inclusive_counts,
+            partners,
+            _box_center(bounds),
+            wp.float32(max_distance_sq),
+        ],
+        outputs=[flipped, visited, touched, inert, far_keys, far_order],
+        device=device,
+    )
+    _launch.radix_sort_pairs(far_keys, far_order, count=n)
+    # The cursor, the going flag, the first unvisited position, and each round parity's largest
+    # margin, seed, frontier count and largest inert fan.
+    state = wp.array([0, 1, n, 0, -1, 0, -1, 0, -1, 0, -1], dtype=wp.int32, device=device)
+
+    fan_width = wp.int32(tris.shape[1])
+
+    def flood_round(slot: int, width: int) -> None:
+        parity = wp.int32(slot)
+        lanes = wp.int32(width)
+        _launch.launch(
+            kernel_reconstruction.count_flood_votes,
+            dim=width,
+            inputs=[
+                inclusive_counts,
+                partners,
+                codes,
+                visited,
+                flipped,
+                stale,
+                frontier,
+                fan_width,
+                parity,
+                lanes,
+                state,
+                votes,
+            ],
+            device=device,
+        )
+        _launch.launch(
+            kernel_reconstruction.settle_flood_fans,
+            dim=width,
+            inputs=[visited, frontier, parity, lanes, flipped, stale, votes, margin, state],
+            device=device,
+        )
+        _launch.launch(
+            kernel_reconstruction.pick_touched_seed,
+            dim=width,
+            inputs=[visited, inert, frontier, far_order, parity, lanes, state],
+            device=device,
+        )
+        _launch.launch(
+            kernel_reconstruction.pick_farthest_seed,
+            dim=1,
+            inputs=[far_order, visited, parity, state],
+            device=device,
+        )
+        _launch.launch(
+            kernel_reconstruction.choose_flood_visits,
+            dim=width,
+            inputs=[
+                rows,
+                inclusive_counts,
+                margin,
+                inert,
+                parity,
+                lanes,
+                state,
+                visited,
+                touched,
+                stale,
+                chosen,
+                frontier,
+            ],
+            device=device,
+        )
+        _launch.launch(
+            kernel_reconstruction.spread_flood_visits,
+            dim=width,
+            inputs=[
+                rows,
+                inclusive_counts,
+                chosen,
+                fan_width,
+                parity,
+                lanes,
+                state,
+                visited,
+                touched,
+                stale,
+                frontier,
+            ],
+            device=device,
+        )
+
+    if wp.get_device(device).is_cpu:
+        # The CPU device runs a launch's threads one after another, so each round launches over
+        # its frontier exactly, read back every round (a host read there costs no synchronization).
+        words = kernel_reconstruction.FLOOD_SLOTS + 2 * kernel_reconstruction.FLOOD_SLOT_WORDS
+        rounds = 0
+        while True:
+            slot = rounds % 2
+            # Readback: the going flag and the frontier's count, the round's launch width.
+            values = read_values(state, 0, words)
+            if not values[kernel_reconstruction.FLOOD_GOING]:
+                break
+            count = kernel_reconstruction.FLOOD_SLOTS + kernel_reconstruction.FLOOD_COUNT
+            # One thread at least: the seed's visit is thread 0's.
+            flood_round(
+                slot, max(1, int(values[count + kernel_reconstruction.FLOOD_SLOT_WORDS * slot]))
+            )
+            rounds += 1
+    else:
+        # CUDA runs the rounds as one recorded device loop until the going flag clears, every
+        # launch ``_FLOOD_CUDA_LANES`` threads striding over the frontier, whose count the kernels
+        # read. A replay is two rounds, one of each parity; a round after the last is a no-op.
+        def both_parities() -> None:
+            flood_round(0, _FLOOD_CUDA_LANES)
+            flood_round(1, _FLOOD_CUDA_LANES)
+
+        going = kernel_reconstruction.FLOOD_GOING
+        run_device_loop(device, odt.as_dense(state[going : going + 1]), both_parities)
+    _launch.launch(
+        kernel_reconstruction.flip_fan_windings,
+        dim=(int(tris.shape[0]), int(tris.shape[1])),
+        inputs=[flipped, inclusive_counts, tris],
+        device=device,
+    )
+
+
+def _box_center(bounds: tuple[wp.vec3, wp.vec3]) -> wp.vec3:
+    """Centre of a box, from its ``float32`` corners."""
+    lower = np.array(bounds[0], dtype=np.float32)
+    upper = np.array(bounds[1], dtype=np.float32)
+    return wp.vec3(*(np.float32(0.5) * (lower + upper)))
+
+
+def _oriented_candidate_rows(
+    points: wp.array[wp.vec3],
+    tris: odt.ArrayNdInt32,
+    keys: wp.array[wp.uint64],
+    slots: wp.array[wp.int32],
     n_candidates: int,
 ) -> tuple[odt.Array2dInt32, int]:
     """
@@ -561,10 +756,11 @@ def _oriented_candidate_rows(
     A triangle three fans agree on in one winding (``t3``), else two (``t2``); a degenerate one is
     kept, as the builder rejects only a repeated vertex. Each row is stored lowest vertex
     first and the rows ascend lexicographically, the ``t3`` rows first, by two stable sorts.
+    ``keys`` and ``slots`` are the fan slots grouped by vertex set
+    ([`_sorted_candidate_keys`][ordito.reconstruction._sorted_candidate_keys]).
     """
     device = tris.device
     n = points.size
-    keys, slots = _sorted_candidate_keys(tris, inclusive_counts, n_candidates, n)
     fan_rows = tris.reshape((-1, 3))
     # The flags and the codes in the payload's upper half and a buffer of their own.
     flags = _launch.view(slots, n_candidates, 2 * n_candidates)
@@ -766,62 +962,15 @@ def _run_mesh_builder(
     return state
 
 
-def _repeated_oriented_triangles(
-    points: wp.array[wp.vec3],
-    tris: odt.ArrayNdInt32,
-    inclusive_counts: wp.array[wp.int32],
-    n_candidates: int,
-) -> wp.array[wp.int32]:
-    """
-    Keep one oriented representative per candidate triangle two or three fans agree on.
-
-    The candidates are the ``(n, k)`` fan slots below each point's count, which
-    ``inclusive_counts`` holds as an inclusive scan. Each is keyed by its vertex set -- the three
-    indices sorted and packed in radix ``n``, the point count -- and the keys are sorted stably
-    with their slot as payload. A run of two or three equal keys is a confirmed triangle, and its
-    first -- lowest -- slot supplies the winding: this is the trusted-normal case, where the
-    orientation is taken from the fans rather than propagated.
-
-    The faces come out in ascending key order, which is the order the duplicate-resolution stage
-    of [`_clean_reconstruction`][ordito.reconstruction._clean_reconstruction] would emit them in:
-    no two carry the same vertex set, so that stage keeps every one and needs no pass. A degenerate
-    representative is dropped here, as that function's degenerate-face stage would drop it.
-    """
-    device = tris.device
-    n = points.size
-    keys, slots = _sorted_candidate_keys(tris, inclusive_counts, n_candidates, n)
-    rows = tris.reshape((-1, 3))
-    # The run flags live in the payload's upper half, the sort's scratch and free once it ran.
-    flags = _launch.view(slots, n_candidates, 2 * n_candidates)
-    _launch.launch(
-        kernel_reconstruction.repeated_triangle_flags,
-        dim=n_candidates,
-        inputs=[points, keys, slots, rows, wp.int32(n_candidates), flags],
-        device=device,
-    )
-    _launch.array_scan(flags, out_array=flags, inclusive=True)
-    # Readback: the confirmed-triangle count sizes the face buffer.
-    n_faces = int(read_scalar(flags))
-    faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-    if n_faces > 0:
-        _launch.launch(
-            kernel_reconstruction.emit_repeated_triangles,
-            dim=n_candidates,
-            inputs=[flags, slots, rows, faces],
-            device=device,
-        )
-    return faces
-
-
 def _sorted_candidate_keys(
     tris: odt.ArrayNdInt32, inclusive_counts: wp.array[wp.int32], n_candidates: int, n: int
 ) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
     """
     Sort the fan slots by their triangle's unoriented key, the slot as payload.
 
-    Both candidate selections group the fans' triangles by vertex set this way: the plain one of
-    the unoriented clouds and the oriented classes of the trusted ones. The buffers are
-    double-width, the radix sort's scratch in their upper halves, which the callers reuse.
+    The flood that winds unoriented fans and the oriented classes both read the fans' triangles
+    grouped by vertex set this way. The buffers are double-width, the radix sort's scratch in
+    their upper halves, which the classes reuse.
     """
     device = tris.device
     keys = _launch.empty(2 * n_candidates, dtype=wp.uint64, device=device)
@@ -4065,9 +4214,6 @@ def _clean_reconstruction(
     crit_hole_length: float,
     *,
     orient: bool = True,
-    away_from: wp.vec3 | None = None,
-    deduplicate: bool = True,
-    nondegenerate: bool = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Shared reconstruction cleanup: dedup, drop degenerate/non-manifold, orient, fill small holes.
@@ -4077,35 +4223,18 @@ def _clean_reconstruction(
     since both hole filling and ``boundary_loops`` assume a manifold boundary. ``crit_hole_length``
     follows the public convention: ``0`` skips hole filling, a negative value means ``0.1 x`` the
     point-cloud bounding-box diagonal. ``orient=False`` keeps the incoming winding for callers
-    that already have a trusted orientation. ``away_from`` replaces the outward orientation with
-    ``_face_away_from``'s, which also decides open components. ``deduplicate=False`` skips the
-    duplicate-resolution stage for a caller whose faces already carry pairwise distinct vertex
-    sets *in ascending unoriented-key order* -- the order that stage emits -- so the result is
-    unchanged. ``nondegenerate=True`` skips the degenerate-face test for a caller whose faces hold
-    no degenerate face.
+    that already have a trusted orientation.
     """
     if faces.size == 0:
         return _launch.clone(points), faces
 
-    if deduplicate:
-        faces, _ = od.repair.resolve_duplicated_faces(faces, n_vertices=points.size)
-    if nondegenerate:
-        # The combined filter's answer: with no degenerate face its first stage only compacts the
-        # vertices, which commutes with the manifold filter. That compacts them only when it drops
-        # a face, so the referenced vertices are compacted here otherwise.
-        vertices, faces = od.repair.remove_non_manifold_faces(points, faces)
-        if vertices is points:
-            vertices, faces, _ = od.repair.remove_unreferenced_vertices(points, faces)
-    else:
-        # One vertex compaction for both filters, rather than one after each: the faces here are
-        # this package's own, so their indices are in range, which the combined filter requires.
-        vertices, faces = od.repair.remove_degenerate_and_non_manifold_faces(points, faces)
+    faces, _ = od.repair.resolve_duplicated_faces(faces, n_vertices=points.size)
+    # One vertex compaction for both filters, rather than one after each: the faces here are
+    # this package's own, so their indices are in range, which the combined filter requires.
+    vertices, faces = od.repair.remove_degenerate_and_non_manifold_faces(points, faces)
 
     if faces.size > 0:
-        mates: wp.array[wp.int32] | None = None
-        if away_from is not None:
-            faces, mates = _face_away_from(vertices, faces, away_from)
-        elif orient:
+        if orient:
             faces = od.repair.make_normals_outward(vertices, faces)
         if crit_hole_length != 0.0:
             hole_length = crit_hole_length
@@ -4114,57 +4243,6 @@ def _clean_reconstruction(
             # The faces are this function's own, so a mesh with nothing to fill keeps them rather
             # than copying them, and their indices are below ``vertices.size`` (compacted above).
             faces = od.holes._fill_small(  # pyright: ignore[reportPrivateUsage]
-                vertices, faces, hole_length, mates=mates, n_vertices=vertices.size
+                vertices, faces, hole_length, n_vertices=vertices.size
             )
     return vertices, faces
-
-
-def _face_away_from(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], center: wp.vec3
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
-    """
-    Wind each component consistently, facing away from ``center`` at its farthest corner.
-
-    The orientation of a cloud without normals: each component's corner farthest from the box
-    centre, the lowest vertex on a tie, keeps a normal pointing away from the centre, and the rest
-    of the component follows it. Unlike an outward
-    test by signed volume it decides an open component too; on a closed one it agrees, since the
-    surface lies inside the sphere through its farthest point. Nonempty ``faces``. Returns the
-    oriented faces and their halfedge mates (a ``-2`` code need not name the lowest halfedge),
-    moved with each flipped face, for the hole fill to read rather than pair again.
-    """
-    n_faces = faces.size // 3
-    device = faces.device
-    # ``make_winding_consistent`` with the wound faces' halfedge mates, which the labelling reads
-    # rather than pairing the halfedges again.
-    faces, mates = od.repair._wound_with_mates(faces, vertices.size)  # pyright: ignore[reportPrivateUsage]
-    labels = od.adjacency.face_connected_component_labels(
-        faces, n_vertices=vertices.size, mates=mates
-    )
-    farthest = _launch.full(n_faces, -1, dtype=wp.int64, device=device)
-    _launch.launch(
-        kernel_reconstruction.farthest_component_corners,
-        dim=n_faces,
-        inputs=[vertices, faces, labels, center],
-        outputs=[farthest],
-        device=device,
-    )
-    # A component can hold every face, so ``n_faces`` terms bound any one sum.
-    sums = _launch.group_sums(n_faces, wp.float32, n_faces, device, fused=True)
-    _launch.launch_group_sums(
-        kernel_reconstruction.scatter_farthest_corner_normal,
-        dim=n_faces,
-        inputs=[vertices, faces, labels, center, farthest],
-        sums=sums,
-        device=device,
-    )
-    out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-    out_mates = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_repair.flip_faces_and_mates_by_component_sign,
-        dim=n_faces,
-        inputs=[faces, mates, labels, sums.out, sums.launch_pass],
-        outputs=[out_faces, out_mates],
-        device=device,
-    )
-    return out_faces, out_mates

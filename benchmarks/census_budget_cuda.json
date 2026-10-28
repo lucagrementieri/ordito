@@ -5622,12 +5622,14 @@
  },
  "benchmarks/test_reconstruction.py::test_triangulate_point_cloud_unoriented[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 25,
-   "alloc": 34,
-   "memset": 7,
-   "d2h": 7,
-   "scan": 6,
-   "sort": 3
+   "launch": 38,
+   "alloc": 45,
+   "memset": 11,
+   "d2d": 1,
+   "h2d": 1,
+   "d2h": 8,
+   "scan": 7,
+   "sort": 6
   }
  },
  "benchmarks/test_reduce.py::test_all_bool[sphere_small-ordito-cuda]": {
@@ -5774,6 +5776,14 @@
    "launch": 7,
    "alloc": 6,
    "memset": 2,
+   "h2d": 1,
+   "d2h": 1
+  }
+ },
+ "benchmarks/test_registration.py::test_icp_mesh_pyvista[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
    "h2d": 1,
    "d2h": 1
   }
@@ -5947,7 +5957,7 @@
    "alloc": 105,
    "memset": 53,
    "h2d": 3,
-   "d2h": 59,
+   "d2h": 60,
    "scan": 67,
    "sort": 23
   },

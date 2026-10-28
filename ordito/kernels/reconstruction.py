@@ -17,9 +17,9 @@ from ordito.kernels.algorithms.conjugate_gradient import (
     cg_widen,
 )
 from ordito.kernels.array import (
+    append_slot,
     is_positive_finite,
     ordered_float_bits,
-    pack_farthest_key,
     pack_triangle_key,
     ravel_index,
     scanned_count,
@@ -29,7 +29,6 @@ from ordito.kernels.array import (
     trilinear_cell,
     trilinear_corner,
     trilinear_weight,
-    unpack_ranked_index,
     update_argmax,
 )
 from ordito.kernels.predicates import (
@@ -37,20 +36,19 @@ from ordito.kernels.predicates import (
     circumcircle_diameter_sq,
     is_unfold_quadrangle_convex,
     orient2d,
+    orient3d_sign_f32,
     project_out_normal,
-    triangle_area_vector,
     triangle_aspect_ratio,
     vector_angle,
 )
 from ordito.kernels.reduce import (
-    GroupSumPass,
     block_chunk_1d,
     block_sum,
+    device_is_cpu,
     store_sum_and_count,
     term_sum_1d,
+    warp_min_at_lead,
 )
-from ordito.kernels.scatter import scatter_add
-from ordito.kernels.triangles import corner_triple, triangle_nondegenerate
 
 wp.set_module_options({"enable_backward": False})
 
@@ -857,58 +855,6 @@ def candidate_triangle_keys(
     out_slots[start + j] = v * tris.shape[1] + j
 
 
-@wp.kernel
-def repeated_triangle_flags(
-    points: wp.array[wp.vec3],
-    sorted_keys: wp.array[wp.uint64],
-    sorted_slots: wp.array[wp.int32],
-    tris: wp.array2d[wp.int32],
-    n: wp.int32,
-    out_flags: wp.array[wp.int32],
-) -> None:
-    # ``1`` at the start of a run of two or three equal keys: a triangle two or three fans agree
-    # on. ``grouping.mark_group_starts`` is the same test for one exact run length; this one
-    # accepts either length in one pass, because keeping both keeps them merged in key order.
-    # Nested rather than one ``and`` chain: each test reads an index only its guard makes valid.
-    # A degenerate triangle is not kept either -- the face ``emit_repeated_triangles`` writes,
-    # tested as ``repair.nondegenerate_face_flags`` tests it -- so the cleanup needs no
-    # degenerate-face pass.
-    i = wp.int32(wp.tid())
-    key = sorted_keys[i]
-    flag = wp.int32(0)
-    if sorted_run_start(sorted_keys, i) and i + 1 < n:
-        if sorted_keys[i + 1] == key:
-            flag = 1
-            if i + 3 < n:
-                if sorted_keys[i + 3] == key:
-                    flag = 0  # a run longer than three
-    if flag != 0:
-        slot = sorted_slots[i]
-        if not triangle_nondegenerate(
-            points[tris[slot, 0]], points[tris[slot, 1]], points[tris[slot, 2]]
-        ):
-            flag = 0
-    out_flags[i] = flag
-
-
-@wp.kernel
-def emit_repeated_triangles(
-    inclusive_flags: wp.array[wp.int32],
-    sorted_slots: wp.array[wp.int32],
-    tris: wp.array2d[wp.int32],
-    out_faces: wp.array[wp.int32],
-) -> None:
-    # One face per flagged run, in key order, taken from the run's first -- lowest -- fan slot so
-    # its winding is that fan's. The flag is the step of the in-place inclusive scan.
-    i = wp.int32(wp.tid())
-    row, flag = scanned_count(inclusive_flags, i)
-    if flag == 0:
-        return
-    slot = sorted_slots[i]
-    for c in range(3):
-        out_faces[3 * row + c] = tris[slot, c]
-
-
 # --------------------------------------------------------------------------------------
 # Oriented candidate classes and the contested regions of the serial builder
 # --------------------------------------------------------------------------------------
@@ -934,6 +880,499 @@ def winding_flipped(a: wp.int32, b: wp.int32, c: wp.int32) -> wp.bool:
     if b > c:
         flipped = not flipped
     return flipped
+
+
+# --------------------------------------------------------------------------------------
+# Orienting unoriented fans: a flood from the farthest points, in rounds
+#
+# The reference visits the points one at a time, the next always the fan its visited neighbours
+# decide by the widest margin. Where no two fans that share a triangle conflict, the result does
+# not depend on that order: every fan of a component ends consistent with the component's first,
+# and the first follows the same rule here (no positive margin: the largest touched fan, else the
+# farthest point). Where fans conflict the order places the seams, and the rounds approach it by
+# deciding only the fans the visited ones support by a margin of at least ``min(top, 3)``. A round
+# is six launches: the votes, one thread a fan row (``count_flood_votes``); each fan's majority and
+# margin (``settle_flood_fans``); the seeds (``pick_touched_seed``, ``pick_farthest_seed``); the
+# visits (``choose_flood_visits``) and their neighbours, one thread a row
+# (``spread_flood_visits``). Inert fans, which share no triangle, are seeded together: the
+# reference visits them one at a time ahead of the next fan that shares one, and their windings
+# decide nothing (their touches can, in principle, hand that fan's component a different first
+# fan; no measured cloud showed it).
+# --------------------------------------------------------------------------------------
+@wp.func
+def packed_candidate(
+    sorted_slots: wp.array[wp.int32],
+    inclusive_counts: wp.array[wp.int32],
+    fan_width: wp.int32,
+    i: wp.int32,
+) -> wp.int32:
+    # The packed row of sorted candidate ``i``: its fan's first row plus its slot within the fan.
+    slot = sorted_slots[i]
+    v = slot // fan_width
+    start, _count = scanned_count(inclusive_counts, v)
+    return start + slot - v * fan_width
+
+
+@wp.kernel
+def pack_flood_candidates(
+    sorted_keys: wp.array[wp.uint64],
+    sorted_slots: wp.array[wp.int32],
+    tris: wp.array2d[wp.int32],
+    inclusive_counts: wp.array[wp.int32],
+    fan_width: wp.int32,
+    out_rows: wp.array2d[wp.int32],
+    out_partners: wp.array[wp.vec2i],
+    out_codes: wp.array[wp.int32],
+) -> None:
+    # The flood's candidate table, over sorted position ``i``: each fan slot's triangle at its
+    # packed position (a fan's triangles contiguous, its center in column 0), its code (twice the
+    # fan plus the row's winding against its sorted triple) and its partners, the packed rows of
+    # the other fans carrying the same triangle (at most its two other corners', ``-1`` past them),
+    # read off the run of equal unoriented keys. A vote then reads two codes, not the run.
+    i = wp.int32(wp.tid())
+    slot = sorted_slots[i]
+    packed = packed_candidate(sorted_slots, inclusive_counts, fan_width, i)
+    for c in range(3):
+        out_rows[packed, c] = tris[slot, c]
+    wound = winding_flipped(tris[slot, 0], tris[slot, 1], tris[slot, 2])
+    out_codes[packed] = 2 * (slot // fan_width) + wp.where(wound, 1, 0)
+    first = i
+    while not sorted_run_start(sorted_keys, first):
+        first -= 1
+    partners = wp.vec2i(-1, -1)
+    found = wp.int32(0)
+    j = first
+    while j < sorted_slots.shape[0] and found < 2:
+        if j != first and sorted_run_start(sorted_keys, j):
+            break
+        if j != i:
+            partners[found] = packed_candidate(sorted_slots, inclusive_counts, fan_width, j)
+            found += 1
+        j += 1
+    out_partners[packed] = partners
+
+
+# The flood decides in bulk every fan whose margin reaches ``min(top, FLOOD_BULK_MARGIN)``, ``top``
+# the largest margin of the round: a fan decided on one neighbour's two votes copies that
+# neighbour's errors, and waiting for a third vote keeps the seams near the serial flood's.
+FLOOD_BULK_MARGIN = wp.int32(3)
+# The flood's state words: the cursor into the farthest-first order, the going flag (``1`` until
+# no fan is left, the condition of the round loop), the first unvisited position past the cursor
+# (CUDA, arriving the order's length), then per round parity a slot of the round's largest margin,
+# its largest touched fan that shares a triangle (the seed), its frontier's count and its largest
+# touched inert fan (one that shares no triangle with any other).
+FLOOD_CURSOR = 0
+FLOOD_GOING = 1
+FLOOD_FARTHEST = 2
+FLOOD_SLOTS = 3
+FLOOD_SLOT_WORDS = 4
+FLOOD_TOP = 0
+FLOOD_SEED = 1
+FLOOD_COUNT = 2
+FLOOD_INERT = 3
+
+# The seed priority of a point: its squared distance from ``center`` less ``limit``, each product
+# and sum rounded on its own (no FMA contraction on CUDA), summed ``x``, ``y``, ``z``, so both
+# devices order the points alike.
+_UNFUSED_FARTHEST_PRIORITY = """
+#if defined(__CUDA_ARCH__)
+float x = __fsub_rn(p[0], center[0]);
+float y = __fsub_rn(p[1], center[1]);
+float z = __fsub_rn(p[2], center[2]);
+return __fsub_rn(__fadd_rn(__fadd_rn(__fmul_rn(x, x), __fmul_rn(y, y)), __fmul_rn(z, z)), limit);
+#else
+float x = p[0] - center[0];
+float y = p[1] - center[1];
+float z = p[2] - center[2];
+float xx = x * x;
+float yy = y * y;
+float zz = z * z;
+float xy = xx + yy;
+float sum = xy + zz;
+return sum - limit;
+#endif
+"""
+
+
+@wp.func_native(_UNFUSED_FARTHEST_PRIORITY)
+def unfused_farthest_priority(p: wp.vec3, center: wp.vec3, limit: wp.float32) -> wp.float32: ...
+
+
+@wp.kernel
+def start_fan_flood(
+    points: wp.array[wp.vec3],
+    rows: wp.array2d[wp.int32],
+    inclusive_counts: wp.array[wp.int32],
+    partners: wp.array[wp.vec2i],
+    center: wp.vec3,
+    max_distance_sq: wp.float32,
+    out_flipped: wp.array[wp.int32],
+    out_visited: wp.array[wp.int32],
+    out_touched: wp.array[wp.int32],
+    out_inert: wp.array[wp.int32],
+    out_far_keys: wp.array[wp.uint64],
+    out_far_order: wp.array[wp.int32],
+) -> None:
+    # Fan ``v`` faces away from ``center`` by a majority of its triangles (the exact sign of each
+    # triangle's normal against the direction from ``center``), is flagged inert when no other fan
+    # carries any of its triangles (its winding then decides nothing), and gets its key in the
+    # farthest-first seed order: the priority's ordered bits above the index, complemented so that
+    # an ascending sort puts the largest first, an empty fan last. An empty fan starts visited.
+    v = wp.int32(wp.tid())
+    start, count = scanned_count(inclusive_counts, v)
+    pv = points[v]
+    balance = wp.int32(0)
+    inert = wp.int32(1)
+    for j in range(count):
+        row = start + j
+        # ``dot(pv - center, (pb - pv) x (pc - pv))`` is ``-det(pb - pv, pc - pv, center - pv)``.
+        balance -= orient3d_sign_f32(pv, points[rows[row, 1]], points[rows[row, 2]], center)
+        if partners[row][0] >= 0:
+            inert = 0
+    out_inert[v] = inert
+    out_flipped[v] = wp.where(balance < 0, 1, 0)
+    out_visited[v] = wp.where(count == 0, 1, 0)
+    out_touched[v] = 0
+    key = ~wp.uint64(0)
+    if count > 0:
+        priority = unfused_farthest_priority(pv, center, max_distance_sq)
+        key = ~((wp.uint64(ordered_float_bits(priority)) << wp.uint64(32)) | wp.uint64(v))
+    out_far_keys[v] = key
+    out_far_order[v] = v
+
+
+@wp.func
+def row_vote(
+    row: wp.int32,
+    partners: wp.array[wp.vec2i],
+    codes: wp.array[wp.int32],
+    visited: wp.array[wp.int32],
+    flipped: wp.array[wp.int32],
+) -> wp.int32:
+    # The visited fans' vote on row ``row``'s fan from its triangle: ``0`` to keep the fan's
+    # winding, ``1`` to flip it, ``-1`` when no visited fan carries the triangle or they disagree.
+    pair = partners[row]
+    same = wp.int32(0)
+    opposite = wp.int32(0)
+    for t in range(2):
+        other = pair[t]
+        if other >= 0:
+            code = codes[other]
+            w = code // 2
+            if visited[w] != 0:
+                if (code % 2) != flipped[w]:
+                    opposite += 1
+                else:
+                    same += 1
+    vote = wp.int32(-1)
+    if (same > 0) != (opposite > 0):
+        agreed = wp.where(same > 0, 0, 1)
+        vote = wp.where(codes[row] % 2 == agreed, 0, 1)
+    return vote
+
+
+@wp.kernel
+def count_flood_votes(
+    inclusive_counts: wp.array[wp.int32],
+    partners: wp.array[wp.vec2i],
+    codes: wp.array[wp.int32],
+    visited: wp.array[wp.int32],
+    flipped: wp.array[wp.int32],
+    stale: wp.array[wp.int32],
+    frontier: wp.array[wp.int32],
+    fan_width: wp.int32,
+    slot: wp.int32,
+    lanes: wp.int32,
+    state: wp.array[wp.int32],
+    votes: wp.array[wp.int32],
+) -> None:
+    # The votes on every stale frontier fan (one a visit has touched since it was last weighed),
+    # one thread a row: the visited fans carrying a row's triangle, when they agree, vote to keep
+    # the fan's winding (``votes[2 u]``) or to flip it (``votes[2 u + 1]``), arriving zero. The
+    # ``lanes`` threads stride over the frontier's ``(fan, row)`` pairs.
+    base = FLOOD_SLOTS + FLOOD_SLOT_WORDS * slot
+    items = state[base + FLOOD_COUNT] * fan_width
+    e = wp.int32(wp.tid())
+    while e < items:
+        u = frontier[slot * visited.shape[0] + e // fan_width]
+        j = e % fan_width
+        e += lanes
+        if visited[u] != 0 or stale[u] == 0:
+            continue
+        start, count = scanned_count(inclusive_counts, u)
+        if j >= count:
+            continue
+        vote = row_vote(start + j, partners, codes, visited, flipped)
+        if vote >= 0:
+            wp.atomic_add(votes, 2 * u + vote, 1)
+
+
+@wp.kernel
+def settle_flood_fans(
+    visited: wp.array[wp.int32],
+    frontier: wp.array[wp.int32],
+    slot: wp.int32,
+    lanes: wp.int32,
+    flipped: wp.array[wp.int32],
+    stale: wp.array[wp.int32],
+    votes: wp.array[wp.int32],
+    margin: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+) -> None:
+    # Every stale frontier fan turns to its votes' majority (a tie keeps its winding) and takes the
+    # margin, ``-1`` without votes, its counts cleared; the others keep theirs, since only a visit
+    # changes a fan's votes. The round's largest margin gathers in its state slot (arriving
+    # ``0``). The ``lanes`` threads stride over the frontier.
+    base = FLOOD_SLOTS + FLOOD_SLOT_WORDS * slot
+    count = state[base + FLOOD_COUNT]
+    i = wp.int32(wp.tid())
+    while i < count:
+        u = frontier[slot * visited.shape[0] + i]
+        i += lanes
+        if visited[u] != 0:
+            continue
+        if stale[u] != 0:
+            stale[u] = 0
+            keep = votes[2 * u]
+            flip = votes[2 * u + 1]
+            votes[2 * u] = 0
+            votes[2 * u + 1] = 0
+            weight = wp.int32(-1)
+            if keep + flip > 0:
+                if flip > keep:
+                    flipped[u] = 1
+                elif keep > flip:
+                    flipped[u] = 0
+                weight = wp.abs(keep - flip)
+            margin[u] = weight
+        if margin[u] > 0:
+            wp.atomic_max(state, base + FLOOD_TOP, margin[u])
+
+
+@wp.kernel
+def pick_touched_seed(
+    visited: wp.array[wp.int32],
+    inert: wp.array[wp.int32],
+    frontier: wp.array[wp.int32],
+    far_order: wp.array[wp.int32],
+    slot: wp.int32,
+    lanes: wp.int32,
+    state: wp.array[wp.int32],
+) -> None:
+    # A round with no positive margin seeds instead: the largest unvisited frontier fan (its votes,
+    # if any, tie) into the slot's seed word, an inert one into its inert word (both arriving
+    # ``-1``). On CUDA it also finds the first unvisited position of the farthest-first order past
+    # the cursor (one ``atomic_min`` a warp), which ``pick_farthest_seed`` takes when no fan is
+    # touched; the CPU device walks the cursor there instead. The ``lanes`` threads stride over
+    # the frontier, then over the order.
+    base = FLOOD_SLOTS + FLOOD_SLOT_WORDS * slot
+    if state[base + FLOOD_TOP] > 0:
+        return
+    count = state[base + FLOOD_COUNT]
+    i = wp.int32(wp.tid())
+    while i < count:
+        u = frontier[slot * visited.shape[0] + i]
+        if visited[u] == 0:
+            word = wp.where(inert[u] != 0, FLOOD_INERT, FLOOD_SEED)
+            wp.atomic_max(state, base + word, u)
+        i += lanes
+    if device_is_cpu() != 0:
+        return
+    cursor = state[FLOOD_CURSOR]
+    position = cursor + wp.int32(wp.tid())
+    while position < far_order.shape[0]:
+        candidate = wp.int32(2147483647)
+        if visited[far_order[position]] == 0:
+            candidate = position
+        first = warp_min_at_lead(candidate)
+        if first < far_order.shape[0]:
+            wp.atomic_min(state, FLOOD_FARTHEST, first)
+        position += lanes
+        # The found position only falls, so one below this thread's next ends its search.
+        if position > state[FLOOD_FARTHEST]:
+            break
+
+
+@wp.kernel
+def pick_farthest_seed(
+    far_order: wp.array[wp.int32],
+    visited: wp.array[wp.int32],
+    slot: wp.int32,
+    state: wp.array[wp.int32],
+) -> None:
+    # One thread. Resets the other parity's slot for the next round, which alone reads it (its
+    # frontier count then gathers this round's appends). A seeding round no fan touches takes the
+    # farthest unvisited fan: the first unvisited position of the farthest-first order past the
+    # cursor, which ``pick_touched_seed`` found on CUDA and the CPU device walks to; none left ends
+    # the flood. Visits only grow, so the cursor moves there.
+    base = FLOOD_SLOTS + FLOOD_SLOT_WORDS * slot
+    other = FLOOD_SLOTS + FLOOD_SLOT_WORDS * (1 - slot)
+    state[other + FLOOD_TOP] = 0
+    state[other + FLOOD_SEED] = -1
+    state[other + FLOOD_COUNT] = 0
+    state[other + FLOOD_INERT] = -1
+    n = far_order.shape[0]
+    first = state[FLOOD_FARTHEST]
+    state[FLOOD_FARTHEST] = n
+    if state[base + FLOOD_TOP] > 0 or state[base + FLOOD_SEED] >= 0:
+        return
+    if state[base + FLOOD_INERT] >= 0:
+        return
+    if device_is_cpu() != 0:
+        first = state[FLOOD_CURSOR]
+        while first < n:
+            if visited[far_order[first]] == 0:
+                break
+            first += 1
+    state[FLOOD_CURSOR] = first
+    if first == n:
+        state[FLOOD_GOING] = 0
+    else:
+        state[base + FLOOD_SEED] = far_order[first]
+
+
+@wp.func
+def append_frontier(
+    state: wp.array[wp.int32],
+    next_count: wp.int32,
+    frontier: wp.array[wp.int32],
+    at: wp.int32,
+    u: wp.int32,
+) -> None:
+    frontier[at + append_slot(state, next_count)] = u
+
+
+@wp.func
+def touch_flood_neighbour(
+    x: wp.int32,
+    visited: wp.array[wp.int32],
+    touched: wp.array[wp.int32],
+    stale: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    next_count: wp.int32,
+    frontier: wp.array[wp.int32],
+    at: wp.int32,
+) -> None:
+    # A visited fan's neighbour ``x``: unvisited, it turns stale, and joins the next frontier the
+    # first time any visit touches it.
+    if visited[x] == 0:
+        stale[x] = 1
+        if wp.atomic_max(touched, x, 1) == 0:
+            append_frontier(state, next_count, frontier, at, x)
+
+
+@wp.kernel
+def choose_flood_visits(
+    rows: wp.array2d[wp.int32],
+    inclusive_counts: wp.array[wp.int32],
+    margin: wp.array[wp.int32],
+    inert: wp.array[wp.int32],
+    slot: wp.int32,
+    lanes: wp.int32,
+    state: wp.array[wp.int32],
+    visited: wp.array[wp.int32],
+    touched: wp.array[wp.int32],
+    stale: wp.array[wp.int32],
+    chosen: wp.array[wp.int32],
+    frontier: wp.array[wp.int32],
+) -> None:
+    # The round's visits: every frontier fan whose margin reaches ``min(top, FLOOD_BULK_MARGIN)``;
+    # with no positive margin, every inert frontier fan above the seed when there is one (the
+    # reference visits them one by one before the seed, and their windings decide nothing), else
+    # the seed. A visited fan's winding is final, and ``chosen[i]`` marks frontier entry ``i``'s
+    # visit for ``spread_flood_visits``; an undecided frontier fan carries over to the next
+    # frontier (``append_slot``, one atomic a warp). Thread 0 visits a seed that is not on the
+    # frontier (the farthest point) and touches its neighbours itself. The appends' order decides
+    # nothing: every decision is a fan's own, or a maximum. The ``lanes`` threads stride over the
+    # frontier.
+    n = visited.shape[0]
+    base = FLOOD_SLOTS + FLOOD_SLOT_WORDS * slot
+    next_count = FLOOD_SLOTS + FLOOD_SLOT_WORDS * (1 - slot) + FLOOD_COUNT
+    at = (1 - slot) * n
+    count = state[base + FLOOD_COUNT]
+    top = state[base + FLOOD_TOP]
+    seed = state[base + FLOOD_SEED]
+    # The inert fans the reference would visit before the seed: every one above it at once.
+    inert_batch = state[base + FLOOD_INERT] > seed
+    i = wp.int32(wp.tid())
+    if i == 0 and top <= 0 and not inert_batch and seed >= 0:
+        if touched[seed] == 0:
+            visited[seed] = 1
+            start, fan_count = scanned_count(inclusive_counts, seed)
+            for j in range(fan_count):
+                for c in range(1, 3):
+                    touch_flood_neighbour(
+                        rows[start + j, c], visited, touched, stale, state, next_count, frontier, at
+                    )
+    while i < count:
+        u = frontier[slot * n + i]
+        visit = wp.bool(False)
+        if visited[u] == 0:
+            if top > 0:
+                visit = margin[u] >= wp.min(top, FLOOD_BULK_MARGIN)
+            elif inert_batch:
+                visit = inert[u] != 0 and u > seed
+            else:
+                visit = u == seed
+            if visit:
+                visited[u] = 1
+            else:
+                append_frontier(state, next_count, frontier, at, u)
+        chosen[i] = wp.where(visit, 1, 0)
+        i += lanes
+
+
+@wp.kernel
+def spread_flood_visits(
+    rows: wp.array2d[wp.int32],
+    inclusive_counts: wp.array[wp.int32],
+    chosen: wp.array[wp.int32],
+    fan_width: wp.int32,
+    slot: wp.int32,
+    lanes: wp.int32,
+    state: wp.array[wp.int32],
+    visited: wp.array[wp.int32],
+    touched: wp.array[wp.int32],
+    stale: wp.array[wp.int32],
+    frontier: wp.array[wp.int32],
+) -> None:
+    # The neighbours of the round's visited frontier fans, one thread a row: each touched as
+    # ``touch_flood_neighbour`` does. The ``lanes`` threads stride over the frontier's
+    # ``(fan, row)`` pairs.
+    n = visited.shape[0]
+    base = FLOOD_SLOTS + FLOOD_SLOT_WORDS * slot
+    next_count = FLOOD_SLOTS + FLOOD_SLOT_WORDS * (1 - slot) + FLOOD_COUNT
+    at = (1 - slot) * n
+    items = state[base + FLOOD_COUNT] * fan_width
+    e = wp.int32(wp.tid())
+    while e < items:
+        i = e // fan_width
+        j = e % fan_width
+        e += lanes
+        if chosen[i] == 0:
+            continue
+        u = frontier[slot * n + i]
+        start, count = scanned_count(inclusive_counts, u)
+        if j >= count:
+            continue
+        for c in range(1, 3):
+            touch_flood_neighbour(
+                rows[start + j, c], visited, touched, stale, state, next_count, frontier, at
+            )
+
+
+@wp.kernel
+def flip_fan_windings(
+    flipped: wp.array[wp.int32], inclusive_counts: wp.array[wp.int32], tris: wp.array3d[wp.int32]
+) -> None:
+    # Reverse every triangle of a fan the flood flipped, in place.
+    v, j = wp.tid()
+    _start, count = scanned_count(inclusive_counts, v)
+    if j >= count or flipped[v] == 0:
+        return
+    b = tris[v, j, 1]
+    tris[v, j, 1] = tris[v, j, 2]
+    tris[v, j, 2] = b
 
 
 @wp.kernel
@@ -1199,51 +1638,6 @@ def apply_builder_state(
     # ``out_keep`` arrives all ones: a contested row stays only where the builder added it.
     i = wp.int32(wp.tid())
     out_keep[contested[i]] = wp.where(state[i] == added, 1, 0)
-
-
-# --------------------------------------------------------------------------------------
-# Orientation without normals: each component faces away from the bounding-box centre at its
-# corner farthest from it
-# --------------------------------------------------------------------------------------
-@wp.kernel
-def farthest_component_corners(
-    points: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    labels: wp.array[wp.int32],
-    center: wp.vec3,
-    out_farthest: wp.array[wp.int64],
-) -> None:
-    # Each corner bids for its face's component: the largest distance from ``center`` wins, the
-    # lowest vertex on a tie (``array.pack_farthest_key``), whatever the arrival order.
-    # ``out_farthest`` arrives holding ``-1``, below every key.
-    f = wp.int32(wp.tid())
-    group = labels[f]
-    a, b, c = corner_triple(faces, f)
-    wp.atomic_max(out_farthest, group, pack_farthest_key(wp.length_sq(points[a] - center), a))
-    wp.atomic_max(out_farthest, group, pack_farthest_key(wp.length_sq(points[b] - center), b))
-    wp.atomic_max(out_farthest, group, pack_farthest_key(wp.length_sq(points[c] - center), c))
-
-
-@wp.kernel
-def scatter_farthest_corner_normal(
-    points: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    labels: wp.array[wp.int32],
-    center: wp.vec3,
-    farthest: wp.array[wp.int64],
-    sums: GroupSumPass,
-    out_normal_sums: wp.array[wp.float32],
-) -> None:
-    # A face touching its component's farthest corner adds its area vector's component along that
-    # corner's direction from ``center`` (``scatter.scatter_add``, per the deterministic setting):
-    # the sum is negative exactly when the component's fan there faces the centre.
-    f = wp.int32(wp.tid())
-    group = labels[f]
-    corner = unpack_ranked_index(farthest[group])
-    a, b, c = corner_triple(faces, f)
-    if corner == a or corner == b or corner == c:
-        area = triangle_area_vector(points[a], points[b], points[c])
-        scatter_add(out_normal_sums, sums, group, wp.dot(area, points[corner] - center))
 
 
 # ======================================================================================

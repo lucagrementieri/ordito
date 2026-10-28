@@ -743,8 +743,26 @@ return 1;
 """
 
 
+# The smallest ``value`` among the warp's active lanes, returned to its lowest active lane only;
+# every other lane gets ``INT_MAX``, so one ``atomic_min`` a warp commits it. Each thread is its own
+# warp on the CPU device.
+_WARP_MIN_AT_LEAD = """
+#if defined(__CUDA_ARCH__)
+const unsigned active = __activemask();
+const int smallest = __reduce_min_sync(active, value);
+return (threadIdx.x & 31u) == (unsigned)(__ffs(active) - 1) ? smallest : 2147483647;
+#else
+return value;
+#endif
+"""
+
+
 @wp.func_native(_WARP_UNIFORM_LANES)
 def warp_uniform_lanes(key: wp.int32) -> wp.int32: ...
+
+
+@wp.func_native(_WARP_MIN_AT_LEAD)
+def warp_min_at_lead(value: wp.int32) -> wp.int32: ...
 
 
 @wp.func_native(_WARP_LANES_SUM)

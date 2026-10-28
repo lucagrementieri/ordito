@@ -325,9 +325,10 @@ def test_triangulate_point_cloud_unoriented(bench_case: BenchCase) -> None:
     """
     The same local triangulation of a bare cloud: each side estimates its own normals.
 
-    meshlib orients its estimated normals over the cloud before triangulating; ordito ignores
-    their signs and orients the assembled mesh instead, so this row prices that winding pass and
-    the normal estimation on top of the oriented row.
+    Both ignore the estimated normals' signs and wind the fans against one another before
+    selecting the candidates, by a flood from each component's farthest point: meshlib's visits
+    the points one at a time on the CPU, ordito's in parallel rounds on the device. This row
+    prices that flood and the normal estimation on top of the oriented row.
     """
     skip_larger_than(bench_case, "bunny", "local triangulation above bunny dominates the suite")
     if bench_case.kind == "meshlib":

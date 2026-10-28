@@ -45,6 +45,7 @@ from tests.comparisons import (
 )
 from tests.conftest import CLOSED_MESHES, ROUND_FRAME_SCALE, ROUND_FRAME_SHIFT, saddle_graded_arrays
 from tests.conversions import (
+    meshlib_local_triangulations_to_numpy,
     meshlib_to_trimesh,
     meshlib_triangulation_to_numpy,
     numpy_to_meshlib,
@@ -621,21 +622,22 @@ def test_torus_without_normals_matches_meshlib_reference(device: str):
     """
     Class C (a surface distance and a volume): neither side is given normals.
 
-    The torus is not star-shaped about its centroid, so normals pointed away from the centroid
-    disagree in sign across each side of the tube; MeshLib orients its estimated normals over the
-    whole cloud instead. The two surfaces agree as in
-    [`test_torus_matches_meshlib_reference`] (diagonal choices differ), and the signed volume,
-    which only a consistently and outward wound surface carries, agrees too: MeshLib's is the
-    torus's own 2.3837. Measured, the same on both devices but for the volume: 2 304 faces against
-    MeshLib's 2 308 (four extra on its side, held exactly), a Hausdorff distance of 3.4e-07 of the
-    mean edge (bound 1.2e-06), and the volume to 3.4e-08 relative on CUDA and 1.6e-06 on the CPU
-    (bound 5e-06).
+    The torus is not star-shaped about its centroid, so fans turned away from the box centre
+    disagree across each side of the tube until the flood from the farthest points winds them
+    (`test_fan_orientation_matches_meshlib` pins that stage on MeshLib's own fans). The two
+    surfaces agree as in [`test_torus_matches_meshlib_reference`] (diagonal choices differ), and
+    the signed volume, which only a consistently and outward wound surface carries, agrees too:
+    MeshLib's is the torus's own 2.3837. Measured: 2 304 faces against MeshLib's 2 308 (four extra
+    on its side, held exactly), a Hausdorff distance of 3.7e-07 of the mean edge (bound 1.2e-06),
+    and the volume to 1.5e-06 relative on the CPU (bound 5e-06); before the flood (2026-10-28) the
+    figures were 3.4e-07 on both devices and a volume of 3.4e-08 on CUDA, 1.6e-06 on the CPU.
 
-    Mutation probes and margins: normals oriented away from the centroid, as this path once used,
-    returned 2 016 faces with holes and a volume of 3.38 (off by 42 %, against the 1 % bound);
-    reading each neighbour's normal on the center's side alone still left eight five-edge holes
-    (2 280 faces), because a flipped center normal reverses its fan's ring and the Delone profit,
-    rounded in ring order, then picked the other diagonal of the grid's exactly tied quads.
+    Mutation probes and margins: a flood that never turns a fan fails; normals oriented away from
+    the centroid, as this path once used, returned 2 016 faces with holes and a volume of 3.38
+    (off by 42 %, against the 1 % bound); reading each neighbour's normal on the center's side
+    alone still left eight five-edge holes (2 280 faces), because a flipped center normal reverses
+    its fan's ring and the Delone profit, rounded in ring order, then picked the other diagonal of
+    the grid's exactly tied quads.
 
     Not a library comparison, on the same reconstruction: consistently wound and closed.
     """
@@ -673,17 +675,20 @@ def test_open_cloud_without_normals_faces_like_meshlib(device: str, seed: int):
     Class B (faces matched by vertex set, windings compared): an open surface faces MeshLib's way.
 
     A closed surface has an outside; an open one does not, so without normals the side it faces
-    is a convention. MeshLib's (``autoOrientLocalTriangulations``) turns each connected component
-    away from the cloud's bounding-box centre at the component's point farthest from that centre.
+    is a convention. MeshLib's (``autoOrientLocalTriangulations``) winds the fans from the point
+    of each component farthest from the cloud's bounding-box centre, which faces away from it.
     The cloud is a sine-wave sheet, not convex, longer on one side so that the farthest point is
     unique, and shuffled by ``seed`` so that the point order is not the answer. Every face the two
-    triangulations share by vertex set must carry the same winding: measured 1 445 and 1 411 shared
-    faces of MeshLib's 1 919 on CUDA, 1 385 and 1 343 on the CPU (the grid's diagonals differ
-    elsewhere), and all six shuffles 0-5 agree on both devices.
+    triangulations share by vertex set must carry the same winding: measured on the CPU 1 421 and
+    1 379 shared faces of MeshLib's 1 919 (the grid's diagonals differ elsewhere, from the fans),
+    and all six shuffles 0-5 agree. Before ordito wound the fans by a flood (2026-10-28) it
+    shared 1 385 and 1 343 on the CPU, 1 445 and 1 411 on CUDA.
 
-    Mutation probe: keeping only the consistent winding, each component following its
-    lowest-indexed face, reversed every shared face for shuffles 0 and 5 of 0-5 and passed the
-    rest; shuffle 0 fails and shuffle 1 passes, so a constant answer cannot pass both.
+    Mutation probes: a flood that never turns a fan, or one deciding every fan with a positive
+    margin at once (no floor), fails both seeds. Keeping only the
+    consistent winding, each component following its lowest-indexed face, reversed every shared
+    face for shuffles 0 and 5 of 0-5 and passed the rest; shuffle 0 fails and shuffle 1 passes, so
+    a constant answer cannot pass both.
     """
     x, y = np.meshgrid(np.arange(-2.0, 2.61, 0.1), np.arange(-1.0, 1.01, 0.1))
     sheet_np = np.stack([x.ravel(), y.ravel(), 0.4 * np.sin(np.pi * x.ravel())], axis=1)
@@ -707,6 +712,137 @@ def test_open_cloud_without_normals_faces_like_meshlib(device: str, seed: int):
     assert len(shared) >= 0.6 * faces_ml_np.shape[0]
     assert len(agreeing) == len(shared)
     assert od.validation.is_winding_consistent(faces_wp)
+
+
+def _unoriented_cloud(name: str) -> tuple[np.ndarray, int]:
+    """Return a cloud with no normals and its neighbour count, for the fan-orientation tests."""
+    if name == "torus":
+        return _torus_grid_cloud()[0].astype(np.float32), 16
+    if name == "sheet":
+        x, y = np.meshgrid(np.arange(-2.0, 2.61, 0.1), np.arange(-1.0, 1.01, 0.1))
+        sheet = np.stack([x.ravel(), y.ravel(), 0.4 * np.sin(np.pi * x.ravel())], axis=1)
+        return sheet[np.random.default_rng(0).permutation(sheet.shape[0])].astype(np.float32), 18
+    if name == "linked_tori":
+        torus = tm.creation.torus(
+            major_radius=1.0, minor_radius=0.4, major_sections=48, minor_sections=16
+        ).vertices
+        tori = np.concatenate([torus, torus[:, [0, 2, 1]] + [1.0, 0.0, 0.0]])
+        return tori[np.random.default_rng(3).permutation(tori.shape[0])].astype(np.float32), 16
+    if name == "sphere_2":
+        sphere = tm.creation.icosphere(subdivisions=4).vertices
+        noise = 0.02 * np.random.default_rng(7).standard_normal(sphere.shape)
+        return (sphere + noise).astype(np.float32), 16
+    if name == "dense_sphere_3":
+        sphere = tm.creation.icosphere(subdivisions=5).vertices
+        noise = 0.03 * np.random.default_rng(1).standard_normal(sphere.shape)
+        return (sphere + noise).astype(np.float32), 16
+    return _saddle_cloud(0, graded=True)[0], 16
+
+
+def _fan_orientation_rows(cloud: str, device: str) -> tuple[np.ndarray, int, np.ndarray, int]:
+    """
+    Return ordito's and MeshLib's candidate rows from MeshLib's fans, each with its ``t3`` count.
+
+    Both sides are handed MeshLib's local triangulations of a cloud without normals
+    (``buildUnitedLocalTriangulations``), so the comparison isolates the orientation from the fans.
+    MeshLib's side is ``autoOrientLocalTriangulations`` over every point; its ``t3`` and ``t2``
+    outputs, sorted as ``triangulatePointCloud``'s ``makeMesh_`` sorts them, are the candidate rows
+    in the builder's order. ordito's side is the same stage of ``triangulate_point_cloud``:
+    ``_orient_fans`` then ``_oriented_candidate_rows``.
+    """
+    points_np, num_neighbours = _unoriented_cloud(cloud)
+    n = points_np.shape[0]
+    cloud_ml = points_to_meshlib(points_np.astype(np.float64))
+    settings = mm.TriangulationHelpersSettings()
+    settings.numNeis = num_neighbours
+    settings.critAngle = math.pi / 2.0
+    settings.boundaryAngle = 0.9 * math.pi
+    settings.automaticRadiusIncrease = True
+    fans_ml = mm.buildUnitedLocalTriangulations(cloud_ml, settings)
+    tris_np, counts_np = meshlib_local_triangulations_to_numpy(fans_ml)
+    region_ml = mm.VertBitSet(n)
+    region_ml.flip()
+    rep3_ml, rep2_ml = mm.Triangulation(), mm.Triangulation()
+    mm.autoOrientLocalTriangulations(cloud_ml, fans_ml, region_ml, outRep3=rep3_ml, outRep2=rep2_ml)
+    rep3, rep2 = meshlib_triangulation_to_numpy(rep3_ml), meshlib_triangulation_to_numpy(rep2_ml)
+    rows_ml = np.concatenate([lexsort_rows(rep3), lexsort_rows(rep2)]).astype(np.int32)
+    # Non-vacuity: both classes present.
+    assert rep3.shape[0] > 0
+    assert rep2.shape[0] > 0
+
+    points_wp = points_to_warp(points_np, device)
+    tris_wp = wp.array(tris_np, dtype=wp.int32, device=device)
+    inclusive_counts = wp.array(np.cumsum(counts_np, dtype=np.int32), dtype=wp.int32, device=device)
+    n_candidates = int(counts_np.sum())
+    keys, slots = od.reconstruction._sorted_candidate_keys(  # pyright: ignore[reportPrivateUsage]
+        tris_wp, inclusive_counts, n_candidates, n
+    )
+    od.reconstruction._orient_fans(  # pyright: ignore[reportPrivateUsage]
+        points_wp, tris_wp, inclusive_counts, keys, slots, n_candidates, od.bounds.aabb(points_wp)
+    )
+    rows_wp, n_rep3 = od.reconstruction._oriented_candidate_rows(  # pyright: ignore[reportPrivateUsage]
+        points_wp, tris_wp, keys, slots, n_candidates
+    )
+    return rows_wp.numpy(), n_rep3, rows_ml, rep3.shape[0]
+
+
+@pytest.mark.parity("triangulate_point_cloud_unoriented", "meshlib")
+@pytest.mark.parametrize("cloud", ["torus", "sheet", "linked_tori", "sphere_2"])
+def test_fan_orientation_matches_meshlib(device: str, cloud: str):
+    """
+    Class A: MeshLib's own fans, wound by ordito's flood, give MeshLib's ``t3`` and ``t2`` rows.
+
+    On clouds whose fans never conflict (no two fans sharing a triangle disagree once wound
+    consistently) the reference's one-at-a-time flood does not depend on its visit order but for
+    each component's first fan, and ordito's rounds pick that fan by the same rule, so the rows are
+    equal (``_fan_orientation_rows`` has the two sides). The torus is not star-shaped, so its inner
+    fans face the centre until the flood turns them; the sheet is open and shuffled; the second of
+    the two linked tori is entered through a fan the first one's neighbours touch, the largest such
+    index; the sphere carries noise of 2 % of its radius.
+
+    Mutation probes, rows differing from MeshLib's: a flood that never turns a fan, torus 1 054 of
+    2 304, sheet 588 of 1 888, linked tori 1 720 of 3 040; no centre pass (each fan as built), or
+    the farthest point as the seed even where a fan is touched, linked tori 3 038 (the second
+    torus reversed).
+    """
+    rows_wp, n_rep3, rows_ml, n_rep3_ml = _fan_orientation_rows(cloud, device)
+    assert n_rep3 == n_rep3_ml
+    assert np.array_equal(rows_wp, rows_ml)
+
+
+def _winding_seams(rows: np.ndarray) -> int:
+    """Return how many directed edges two candidate rows share: a seam between two windings."""
+    edges = np.concatenate([rows[:, [0, 1]], rows[:, [1, 2]], rows[:, [2, 0]]])
+    _, counts = np.unique(edges, axis=0, return_counts=True)
+    return int(np.count_nonzero(counts > 1))
+
+
+@pytest.mark.parity("triangulate_point_cloud_unoriented", "meshlib")
+@pytest.mark.parametrize("cloud", ["dense_sphere_3", "graded_saddle"])
+def test_conflicting_fan_orientation_near_meshlib(device: str, cloud: str):
+    """
+    Class C (the rows' symmetric difference and the seam count): where fans conflict, near MeshLib.
+
+    Where fans sharing a triangle conflict, the reference's flood places the seam between the two
+    windings where its one-at-a-time visit order reaches it, which no parallel order reproduces;
+    ordito's rounds decide only the fans the visited ones support by at least ``min(top, 3)``
+    votes, which keeps the seams where the reference's are. Measured on MeshLib's own fans
+    (``_fan_orientation_rows``), both devices bit for bit alike: a 10 242-point sphere at 3 %
+    noise differs by 42 of 16 378 rows with MeshLib's 1 492 seams, the graded noisy saddle by 3 of
+    2 244 with 82 seams to MeshLib's 84. The bounds, 0.8 % of MeshLib's rows (3.1x the sphere's
+    difference) and its seams plus 2 %, exclude a misplaced or extra seam that reverses a region
+    (every reversed row counts twice).
+
+    Mutation probes on the sphere, against the bound of 131 rows: deciding every fan with a
+    positive margin at once (no floor), 1 089; no centre pass, 206; a flood that never turns a fan,
+    142. A floor of 2 passes here (40 rows); it differs on scans, where a 60 000-point sample of
+    ``happy_buddha`` (not in the suite) left 1 112 seams to MeshLib's 609 at 2 and 635 at 3.
+    """
+    rows_wp, _, rows_ml, _ = _fan_orientation_rows(cloud, device)
+    set_wp = {tuple(row) for row in rows_wp.tolist()}
+    set_ml = {tuple(row) for row in rows_ml.tolist()}
+    assert len(set_wp ^ set_ml) <= 0.008 * len(set_ml)
+    assert _winding_seams(rows_wp) <= 1.02 * _winding_seams(rows_ml)
 
 
 def test_open_hemisphere_keeps_single_boundary(device: str):
