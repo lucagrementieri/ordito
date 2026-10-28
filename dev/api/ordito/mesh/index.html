@@ -14525,8 +14525,8 @@ share a diffusion time.</p>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">use_robust</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
     <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span>
-        <span class="s2">"geometry_central"</span><span class="p">,</span> <span class="s2">"meshlab"</span><span class="p">,</span> <span class="s2">"igl"</span>
-    <span class="p">]</span> <span class="o">=</span> <span class="s2">"geometry_central"</span><span class="p">,</span>
+        <span class="s2">"potpourri3d"</span><span class="p">,</span> <span class="s2">"meshlab"</span><span class="p">,</span> <span class="s2">"igl"</span>
+    <span class="p">]</span> <span class="o">=</span> <span class="s2">"potpourri3d"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">od</span><span class="o">.</span><span class="n">heat</span><span class="o">.</span><span class="n">HeatSolver</span>
 </code></pre></div>
 
@@ -14588,18 +14588,18 @@ defaults its operators are <code>heat_operators</code> and <code>vector_heat_ope
                 <code>method</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;geometry_central&#39;, &#39;meshlab&#39;, &#39;igl&#39;]</code>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;potpourri3d&#39;, &#39;meshlab&#39;, &#39;igl&#39;]</code>
             </td>
             <td>
               <div class="doc-md-description">
                 <p>Whose discretization the operators follow (see
-<a class="autorefs autorefs-internal" title="heat_operators" href="../heat/#ordito.heat.heat_operators"><code>heat_operators</code></a>): <code>"geometry_central"</code> (default, the
+<a class="autorefs autorefs-internal" title="heat_operators" href="../heat/#ordito.heat.heat_operators"><code>heat_operators</code></a>): <code>"potpourri3d"</code> (default, the
 vector heat method's), or <code>"meshlab"</code> / <code>"igl"</code>, what
 <a class="autorefs autorefs-internal" title="heat_geodesic" href="../heat/#ordito.heat.heat_geodesic"><code>heat_geodesic</code></a> runs on at its own <code>method</code>.</p>
               </div>
             </td>
             <td>
-                  <code>&#39;geometry_central&#39;</code>
+                  <code>&#39;potpourri3d&#39;</code>
             </td>
           </tr>
       </tbody>
@@ -14644,7 +14644,7 @@ vector heat method's), or <code>"meshlab"</code> / <code>"igl"</code>, what
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>method</code> is not <code>"geometry_central"</code>, <code>"meshlab"</code> or <code>"igl"</code>.</p>
+                <p>If <code>method</code> is not <code>"potpourri3d"</code>, <code>"meshlab"</code> or <code>"igl"</code>.</p>
               </div>
             </td>
           </tr>
@@ -14774,7 +14774,7 @@ dropping the mesh. They are not carried into the meshes <code>transform</code>, 
     <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">use_robust</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"geometry_central"</span><span class="p">,</span> <span class="s2">"meshlab"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"geometry_central"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"potpourri3d"</span><span class="p">,</span> <span class="s2">"meshlab"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"potpourri3d"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">od</span><span class="o">.</span><span class="n">heat</span><span class="o">.</span><span class="n">HeatSolver</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Return this mesh's [`HeatSolver`][ordito.heat.HeatSolver] at diffusion time ``t``.</span>
@@ -14793,7 +14793,7 @@ dropping the mesh. They are not carried into the meshes <code>transform</code>, 
 <span class="sd">        [`heat_operators`][ordito.heat.heat_operators]).</span>
 <span class="sd">    method</span>
 <span class="sd">        Whose discretization the operators follow (see</span>
-<span class="sd">        [`heat_operators`][ordito.heat.heat_operators]): ``"geometry_central"`` (default, the</span>
+<span class="sd">        [`heat_operators`][ordito.heat.heat_operators]): ``"potpourri3d"`` (default, the</span>
 <span class="sd">        vector heat method's), or ``"meshlab"`` / ``"igl"``, what</span>
 <span class="sd">        [`heat_geodesic`][ordito.heat.heat_geodesic] runs on at its own ``method``.</span>
 
@@ -14805,7 +14805,7 @@ dropping the mesh. They are not carried into the meshes <code>transform</code>, 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If ``method`` is not ``"geometry_central"``, ``"meshlab"`` or ``"igl"``.</span>
+<span class="sd">        If ``method`` is not ``"potpourri3d"``, ``"meshlab"`` or ``"igl"``.</span>
 
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
