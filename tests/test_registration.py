@@ -919,10 +919,13 @@ def test_icp_transformed_is_matrix_image(
 
 
 @pytest.mark.parametrize("angle", [0.30])
-@pytest.mark.parity("icp_mesh", "pyvista")
 def test_icp_mesh_matches_pyvista(device: str, angle: float) -> None:
     """
     Mesh-target ICP against VTK's: both recover the alignment (MeshLab's is not a usable oracle).
+
+    The default method against VTK's landmark ICP, two algorithms reaching one alignment; VTK's
+    own algorithm is ``method="pyvista"``, compared buffer for buffer by
+    ``test_icp_pyvista_matches_pyvista``, which carries the ``icp_mesh_pyvista`` pair.
 
     **pymeshlab is exempt here, measured (2026-10-07)**: ``compute_matrix_by_icp_between_meshes``
     on this exact input converges (RMS 1.2e-8) or stalls (0.047 at 0.15 rad, 0.108 at 0.30) from
@@ -992,6 +995,91 @@ def test_icp_mesh_matches_pyvista(device: str, angle: float) -> None:
     assert _rms(moved_wp, vertices_np) < 1.5e-5
     assert _rms(moved_pv, vertices_np) < 1.5e-4
     assert _rms(moved_wp, moved_pv) < 1.5e-4
+
+
+@pytest.mark.parametrize("max_iterations", [3, 500])
+@pytest.mark.parametrize("target", ["mesh", "cloud"])
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "saddle_graded", "torus_irregular_holes"]
+)
+@pytest.mark.parity("icp_mesh_pyvista", "pyvista")
+def test_icp_pyvista_matches_pyvista(
+    request: pytest.FixtureRequest,
+    mesh_name: str,
+    target: Literal["mesh", "cloud"],
+    max_iterations: int,
+) -> None:
+    """
+    ``icp(method="pyvista")`` against ``pyvista``'s ``align``, VTK's landmark ICP.
+
+    **Class A**: the matrix and the moved source, element for element, on a mesh target and on
+    the target's vertices as a point cloud (VTK's locator then answers the nearest vertex), both
+    stopped by the iteration cap (3) and converged by the mean-distance stop at ``align``'s
+    defaults (500 iterations, ``1e-5``). VTK is handed the same ``float32`` coordinates. Measured
+    on the CPU, worst over the twelve cases: matrix 2.6e-7, points 6.3e-7. **Mutation probe:**
+    matching on the face ``float32`` ``mesh_query_point_no_sign`` returns, without the exact
+    ``float64`` search about it, sends one landmark of ``saddle_graded`` to another face at
+    iteration 110, and the converged answer misses by 1.4e-4 (VTK stops at 117, that variant at
+    153). The source has more than 100 points, so the landmarks are a strided subset and the
+    centroid pre-translation moves the source; the rotation is asserted away from the identity,
+    so no comparison here is two identities agreeing.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
+    faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
+    rotation_np, translation_np = _rigid_transform(0.2, [0.2, 0.7, 0.1], [0.05, -0.03, 0.04])
+    center_np = vertices_np.mean(axis=0)
+    source_np = ((vertices_np - center_np) @ rotation_np.T + center_np + translation_np).astype(
+        np.float32
+    )
+    assert source_np.shape[0] > 100
+
+    source_pv = pv.PolyData.from_regular_faces(source_np.astype(np.float64), faces_np)
+    target_np = vertices_np.astype(np.float64)
+    target_pv = (
+        pv.PolyData.from_regular_faces(target_np, faces_np)
+        if target == "mesh"
+        else pv.PolyData(target_np)
+    )
+    aligned_pv, matrix_pv = cast(
+        "tuple[pv.PolyData, NDArray[np.float64]]",
+        source_pv.align(target_pv, max_iterations=max_iterations, return_matrix=True),
+    )
+
+    matrix_wp, transformed_wp, cost = od.registration.icp(
+        points_to_warp(source_np, mesh_wp.device),
+        points_to_warp(vertices_np, mesh_wp.device),
+        wp.array(faces_np.reshape(-1), dtype=wp.int32, device=mesh_wp.device)
+        if target == "mesh"
+        else None,
+        max_iterations=max_iterations,
+        method="pyvista",
+    )
+
+    assert np.abs(np.asarray(matrix_pv)[:3, :3] - np.eye(3)).max() > 0.05
+    assert np.allclose(matrix_wp.numpy()[0], matrix_pv, rtol=1e-5, atol=1e-5)
+    assert np.allclose(transformed_wp.numpy(), aligned_pv.points, rtol=1e-5, atol=1e-5)
+    assert np.isfinite(cost)
+
+
+def test_icp_pyvista_rejects_options_vtk_lacks(device: str) -> None:
+    """
+    ``method="pyvista"`` is VTK's rigid fit: options it has no counterpart for raise.
+
+    Not a parity assert: argument validation.
+    """
+    points_wp = points_to_warp(np.eye(3, dtype=np.float32), device)
+    with pytest.raises(ValueError, match="method must be"):
+        od.registration.icp(points_wp, points_wp, method="vtk")  # pyright: ignore[reportArgumentType]
+    icp_pyvista = partial(od.registration.icp, points_wp, points_wp, method="pyvista")
+    for call in (
+        partial(icp_pyvista, max_distance=1.0),
+        partial(icp_pyvista, reflection=True),
+        partial(icp_pyvista, scale=True),
+        partial(icp_pyvista, translation=False),
+    ):
+        with pytest.raises(ValueError, match="method='pyvista'"):
+            call()
 
 
 @pytest.mark.parity(

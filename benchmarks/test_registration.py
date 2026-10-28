@@ -459,40 +459,21 @@ def test_icp_convergence(bench_case: BenchCase, degrees: float) -> None:
 @pytest.mark.benchmark(group="icp_mesh")
 @pytest.mark.noparity(
     "pymeshlab",
-    oracle="pyvista",
     reason="stochastic with no shared invariant: compute_matrix_by_icp_between_meshes converges "
     "(RMS 1.2e-8) or stalls (0.047 / 0.108) on one input depending on the process's memory "
     "layout; re-measured in 16 fresh processes it stalled every time (0.043-0.049 at 0.15 rad, "
     "0.1035-0.1066 at 0.30) with the value moving run to run; seeding, thread caps and its own "
-    "parameters do not settle it. "
-    "pyvista is the oracle, in tests/test_registration.py::test_icp_mesh_matches_pyvista.",
+    "parameters do not settle it.",
 )
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("ordito", "pymeshlab", "pyvista")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 def test_icp_mesh(bench_case: BenchCase) -> None:
     """
     Point-to-point ICP against the triangle surface (closest-point-on-mesh correspondences).
 
-    pyvista's ``align`` is ``vtkIterativeClosestPointTransform`` and is the third mesh-target ICP
-    here. Unlike MeshLab's it moves the points and returns ``(aligned_mesh, 4x4 matrix)``, so
-    nothing has to be rebuilt between rounds -- but it caps its own iteration count internally, so
-    read the row as "align these two meshes" rather than as a fixed iteration budget.
+    pyvista's ``align`` times in ``icp_mesh_pyvista`` against the method that reproduces it.
     """
     skip_larger_than(bench_case, "happy_buddha", "per-iteration mesh queries scale with face count")
-    if bench_case.kind == "pyvista":
-        skip_larger_than(
-            bench_case, "bunny", "vtkIterativeClosestPointTransform is single-threaded"
-        )
-        target_pv = bench_case.mesh_pv
-        source_pv = pv.PolyData.from_regular_faces(
-            _source_mesh_np(bench_case), np.ascontiguousarray(bench_case.faces_np, dtype=np.int32)
-        )
-        aligned_pv, matrix_pv = bench_case.run(
-            lambda: source_pv.align(target_pv, return_matrix=True), rounds=_PML_ROUNDS
-        )
-        assert np.asarray(matrix_pv).shape == (4, 4)
-        assert aligned_pv.n_points == source_pv.n_points
-        return
     if bench_case.kind == "pymeshlab":
         # ``compute_matrix_by_icp_between_meshes`` correspondences run against the *reference mesh*
         # rather than a point cloud, which is what makes it the equivalent of ``icp`` here rather
@@ -522,6 +503,45 @@ def test_icp_mesh(bench_case: BenchCase) -> None:
         lambda: od.registration.icp(
             source, vertices, faces, max_iterations=_ICP_ITERATIONS, threshold=-math.inf
         )
+    )
+    assert matrix.shape == (1,)
+
+
+@pytest.mark.benchmark(group="icp_mesh_pyvista")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "pyvista")
+def test_icp_mesh_pyvista(bench_case: BenchCase) -> None:
+    """
+    VTK's landmark ICP (``pyvista``'s ``align``) and ``icp(method="pyvista")``, which reproduces it.
+
+    Both align the whole misaligned mesh onto the target at ``align``'s defaults (100 landmarks,
+    500 iterations, a ``1e-5`` mean-distance stop), so both run the same iterations; the row reads
+    as "align these two meshes". The landmarks are a fixed few hundred points whatever the mesh, so
+    what grows with it is the two centroids and the moved copy of the source.
+    """
+    skip_larger_than(bench_case, "happy_buddha", "the mesh queries scale with face count")
+    if bench_case.kind == "pyvista":
+        skip_larger_than(
+            bench_case, "bunny", "vtkIterativeClosestPointTransform is single-threaded"
+        )
+        target_pv = bench_case.mesh_pv
+        source_pv = pv.PolyData.from_regular_faces(
+            _source_mesh_np(bench_case), np.ascontiguousarray(bench_case.faces_np, dtype=np.int32)
+        )
+        aligned_pv, matrix_pv = bench_case.run(
+            lambda: source_pv.align(target_pv, return_matrix=True), rounds=_PML_ROUNDS
+        )
+        assert np.asarray(matrix_pv).shape == (4, 4)
+        assert aligned_pv.n_points == source_pv.n_points
+        return
+    source = wp.array(
+        np.ascontiguousarray(_source_mesh_np(bench_case), dtype=np.float32),
+        dtype=wp.vec3,
+        device=bench_case.device,
+    )
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    matrix, _transformed, _cost = bench_case.run(
+        lambda: od.registration.icp(source, vertices, faces, max_iterations=500, method="pyvista")
     )
     assert matrix.shape == (1,)
 

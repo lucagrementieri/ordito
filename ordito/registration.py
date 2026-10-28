@@ -311,6 +311,7 @@ def icp(
     reflection: bool = False,
     translation: bool = True,
     scale: bool = False,
+    method: Literal["all_points", "pyvista"] = "all_points",
     target_index: wp.Mesh | wp.Bvh | None = None,
 ) -> tuple[wp.array[wp.mat44], wp.array[wp.vec3], float]:
     """
@@ -354,7 +355,9 @@ def icp(
     max_iterations
         Maximum number of ICP iterations.
     threshold
-        Stop when the cost decreases by less than this between iterations.
+        Stop when the cost decreases by less than this between iterations; under
+        ``method="pyvista"``, once an iteration moves the landmarks by a root mean square of at
+        most this.
     max_distance
         Reject correspondences farther than this (weight ``0``, excluded from the
         fit). No rejection when ``None``.
@@ -362,6 +365,14 @@ def icp(
         Forwarded to [`procrustes`][ordito.registration.procrustes]. Defaults are
         rigid (`reflection=False, scale=False`); set ``scale=True`` for a
         similarity transform.
+    method
+        ``"all_points"`` matches every point of *a* each iteration, as described above.
+        ``"pyvista"`` is ``vtkIterativeClosestPointTransform`` as ``pyvista``'s ``align`` runs it:
+        every ``n // 100``-th point of *a* is a landmark (every point when ``n <= 100``), *a* is
+        first translated so its centroid lands on the target's (both centroids over every point,
+        after ``initial``), and each iteration fits a rigid map of the landmarks onto their
+        matches and composes it onto the transform so far. It is rigid only, in ``float64``.
+        ``align``'s defaults are ``max_iterations=500`` and ``threshold=1e-5``.
     target_index
         The structure the correspondence search queries, already built, to spare the build each
         call otherwise pays (worth it when one target is registered against repeatedly): a
@@ -378,10 +389,15 @@ def icp(
     transformed
         ``(n,)`` image of *a* under *matrix*.
     cost
-        Weighted mean squared correspondence distance at the final iteration.
+        Weighted mean squared correspondence distance at the final iteration; under
+        ``method="pyvista"``, over the landmarks.
 
     Raises
     ------
+    ValueError
+        If ``method`` is not ``"all_points"`` or ``"pyvista"``, or if ``method="pyvista"`` is
+        combined with ``max_distance``, ``reflection=True``, ``translation=False`` or
+        ``scale=True``, which VTK's rigid landmark fit does not have.
     TypeError
         If ``target_index`` is not a ``wp.Bvh`` for a point-cloud target, or not a ``wp.Mesh`` for
         a mesh target.
@@ -424,6 +440,13 @@ def icp(
         initial=initial,
         target_index=target_index,
     )
+    if method not in ("all_points", "pyvista"):
+        raise ValueError(f"method must be 'all_points' or 'pyvista', got {method!r}")
+    if method == "pyvista" and (max_distance is not None or reflection or not translation or scale):
+        raise ValueError(
+            "method='pyvista' is a rigid fit with no distance gate: it takes no max_distance, "
+            "reflection, scale or translation=False"
+        )
     device = a.device
     n = a.size
 
@@ -445,6 +468,10 @@ def icp(
     )
     search_index = mesh if mesh is not None else cloud_tree
     assert search_index is not None
+    if method == "pyvista":
+        return _landmark_icp(
+            a, target_vertices, search_index, total, transformed, max_iterations, threshold
+        )
 
     # Every buffer is allocated once and rewritten in place by every round. The fit lands in
     # ``fitted`` and is kept in ``total`` only once ``close_point_to_point_round`` has seen that it
@@ -543,6 +570,57 @@ def icp(
     _apply_transform(a, total, transformed)
     # The kept fit's cost, ``inf`` if every fit was weightless: a pinned call's one readback.
     return total, transformed, float(read_scalar(acc, int(kernel_registration.ACC_KEPT_COST)))
+
+
+# ``vtkIterativeClosestPointTransform``'s ``MaximumNumberOfLandmarks`` at ``pyvista``'s default.
+_PYVISTA_MAX_LANDMARKS = 100
+
+
+def _landmark_icp(
+    a: wp.array[wp.vec3],
+    target_vertices: wp.array[wp.vec3],
+    search_index: wp.Mesh | wp.Bvh,
+    total: wp.array[wp.mat44],
+    transformed: wp.array[wp.vec3],
+    max_iterations: int,
+    threshold: float,
+) -> tuple[wp.array[wp.mat44], wp.array[wp.vec3], float]:
+    """
+    Run ``icp(method="pyvista")`` from the seed in ``total``, which it overwrites.
+
+    The landmarks are VTK's: every ``n // 100``-th point while ``n > 100``, so between 100 and
+    199 of them, few enough for the whole loop to run as one block
+    (``kernel_registration.landmark_icp``): one launch and one readback. ``transformed`` receives
+    the image of *a*.
+    """
+    device = a.device
+    n = a.size
+    step = n // _PYVISTA_MAX_LANDMARKS if n > _PYVISTA_MAX_LANDMARKS else 1
+    count = n // step
+    closest = _launch.empty(count, dtype=wp.vec3d, device=device)
+    cost = _launch.empty(1, dtype=wp.float64, device=device)
+    _launch.launch_tiled(
+        kernel_registration.landmark_icp,
+        dim=1,
+        inputs=[
+            search_index.id,
+            target_vertices,
+            isinstance(search_index, wp.Bvh),
+            a,
+            step,
+            count,
+            max_iterations,
+            wp.float64(threshold),
+            closest,
+            total,
+            cost,
+        ],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    _apply_transform(a, total, transformed)
+    # The landmarks' cost: the call's one readback.
+    return total, transformed, float(read_scalar(cost, 0))
 
 
 # Values are zero-length arrays of the key's dtype; ``_zero_length`` restores the element type.

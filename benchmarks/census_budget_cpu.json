@@ -5332,6 +5332,14 @@
    "readback": 1
   }
  },
+ "benchmarks/test_registration.py::test_icp_mesh_pyvista[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "h2h": 1,
+   "readback": 1
+  }
+ },
  "benchmarks/test_registration.py::test_icp_point_cloud[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 31,

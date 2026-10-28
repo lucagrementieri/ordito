@@ -1,9 +1,11 @@
+from typing import Any
+
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT
 from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, binary_search_index_left
 from ordito.kernels.neighbors import bvh_nearest_point
-from ordito.kernels.predicates import normalize_or_zero
+from ordito.kernels.predicates import normalize_or_zero, point_triangle_offset
 from ordito.kernels.proximity import closest_point_query
 from ordito.kernels.reduce import (
     ITEMS_PER_BLOCK_1D,
@@ -214,6 +216,33 @@ def acc_vec3(acc: wp.array[wp.float32], base: wp.int32) -> wp.vec3:
 
 
 @wp.func
+def rotation_from_covariance(cov: Any, use_reflection: wp.bool):
+    # The orthogonal ``R`` maximizing ``trace(R^T cov)`` for a cross-covariance
+    # ``cov = sum outer(b - b_centroid, a - a_centroid)``, at the precision of ``cov``: the
+    # ``float32`` Procrustes fit and ``landmark_icp``'s ``float64`` one share it.
+    U, sigma, V = wp.svd3(cov)  # noqa: N806
+
+    Vt = wp.transpose(V)  # noqa: N806
+
+    # wp.svd3 may return negative singular values; absorb their signs into a
+    # diagonal correction matrix so R = U @ D @ V^T matches the numpy convention
+    # (all-positive sigma) and correctly handles reflective optimal solutions.
+    # wp.sign is -1 for negative components and +1 otherwise (including at exactly 0).
+    d = wp.sign(sigma)
+    R = U * wp.diag(d) * Vt  # noqa: N806
+
+    if not use_reflection:
+        # Ensure det(R) = 1 by flipping the last correction factor when needed. Rebuilding ``R``
+        # only on the branch that actually flips ``d`` -- the common, no-flip case reuses the
+        # matrix just computed above instead of recomputing the identical product from the same,
+        # unchanged ``d``.
+        if wp.determinant(R) < type(sigma[0])(0.0):
+            d[2] = -d[2]
+            R = U * wp.diag(d) * Vt  # noqa: N806
+    return R
+
+
+@wp.func
 def procrustes_matrix(
     a: wp.array[wp.vec3],
     b: wp.array[wp.vec3],
@@ -264,25 +293,7 @@ def procrustes_matrix(
     inv_scales = wp.float32(1.0) / (bscale * ascale)
     target = cov * inv_scales
 
-    U, sigma, V = wp.svd3(target)  # noqa: N806
-
-    Vt = wp.transpose(V)  # noqa: N806
-
-    # wp.svd3 may return negative singular values; absorb their signs into a
-    # diagonal correction matrix so R = U @ D @ V^T matches the numpy convention
-    # (all-positive sigma) and correctly handles reflective optimal solutions.
-    # wp.sign is -1 for negative components and +1 otherwise (including at exactly 0).
-    d = wp.sign(sigma)
-    R = U * wp.diag(d) * Vt  # noqa: N806
-
-    if not use_reflection:
-        # Ensure det(R) = 1 by flipping the last correction factor when needed. Rebuilding ``R``
-        # only on the branch that actually flips ``d`` -- the common, no-flip case reuses the
-        # matrix just computed above instead of recomputing the identical product from the same,
-        # unchanged ``d``.
-        if wp.determinant(R) < wp.float32(0.0):
-            d = wp.vec3(d[0], d[1], -d[2])
-            R = U * wp.diag(d) * Vt  # noqa: N806
+    R = rotation_from_covariance(target, use_reflection)  # noqa: N806
 
     s = wp.float32(1.0)
     if use_scale:
@@ -594,6 +605,161 @@ def point_to_point_correspondence_pass(
     out_closest[tid] = closest
     if out_weights.shape[0] > 0:
         out_weights[tid] = distance_threshold_weight(distance, index, max_distance)
+
+
+# --- ``registration.icp(method="pyvista")``: VTK's landmark ICP in one block -----------------
+#
+# ``vtkIterativeClosestPointTransform`` as ``pyvista``'s ``align`` configures it: every
+# ``landmark_step``-th source point is a landmark, the source is first translated onto the
+# target's centroid (both centroids over *every* point), and each round matches the moved
+# landmarks to the target, fits the rigid map of the landmarks onto their matches and composes it
+# onto the transform kept so far. The loop stops after ``max_iterations`` fits, or once a fit
+# moves the landmarks by an RMS of at most ``max_mean_distance``. Everything is ``float64``, as in
+# VTK; only the search runs on the ``float32`` point, and a mesh match is re-formed in ``float64``
+# on the face the search found.
+#
+# The landmarks are a few hundred points at most (``step = n // max_landmarks``, so fewer than
+# ``2 * max_landmarks``), so the whole loop is one block: lanes stride the landmarks by
+# ``wp.block_dim()`` and every reduction is a ``block_sum``, whose value every lane reads, so every
+# lane forms the same fit and takes the same exit. A lane reads back only the matches it wrote. On
+# the CPU device the block is one lane and walks every landmark in turn. Nothing is an atomic, so
+# the result repeats bit for bit under either deterministic setting.
+#
+# The landmarks are re-formed each round from the source by the composed map, where VTK carries
+# them from round to round; the two differ by rounding only.
+vec6d = wp.types.vector(length=6, dtype=wp.float64)
+
+
+@wp.func
+def face_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3d:
+    # ``p`` minus its closest point on one mesh face, in ``float64``.
+    corner = face * 3
+    a = wp.vec3d(wp.mesh_get_point(mesh_id, corner))
+    b = wp.vec3d(wp.mesh_get_point(mesh_id, corner + 1))
+    c = wp.vec3d(wp.mesh_get_point(mesh_id, corner + 2))
+    return point_triangle_offset(p, a, b, c)
+
+
+@wp.func
+def landmark_match(
+    index_id: wp.uint64, target_points: wp.array[wp.vec3], cloud: wp.bool, p: wp.vec3d
+) -> wp.vec3d:
+    # ``p``'s match on the target in ``float64``: the nearest target point, or the exact closest
+    # point on the surface. ``icp_match``'s ``float32`` mesh query is not exact (its face can be
+    # one whose true distance is a few 1e-5 longer, on a needle), and one landmark sent to another
+    # face moved a converging saddle by 1e-3 where VTK's exact locator did not. So its face only
+    # bounds the answer: every face nearer than it meets the box of that radius about ``p``, and
+    # the nearest of those in ``float64`` is the match. The box grows by a relative ``1e-6`` to
+    # cover its own rounding to ``float32``.
+    closest, _distance, index = icp_match(
+        index_id, target_points, cloud, wp.vec3(p), FLOAT32_INF_CONSTANT
+    )
+    if cloud or index < 0:
+        return wp.vec3d(closest)
+    best = face_offset_d(index_id, index, p)
+    best_sq = wp.length_sq(best)
+    radius = wp.sqrt(best_sq)
+    margin = wp.float64(1e-6) * (radius + wp.max(wp.abs(p[0]), wp.max(wp.abs(p[1]), wp.abs(p[2]))))
+    reach = wp.vec3d(radius + margin, radius + margin, radius + margin)
+    query = wp.mesh_query_aabb(index_id, wp.vec3(p - reach), wp.vec3(p + reach))
+    face = wp.int32(0)
+    while wp.mesh_query_next(query, face):
+        offset = face_offset_d(index_id, face, p)
+        offset_sq = wp.length_sq(offset)
+        if offset_sq < best_sq:
+            best = offset
+            best_sq = offset_sq
+    return p - best
+
+
+@wp.func
+def strided_centroid(points: wp.array[wp.vec3], lane: wp.int32) -> wp.vec3d:
+    # The ``float64`` mean of every point, lanes striding the array by ``wp.block_dim()``.
+    total = wp.vec3d()
+    i = lane
+    while i < points.shape[0]:
+        total += wp.vec3d(points[i])
+        i += wp.block_dim()
+    return block_sum(total) / wp.float64(points.shape[0])
+
+
+@wp.kernel
+def landmark_icp(
+    index_id: wp.uint64,
+    target_points: wp.array[wp.vec3],
+    cloud: wp.bool,
+    source: wp.array[wp.vec3],
+    landmark_step: wp.int32,
+    landmark_count: wp.int32,
+    max_iterations: wp.int32,
+    max_mean_distance: wp.float64,
+    closest: wp.array[wp.vec3d],
+    total: wp.array[wp.mat44],
+    out_cost: wp.array[wp.float64],
+) -> None:
+    # ``total`` holds the seed on entry and the composed map on exit; ``closest`` is per-landmark
+    # scratch. ``out_cost`` is the mean squared distance from the last fit's landmarks to their
+    # matches.
+    _block, lane = wp.tid()
+    seed = total[0]
+    linear = wp.mat33d(
+        wp.mat33(
+            seed[0, 0], seed[0, 1], seed[0, 2],
+            seed[1, 0], seed[1, 1], seed[1, 2],
+            seed[2, 0], seed[2, 1], seed[2, 2],
+        )
+    )  # fmt: skip
+    # The seeded source's centroid moved onto the target's. The seed is affine, so it maps the
+    # source's centroid onto the seeded one's, and its own translation cancels.
+    shift = strided_centroid(target_points, lane) - linear * strided_centroid(source, lane)
+
+    count = wp.float64(landmark_count)
+    cost = wp.float64(0.0)
+    iteration = wp.int32(0)
+    while iteration < max_iterations:
+        # Match the landmarks; their centroid and their matches' in one reduction.
+        sums = vec6d()
+        k = lane
+        while k < landmark_count:
+            p = linear * wp.vec3d(source[k * landmark_step]) + shift
+            q = landmark_match(index_id, target_points, cloud, p)
+            closest[k] = q
+            sums += vec6d(p[0], p[1], p[2], q[0], q[1], q[2])
+            k += wp.block_dim()
+        sums = block_sum(sums)
+        p_centroid = wp.vec3d(sums[0], sums[1], sums[2]) / count
+        q_centroid = wp.vec3d(sums[3], sums[4], sums[5]) / count
+
+        # The centred cross-covariance, then the rigid fit of the landmarks onto their matches.
+        cov = wp.mat33d()
+        k = lane
+        while k < landmark_count:
+            p = linear * wp.vec3d(source[k * landmark_step]) + shift
+            cov += wp.outer(closest[k] - q_centroid, p - p_centroid)
+            k += wp.block_dim()
+        rotation = rotation_from_covariance(block_sum(cov), False)
+        translation = q_centroid - rotation * p_centroid
+
+        # How far the fit moves the landmarks, and how far it leaves them from their matches.
+        moments = wp.vec2d()
+        k = lane
+        while k < landmark_count:
+            p = linear * wp.vec3d(source[k * landmark_step]) + shift
+            moved = rotation * p + translation
+            moments += wp.vec2d(wp.length_sq(moved - p), wp.length_sq(moved - closest[k]))
+            k += wp.block_dim()
+        moments = block_sum(moments)
+
+        linear = rotation * linear
+        shift = rotation * shift + translation
+        cost = moments[1] / count
+        iteration += 1
+        if wp.sqrt(moments[0] / count) <= max_mean_distance:
+            break
+
+    if lane == 0:
+        total[0] = make_affine44(wp.mat33(linear), wp.vec3(shift))
+        out_cost[0] = cost
 
 
 @wp.func

@@ -807,7 +807,7 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 - FMA fusion makes a degenerate triangle's area ~1e-8 on CUDA and 0 on CPU. Do not disable it; write degeneracy tests at small scale and never assume CPU/CUDA bit agreement.
 - Form area vectors and cotangents where they do not cancel (`predicates.triangle_area_vector` crosses at the largest angle); Heron needs sorted sides. Float32 lengths cannot represent a needle (the intrinsic path warns).
 - Never substitute an algebraic identity inside a sign test that feeds a branch; CUDA differs, CPU does not. Exactly coplanar float32 corners give float64 plane distances of ~1e-19 with mixed signs on CUDA (FMA) and exact zeros on CPU: snap a distance within its own rounding to zero before branching on its sign (`predicates.plane_distances_d`; without it two disjoint coplanar triangles "intersected" on CUDA).
-- `mesh_query_point_no_sign` is inexact (~2e-5, the point worse than the distance); `length < r` and `length_sq < r*r` differ in float32 (§2.4); NaN breaks `searchsorted(side="right")` (§3.1).
+- `mesh_query_point_no_sign` is inexact (~2e-5, the point worse than the distance; its face need not be the nearest, so an exact match re-searches the faces within that distance, `kernels/registration.landmark_match`); `length < r` and `length_sq < r*r` differ in float32 (§2.4); NaN breaks `searchsorted(side="right")` (§3.1).
 - Gate an angle near pi on the angle (`atan2` form, `predicates.vector_angle`), not on its `float32` cosine: the cosine is flat there, so every threshold above ~179.98° rounded to `cos == -1` and the fold gate of `face_defective_mask` / `remove_folded_faces` never flagged an exactly folded-back pair (fixed 2026-10-26; MeshLib, which tests `dot <= cos`, is inclusive at the threshold where ordito is strict).
 - Float32 storage sets a noise floor no tolerance reaches; heat fields scale as 1/scale², so absolute tolerances on them are wrong.
 - The backward pass of an empty dynamic `range` runs one iteration past the array: a differentiated thread whose loop can draw nothing must return first.
@@ -1229,6 +1229,18 @@ it was read for the rule only, and each kernel implements the rule, not the sour
   icosphere, both devices (was 1.4e-5 on CUDA, a 1.4x margin; the unrounded input alone moves
   MeshLab 3.8e-6). Price, CUDA, best of 5 against HEAD in a detached worktree: 1.61x at 20 k faces,
   1.20x at 328 k. The default stays `float32`.
+- **`icp(method="pyvista")`** is `vtkIterativeClosestPointTransform` as `align` runs it: every
+  `n // 100`-th point a landmark (100-199 of them), the source first translated onto the target's
+  centroid (both over every point), Kabsch on the landmarks' matches composed each round (VTK's
+  Horn quaternion is the same rotation; its Jacobi solve moves the first round 3e-9), stop at the
+  cap or once a fit moves the landmarks by an RMS of at most `threshold` (VTK's `MeanDistance`,
+  RMS mode, measured from VTK's own matrices). One block, one launch, `float64`
+  (`kernels/registration.landmark_icp`). Class A to 6.3e-7 (CPU), mesh and cloud targets, at a
+  3-iteration cap and converged; group `icp_mesh_pyvista` (the pyvista row left `icp_mesh`). The
+  match must be the *exact* nearest face: `mesh_query_point_no_sign` returned a face a few 1e-5
+  farther than the nearest on `saddle_graded`'s needles, one landmark switched faces at round
+  110, and the converged answer missed VTK's by 1.4e-4 (stopping at 153 rounds, VTK at 117);
+  taking the `float64` minimum over the faces whose boxes meet that face's distance closes it.
 
 ### Open items from the 2026-10-28 Class C upgrades
 
@@ -1312,9 +1324,9 @@ as it stands; an upgrade means adding the reference's own algorithm as an option
   narrow-band distance field; `principal_axes` on a degenerate spectrum (one axis defined).
 - `screened_poisson` (`dense`) against open3d / pymeshlab (Kazhdan's octree; `method="octree"` is
   the reproduction) and MeshLib's distance volume (another reconstructor).
-- `icp_mesh` against pyvista's `vtkIterativeClosestPointTransform` (landmark subsampling and a
-  mean-distance stop: a candidate for a `method="pyvista"` port); `principal_curvature
-  (frame_independent=True)` against igl (a bound; `False` is Class A).
+- `principal_curvature(frame_independent=True)` against igl (a bound; `False` is Class A).
+  (`icp_mesh` against pyvista is closed: `icp(method="pyvista")`, `Second pass over the non-A
+  pairs`.)
 - The defaults of `filter_normals` and `filter_two_step` against MeshLib's and MeshLab's crease
   measures: different algorithms whose library-named methods are Class A.
 - Truth checks with no library answer: `resample_uniform` on a sphere's offset; `sample_volume`'s
