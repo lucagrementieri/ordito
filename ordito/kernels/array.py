@@ -2228,3 +2228,25 @@ def float_scan_chunks(
         scanned + wp.tile_ones(shape=FLOAT_SCAN_CHUNK, dtype=wp.float32) * offset,
         offset=chunk * FLOAT_SCAN_CHUNK,
     )
+
+
+@wp.func
+def unique_edge_row(
+    unique_edges: wp.array2d[wp.int32], n_edges: wp.int32, u: wp.int32, v: wp.int32, base: wp.uint64
+) -> wp.int32:
+    # The row of undirected edge ``(u, v)`` among the first ``n_edges`` rows of ``unique_edges``,
+    # which ascend by ``pack_edge_key`` (``edges.edges_unique``' order); ``-1`` when it is not
+    # there. ``base`` is at least the vertex count.
+    key = pack_edge_key(u, v, base)
+    lo = wp.int32(0)
+    hi = n_edges
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if pack_edge_key(unique_edges[mid, 0], unique_edges[mid, 1], base) < key:
+            lo = mid + 1
+        else:
+            hi = mid
+    if lo < n_edges:
+        if pack_edge_key(unique_edges[lo, 0], unique_edges[lo, 1], base) == key:
+            return lo
+    return wp.int32(-1)

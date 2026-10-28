@@ -29,6 +29,7 @@ import math
 from collections.abc import Callable
 from typing import Literal, NamedTuple, cast, overload
 
+import numpy as np
 import warp as wp
 
 import ordito as od
@@ -44,6 +45,11 @@ from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import remesh as kernel_remesh
 from ordito.kernels import scatter as kernel_scatter
 from ordito.laplacian import mollify_intrinsic
+
+# ``cluster_decimate(method="meshlib")``'s most cells along one axis: a finer ``voxel_size``
+# widens the cells along that axis to ``extent / 1024``, as the grid sampling it reproduces caps
+# them.
+_BOX_FITTED_MAX_CELLS = 1024
 
 # Callback that launches a predicate kernel filling ``out_flip``/``out_quad`` for one flip
 # iteration. Supplied by each consumer of ``_flip_interior_edges`` (3D Delone / 2D incircle).
@@ -1971,7 +1977,7 @@ def cluster_decimate(
     *,
     voxel_size: float | None = None,
     contraction: Literal["average", "closest"] = "average",
-    method: Literal["open3d", "meshlab"] = "open3d",
+    method: Literal["open3d", "meshlab", "meshlib"] = "open3d",
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Decimate by snapping vertices to a voxel grid and welding each cell to one vertex.
@@ -1983,7 +1989,7 @@ def cluster_decimate(
     (two or three corners in the same cell) or repeat another face with the same winding are
     dropped. A face and its reversed twin are both kept, as both libraries keep them.
 
-    ``method`` names the library whose grid and mean are reproduced:
+    ``method`` names the grid and the mean, two of them after the library they reproduce:
 
     - ``"open3d"`` (default) is Open3D's ``simplify_vertex_clustering``: cells of exactly
       ``voxel_size``, anchored half a cell below the bounding box, and a cell's mean over its
@@ -1993,6 +1999,14 @@ def cluster_decimate(
       each cell is stretched a little to fit it, and a cell's mean over its face corners (a vertex
       counts once per face on it). Its vertices alone are MeshLab's
       ``generate_sampling_clustered_vertex`` with the same ``contraction``.
+    - ``"meshlib"`` is that library's vertex grid sampling: the bounding box of the vertices on a
+      face, split into ``ceil(extent / voxel_size)`` cells per axis (at most 1024, so a
+      ``voxel_size`` under ``extent / 1024`` widens the cells along that axis) stretched to fit it
+      exactly, with a vertex on the box's maximum in the last cell. The grid, the cell of each
+      vertex and its distance to the cell centre are all formed in ``float32``, one rounding per
+      operation, so with ``contraction="closest"`` the output vertices are exactly the vertices a
+      serial single-precision grid sampling keeps, on both devices. Its mean is over face corners,
+      as for ``"meshlab"``. An axis the box is flat along has one cell.
 
     !!! warning "This does not preserve topology"
         Two sheets of the surface that pass within ``voxel_size`` of each other get welded
@@ -2020,11 +2034,11 @@ def cluster_decimate(
         - ``"closest"`` — the input vertex nearest the cell centre, which is MeshLab's
           ``'Closest to center'``. Keeps every output vertex *on* the input surface, so it is the
           right choice when the positions must stay exact (ties break to the lowest index). Under
-          ``method="meshlab"`` only vertices on a face are candidates, as in MeshLab.
+          ``method="meshlab"`` and ``"meshlib"`` only vertices on a face are candidates.
 
         The contraction moves vertices only: the cells, and so the faces, are the same for both.
     method
-        ``"open3d"`` or ``"meshlab"``: which library's grid and mean, as above.
+        ``"open3d"``, ``"meshlab"`` or ``"meshlib"``: which grid and mean, as above.
 
     Returns
     -------
@@ -2037,7 +2051,7 @@ def cluster_decimate(
     Raises
     ------
     ValueError
-        If ``voxel_size`` is not positive, or ``contraction`` or ``method`` is not one of its two
+        If ``voxel_size`` is not positive, or ``contraction`` or ``method`` is not one of its
         names.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
@@ -2054,9 +2068,11 @@ def cluster_decimate(
 
     Notes
     -----
-    Cells whose every face collapsed are dropped from the output, where both libraries keep them
+    Cells whose every face collapsed are dropped from the output, where the libraries keep them
     as unreferenced vertices. So the faces agree exactly and the vertex counts can differ by the
-    number of such cells — usually zero, and never in a way that changes the surface.
+    number of such cells — usually zero, and never in a way that changes the surface. On a closed
+    surface sampled several vertices to a cell none is lost; a strip narrower than ``voxel_size``
+    can lose every face, and so every cell.
 
     Under ``method="open3d"`` the binning is
     [`ordito.voxels.cell_indices`][ordito.voxels.cell_indices]' cell assignment. Output vertices
@@ -2086,8 +2102,8 @@ def cluster_decimate(
     require_same_device(vertices=vertices, faces=faces)
     if contraction not in ("average", "closest"):
         raise ValueError(f"contraction must be 'average' or 'closest', got {contraction!r}")
-    if method not in ("open3d", "meshlab"):
-        raise ValueError(f"method must be 'open3d' or 'meshlab', got {method!r}")
+    if method not in ("open3d", "meshlab", "meshlib"):
+        raise ValueError(f"method must be 'open3d', 'meshlab' or 'meshlib', got {method!r}")
 
     device = vertices.device
     n_vertices = vertices.size
@@ -2095,9 +2111,13 @@ def cluster_decimate(
     if n_vertices == 0 or n_faces == 0:
         return _launch.clone(vertices), _launch.clone(faces)
 
-    origin, cell_widths, cell_bound = _cluster_grid(vertices, voxel_size, method)
-    inverse_size = wp.vec3(*(1.0 / width for width in cell_widths))
-    bound = wp.uint64(cell_bound)
+    origin, cell_widths, inverse_widths, cell_bound = _cluster_grid(
+        vertices, faces, voxel_size, method
+    )
+    inverse_size = wp.vec3(*inverse_widths)
+    cell_max = wp.vec3i(*(count - 1 for count in cell_bound))
+    radix = max(cell_bound)
+    bound = wp.uint64(radix)
     cell_mask = kernel_grouping.hash_table_mask(n_vertices)
     face_mask = kernel_grouping.hash_table_mask(n_faces)
     n_cells = cell_mask + 1
@@ -2118,8 +2138,9 @@ def cluster_decimate(
     sort_keys = _launch.empty(2 * n_vertices, dtype=wp.uint64, device=device)
     average = contraction == "average"
     # What a cell's representative is taken over: its vertices (Open3D), or the face corners in it
-    # (MeshLab's mean weighs a vertex by its faces, and its closest vertex is one on a face).
-    corner_items = method == "meshlab"
+    # (MeshLab's mean weighs a vertex by its faces, and its closest vertex is one on a face; the
+    # box-fitted grid's box and candidates are the vertices on a face too).
+    corner_items = method != "open3d"
     n_items = faces.size if corner_items else n_vertices
     # Under the deterministic setting the mean is not scattered: each item is staged with its
     # output vertex for a stable sort, and every cell's run is added in one fixed order
@@ -2129,7 +2150,7 @@ def cluster_decimate(
     _launch.launch(
         kernel_remesh.cluster_insert_vertices,
         dim=n_vertices,
-        inputs=[vertices, origin, inverse_size, bound, wp.int32(cell_mask), cell_table],
+        inputs=[vertices, origin, inverse_size, cell_max, bound, wp.int32(cell_mask), cell_table],
         outputs=[vertex_cell],
         device=device,
     )
@@ -2146,6 +2167,7 @@ def cluster_decimate(
             vertices,
             origin,
             inverse_size,
+            cell_max,
             bound,
             cell_table,
             wp.int32(face_mask),
@@ -2171,7 +2193,7 @@ def cluster_decimate(
         sort_keys,
         kept_cells,
         count=n_kept,
-        end_bit=max(1, (min(cell_bound**3, 1 << 64) - 1).bit_length()),
+        end_bit=max(1, (min(radix**3, 1 << 64) - 1).bit_length()),
     )
     _launch.launch(
         kernel_remesh.cluster_rank_cells, dim=n_kept, inputs=[kept_cells, cell_rank], device=device
@@ -2192,6 +2214,8 @@ def cluster_decimate(
         if ordered
         else kernel_remesh.CLUSTER_AVERAGE
         if average
+        else kernel_remesh.CLUSTER_CLOSEST_UNFUSED
+        if method == "meshlib"
         else kernel_remesh.CLUSTER_CLOSEST
     )
     # The distinct surviving faces come out in the order of their output-vertex triple rotated to
@@ -2211,6 +2235,7 @@ def cluster_decimate(
             vertices,
             origin,
             inverse_size,
+            cell_max,
             wp.vec3(*cell_widths),
             mode,
             wp.int32(corner_items),
@@ -2254,24 +2279,33 @@ def cluster_decimate(
 
 
 def _cluster_grid(
-    vertices: wp.array[wp.vec3], voxel_size: float | None, method: str
-) -> tuple[wp.vec3, tuple[float, float, float], int]:
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], voxel_size: float | None, method: str
+) -> tuple[wp.vec3, tuple[float, float, float], tuple[float, float, float], tuple[int, int, int]]:
     """
-    ``cluster_decimate``'s grid: its origin, its cell width along each axis and the cell bound.
+    ``cluster_decimate``'s grid: origin, cell width and its inverse per axis, and cell counts.
 
-    The origin is derived, so every cell coordinate is non-negative and below the bound, the
-    radix the cell keys are packed in. Open3D's grid is
+    The origin is derived, so every cell coordinate is non-negative and below its axis's count;
+    the largest count is the radix the cell keys are packed in. Open3D's grid is
     [`voxels.resolve_voxel_grid`][ordito.voxels.resolve_voxel_grid]'s, the one definition shared
     with ``ordito.voxels`` so the two modules cannot drift on the cell size or on Open3D's half-cell
     anchor. MeshLab's grows the bounding box by one cell on every side and divides each axis into
     ``floor(extent / voxel_size)`` equal cells (vcg's ``Clustering::Init``), so its cells are a
-    little wider than ``voxel_size`` and differ per axis.
+    little wider than ``voxel_size`` and differ per axis. Both bound every cell strictly, so their
+    counts are the one bound on all three axes.
     """
     if method == "open3d":
         voxel_size, origin, cell_bound = od.voxels.resolve_voxel_grid(
             vertices, voxel_size, caller="cluster_decimate", return_cell_bound=True
         )
-        return origin, (voxel_size, voxel_size, voxel_size), cell_bound
+        inverse = 1.0 / voxel_size
+        return (
+            origin,
+            (voxel_size, voxel_size, voxel_size),
+            (inverse, inverse, inverse),
+            (cell_bound, cell_bound, cell_bound),
+        )
+    if method == "meshlib":
+        return _box_fitted_grid(vertices, faces, voxel_size)
     lower, upper = od.bounds.aabb(vertices)
     voxel_size, _origin = od.voxels.resolve_voxel_grid(
         vertices, voxel_size, bounds=(lower, upper), caller="cluster_decimate"
@@ -2281,7 +2315,44 @@ def _cluster_grid(
     widths = (extents[0] / counts[0], extents[1] / counts[1], extents[2] / counts[2])
     origin = wp.vec3(*(float(lower[axis]) - voxel_size for axis in range(3)))
     # One cell of slack over the largest count, for the float32 rounding of the cell kernel.
-    return origin, widths, max(counts) + 1
+    bound = max(counts) + 1
+    inverse = (1.0 / widths[0], 1.0 / widths[1], 1.0 / widths[2])
+    return origin, widths, inverse, (bound, bound, bound)
+
+
+def _box_fitted_grid(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], voxel_size: float | None
+) -> tuple[wp.vec3, tuple[float, float, float], tuple[float, float, float], tuple[int, int, int]]:
+    """
+    ``cluster_decimate``'s box-fitted grid: the faces' bounding box split into whole cells.
+
+    Each axis takes ``ceil(extent / voxel_size)`` cells, at most ``_BOX_FITTED_MAX_CELLS`` and at
+    least one, stretched to fit the box exactly. Every quantity is formed in ``float32`` as the
+    kernels round it, so the cell a vertex falls in and the centre it is measured against are
+    those of the same grid built in single precision. An axis the box is flat along has one cell
+    of width zero, its inverse zero, so every vertex sits at that cell's centre along it.
+    """
+    # Only the vertices on a face span the box: an unreferenced vertex is binned (clamped into a
+    # border cell) but never a candidate.
+    corners = cast("wp.array[wp.vec3]", od.array.gather(vertices, faces))
+    lower, upper = od.bounds.aabb(corners)
+    voxel_size, _origin = od.voxels.resolve_voxel_grid(
+        corners, voxel_size, bounds=(lower, upper), caller="cluster_decimate"
+    )
+    # Host arithmetic over three axes, in the kernels' own float32.
+    low = np.array([float(lower[axis]) for axis in range(3)], dtype=np.float32)
+    extent = np.array([float(upper[axis]) for axis in range(3)], dtype=np.float32) - low
+    counts = np.clip(np.ceil(extent / np.float32(voxel_size)), 1, _BOX_FITTED_MAX_CELLS)
+    widths = extent / counts.astype(np.float32)
+    flat = widths == 0
+    inverse = np.float32(1.0) / np.where(flat, np.float32(1.0), widths)
+    inverse[flat] = 0
+    return (
+        wp.vec3(*low.tolist()),
+        (float(widths[0]), float(widths[1]), float(widths[2])),
+        (float(inverse[0]), float(inverse[1]), float(inverse[2])),
+        (int(counts[0]), int(counts[1]), int(counts[2])),
+    )
 
 
 def _cluster_sorted_means(

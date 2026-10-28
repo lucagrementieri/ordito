@@ -288,6 +288,11 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "geodesic_ball packs every row first, up to 512 entries a vertex, which on a 14 M-vertex "
         "scan is past the device's memory and the int32 offsets"
     ),
+    ("smoothing", "neighbors._EdgePathBallWalk"): (
+        "relax_approx(method='meshlib') rebuilds its shortest-path balls from each pass's "
+        "positions and fits each chunk's rows as the walk leaves them; no public form returns a "
+        "ball it would only pack to read once"
+    ),
     ("curvature", "neighbors._GeodesicBallWalk"): (
         "principal_curvature fits each vertex's quadric from its chunk's queue rows as the walk "
         "leaves them; geodesic_ball would pack every row into a list the fit reads once"
@@ -585,6 +590,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.conjugate_gradient", "cg_one_block"): frozenset({"scratch", "narrow"}),
     # The heat method's normalization shifts and orients the distance field where it lies.
     ("heat", "shift_and_orient"): frozenset({"phi"}),
+    # The edge-based signed heat method's ``none`` constraint shifts its field the same way.
+    ("heat", "shift_by_mean"): frozenset({"phi"}),
     ("holes", "fill_dp_span"): frozenset({"tables"}),
     # ``join_closest_components``' round state, carried across its launches: the rim table edited
     # in place, the component map, the state word, the running best key (decoded, then re-armed)
@@ -2094,7 +2101,10 @@ _UNCITABLE_REFERENCES = re.compile(
     # The ``MR`` source-file / class prefix is matched case-**sensitively**, inside a scoped
     # ``(?-i:)``, so that ``IGNORECASE`` on the rest cannot turn it into "any word starting with
     # mr". The ``\b`` is what keeps ``circumradius`` from matching it either way.
-    r"\bmeshlib\b|\bmrmesh(py|numpy)\b|(?-i:\bMR[A-Z][A-Za-z]{2,})"
+    # The one exception is the quoted method value ``"meshlib"`` (owner decision, 2026-10-28): an
+    # option reproducing that library is named for it, like ``"open3d"`` or ``"meshlab"``, so the
+    # quote marks on either side exempt it; the library in prose stays uncitable.
+    r"(?<![\"'])\bmeshlib\b(?![\"'])|\bmrmesh(py|numpy)\b|(?-i:\bMR[A-Z][A-Za-z]{2,})"
     r"|\bFanOptimizer\b|\bbuildLocalTriangulation\b|\bpositionVertsSmoothly"
     r"|\bcalcQueueElement|\bupdateBorderQueueElement"
     r"|\bpromesh\b|\btriangulate_boundaries\b",
@@ -2120,6 +2130,9 @@ def uncitable_reference_problems() -> list[str]:
     **promesh** -- not proprietary but *unverifiable*, and not a published package: its mirror
     carries no licence file of any kind, and nothing installs it. Five references in ``holes.py``
     claimed a port from it. See the comment above the pattern.
+
+    The quoted method value ``"meshlib"`` is exempt: an option that reproduces the library is
+    named for it, as the ``"open3d"`` and ``"meshlab"`` options are.
 
     Describe what the code computes, or name the algorithm in the literature's vocabulary -- which
     is what the docs rule asks for independently and what a reader needed anyway. Reading either

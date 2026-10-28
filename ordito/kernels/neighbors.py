@@ -4,6 +4,7 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, INT64_MAX
 from ordito.kernels import array as kernel_array
+from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels.algorithms import bfs as kernel_bfs
 from ordito.kernels.array import declare_map_signatures, map_probe, map_probe_single
 from ordito.kernels.reduce import block_chunk_1d, block_min, thread_fence
@@ -1507,6 +1508,146 @@ def gather_queue_rows(
     if j >= counts[chunk_start + t]:
         return
     out_flat[local_offsets[t] + j] = queue_pool[t, j]
+
+
+# Capacity of the open-addressing table that maps a vertex to its slot of the edge-path ball row:
+# twice the row's, so the table is at most half full.
+EDGE_PATH_HASH_CAPACITY = 2 * kernel_bfs.PER_SOURCE_MAX_NEIGHBORS
+
+
+@wp.func
+def edge_path_hash_find(keys: wp.array[wp.int32], vertex: wp.int32) -> wp.int32:
+    # The slot holding ``vertex``, or the empty slot (``-1``) where it would go.
+    mask = keys.shape[0] - 1
+    slot = kernel_grouping.hash_slot(vertex, mask)
+    while keys[slot] != vertex and keys[slot] != wp.int32(-1):
+        slot = kernel_grouping.next_slot(slot, mask)
+    return slot
+
+
+@wp.func
+def per_source_edge_path_collect(
+    i: wp.int32,
+    positions: wp.array[wp.vec3],
+    adj_offsets: wp.array[wp.int32],
+    adj_columns: wp.array[wp.int32],
+    radius: wp.float32,
+    row: wp.array[wp.int32],
+    row_distances: wp.array[wp.float32],
+    pending: wp.array[wp.int32],
+    keys: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    out_overflow: wp.array[wp.int32],
+) -> wp.int32:
+    """
+    Collect the shortest-edge-path ball of ``i`` within ``radius``; return its size.
+
+    The ball is every vertex whose shortest path along edges from ``i`` -- edge lengths summed in
+    ``float32`` from the source outward -- is at most ``radius``, inclusive. Label correcting in
+    first-in first-out order: a vertex whose distance falls is queued again unless it is queued
+    already, so the walk ends at the distances no edge can lower, which are the shortest-path
+    ones (a rounded ``d + length`` is never below ``d`` and rises with it, so the float sums keep
+    the order a settle-by-distance walk relies on). Only a distance within the radius is recorded
+    and a recorded one only falls, so ``row[:count]`` is exactly the ball, in discovery order.
+
+    ``row_distances`` is each row entry's distance, ``pending`` a ring of the table slots of the
+    vertices waiting to be expanded (a vertex is queued at most once at a time, so the ring never
+    holds more than the row), and ``keys`` / ``ranks`` an open-addressing table from a vertex to
+    its row rank, ``-rank - 1`` while it is queued. ``keys`` arrives filled with ``-1`` and is left
+    so. A ball past the row's capacity keeps its first-discovered vertices and adds one to
+    ``out_overflow``.
+    """
+    capacity = row.shape[0]
+    home = edge_path_hash_find(keys, i)
+    keys[home] = i
+    ranks[home] = wp.int32(-1)
+    row[0] = i
+    row_distances[0] = wp.float32(0.0)
+    pending[0] = home
+    head = wp.int32(0)
+    queued = wp.int32(1)
+    count = wp.int32(1)
+    clipped = wp.bool(False)
+    while queued > 0:
+        popped = pending[head]
+        head = wp.where(head + 1 == capacity, wp.int32(0), head + 1)
+        queued -= wp.int32(1)
+        rank = -ranks[popped] - 1
+        ranks[popped] = rank
+        source = row[rank]
+        distance = row_distances[rank]
+        origin = positions[source]
+        for k in range(adj_offsets[source], adj_offsets[source + 1]):
+            neighbor = adj_columns[k]
+            reach = distance + wp.length(positions[neighbor] - origin)
+            if reach > radius:
+                continue
+            slot = edge_path_hash_find(keys, neighbor)
+            target = wp.int32(-1)
+            if keys[slot] == neighbor:
+                stored = ranks[slot]
+                at = wp.where(stored < 0, -stored - 1, stored)
+                if reach < row_distances[at]:
+                    row_distances[at] = reach
+                    if stored >= 0:
+                        target = at
+            elif count < capacity:
+                keys[slot] = neighbor
+                row[count] = neighbor
+                row_distances[count] = reach
+                target = count
+                count += wp.int32(1)
+            else:
+                clipped = wp.bool(True)
+            if target >= 0:
+                ranks[slot] = -target - 1
+                tail = head + queued
+                pending[wp.where(tail >= capacity, tail - capacity, tail)] = slot
+                queued += wp.int32(1)
+    # Every slot is found before any is cleared: clearing one first would cut the probe chain of
+    # a key stored past it.
+    for k in range(count):
+        pending[k] = edge_path_hash_find(keys, row[k])
+    for k in range(count):
+        keys[pending[k]] = wp.int32(-1)
+    if clipped:
+        wp.atomic_add(out_overflow, 0, 1)
+    return count
+
+
+@wp.kernel
+def query_edge_path_ball_collect(
+    positions: wp.array[wp.vec3],
+    adj_offsets: wp.array[wp.int32],
+    adj_columns: wp.array[wp.int32],
+    radius: wp.float32,
+    chunk_start: wp.int32,
+    rows: wp.array2d[wp.int32],
+    distance_pool: wp.array2d[wp.float32],
+    pending_pool: wp.array2d[wp.int32],
+    key_pool: wp.array2d[wp.int32],
+    rank_pool: wp.array2d[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_overflow: wp.array[wp.int32],
+) -> None:
+    # One chunk of edge-path balls, in ``query_geodesic_ball_collect``'s layout: thread ``t``'s row
+    # of ``rows`` holds source ``chunk_start + t``'s ball, ``out_counts`` its size. The two differ
+    # by the ball (a breadth-first walk inside a Euclidean ball there, shortest paths here).
+    t = wp.int32(wp.tid())
+    i = chunk_start + t
+    out_counts[i] = per_source_edge_path_collect(
+        i,
+        positions,
+        adj_offsets,
+        adj_columns,
+        radius,
+        rows[t],
+        distance_pool[t],
+        pending_pool[t],
+        key_pool[t],
+        rank_pool[t],
+        out_overflow,
+    )
 
 
 def _declare_map_kernels() -> None:

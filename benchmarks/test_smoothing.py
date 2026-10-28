@@ -69,7 +69,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 import pymeshlab as ml
@@ -626,6 +626,24 @@ def test_filter_normals(bench_case: BenchCase) -> None:
 @pytest.mark.benchlibs("ordito", "pymeshlab")
 def test_filter_two_step(bench_case: BenchCase) -> None:
     """Normal diffusion plus vertex fitting, at MeshLab's own 3 x 20 x 20 defaults on both sides."""
+    _bench_two_step(bench_case, "edge_neighbors")
+
+
+@pytest.mark.benchmark(group="filter_two_step_meshlab")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+def test_filter_two_step_meshlab(bench_case: BenchCase) -> None:
+    """
+    ``method="meshlab"``: the same answer as the pymeshlab row, vertex for vertex.
+
+    Its normal pass walks the vertex -> face rows (every face sharing a vertex, of lower index)
+    where the default reads three edge mates.
+    """
+    _bench_two_step(bench_case, "meshlab")
+
+
+def _bench_two_step(bench_case: BenchCase, method: Literal["edge_neighbors", "meshlab"]) -> None:
+    """Time ``filter_two_step`` at ``method``, or MeshLab's filter, at MeshLab's defaults."""
     n_vertices = bench_case.n_vertices
     if bench_case.kind == "pymeshlab":
         _skip_pml_beyond_bunny(bench_case)
@@ -652,8 +670,73 @@ def test_filter_two_step(bench_case: BenchCase) -> None:
             threshold=_TWO_STEP_NORMAL_THRESHOLD,
             normal_iterations=_TWO_STEP_NORMAL_STEPS,
             fit_iterations=_TWO_STEP_FIT_STEPS,
+            method=method,
         ),
         rounds=3,
+    )
+    assert smoothed.shape == (n_vertices,)
+
+
+@pytest.mark.benchmark(group="filter_normals_meshlib")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_filter_normals_meshlib(bench_case: BenchCase) -> None:
+    """
+    ``method="meshlib"`` at its defaults: ten face-system solves with the indicator between.
+
+    meshlib's side is the same loop through its two public steps, ``denoiseNormals`` from the
+    original normals then ``updateIndicatorFast``, which is ``meshDenoiseViaNormals``' normal half
+    (Class A in ``tests/test_smoothing.py``). Its normals and indicator are rebuilt per round: both
+    are mutated in place.
+    """
+    n_faces = bench_case.n_faces
+    if bench_case.kind == "meshlib":
+        mesh_ml = bench_case.new_mesh_ml()  # read only
+
+        def denoise_ml() -> mm.FaceNormals:
+            weights_ml = mm.UndirectedEdgeScalars()
+            weights_ml.resize(mesh_ml.topology.undirectedEdgeSize(), 1.0)
+            normals_ml = mm.computePerFaceNormals(mesh_ml)
+            for _ in range(10):
+                normals_ml = mm.computePerFaceNormals(mesh_ml)
+                mm.denoiseNormals(mesh_ml, normals_ml, weights_ml, 5.0)
+                mm.updateIndicatorFast(mesh_ml.topology, weights_ml, normals_ml, 0.01, 5.0)
+            return normals_ml
+
+        assert bench_case.run(denoise_ml, rounds=3).size() == n_faces
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    normals = bench_case.run(
+        lambda: od.smoothing.filter_normals(vertices, faces, method="meshlib"), rounds=3
+    )
+    assert normals.shape == (n_faces,)
+
+
+@pytest.mark.benchmark(group="filter_two_step_meshlib")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_filter_two_step_meshlib(bench_case: BenchCase) -> None:
+    """
+    ``method="meshlib"`` against ``meshDenoiseViaNormals``, both at the reference's defaults.
+
+    Ten normal solves, then twenty least-squares vertex solves over one factorization. meshlib
+    moves its mesh in place, so each round denoises a fresh copy.
+    """
+    n_vertices = bench_case.n_vertices
+    if bench_case.kind == "meshlib":
+        new_mesh_ml = bench_case.new_mesh_ml
+        settings_ml = mm.DenoiseViaNormalsSettings()
+
+        def denoise_ml() -> int:
+            mesh_ml = new_mesh_ml()
+            mm.meshDenoiseViaNormals(mesh_ml, settings_ml)
+            return mesh_ml.topology.numValidVerts()
+
+        assert bench_case.run(denoise_ml, rounds=3) == n_vertices
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    smoothed = bench_case.run(
+        lambda: od.smoothing.filter_two_step(vertices, faces, method="meshlib"), rounds=3
     )
     assert smoothed.shape == (n_vertices,)
 
@@ -1099,6 +1182,52 @@ def test_relax_approx(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     relaxed = bench_case.run(
         lambda: od.smoothing.relax_approx(vertices, faces, radius, 1), rounds=3
+    )
+    assert relaxed.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="relax_approx_meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_relax_approx_meshlib(bench_case: BenchCase) -> None:
+    """
+    ``relax_approx(method="meshlib")``: shortest-edge-path balls rebuilt every pass, float64 fit.
+
+    Read against ``relax_approx``, which builds its balls once: this row walks a bounded Dijkstra
+    per vertex on every pass, so at several passes the walk is most of the call. Three planar
+    passes, radius 3 % of the bounding-box diagonal as in ``relax_approx``, and the same cap for
+    the same reason (lucy's balls clip at their 512-entry row).
+
+    Measured on CUDA (noisy unit icospheres, this radius, planar), ``method="meshlib"`` against
+    the default: 5.2x at three passes and 2.1x at one on ``icosphere(6)`` (41 k vertices), 5.9x and
+    2.1x on ``icosphere(7)`` (164 k). One walk costs about two of the default's breadth-first
+    walks, and the default walks once whatever the pass count. The walk's chunk was swept on the
+    164 k sphere: 2**14 and 2**15 sources a launch tie, 2**13 and 2**16 lose 1.4-1.5x.
+    """
+    skip_larger_than(
+        bench_case,
+        "happy_buddha",
+        "a ball of 3 % of lucy's diagonal holds about 57 000 vertices by area, so every ordito "
+        "ball is clipped at its 512-entry row and the two rows would not time the same fit",
+    )
+    radius = 0.03 * float(
+        np.linalg.norm(bench_case.vertices_np.max(0) - bench_case.vertices_np.min(0))
+    )
+    if bench_case.kind == "meshlib":
+
+        def relax_ml() -> int:
+            mesh_ml = mesh_ml_from_numpy(bench_case.vertices_np, bench_case.faces_np)
+            params_ml = mm.MeshApproxRelaxParams()
+            params_ml.iterations = 3
+            params_ml.surfaceDilateRadius = radius
+            params_ml.type = mm.RelaxApproxType.Planar
+            mm.relaxApprox(mesh_ml, params_ml)
+            return mesh_ml.topology.numValidVerts()
+
+        assert bench_case.run(relax_ml, rounds=3) > 0
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    relaxed = bench_case.run(
+        lambda: od.smoothing.relax_approx(vertices, faces, radius, 3, method="meshlib"), rounds=3
     )
     assert relaxed.shape == (bench_case.n_vertices,)
 

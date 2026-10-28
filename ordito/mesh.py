@@ -1962,7 +1962,7 @@ class Trimesh:
         t: float | None = None,
         *,
         use_robust: bool = False,
-        method: Literal["geometry_central", "meshlab", "igl"] = "geometry_central",
+        method: Literal["potpourri3d", "meshlab", "igl"] = "potpourri3d",
     ) -> od.heat.HeatSolver:
         """
         Return this mesh's [`HeatSolver`][ordito.heat.HeatSolver] at diffusion time ``t``.
@@ -1981,7 +1981,7 @@ class Trimesh:
             [`heat_operators`][ordito.heat.heat_operators]).
         method
             Whose discretization the operators follow (see
-            [`heat_operators`][ordito.heat.heat_operators]): ``"geometry_central"`` (default, the
+            [`heat_operators`][ordito.heat.heat_operators]): ``"potpourri3d"`` (default, the
             vector heat method's), or ``"meshlab"`` / ``"igl"``, what
             [`heat_geodesic`][ordito.heat.heat_geodesic] runs on at its own ``method``.
 
@@ -1993,7 +1993,7 @@ class Trimesh:
         Raises
         ------
         ValueError
-            If ``method`` is not ``"geometry_central"``, ``"meshlab"`` or ``"igl"``.
+            If ``method`` is not ``"potpourri3d"``, ``"meshlab"`` or ``"igl"``.
 
         Notes
         -----

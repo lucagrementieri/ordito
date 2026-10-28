@@ -1335,68 +1335,62 @@ def test_cluster_decimate_matches_pymeshlab(
     assert np.array_equal(closest_faces_wp.numpy(), decimated_faces_wp.numpy())
 
 
-@pytest.mark.parametrize("voxel_fraction", [0.02, 0.05])
-@pytest.mark.parity("cluster_decimate", "meshlib")
-def test_cluster_decimate_matches_meshlib_cell_count(device: str, voxel_fraction: float) -> None:
+@pytest.mark.parametrize(
+    ("mesh_name", "voxel_fraction"),
+    [("icosphere", 0.05), ("icosphere", 0.1), ("sphere_irregular", 0.1), ("sphere_irregular", 0.2)],
+)
+@pytest.mark.parity("cluster_decimate_meshlib", "meshlib")
+def test_cluster_decimate_meshlib_method_matches_meshlib(
+    request: pytest.FixtureRequest, device: str, mesh_name: str, voxel_fraction: float
+) -> None:
     """
-    Class C (a count statistic): ``verticesGridSampling`` picks one vertex per occupied cell.
+    Class A (point sets up to order): ``method="meshlib"`` keeps MeshLib's sampled vertices.
 
-    Not the same operation, and the difference is named rather than tolerated: MeshLib *samples* --
-    it returns a ``VertBitSet`` selecting one surviving vertex per voxel and never builds a mesh --
-    where ``cluster_decimate`` contracts each cell's vertices to a representative and rebuilds the
-    faces. What the two share is the cell decomposition, so the comparable quantity is **how many
-    cells the surface occupies**, which is ordito's output vertex count and MeshLib's bit count.
+    With ``contraction="closest"``, against ``verticesGridSampling``. MeshLib returns a bitset of
+    one vertex per occupied cell of its grid (the faces' bounding box split into
+    ``ceil(extent / voxel_size)`` stretched cells, the vertex nearest the cell centre in
+    ``float32``, ties to the lowest index); ordito's output vertices are those positions, compared
+    with ``od.equality.points_allclose`` at zero tolerance. Measured: equal exactly on CPU and
+    CUDA at every size here, and on ``icosphere(4)`` at 1-30 % of the diagonal, so no cell of
+    these closed surfaces loses its faces and the counts agree.
 
-    Measured on ``icosphere(4)`` at 2 % and 5 % of the bounding-box diagonal, both devices: 2 310 /
-    541 against MeshLib's 2 394 / 548, i.e. ratios of **0.965 / 0.987** (and 1.18 at 10 %, which is
-    why that coarser size is not a parameter). The residual is grid *anchoring*, a convention the
-    two genuinely differ on and ordito cannot adopt without breaking its Open3D parity: ordito
-    anchors half a cell below the bounding box with cells of exactly ``voxel_size`` (Open3D's grid),
-    where MeshLib, measured, fits ``ceil(extent / voxel_size)`` cells *exactly* to the bounding box
-    and so stretches them. Hence a bound of 1.12x rather than exact: about 3x the worse 3.5 %
-    residual. The attribution is asserted, not assumed: a NumPy count of the occupied cells of
-    each grid reproduces each side **exactly** (ordito's 2 310 / 541 on Open3D's grid, MeshLib's
-    2 394 / 548 on the box-fitted one; 151 against 128 at 10 %). So adopting MeshLib's grid would
-    move every count off Open3D's, which
-    [`test_cluster_decimate_matches_open3d`][tests.test_remesh.test_cluster_decimate_matches_open3d]
-    pins exactly.
-
-    **Bug class excluded:** a voxel size interpreted in the wrong units, or a grid whose cells are
-    the wrong size. **Mutation probe, measured:** the count falls **4.3x** between consecutive
-    fractions here (2 310 -> 541 -> 151), so a factor-of-two error in the cell size moves the ratio
-    far outside the 1.12x band while the anchoring residual stays inside it.
+    Non-vacuity: the reference samples down (several vertices a cell), and the default grid
+    selects another set at every size, asserted below. ``icosphere(4)`` is symmetric, so
+    vertices tie for the centre of a cell: **mutation probes, measured:** the fused
+    ``wp.length_sq`` distance on CUDA picks 4 of 128 vertices differently at 10 %; dropping the
+    clamp to the last cell turns the vertices on the box's maximum into cells of their own and
+    fails every case.
     """
-    sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
-    diagonal = float(
-        np.linalg.norm(sphere_tm.vertices.max(axis=0) - sphere_tm.vertices.min(axis=0))
-    )
-    voxel_size = voxel_fraction * diagonal
-
-    clustered_vertices_wp, clustered_faces_wp = od.remesh.cluster_decimate(
-        vertices_wp, faces_wp, voxel_size=voxel_size
-    )
+    if mesh_name == "icosphere":
+        sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
+        faces_np = sphere_tm.faces
+    else:
+        mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+        vertices_wp, faces_wp, faces_np = mesh_wp.points, mesh_wp.indices, mesh_tm.faces
+    # MeshLib takes the positions as ordito holds them, in float32.
+    vertices_np = vertices_wp.numpy()
+    voxel_size = voxel_fraction * float(np.linalg.norm(np.ptp(vertices_np, axis=0)))
     sampled_ml = mm.verticesGridSampling(
-        mm.MeshPart(numpy_to_meshlib(sphere_tm.vertices, sphere_tm.faces)), voxel_size
+        mm.MeshPart(numpy_to_meshlib(vertices_np, faces_np)), voxel_size
     )
+    selected_np = meshlib_bitset_to_numpy(sampled_ml, vertices_wp.size)
+    n_selected = int(selected_np.sum())
+    assert 0 < n_selected < vertices_wp.size // 3  # non-vacuity: several vertices a cell
 
-    n_cells_ml = sampled_ml.count()
-    n_cells_wp = clustered_vertices_wp.size
-    assert 0 < n_cells_ml < sphere_tm.vertices.shape[0]  # non-vacuity: it really sampled down
-    assert 0 < n_cells_wp < sphere_tm.vertices.shape[0]
-    assert 1.0 / 1.12 < n_cells_wp / n_cells_ml < 1.12
-    assert clustered_faces_wp.size > 0
-
-    # The residual is the anchoring and nothing else: each count is its own grid's, exactly.
-    points_np = vertices_wp.numpy().astype(np.float64)
-    lower_np, upper_np = points_np.min(axis=0), points_np.max(axis=0)
-    open3d_cells_np = np.floor((points_np - (lower_np - voxel_size / 2)) / voxel_size)
-    dims_np = np.ceil((upper_np - lower_np) / voxel_size)
-    fitted_cells_np = np.minimum(
-        np.floor((points_np - lower_np) / ((upper_np - lower_np) / dims_np)), dims_np - 1
+    sampled_wp, sampled_faces_wp = od.remesh.cluster_decimate(
+        vertices_wp, faces_wp, voxel_size=voxel_size, contraction="closest", method="meshlib"
     )
-    assert n_cells_wp == np.unique(open3d_cells_np, axis=0).shape[0]
-    assert n_cells_ml == np.unique(fitted_cells_np, axis=0).shape[0]
-    assert n_cells_wp != n_cells_ml  # non-vacuity: the two grids really differ here
+    selected_wp = wp.array(vertices_np[selected_np], dtype=wp.vec3, device=device)
+    assert sampled_wp.size == n_selected
+    assert od.equality.points_allclose(sampled_wp, selected_wp, rtol=0.0, atol=0.0)
+    assert sampled_faces_wp.size > 0
+
+    default_wp = od.remesh.cluster_decimate(
+        vertices_wp, faces_wp, voxel_size=voxel_size, contraction="closest"
+    )[0]
+    assert default_wp.size != n_selected or not od.equality.points_allclose(
+        default_wp, selected_wp, rtol=0.0, atol=0.0
+    )
 
 
 @pytest.mark.parametrize("voxel_size", [1e-3, 0.1])
@@ -1549,7 +1543,7 @@ def test_cluster_decimate_invalid(device: str) -> None:
         od.remesh.cluster_decimate(vertices_wp, faces_wp, voxel_size=0.0)
     with pytest.raises(ValueError, match="contraction must be"):
         od.remesh.cluster_decimate(vertices_wp, faces_wp, contraction="quadric")  # pyright: ignore[reportArgumentType]
-    with pytest.raises(ValueError, match="method must be 'open3d' or 'meshlab'"):
+    with pytest.raises(ValueError, match="method must be 'open3d', 'meshlab' or 'meshlib'"):
         od.remesh.cluster_decimate(vertices_wp, faces_wp, method="vcg")  # pyright: ignore[reportArgumentType]
 
 

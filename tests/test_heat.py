@@ -344,14 +344,14 @@ def test_heat_geodesic_rejects_unknown_options(device: str) -> None:
     Not a library comparison: ``method`` is a menu, guarded at every entry.
 
     ``heat_geodesic`` takes two of the three names and says so; ``heat_operators`` and
-    ``Trimesh.heat_solver`` share the three-name guard; a solver off ``"geometry_central"`` has no
+    ``Trimesh.heat_solver`` share the three-name guard; a solver off ``"potpourri3d"`` has no
     vector operators.
     """
     mesh_wp = trimesh_to_warp(tm.creation.icosphere(subdivisions=1), device)
     sources_wp = wp.array([0], dtype=wp.int32, device=device)
     with pytest.raises(ValueError, match="method must be 'meshlab' or 'igl'"):
         od.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, sources_wp, method="geometry")  # pyright: ignore[reportArgumentType]
-    with pytest.raises(ValueError, match="method must be 'geometry_central', 'meshlab' or 'igl'"):
+    with pytest.raises(ValueError, match="method must be 'potpourri3d', 'meshlab' or 'igl'"):
         od.heat.heat_operators(mesh_wp.points, mesh_wp.indices, method="lumped")  # pyright: ignore[reportArgumentType]
     mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
     with pytest.raises(ValueError, match="method must be"):
@@ -926,9 +926,12 @@ def _distance_pp(
         np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
         np.ascontiguousarray(mesh_tm.faces, dtype=np.int32),
     )
+    # A closed curve repeats its first point: given ``curve`` alone, potpourri3d reads an open
+    # path and drops the closing segment that ``heat_signed_distance(closed=True)`` keeps.
+    closed = [*curve.tolist(), int(curve[0])]
     return np.asarray(
         solver_pp.compute_distance(
-            [[(int(vertex), []) for vertex in curve]], level_set_constraint=level_set_constraint
+            [[(int(vertex), []) for vertex in closed]], level_set_constraint=level_set_constraint
         )
     )
 
@@ -971,17 +974,17 @@ def test_heat_signed_distance_level_set_constraint_matches_potpourri3d(
 
     **The constraint is observable, which is what keeps this from being one comparison run twice.**
     Under ``zero_set`` both libraries pin the curve to exactly ``0.0``; under ``none`` neither does,
-    and the measured on-curve magnitudes on this fixture are 5.93e-02 (ordito) and 4.04e-02
+    and the measured on-curve magnitudes on this fixture are 6.37e-02 (ordito) and 3.57e-02
     (potpourri3d). So the last two asserts fail if either side silently ignores the keyword -- the
     bug this exists for, and one a correlation bound alone would pass, since the two fields
-    correlate 0.9986 and 0.9985 respectively, i.e. the *statistic does not separate the two modes
-    at all*. The 1e-3 floor is 40x below the smaller measured magnitude.
+    correlate 0.9981 and 0.9980 respectively, i.e. the *statistic does not separate the two modes
+    at all*. The 1e-3 floor is 36x below the smaller measured magnitude.
 
-    **Measured on ``saddle_graded``, both devices:** correlation **0.9986 / 0.9985** (``zero_set``
-    / ``none``) against a **0.995** bar (3x the gap from 1), mean error **1.5 % / 1.9 %** of the
+    **Measured on ``saddle_graded``, both devices:** correlation **0.9981 / 0.9980** (``zero_set``
+    / ``none``) against a **0.995** bar (2.6x the gap from 1), mean error **1.5 % / 1.9 %** of the
     diagonal against the 5 % bar. **Mutation probe:** shuffling one side drops the correlation to
-    -0.06 and raises the mean error to 19 %; scaling ordito's field by 1.05 leaves the
-    correlation untouched (it is scale-invariant) and the mean error at 0.8 %, so on this fixture a
+    0.003 and raises the mean error to 19 %; scaling ordito's field by 1.05 leaves the
+    correlation untouched (it is scale-invariant) and the mean error at 0.9 %, so on this fixture a
     small scale error is the one thing the pair cannot see, and the sibling's ``sphere_irregular``
     row (where x1.05 fails the bar) carries it.
     """
@@ -1025,21 +1028,26 @@ def test_heat_signed_distance_matches_potpourri3d(
     curve, so a vertex-wise ``allclose`` is not available at any tolerance -- what *is* shared is
     the sign convention and the shape of the field. The bug class this excludes is the one that
     matters here: a sign flip, a scale error, or a field ignoring the curve would each break the
-    correlation bar or a mean error under 5 % of the mesh diagonal.
+    correlation bar or a mean error under 4.2 % of the mesh diagonal.
 
-    **Measured on ``sphere_irregular``, both devices:** correlation **0.977** against a **0.93**
-    bar (3x the gap from 1), mean error **4.4 %** of the diagonal against the 5 % bar -- only
-    1.13x headroom, and deliberately not loosened: the gap is the *reference's* error (see the
-    comment above the parametrize), so a looser bar would hide ordito drifting toward it.
+    **Measured on ``sphere_irregular``, both devices:** correlation **0.972** against a **0.93**
+    bar (2.5x the gap from 1), mean error **3.7 %** of the diagonal against the 4.2 % bar -- only
+    1.14x headroom, and deliberately not loosened: the gap is the *reference's* error (see the
+    comment above the parametrize), so a looser bar would hide ordito drifting toward it, and the
+    bar is what sees a 5 % scale error (below). The curve is handed to potpourri3d closed, its
+    first vertex repeated; given the ring alone it drops the closing segment (4.4 % then).
+    Matching it vertex for vertex takes geometry-central's construction, which diffuses an
+    edge-based (Crouzeix-Raviart) vector field from the curve's edges at a quarter of this
+    method's time step.
 
     **Mutation probe**, and it shows the two statistics are complementary rather than redundant
     -- neither alone excludes the whole bug class:
 
-    | mutation             | correlation      | mean error vs the 5 % bar    |
+    | mutation             | correlation      | mean error vs the 4.2 % bar  |
     |----------------------|------------------|------------------------------|
-    | shuffle one side     | 0.02 -- **fails** | 19 % -- **fails**           |
-    | negate one side      | -0.977 -- **fails** | far past it -- **fails**  |
-    | scale ordito x1.05   | unchanged (scale-invariant) | 5.7 % -- **fails** |
+    | shuffle one side     | -0.02 -- **fails** | 19.5 % -- **fails**        |
+    | negate one side      | -0.972 -- **fails** | 48 % -- **fails**         |
+    | scale ordito x1.05   | unchanged (scale-invariant) | 4.7 % -- **fails** |
 
     So the correlation catches the sign flip and the error bound catches the scale error, which is
     the division of labour claimed above. The ``saddle_graded`` comparison is the ``zero_set`` arm
@@ -1056,7 +1064,96 @@ def test_heat_signed_distance_matches_potpourri3d(
     # to a few percent of the mesh scale.
     scale = float(np.linalg.norm(mesh_tm.vertices.max(axis=0) - mesh_tm.vertices.min(axis=0)))
     assert np.corrcoef(distance_wp, distance_pp)[0, 1] > 0.93
-    assert np.abs(distance_wp - distance_pp).mean() < 0.05 * scale
+    assert np.abs(distance_wp - distance_pp).mean() < 0.042 * scale
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parametrize(
+    ("level_set_constraint", "constraint_pp"), [("zero_set", "ZeroSet"), ("none", "None")]
+)
+@pytest.mark.parity("heat_signed_distance_potpourri3d", "potpourri3d")
+def test_heat_signed_distance_potpourri3d_method_matches_potpourri3d(
+    request: pytest.FixtureRequest, mesh_name: str, level_set_constraint: str, constraint_pp: str
+) -> None:
+    """
+    Class A: ``method="potpourri3d"`` equals ``potpourri3d.MeshSignedHeatSolver``, per vertex.
+
+    Both run geometry-central's discretization -- the curve's normals on its edges, the
+    Crouzeix-Raviart vector heat system at ``t = (h / 2) ** 2``, a face-sampled divergence and the
+    cotangent Poisson solve -- on the same triangulation, under both level-set constraints.
+
+    **Measured worst absolute difference**, against a field range of 4.5 (``sphere_irregular``)
+    and 2.6 (``saddle_graded``): CUDA 3.5e-08 / 9.0e-10, CPU 8.5e-08 / 1.1e-09, either constraint.
+    **Mutation probes** (CUDA): the vertex method's time step ``t = h ** 2`` is off by 1.33 / 0.16;
+    under ``none``, shifting by the mean over the curve's vertices instead of along its segments is
+    off by 5.0e-04 / 3.7e-03, 50x the tolerance. The reference is not vacuous: its range exceeds
+    1, it takes both signs, and under ``none`` it is not pinned on the curve (7.0e-02 / 3.6e-02).
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    _, curve_np, curve_wp = _one_ring_cycle(mesh_tm, mesh_wp)
+
+    distance_wp = od.heat.heat_signed_distance(
+        mesh_wp.points,
+        mesh_wp.indices,
+        curve_wp,
+        level_set_constraint=level_set_constraint,
+        method="potpourri3d",
+    ).numpy()
+    distance_pp = _distance_pp(mesh_tm, curve_np, level_set_constraint=constraint_pp)
+
+    assert np.ptp(distance_pp) > 1.0
+    assert distance_pp.min() < 0.0 < distance_pp.max()
+    if level_set_constraint == "none":
+        assert np.abs(distance_pp[curve_np]).max() > 1e-2
+    assert np.allclose(distance_wp, distance_pp, rtol=1e-5, atol=1e-5)
+
+
+def test_heat_signed_distance_potpourri3d_method_two_curves_match_potpourri3d(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class A: two curves through ``curve_offsets``, each closed, against potpourri3d's two curves.
+
+    The packed path (each entry finding its curve in the offsets) and, under ``none``, the shift
+    along both curves at once. **Measured worst absolute difference** on a range of 4.5: CUDA
+    2.9e-08 / 2.7e-08 (``zero_set`` / ``none``), CPU 6.1e-08 / 6.3e-08. Not vacuous: the two
+    curves' fields differ (asserted against the first curve alone).
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    _, first, first_wp = _one_ring_cycle(mesh_tm, mesh_wp, which=0)
+    _, second, _ = _one_ring_cycle(mesh_tm, mesh_wp, which=5)
+    packed = wp.array(np.concatenate([first, second]), dtype=wp.int32, device=mesh_wp.device)
+    offsets = wp.array(
+        np.array([0, len(first), len(first) + len(second)], dtype=np.int32),
+        dtype=wp.int32,
+        device=mesh_wp.device,
+    )
+    solver_pp = pp3d.MeshSignedHeatSolver(
+        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
+        np.ascontiguousarray(mesh_tm.faces, dtype=np.int32),
+    )
+    curves_pp = [[(int(v), []) for v in [*curve, curve[0]]] for curve in (first, second)]
+    for level_set_constraint, constraint_pp in (("zero_set", "ZeroSet"), ("none", "None")):
+        both_wp = od.heat.heat_signed_distance(
+            mesh_wp.points,
+            mesh_wp.indices,
+            packed,
+            offsets,
+            level_set_constraint=level_set_constraint,
+            method="potpourri3d",
+        ).numpy()
+        first_only_wp = od.heat.heat_signed_distance(
+            mesh_wp.points,
+            mesh_wp.indices,
+            first_wp,
+            level_set_constraint=level_set_constraint,
+            method="potpourri3d",
+        ).numpy()
+        both_pp = np.asarray(
+            solver_pp.compute_distance(curves_pp, level_set_constraint=constraint_pp)
+        )
+        assert not np.allclose(both_pp, first_only_wp, rtol=1e-2, atol=1e-2)
+        assert np.allclose(both_wp, both_pp, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -1183,6 +1280,17 @@ def test_invalid_level_set_constraint(sphere_irregular: tuple[tm.Trimesh, wp.Mes
             mesh_wp.indices,
             wp.array(np.array([0, 1], dtype=np.int32), dtype=wp.int32, device=mesh_wp.device),
             level_set_constraint="Multiple",
+        )
+
+
+def test_invalid_signed_heat_method(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _, mesh_wp = sphere_irregular
+    with pytest.raises(ValueError, match="method"):
+        od.heat.heat_signed_distance(
+            mesh_wp.points,
+            mesh_wp.indices,
+            wp.array(np.array([0, 1], dtype=np.int32), dtype=wp.int32, device=mesh_wp.device),
+            method="dense_eikonal",  # pyright: ignore[reportArgumentType]
         )
 
 
@@ -1686,6 +1794,72 @@ def test_log_map_matches_potpourri3d(request: pytest.FixtureRequest, mesh_name: 
     # where most of it is potpourri3d's radius -- 3.4 % of the diagonal off ``igl.exact_geodesic``
     # in the median, against ordito's 0.46 % (1.5 % against 5.0 % on ``hemisphere``).
     assert np.median(error) < 0.15 * scale
+
+
+@pytest.mark.parametrize(
+    ("mesh_name", "source_kind"),
+    [
+        ("saddle_graded", "interior"),
+        ("saddle_graded", "boundary"),
+        ("sphere_well_shaped", "interior"),
+    ],
+)
+@pytest.mark.parity("log_map_potpourri3d", "potpourri3d")
+def test_log_map_potpourri3d_method_matches_potpourri3d(
+    request: pytest.FixtureRequest, mesh_name: str, source_kind: str
+) -> None:
+    """
+    Class A: ``method="potpourri3d"`` is ``compute_log_map(source, "VectorHeat")``.
+
+    The same construction on the same system (``M + t L_connection``, barycentric mass, ``t`` the
+    squared unique-edge mean) in the same gauge: the outward ball's diffused direction measured
+    from the diffused source direction, its averaged-edge divergence integrated by one cotangent
+    Poisson solve. Measured worst coordinate difference, CUDA / CPU: 9.7e-6 / 1.0e-5 from the
+    graded saddle's first interior vertex, 6.8e-6 / 6.7e-6 from its boundary corner (where the
+    outward ball has no exterior half), 1.5e-5 / 1.3e-5 on ``sphere_well_shaped`` (radii to 5);
+    the ``allclose`` bound's worst ratio is 0.66 / 0.60, 0.42 / 0.42 and 0.82 / 0.70.
+
+    Not on the needle fixtures: ordito stores the connection's transport angles in ``float32``,
+    and rounding a ``float64`` rebuild's angles to ``float32`` alone moves the map by 4.4e-5 on
+    ``sphere_irregular`` (measured), where ordito's worst is 6.0e-5 / 1.8e-4 (CUDA / CPU) and
+    ``torus_irregular`` 1.5e-4 / 5.2e-5. **Mutation probes**, worst ratio to the bound: the
+    outward ball's term at ``c`` with its sign flipped 6.6e4, its term at the source dropped 3.9e3,
+    the radial field left non-zero at the source 2.6e3, the divergence averaging the neighbour's
+    radial direction without transporting it 4.4e3 (all at the saddle's interior source).
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    border = np.asarray(igl.is_border_vertex(mesh_tm.faces.astype(np.int64)), dtype=bool)
+    source = int(np.flatnonzero(~border if source_kind == "interior" else border)[0])
+    logarithm_wp = od.heat.log_map(
+        mesh_wp.points, mesh_wp.indices, source, method="potpourri3d"
+    ).numpy()
+    logarithm_pp = np.asarray(_solver_pp(mesh_tm).compute_log_map(source, "VectorHeat"))
+
+    assert np.ptp(logarithm_pp) > 1.0
+    assert np.allclose(logarithm_wp, logarithm_pp, rtol=1e-5, atol=1e-5)
+
+
+def test_log_map_potpourri3d_takes_a_trimesh(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Ordito against ordito: the `Trimesh` form returns the ``vertices, faces`` form's map.
+
+    The `Trimesh` keeps the vector system, so its second call is solved by the factorization the
+    first's rent-or-buy tally builds; the comparison above pins the ``vertices, faces`` form.
+    """
+    _, mesh_wp = sphere_irregular
+    plain = od.heat.log_map(mesh_wp.points, mesh_wp.indices, 0, method="potpourri3d").numpy()
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    for _ in range(2):
+        held = od.heat.log_map(mesh, 0, method="potpourri3d").numpy()
+        assert np.ptp(held) > 1.0
+        assert np.allclose(held, plain, rtol=1e-4, atol=1e-4)
+    assert mesh.heat_solver().nbytes > 0
+
+
+def test_log_map_rejects_an_unknown_method(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _, mesh_wp = sphere_irregular
+    with pytest.raises(ValueError, match="method must be 'heat_geodesic' or 'potpourri3d'"):
+        od.heat.log_map(mesh_wp.points, mesh_wp.indices, 0, method="vector_heat")  # pyright: ignore[reportArgumentType]
 
 
 def test_log_map_radius_matches_potpourri3d_far_from_the_sources(icosphere5: Icosphere5) -> None:
@@ -2561,6 +2735,8 @@ def _heat_call(mesh_wp: wp.Mesh, function: str) -> list[np.ndarray]:
         return [distance.numpy()]
     if function == "log_map":
         return [od.heat.log_map(vertices_wp, faces_wp, 0).numpy()]
+    if function == "log_map_potpourri3d":
+        return [od.heat.log_map(vertices_wp, faces_wp, 0, method="potpourri3d").numpy()]
     if function == "heat_operators":
         system = od.heat.heat_operators(vertices_wp, faces_wp)[0]
     else:
@@ -2603,6 +2779,8 @@ def test_heat_arrival_order_agrees_with_the_default(
         ("heat_signed_distance", "saddle_graded"),
         ("log_map", "saddle_graded"),
         ("log_map", "icosphere"),
+        ("log_map_potpourri3d", "saddle_graded"),
+        ("log_map_potpourri3d", "icosphere"),
     ],
 )
 def test_heat_solvers_are_reproducible(
@@ -2622,13 +2800,14 @@ def test_heat_solvers_are_reproducible(
     the same bits as before.
 
     Asserted as exact equality: a tolerance would admit exactly the noise this pins. The
-    icosphere case checks that the antipode is in the field (a non-zero radius near pi).
+    icosphere case checks that the antipode is in the field (a non-zero radius near pi; the vector
+    heat method's own radius, ``method="potpourri3d"``, reads 2.98 there).
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     runs = [_heat_call(mesh_wp, function) for _ in range(5)]
     if mesh_name == "icosphere":
         antipode = int(np.argmin(mesh_wp.points.numpy() @ mesh_wp.points.numpy()[0]))
-        assert np.linalg.norm(runs[0][0][antipode]) > 3.0
+        assert np.linalg.norm(runs[0][0][antipode]) > 2.9
     for first_np in runs[0]:
         assert np.ptp(first_np) > 1e-3
     for other in runs[1:]:

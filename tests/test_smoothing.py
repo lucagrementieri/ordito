@@ -28,7 +28,12 @@ import ordito.typing as odt
 from benchmarks.meshes import BUILDERS
 from ordito.kernels import smoothing as kernel_smoothing
 from tests.comparisons import meshlab_umbrella
-from tests.conftest import MESHES, saddle_graded_large_arrays, sphere_irregular_arrays
+from tests.conftest import (
+    MESHES,
+    saddle_graded_arrays,
+    saddle_graded_large_arrays,
+    sphere_irregular_arrays,
+)
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
@@ -845,7 +850,8 @@ def test_relax_approx_matches_meshlib(device: str, fit: Literal["planar", "quadr
     noise by a similar amount. The fits themselves are pinned element-wise, both of them, by
     [`test_relax_approx_matches_meshlib_where_the_balls_coincide`][tests.test_smoothing.test_relax_approx_matches_meshlib_where_the_balls_coincide],
     on a lattice where the two neighbourhoods are the same set; this test is what covers the sets
-    differing.
+    differing. ``method="meshlib"`` takes the reference's neighbourhood and is Class A
+    ([`test_relax_approx_meshlib_matches_meshlib`][tests.test_smoothing.test_relax_approx_meshlib_matches_meshlib]).
 
     ``fit`` is parametrized because the two are different fits, not a tuning: the quadric keeps
     curvature the plane removes, and on a sphere that difference is the whole answer.
@@ -1019,6 +1025,13 @@ def test_relax_approx_needs_a_radius_that_reaches(device: str) -> None:
         )
     with pytest.raises(ValueError, match="max_displacement must be non-negative"):
         od.smoothing.relax_approx(vertices_wp, faces_wp, 0.3, max_displacement=-1.0)
+    with pytest.raises(ValueError, match="method must be 'geodesic_ball' or 'meshlib'"):
+        od.smoothing.relax_approx(
+            vertices_wp,
+            faces_wp,
+            0.3,
+            method="dilate",  # pyright: ignore[reportArgumentType]  # the off-menu value under test
+        )
 
 
 @pytest.mark.parametrize("iterations", [1, 3])
@@ -1073,6 +1086,120 @@ def test_relax_approx_fits_streamed_balls_as_packed_ones(
         assert np.array_equal(whole, chunked)
     assert [str(w.message) for w in whole_warnings] == [str(w.message) for w in chunked_warnings]
     assert len(whole_warnings) == (len(calls) if radius_scale > 10.0 else 0)
+
+
+@pytest.mark.parity("relax_approx_meshlib", "meshlib")
+@pytest.mark.parametrize("iterations", [1, 5])
+@pytest.mark.parametrize(
+    ("mesh_name", "fit"),
+    [
+        ("noisy_icosphere", "planar"),
+        ("noisy_icosphere", "quadric"),
+        ("sphere_irregular", "planar"),
+        ("sphere_irregular", "quadric"),
+        ("saddle_graded", "planar"),
+    ],
+)
+def test_relax_approx_meshlib_matches_meshlib(
+    request: pytest.FixtureRequest,
+    device: str,
+    mesh_name: str,
+    fit: Literal["planar", "quadric"],
+    iterations: int,
+) -> None:
+    """
+    Class A against ``relaxApprox``: ``method="meshlib"`` is its neighbourhood and its fit.
+
+    The neighbourhood is ``dilateRegion``'s: every vertex whose shortest edge path is within the
+    radius, rebuilt from each pass's starting positions; the fit is formed in ``float64``, as
+    ``PointAccumulator`` forms it. Measured worst difference, identical on CPU and CUDA: noisy
+    ``icosphere(3)`` at ``r = 0.3`` 1.2e-07 / 1.8e-07 planar at 1 / 5 passes and exactly 0 quadric;
+    ``sphere_irregular`` at three mean edges 2.4e-07 / 4.8e-07 planar, 0 quadric;
+    ``saddle_graded`` (its rim) 1.2e-07 / 2.4e-07 planar, against reference moves of 3.5e-03 to
+    6.0e-01. The saddle's quadric is left out: it moves the saddle by 3.6e-05 at one pass, too
+    little to tell a fit from none at this tolerance.
+
+    Mutation probes, both devices: the default ``"geodesic_ball"`` neighbourhood scores 7.5e-04 to
+    3.4e-01 on every row, and balls built once from the input instead of each pass score 5.2e-04
+    to 4.4e-01 on every five-pass row (one pass cannot tell them apart). A float32 frame
+    (``kernels/smoothing.relax_approx_step``'s) was 7.0e-06 on CUDA on the noisy sphere at three
+    planar passes, inside the tolerance, which is why this path forms it in float64. Five planar
+    passes over ``torus_irregular_holes`` reach 2.0e-03, though every pass started from the
+    reference's positions agrees to 4.8e-07: planar passes there amplify an ulp into a different
+    ball.
+    """
+    if mesh_name == "noisy_icosphere":
+        mesh_tm, vertices_wp, faces_wp = _noisy_icosphere_3(device)
+        radius = 0.3
+    else:
+        mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+        vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+        radius = 3.0 * float(np.mean(mesh_tm.edges_unique_length))
+
+    relaxed_wp = od.smoothing.relax_approx(
+        vertices_wp, faces_wp, radius, iterations, 0.5, fit, method="meshlib"
+    )
+    mesh_ml = trimesh_to_meshlib(mesh_tm)
+    params_ml = mm.MeshApproxRelaxParams()
+    params_ml.iterations = iterations
+    params_ml.force = 0.5
+    params_ml.surfaceDilateRadius = radius
+    params_ml.type = mm.RelaxApproxType.Planar if fit == "planar" else mm.RelaxApproxType.Quadric
+    mm.relaxApprox(mesh_ml, params_ml)
+    relaxed_ml = cast("np.ndarray", mn.toNumpyArray(mesh_ml.points))
+
+    assert np.abs(relaxed_ml - np.asarray(mesh_tm.vertices)).max() > 1e-3  # non-vacuity
+    assert np.allclose(relaxed_wp.numpy(), relaxed_ml, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("radius_scale", [3.0, 100.0], ids=["ball", "clipped"])
+def test_relax_approx_meshlib_streams_its_balls(
+    device: str, monkeypatch: pytest.MonkeyPatch, radius_scale: float
+) -> None:
+    """
+    Ordito against ordito: ``method="meshlib"`` walked in uneven chunks equals one chunk.
+
+    No fixture is large enough to take several chunks, so the chunk is forced down; the answer must
+    not move by a bit, the walk's table must come back clean between chunks and passes (a stale
+    entry would join the next ball), and a radius past the row's capacity warns once per call. The
+    one-chunk answer carries the ``relaxApprox`` oracle above.
+    """
+    mesh_tm = tm.creation.icosphere(subdivisions=4)
+    vertices_wp, faces_wp = numpy_to_warp(
+        np.asarray(mesh_tm.vertices, dtype=np.float32)
+        + np.random.default_rng(3).normal(0.0, 0.01, mesh_tm.vertices.shape).astype(np.float32),
+        np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1),
+        device,
+    )
+    radius = radius_scale * float(od.edges.mean_edge_length(vertices_wp, faces_wp))
+    region_wp = wp.array(
+        np.arange(vertices_wp.size) % 5 != 0, dtype=wp.bool, device=vertices_wp.device
+    )
+
+    def call() -> np.ndarray:
+        return od.smoothing.relax_approx(
+            vertices_wp,
+            faces_wp,
+            radius,
+            3,
+            fit="quadric",
+            region=region_wp,
+            max_displacement=0.5 * radius,
+            method="meshlib",
+        ).numpy()
+
+    with warnings.catch_warnings(record=True) as whole_warnings:
+        warnings.simplefilter("always")
+        whole_np = call()
+    monkeypatch.setattr(od.neighbors, "_EDGE_PATH_BALL_CHUNK", 700)
+    assert vertices_wp.size > 3 * 700
+    with warnings.catch_warnings(record=True) as chunked_warnings:
+        warnings.simplefilter("always")
+        chunked_np = call()
+    assert not np.array_equal(whole_np, vertices_wp.numpy())
+    assert np.array_equal(whole_np, chunked_np)
+    assert [str(w.message) for w in whole_warnings] == [str(w.message) for w in chunked_warnings]
+    assert len(whole_warnings) == (1 if radius_scale > 10.0 else 0)
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
@@ -2754,6 +2881,108 @@ def test_filter_normals_zero_iterations_returns_a_copy_of_the_given_normals(
     assert np.array_equal(out_wp.numpy(), normals_wp.numpy())
 
 
+def _mumford_shah_input(mesh_name: str) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build a noisy mesh for the Mumford-Shah comparisons: the noisy cube, or a fixture plus noise.
+
+    The saddle is open (rim faces, whose perimeter counts an edge with no neighbour) and graded;
+    the sphere is scrambled, so the face numbering that picks each coupling's perimeter is not
+    the geometry's.
+    """
+    if mesh_name == "cube":
+        _clean_np, faces_np, noisy_np = _noisy_cube()
+        return noisy_np, faces_np
+    vertices_np, faces_np = (
+        saddle_graded_arrays() if mesh_name == "saddle_graded" else sphere_irregular_arrays()
+    )
+    rng = np.random.default_rng(0)
+    scale = float(np.ptp(vertices_np, axis=0).max())
+    return vertices_np + rng.normal(scale=0.005 * scale, size=vertices_np.shape), faces_np
+
+
+@pytest.mark.parity("filter_normals_meshlib", "meshlib")
+@pytest.mark.parametrize(
+    ("mesh_name", "iterations", "gamma"),
+    [
+        ("cube", 1, 20.0),
+        ("cube", None, 5.0),
+        ("saddle_graded", None, 5.0),
+        ("sphere_irregular", None, 5.0),
+    ],
+)
+def test_filter_normals_meshlib_method_matches_meshlib(
+    device: str, mesh_name: str, iterations: int | None, gamma: float
+) -> None:
+    """
+    Class A: ``method="meshlib"`` is meshlib's ``denoiseNormals`` loop, normal for normal.
+
+    One solve (``iterations=1``) is a single ``denoiseNormals`` call with every edge indicator 1;
+    the default ten are ``meshDenoiseViaNormals``' normal half, ``denoiseNormals`` from the
+    original normals then ``updateIndicatorFast``, ten times at ``beta = 0.01``. The face system
+    is the one meshlib's ``SimplicialLDLT`` factors, which reads only the lower triangle of its
+    non-symmetric matrix: each coupling takes the higher-numbered face's perimeter, and ordito's
+    conjugate gradient stands in for the factorization. Measured max over the four cases
+    **1.2e-6** on CUDA and **1.3e-6** on the CPU (the graded saddle; the cube 1.2e-7 / 1.8e-7, the
+    sphere 8.3e-7 / 1.1e-6), against the reference moving the normals by 0.26-1.9. Mutation
+    probes (CUDA): the lower-numbered face's perimeter instead is 1.8e-2 to 1.9 away in every
+    case, and an indicator held at 1 is 0.49-1.9 away in the three ten-solve cases (the one-solve
+    case reads no indicator).
+    """
+    noisy_np, faces_np = _mumford_shah_input(mesh_name)
+    mesh_ml = numpy_to_meshlib(noisy_np, faces_np)
+    weights_ml = mm.UndirectedEdgeScalars()
+    weights_ml.resize(mesh_ml.topology.undirectedEdgeSize(), 1.0)
+    original_ml = cast("np.ndarray", mn.toNumpyArray(mm.computePerFaceNormals(mesh_ml)))
+    normals_ml = mm.computePerFaceNormals(mesh_ml)
+    for _ in range(10 if iterations is None else iterations):
+        normals_ml = mm.computePerFaceNormals(mesh_ml)  # every solve restarts from these
+        assert mm.denoiseNormals(mesh_ml, normals_ml, weights_ml, gamma) is None
+        mm.updateIndicatorFast(mesh_ml.topology, weights_ml, normals_ml, 0.01, gamma)
+    denoised_ml = cast("np.ndarray", mn.toNumpyArray(normals_ml))
+
+    vertices_wp, faces_wp = numpy_to_warp(noisy_np, faces_np, device)
+    denoised_wp = od.smoothing.filter_normals(
+        vertices_wp, faces_wp, iterations=iterations, method="meshlib", gamma=gamma
+    )
+
+    assert np.abs(denoised_ml - original_ml).max() > 1e-2
+    assert np.allclose(denoised_wp.numpy(), denoised_ml, rtol=1e-5, atol=1e-5)
+
+
+def test_filter_normals_meshlib_method_is_reproducible(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Ordito against ordito: under the deterministic setting two calls agree bit for bit."""
+    _mesh_tm, mesh_wp = sphere_irregular
+    first_np = od.smoothing.filter_normals(
+        mesh_wp.points, mesh_wp.indices, method="meshlib"
+    ).numpy()
+    second_np = od.smoothing.filter_normals(
+        mesh_wp.points, mesh_wp.indices, method="meshlib"
+    ).numpy()
+    assert np.array_equal(first_np, second_np)
+    assert np.allclose(np.linalg.norm(first_np, axis=1), 1.0, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("keywords", "message"),
+    [
+        ({"method": "bilateral"}, "'bilateral'"),
+        ({"method": "meshlib", "gamma": -1.0}, "gamma must be non-negative"),
+        ({"method": "meshlib", "beta": 0.0}, "beta must be positive"),
+    ],
+)
+def test_filter_normals_rejects_bad_meshlib_method_arguments(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], keywords: dict[str, Any], message: str
+) -> None:
+    """Not a parity assert: an unknown ``method`` and out-of-range weights raise ``ValueError``."""
+    _mesh_tm, mesh_wp = sphere_irregular
+    with pytest.raises(ValueError, match=message):
+        od.smoothing.filter_normals(mesh_wp.points, mesh_wp.indices, **keywords)
+    with pytest.raises(ValueError, match=message):
+        od.smoothing.filter_two_step(mesh_wp.points, mesh_wp.indices, **keywords)
+
+
 @pytest.mark.parity("filter_two_step", "pymeshlab")
 def test_filter_two_step_matches_pymeshlab_on_crease_preservation(device: str) -> None:
     """
@@ -2764,10 +2993,14 @@ def test_filter_two_step_matches_pymeshlab_on_crease_preservation(device: str) -
 
     **Denoising is where they part company, and not in MeshLab's favour.** At the same four
     parameters its output is *further* from the clean cube than the noise was — RMS 0.0244 against
-    the noise's 0.0156, against this port's 0.0114 — because its fitting step rounds the corners
-    inward (a corner at ``(-0.5, -0.5, -0.5)`` comes back at ``(-0.43, -0.49, -0.42)``). So the
-    assertion below is one-sided: this port must be at least as close to clean as MeshLab, not equal
-    to it.
+    the noise's 0.0156, against this port's 0.0114 — because its normal pass rounds the corners
+    inward (a corner at ``(-0.5, -0.5, -0.5)`` comes back at ``(-0.43, -0.49, -0.42)``): vcg's
+    vertex walk averages each face only with the faces of lower index around its corners, so the
+    filter is lopsided and depends on the face order (reversing it moves MeshLab's RMS to 0.0160;
+    the full ring instead of the lower half reads 0.0112). So the assertion below is one-sided:
+    the default must be at least as close to clean as MeshLab, not equal to it. MeshLab's own
+    answer is ``method="meshlab"``, compared element-wise in
+    [`test_filter_two_step_meshlab_matches_pymeshlab`][tests.test_smoothing.test_filter_two_step_meshlab_matches_pymeshlab].
     """
     clean_np, faces_np, noisy_np = _noisy_cube()
     meshset_pml = ml.MeshSet()
@@ -2783,6 +3016,91 @@ def test_filter_two_step_matches_pymeshlab_on_crease_preservation(device: str) -
     assert _rms_error(two_step_np, clean_np) <= _rms_error(pml_np, clean_np)
     assert _dihedral_percentile(pml_np, faces_np, 95.0) > 85.0
     assert _dihedral_percentile(two_step_np, faces_np, 95.0) > 85.0
+
+
+@pytest.mark.parity("filter_two_step_meshlab", "pymeshlab")
+@pytest.mark.parametrize(
+    ("mesh_name", "threshold"),
+    [("cube", 60.0), ("cube", 30.0), ("cube", 120.0), ("icosphere_scrambled", 40.0)],
+)
+def test_filter_two_step_meshlab_matches_pymeshlab(
+    device: str, mesh_name: str, threshold: float
+) -> None:
+    """
+    Class A: ``method="meshlab"`` is ``apply_coord_two_steps_smoothing``, vertex for vertex.
+
+    The normal pass is vcg's ``FaceNormalAngleThreshold`` -- the faces sharing a vertex, weighted
+    ``(c - sigma)^2``, ``sigma = max(cos(threshold), 0)`` -- over the lower-index half of the ring
+    its vertex walk visits, and the fit is the default's own (``FastFitMesh`` is the same step).
+    Both are Jacobi passes, so the only gap is ``float32`` against MeshLab's ``double``, over 60
+    normal passes: measured max **2.5e-07** on the cube at ``60`` and ``30``, **9.3e-06** at
+    ``120`` and **1.4e-05** on the scrambled icosphere (CUDA; 1.9e-06 on the CPU) -- inside
+    ``allclose``'s ``1e-5 + 1e-5 |x|`` on unit-scale coordinates, the last by 1.4x. The thresholds
+    take the clamp (``120`` acts as ``90``) and both sides of it; the scrambled icosphere is where
+    the walk's face-order dependence bites. Mutation probe: the default edge-neighbour filter at
+    the same parameters is 0.044-0.39 away, against MeshLab moving the input by 0.050-0.43.
+    """
+    if mesh_name == "cube":
+        _clean_np, faces_np, noisy_np = _noisy_cube()
+    else:
+        sphere_tm = tm.creation.icosphere(subdivisions=4)
+        rng = np.random.default_rng(1)
+        noisy_np = sphere_tm.vertices + rng.normal(scale=0.01, size=sphere_tm.vertices.shape)
+        faces_np = sphere_tm.faces[rng.permutation(len(sphere_tm.faces))].astype(np.int32)
+    meshset_pml = ml.MeshSet()
+    meshset_pml.add_mesh(ml.Mesh(noisy_np, faces_np))
+    meshset_pml.apply_coord_two_steps_smoothing(
+        stepsmoothnum=3, normalthr=threshold, stepnormalnum=20, stepfitnum=20
+    )
+    pml_np = np.ascontiguousarray(meshset_pml.current_mesh().vertex_matrix(), dtype=np.float64)
+
+    vertices_wp, faces_wp = numpy_to_warp(noisy_np, faces_np, device)
+    smoothed_wp = od.smoothing.filter_two_step(
+        vertices_wp, faces_wp, threshold=threshold, method="meshlab"
+    )
+
+    assert np.abs(pml_np - noisy_np).max() > 1e-3
+    assert np.allclose(smoothed_wp.numpy(), pml_np, rtol=1e-5, atol=1e-5)
+
+
+def test_filter_two_step_rejects_an_unknown_method(device: str) -> None:
+    """Not a parity assert: an unknown ``method`` raises ``ValueError`` naming the value."""
+    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=1, device=device)
+    with pytest.raises(ValueError, match="'gauss_seidel'"):
+        od.smoothing.filter_two_step(
+            vertices_wp,
+            faces_wp,
+            method="gauss_seidel",  # pyright: ignore[reportArgumentType]
+        )
+
+
+@pytest.mark.parity("filter_two_step_meshlib", "meshlib")
+@pytest.mark.parametrize("mesh_name", ["cube", "saddle_graded", "sphere_irregular"])
+def test_filter_two_step_meshlib_method_matches_meshlib(device: str, mesh_name: str) -> None:
+    """
+    Class A: ``method="meshlib"`` is meshlib's ``meshDenoiseViaNormals``, vertex for vertex.
+
+    At the reference's defaults (``beta = 0.01``, ``gamma = 5``, ten normal solves, twenty point
+    solves, unit guide weight, the fast indicator), which are this method's: the normals as in
+    [`test_filter_normals_meshlib_method_matches_meshlib`][tests.test_smoothing.test_filter_normals_meshlib_method_matches_meshlib],
+    then ``NormalsToPoints``' least-squares update factored once and solved twenty times. Measured
+    max **6.0e-7** on CUDA and **7.2e-7** on the CPU (the sphere; the cube 8.9e-8 / 1.2e-7, the
+    saddle 2.4e-7 / 3.6e-7), against meshlib moving the vertices by 0.018-0.19. Mutation probes
+    (CUDA): projecting a turned-over triangle without collapsing it onto a line is 1.2e-2 away on
+    the saddle and the sphere (the cube turns none over), the lower-numbered face's perimeter
+    1.4e-3 to 0.11 away, and an indicator held at 1 2.8e-2 to 0.20 away.
+    """
+    noisy_np, faces_np = _mumford_shah_input(mesh_name)
+    mesh_ml = numpy_to_meshlib(noisy_np, faces_np)
+    mm.meshDenoiseViaNormals(mesh_ml, mm.DenoiseViaNormalsSettings())
+    denoised_ml = np.ascontiguousarray(meshlib_to_trimesh(mesh_ml).vertices, dtype=np.float64)
+    assert denoised_ml.shape == noisy_np.shape  # the topology is fixed, so nothing was packed away
+
+    vertices_wp, faces_wp = numpy_to_warp(noisy_np, faces_np, device)
+    denoised_wp = od.smoothing.filter_two_step(vertices_wp, faces_wp, method="meshlib")
+
+    assert np.abs(denoised_ml - noisy_np).max() > 1e-2
+    assert np.allclose(denoised_wp.numpy(), denoised_ml, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parity(

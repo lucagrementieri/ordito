@@ -93,6 +93,10 @@ _KNN_START_SAMPLE_MIN_QUERIES = 1_000_000
 # latency-bound, so the chunk is also the launch's thread count, and it is as large as it can be
 # before the pools stop fitting in the device's L2 cache.
 _GEODESIC_BALL_CHUNK = 1 << 16
+# Sources per edge-path ball launch. Each source's scratch (its row, the row's distances, a queue of
+# table slots, and a vertex-to-rank table twice the row's capacity) is about twice the
+# breadth-first walk's, and the walk ran fastest at a quarter of ``_GEODESIC_BALL_CHUNK``'s count.
+_EDGE_PATH_BALL_CHUNK = 1 << 14
 # Entries the packed ``geodesic_ball`` list can hold: its offsets are ``int32``.
 _PACKED_ENTRIES_MAX = 2**31 - 1
 
@@ -2407,3 +2411,83 @@ def _sorted_vertex_adjacency(
         device=device,
     )
     return columns, offsets, reference
+
+
+class _EdgePathBallWalk:  # pyright: ignore[reportUnusedClass]  # driven by smoothing.relax_approx
+    """
+    Chunks of shortest-edge-path balls, rebuilt from whatever positions each walk is handed.
+
+    The ball of a vertex is every vertex reachable along mesh edges by a path of total length at
+    most ``radius`` (``kernels/neighbors.per_source_edge_path_collect``). ``chunks(positions)``
+    yields ``(start, m)`` once sources ``start .. start + m`` hold their balls in
+    ``rows_flat[t * row_stride :][: counts[start + t]]``, ``_GeodesicBallWalk``'s layout, so a fit
+    reads either walk's rows through ``kernels/algorithms/bfs.ball_row_bounds``. The adjacency is
+    built once; the balls follow the positions, so a caller moving the mesh walks again.
+    """
+
+    counts: wp.array[wp.int32]
+    rows_flat: wp.array[wp.int32]
+    row_stride: wp.int32
+    chunk: int
+
+    def __init__(self, faces: wp.array[wp.int32], n_vertices: int, radius: float) -> None:
+        device = faces.device
+        self._radius = wp.float32(radius)
+        self._n = n_vertices
+        self._columns, self._offsets, _reference = _sorted_vertex_adjacency(faces, n_vertices)
+        self.chunk = max(1, min(n_vertices, _EDGE_PATH_BALL_CHUNK))
+        stride = kernel_bfs.PER_SOURCE_MAX_NEIGHBORS
+        table = kernel_neighbors.EDGE_PATH_HASH_CAPACITY
+        self.rows_flat, self.counts, pending_flat, ranks_flat = _launch.carve(
+            wp.int32,
+            [self.chunk * stride, n_vertices, self.chunk * stride, self.chunk * table],
+            device,
+        )
+        self._rows = odt.as_array2d(self.rows_flat.reshape((self.chunk, stride)), wp.int32)
+        self._pending = odt.as_array2d(pending_flat.reshape((self.chunk, stride)), wp.int32)
+        self._ranks = odt.as_array2d(ranks_flat.reshape((self.chunk, table)), wp.int32)
+        self._distances = odt.empty_2d((self.chunk, stride), wp.float32, device=device)
+        self.row_stride = wp.int32(stride)
+        # Every walk leaves the table as it found it, so it is filled once.
+        self._keys = _launch.full((self.chunk, table), -1, dtype=wp.int32, device=device)
+        self._overflow = _launch.zeros(1, dtype=wp.int32, device=device)
+        self._warned = False
+
+    def chunks(self, positions: wp.array[wp.vec3]) -> Iterator[tuple[int, int]]:
+        """Walk the balls over ``positions`` a chunk at a time, yielding ``(start, m)``."""
+        for start in range(0, self._n, self.chunk):
+            m = min(self.chunk, self._n - start)
+            _launch.launch(
+                kernel_neighbors.query_edge_path_ball_collect,
+                dim=m,
+                inputs=[
+                    positions,
+                    self._offsets,
+                    self._columns,
+                    self._radius,
+                    wp.int32(start),
+                    self._rows,
+                    self._distances,
+                    self._pending,
+                    self._keys,
+                    self._ranks,
+                    self.counts,
+                    self._overflow,
+                ],
+                device=positions.device,
+            )
+            yield start, m
+
+    def warn_clipped(self) -> None:
+        """Warn once about the balls the first walk clipped at their row's capacity."""
+        if self._warned:
+            return
+        self._warned = True
+        # The one readback the walk costs: whether to warn is a host decision.
+        n_overflow = int(read_scalar(self._overflow, 0))
+        if n_overflow > 0:
+            warnings.warn(
+                f"{n_overflow} of {self._n} edge-path balls exceeded the fixed capacity of "
+                f"{kernel_bfs.PER_SOURCE_MAX_NEIGHBORS}; their surplus neighbors were dropped.",
+                stacklevel=3,
+            )

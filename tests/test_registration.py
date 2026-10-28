@@ -492,13 +492,13 @@ def test_icp_point_to_point_matches_open3d_and_trimesh(device: str) -> None:
     so the answer is also known in closed form, and ordito must recover it exactly (a near-zero
     cost and RMS): that is what would catch a converged-but-wrong fit.
 
-    Class C only in that a small rigid offset is required for it to be well posed: nearest-neighbour
-    correspondence has to be unique, or the three solvers may legitimately land in different local
-    minima and no comparison is meaningful. With the offset small enough (0.15 rad, 0.07
-    translation) all three recover the exact alignment and agree to **2.6e-06** per coordinate,
-    worst over both devices, so the bound is ``8e-6``; ordito's RMS to the target is **1.1e-06**,
-    bounded at ``3.5e-6``. A solver landing in a different minimum would miss by orders of
-    magnitude, not by a tolerance.
+    Class A on the transformed source, which is ordito's returned cloud and each reference's matrix
+    applied to the same input. The offset is small (0.15 rad, 0.07 translation) so the
+    nearest-neighbour correspondence is unique and the three solvers share one basin; without that
+    they may legitimately land in different local minima. All three recover the exact alignment and
+    agree to **2.6e-06** per coordinate, worst over both devices, so the bound is ``8e-6``, inside
+    the standard ``1e-5``; ordito's RMS to the target is **1.1e-06**, bounded at ``3.5e-6``. A
+    solver landing in a different minimum would miss by orders of magnitude, not by a tolerance.
     """
     rng = np.random.default_rng(10)
     target_np = rng.standard_normal((300, 3)).astype(np.float32)
@@ -615,7 +615,7 @@ def test_icp_point_to_plane_matches_open3d(
     device: str, robust_kernel: _RobustKernel, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
-    Class C (a fit-error bound): point-to-plane ICP against Open3D's, plain and robust.
+    Class A on the transformed source: point-to-plane ICP against Open3D's, plain and robust.
 
     Both benchmark groups are the same solver at two robust-kernel settings, and Open3D exposes the
     matching pair -- ``TransformationEstimationPointToPlane()`` and the same wrapped in
@@ -624,7 +624,8 @@ def test_icp_point_to_plane_matches_open3d(
 
     Compared by the recovered alignment rather than by each side's cost, for the reason given in
     ``test_icp_point_to_point_matches_open3d_and_trimesh``. Measured worst per-point deviation
-    **8.9e-07** over both kernels and both devices, against the ``3e-6`` bound here; both land on
+    **8.9e-07** over both kernels and both devices, against the ``3e-6`` bound here (inside the
+    standard ``1e-5``); both land on
     the target to RMS **4.7e-07** (ordito) and 1.2e-07 (Open3D), bounded at ``1.5e-6``. A
     linearized step solved differently on the two sides would stop at a different iterate and
     miss these bounds by orders of magnitude.
@@ -1146,20 +1147,22 @@ def test_icp_point_to_plane_tukey_converges_from_outside_its_kernel(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh], scale: float, target: str
 ) -> None:
     """
-    Class C (a fit error against the exact answer): Tukey ICP from a start mostly outside ``c``.
+    Class A against Open3D's ``TukeyLoss(k=c)``: Tukey ICP from a start mostly outside ``c``.
 
     The source is the target under a known rigid motion, so a converged fit maps every source point
     onto its own target vertex, and Open3D's ``TukeyLoss(k=c)`` at its default convergence criteria
-    lands there too. ``c`` is below most of the starting residuals (asserted), which is the regime
-    an explicit ``robust_scale`` normally puts the fit in: a biweight gives those correspondences
-    zero weight, so ``sum w r^2`` *rises* for several iterations while the pose improves. Stopping
-    on that sum -- what ``icp_point_to_plane`` did -- ended the fit after two iterations, at RMS
-    ``6.9e-2`` / ``5.1e-3`` (cloud / mesh, ``c = 0.02``, measured on ``half_torus``), far above
-    the bound here; the Tukey loss it stops on now falls monotonically. On ``saddle_graded``
-    the starting residuals exceed ``c`` at 92.6 % / 80.3 % of the points (``c = 0.01`` / ``0.02``;
-    at 0.05 only 19 %, outside the regime) and the fit reaches ``1.5e-7`` to ``4.5e-7`` (Open3D at
-    most 3.7e-08), so both are bounded at ``1.5e-6``. The mutation probe is restoring
-    ``weight * r^2`` for Tukey in ``robust_loss``: all four cases failed on ``half_torus``.
+    lands there too: the two transformed sources agree to **7.3e-07** per coordinate, worst over the
+    four cases and both devices, bounded at ``3e-6``. ``c`` is below most of the starting residuals
+    (asserted), which is the regime an explicit ``robust_scale`` normally puts the fit in: a
+    biweight gives those correspondences zero weight, so ``sum w r^2`` *rises* for several
+    iterations while the pose improves. Stopping on that sum -- what ``icp_point_to_plane`` did --
+    ended the fit after two iterations, at RMS ``6.9e-2`` / ``5.1e-3`` (cloud / mesh, ``c = 0.02``,
+    measured on ``half_torus``), far above the bound here; the Tukey loss it stops on now falls
+    monotonically. On ``saddle_graded`` the starting residuals exceed ``c`` at 92.6 % / 80.3 % of
+    the points (``c = 0.01`` / ``0.02``; at 0.05 only 19 %, outside the regime) and the fit reaches
+    ``1.5e-7`` to ``4.5e-7`` (Open3D at most 3.7e-08), so both are bounded at ``1.5e-6``. The
+    mutation probe is restoring ``weight * r^2`` for Tukey in ``robust_loss``: all four cases failed
+    on ``half_torus``.
     """
     mesh_tm, mesh_wp = saddle_graded
     vertices_np, faces_np = _mesh_vertices_faces(mesh_tm)
@@ -1191,6 +1194,7 @@ def test_icp_point_to_plane_tukey_converges_from_outside_its_kernel(
     matrix_o3d = np.asarray(result_o3d.transformation)
     moved_o3d = source_np @ matrix_o3d[:3, :3].T + matrix_o3d[:3, 3]
 
+    assert np.allclose(transformed_wp.numpy(), moved_o3d, rtol=0.0, atol=3e-6)
     assert _rms(moved_o3d, vertices_np) < 1.5e-6
     assert _rms(transformed_wp.numpy(), vertices_np) < 1.5e-6
     # Converged means every correspondence is back inside the kernel, contributing ~r^2.

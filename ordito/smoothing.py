@@ -1203,6 +1203,7 @@ def relax_approx(
     fit: Literal["planar", "quadric"] = "planar",
     region: wp.array[wp.bool] | None = None,
     max_displacement: float | None = None,
+    method: Literal["geodesic_ball", "meshlib"] = "geodesic_ball",
 ) -> wp.array[wp.vec3]:
     """
     Move each vertex onto a surface fitted to its **neighbourhood**, rather than toward its 1-ring.
@@ -1221,7 +1222,9 @@ def relax_approx(
 
     The neighbourhood is a **geodesic** ball ([`geodesic_ball`][ordito.neighbors.geodesic_ball]),
     not a Euclidean one, so the opposite wall of a thin tube is excluded even when it is close --
-    which is exactly the case that corrupts a fit.
+    which is exactly the case that corrupts a fit. ``method="meshlib"`` takes the stricter ball of
+    vertices reached along mesh edges within ``dilate_radius`` of path length, rebuilt from the
+    moved positions on every pass.
 
     Parameters
     ----------
@@ -1235,9 +1238,9 @@ def relax_approx(
         starts at a small multiple of the mean edge length
         ([`edges_unique_length`][ordito.edges.edges_unique_length]).
     iterations
-        Number of passes. ``0`` returns a copy. The neighbourhoods are built **once**, from the
-        input positions, and reused -- the ball's membership is a topological choice and rebuilding
-        it per pass would cost more than the fit.
+        Number of passes. ``0`` returns a copy. Under ``method="geodesic_ball"`` the
+        neighbourhoods are built **once**, from the input positions, and reused -- the ball's
+        membership is a topological choice and rebuilding it per pass would cost more than the fit.
     force
         Fraction of the way to the fitted surface each pass moves.
     fit
@@ -1249,6 +1252,13 @@ def relax_approx(
     max_displacement
         Clamp every vertex into a ball of this radius around its **input** position, applied after
         each pass. ``None`` leaves the relaxation unbounded.
+    method
+        ``"geodesic_ball"`` for the edge-connected part of the Euclidean ball of ``dilate_radius``
+        around each vertex, built once from the input. ``"meshlib"`` for every vertex whose
+        shortest path along mesh edges is at most ``dilate_radius`` long (path lengths summed in
+        ``float32``, the radius inclusive), rebuilt from each pass's starting positions, with the
+        fit formed in ``float64``. A path is never shorter than the straight line, so this ball is
+        the smaller of the two; walking it again every pass is what the option costs.
 
     Returns
     -------
@@ -1259,8 +1269,8 @@ def relax_approx(
     ------
     ValueError
         If ``iterations`` is negative, if ``dilate_radius`` is not positive, if
-        ``max_displacement`` is negative, if ``fit`` is not one of the two names, or if ``region``
-        is not a length-``n_vertices`` ``wp.bool`` array.
+        ``max_displacement`` is negative, if ``fit`` or ``method`` is not one of its two
+        names, or if ``region`` is not a length-``n_vertices`` ``wp.bool`` array.
     RuntimeError
         If ``vertices``, ``faces`` and ``region`` are not all on one device.
 
@@ -1296,11 +1306,15 @@ def relax_approx(
     noisy = wp.array(noisy, dtype=wp.vec3)
     smoothed = od.smoothing.relax_approx(noisy, faces, 0.2, iterations=3, fit="planar")
     print(smoothed.numpy()[:, 2].std() < 0.5 * noisy.numpy()[:, 2].std())  # True
+    along_edges = od.smoothing.relax_approx(noisy, faces, 0.2, 3, method="meshlib")
+    print(along_edges.numpy()[:, 2].std() < 0.5 * noisy.numpy()[:, 2].std())  # True
     ```
     """
     require_same_device(vertices=vertices, faces=faces, region=region)
     if fit not in ("planar", "quadric"):
         raise ValueError(f"fit must be 'planar' or 'quadric', got {fit!r}")
+    if method not in ("geodesic_ball", "meshlib"):
+        raise ValueError(f"method must be 'geodesic_ball' or 'meshlib', got {method!r}")
     if dilate_radius <= 0.0:
         raise ValueError(f"dilate_radius must be positive, got {dilate_radius}")
     device = vertices.device
@@ -1329,7 +1343,9 @@ def relax_approx(
         dim: int,
     ) -> None:
         _launch.launch(
-            kernel_smoothing.relax_approx_step,
+            kernel_smoothing.relax_approx_step_d
+            if method == "meshlib"
+            else kernel_smoothing.relax_approx_step,
             dim=dim,
             inputs=[
                 src,
@@ -1347,7 +1363,21 @@ def relax_approx(
             device=device,
         )
 
-    if iterations > 1 and n_vertices <= _PACKED_BALL_MAX_VERTICES:
+    if method == "meshlib":
+        # Each pass walks its balls over the positions it starts from, so the ball follows the
+        # surface as it moves; a fit reads each chunk's rows as the walk leaves them.
+        path_walk = od.neighbors._EdgePathBallWalk(  # pyright: ignore[reportPrivateUsage]
+            faces, n_vertices, dilate_radius
+        )
+
+        def relax_pass(src: wp.array[wp.vec3], dst: wp.array[wp.vec3]) -> None:
+            for start, m in path_walk.chunks(src):
+                relax_launch(
+                    src, dst, path_walk.rows_flat, path_walk.counts, path_walk.row_stride, start, m
+                )
+            path_walk.warn_clipped()
+
+    elif iterations > 1 and n_vertices <= _PACKED_BALL_MAX_VERTICES:
         neighbor_indices, neighbor_offsets, _ = od.neighbors.geodesic_ball(
             vertices, faces, dilate_radius, min_count=1
         )
@@ -1861,7 +1891,7 @@ def filter_mut_dif_laplacian(
                     vol_cur,
                     vol_probe,
                     area_max,
-                    wp.int32(index == 0),
+                    wp.int32(1 if index == 0 else 0),
                     slope,
                 ],
                 outputs=[iterate, out if last else None],
@@ -3686,11 +3716,14 @@ def filter_normals(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
-    iterations: int = 20,
+    iterations: int | None = None,
     threshold: float = 60.0,
     face_adjacency: odt.Array2dInt32 | None = None,
     face_normals: wp.array[wp.vec3] | None = None,
     face_areas: wp.array[wp.float32] | None = None,
+    method: Literal["edge_neighbors", "meshlib"] = "edge_neighbors",
+    gamma: float = 5.0,
+    beta: float = 0.01,
 ) -> wp.array[wp.vec3]:
     """
     Smooth the *face normals* without moving a vertex, preserving creases.
@@ -3705,6 +3738,9 @@ def filter_normals(
     *target* for [`filter_two_step`][ordito.smoothing.filter_two_step]'s second half, and useful on
     its own for shading.
 
+    ``method="meshlib"`` is a second denoiser with no angle gate: the Mumford-Shah normal
+    filter of Zhang et al. (2015), which finds the creases itself as an edge indicator.
+
     Parameters
     ----------
     vertices
@@ -3712,23 +3748,46 @@ def filter_normals(
     faces
         ``(3 * n_faces,)`` triangle index buffer.
     iterations
-        Number of diffusion passes over the normal field. MeshLab's ``stepnormalnum``, whose default
-        of ``20`` is this one.
+        Number of diffusion passes over the normal field, ``20`` when ``None``: MeshLab's
+        ``stepnormalnum``, whose default this is. Under ``method="meshlib"`` the number of
+        solves, ``10`` when ``None``.
     threshold
         Angle in **degrees** beyond which two neighbouring faces refuse to average. ``0`` averages
         nothing and ``180`` averages everything (isotropic). MeshLab's ``normalthr``, default
-        ``60``. Must be in ``[0, 180]``.
+        ``60``. Must be in ``[0, 180]``. Unread under ``method="meshlib"``.
     face_adjacency
         ``(m, 2)`` adjacency from [`face_adjacency`][ordito.adjacency.face_adjacency], or
         ``None`` to derive the same neighbours from ``faces``. A supplied table may list any
-        pairs; each is averaged across, subject to the threshold.
+        pairs; each is averaged across, subject to the threshold. Unread under
+        ``method="meshlib"``, whose neighbours are the faces across each edge of ``faces``.
     face_normals
         ``(n_faces,)`` optional unit face normals and matching areas from
         [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]; recomputed together
         when either is ``None``. [`Trimesh.face_normals`][ordito.mesh.Trimesh.face_normals] and
         [`Trimesh.face_areas`][ordito.mesh.Trimesh.face_areas] cache the pair.
     face_areas
-        ``(n_faces,)`` face areas; see ``face_normals``.
+        ``(n_faces,)`` face areas; see ``face_normals``. Unread under ``method="meshlib"``.
+    method
+        The denoiser.
+
+        - ``"edge_neighbors"`` (default) — the crease-gated, area-weighted passes above.
+        - ``"meshlib"`` — Zhang et al., "Mesh Denoising via a Novel Mumford-Shah Framework"
+          (2015), eqs. 19-20, with the closed-form edge indicator. Each solve restarts from the
+          original normals ``n0`` and solves the linear system ``n_f + sum_e w_e (n_f - n_r) =
+          n0_f`` over the faces ``r`` across face ``f``'s edges, with
+          ``w_e = gamma |e| v_e^2 / P``, ``|e|`` the edge's length and ``P`` the perimeter of
+          ``f`` (rim edges included) for the diagonal and of the higher-numbered face of the pair
+          for the coupling, which makes the system symmetric. The answer is normalized and sets
+          each edge's indicator for the next solve, ``v_e = rho / (rho + 2 gamma |n_f - n_r|^2)``
+          with ``rho = beta / 0.002``: near ``1`` on a smooth edge and near ``0`` across a crease,
+          which stops the crease from diffusing. The first solve takes ``v = 1``.
+    gamma
+        The smoothing weight of ``method="meshlib"``: ``0`` keeps the input normals, and the
+        larger it is the further each solve diffuses. Default ``5``. Must be non-negative.
+    beta
+        The crease sensitivity of ``method="meshlib"``: about ``0.001`` keeps sharp edges,
+        ``0.01`` (the default) moderate ones and ``0.1`` smooths them. Read from the second solve
+        on. Must be positive.
 
     Returns
     -------
@@ -3739,7 +3798,9 @@ def filter_normals(
     Raises
     ------
     ValueError
-        If ``threshold`` is outside ``[0, 180]``.
+        If ``threshold`` is outside ``[0, 180]``, ``method`` is neither ``"edge_neighbors"`` nor
+        ``"meshlib"``, or under ``"meshlib"`` ``gamma`` is negative or ``beta`` is not
+        positive.
     RuntimeError
         If ``vertices``, ``faces``, ``face_adjacency``, ``face_normals`` and ``face_areas`` are not
         all on one device.
@@ -3752,7 +3813,9 @@ def filter_normals(
     Examples
     --------
     The creases of a box are sharper than the default 60 degree threshold, so its face normals
-    survive unchanged; at 180 degrees every normal averages with its neighbours:
+    survive unchanged; at 180 degrees every normal averages with its neighbours. The Mumford-Shah
+    filter's first solve weighs every edge alike and blurs the creases too, and its edge indicator
+    then finds them and keeps them:
 
     ```python
     import numpy as np
@@ -3765,6 +3828,16 @@ def filter_normals(
     print(np.allclose(filtered.numpy(), normals.numpy()))  # True
     blurred = od.smoothing.filter_normals(vertices, faces, threshold=180.0)
     print(np.allclose(blurred.numpy(), normals.numpy()))  # False
+
+
+    def worst_cosine(field):
+        return np.einsum("ij,ij->i", field.numpy(), normals.numpy()).min()
+
+
+    one_solve = od.smoothing.filter_normals(vertices, faces, method="meshlib", iterations=1)
+    print(bool(worst_cosine(one_solve) > 0.999))  # False
+    mumford_shah = od.smoothing.filter_normals(vertices, faces, method="meshlib")
+    print(bool(worst_cosine(mumford_shah) > 0.999))  # True
     ```
     """
     require_same_device(
@@ -3774,8 +3847,15 @@ def filter_normals(
         face_normals=face_normals,
         face_areas=face_areas,
     )
+    if method not in ("edge_neighbors", "meshlib"):
+        raise ValueError(f"method must be 'edge_neighbors' or 'meshlib', got {method!r}")
     if not 0.0 <= threshold <= 180.0:
         raise ValueError(f"threshold must be in [0, 180] degrees, got {threshold}")
+    mumford_shah = method == "meshlib"
+    if mumford_shah:
+        _require_mumford_shah_weights(gamma, beta)
+    if iterations is None:
+        iterations = 10 if mumford_shah else 20
 
     n_faces = faces.size // 3
     # A computed field is this call's own; a caller-supplied one is never written --
@@ -3791,6 +3871,10 @@ def filter_normals(
     if n_faces == 0 or iterations <= 0:
         return normals if computed else _launch.clone(normals)
 
+    if mumford_shah:
+        mates = od.halfedge.halfedge_mates(faces, vertices.size)
+        system = _MumfordShahNormals(faces, mates, gamma, beta)
+        return system(vertices, normals, iterations)
     if face_adjacency is None:
         # The pairs ``face_adjacency`` would list are the halfedges' mates, read three to a face.
         mates = od.halfedge.halfedge_mates(faces, vertices.size)
@@ -3805,11 +3889,14 @@ def filter_two_step(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
-    iterations: int = 3,
+    iterations: int | None = None,
     threshold: float = 60.0,
-    normal_iterations: int = 20,
+    normal_iterations: int | None = None,
     fit_iterations: int = 20,
     mates: wp.array[wp.int32] | None = None,
+    method: Literal["edge_neighbors", "meshlab", "meshlib"] = "edge_neighbors",
+    gamma: float = 5.0,
+    beta: float = 0.01,
 ) -> wp.array[wp.vec3]:
     """
     Feature-preserving smoothing: filter the face normals, then fit the vertices to them.
@@ -3835,20 +3922,52 @@ def filter_two_step(
         ``(3 * n_faces,)`` triangle index buffer. The topology never changes.
     iterations
         Number of outer passes; each one re-derives the normals from the current positions and
-        refits. MeshLab's ``stepsmoothnum``, default ``3``.
+        refits. MeshLab's ``stepsmoothnum``, default (``None``) ``3``; ``1`` under
+        ``method="meshlib"``, where each pass also takes its input as the new guide.
     threshold
         Crease threshold in **degrees** for the normal filter. See
         [`filter_normals`][ordito.smoothing.filter_normals]. MeshLab's ``normalthr``, default
-        ``60``.
+        ``60``. Unread under ``method="meshlib"``.
     normal_iterations
-        Normal-diffusion passes per outer pass. MeshLab's ``stepnormalnum``, default ``20``.
+        Normal-diffusion passes per outer pass. MeshLab's ``stepnormalnum``, default (``None``)
+        ``20``; under ``method="meshlib"`` the normal solves per outer pass, default ``10``.
     fit_iterations
-        Vertex-fitting gradient steps per outer pass. MeshLab's ``stepfitnum``, default ``20``.
+        Vertex-fitting steps per outer pass. MeshLab's ``stepfitnum``, default ``20``; under
+        ``method="meshlib"`` the least-squares solves.
     mates
         ``(3 * n_faces,)`` [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces`` when the
         caller holds them ([`Trimesh.halfedge_mates`][ordito.mesh.Trimesh.halfedge_mates]), which
         the normal filter reads for its neighbours rather than pairing the halfedges again.
-        Trusted, not checked.
+        Trusted, not checked. Unread under ``method="meshlab"``.
+    method
+        The normal filter of step 1; the vertex fitting is the same under the first two.
+
+        - ``"edge_neighbors"`` (default) — [`filter_normals`][ordito.smoothing.filter_normals]'s
+          pass: each face averages, by area, with the neighbours across its three edges whose
+          normals lie within ``threshold`` of its own.
+        - ``"meshlab"`` — MeshLab's ``apply_coord_two_steps_smoothing`` exactly: each face averages
+          with the faces sharing a vertex with it, weighted ``(c - cos(threshold))^2`` by the
+          cosine ``c`` between the two normals (clamped to ``[1e-4, 1]``) and kept where ``c``
+          reaches ``cos(threshold)``, a threshold above 90 degrees acting as 90. **Its answer
+          depends on the face order**: MeshLab's vertex walk visits only the faces of lower index
+          than the one being filtered, and this reproduces that walk. On a noisy cube it rounds the
+          corners inward, where the default keeps them.
+        - ``"meshlib"`` — Zhang et al., "Mesh Denoising via a Novel Mumford-Shah Framework"
+          (2015), both steps: the normals are
+          [`filter_normals`][ordito.smoothing.filter_normals]'s ``method="meshlib"`` at
+          ``gamma``, ``beta`` and ``normal_iterations``, and the vertices then solve the linear
+          least-squares problem ``min |x - g|^2 + sum_f |G x_f - d_f|^2`` ``fit_iterations``
+          times, ``g`` the pass's input positions. ``G x_f`` is face ``f``'s two corner offsets
+          ``2 x_0 - x_1 - x_2`` and ``2 x_1 - x_0 - x_2``, and ``d_f`` the same offsets of the
+          current triangle projected onto the plane through its centroid with the filtered normal
+          (collapsed onto a line when the projection turns it over). The system is factored once
+          per call.
+    gamma
+        The smoothing weight of ``method="meshlib"``; see
+        [`filter_normals`][ordito.smoothing.filter_normals]. Default ``5``.
+    beta
+        The crease sensitivity of ``method="meshlib"``; see
+        [`filter_normals`][ordito.smoothing.filter_normals]. Default ``0.01``.
 
     Returns
     -------
@@ -3858,7 +3977,9 @@ def filter_two_step(
     Raises
     ------
     ValueError
-        If ``threshold`` is outside ``[0, 180]``.
+        If ``threshold`` is outside ``[0, 180]``, ``method`` is not ``"edge_neighbors"``,
+        ``"meshlab"`` or ``"meshlib"``, or under ``"meshlib"`` ``gamma`` is negative or
+        ``beta`` is not positive.
     RuntimeError
         If ``vertices``, ``faces`` and ``mates`` are not all on one device.
 
@@ -3895,9 +4016,20 @@ def filter_two_step(
     print(f"{od.measures.volume(smoothed, faces):.2f}")  # 1.00
     off_surface = np.abs(np.abs(smoothed.numpy()) - 0.5).min(axis=1)
     print(off_surface.mean() < np.abs(np.abs(noisy.numpy()) - 0.5).min(axis=1).mean())  # True
+    denoised = od.smoothing.filter_two_step(noisy, faces, method="meshlib")
+    print(f"{od.measures.volume(denoised, faces):.2f}")  # 1.00
     ```
     """
     require_same_device(vertices=vertices, faces=faces, mates=mates)
+    if method not in ("edge_neighbors", "meshlab", "meshlib"):
+        raise ValueError(f"method must be 'edge_neighbors', 'meshlab' or 'meshlib', got {method!r}")
+    mumford_shah = method == "meshlib"
+    if mumford_shah:
+        _require_mumford_shah_weights(gamma, beta)
+    if iterations is None:
+        iterations = 1 if mumford_shah else 3
+    if normal_iterations is None:
+        normal_iterations = 10 if mumford_shah else 20
     device = vertices.device
     n = vertices.size
     n_faces = faces.size // 3
@@ -3905,13 +4037,25 @@ def filter_two_step(
         return _launch.clone(vertices)
     if not 0.0 <= threshold <= 180.0:
         raise ValueError(f"threshold must be in [0, 180] degrees, got {threshold}")
+    if mumford_shah:
+        return _mumford_shah_two_step(
+            vertices, faces, mates, iterations, normal_iterations, fit_iterations, gamma, beta
+        )
 
     # The topology is fixed, so both incidence tables are built once for every pass of both halves:
     # the halfedge mates the normal passes read their neighbours off, and the vertex -> face rows
     # the fit steps gather over, whose lengths are the incident-face counts that set the step.
-    if mates is None:
-        mates = od.halfedge.halfedge_mates(faces, n)
+    # MeshLab's normal pass walks the vertex -> face rows too, so it needs no mates.
     vf_offsets, vertex_faces = _incidence_rows(faces, 3, n)
+    if method == "meshlab":
+        normal_pass = (
+            kernel_smoothing.smooth_face_normals_meshlab,
+            [faces, vertex_faces, vf_offsets],
+        )
+    else:
+        if mates is None:
+            mates = od.halfedge.halfedge_mates(faces, n)
+        normal_pass = (kernel_smoothing.smooth_face_normals_over_mates, [mates])
     # The fit steps ping-pong between two buffers of this call; the input is only ever read.
     positions = vertices
     spare: wp.array[wp.vec3] | None = None
@@ -3941,8 +4085,7 @@ def filter_two_step(
             normals = _smoothed_face_normals(
                 normals,
                 normal_areas,
-                kernel_smoothing.smooth_face_normals_over_mates,
-                [mates],
+                *normal_pass,
                 threshold,
                 normal_iterations,
                 owned=True,
@@ -3960,6 +4103,228 @@ def filter_two_step(
             )
             positions, spare = spare, (None if positions is vertices else positions)
     return _launch.clone(vertices) if positions is vertices else positions
+
+
+def _mumford_shah_two_step(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32] | None,
+    iterations: int,
+    normal_iterations: int,
+    fit_iterations: int,
+    gamma: float,
+    beta: float,
+) -> wp.array[wp.vec3]:
+    """
+    ``filter_two_step(method="meshlib")`` on a non-empty mesh, ``iterations >= 1``.
+
+    Both systems depend on the topology alone for their pattern, and the vertex system for its
+    values too, so each is built once for every pass: the vertex system's factorization serves
+    every least-squares solve of the call.
+    """
+    device = vertices.device
+    n_faces = faces.size // 3
+    if mates is None:
+        mates = od.halfedge.halfedge_mates(faces, vertices.size)
+    normal_system = _MumfordShahNormals(faces, mates, gamma, beta)
+    point_system = _NormalsToPoints(faces, vertices) if fit_iterations > 0 else None
+    face_field = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    face_areas = _launch.empty(n_faces, dtype=wp.float32, device=device)
+    positions = vertices
+    for _ in range(iterations):
+        _launch.launch(
+            kernel_triangles.face_normals_and_areas,
+            dim=n_faces,
+            inputs=[positions, faces],
+            outputs=[face_field, face_areas],
+            device=device,
+        )
+        normals = face_field
+        if normal_iterations > 0:
+            normals = normal_system(positions, face_field, normal_iterations)
+        if point_system is not None:
+            positions = point_system(positions, normals, fit_iterations)
+    return _launch.clone(vertices) if positions is vertices else positions
+
+
+def _require_mumford_shah_weights(gamma: float, beta: float) -> None:
+    """Raise ``ValueError`` unless ``gamma >= 0`` and ``beta > 0``, the Mumford-Shah weights."""
+    if not gamma >= 0.0:
+        raise ValueError(f"gamma must be non-negative, got {gamma}")
+    if not beta > 0.0:
+        raise ValueError(f"beta must be positive, got {beta}")
+
+
+class _MumfordShahNormals:
+    """
+    The Mumford-Shah face normal filter over one face set: its pattern, buffers and solver state.
+
+    The face system's pattern is the face graph, built once; each call writes the geometry the
+    values read, then runs ``iterations`` value-and-solve rounds, every one warm-started from the
+    last. A round's values read the previous round's solution for the edge indicator, so the
+    indicator needs no buffer of its own. The solver's Jacobi diagonal is the first round's; later
+    rounds lower the couplings, which changes its rate and not its answer.
+    """
+
+    def __init__(
+        self, faces: wp.array[wp.int32], mates: wp.array[wp.int32], gamma: float, beta: float
+    ) -> None:
+        device = faces.device
+        n_faces = faces.size // 3
+        self._faces = faces
+        self._mates = mates
+        self._gamma = wp.float32(gamma)
+        self._beta = wp.float32(beta)
+        count = 4 * n_faces
+        keys, order = od.array.csr_key_buffers(count, device)
+        _launch.launch(
+            kernel_smoothing.mumford_shah_face_keys,
+            dim=n_faces,
+            inputs=[mates, wp.int32(n_faces)],
+            outputs=[keys, order],
+            device=device,
+        )
+        offsets, columns, starts = od.array.csr_from_keys(keys, order, count, n_faces, n_faces)
+        self._offsets, self._starts, self._order = offsets, starts, order
+        self._values = _launch.empty(count, dtype=wp.float64, device=device)
+        self._matrix = od.array.bsr_from_csr(n_faces, n_faces, offsets, columns, self._values)
+        self._lengths = _launch.empty(3 * n_faces, dtype=wp.float32, device=device)
+        self._perimeters = _launch.empty(n_faces, dtype=wp.float32, device=device)
+        self._rhs = odt.empty_2d((3, n_faces), wp.float64, device=device)
+        self._solution = odt.empty_2d((3, n_faces), wp.float64, device=device)
+        self._solver: Callable[[], object] | None = None
+
+    def __call__(
+        self, vertices: wp.array[wp.vec3], normals: wp.array[wp.vec3], iterations: int
+    ) -> wp.array[wp.vec3]:
+        """Filter ``normals``, the face normals of ``vertices``, in ``iterations >= 1`` solves."""
+        device = vertices.device
+        n_faces = normals.size
+        _launch.launch(
+            kernel_smoothing.mumford_shah_face_geometry,
+            dim=n_faces,
+            inputs=[vertices, self._faces, normals],
+            outputs=[self._lengths, self._perimeters, self._rhs, self._solution],
+            device=device,
+        )
+        for index in range(iterations):
+            _launch.launch(
+                kernel_smoothing.mumford_shah_face_values,
+                dim=n_faces,
+                inputs=[
+                    self._offsets,
+                    self._starts,
+                    self._order,
+                    self._mates,
+                    self._lengths,
+                    self._perimeters,
+                    self._solution,
+                    wp.int32(1 if index == 0 else 0),
+                    self._gamma,
+                    self._beta,
+                ],
+                outputs=[self._values],
+                device=device,
+            )
+            if self._solver is None:
+                # Built after the first values exist: the state derives its Jacobi diagonal from
+                # them. Iterated, never factored: the values change every round.
+                self._solver = twl.spd_column_solver(
+                    self._matrix, self._rhs, self._solution, factorize=False
+                )
+            self._solver()
+        filtered = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+        _launch.launch(
+            kernel_smoothing.normalize_solved_normals,
+            dim=n_faces,
+            inputs=[self._solution],
+            outputs=[filtered],
+            device=device,
+        )
+        return filtered
+
+
+class _NormalsToPoints:
+    """
+    The Mumford-Shah vertex update over one face set: ``(I + M^T M) x = g + M^T d``, factored once.
+
+    ``M`` stacks two shape rows per face (``kernels/smoothing.corner_pair_gram``), so the operator
+    depends on the topology alone; the state factors it from its second solve on
+    (``linalg.spd_column_solver``). A solve's right-hand side is the guide plus each face's
+    projected shape, gathered over the vertex -> corner rows.
+    """
+
+    def __init__(self, faces: wp.array[wp.int32], vertices: wp.array[wp.vec3]) -> None:
+        device = vertices.device
+        n = vertices.size
+        n_faces = faces.size // 3
+        self._faces = faces
+        # The guide's weight ``w``: every point is drawn to its pass's input with unit weight.
+        self._guide_weight_sq = wp.float64(1.0)
+        count = 9 * n_faces + n
+        keys, order = od.array.csr_key_buffers(count, device)
+        values = _launch.empty(count, dtype=wp.float64, device=device)
+        _launch.launch(
+            kernel_smoothing.normals_to_points_keys,
+            dim=max(n_faces, n),
+            inputs=[faces, wp.int32(n_faces), wp.int32(n), self._guide_weight_sq],
+            outputs=[keys, order, values],
+            device=device,
+        )
+        matrix = od.array.csr_from_coo_keys(n, n, keys, order, values)
+        self._corner_offsets, self._corners = _incidence_rows(faces, 1, n)
+        self._corner_terms = _launch.empty(3 * n_faces, dtype=wp.vec3d, device=device)
+        self._rhs = odt.empty_2d((3, n), wp.float64, device=device)
+        self._solution = odt.empty_2d((3, n), wp.float64, device=device)
+        self._solver = twl.spd_column_solver(
+            matrix, self._rhs, self._solution, coordinates=vertices
+        )
+
+    def __call__(
+        self, guide: wp.array[wp.vec3], normals: wp.array[wp.vec3], iterations: int
+    ) -> wp.array[wp.vec3]:
+        """Fit the vertices to the face ``normals`` from ``guide`` in ``iterations >= 1`` solves."""
+        device = guide.device
+        n = guide.size
+        n_faces = normals.size
+        _launch.launch(
+            kernel_smoothing.vec3_to_columns,
+            dim=n,
+            inputs=[guide],
+            outputs=[self._solution],
+            device=device,
+        )
+        for _ in range(iterations):
+            _launch.launch(
+                kernel_smoothing.project_to_target_normals,
+                dim=n_faces,
+                inputs=[self._solution, self._faces, normals],
+                outputs=[self._corner_terms],
+                device=device,
+            )
+            _launch.launch(
+                kernel_smoothing.normals_to_points_rhs,
+                dim=n,
+                inputs=[
+                    guide,
+                    self._corner_offsets,
+                    self._corners,
+                    self._corner_terms,
+                    self._guide_weight_sq,
+                ],
+                outputs=[self._rhs],
+                device=device,
+            )
+            self._solver()
+        positions = _launch.empty(n, dtype=wp.vec3, device=device)
+        _launch.launch(
+            kernel_smoothing.columns_to_vec3,
+            dim=n,
+            inputs=[self._solution],
+            outputs=[positions],
+            device=device,
+        )
+        return positions
 
 
 def _smoothed_face_normals(

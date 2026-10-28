@@ -28,6 +28,7 @@ from ordito.kernels.array import (
     to_vec2d,
     to_vec3,
     to_vec3d,
+    unique_edge_row,
     unpack_edge_key,
 )
 from ordito.kernels.edges import emit_sorted_unique_edge
@@ -87,7 +88,7 @@ from ordito.kernels.triangles import (
     write_row_triple,
 )
 from ordito.kernels.vertices import add_to_face_corners, normalized_accumulated_row
-from ordito.kernels.voxels import squared_distance_to_own_cell_center, voxel_cell_axes
+from ordito.kernels.voxels import voxel_cell_axes, voxel_cell_center
 
 wp.set_module_options({"enable_backward": False})
 
@@ -3218,16 +3219,35 @@ def fixup_twin_remap(
 
 
 @wp.func
+def cluster_cell(
+    vertex: wp.vec3, origin: wp.vec3, inverse_size: wp.vec3, cell_max: wp.vec3i
+) -> wp.vec3i:
+    # The cell ``remesh.cluster_decimate`` bins a vertex into: ``voxel_cell_axes`` clamped to
+    # ``[0, cell_max]`` per axis. Only the box-fitted grid relies on the clamp, whose box is the
+    # faces' vertices' own bounding box split into whole cells: a vertex on the box's maximum
+    # lands in the last cell rather than one past it, and an unreferenced vertex off the box in a
+    # border cell. The other two grids enclose every vertex strictly inside ``cell_bound`` and
+    # pass ``cell_bound - 1``, so for them the clamp is the identity.
+    cell = voxel_cell_axes(vertex, origin, inverse_size)
+    return wp.max(wp.min(cell, cell_max), wp.vec3i(0))
+
+
+@wp.func
 def cluster_cell_key(
-    vertex: wp.vec3, origin: wp.vec3, inverse_size: wp.vec3, cell_bound: wp.uint64
+    vertex: wp.vec3,
+    origin: wp.vec3,
+    inverse_size: wp.vec3,
+    cell_max: wp.vec3i,
+    cell_bound: wp.uint64,
 ) -> wp.uint64:
     # A vertex's voxel cell packed into the ``uint64`` key ``remesh.cluster_decimate`` orders its
     # clusters by: ``voxels.cell_indices`` and ``grouping.hash_indices_rows`` in one thread, the
     # same cell (``voxel_cell_axes`` over three equal widths is ``voxel_cell``) and the same
-    # packing, so the keys are theirs bit for bit. ``inverse_size`` is per axis for MeshLab's grid,
-    # whose cells are stretched to fit the box. Pure in its inputs, which is what lets
-    # ``cluster_insert_vertices`` recompute a stored vertex's key rather than keep a table of keys.
-    cell = voxel_cell_axes(vertex, origin, inverse_size)
+    # packing, so the keys are theirs bit for bit. ``inverse_size`` is per axis for MeshLab's grid
+    # and the box-fitted one, whose cells are stretched to fit a box. Pure in its inputs, which is
+    # what lets ``cluster_insert_vertices`` recompute a stored vertex's key rather than keep a
+    # table of keys.
+    cell = cluster_cell(vertex, origin, inverse_size, cell_max)
     return pack_index_triple(cell[0], cell[1], cell[2], cell_bound)
 
 
@@ -3236,6 +3256,7 @@ def cluster_insert_vertices(
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
     inverse_size: wp.vec3,
+    cell_max: wp.vec3i,
     cell_bound: wp.uint64,
     mask: wp.int32,
     out_cell_table: wp.array[wp.int32],
@@ -3249,7 +3270,7 @@ def cluster_insert_vertices(
     # ``atomic_min`` is needed. The slots number the clusters arbitrarily: the output order is
     # fixed later by sorting the keys of the cells a face keeps (``cluster_mark_faces``).
     v = wp.int32(wp.tid())
-    key = cluster_cell_key(vertices[v], origin, inverse_size, cell_bound)
+    key = cluster_cell_key(vertices[v], origin, inverse_size, cell_max, cell_bound)
     h = hash_slot(wp.int64(key), mask)
     while True:
         # Read before claiming: a cluster's vertices all probe its slot, and once it is taken a
@@ -3259,7 +3280,7 @@ def cluster_insert_vertices(
             prev = wp.atomic_cas(out_cell_table, h, wp.int32(-1), v)
             if prev == wp.int32(-1):
                 break
-        if cluster_cell_key(vertices[prev], origin, inverse_size, cell_bound) == key:
+        if cluster_cell_key(vertices[prev], origin, inverse_size, cell_max, cell_bound) == key:
             break
         h = next_slot(h, mask)
     out_vertex_cell[v] = h
@@ -3284,6 +3305,7 @@ def claim_kept_cluster(
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
     inverse_size: wp.vec3,
+    cell_max: wp.vec3i,
     cell_bound: wp.uint64,
     cell_table: wp.array[wp.int32],
     cell_state: wp.array[wp.int32],
@@ -3300,7 +3322,9 @@ def claim_kept_cluster(
         return
     if wp.atomic_exch(cell_state, cell, wp.int32(0)) == wp.int32(-1):
         p = wp.atomic_add(counters, 0, wp.int32(1))
-        out_keys[p] = cluster_cell_key(vertices[cell_table[cell]], origin, inverse_size, cell_bound)
+        out_keys[p] = cluster_cell_key(
+            vertices[cell_table[cell]], origin, inverse_size, cell_max, cell_bound
+        )
         out_cells[p] = cell
 
 
@@ -3311,6 +3335,7 @@ def cluster_mark_faces(
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
     inverse_size: wp.vec3,
+    cell_max: wp.vec3i,
     cell_bound: wp.uint64,
     cell_table: wp.array[wp.int32],
     face_mask: wp.int32,
@@ -3339,6 +3364,7 @@ def cluster_mark_faces(
         vertices,
         origin,
         inverse_size,
+        cell_max,
         cell_bound,
         cell_table,
         out_cell_state,
@@ -3351,6 +3377,7 @@ def cluster_mark_faces(
         vertices,
         origin,
         inverse_size,
+        cell_max,
         cell_bound,
         cell_table,
         out_cell_state,
@@ -3363,6 +3390,7 @@ def cluster_mark_faces(
         vertices,
         origin,
         inverse_size,
+        cell_max,
         cell_bound,
         cell_table,
         out_cell_state,
@@ -3412,10 +3440,15 @@ def vertex_cluster_rank(
 # is the mean under the deterministic setting: the vertices are staged for a stable sort by cluster
 # (``stage_cluster_vertex``) and each cluster's run is added in one fixed order
 # (``cluster_sorted_means`` and ``cluster_heavy_means``, which write the output positions), where
-# ``CLUSTER_AVERAGE``'s atomics add them in arrival order.
+# ``CLUSTER_AVERAGE``'s atomics add them in arrival order. ``CLUSTER_CLOSEST_UNFUSED`` is
+# ``CLUSTER_CLOSEST`` with the distance to the cell centre rounded one operation at a time
+# (``unfused_cell_center_distance_sq``), the box-fitted grid's: ties at the centre, which a
+# symmetric mesh has many of, then break as a serial single-precision evaluation breaks them, on
+# both devices.
 CLUSTER_AVERAGE = wp.constant(wp.int32(0))
 CLUSTER_CLOSEST = wp.constant(wp.int32(1))
 CLUSTER_AVERAGE_SORTED = wp.constant(wp.int32(2))
+CLUSTER_CLOSEST_UNFUSED = wp.int32(3)
 
 
 @wp.func
@@ -3461,6 +3494,44 @@ def mean_from_sum(total: wp.vec3, count: wp.int32) -> wp.vec3:
     return total / wp.float32(count)
 
 
+# The squared distance from ``position`` to the centre of ``cell`` (``origin + (cell + 0.5) *
+# size`` per axis), every product and sum rounded on its own. On CUDA the round-to-nearest
+# intrinsics are never contracted into an FMA, which ``wp.length_sq`` over ``voxel_cell_center``
+# is (a centre and its distance each one rounding short), and which moved the pick on ties at the
+# centre of an icosphere's cells (four of 128 at 10 % of the diagonal). The CPU device takes
+# the same operations, one statement each, and its plain ``wp.length_sq`` already picked the
+# reference's vertex on every probe. Summed ``x``, then ``y``, then ``z``.
+_UNFUSED_CELL_CENTER_DISTANCE_SQ = """
+float squares[3];
+for (int axis = 0; axis < 3; ++axis) {
+#if defined(__CUDA_ARCH__)
+    float center = __fadd_rn(
+        origin[axis], __fmul_rn(__fadd_rn((float)cell[axis], 0.5f), size[axis]));
+    float offset = __fsub_rn(position[axis], center);
+    squares[axis] = __fmul_rn(offset, offset);
+#else
+    float half_cell = (float)cell[axis] + 0.5f;
+    float scaled = half_cell * size[axis];
+    float center = origin[axis] + scaled;
+    float offset = position[axis] - center;
+    squares[axis] = offset * offset;
+#endif
+}
+#if defined(__CUDA_ARCH__)
+return __fadd_rn(__fadd_rn(squares[0], squares[1]), squares[2]);
+#else
+float xy = squares[0] + squares[1];
+return xy + squares[2];
+#endif
+"""
+
+
+@wp.func_native(_UNFUSED_CELL_CENTER_DISTANCE_SQ)
+def unfused_cell_center_distance_sq(
+    position: wp.vec3, origin: wp.vec3, size: wp.vec3, cell: wp.vec3i
+) -> wp.float32: ...
+
+
 @wp.func
 def pick_closest_cluster_vertex(
     vertex_cell: wp.array[wp.int32],
@@ -3468,7 +3539,9 @@ def pick_closest_cluster_vertex(
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
     inverse_size: wp.vec3,
+    cell_max: wp.vec3i,
     voxel_size: wp.vec3,
+    unfused: wp.bool,
     v: wp.int32,
     out_closest: wp.array[wp.uint64],
 ) -> None:
@@ -3479,7 +3552,15 @@ def pick_closest_cluster_vertex(
     # whatever the arrival order. ``out_closest`` arrives holding ``UINT64_MAX``.
     r = vertex_cluster_rank(vertex_cell, cell_rank, v)
     if r >= 0:
-        d = squared_distance_to_own_cell_center(vertices[v], origin, inverse_size, voxel_size)
+        # The centre of the cell ``v`` was binned into, clamp included, so a vertex on the
+        # box-fitted grid's maximum is measured against the last cell's centre.
+        # ``unfused`` is ``CLUSTER_CLOSEST_UNFUSED``'s rounding.
+        cell = cluster_cell(vertices[v], origin, inverse_size, cell_max)
+        d = wp.where(
+            unfused,
+            unfused_cell_center_distance_sq(vertices[v], origin, voxel_size, cell),
+            wp.length_sq(vertices[v] - voxel_cell_center(cell, origin, voxel_size)),
+        )
         key = (wp.uint64(wp.cast(d, wp.uint32)) << wp.uint64(32)) | wp.uint64(wp.uint32(v))
         wp.atomic_min(out_closest, r, key)
 
@@ -3508,6 +3589,7 @@ def cluster_gather_and_face_keys(
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
     inverse_size: wp.vec3,
+    cell_max: wp.vec3i,
     voxel_size: wp.vec3,
     contraction: wp.int32,
     corner_items: wp.int32,
@@ -3527,9 +3609,10 @@ def cluster_gather_and_face_keys(
     # - item ``t`` into its cluster's representative: ``accumulate_cluster_vertex`` under
     #   ``CLUSTER_AVERAGE`` (``out_sum`` / ``out_count`` zeroed), staged for the ordered mean's sort
     #   under ``CLUSTER_AVERAGE_SORTED``, or ``pick_closest_cluster_vertex`` under
-    #   ``CLUSTER_CLOSEST``; the other contractions' outputs are empty. An item is a vertex
-    #   (Open3D's mean, over every vertex of the cell) or, with ``corner_items`` set, a face corner
-    #   (MeshLab's, over every face corner in the cell, so a vertex counts once per face on it);
+    #   ``CLUSTER_CLOSEST`` and ``CLUSTER_CLOSEST_UNFUSED``; the other contractions' outputs are
+    #   empty. An item is a vertex (Open3D's mean, over every vertex of the cell) or, with
+    #   ``corner_items`` set, a face corner (MeshLab's, over every face corner in the cell, so a
+    #   vertex counts once per face on it; the box-fitted grid's, whose candidates are on a face);
     # - unique face ``t < n_unique``: its class representative (the smallest face index,
     #   ``cluster_mark_faces``) and its key, the output-vertex triple rotated to start at its
     #   smallest and packed in radix ``n_kept``, which the sort that follows orders faces by.
@@ -3543,7 +3626,16 @@ def cluster_gather_and_face_keys(
             stage_cluster_vertex(vertex_cell, cell_rank, t, v, wp.int32(n_kept), out_count)
         else:
             pick_closest_cluster_vertex(
-                vertex_cell, cell_rank, vertices, origin, inverse_size, voxel_size, v, out_closest
+                vertex_cell,
+                cell_rank,
+                vertices,
+                origin,
+                inverse_size,
+                cell_max,
+                voxel_size,
+                contraction == CLUSTER_CLOSEST_UNFUSED,
+                v,
+                out_closest,
             )
     if t < n_unique:
         g = face_table[face_slots[t]]
@@ -3577,7 +3669,7 @@ def cluster_emit(
     if t < out_vertices.shape[0]:
         if contraction == CLUSTER_AVERAGE:
             out_vertices[t] = mean_from_sum(sums[t], counts[t])
-        elif contraction == CLUSTER_CLOSEST:
+        elif contraction == CLUSTER_CLOSEST or contraction == CLUSTER_CLOSEST_UNFUSED:
             out_vertices[t] = vertices[wp.int32(closest[t] & wp.uint64(0xFFFFFFFF))]
     if t < sorted_faces.shape[0]:
         r0, r1, r2 = ranked_face_corners(faces, vertex_cell, cell_rank, sorted_faces[t])
@@ -4562,27 +4654,6 @@ def gather_vertex_quadrics(
 
 
 @wp.func
-def unique_edge_index(
-    unique_edges: wp.array2d[wp.int32], n_edges: wp.int32, u: wp.int32, v: wp.int32, base: wp.uint64
-) -> wp.int32:
-    # The row of edge ``(u, v)`` among the first ``n_edges`` rows of ``unique_edges``, which ascend
-    # by ``pack_edge_key``; ``-1`` when it is not there.
-    key = pack_edge_key(u, v, base)
-    lo = wp.int32(0)
-    hi = n_edges
-    while lo < hi:
-        mid = (lo + hi) // 2
-        if pack_edge_key(unique_edges[mid, 0], unique_edges[mid, 1], base) < key:
-            lo = mid + 1
-        else:
-            hi = mid
-    if lo < n_edges:
-        if pack_edge_key(unique_edges[lo, 0], unique_edges[lo, 1], base) == key:
-            return lo
-    return wp.int32(-1)
-
-
-@wp.func
 def boundary_edge_at(
     unique_edges: wp.array2d[wp.int32],
     edge_face_count: wp.array[wp.int32],
@@ -4595,7 +4666,7 @@ def boundary_edge_at(
     # (one face, two distinct ends), else ``-1``.
     if w == v:
         return wp.int32(-1)
-    e = unique_edge_index(unique_edges, n_edges, v, w, base)
+    e = unique_edge_row(unique_edges, n_edges, v, w, base)
     if e < 0:
         return wp.int32(-1)
     if edge_face_count[e] != 1:

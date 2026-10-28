@@ -83,8 +83,9 @@ pass count.
 iteration), so if the two do not scale alike something is wrong with one. Both open3d and pymeshlab
 are exact references -- same grid, same cell means, the same faces -- open3d in ``cluster_decimate``
 and pymeshlab against ``method="meshlab"`` in ``cluster_decimate_meshlab``, which is rare enough
-here to be worth stating. Cell width is a fraction of the mean edge
-length so the ratio is comparable across meshes.
+here to be worth stating; meshlib's grid sampling selects the vertices ``method="meshlib"``
+keeps under ``contraction="closest"`` (``cluster_decimate_meshlib``). Cell width is a fraction
+of the mean edge length so the ratio is comparable across meshes.
 
 Caps: ``isotropic_remesh`` stops at ``bunny`` on the scan sweep (it is an order of magnitude dearer
 on ``dragon`` and would dominate the suite); the split paths stop at ``dragon`` because a 1:4
@@ -648,7 +649,7 @@ _CLUSTER_FACTORS = [2.0, 6.0]
 
 
 @pytest.mark.benchmark(group="cluster_decimate")
-@pytest.mark.benchlibs("ordito", "open3d", "meshlib")
+@pytest.mark.benchlibs("ordito", "open3d")
 @pytest.mark.parametrize("cell_factor", _CLUSTER_FACTORS)
 def test_cluster_decimate(bench_case: BenchCase, cell_factor: float) -> None:
     """
@@ -659,14 +660,6 @@ def test_cluster_decimate(bench_case: BenchCase, cell_factor: float) -> None:
     magnitude. A single point from this group is uninterpretable in either direction.
     """
     voxel_size = cell_factor * bench_case.mean_edge
-    if bench_case.kind == "meshlib":
-        # ``verticesGridSampling`` stops one step earlier than the other three rows: it returns the
-        # *bitset* of one surviving vertex per occupied cell and never rebuilds the faces, so read
-        # it as a lower bound on the group. It leaves the mesh alone, so one mesh serves the rounds.
-        mesh_part_ml = mm.MeshPart(_mesh_ml(bench_case))
-        sampled_ml = bench_case.run(lambda: mm.verticesGridSampling(mesh_part_ml, voxel_size))
-        assert 0 < sampled_ml.count() <= bench_case.n_vertices
-        return
     if bench_case.kind == "open3d":
         # Returns a new mesh and never touches its input, so the shared mesh is safe across rounds.
         mesh_o3d = bench_case.mesh_o3d
@@ -710,6 +703,34 @@ def test_cluster_decimate_meshlab(bench_case: BenchCase, cell_factor: float) -> 
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _decimated_vertices, decimated_faces = bench_case.run(
         lambda: od.remesh.cluster_decimate(vertices, faces, voxel_size=voxel_size, method="meshlab")
+    )
+    assert int(decimated_faces.shape[0]) // 3 <= bench_case.n_faces
+
+
+@pytest.mark.benchmark(group="cluster_decimate_meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
+@pytest.mark.parametrize("cell_factor", _CLUSTER_FACTORS)
+def test_cluster_decimate_meshlib(bench_case: BenchCase, cell_factor: float) -> None:
+    """
+    ``method="meshlib", contraction="closest"`` against MeshLib's ``verticesGridSampling``.
+
+    The two select the same vertices; MeshLib stops one step earlier: it returns the *bitset* of
+    one surviving vertex per occupied cell and never rebuilds the faces, so read its row as a
+    lower bound. The ordito row also gathers the face corners for the box and ranks them as
+    candidates, three items a face, as the ``meshlab`` row does.
+    """
+    voxel_size = cell_factor * bench_case.mean_edge
+    if bench_case.kind == "meshlib":
+        # It leaves the mesh alone, so one mesh serves the rounds.
+        mesh_part_ml = mm.MeshPart(_mesh_ml(bench_case))
+        sampled_ml = bench_case.run(lambda: mm.verticesGridSampling(mesh_part_ml, voxel_size))
+        assert 0 < sampled_ml.count() <= bench_case.n_vertices
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _decimated_vertices, decimated_faces = bench_case.run(
+        lambda: od.remesh.cluster_decimate(
+            vertices, faces, voxel_size=voxel_size, contraction="closest", method="meshlib"
+        )
     )
     assert int(decimated_faces.shape[0]) // 3 <= bench_case.n_faces
 

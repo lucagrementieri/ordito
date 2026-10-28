@@ -13,6 +13,8 @@ transport, extension and log map. They share `face_unit_gradient`, `tangent_to_w
 ``float64`` convention, which is why they are one module rather than three.
 """
 
+import math
+
 import warp as wp
 
 from ordito.constants import TOLERANCE_ZERO_CONSTANT
@@ -20,11 +22,14 @@ from ordito.kernels.array import (
     OverloadTable,
     binary_search_index,
     cross2,
+    csr_key,
+    divide_if_positive,
     sorted_run_end,
     to_vec2,
     to_vec2d,
     to_vec3,
     to_vec3d,
+    unique_edge_row,
 )
 from ordito.kernels.laplacian import (
     connection_offdiagonal,
@@ -37,10 +42,11 @@ from ordito.kernels.predicates import (
     stable_length,
     stable_normalize,
     unit_tangent,
+    vector_angle,
     world_to_tangent,
 )
-from ordito.kernels.reduce import block_chunk_1d, store_sum_and_count
-from ordito.kernels.scatter import add_corner_triple, add_or_store_corner_triple
+from ordito.kernels.reduce import GroupSumPass, block_chunk_1d, store_sum_and_count
+from ordito.kernels.scatter import add_corner_triple, add_or_store_corner_triple, scatter_add_vector
 from ordito.kernels.triangles import (
     face_normals_and_area,
     face_unit_gradient,
@@ -450,6 +456,36 @@ def shift_and_orient(
     phi[v] = shifted
 
 
+@wp.func
+def curve_segment_end(
+    curve_vertices: wp.array[wp.int32],
+    curve_offsets: wp.array[wp.int32],
+    single_curve: wp.int32,
+    closed: wp.int32,
+    k: wp.int32,
+) -> wp.int32:
+    # The entry of the packed ``curve_vertices`` where the segment starting at entry ``k`` ends:
+    # the next entry of its curve, or -- the last entry of a ``closed`` curve of two or more --
+    # the curve's first; ``-1`` when ``k`` starts no segment. The curve is ``curve_offsets``' CSR
+    # row holding ``k`` (the whole buffer with ``single_curve`` set, when ``curve_offsets`` may be
+    # ``None``); an entry in no row starts nothing. Shared by both signed heat discretizations'
+    # source kernels and the edge one's shift onto the curve, so all three walk one segment list.
+    begin = wp.int32(0)
+    end = curve_vertices.shape[0]
+    if single_curve == 0:
+        curve = binary_search_index(curve_offsets, k) - 1
+        if curve < 0 or curve >= curve_offsets.shape[0] - 1:
+            return wp.int32(-1)
+        begin = curve_offsets[curve]
+        # Clamped to the buffer, as slicing it by a row past its end would be.
+        end = wp.min(curve_offsets[curve + 1], end)
+    if k + 1 < end:
+        return k + 1
+    if closed != 0 and end - begin >= 2:
+        return begin
+    return wp.int32(-1)
+
+
 @wp.kernel
 def splat_curve_normals(
     vertices: wp.array[wp.vec3],
@@ -489,23 +525,11 @@ def splat_curve_normals(
         return
     if out_fixed.shape[0] > 0:
         out_fixed[curve_vertices[k]] = True
-    begin = wp.int32(0)
-    end = curve_vertices.shape[0]
-    if single_curve == 0:
-        curve = binary_search_index(curve_offsets, k) - 1
-        if curve < 0 or curve >= curve_offsets.shape[0] - 1:
-            return
-        begin = curve_offsets[curve]
-        # Clamped to the buffer, as slicing it by a row past its end would be.
-        end = wp.min(curve_offsets[curve + 1], end)
-    a = curve_vertices[k]
-    b = a
-    if k + 1 < end:
-        b = curve_vertices[k + 1]
-    elif closed != 0 and end - begin >= 2:
-        b = curve_vertices[begin]
-    else:
+    far = curve_segment_end(curve_vertices, curve_offsets, single_curve, closed, k)
+    if far < 0:
         return
+    a = curve_vertices[k]
+    b = curve_vertices[far]
     if flag_out_of_range(b, n_vertices, out_invalid):
         return
     edge = vertices[b] - vertices[a]
@@ -585,6 +609,259 @@ def gather_free_solution(
         out_field[i] = wp.float64(0.0)
         return
     out_field[i] = solution[0, free_map[i]]
+
+
+# --------------------------------------------------------------------------------------
+# Signed heat method on edges: the Crouzeix-Raviart discretization of geometry-central
+# --------------------------------------------------------------------------------------
+#
+# The same three stages as above, with the diffused field one complex number per unique edge
+# instead of one per vertex. Edge ``e``'s value is measured in its own frame: the real axis along
+# ``edges[e, 0] -> edges[e, 1]``, the imaginary axis that direction turned a quarter in a face
+# holding the edge (by the face's winding). A frame is a gauge, so the direction chosen for each
+# edge cancels: a source, a system entry and a sampled vector all change sign with it.
+#
+# The system is ``M + t L`` over the edges, ``M`` a third of the areas of the faces holding an
+# edge and ``L`` the Crouzeix-Raviart connection Laplacian: each face corner couples the two edges
+# meeting there with weight ``2 cot`` of the corner (the half-cotangent weight of the edge opposite,
+# four times over) and the rotation between their frames, ``(-cos, sin)`` of the corner angle. It
+# is Hermitian, and stored as the real ``2 x 2`` blocks ``[[a, -b], [b, a]]`` of each complex
+# ``a + ib``, which is symmetric positive definite.
+
+
+@wp.func
+def crouzeix_raviart_slot(
+    face_edges: wp.array2d[wp.int32], slot: wp.int32
+) -> tuple[wp.int32, wp.int32, wp.int32, wp.int32, wp.int32]:
+    # The term ``slot`` of the edge system: twelve per face, four per corner ``c`` -- whose two
+    # edges ``i`` (from corner ``c + 1`` to ``c + 2``) and ``j`` (from ``c + 2`` to ``c``) meet at
+    # corner ``c + 2`` -- as ``(face, corner, part, i, j)``; ``part`` 0 to 3 is the entry
+    # ``(i, i)``, ``(j, j)``, ``(i, j)`` or ``(j, i)``. Shared by the key pass and the row pass, so
+    # the pattern and the values index one term table.
+    f = slot // 12
+    local = slot - 12 * f
+    corner = local // 4
+    part = local - 4 * corner
+    i = face_edges[f, (corner + 1) % 3]
+    j = face_edges[f, (corner + 2) % 3]
+    return f, corner, part, i, j
+
+
+@wp.func
+def crouzeix_raviart_entry(part: wp.int32, i: wp.int32, j: wp.int32) -> tuple[wp.int32, wp.int32]:
+    # The ``(row, column)`` a term of ``crouzeix_raviart_slot`` lands on.
+    row = wp.where(part == 1 or part == 3, j, i)
+    col = wp.where(part == 1 or part == 2, j, i)
+    return row, col
+
+
+@wp.func
+def crouzeix_raviart_term(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    edges: wp.array2d[wp.int32],
+    f: wp.int32,
+    corner: wp.int32,
+    part: wp.int32,
+    i: wp.int32,
+    j: wp.int32,
+) -> tuple[wp.float64, wp.vec2d]:
+    # One term of the edge system as ``(mass, stiffness)``: the mass a diagonal term adds (a sixth
+    # of the face's area: each edge of a face is a diagonal term at two of its corners, so the face
+    # gives it a third) and the stiffness as a complex number ``(re, im)``. Formed in ``float64``
+    # from the positions; a face of exactly zero area gives nothing.
+    tail = faces[3 * f + corner]
+    tip = faces[3 * f + (corner + 1) % 3]
+    apex = faces[3 * f + (corner + 2) % 3]
+    p_apex = to_vec3d(vertices[apex])
+    to_tail = to_vec3d(vertices[tail]) - p_apex
+    to_tip = to_vec3d(vertices[tip]) - p_apex
+    double_area = wp.length(wp.cross(to_tail, to_tip))
+    if double_area == wp.float64(0.0):
+        return wp.float64(0.0), wp.vec2d(0.0, 0.0)
+    cosine = wp.dot(to_tail, to_tip)
+    weight = wp.float64(2.0) * cosine / double_area
+    if part < 2:
+        return double_area / wp.float64(12.0), wp.vec2d(weight, wp.float64(0.0))
+    # Edge ``i`` runs tip -> apex in this face and edge ``j`` apex -> tail; ``sign`` is whether the
+    # two frames' directions agree with those runs alike.
+    sign = wp.where(edges[i, 0] == tip, wp.float64(1.0), wp.float64(-1.0))
+    if edges[j, 0] != apex:
+        sign = -sign
+    lengths = wp.length(to_tail) * wp.length(to_tip)
+    rotation = wp.vec2d(-cosine / lengths, double_area / lengths)
+    if part == 3:
+        rotation = wp.vec2d(rotation[0], -rotation[1])
+    return wp.float64(0.0), -weight * sign * rotation
+
+
+@wp.kernel
+def crouzeix_raviart_keys(
+    face_edges: wp.array2d[wp.int32],
+    n_edges: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # The edge system's sparsity, as one ``csr_key`` per term of ``crouzeix_raviart_slot`` with the
+    # term's slot as its payload: one thread per face, twelve terms.
+    f = wp.int32(wp.tid())
+    for local in range(12):
+        slot = 12 * f + local
+        _face, _corner, part, i, j = crouzeix_raviart_slot(face_edges, slot)
+        row, col = crouzeix_raviart_entry(part, i, j)
+        out_keys[slot] = csr_key(row, col, n_edges, n_edges)
+        out_order[slot] = slot
+
+
+@wp.kernel
+def crouzeix_raviart_system_rows(
+    offsets: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_edges: wp.array2d[wp.int32],
+    edges: wp.array2d[wp.int32],
+    scale: wp.float64,
+    edge_sum_and_count: wp.array[wp.float64],
+    from_edges: wp.int32,
+    out_values: wp.array[wp.mat22d],
+    out_midpoints: wp.array[wp.vec3],
+) -> None:
+    # Edge ``e``'s row of ``M + t L``, each entry the sum of its terms in the sorted order
+    # ``array.csr_from_keys`` left them (the producer's slot order), so it repeats bit for bit.
+    # ``t`` is ``shift_factor``'s: ``scale`` itself, or with ``from_edges`` set ``scale`` times the
+    # squared mean unique-edge length, formed on the device. Also the edge's midpoint, the position
+    # the system's factorization orders its rows by.
+    e = wp.int32(wp.tid())
+    factor = shift_factor(scale, edge_sum_and_count, from_edges)
+    for p in range(offsets[e], offsets[e + 1]):
+        mass = wp.float64(0.0)
+        stiffness = wp.vec2d(0.0, 0.0)
+        for q in range(starts[p], starts[p + 1]):
+            f, corner, part, i, j = crouzeix_raviart_slot(face_edges, order[q])
+            term_mass, term = crouzeix_raviart_term(vertices, faces, edges, f, corner, part, i, j)
+            mass += term_mass
+            stiffness += term
+        real = mass + factor * stiffness[0]
+        imaginary = factor * stiffness[1]
+        out_values[p] = wp.mat22d(real, -imaginary, imaginary, real)
+    out_midpoints[e] = wp.float32(0.5) * (vertices[edges[e, 0]] + vertices[edges[e, 1]])
+
+
+@wp.kernel
+def splat_curve_edges(
+    vertices: wp.array[wp.vec3],
+    curve_vertices: wp.array[wp.int32],
+    curve_offsets: wp.array[wp.int32],
+    single_curve: wp.int32,
+    closed: wp.int32,
+    edges: wp.array2d[wp.int32],
+    sums: GroupSumPass,
+    out_source: wp.array[wp.vec2d],
+    out_fixed: wp.array[wp.bool],
+    out_lengths: wp.array[wp.float64],
+    out_invalid: wp.array[wp.int32],
+) -> None:
+    # The edge discretization's source term: a segment lying on a mesh edge adds its length along
+    # the imaginary axis of that edge's frame -- the edge's normal, ``+i`` where the segment runs
+    # along the frame's direction -- and a segment on no edge adds nothing. One thread per entry
+    # of the packed ``curve_vertices`` (``curve_segment_end``), range-checked first as in
+    # ``splat_curve_normals``, which also marks the zero set into a non-empty ``out_fixed``. A
+    # non-empty ``out_lengths`` (pre-zeroed) gets each source segment's length at its first entry,
+    # the weights of the shift onto the curve (``curve_midpoint_sums``). The terms go through
+    # ``scatter.scatter_add_vector``, so an edge two segments share sums in a fixed order under
+    # ``ordito.config``'s deterministic mode.
+    k = wp.int32(wp.tid())
+    n_vertices = vertices.shape[0]
+    if flag_out_of_range(curve_vertices[k], n_vertices, out_invalid):
+        return
+    if out_fixed.shape[0] > 0:
+        out_fixed[curve_vertices[k]] = True
+    far = curve_segment_end(curve_vertices, curve_offsets, single_curve, closed, k)
+    if far < 0:
+        return
+    a = curve_vertices[k]
+    b = curve_vertices[far]
+    if flag_out_of_range(b, n_vertices, out_invalid) or a == b:
+        return
+    e = unique_edge_row(edges, edges.shape[0], a, b, wp.uint64(n_vertices))
+    if e < 0:
+        return
+    length = wp.length(to_vec3d(vertices[b]) - to_vec3d(vertices[a]))
+    if out_lengths.shape[0] > 0:
+        out_lengths[k] = length
+    along = wp.where(edges[e, 0] == a, length, -length)
+    scatter_add_vector(out_source, sums, e, wp.vec2d(wp.float64(0.0), along))
+
+
+@wp.kernel
+def edge_field_divergence(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_edges: wp.array2d[wp.int32],
+    edges: wp.array2d[wp.int32],
+    field: wp.array[wp.vec2d],
+    cot_entries: wp.array2d[wp.float32],
+    out_div: wp.array[wp.float64],
+    out_corner_div: wp.array2d[wp.float64],
+) -> None:
+    # The edge discretization's stage 3, the counterpart of ``vertex_field_divergence``: face
+    # ``f``'s vector is the sum of its three edges' values expanded from their frames into world
+    # space (the face's own quarter turn for the imaginary axis), normalized (zero only where it is
+    # exactly zero), and integrated by the same thread. Accumulates the negated divergence by
+    # integrating ``-X``, as ``vertex_field_divergence`` does.
+    f = wp.int32(wp.tid())
+    v0, v1, v2 = face_vertices_vec3d(vertices, faces, f)
+    normal = stable_normalize(wp.cross(v1 - v0, v2 - v0))
+    total = wp.vec3d(0.0, 0.0, 0.0)
+    for k in range(3):
+        e = face_edges[f, k]
+        tangent = stable_normalize(
+            to_vec3d(vertices[edges[e, 1]]) - to_vec3d(vertices[edges[e, 0]])
+        )
+        value = field[e]
+        total += value[0] * tangent + value[1] * wp.cross(normal, tangent)
+    x = -stable_normalize(total)
+    accumulate_face_divergence(vertices, faces, cot_entries, f, x, out_div, out_corner_div)
+
+
+@wp.kernel
+def curve_midpoint_sums(
+    phi: wp.array[wp.float64],
+    curve_vertices: wp.array[wp.int32],
+    curve_offsets: wp.array[wp.int32],
+    single_curve: wp.int32,
+    closed: wp.int32,
+    lengths: wp.array[wp.float64],
+    stride: wp.int32,
+    out_sums: wp.array[wp.float64],
+) -> None:
+    # ``(integral of phi along the source segments, their total length)`` as one row per block of
+    # ``out_sums`` (``store_sum_and_count``), the midpoint rule on each segment -- exact for the
+    # piecewise-linear field -- weighted by the lengths ``splat_curve_edges`` stored (zero for an
+    # entry that starts no source segment).
+    i, t = wp.tid()
+    base, remaining = block_chunk_1d(curve_vertices.shape[0], i)
+    integral = wp.float64(0.0)
+    total = wp.float64(0.0)
+    for k in range(t, remaining, wp.block_dim()):
+        entry = base + k
+        length = lengths[entry]
+        if length > wp.float64(0.0):
+            far = curve_segment_end(curve_vertices, curve_offsets, single_curve, closed, entry)
+            middle = phi[curve_vertices[entry]] + phi[curve_vertices[far]]
+            integral += wp.float64(0.5) * length * middle
+            total += length
+    store_sum_and_count(i, t, integral, total, out_sums, stride)
+
+
+@wp.kernel
+def shift_by_mean(sums: wp.array[wp.float64], phi: wp.array[wp.float64]) -> None:
+    # Shift ``phi`` in place by ``curve_midpoint_sums``' mean along the curve, read on the device;
+    # no shift for a curve with no source segment.
+    v = wp.int32(wp.tid())
+    phi[v] = phi[v] - divide_if_positive(sums[0], sums[1])
 
 
 # --------------------------------------------------------------------------------------
@@ -800,6 +1077,193 @@ def log_map_from_angles(
         return
     angle = wp.atan2(cross2(reference, outward), wp.dot(reference, outward))
     out_log[v] = wp.vec2(r * wp.cos(angle), r * wp.sin(angle))
+
+
+# The vector heat method's own log map (Sharp, Soliman and Crane 2019, section 8 and appendix A),
+# ``log_map(method="potpourri3d")``: the radial direction is a second vector diffusion, of an
+# outward-pointing ball at the source, rather than the distance gradient ``log_map_from_angles``
+# reads, and the radius is that radial field integrated by one Poisson solve. Tangent vectors are
+# complex numbers in each vertex's polar coordinates (``tangent_space.halfedge_tangent_angles``);
+# a halfedge ``i -> j`` carries one from ``i``'s frame into ``j``'s by its transport angle.
+
+HALF_PI_D = wp.float64(0.5 * math.pi)
+PI_D = wp.float64(math.pi)
+
+
+@wp.func
+def polar_unit(angle: wp.float64) -> wp.vec2d:
+    # The unit tangent vector at polar ``angle``, as the complex number ``exp(i angle)``.
+    return wp.vec2d(wp.cos(angle), wp.sin(angle))
+
+
+@wp.func
+def complex_product(a: wp.vec2d, b: wp.vec2d) -> wp.vec2d:
+    # Two tangent vectors multiplied as complex numbers: ``b`` rotated and scaled by ``a``.
+    return wp.vec2d(a[0] * b[0] - a[1] * b[1], a[0] * b[1] + a[1] * b[0])
+
+
+@wp.func
+def reversed_halfedge_angle(
+    tangent_angles: wp.array[wp.float32], transport_angles: wp.array[wp.float32], h: wp.int32
+) -> wp.float64:
+    # The polar angle of halfedge ``h``'s reverse ``j -> i`` in ``j``'s frame, read off ``h``
+    # alone: transport along ``h`` turns ``h``'s own direction into the reverse's opposite. Exists
+    # for a boundary edge too, whose reverse is no face's halfedge.
+    return wp.float64(tangent_angles[h]) + wp.float64(transport_angles[h]) - PI_D
+
+
+@wp.kernel
+def seed_log_map_outward_ball(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    ring_halfedges: wp.array[wp.int32],
+    tangent_angles: wp.array[wp.float32],
+    transport_angles: wp.array[wp.float32],
+    source: wp.int32,
+    out_radial: wp.array[wp.vec2d],
+    out_horizontal: wp.array[wp.vec2d],
+) -> None:
+    # The two right-hand sides of the vector heat log map, by one thread: the source's reference
+    # direction (``out_horizontal``) and the outward ball (``out_radial``), the integrated radial
+    # unit field of a small disk around the source in closed form (appendix A of the vector heat
+    # method). Each face at the source, with corners ``(a, b, c)`` counter-clockwise from the
+    # source ``a``, adds one term at each corner, from its angles at ``a`` and ``b`` and its
+    # heights; the terms at ``b`` and ``c`` point along their edges back to the source, the one at
+    # ``a`` along ``a -> b``. A degenerate face has no heights and adds nothing. One thread walks
+    # the source's ring in its fixed order, so the sums repeat bit for bit with no atomics.
+    out_horizontal[source] = wp.vec2d(wp.float64(1.0), wp.float64(0.0))
+    pa = to_vec3d(vertices[source])
+    for j in range(ring_offsets[source], ring_offsets[source + 1]):
+        ab = ring_halfedges[j]
+        f = ab // wp.int32(3)
+        k = ab - wp.int32(3) * f
+        bc = wp.int32(3) * f + (k + wp.int32(1)) % wp.int32(3)
+        ca = wp.int32(3) * f + (k + wp.int32(2)) % wp.int32(3)
+        b = faces[bc]
+        c = faces[ca]
+        pb = to_vec3d(vertices[b])
+        pc = to_vec3d(vertices[c])
+        twice_area = wp.length(wp.cross(pb - pa, pc - pa))
+        if twice_area == wp.float64(0.0):
+            continue
+        theta = vector_angle(pb - pa, pc - pa)
+        gamma = vector_angle(pa - pb, pc - pb)
+        sine = wp.sin(theta)
+        swing = theta * wp.cos(theta) - sine
+
+        height_b = twice_area / wp.length(pc - pa)
+        toward_b = wp.vec2d(-theta * sine, swing) / (wp.float64(2.0) * height_b)
+        out_radial[b] = out_radial[b] + complex_product(
+            toward_b, polar_unit(reversed_halfedge_angle(tangent_angles, transport_angles, ab))
+        )
+
+        height_c = twice_area / wp.length(pb - pa)
+        toward_c = wp.vec2d(-theta * sine, -swing) / (wp.float64(2.0) * height_c)
+        out_radial[c] = out_radial[c] + complex_product(
+            toward_c, polar_unit(wp.float64(tangent_angles[ca]))
+        )
+
+        height_a = twice_area / wp.length(pc - pb)
+        alpha = HALF_PI_D - gamma
+        at_source = wp.vec2d(
+            -(theta * wp.cos(alpha) + wp.cos(alpha - theta) * sine) / (wp.float64(2.0) * height_a),
+            -(wp.cos(alpha) - wp.cos(alpha - wp.float64(2.0) * theta) + wp.float64(2.0) * theta
+              * wp.sin(alpha)) / (wp.float64(4.0) * height_a),
+        )  # fmt: skip
+        out_radial[source] = out_radial[source] + complex_product(
+            at_source, polar_unit(wp.float64(tangent_angles[ab]))
+        )
+
+
+@wp.func
+def unit_radial(radial_raw: wp.array[wp.vec2d], v: wp.int32, source: wp.int32) -> wp.vec2d:
+    # The diffused outward ball's direction at ``v``, and zero at the source, where it has none.
+    if v == source:
+        return wp.vec2d()
+    return stable_normalize(radial_raw[v])
+
+
+@wp.func
+def halfedge_radial_flux(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    tangent_angles: wp.array[wp.float32],
+    transport_angles: wp.array[wp.float32],
+    radial_raw: wp.array[wp.vec2d],
+    source: wp.int32,
+    half_cotangent: wp.float64,
+    h: wp.int32,
+    next_h: wp.int32,
+) -> wp.float64:
+    # One face's share of the radial field's flux along its halfedge ``h = i -> j``: the field
+    # averaged over the edge in ``i``'s frame (``j``'s carried back across the edge) dotted with the
+    # edge vector, times the face's half-cotangent weight of the edge. The divergence at ``i`` loses
+    # it and at ``j`` gains it: the reverse halfedge's flux is its negation, so both directions of
+    # an edge, the boundary's included, come from the face that holds it.
+    i = faces[h]
+    j = faces[next_h]
+    radial_i = unit_radial(radial_raw, i, source)
+    radial_j = unit_radial(radial_raw, j, source)
+    back = complex_product(radial_j, polar_unit(-wp.float64(transport_angles[h])))
+    length = wp.length(to_vec3d(vertices[j]) - to_vec3d(vertices[i]))
+    edge = length * polar_unit(wp.float64(tangent_angles[h]))
+    return half_cotangent * wp.dot(wp.float64(0.5) * (radial_i + back), edge)
+
+
+@wp.kernel
+def radial_field_divergence(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    tangent_angles: wp.array[wp.float32],
+    transport_angles: wp.array[wp.float32],
+    radial_raw: wp.array[wp.vec2d],
+    source: wp.int32,
+    cot_entries: wp.array2d[wp.float32],
+    out_div: wp.array[wp.float64],
+    out_corner_div: wp.array2d[wp.float64],
+) -> None:
+    # The negated cotangent divergence of the unit radial field, ``-sum_j w_ij <X_ij, e_ij>`` at
+    # each vertex ``i``, which the Poisson system ``-L phi = rhs`` integrates into the distance.
+    # Per face, each edge weighted by the half-cotangent of the opposite corner, so the two faces
+    # of an interior edge add up to its whole cotangent weight. Added atomically, or stored per
+    # corner for ``scatter.sum_sorted_corner_values`` under the deterministic mode, as
+    # ``unit_gradient_divergence``.
+    f = wp.int32(wp.tid())
+    base = wp.int32(3) * f
+    flux_01 = halfedge_radial_flux(
+        vertices, faces, tangent_angles, transport_angles, radial_raw, source,
+        wp.float64(cot_entries[f, 2]), base, base + 1,
+    )  # fmt: skip
+    flux_12 = halfedge_radial_flux(
+        vertices, faces, tangent_angles, transport_angles, radial_raw, source,
+        wp.float64(cot_entries[f, 0]), base + 1, base + 2,
+    )  # fmt: skip
+    flux_20 = halfedge_radial_flux(
+        vertices, faces, tangent_angles, transport_angles, radial_raw, source,
+        wp.float64(cot_entries[f, 1]), base + 2, base,
+    )  # fmt: skip
+    add_or_store_corner_triple(
+        out_div, out_corner_div, faces, f, flux_20 - flux_01, flux_01 - flux_12, flux_12 - flux_20
+    )
+
+
+@wp.kernel
+def log_map_from_vector_fields(
+    radial_raw: wp.array[wp.vec2d],
+    horizontal_raw: wp.array[wp.vec2d],
+    distance: wp.array[wp.float64],
+    source: wp.int32,
+    out_log: wp.array[wp.vec2],
+) -> None:
+    # The radial direction measured from the transported reference, as the quotient of the two unit
+    # fields (``radial * conj(horizontal)``), scaled by the distance shifted to zero at the source.
+    # Zero where either field is exactly zero: at the source, and where no diffusion reached.
+    v = wp.int32(wp.tid())
+    radial = unit_radial(radial_raw, v, source)
+    horizontal = stable_normalize(horizontal_raw[v])
+    conjugate = wp.vec2d(horizontal[0], -horizontal[1])
+    out_log[v] = to_vec2((distance[v] - distance[source]) * complex_product(radial, conjugate))
 
 
 # The concrete handles of the two generic row kernels, keyed by the half-cotangent table's dtype

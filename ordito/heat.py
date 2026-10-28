@@ -141,7 +141,7 @@ HeatOperators = tuple[
 solves."""
 
 
-HeatMethod = Literal["geometry_central", "meshlab", "igl"]
+HeatMethod = Literal["potpourri3d", "meshlab", "igl"]
 """The heat method discretizations ordito assembles, named for the library each reproduces."""
 
 
@@ -153,7 +153,7 @@ def heat_operators(
     use_robust: bool = False,
     cot_entries: odt.Array2dFloat | None = None,
     pattern: MeshOperatorPattern | None = None,
-    method: HeatMethod = "geometry_central",
+    method: HeatMethod = "potpourri3d",
 ) -> HeatOperators:
     """
     Assemble the source-independent operators the heat method solves against.
@@ -205,7 +205,7 @@ def heat_operators(
         Whose discretization of the heat system to assemble -- the lumped mass ``M`` and the mean
         edge length ``h`` of the default ``t = h ** 2``:
 
-        - ``"geometry_central"`` (default): each vertex a third of its faces' areas, ``h`` over the
+        - ``"potpourri3d"`` (default): each vertex a third of its faces' areas, ``h`` over the
           unique edges. What ``potpourri3d``'s solvers assemble, and what the vector heat method
           ([`vector_heat_operators`][ordito.heat.vector_heat_operators]) builds on.
         - ``"meshlab"``: the same mass, ``h`` over every face's three edges (an interior edge
@@ -526,6 +526,11 @@ def _heat_geodesic(
 # --------------------------------------------------------------------------------------
 
 
+SignedHeatMethod = Literal["vertex_connection", "potpourri3d"]
+"""The signed heat method discretizations [`heat_signed_distance`][ordito.heat.heat_signed_distance]
+offers: the field on vertices, or geometry-central's on edges."""
+
+
 @overload
 def heat_signed_distance(
     mesh: Trimesh,
@@ -536,6 +541,7 @@ def heat_signed_distance(
     t: float | None = None,
     closed: bool = True,
     level_set_constraint: str = "zero_set",
+    method: SignedHeatMethod = "vertex_connection",
 ) -> wp.array[wp.float64]: ...
 @overload
 def heat_signed_distance(
@@ -548,6 +554,7 @@ def heat_signed_distance(
     *,
     closed: bool = True,
     level_set_constraint: str = "zero_set",
+    method: SignedHeatMethod = "vertex_connection",
 ) -> wp.array[wp.float64]: ...
 def heat_signed_distance(
     mesh: Trimesh | wp.array[wp.vec3] | None = None,
@@ -559,6 +566,7 @@ def heat_signed_distance(
     vertices: wp.array[wp.vec3] | None = None,
     closed: bool = True,
     level_set_constraint: str = "zero_set",
+    method: SignedHeatMethod = "vertex_connection",
 ) -> wp.array[wp.float64]:
     """
     Signed distance from every vertex to a set of oriented curves.
@@ -573,6 +581,12 @@ def heat_signed_distance(
     2. the connection Laplacian diffuses that tangent field for a short time ``t`` and it is
        normalized, giving a unit field that approximates the signed distance's gradient;
     3. a Poisson solve integrates the field back into a scalar.
+
+    That is the default ``method="vertex_connection"``, the field on the vertices.
+    ``method="potpourri3d"`` is geometry-central's own discretization (Feng and Crane), which
+    ``potpourri3d`` runs and which this reproduces vertex for vertex: the field lives on the edges,
+    one value per edge in that edge's frame (Crouzeix-Raviart elements), a segment's normal is
+    placed on the edge it lies on, and each face samples its three edges before the Poisson solve.
 
     Takes the mesh as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh], which keeps the
     [`vector_heat_operators`][ordito.heat.vector_heat_operators] and the factorizations later calls
@@ -596,7 +610,9 @@ def heat_signed_distance(
         ``(n_curves + 1,)`` CSR bounds into ``curve_vertices``. When ``None`` the whole buffer
         is treated as a single curve.
     t
-        Diffusion time; defaults to the squared mean edge length. Larger values smooth the field.
+        Diffusion time; defaults to the squared mean unique-edge length, or a quarter of it (the
+        squared half-length, geometry-central's default) at ``method="potpourri3d"``. Larger
+        values smooth the field.
     closed
         Whether each curve closes back on its first vertex (adding one more segment). Signed
         distance is most meaningful for closed curves; an open curve gives a field whose sign flips
@@ -607,7 +623,18 @@ def heat_signed_distance(
         [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed].
         ``"none"`` solves unconstrained and then shifts the field so the curve's mean is zero,
         which leaves the level set slightly off the curve but is cheaper and pins nothing. Both are
-        modes ``potpourri3d`` offers under the same names.
+        modes ``potpourri3d`` offers under the same names. At ``method="potpourri3d"`` the
+        mean is the curve's, its segments weighted by length, as geometry-central takes it.
+    method
+        Whose discretization of the signed heat method to run:
+
+        - ``"vertex_connection"`` (default): the tangent field on the vertices, diffused by the
+          vertex connection Laplacian.
+        - ``"potpourri3d"``: the field on the edges, diffused by the Crouzeix-Raviart
+          connection Laplacian, ``potpourri3d.MeshSignedHeatSolver``'s answer. Only segments that
+          are mesh edges enter its source; one joining two vertices with no edge between them adds
+          nothing. On a `Trimesh` the edge system and its factorization are kept with the mesh's
+          other heat operators.
 
     Returns
     -------
@@ -617,8 +644,9 @@ def heat_signed_distance(
     Raises
     ------
     ValueError
-        If ``level_set_constraint`` is not ``"zero_set"`` or ``"none"``, or if an entry of
-        ``curve_vertices`` is not a vertex index in ``[0, n_vertices)``.
+        If ``level_set_constraint`` is not ``"zero_set"`` or ``"none"``, ``method`` is not
+        ``"vertex_connection"`` or ``"potpourri3d"``, or an entry of ``curve_vertices`` is not
+        a vertex index in ``[0, n_vertices)``.
     RuntimeError
         If ``vertices``, ``faces``, ``curve_vertices`` and ``curve_offsets`` are not all on one
         device.
@@ -657,6 +685,8 @@ def heat_signed_distance(
     distance = od.heat.heat_signed_distance(vertices, faces, curve).numpy()
     print(f"{distance[60]:.2f}")  # 0.30
     print(distance[0] < 0.0)  # True
+    on_edges = od.heat.heat_signed_distance(vertices, faces, curve, method="potpourri3d")
+    print(f"{on_edges.numpy()[60]:.3f}")  # 0.303
     ```
     """
     bound, owned, arguments = mesh_arguments(
@@ -670,6 +700,7 @@ def heat_signed_distance(
         cast("float | None", arguments[2]),
         closed=closed,
         level_set_constraint=level_set_constraint,
+        method=method,
     )
 
 
@@ -682,6 +713,7 @@ def _heat_signed_distance(
     *,
     closed: bool,
     level_set_constraint: str,
+    method: str,
 ) -> wp.array[wp.float64]:
     """``heat_signed_distance`` on a `Trimesh`; ``owned`` is whether the caller passed it."""
     vertices, faces = mesh.vertices, mesh.faces
@@ -692,11 +724,24 @@ def _heat_signed_distance(
         raise ValueError(
             f'level_set_constraint must be "zero_set" or "none", got {level_set_constraint!r}'
         )
+    if method not in ("vertex_connection", "potpourri3d"):
+        raise ValueError(f'method must be "vertex_connection" or "potpourri3d", got {method!r}')
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
     if n_vertices == 0 or n_faces == 0 or curve_vertices.size == 0:
         return _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    if method == "potpourri3d":
+        field = _edge_signed_distance(
+            mesh,
+            curve_vertices,
+            curve_offsets,
+            t,
+            closed=closed,
+            zero_set=level_set_constraint == "zero_set",
+        )
+        _log_discarded("heat_signed_distance", owned, mesh.heat_solver(t))
+        return field
 
     solver = mesh.heat_solver(t)
     _, scalar, frames, _ = solver.vector_operators
@@ -869,6 +914,170 @@ def _solve_poisson_shifted(
         device=device,
     )
     return field
+
+
+def _edge_signed_distance(
+    mesh: Trimesh,
+    curve_vertices: wp.array[wp.int32],
+    curve_offsets: wp.array[wp.int32] | None,
+    t: float | None,
+    *,
+    closed: bool,
+    zero_set: bool,
+) -> wp.array[wp.float64]:
+    """
+    ``heat_signed_distance(method="potpourri3d")``: the field diffused on the mesh's edges.
+
+    The source is each curve segment's normal on the edge it lies on, diffused by the
+    Crouzeix-Raviart vector heat system ([`_edge_heat_system`]); each face samples its three edges
+    and normalizes, and the Poisson stage is the vertex method's, with the unconstrained field
+    shifted by its mean along the curve's segments (the midpoint rule, length-weighted) rather than
+    over its vertices.
+    """
+    vertices, faces = mesh.vertices, mesh.faces
+    device = vertices.device
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
+    n_entries = curve_vertices.size
+    solver = mesh.heat_solver(t)
+    operators = solver.operators
+    edges = mesh.edges_unique
+    face_edges = mesh.faces_unique_edges
+    system, preconditioner = _edge_heat_system(mesh, solver, t)
+
+    single_curve = wp.int32(1 if curve_offsets is None else 0)
+    closed_flag = wp.int32(1 if closed else 0)
+    invalid = _launch.zeros(1, dtype=wp.int32, device=device)
+    fixed_mask = _launch.zeros(n_vertices if zero_set else 0, dtype=wp.bool, device=device)
+    lengths = _launch.zeros(0 if zero_set else n_entries, dtype=wp.float64, device=device)
+    source = _launch.group_sums(edges.shape[0], wp.vec2d, n_entries, device)
+    _launch.launch_group_sums(
+        kernel_heat.splat_curve_edges,
+        dim=n_entries,
+        inputs=[vertices, curve_vertices, curve_offsets, single_curve, closed_flag, edges],
+        sums=source,
+        outputs=[fixed_mask, lengths, invalid],
+        device=device,
+    )
+    _require_indices_in_range(invalid, n_vertices, "heat_signed_distance", "curve_vertices")
+    rhs = cast("wp.array[wp.vec2d]", _launch.finish_group_sums(source))
+
+    diffused = _launch.zeros(edges.shape[0], dtype=wp.vec2d, device=device)
+    # The solver's own settled diffusion and rent-or-buy factorization, under the edge system's role
+    # (its slot placed by ``_edge_heat_system``).
+    solver._settle(  # pyright: ignore[reportPrivateUsage]
+        _EDGE_HEAT_ROLE, system, rhs, diffused, preconditioner=preconditioner
+    )
+
+    order = _corner_order(mesh, solver)
+    divergence, corner_divergence = _corner_outputs(order, n_vertices, n_faces, wp.float64, device)
+    _launch.launch(
+        kernel_heat.edge_field_divergence,
+        dim=n_faces,
+        inputs=[vertices, faces, face_edges, edges, diffused, operators[5]],
+        outputs=[divergence, corner_divergence],
+        device=device,
+    )
+    _sum_corner_outputs(order, corner_divergence, divergence)
+
+    if zero_set:
+        return _solve_poisson_zero_set(
+            operators[3], divergence, fixed_mask, vertices, solver.ill_conditioned
+        )
+    field = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    solver.solve_poisson(divergence, field)
+    blocks = kernel_reduce.blocks_1d(n_entries)
+    sums, stride = _launch.block_partials(blocks, 2, wp.float64, device)
+    _launch.launch_tiled(
+        kernel_heat.curve_midpoint_sums,
+        dim=[blocks],
+        inputs=[field, curve_vertices, curve_offsets, single_curve, closed_flag, lengths, stride],
+        outputs=[sums],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    _launch.launch(kernel_heat.shift_by_mean, dim=n_vertices, inputs=[sums, field], device=device)
+    return field
+
+
+# The ``HeatSolver`` role of the edge system: its factorization slot, solved and factored by the
+# solver's own rent-or-buy rule.
+_EDGE_HEAT_ROLE = "crouzeix_raviart"
+
+# Each solver's edge system, Jacobi preconditioner and edge midpoints (the positions its
+# factorization orders rows by), keyed weakly so they live exactly as long as the solver -- the
+# mesh's lifetime -- as its operators do, and survive its ``release``.
+_EDGE_HEAT_SYSTEMS: weakref.WeakKeyDictionary[
+    HeatSolver, tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator, wp.array[wp.vec3]]
+] = weakref.WeakKeyDictionary()
+
+
+def _edge_heat_system(
+    mesh: Trimesh, solver: HeatSolver, t: float | None
+) -> tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator]:
+    """
+    Return the Crouzeix-Raviart vector heat system ``M + t L`` and its preconditioner, kept.
+
+    ``wp.mat22d`` blocks over the rows of
+    [`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique], kept per solver and assembled
+    from keys (``kernels/heat.crouzeix_raviart_keys``) and one row kernel; ``t`` defaults to a
+    quarter of the squared mean unique-edge length, geometry-central's ``(h / 2) ** 2``, formed on
+    the device from the scalar bundle's own sums. Also places ``solver``'s factorization slot for
+    the system, which a ``release`` drops.
+    """
+    kept = _EDGE_HEAT_SYSTEMS.get(solver)
+    if kept is None:
+        vertices, faces = mesh.vertices, mesh.faces
+        device = vertices.device
+        edges = mesh.edges_unique
+        face_edges = mesh.faces_unique_edges
+        n_edges = edges.shape[0]
+        n_faces = faces.size // 3
+        count = 12 * n_faces
+        keys, order = od.array.csr_key_buffers(count, device)
+        _launch.launch(
+            kernel_heat.crouzeix_raviart_keys,
+            dim=n_faces,
+            inputs=[face_edges, wp.int32(n_edges)],
+            outputs=[keys, order],
+            device=device,
+        )
+        offsets, columns, starts = od.array.csr_from_keys(keys, order, count, n_edges, n_edges)
+        edge_sums = None
+        if t is None:
+            built = _SCALAR_BUILDS.get(solver.operators[0])
+            edge_sums = built.edge_sums if built is not None else None
+            if edge_sums is None:
+                edge_sums = _edge_length_sums(vertices, mesh.mesh_operator_pattern)
+        values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
+        midpoints = _launch.empty(n_edges, dtype=wp.vec3, device=device)
+        _launch.launch(
+            kernel_heat.crouzeix_raviart_system_rows,
+            dim=n_edges,
+            inputs=[
+                offsets,
+                starts,
+                order,
+                vertices,
+                faces,
+                face_edges,
+                edges,
+                wp.float64(0.25 if t is None else t),
+                edge_sums,
+                wp.int32(1 if t is None else 0),
+            ],
+            outputs=[values, midpoints],
+            device=device,
+        )
+        system = od.array.bsr_from_csr(n_edges, n_edges, offsets, columns, values)
+        kept = _EDGE_HEAT_SYSTEMS[solver] = (system, twl.jacobi_preconditioner(system), midpoints)
+    system, preconditioner, midpoints = kept
+    # The slot is placed here, not by the solver, because its factorization orders the rows by the
+    # edge midpoints, where the solver's own slots take the vertices.
+    systems = solver._systems  # pyright: ignore[reportPrivateUsage]
+    if _EDGE_HEAT_ROLE not in systems:
+        systems[_EDGE_HEAT_ROLE] = _KeptSystem(twl.OperatorFactorization(system, midpoints))
+    return system, preconditioner
 
 
 # --------------------------------------------------------------------------------------
@@ -1141,13 +1350,13 @@ def _heat_method_choices(
     method: str,
 ) -> tuple[Literal["barycentric", "voronoi"], Literal["unique_edges", "face_edges"]]:
     """Return ``method``'s ``(mass, timestep)``, raising unless it names a heat discretization."""
-    if method == "geometry_central":
+    if method == "potpourri3d":
         return "barycentric", "unique_edges"
     if method == "meshlab":
         return "barycentric", "face_edges"
     if method == "igl":
         return "voronoi", "unique_edges"
-    raise ValueError(f"method must be 'geometry_central', 'meshlab' or 'igl', got {method!r}")
+    raise ValueError(f"method must be 'potpourri3d', 'meshlab' or 'igl', got {method!r}")
 
 
 def _heat_operators(
@@ -1786,11 +1995,23 @@ def _transport_tangent_vectors(
     return transported, resolved
 
 
-@overload
-def log_map(mesh: Trimesh, source: int, /, *, t: float | None = None) -> wp.array[wp.vec2]: ...
+LogMapMethod = Literal["heat_geodesic", "potpourri3d"]
+"""How [`log_map`][ordito.heat.log_map] forms its radius and radial direction."""
+
+
 @overload
 def log_map(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], source: int, /, t: float | None = None
+    mesh: Trimesh, source: int, /, *, t: float | None = None, method: LogMapMethod = "heat_geodesic"
+) -> wp.array[wp.vec2]: ...
+@overload
+def log_map(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    source: int,
+    /,
+    t: float | None = None,
+    *,
+    method: LogMapMethod = "heat_geodesic",
 ) -> wp.array[wp.vec2]: ...
 def log_map(
     mesh: Trimesh | wp.array[wp.vec3] | None = None,
@@ -1799,6 +2020,7 @@ def log_map(
     t: float | None = None,
     *,
     vertices: wp.array[wp.vec3] | None = None,
+    method: LogMapMethod = "heat_geodesic",
 ) -> wp.array[wp.vec2]:
     """
     Logarithmic map: every vertex's position in the source vertex's tangent plane.
@@ -1809,18 +2031,28 @@ def log_map(
     [`trace_from_vertex`][ordito.geodesic_walk.trace_from_vertex]
     computes, and the standard way to lay out a local coordinate patch around a point.
 
-    Assembled from two fields that are each cheap: the distance to the source
-    ([`heat_geodesic`][ordito.heat.heat_geodesic] with ``t`` the squared unique-edge mean, the
-    vector heat method's own) gives the radius, and the source's
-    reference direction parallel-transported outwards gives the angle — at any vertex the angle
-    between that transported direction and the outward radial direction is exactly the angle at
-    which the connecting geodesic left the source, because transport along that geodesic preserves
-    it. This is
-    the ``VectorHeat`` strategy in ``potpourri3d.MeshVectorHeatSolver.compute_log_map``; its
-    ``AffineLocal`` and ``AffineAdaptive`` strategies solve a small dense problem per vertex and are
-    deliberately not ported. Takes the mesh as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh],
-    which keeps the operators and factorizations later calls reuse (see
-    [`heat_geodesic`][ordito.heat.heat_geodesic]), or as its ``vertices`` and ``faces``.
+    The angle comes from the source's reference direction parallel-transported outwards: at any
+    vertex the angle between that transported direction and the outward radial direction is
+    exactly the angle at which the connecting geodesic left the source, because transport along
+    that geodesic preserves it. ``method`` chooses where the radial direction and the radius come
+    from:
+
+    * ``"heat_geodesic"`` (the default): both from the distance to the source,
+      [`heat_geodesic`][ordito.heat.heat_geodesic] with ``t`` the squared unique-edge mean (the
+      vector heat method's own), whose gradient is the radial direction and whose value is the
+      radius.
+    * ``"potpourri3d"``: the vector heat method's own construction, the ``VectorHeat``
+      strategy of ``potpourri3d.MeshVectorHeatSolver.compute_log_map`` (geometry-central's
+      ``computeLogMap_VectorHeat``). A second vector diffusion, of a small outward-pointing disk
+      at the source, gives the radial direction, and the radius is that unit radial field
+      integrated by one Poisson solve. It reproduces potpourri3d's map; its radius is not
+      ``heat_geodesic``'s distance, and is the less accurate of the two on graded meshes.
+
+    potpourri3d's ``AffineLocal`` and ``AffineAdaptive`` strategies solve a small dense problem per
+    vertex and are deliberately not ported. Takes the mesh as an
+    [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh], which keeps the operators and factorizations
+    later calls reuse (see [`heat_geodesic`][ordito.heat.heat_geodesic]), or as its ``vertices``
+    and ``faces``.
 
     Parameters
     ----------
@@ -1837,6 +2069,9 @@ def log_map(
         Diffusion time; defaults to the squared mean edge length. The *angles* this function
         returns are measured from the source's ``basis_x`` in
         [`Trimesh.vertex_tangent_frames`][ordito.mesh.Trimesh.vertex_tangent_frames].
+    method
+        Where the radial direction and the radius come from: ``"heat_geodesic"`` or
+        ``"potpourri3d"``, as described above.
 
     Returns
     -------
@@ -1845,12 +2080,14 @@ def log_map(
         source.
         On the cut locus — the antipode of a closed surface, where geodesics from the source arrive
         from every side — there is no direction to report, and the entry keeps the correct magnitude
-        with an arbitrary angle.
+        with an arbitrary angle. With ``method="potpourri3d"`` a vertex no diffusion reaches
+        (another connected component) is ``(0, 0)``.
 
     Raises
     ------
     ValueError
-        If the mesh has faces and ``source`` is not a vertex index in ``[0, n_vertices)``.
+        If the mesh has faces and ``source`` is not a vertex index in ``[0, n_vertices)``, or if
+        ``method`` is not ``"heat_geodesic"`` or ``"potpourri3d"``.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -1867,7 +2104,8 @@ def log_map(
     Examples
     --------
     On a flat grid the log map centred on the origin returns each vertex's own position, expressed
-    in the centre's tangent frame:
+    in the centre's tangent frame; the vector heat method's own construction finds the same
+    direction with its shorter radius:
 
     ```python
     import numpy as np
@@ -1880,13 +2118,25 @@ def log_map(
     x, y = coordinates.numpy()[108]  # the vertex at (0.4, 0.4)
     world = x * basis_x.numpy()[60] + y * basis_y.numpy()[60]
     print(np.round(world[:2], 2))  # [0.41 0.41]
+    vector_heat = od.heat.log_map(vertices, faces, 60, method="potpourri3d")
+    x, y = vector_heat.numpy()[108]
+    world = x * basis_x.numpy()[60] + y * basis_y.numpy()[60]
+    print(np.round(world[:2], 2))  # [0.35 0.35]
     ```
     """
+    if method not in ("heat_geodesic", "potpourri3d"):
+        raise ValueError(
+            f"log_map: method must be 'heat_geodesic' or 'potpourri3d', got {method!r}"
+        )
     bound, owned, arguments = mesh_arguments("log_map", mesh, vertices, faces, (source, t), 1)
-    return _log_map(bound, owned, cast("int", arguments[0]), cast("float | None", arguments[1]))
+    return _log_map(
+        bound, owned, cast("int", arguments[0]), cast("float | None", arguments[1]), method
+    )
 
 
-def _log_map(mesh: Trimesh, owned: bool, source: int, t: float | None) -> wp.array[wp.vec2]:
+def _log_map(
+    mesh: Trimesh, owned: bool, source: int, t: float | None, method: LogMapMethod
+) -> wp.array[wp.vec2]:
     """``log_map`` on a `Trimesh`; ``owned`` is whether the caller passed it."""
     vertices, faces = mesh.vertices, mesh.faces
     require_same_device(vertices=vertices, faces=faces)
@@ -1900,6 +2150,10 @@ def _log_map(mesh: Trimesh, owned: bool, source: int, t: float | None) -> wp.arr
         )
 
     solver = mesh.heat_solver(t)
+    if method == "potpourri3d":
+        logarithm = _log_map_vector_heat(mesh, solver, source)
+        _log_discarded("log_map", owned, solver)
+        return logarithm
     _, scalar, frames, _ = solver.vector_operators
     basis_x, basis_y, _ = frames
 
@@ -1949,6 +2203,105 @@ def _log_map(mesh: Trimesh, owned: bool, source: int, t: float | None) -> wp.arr
     )
     _log_discarded("log_map", owned, solver)
     return logarithm
+
+
+def _log_map_vector_heat(mesh: Trimesh, solver: HeatSolver, source: int) -> wp.array[wp.vec2]:
+    """
+    ``log_map(method="potpourri3d")``: the vector heat method's radial field and its integral.
+
+    Two vector diffusions on the one system, run as one solve over ``[vector system; vector
+    system]`` (``HeatSolver._diffuse_tangent_pair``): the outward ball at the source, whose
+    direction is radial, and the source's reference direction, the angle's zero. The radial field's
+    divergence then integrates into the distance by the Poisson solve ``heat_geodesic`` ends with.
+    """
+    vertices, faces = mesh.vertices, mesh.faces
+    device = vertices.device
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
+    ring_halfedges, ring_offsets, _ = mesh.vertex_one_rings
+    tangent_angles = _halfedge_tangent_angles(mesh, solver)
+    transport_angles = mesh.halfedge_transport_angles
+    cot_entries = solver.vector_operators[1][5]
+
+    # The stack's right-hand side and solution (radial pairs, then horizontal pairs), the
+    # divergence's sums and the distance: one buffer.
+    rows = 4 * n_vertices
+    rhs, diffused, scratch, distance = _zeroed_fields(device, rows, rows, n_vertices, n_vertices)
+    _launch.launch(
+        kernel_heat.seed_log_map_outward_ball,
+        dim=1,
+        inputs=[
+            vertices,
+            faces,
+            ring_offsets,
+            ring_halfedges,
+            tangent_angles,
+            transport_angles,
+            wp.int32(source),
+        ],
+        outputs=[
+            _pairs(rhs, n_vertices),
+            _pairs(_launch.view(rhs, 2 * n_vertices, rows), n_vertices),
+        ],
+        device=device,
+    )
+    solver._diffuse_tangent_pair(rhs, diffused)  # pyright: ignore[reportPrivateUsage]
+    radial_raw = _pairs(diffused, n_vertices)
+    horizontal_raw = _pairs(_launch.view(diffused, 2 * n_vertices, rows), n_vertices)
+
+    order = _corner_order(mesh, solver)
+    divergence, corner_divergence = _corner_outputs(
+        order, n_vertices, n_faces, wp.float64, device, sums=scratch
+    )
+    _launch.launch(
+        kernel_heat.radial_field_divergence,
+        dim=n_faces,
+        inputs=[
+            vertices,
+            faces,
+            tangent_angles,
+            transport_angles,
+            radial_raw,
+            wp.int32(source),
+            cot_entries,
+        ],
+        outputs=[divergence, corner_divergence],
+        device=device,
+    )
+    _sum_corner_outputs(order, corner_divergence, divergence)
+    solver.solve_poisson(divergence, distance)
+
+    logarithm = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
+    _launch.launch(
+        kernel_heat.log_map_from_vector_fields,
+        dim=n_vertices,
+        inputs=[radial_raw, horizontal_raw, distance, wp.int32(source)],
+        outputs=[logarithm],
+        device=device,
+    )
+    return logarithm
+
+
+def _halfedge_tangent_angles(mesh: Trimesh, solver: HeatSolver) -> wp.array[wp.float32]:
+    """
+    Every halfedge's polar angle in its origin's frame, kept for ``solver``'s lifetime.
+
+    [`halfedge_tangent_angles`][ordito.tangent_space.halfedge_tangent_angles] over the mesh's
+    cached rings, the gauge its frames and connection are in, as ``_corner_order`` keeps its sort.
+    """
+    angles = _TANGENT_ANGLES.get(solver)
+    if angles is None:
+        angles = _TANGENT_ANGLES[solver] = halfedge_tangent_angles(
+            mesh.vertices, mesh.faces, rings=mesh.vertex_one_rings
+        )
+    return angles
+
+
+# Each solver's halfedge polar angles (``_halfedge_tangent_angles``), keyed weakly as
+# ``_CORNER_ORDERS`` is.
+_TANGENT_ANGLES: weakref.WeakKeyDictionary[HeatSolver, wp.array[wp.float32]] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def _distance_from_heat(
@@ -2355,7 +2708,7 @@ class HeatSolver:
         Whether the scalar operators are built from mollified edge lengths (see
         [`heat_operators`][ordito.heat.heat_operators]).
     method : str
-        Whose discretization the operators follow, ``"geometry_central"``, ``"meshlab"`` or
+        Whose discretization the operators follow, ``"potpourri3d"``, ``"meshlab"`` or
         ``"igl"`` (see [`heat_operators`][ordito.heat.heat_operators]).
 
     Notes
@@ -2399,7 +2752,7 @@ class HeatSolver:
         t: float | None = None,
         *,
         use_robust: bool = False,
-        method: HeatMethod = "geometry_central",
+        method: HeatMethod = "potpourri3d",
     ) -> None:
         """
         Bind a solver to ``mesh`` at ``t``; nothing is assembled until first use.
@@ -2407,7 +2760,7 @@ class HeatSolver:
         Raises
         ------
         ValueError
-            If ``method`` is not ``"geometry_central"``, ``"meshlab"`` or ``"igl"``.
+            If ``method`` is not ``"potpourri3d"``, ``"meshlab"`` or ``"igl"``.
         """
         _heat_method_choices(method)
         self.t = None if t is None else float(t)
@@ -2457,11 +2810,11 @@ class HeatSolver:
         ------
         ValueError
             If this solver was built with ``use_robust`` or a ``method`` other than
-            ``"geometry_central"``, the discretization the vector heat method is defined on.
+            ``"potpourri3d"``, the discretization the vector heat method is defined on.
         """
         if self.use_robust:
             raise ValueError("HeatSolver: the vector heat operators have no use_robust variant")
-        if self.method != "geometry_central":
+        if self.method != "potpourri3d":
             raise ValueError(
                 f"HeatSolver: the vector heat operators have no method={self.method!r} variant"
             )
@@ -2484,7 +2837,7 @@ class HeatSolver:
 
     def _is_default(self) -> bool:
         """Whether this solver's scalar operators are the mesh's own cached bundle."""
-        return self.t is None and not self.use_robust and self.method == "geometry_central"
+        return self.t is None and not self.use_robust and self.method == "potpourri3d"
 
     @property
     def ill_conditioned(self) -> bool:
@@ -2634,6 +2987,30 @@ class HeatSolver:
                     self._slot("vector", vector_system).factorization,
                     self._slot("heat", scalar[0]).factorization,
                     n_scalars,
+                )
+            )
+        self._settle(role, kept.factorization.matrix, rhs, solution)
+
+    def _diffuse_tangent_pair(
+        self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64]
+    ) -> None:
+        """
+        Diffuse two tangent fields as one solve over ``[vector system; vector system]``.
+
+        ``rhs`` and ``solution`` hold ``4 * n_vertices`` entries, each field as interleaved
+        ``float64`` pairs, as ``diffuse_stacked`` lays its tangent field out. Factored, when that
+        pays, as the vector system's own slot solving both fields as columns.
+        """
+        self._require_fields("HeatSolver._diffuse_tangent_pair", rhs, solution, rhs.size, 4)
+        role = "vector_pair"
+        kept = self._systems.get(role)
+        if kept is None:
+            vector_system, scalar, _, _ = self.vector_operators
+            kept = self._systems[role] = _KeptSystem(
+                _PairedFactorization(
+                    od.array.block_diag((vector_system, vector_system)),
+                    self._slot("vector", vector_system).factorization,
+                    self._slot("heat", scalar[0]).factorization,
                 )
             )
         self._settle(role, kept.factorization.matrix, rhs, solution)
@@ -2954,6 +3331,61 @@ class _StackedFactorization(twl.OperatorFactorization):
         super().release()
         self._vector.release()
         self._heat.release()
+
+
+class _PairedFactorization(twl.OperatorFactorization):
+    """
+    The factorization of ``block_diag((vector system, vector system))``: the vector system's.
+
+    ``HeatSolver._diffuse_tangent_pair`` iterates the stack as one system; factored, it is the one
+    distinct block, the solver's vector slot (its analysis derived from the heat system's when that
+    is factored over the shared pattern), solving the two fields as two columns.
+    """
+
+    def __init__(
+        self,
+        stack: odt.SparseMatrix,
+        vector: twl.OperatorFactorization,
+        heat: twl.OperatorFactorization,
+    ) -> None:
+        """Hold ``stack`` and the vector and heat systems' slots."""
+        super().__init__(stack)
+        self._vector = vector
+        self._heat = heat
+
+    @property
+    def factorization(self) -> SparseCholesky | None:
+        """The vector system's factorization, once held."""
+        return self._vector.factorization
+
+    @property
+    def nbytes(self) -> int:
+        """Device memory the vector system's factorization holds, in bytes."""
+        return self._vector.nbytes
+
+    def factor(
+        self, sharing: twl.OperatorFactorization | None = None, *, expandable: bool = False
+    ) -> bool:
+        """Factor the vector system; ``sharing`` and ``expandable`` are not read."""
+        del sharing, expandable
+        return self._vector.factor(self._heat)
+
+    def solve(
+        self, rhs: odt.ArrayNd, solution: odt.ArrayNd, *, tol: float, componentwise: bool = False
+    ) -> None:
+        """Solve the two fields as columns of the vector system's factorization."""
+        shape = (2, rhs.size // 2)
+        self._vector.solve(
+            odt.as_dense(rhs).reshape(shape),
+            odt.as_dense(solution).reshape(shape),
+            tol=tol,
+            componentwise=componentwise,
+        )
+
+    def release(self) -> None:
+        """Drop the vector system's factorization."""
+        super().release()
+        self._vector.release()
 
 
 # Stack rows from which ``_StackedFactorization`` factors by blocks rather than whole: the vector

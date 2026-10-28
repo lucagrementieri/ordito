@@ -89,18 +89,6 @@ def voxel_cell_center(cell: wp.vec3i, origin: wp.vec3, voxel_size: wp.vec3) -> w
     )
 
 
-@wp.func
-def squared_distance_to_own_cell_center(
-    position: wp.vec3, origin: wp.vec3, inverse_size: wp.vec3, voxel_size: wp.vec3
-) -> wp.float32:
-    # How far a point sits from the centre of the voxel it falls in, squared. The quantity a
-    # "closest to the cell centre" cluster representative is chosen by. The cell is found with the
-    # caller's own ``inverse_size``, the one its clusters were binned with, so a point on a cell
-    # wall is measured against the centre of the cell it was binned into.
-    cell = voxel_cell_axes(position, origin, inverse_size)
-    return wp.length_sq(position - voxel_cell_center(cell, origin, voxel_size))
-
-
 @wp.kernel
 def voxel_cell_indices(
     points: wp.array[wp.vec3],

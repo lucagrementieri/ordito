@@ -778,6 +778,69 @@ def test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice(
     )
 
 
+@pytest.mark.parity(
+    "signed_distance_level_set",
+    "igl",
+    benchmarked=False,
+    reason="The group times ordito alone, on the lattice offset_mesh picks; igl.offset_surface "
+    "chooses its own lattice from a cell count, so a timed row would price two different grids. "
+    "Its timed rows are in the resample_uniform group.",
+)
+@pytest.mark.parametrize("iso", [0.0, -0.05])
+def test_signed_distance_level_set_matches_igl_offset_surface(
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh], iso: float
+) -> None:
+    """
+    Class A (up to numbering): ``igl.offset_surface``'s mesh, extracted on igl's own lattice.
+
+    ``offset_surface(V, F, iso, s, PSEUDONORMAL)`` is ``voxel_grid(V, iso, s, 1)`` -- ``s`` nodes on
+    the longest axis, one node of padding a side, the box grown by ``iso`` -- sampled with the
+    pseudonormal signed distance and marched at ``iso``. Handed that lattice's ``side`` and corner
+    nodes as ``shape`` and ``bounds``, ``signed_distance_level_set`` samples the same nodes, and the
+    two extractions are the same mesh, compared with
+    [`meshes_allclose`][ordito.equality.meshes_allclose]: the same vertex and face counts, the
+    same oriented faces under the nearest-vertex map (measured at ``iso = 0``: 18 284 vertices,
+    36 564 faces, positions to 1.9e-05 at worst and 4.6e-6 of a cell in the mean, the fields to
+    5.9e-07; at ``-0.05`` 8.6e-06). Not every level holds at the standard tolerance, and the two
+    measured exceptions are single vertices, not the surfaces: at ``0.1`` the counts and faces
+    agree but one vertex lands 4.8e-05 away (not traced), and at ``0.05`` two vertices of either
+    mesh are nearer each other than the tolerance, so the nearest-vertex map is not a bijection (6
+    faces map wrongly; the counts and every position still agree to 1.9e-05).
+    [`resample_uniform`][ordito.reconstruction.resample_uniform], which picks its own lattice from
+    a voxel size, keeps its Class C comparison with igl: no voxel size makes its ``3``-cell
+    padding igl's one node at igl's spacing.
+
+    Non-vacuity is the surface itself; a lattice one node off on any axis, or the field's sign
+    flipped, fails the vertex count.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices_igl, faces_igl = mesh_igl(mesh_tm)
+    extent = float((vertices_igl.max(axis=0) - vertices_igl.min(axis=0)).max())
+    cells = round(extent / 0.06)
+    offset_igl = igl.offset_surface(
+        vertices_igl, faces_igl, iso, cells, igl.SIGNED_DISTANCE_TYPE_PSEUDONORMAL
+    )
+    offset_vertices_igl = np.asarray(offset_igl[0])
+    offset_faces_igl = np.asarray(offset_igl[1])
+    grid_igl = igl.voxel_grid(vertices_igl, iso, cells, 1)
+    lattice_igl, side_igl = np.asarray(grid_igl[0]), grid_igl[1]
+    shape = cast("tuple[int, int, int]", tuple(int(n) for n in np.asarray(side_igl).ravel()))
+    lower = wp.vec3(*lattice_igl.min(axis=0).astype(np.float32).tolist())
+    upper = wp.vec3(*lattice_igl.max(axis=0).astype(np.float32).tolist())
+
+    level_vertices_wp, level_faces_wp = od.levelset.signed_distance_level_set(
+        mesh_wp.points, mesh_wp.indices, iso, shape, bounds=(lower, upper)
+    )
+    reference_vertices_wp, reference_faces_wp = numpy_to_warp(
+        offset_vertices_igl, offset_faces_igl, device
+    )
+
+    assert offset_faces_igl.shape[0] > 1000
+    assert od.equality.meshes_allclose(
+        level_vertices_wp, level_faces_wp, reference_vertices_wp, reference_faces_wp
+    )
+
+
 @pytest.mark.parametrize(
     ("mesh_name", "sparse_expected", "distance", "rotate"),
     [

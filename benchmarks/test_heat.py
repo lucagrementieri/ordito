@@ -504,6 +504,46 @@ def test_heat_signed_distance_conditioning(bench_case: BenchCase) -> None:
     test_heat_signed_distance(bench_case, "ring")
 
 
+@pytest.mark.benchmark(group="heat_signed_distance_potpourri3d")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
+@pytest.mark.parametrize("curve_kind", ["ring", "band"])
+def test_heat_signed_distance_potpourri3d(bench_case: BenchCase, curve_kind: str) -> None:
+    """
+    geometry-central's edge (Crouzeix-Raviart) discretization on both sides, the same answer.
+
+    The ``heat_signed_distance`` rows' curves, each handed to potpourri3d closed (its first vertex
+    repeated), as ``closed=True`` closes it on ordito's side.
+    """
+    curve_np, bounds_np = _curve(bench_case, curve_kind)
+    if bench_case.kind == "ordito":
+        vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+        curve = wp.array(curve_np, dtype=wp.int32, device=bench_case.device)
+        offsets = wp.array(bounds_np, dtype=wp.int32, device=bench_case.device)
+        distance = bench_case.run(
+            lambda: od.heat.heat_signed_distance(
+                vertices, faces, curve, offsets, method="potpourri3d"
+            ),
+            rounds=_SIGNED_DISTANCE_ROUNDS,
+        )
+        assert distance.shape == (bench_case.n_vertices,)
+    else:
+        vertices_np = bench_case.vertices_np
+        faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int32)
+        curves_pp = [
+            [(int(vertex), []) for vertex in [*curve_np[begin:end], curve_np[begin]]]
+            for begin, end in itertools.pairwise(bounds_np)
+        ]
+
+        def solve_pp() -> np.ndarray:
+            solver = pp3d.MeshSignedHeatSolver(vertices_np, faces_np)
+            return np.asarray(solver.compute_distance(curves_pp, level_set_constraint="ZeroSet"))
+
+        assert bench_case.run(solve_pp, rounds=_SIGNED_DISTANCE_ROUNDS).shape == (
+            bench_case.n_vertices,
+        )
+
+
 # --------------------------------------------------------------------------
 # vector_heat_operators / extend_scalar / transport_tangent_vectors / log_map
 # --------------------------------------------------------------------------
@@ -607,6 +647,28 @@ def test_log_map(bench_case: BenchCase) -> None:
         assert logarithm.shape == (n_vertices,)
     else:
         # geometry-central's own strategy name for the same construction.
+        assert np.asarray(
+            bench_case.run(
+                lambda: _solver_pp(bench_case).compute_log_map(0, "VectorHeat"),
+                rounds=_VECTOR_HEAT_ROUNDS,
+            )
+        ).shape == (n_vertices, 2)
+
+
+@pytest.mark.benchmark(group="log_map_potpourri3d")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
+def test_log_map_potpourri3d(bench_case: BenchCase) -> None:
+    """The vector heat method's own log map: two vector solves as one and a Poisson solve."""
+    n_vertices = bench_case.n_vertices
+    if bench_case.kind == "ordito":
+        vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+        logarithm = bench_case.run(
+            lambda: od.heat.log_map(vertices, faces, 0, method="potpourri3d"),
+            rounds=_VECTOR_HEAT_ROUNDS,
+        )
+        assert logarithm.shape == (n_vertices,)
+    else:
         assert np.asarray(
             bench_case.run(
                 lambda: _solver_pp(bench_case).compute_log_map(0, "VectorHeat"),

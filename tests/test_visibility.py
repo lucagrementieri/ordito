@@ -149,30 +149,35 @@ def test_ambient_occlusion_ranks_like_pymeshlab(
     "tangent frame, where a single patch set measures a different integral at every vertex but the "
     "first. pymeshlab carries the timed row.",
 )
-def test_ambient_occlusion_matches_meshlib_sky_view_factor(device: str) -> None:
+@pytest.mark.parametrize("weight", ["uniform", "cosine"])
+def test_ambient_occlusion_matches_meshlib_sky_view_factor(
+    device: str, weight: Literal["uniform", "cosine"]
+) -> None:
     """
-    Class C (a quadrature statistic): the sky-view factor is one minus the occlusion.
+    Class B (the complement): the sky-view factor is one minus the occlusion, sample for sample.
 
     MeshLib solves the terrain form of this integral -- how much of the sky each sample point can
     see -- and it is the same quantity ``ambient_occlusion`` reports as the blocked share, so the
-    named part of the comparison is the complement ``svf = 1 - occlusion``. What keeps it Class C
-    rather than Class B is that the two integrate over *different direction sets*: ordito rotates
-    its own Fibonacci lattice into each point's frame and MeshLib takes the patch list it is given,
-    so the residual is quadrature error and not a correspondence.
+    named transform is the complement ``svf = 1 - occlusion``. ``computeSkyViewFactor`` takes the
+    direction set and the weights as its patch list, so it is handed ordito's own: the Fibonacci
+    hemisphere lattice ([`sample_fibonacci_hemisphere`][ordito.sample.sample_fibonacci_hemisphere])
+    lifted into the bundle's frame at a ``+z`` normal (``any_perpendicular`` gives
+    ``basis_x = +y``, ``basis_y = -x``), each patch's radiation the ray's weight (``1`` or
+    ``dot(direction, normal)``). And it traces from the sample itself, where ordito steps the
+    origin out along the normal by ``_SURFACE_OFFSET`` of the box enclosing the mesh and the
+    samples, so it is handed the stepped origins. With both the answers are bit-identical
+    (measured 0.0 on every one of the 441 samples, both weights, both devices).
 
-    Two things the scene has to arrange, and both are why this is not simply a row on the group. The
-    patch set is **global**, so every sample must share one hemisphere: the samples sit just above a
-    flat plate, where the normal is exactly ``+z``. And ``sampleHalfSphere()`` is *not* a hemisphere
-    -- measured, its 145 directions span ``z`` from -1 to +1 and only 72 have ``z > 0`` -- so
-    feeding it directly makes the sky-view factor read half of what it should (0.52 against 0.98 at
-    the open corner). The patches are therefore an equal-area hemisphere lattice built here, with
-    equal radiation, which is what makes MeshLib's weighted mean an isotropic one.
+    Two things the scene has to arrange. The patch set is **global**, so every sample must share
+    one hemisphere: the samples sit just above a flat plate, where the normal is exactly ``+z``.
+    And ``sampleHalfSphere()`` is *not* a hemisphere (its 145 directions span ``z`` from -1 to
+    +1), so it is not a usable patch set at all.
 
-    Measured at 256 patches against 256 rays: **mean |difference| 0.0035, maximum 0.0195, Pearson
-    0.99985** over 441 samples spanning 0 to 0.98, on both devices. Each bound below is 3x its
-    measured value. The mutation probe: shuffling one side gives mean |difference| **0.235** (22x
-    the bound) and correlation -0.02, so the agreement is a correspondence rather than two similar
-    marginal distributions.
+    The origins carry the claim's sharpness: from the unstepped samples, 7 of the 441 differ by a
+    ray or two (1/256 of the sky) where a grazing ray clears the dome's rim from one origin and not
+    the other; an independent equal-area lattice (what this test handed MeshLib before) reads a
+    mean difference of 3.5e-3, the two quadratures' error. The mutation probe: shuffling one side
+    gives a mean difference of 0.235.
     """
     n_patches = 256
     ground = tm.creation.box(extents=(8.0, 8.0, 0.2))
@@ -187,21 +192,22 @@ def test_ambient_occlusion_matches_meshlib_sky_view_factor(device: str) -> None:
         np.column_stack([grid.reshape(-1, 2), np.full(grid.size // 2, 1e-3)]), dtype=np.float32
     )
 
-    # Equal-area hemisphere lattice: z uniform in (0, 1], azimuth by the golden angle.
-    index = np.arange(n_patches) + 0.5
-    z_np = index / n_patches
-    radius_np = np.sqrt(np.maximum(0.0, 1.0 - z_np * z_np))
-    azimuth_np = index * np.pi * (3.0 - np.sqrt(5.0))
-    patches_np = np.column_stack(
-        [radius_np * np.cos(azimuth_np), radius_np * np.sin(azimuth_np), z_np]
-    )
+    # ordito's lattice in the bundle frame of a +z normal: local (x, y, z) -> world (-y, x, z).
+    local_np = od.sample.sample_fibonacci_hemisphere(n_patches, device="cpu").numpy()
+    patches_np = np.column_stack([-local_np[:, 1], local_np[:, 0], local_np[:, 2]])
+    # ordito's ray origins: the samples stepped 1e-4 of the scene box's diagonal along +z.
+    lower_np = np.minimum(terrain_tm.vertices.min(axis=0), samples_np.min(axis=0))
+    upper_np = np.maximum(terrain_tm.vertices.max(axis=0), samples_np.max(axis=0))
+    diagonal = float(np.linalg.norm((upper_np - lower_np).astype(np.float32)))
+    origins_np = samples_np.copy()
+    origins_np[:, 2] += np.float32(1e-4 * diagonal)
 
     mesh_ml = trimesh_to_meshlib(terrain_tm)
     patches_ml = mm.std_vector_SkyPatch()
-    for direction in patches_np:
+    for direction, local in zip(patches_np, local_np, strict=True):
         patch_ml = mm.SkyPatch()
         patch_ml.dir = mm.Vector3f(*direction.tolist())
-        patch_ml.radiation = 1.0  # equal weight, so the weighted mean is an isotropic one
+        patch_ml.radiation = float(local[2]) if weight == "cosine" else 1.0
         patches_ml.append(patch_ml)
     valid_ml = mm.VertBitSet()
     valid_ml.resize(len(samples_np), True)
@@ -209,7 +215,7 @@ def test_ambient_occlusion_matches_meshlib_sky_view_factor(device: str) -> None:
         mm.computeSkyViewFactor(
             mesh_ml,
             # The stub names ``VertCoords``; pybind converts this vector implicitly.
-            mn.fromNumpyArray(cast("Buffer", samples_np)),  # pyright: ignore[reportArgumentType]
+            mn.fromNumpyArray(cast("Buffer", origins_np)),  # pyright: ignore[reportArgumentType]
             valid_ml,
             patches_ml,
         )
@@ -223,17 +229,13 @@ def test_ambient_occlusion_matches_meshlib_sky_view_factor(device: str) -> None:
         device=device,
     )
     occlusion_np = od.visibility.ambient_occlusion(
-        mesh_wp, samples_wp, normals=normals_wp, n_rays=n_patches, weight="uniform"
+        mesh_wp, samples_wp, normals=normals_wp, n_rays=n_patches, weight=weight
     ).numpy()
 
     # Non-vacuity: the dome must actually occlude some samples and leave others open.
     assert sky_view_ml.min() < 0.2
     assert sky_view_ml.max() > 0.9
-    difference = np.abs((1.0 - occlusion_np) - sky_view_ml)
-    assert difference.mean() < 0.0105  # 3x the measured 0.0035
-    assert difference.max() < 0.06  # 3x the measured 0.0195
-    # 3x the measured 1 - r of 1.5e-4
-    assert np.corrcoef(1.0 - occlusion_np, sky_view_ml)[0, 1] > 0.9995
+    assert np.allclose(1.0 - occlusion_np, sky_view_ml, rtol=1e-5, atol=1e-5)
 
 
 def test_ambient_occlusion_converges_with_more_rays(

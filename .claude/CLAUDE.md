@@ -406,7 +406,7 @@ Thirty-one checks fail the default `pytest` run. Read an allowlist entry's reaso
 18. Bare `bool` / `int` / `float` kernel annotation (§1.2).
 19. Reference-library comparison test with no class label (§7.4).
 20. Kernel-scope ternary instead of `wp.where` (§1.5).
-21. MeshLib or promesh name under `ordito/` (§7.6).
+21. MeshLib or promesh name under `ordito/` (§7.6); the quoted method value `"meshlib"` is exempt.
 22. Bare single-index `wp.tid()` (§1.3).
 23. `wp.map`'d `@wp.func` with no declaration table (§3.5).
 24. `.claude/CLAUDE.md` cross-reference to a nonexistent section, or a bare chapter number where that chapter has numbered subsections.
@@ -637,7 +637,8 @@ marker citing it. Both markers are stackable and take string literals only.
   as mm` / `mrmeshnumpy as mn`, `import pymeshfix`, `import pytorch3d.ops as p3d_ops`).
 - Threading decides how a ratio reads: trimesh, igl, pyvista and pymeshfix are single-threaded;
   meshlib and pytorch3d-cpu are multi-threaded; only pytorch3d-cuda runs on the GPU.
-- Licensing: nothing under `ordito/` may name MeshLib or promesh (check 21); pymeshfix and pymeshlab
+- Licensing: nothing under `ordito/` may name MeshLib or promesh (check 21), except an option
+  reproducing MeshLib, whose method value is `"meshlib"`; pymeshfix and pymeshlab
   (GPL) may be named in prose, but no ordito code may derive from their source.
 - Before writing a test or benchmark against a library, read its section in
   `reference/reference-libraries.md` (traps that fail silently).
@@ -1017,9 +1018,9 @@ Each costs nothing measurable unless stated; the tests it freed compare buffers 
   (1.4e-6 at 10 passes). **`filter_sharpen(method="graph_laplacian")`** is Open3D's sharpener
   (`v + w sum (v - v_j)`, repeated), equal to 2.4e-7 at 3 steps; its benchmark group is
   `filter_sharpen_graph_laplacian`.
-- **Heat methods are named by library: `method="geometry_central" | "meshlab" | "igl"`** on
-  `heat_operators`, `HeatSolver` and `Trimesh.heat_solver` (default `"geometry_central"`, what the
-  vector heat method and potpourri3d use); `heat_geodesic(method="meshlab" | "igl")`, default
+- **Heat methods are named by library: `method="potpourri3d" | "meshlab" | "igl"`** on
+  `heat_operators`, `HeatSolver` and `Trimesh.heat_solver` (default `"potpourri3d"`:
+  geometry-central's discretization, what the vector heat method and potpourri3d use); `heat_geodesic(method="meshlab" | "igl")`, default
   `"meshlab"`, runs on `mesh.heat_solver(method=method)`. MeshLab = barycentric mass, Neumann, `h`
   over every face's edges (`kernels/heat.upper_edge_length_sum_and_count(face_edges=)` weights each
   unique edge by its run, the faces on it): Class A to 9.5e-7 of the range. igl = Voronoi mass
@@ -1063,6 +1064,53 @@ Each costs nothing measurable unless stated; the tests it freed compare buffers 
   23 % too large at 4096 rotations; refined it is exact, and on stretched clouds it reaches the
   hull-face minimizers' volume (trimesh, Open3D) to a few parts in 1e5, the frames differing from
   Open3D's by about 0.25° (a flat minimum). No library refines; the owner decides the default.
+
+### Class C comparisons upgraded, and the ones that cannot be (2026-10-28)
+
+Every option below is opt-in; each default is unchanged in outputs and launch counts. Options that
+reproduce a library are named for it (`"potpourri3d"`, `"meshlab"`, `"meshlib"`; check 21 exempts
+the quoted `"meshlib"` value only), and their kernels describe behaviour, not the reference source.
+
+- **Mislabelled, already Class A:** the three ICP-vs-Open3D tests (transformed sources within
+  8e-6 / 3e-6 / 7.3e-7). **Test-side only:** MeshLib's sky-view factor equals `1 - ambient_occlusion`
+  bit for bit when handed ordito's Fibonacci lattice in the `+z` bundle frame (`any_perpendicular`
+  gives `(-l1, l0, l2)`) and the origins stepped `1e-4` of the scene diagonal; and
+  `signed_distance_level_set` on `igl.voxel_grid`'s lattice is `igl.offset_surface`'s mesh
+  (levels 0, -0.05; at 0.1 one vertex is 4.8e-5 off, at 0.05 two vertices are closer than the
+  tolerance). `resample_uniform` cannot reach igl's lattice (3-cell padding vs one node).
+- **`filter_two_step(method="meshlab")`:** MeshLab's normal pass averages each face with the faces
+  of *lower index* around its corners (weights `(c - sigma)^2`, `sigma = max(cos, 0)`), so its
+  answer depends on face order; that, not the fit, rounds a cube's corners inward (the whole ring
+  reads RMS 0.0112, the default 0.0114, MeshLab 0.0244). 2.5e-7 on the cube, 1.4e-5 on a
+  scrambled icosphere (CUDA).
+- **`filter_normals` / `filter_two_step(method="meshlib")`:** Zhang et al.'s Mumford-Shah
+  denoiser; the face system takes each pair's weight from the *higher-numbered* face's perimeter
+  (the reference's LDLT reads one triangle of a non-symmetric matrix: 8.9e-8 that way, 9.6e-4 for
+  the full solve). Within 1.3e-6. Batched CG at tol 1e-10 on the face system; the vertex system
+  factored once.
+- **`heat_signed_distance(method="potpourri3d")`:** an edge (Crouzeix-Raviart) vector field at
+  `t = (h/2)^2`, sourced on the curve's edges; `L_CR` is Hermitian PSD, so CG/Cholesky apply.
+  Within 1e-7; ~2.5x the default on CUDA. The old Class C test also handed potpourri3d an open
+  curve (closing it: 4.4 % -> 3.7 % of the diagonal).
+- **`log_map(method="potpourri3d")`:** the outward-ball radial field and the transported reference
+  solved as one paired system. Class A on `saddle_graded` and `sphere_well_shaped` (1.5e-5 worst);
+  6e-5 to 1.8e-4 on the needle fixtures, from the shared connection's `float32` transport angles
+  (a `float64` prototype rounded there moves 4.4e-5). Fixing that changes the default's system.
+- **`cluster_decimate(method="meshlib", contraction="closest")`:** exact `float32` box,
+  `ceil(extent / voxel)` cells capped at 1024 an axis, the maximum clamped into the last cell,
+  closest vertex by an unfused (`__fmul_rn`/`__fadd_rn`) squared distance: with an FMA, CUDA
+  picked 4 of 128 cell representatives differently on ties at the centre. Exact set equality.
+- **`relax_approx(method="meshlib")`:** balls of edge-path length (`float32` sums, inclusive
+  radius) rebuilt each pass, fit in `float64` in its own kernel (`float32` `svd3` tilted a plane
+  by 4e-4; a precision switch inside the default kernel moved it by an ulp at the clamp). Within
+  4.8e-7, quadric exact; 2.1x the default at 1 pass, 5-6x at 3. Planar passes on
+  `torus_irregular_holes` amplify ulps into different balls (2e-3 at 5 passes).
+- **Measured declines:** hole-fill ties against MeshLib need a `float64` DP, MeshLib's triangle
+  terms bit for bit, descending `k`, *and* MeshLib's smallest-EdgeId start vertex (not
+  reproducible in general); stitch ties follow `std::priority_queue` order. Earcut's order is
+  serial (and trimesh here falls through to manifold3d, `mapbox_earcut` not installed). MeshLab's
+  ambient occlusion is Embree with no vendored source. The rest of Class C are independent RNGs,
+  serial priority queues, or comparisons against the truth.
 
 ### Open item from the 2026-10-27 octree memory work: a sparse solve
 

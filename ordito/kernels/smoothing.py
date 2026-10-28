@@ -10,6 +10,7 @@ from ordito.kernels.array import (
     mask_and_not,
     next_row_entry,
     sort_segment,
+    store_coo_key,
     to_vec3,
     to_vec3d,
 )
@@ -23,7 +24,7 @@ from ordito.kernels.linalg import (
 from ordito.kernels.predicates import angle_defect, closest_point_on_segment, plane_basis
 from ordito.kernels.reduce import block_chunk, block_chunk_1d, block_max, store_block_sum
 from ordito.kernels.scatter import add_corner_triple
-from ordito.kernels.triangles import corner_triple
+from ordito.kernels.triangles import corner_triple, local_corner
 from ordito.kernels.vertices import gathered_area_weighted_normal
 
 wp.set_module_options({"enable_backward": False})
@@ -1736,6 +1737,50 @@ def smooth_face_normals_over_mates(
 
 
 @wp.kernel
+def smooth_face_normals_meshlab(
+    face_normals: wp.array[wp.vec3],
+    face_areas: wp.array[wp.float32],
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    threshold_cos: wp.float32,
+    out_normals: wp.array[wp.vec3],
+) -> None:
+    # One normal pass of MeshLab's two-step smoothing, as its output measures: the normalized sum
+    # of the vertex-adjacent faces' normals, each weighted ``(c - sigma)^2`` where
+    # ``c = clamp(dot, 1e-4, 1)`` reaches ``sigma = max(threshold_cos, 0)``; no area weight
+    # (``face_areas`` is read by ``smooth_face_normals_over_mates``, the pass this replaces, and
+    # takes the slot so both share ``_smoothed_face_normals``). Two algorithms, not a parameter:
+    # that one is an area-weighted sum over the three edge neighbours behind a binary gate.
+    #
+    # The neighbourhood is not the whole vertex ring: MeshLab's answer depends on the face order,
+    # and equals averaging face ``f`` with ``f`` itself and the faces of *lower* index around its
+    # corners, each counted once. Here: the rows' faces ``g <= f``, skipping a ``g`` that also
+    # holds an earlier corner's vertex (already counted there), so the row order does not matter.
+    # A Jacobi pass: ``face_normals`` is read-only throughout.
+    f = wp.int32(wp.tid())
+    normal = face_normals[f]
+    sigma = wp.max(threshold_cos, wp.float32(0.0))
+    c0, c1, c2 = corner_triple(faces, f)
+    corners = wp.vec3i(c0, c1, c2)
+    accumulated = wp.vec3(0.0, 0.0, 0.0)
+    for k in range(3):
+        for slot in range(vf_offsets[corners[k]], vf_offsets[corners[k] + 1]):
+            g = vertex_faces[slot]
+            counted = g > f
+            for j in range(k):
+                if local_corner(faces, g, corners[j]) >= 0:
+                    counted = True
+            if not counted:
+                other = face_normals[g]
+                c = wp.clamp(wp.dot(other, normal), wp.float32(1e-4), wp.float32(1.0))
+                if c >= sigma:
+                    w = c - sigma
+                    accumulated += other * (w * w)
+    out_normals[f] = wp.normalize(accumulated)
+
+
+@wp.kernel
 def fit_vertices_to_normals(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -1766,6 +1811,287 @@ def fit_vertices_to_normals(
     if end > start:
         position = position + delta / wp.float32(end - start)
     out_positions[v] = position
+
+
+# The Mumford-Shah normal denoiser of Zhang et al. (2015), "Mesh Denoising via a Novel
+# Mumford-Shah Framework", eqs. 19-20, and the least-squares vertex update after it. The face
+# system's kernels come first (pattern, geometry, values, the normalized solution), then the
+# vertex system's (pattern, projection, right-hand side). ``smoothing._MumfordShahNormals`` and
+# ``smoothing._NormalsToPoints`` drive them.
+#
+# Every quantity is formed in ``float32`` up to the system entries, which are ``float64``, so a
+# solve reproduces a reference holding ``float32`` geometry in ``float64`` matrices.
+
+# The indicator's ``epsilon`` (eq. 20): an edge's weight ``rho = beta / (2 epsilon)``.
+MUMFORD_SHAH_EPSILON = wp.float32(0.001)
+
+
+@wp.kernel
+def mumford_shah_face_keys(
+    mates: wp.array[wp.int32],
+    n_faces: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # The face system's pattern for ``array.csr_from_keys``: slot ``4 f + k`` is face ``f``'s entry
+    # with the face across its halfedge ``3 f + k`` (the sentinel on a rim or a non-manifold edge,
+    # which have no partner face), slot ``4 f + 3`` its diagonal. The payload is the slot, which
+    # ``mumford_shah_face_values`` decodes.
+    f = wp.int32(wp.tid())
+    for k in range(3):
+        mate = mates[3 * f + k]
+        partner = wp.where(mate >= 0, mate // 3, wp.int32(-1))
+        store_coo_key(4 * f + k, f, partner, n_faces, n_faces, out_keys, out_order)
+    store_coo_key(4 * f + 3, f, f, n_faces, n_faces, out_keys, out_order)
+
+
+@wp.kernel
+def mumford_shah_face_geometry(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    normals: wp.array[wp.vec3],
+    out_lengths: wp.array[wp.float32],
+    out_perimeters: wp.array[wp.float32],
+    out_rhs: wp.array2d[wp.float64],
+    out_solution: wp.array2d[wp.float64],
+) -> None:
+    # What the face system reads of the geometry: every halfedge's length (``3 f + k`` runs from
+    # corner ``k`` to ``k + 1``), each face's perimeter summed in corner order -- rim edges
+    # included, so a rim face's neighbours weigh as much as an interior face's -- and the
+    # original normals as the three right-hand-side columns, which also seed the first solve.
+    f = wp.int32(wp.tid())
+    perimeter = wp.float32(0.0)
+    for k in range(3):
+        a = vertices[faces[3 * f + k]]
+        b = vertices[faces[3 * f + (k + 1) % 3]]
+        length = wp.length(b - a)
+        out_lengths[3 * f + k] = length
+        perimeter += length
+    out_perimeters[f] = perimeter
+    normal = normals[f]
+    for c in range(3):
+        out_rhs[c, f] = wp.float64(normal[c])
+        out_solution[c, f] = wp.float64(normal[c])
+
+
+@wp.func
+def solved_normal(solution: wp.array2d[wp.float64], f: wp.int32) -> wp.vec3:
+    # Face ``f``'s unit normal from the face system's ``float64`` solution columns.
+    return wp.normalize(
+        wp.vec3(wp.float32(solution[0, f]), wp.float32(solution[1, f]), wp.float32(solution[2, f]))
+    )
+
+
+@wp.func
+def mumford_shah_edge_indicator(
+    a: wp.vec3, b: wp.vec3, gamma: wp.float32, beta: wp.float32
+) -> wp.float32:
+    # The edge indicator's closed form (eq. 20 without its smoothness term): ``rho / (rho + 2 gamma
+    # |a - b|^2)``, ``rho = beta / (2 epsilon)``. Near 1 where the two normals agree, near 0 across
+    # a crease. Symmetric in ``a`` and ``b`` bit for bit, so both faces of an edge read one value.
+    rho = beta / (wp.float32(2.0) * MUMFORD_SHAH_EPSILON)
+    return rho / (rho + wp.float32(2.0) * gamma * wp.length_sq(a - b))
+
+
+@wp.kernel
+def mumford_shah_face_values(
+    offsets: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    lengths: wp.array[wp.float32],
+    perimeters: wp.array[wp.float32],
+    solution: wp.array2d[wp.float64],
+    first: wp.int32,
+    gamma: wp.float32,
+    beta: wp.float32,
+    out_values: wp.array[wp.float64],
+) -> None:
+    # Row ``f`` of the face system (eq. 19): ``n_f + sum_e w_e (n_f - n_r) = n0_f`` over the faces
+    # ``r`` across ``f``'s edges, ``w_e = gamma |e| v_e^2 / P``. The indicator ``v_e`` is 1 on the
+    # first solve and otherwise ``mumford_shah_edge_indicator`` of the previous solve's normals.
+    #
+    # ``P`` is a face's perimeter, which makes the stencil row-scaled and so not symmetric: the
+    # diagonal takes ``f``'s own, and the coupling of a face pair the *higher-numbered* face's,
+    # which symmetrizes the system as a solver reading only its lower triangle does. A face with
+    # a zero perimeter couples to nothing through its own row.
+    f = wp.int32(wp.tid())
+    own = perimeters[f]
+    normal = wp.vec3(0.0, 0.0, 0.0)
+    if first == 0:
+        normal = solved_normal(solution, f)
+    weights = wp.vec3(0.0, 0.0, 0.0)
+    central = wp.float32(1.0)
+    for k in range(3):
+        mate = mates[3 * f + k]
+        if mate >= 0:
+            indicator = wp.float32(1.0)
+            if first == 0:
+                indicator = mumford_shah_edge_indicator(
+                    normal, solved_normal(solution, mate // 3), gamma, beta
+                )
+            weight = gamma * lengths[3 * f + k] * (indicator * indicator)
+            weights[k] = weight
+            if own > wp.float32(0.0):
+                central += weight / own
+    for entry in range(offsets[f], offsets[f + 1]):
+        value = wp.float64(0.0)
+        for p in range(starts[entry], starts[entry + 1]):
+            k = order[p] - 4 * f
+            if k == 3:
+                value += wp.float64(central)
+            else:
+                partner = mates[3 * f + k] // 3
+                scale = perimeters[wp.max(f, partner)]
+                if scale > wp.float32(0.0):
+                    value -= wp.float64(weights[k] / scale)
+        out_values[entry] = value
+
+
+@wp.kernel
+def normalize_solved_normals(
+    solution: wp.array2d[wp.float64], out_normals: wp.array[wp.vec3]
+) -> None:
+    # The face system's answer as unit normals, once after its last solve.
+    f = wp.int32(wp.tid())
+    out_normals[f] = solved_normal(solution, f)
+
+
+@wp.func
+def corner_pair_gram(i: wp.int32, j: wp.int32) -> wp.float64:
+    # Entry ``(i, j)`` of ``G^T G`` for a face's two shape rows ``G = [[2, -1, -1], [-1, 2, -1]]``
+    # (corner 0's and corner 1's offset from the other two): ``[[5, -4, -1], [-4, 5, -1],
+    # [-1, -1, 2]]``. Integers, so any summation order is exact.
+    diagonal = wp.where(i == 2, wp.float64(2.0), wp.float64(5.0))
+    coupling = wp.where(i + j == 1, wp.float64(-4.0), wp.float64(-1.0))
+    return wp.where(i == j, diagonal, coupling)
+
+
+@wp.kernel
+def normals_to_points_keys(
+    faces: wp.array[wp.int32],
+    n_faces: wp.int32,
+    n_vertices: wp.int32,
+    guide_weight_sq: wp.float64,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+) -> None:
+    # The vertex update's normal equations ``(w^2 I + M^T M)`` for ``array.csr_from_coo_keys``:
+    # nine corner-pair contributions per face at slots ``9 f + 3 i + j``, then every vertex's
+    # guide term ``w^2`` at ``9 n_faces + v``.
+    t = wp.int32(wp.tid())
+    if t < n_faces:
+        for i in range(3):
+            for j in range(3):
+                slot = 9 * t + 3 * i + j
+                store_coo_key(
+                    slot,
+                    faces[3 * t + i],
+                    faces[3 * t + j],
+                    n_vertices,
+                    n_vertices,
+                    out_keys,
+                    out_order,
+                )
+                out_values[slot] = corner_pair_gram(i, j)
+    if t < n_vertices:
+        slot = 9 * n_faces + t
+        store_coo_key(slot, t, t, n_vertices, n_vertices, out_keys, out_order)
+        out_values[slot] = guide_weight_sq
+
+
+@wp.kernel
+def vec3_to_columns(values: wp.array[wp.vec3], out_columns: wp.array2d[wp.float64]) -> None:
+    # A ``vec3`` field as the three ``float64`` columns a column solver reads and writes.
+    i = wp.int32(wp.tid())
+    value = values[i]
+    for c in range(3):
+        out_columns[c, i] = wp.float64(value[c])
+
+
+@wp.kernel
+def columns_to_vec3(columns: wp.array2d[wp.float64], out_values: wp.array[wp.vec3]) -> None:
+    # The inverse of ``vec3_to_columns``, rounding each entry to ``float32``.
+    i = wp.int32(wp.tid())
+    out_values[i] = wp.vec3(
+        wp.float32(columns[0, i]), wp.float32(columns[1, i]), wp.float32(columns[2, i])
+    )
+
+
+@wp.func
+def collapse_to_line(p0: wp.vec3, p1: wp.vec3, p2: wp.vec3) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
+    # The degenerate triangle nearest ``(p0, p1, p2)`` with the same centroid: every corner
+    # projected onto the line through the centroid toward the corner farthest from it (the first
+    # of equally far ones).
+    c = (p0 + p1 + p2) / wp.float32(3.0)
+    far = p0 - c
+    far_sq = wp.length_sq(far)
+    if wp.length_sq(p1 - c) > far_sq:
+        far = p1 - c
+        far_sq = wp.length_sq(far)
+    if wp.length_sq(p2 - c) > far_sq:
+        far = p2 - c
+    d = wp.normalize(far)
+    return (c + d * wp.dot(d, p0 - c), c + d * wp.dot(d, p1 - c), c + d * wp.dot(d, p2 - c))
+
+
+@wp.kernel
+def project_to_target_normals(
+    solution: wp.array2d[wp.float64],
+    faces: wp.array[wp.int32],
+    normals: wp.array[wp.vec3],
+    out_corner_terms: wp.array[wp.vec3d],
+) -> None:
+    # Each face's target shape for the vertex update: the current triangle (the ``float32``
+    # rounding of the solution columns) projected onto the plane through its centroid with the
+    # face's target normal, or collapsed onto a line when the projection turns it over. Its two
+    # shape rows ``d0 = 2 q0 - q1 - q2`` and ``d1 = 2 q1 - q0 - q2`` enter the right-hand side as
+    # ``G^T (d0, d1)``, written per corner for ``normals_to_points_rhs`` to gather.
+    f = wp.int32(wp.tid())
+    i0, i1, i2 = corner_triple(faces, f)
+    p0 = wp.vec3(
+        wp.float32(solution[0, i0]), wp.float32(solution[1, i0]), wp.float32(solution[2, i0])
+    )
+    p1 = wp.vec3(
+        wp.float32(solution[0, i1]), wp.float32(solution[1, i1]), wp.float32(solution[2, i1])
+    )
+    p2 = wp.vec3(
+        wp.float32(solution[0, i2]), wp.float32(solution[1, i2]), wp.float32(solution[2, i2])
+    )
+    n = normals[f]
+    c = (p0 + p1 + p2) / wp.float32(3.0)
+    q0 = p0 - n * wp.dot(n, p0 - c)
+    q1 = p1 - n * wp.dot(n, p1 - c)
+    q2 = p2 - n * wp.dot(n, p2 - c)
+    if wp.dot(n, wp.cross(q1 - q0, q2 - q0)) < wp.float32(0.0):
+        q0, q1, q2 = collapse_to_line(q0, q1, q2)
+    d0 = wp.vec3d(wp.float32(2.0) * q0 - q1 - q2)
+    d1 = wp.vec3d(wp.float32(2.0) * q1 - q0 - q2)
+    two = wp.float64(2.0)
+    out_corner_terms[3 * f] = two * d0 - d1
+    out_corner_terms[3 * f + 1] = two * d1 - d0
+    out_corner_terms[3 * f + 2] = -d0 - d1
+
+
+@wp.kernel
+def normals_to_points_rhs(
+    guide: wp.array[wp.vec3],
+    corner_offsets: wp.array[wp.int32],
+    corners: wp.array[wp.int32],
+    corner_terms: wp.array[wp.vec3d],
+    guide_weight_sq: wp.float64,
+    out_rhs: wp.array2d[wp.float64],
+) -> None:
+    # Vertex ``v``'s right-hand side ``w^2 g_v + (M^T d)_v``, gathered over its corners (one
+    # vertex -> corner ``smoothing._incidence_rows`` row, ascending under the deterministic
+    # setting).
+    v = wp.int32(wp.tid())
+    total = guide_weight_sq * wp.vec3d(guide[v])
+    for slot in range(corner_offsets[v], corner_offsets[v + 1]):
+        total += corner_terms[corners[slot]]
+    for c in range(3):
+        out_rhs[c, v] = total[c]
 
 
 @wp.func
@@ -2155,6 +2481,124 @@ def _neighborhood_frame(
     return centroid, axis_u, axis_v, axis_w, radius
 
 
+@wp.func
+def _quadric_design_row(u: wp.float64, v: wp.float64) -> vec6d:
+    # The least-squares row of ``w = a u^2 + b u v + c v^2 + d u + e v + f`` at ``(u, v)``.
+    return vec6d(u * u, u * v, v * v, u, v, wp.float64(1.0))
+
+
+@wp.func
+def _quadric_value(coefficients: vec6d, u: wp.float64, v: wp.float64) -> wp.float64:
+    # The fitted quadric's height at ``(u, v)``, coefficients in ``_quadric_design_row``'s order.
+    return (
+        coefficients[0] * u * u
+        + coefficients[1] * u * v
+        + coefficients[2] * v * v
+        + coefficients[3] * u
+        + coefficients[4] * v
+        + coefficients[5]
+    )
+
+
+@wp.func
+def _neighborhood_target(
+    positions: wp.array[wp.vec3],
+    neighbors: wp.array[wp.int32],
+    begin: wp.int32,
+    end: wp.int32,
+    current: wp.vec3,
+    quadric: wp.bool,
+) -> wp.vec3:
+    # The point above ``current`` of the plane or quadric fitted to the neighbourhood, its frame
+    # formed in float32 and the quadric solved in float64.
+    centroid, axis_u, axis_v, axis_w, radius = _neighborhood_frame(positions, neighbors, begin, end)
+    offset = current - centroid
+    # Initialized before the branch, per the kernel-scope scoping rule; the planar fit's answer is
+    # exactly this, since the plane passes through the neighbourhood centroid.
+    height = wp.float32(0.0)
+    # A zero radius means every neighbour sits on the centroid: no quadric to fit, and the plane's
+    # answer -- which ``height = 0`` already is -- is the whole of what the neighbourhood says.
+    if quadric and radius > wp.float32(0.0):
+        # Least squares over ``w = a u^2 + b u v + c v^2 + d u + e v + f`` in the neighbourhood's
+        # own frame, **in units of the neighbourhood radius**: the fit is a graph over the plane the
+        # neighbourhood already lies closest to.
+        #
+        # The division by the radius is what makes the fit scale-free, and it is a correctness
+        # requirement. The design row spans ``[u^2, u v, v^2, u, v, 1]``, so at mesh scale ``h`` the
+        # normal matrix's diagonal spans ``h^8`` down to ``1`` and ``solve_normal_equations``'
+        # singularity test -- absolute, and necessarily so, since it cannot see the caller's units
+        # -- starts reporting well-conditioned neighbourhoods as singular. That failure is silent:
+        # the vertex falls back to the planar answer with nothing said, and on a small enough mesh
+        # nearly every vertex does.
+        inv_radius = wp.float64(1.0) / wp.float64(radius)
+        normal_matrix = mat66d()
+        normal_rhs = vec6d()
+        for slot in range(begin, end):
+            local = positions[neighbors[slot]] - centroid
+            u = wp.float64(wp.dot(local, axis_u)) * inv_radius
+            v = wp.float64(wp.dot(local, axis_v)) * inv_radius
+            row = _quadric_design_row(u, v)
+            normal_matrix += wp.outer(row, row)
+            normal_rhs += row * (wp.float64(wp.dot(local, axis_w)) * inv_radius)
+        coefficients, ok = solve_normal_equations(normal_matrix, normal_rhs)
+        if ok:
+            # Evaluated in the same units the fit was solved in, then carried back: ``w`` was
+            # divided by the radius alongside ``u`` and ``v``, so the height is multiplied by it.
+            u = wp.float64(wp.dot(offset, axis_u)) * inv_radius
+            v = wp.float64(wp.dot(offset, axis_v)) * inv_radius
+            height = wp.float32(wp.float64(radius) * _quadric_value(coefficients, u, v))
+
+    return current + axis_w * (height - wp.dot(offset, axis_w))
+
+
+@wp.func
+def _neighborhood_target_d(
+    positions: wp.array[wp.vec3],
+    neighbors: wp.array[wp.int32],
+    begin: wp.int32,
+    end: wp.int32,
+    current: wp.vec3,
+    quadric: wp.bool,
+) -> wp.vec3:
+    # ``_neighborhood_target`` with every step in float64: the centroid, the covariance and its
+    # ``wp.svd3``, the quadric's local coordinates. The float32 ``svd3`` of a well-conditioned
+    # covariance can tilt the normal by ~4e-4, which a vertex ~0.03 off the centroid turns into a
+    # 1e-5 move; in float64 the normal is the covariance's to ~1e-8. Same fit, same frame, same
+    # scale-free quadric coordinates -- the two differ by precision alone.
+    count = wp.float64(end - begin)
+    centroid = wp.vec3d()
+    for slot in range(begin, end):
+        centroid += to_vec3d(positions[neighbors[slot]])
+    centroid /= count
+    covariance = wp.mat33d()
+    radius = wp.float64(0.0)
+    for slot in range(begin, end):
+        offset = to_vec3d(positions[neighbors[slot]]) - centroid
+        covariance += wp.outer(offset, offset)
+        radius = wp.max(radius, wp.length(offset))
+    _left, _singular, basis = wp.svd3(covariance / count)
+    axis_u = wp.vec3d(basis[0, 0], basis[1, 0], basis[2, 0])
+    axis_v = wp.vec3d(basis[0, 1], basis[1, 1], basis[2, 1])
+    axis_w = wp.vec3d(basis[0, 2], basis[1, 2], basis[2, 2])
+    offset = to_vec3d(current) - centroid
+    height = wp.float64(0.0)
+    if quadric and radius > wp.float64(0.0):
+        inv_radius = wp.float64(1.0) / radius
+        normal_matrix = mat66d()
+        normal_rhs = vec6d()
+        for slot in range(begin, end):
+            local = (to_vec3d(positions[neighbors[slot]]) - centroid) * inv_radius
+            row = _quadric_design_row(wp.dot(local, axis_u), wp.dot(local, axis_v))
+            normal_matrix += wp.outer(row, row)
+            normal_rhs += row * wp.dot(local, axis_w)
+        coefficients, ok = solve_normal_equations(normal_matrix, normal_rhs)
+        if ok:
+            u = wp.dot(offset, axis_u) * inv_radius
+            v = wp.dot(offset, axis_v) * inv_radius
+            height = radius * _quadric_value(coefficients, u, v)
+    return to_vec3(to_vec3d(current) + axis_w * (height - wp.dot(offset, axis_w)))
+
+
 @wp.kernel
 def relax_approx_step(
     positions: wp.array[wp.vec3],
@@ -2186,56 +2630,37 @@ def relax_approx_step(
         out_positions[vertex] = current
         return
 
-    centroid, axis_u, axis_v, axis_w, radius = _neighborhood_frame(
-        positions, neighbor_indices, begin, end
-    )
-    offset = current - centroid
-    # Initialized before the branch, per the kernel-scope scoping rule; the planar fit's answer is
-    # exactly this, since the plane passes through the neighbourhood centroid.
-    height = wp.float32(0.0)
-    # A zero radius means every neighbour sits on the centroid: no quadric to fit, and the plane's
-    # answer -- which ``height = 0`` already is -- is the whole of what the neighbourhood says.
-    if quadric and radius > wp.float32(0.0):
-        # Least squares over ``w = a u^2 + b u v + c v^2 + d u + e v + f`` in the neighbourhood's
-        # own frame, **in units of the neighbourhood radius**: the fit is a graph over the plane the
-        # neighbourhood already lies closest to.
-        #
-        # The division by the radius is what makes the fit scale-free, and it is a correctness
-        # requirement. The design row spans ``[u^2, u v, v^2, u, v, 1]``, so at mesh scale ``h`` the
-        # normal matrix's diagonal spans ``h^8`` down to ``1`` and ``solve_normal_equations``'
-        # singularity test -- absolute, and necessarily so, since it cannot see the caller's units
-        # -- starts reporting well-conditioned neighbourhoods as singular. That failure is silent:
-        # the vertex falls back to the planar answer with nothing said, and on a small enough mesh
-        # nearly every vertex does.
-        inv_radius = wp.float64(1.0) / wp.float64(radius)
-        normal_matrix = mat66d()
-        normal_rhs = vec6d()
-        for slot in range(begin, end):
-            local = positions[neighbor_indices[slot]] - centroid
-            u = wp.float64(wp.dot(local, axis_u)) * inv_radius
-            v = wp.float64(wp.dot(local, axis_v)) * inv_radius
-            row = vec6d(u * u, u * v, v * v, u, v, wp.float64(1.0))
-            normal_matrix += wp.outer(row, row)
-            normal_rhs += row * (wp.float64(wp.dot(local, axis_w)) * inv_radius)
-        coefficients, ok = solve_normal_equations(normal_matrix, normal_rhs)
-        if ok:
-            # Evaluated in the same units the fit was solved in, then carried back: ``w`` was
-            # divided by the radius alongside ``u`` and ``v``, so the height is multiplied by it.
-            u = wp.float64(wp.dot(offset, axis_u)) * inv_radius
-            v = wp.float64(wp.dot(offset, axis_v)) * inv_radius
-            height = wp.float32(
-                wp.float64(radius)
-                * (
-                    coefficients[0] * u * u
-                    + coefficients[1] * u * v
-                    + coefficients[2] * v * v
-                    + coefficients[3] * u
-                    + coefficients[4] * v
-                    + coefficients[5]
-                )
-            )
+    target = _neighborhood_target(positions, neighbor_indices, begin, end, current, quadric)
+    moved = current + (target - current) * force
+    out_positions[vertex] = limit_near_initial(moved, initial[vertex], max_displacement)
 
-    target = current + axis_w * (height - wp.dot(offset, axis_w))
+
+@wp.kernel
+def relax_approx_step_d(
+    positions: wp.array[wp.vec3],
+    neighbor_indices: wp.array[wp.int32],
+    neighbor_offsets: wp.array[wp.int32],
+    row_stride: wp.int32,
+    chunk_start: wp.int32,
+    region: wp.array[wp.bool],
+    initial: wp.array[wp.vec3],
+    force: wp.float32,
+    quadric: wp.bool,
+    max_displacement: wp.float32,
+    out_positions: wp.array[wp.vec3],
+) -> None:
+    # ``relax_approx_step`` with the fit formed in float64 (``_neighborhood_target_d``); the guard
+    # and the step are the same. Two kernels rather than a precision selector in one: a selector
+    # moved the float32 kernel's CUDA rounding at the displacement clamp by an ulp.
+    t = wp.int32(wp.tid())
+    vertex = chunk_start + t
+    current = positions[vertex]
+    begin, end = ball_row_bounds(neighbor_offsets, row_stride, vertex, t)
+    if not in_region(region, vertex) or end - begin < 6:
+        out_positions[vertex] = current
+        return
+
+    target = _neighborhood_target_d(positions, neighbor_indices, begin, end, current, quadric)
     moved = current + (target - current) * force
     out_positions[vertex] = limit_near_initial(moved, initial[vertex], max_displacement)
 
