@@ -1076,8 +1076,8 @@ the quoted `"meshlib"` value only), and their kernels describe behaviour, not th
   bit for bit when handed ordito's Fibonacci lattice in the `+z` bundle frame (`any_perpendicular`
   gives `(-l1, l0, l2)`) and the origins stepped `1e-4` of the scene diagonal; and
   `signed_distance_level_set` on `igl.voxel_grid`'s lattice is `igl.offset_surface`'s mesh
-  (levels 0, -0.05; at 0.1 one vertex is 4.8e-5 off, at 0.05 two vertices are closer than the
-  tolerance). `resample_uniform` reaches igl's lattice under `method="igl"` (second pass, below).
+  (levels 0, -0.05, 0.05, vertices matched by the lattice edge each lies on; at 0.1 one vertex is
+  4.8e-5 off). `resample_uniform` reaches igl's lattice under `method="igl"` (second pass, below).
 - **`filter_two_step(method="meshlab")`:** MeshLab's normal pass averages each face with the faces
   of *lower index* around its corners (weights `(c - sigma)^2`, `sigma = max(cos, 0)`), so its
   answer depends on face order; that, not the fit, rounds a cube's corners inward (the whole ring
@@ -1247,7 +1247,7 @@ Each is a measured limit of an option above; re-measure before acting on it.
   5 planar passes on `torus_irregular_holes` drift 2e-3 from MeshLib though each pass agrees to
   4.8e-7: one-ulp position differences change the next pass's balls. Not reproducible without
   MeshLib's own float order; the test excludes that case and says so.
-- **`signed_distance_level_set` against `igl.offset_surface` holds at two of four levels.** At
+- **`signed_distance_level_set` against `igl.offset_surface` holds at three of four levels.** At
   `iso = 0.1` the counts and faces agree but one vertex is 4.8e-5 off. Cause (traced 2026-10-28,
   both devices): a near-tangent lattice edge, both nodes within 1.8e-4 of the level, where any
   field or node error is amplified by `h / |df|` ~ 225. Ordito's field there is 2e-7 from igl's,
@@ -1255,14 +1255,15 @@ Each is a measured limit of an option above; re-measure before acting on it.
   exact field): at the nodes the `float32` `bounds` place (1.2e-7 from igl's) the vertex is still
   2.8e-5 off, a second 4.7e-5 (now 4.1e-5); with `float32` nodes 2.0e-5 / 3.7e-5. Only igl's
   `float64` lattice reproduces them. Both vertices lie on the same surface to ~1e-7, slid along
-  it. At `0.05` two vertices of either mesh lie closer than the tolerance, so the nearest-vertex
-  map is not a bijection. The test runs `0` and `-0.05` only. **Proposed:** for 0.1, a `float64`
+  it. `0.05` is closed (2026-10-28): two crossings there sit 5e-6 of a cell from one node, nearer
+  each other than the tolerance, so the test matches vertices by the lattice edge each lies on, not
+  by nearest neighbour (a bijection at all four levels, faces equal, worst vertex 2.6e-5 CUDA /
+  1.9e-5 CPU). The test runs `0`, `-0.05` and `0.05`. **Proposed:** for 0.1, a `float64`
   path through the whole extraction (`float64` `bounds`, a public API change; `float64` node
   positions; each node's distance recomputed in `float64` on the face Warp's search finds;
   `float64` interpolation in `marching_cubes`; a route for inputs on the `float32`-only
   `sparse_marching_cubes`), opt-in or priced first (`float64` runs at 1/64 rate, §13.2, under
-  `offset_mesh`, `resample_uniform`, `screened_poisson`, `fix_self_intersections`); for 0.05,
-  pair vertices by the lattice edge each lies on rather than by nearest neighbour.
+  `offset_mesh`, `resample_uniform`, `screened_poisson`, `fix_self_intersections`).
 - **`heat_signed_distance(method="potpourri3d")` is ~2.5x the default on CUDA** (ring 25.3 vs
   9.8 ms, band 9.3 vs 5.2) with more launches (CPU census 2448 / 958 vs 1749 / 809): the edge
   system's assembly and a longer settle on a system ~3x larger (the operator is already held per
@@ -1322,7 +1323,7 @@ as it stands; an upgrade means adding the reference's own algorithm as an option
 **Same algorithm, small numeric gap.** Each has its own entry: `log_map(method="potpourri3d")`
 (`float32` transport angles) and `relax_approx(method="meshlib")` (planar drift) in
 `Open items from the 2026-10-28 Class C upgrades`; `signed_distance_level_set` against
-`igl.offset_surface` at iso 0.1 (the lattice's `float32` placement) and 0.05, same section; `screened_poisson(method="octree")` on an
+`igl.offset_surface` at iso 0.1 (the lattice's `float32` placement), same section; `screened_poisson(method="octree")` on an
 open cloud (`test_poisson_octree_matches_open3d_on_an_open_cloud`: far-field vertices at the
 cube's walls, open3d's wall evaluation untraced; on closed clouds the residual ties are open3d's
 own `float32` rounding, `Open defects`); `triangulate_point_cloud` without normals

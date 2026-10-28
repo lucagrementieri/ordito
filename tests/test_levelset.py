@@ -27,6 +27,7 @@ from warp.geometry import IsoSurfaceMarchingCubes
 
 import ordito as od
 import ordito.typing as odt
+from ordito.constants import ALLCLOSE_ATOL, ALLCLOSE_RTOL
 from tests.comparisons import (
     assert_nearest_bijection,
     assert_unordered_rows_equal,
@@ -786,7 +787,7 @@ def test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice(
     "chooses its own lattice from a cell count, so a timed row would price two different grids. "
     "Its timed rows are in the resample_uniform group.",
 )
-@pytest.mark.parametrize("iso", [0.0, -0.05])
+@pytest.mark.parametrize("iso", [0.0, -0.05, 0.05])
 def test_signed_distance_level_set_matches_igl_offset_surface(
     device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh], iso: float
 ) -> None:
@@ -797,27 +798,31 @@ def test_signed_distance_level_set_matches_igl_offset_surface(
     the longest axis, one node of padding a side, the box grown by ``iso`` -- sampled with the
     pseudonormal signed distance and marched at ``iso``. Handed that lattice's ``side`` and corner
     nodes as ``shape`` and ``bounds``, ``signed_distance_level_set`` samples the same nodes, and the
-    two extractions are the same mesh, compared with
-    [`meshes_allclose`][ordito.equality.meshes_allclose]: the same vertex and face counts, the
-    same oriented faces under the nearest-vertex map (measured at ``iso = 0``: 18 284 vertices,
-    36 564 faces, positions to 1.9e-05 at worst and 4.6e-6 of a cell in the mean, the fields to
-    5.9e-07; at ``-0.05`` 8.6e-06). Not every level holds at the standard tolerance, and the two
-    measured exceptions are single vertices, not the surfaces: at ``0.1`` the counts and faces
-    agree but one vertex lands 4.8e-05 away, on a lattice edge whose two nodes both lie within
-    1.8e-4 of the level (a near-tangent edge), so the crossing moves about 225 times as far as
-    the field does (a 2.9e-4 step over a 0.066 cell). Ordito's field there is 2e-7 from igl's,
-    but a ``float64`` field would not close it: igl's own distance at the lattice ``float32``
-    ``bounds`` describe (each node 1.2e-7 from igl's) still puts that vertex 2.8e-5 away, and a
-    second one 4.7e-5. Only igl's ``float64`` lattice itself reproduces them (traced on both
-    devices). At ``0.05`` two vertices of either
-    mesh are nearer each other than the tolerance, so the nearest-vertex map is not a bijection (6
-    faces map wrongly; the counts and every position still agree to 1.9e-05).
+    two extractions are the same mesh: the same vertex and face counts, each vertex within
+    [`meshes_allclose`][ordito.equality.meshes_allclose]'s tolerance of its match, and the same
+    oriented faces under that match ([`faces_equal`][ordito.equality.faces_equal]).
+
+    Vertices are matched by the lattice edge each lies on (``_lattice_edge_matching``), not by
+    nearest neighbour: marching cubes puts one vertex on each crossed edge, so the edge *is* the
+    vertex's identity in both extractions. A nearest-vertex map is not a bijection at ``0.05``,
+    where two crossings sit 5e-6 of a cell from one node and so nearer each other than the
+    tolerance (6 faces mapped wrongly). Measured, worst vertex over both devices: 1.9e-05 at
+    ``0``, 8.9e-06 at ``-0.05``, 2.6e-05 at ``0.05`` (CUDA; 1.9e-05 CPU), against a tolerance of
+    at least 1.7e-06 + 1e-5 of the vertex's distance from the origin; the fields agree to 5.9e-07.
+    ``0.1`` matches the same way, counts and faces included, but one vertex lands 4.8e-05 away,
+    on a lattice edge whose two nodes both lie within 1.8e-4 of the level (a near-tangent edge),
+    so the crossing moves about 225 times as far as the field does (a 2.9e-4 step over a 0.066
+    cell). Ordito's field there is 2e-7 from igl's, but a ``float64`` field would not close it:
+    igl's own distance at the lattice ``float32`` ``bounds`` describe (each node 1.2e-7 from
+    igl's) still puts that vertex 2.8e-5 away, and a second one 4.7e-5. Only igl's ``float64``
+    lattice itself reproduces them (traced on both devices).
     [`resample_uniform`][ordito.reconstruction.resample_uniform] builds this lattice itself under
     ``method="igl"`` (``test_resample_uniform_igl_method_matches_igl_offset_surface``); its default
     ``3``-cell padding keeps a Class C comparison.
 
-    Non-vacuity is the surface itself; a lattice one node off on any axis, or the field's sign
-    flipped, fails the vertex count.
+    Non-vacuity is the surface itself. Mutation probe: ordito's lattice shifted half a cell along
+    ``x`` fails the vertex count at every level. A whole node does not: the padded lattice samples
+    the same interior nodes and extracts the same mesh at ``0`` and ``-0.05``.
     """
     mesh_tm, mesh_wp = sphere_irregular
     vertices_igl, faces_igl = mesh_igl(mesh_tm)
@@ -837,14 +842,53 @@ def test_signed_distance_level_set_matches_igl_offset_surface(
     level_vertices_wp, level_faces_wp = od.levelset.signed_distance_level_set(
         mesh_wp.points, mesh_wp.indices, iso, shape, bounds=(lower, upper)
     )
-    reference_vertices_wp, reference_faces_wp = numpy_to_warp(
-        offset_vertices_igl, offset_faces_igl, device
-    )
 
     assert offset_faces_igl.shape[0] > 1000
-    assert od.equality.meshes_allclose(
-        level_vertices_wp, level_faces_wp, reference_vertices_wp, reference_faces_wp
+    level_vertices_np = level_vertices_wp.numpy().astype(np.float64)
+    to_igl = _lattice_edge_matching(level_vertices_np, offset_vertices_igl, lattice_igl, shape)
+    matched_igl = offset_vertices_igl[to_igl]
+    distances = np.linalg.norm(level_vertices_np - matched_igl, axis=1)
+    bound = ALLCLOSE_ATOL + ALLCLOSE_RTOL * np.linalg.norm(matched_igl, axis=1)
+    assert np.all(distances <= bound)
+    faces_wp = wp.array(to_igl[level_faces_wp.numpy()].astype(np.int32), device=device)
+    reference_faces_wp = wp.array(offset_faces_igl.ravel().astype(np.int32), device=device)
+    assert od.equality.faces_equal(
+        faces_wp, reference_faces_wp, n_vertices=offset_vertices_igl.shape[0]
     )
+
+
+def _lattice_edge_matching(
+    vertices_a: np.ndarray, vertices_b: np.ndarray, lattice: np.ndarray, shape: tuple[int, int, int]
+) -> np.ndarray:
+    """
+    ``(n_vertices,)`` index of the ``vertices_b`` vertex on each ``vertices_a`` vertex's edge.
+
+    A marching-cubes vertex lies on one lattice edge: two of its lattice coordinates are whole and
+    the third falls between two nodes. The edge is keyed by its lower node and its axis, the axis
+    being the coordinate farthest from a whole number. Asserts both meshes cross the same edges,
+    each once, so the result is a bijection.
+    """
+    origin = lattice.min(axis=0)
+    step = (lattice.max(axis=0) - origin) / (np.asarray(shape) - 1)
+
+    def edge_keys(vertices: np.ndarray) -> np.ndarray:
+        coordinates = (vertices - origin) / step
+        rows = np.arange(coordinates.shape[0])
+        axis = np.argmax(np.abs(coordinates - np.round(coordinates)), axis=1)
+        node = np.round(coordinates).astype(np.int64)
+        node[rows, axis] = np.floor(coordinates[rows, axis]).astype(np.int64)
+        return np.column_stack([node, axis])
+
+    keys_a = edge_keys(vertices_a)
+    keys_b = edge_keys(vertices_b)
+    order_a = np.lexsort(keys_a.T[::-1])
+    order_b = np.lexsort(keys_b.T[::-1])
+    assert keys_a.shape == keys_b.shape
+    assert np.array_equal(keys_a[order_a], keys_b[order_b])
+    assert np.unique(keys_a, axis=0).shape[0] == keys_a.shape[0]
+    matching = np.empty(keys_a.shape[0], dtype=np.int64)
+    matching[order_a] = order_b
+    return matching
 
 
 @pytest.mark.parametrize(
