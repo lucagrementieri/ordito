@@ -1248,11 +1248,21 @@ Each is a measured limit of an option above; re-measure before acting on it.
   4.8e-7: one-ulp position differences change the next pass's balls. Not reproducible without
   MeshLib's own float order; the test excludes that case and says so.
 - **`signed_distance_level_set` against `igl.offset_surface` holds at two of four levels.** At
-  `iso = 0.1` the counts and faces agree but one vertex is 4.8e-5 off (not traced); at `0.05` two
-  vertices of either mesh lie closer than the tolerance, so the nearest-vertex map is not a
-  bijection. The test runs `0` and `-0.05` only. **Proposed:** trace the 0.1 vertex (interpolation
-  order or the field at a node near the level) and compare the 0.05 case by vertex pairing on the
-  lattice edge each vertex lies on rather than by nearest neighbour.
+  `iso = 0.1` the counts and faces agree but one vertex is 4.8e-5 off. Cause (traced 2026-10-28,
+  both devices): a near-tangent lattice edge, both nodes within 1.8e-4 of the level, where any
+  field or node error is amplified by `h / |df|` ~ 225. Ordito's field there is 2e-7 from igl's,
+  but a `float64` field alone does not close it (probed with igl's own double distance as the
+  exact field): at the nodes the `float32` `bounds` place (1.2e-7 from igl's) the vertex is still
+  2.8e-5 off, a second 4.7e-5 (now 4.1e-5); with `float32` nodes 2.0e-5 / 3.7e-5. Only igl's
+  `float64` lattice reproduces them. Both vertices lie on the same surface to ~1e-7, slid along
+  it. At `0.05` two vertices of either mesh lie closer than the tolerance, so the nearest-vertex
+  map is not a bijection. The test runs `0` and `-0.05` only. **Proposed:** for 0.1, a `float64`
+  path through the whole extraction (`float64` `bounds`, a public API change; `float64` node
+  positions; each node's distance recomputed in `float64` on the face Warp's search finds;
+  `float64` interpolation in `marching_cubes`; a route for inputs on the `float32`-only
+  `sparse_marching_cubes`), opt-in or priced first (`float64` runs at 1/64 rate, §13.2, under
+  `offset_mesh`, `resample_uniform`, `screened_poisson`, `fix_self_intersections`); for 0.05,
+  pair vertices by the lattice edge each lies on rather than by nearest neighbour.
 - **`heat_signed_distance(method="potpourri3d")` is ~2.5x the default on CUDA** (ring 25.3 vs
   9.8 ms, band 9.3 vs 5.2) with more launches (CPU census 2448 / 958 vs 1749 / 809): the edge
   system's assembly and a longer settle on a system ~3x larger (the operator is already held per
@@ -1261,11 +1271,13 @@ Each is a measured limit of an option above; re-measure before acting on it.
   census; 1780-1875 on the CPU), and 21 sorts and scans for the vertex factorization's analysis
   per call: the face-system CG and 20 vertex solves. Unpriced against MeshLib beyond the small
   saddles (15 ms vs ~400 ms).
-- **Private access added across a module boundary**, each allowlisted or scoped:
-  `smoothing` reaches `neighbors._EdgePathBallWalk` (check 5 allowlist, plus a scoped
-  `reportUnusedClass` ignore), `log_map` calls `HeatSolver._diffuse_tangent_pair`, and the edge
-  signed heat method reads `solver._settle` / `solver._systems`. **Proposed:** a public (or
-  module-level) entry point for each, then drop the allowlist entries.
+- **Private access added across a module boundary.** The heat half is closed (2026-10-28):
+  `HeatSolver.diffuse_tangent_pair` and `HeatSolver.diffuse_edge_field` are public, the solver
+  owns the Crouzeix-Raviart system (no weak-keyed module cache), and `log_map` /
+  `heat_signed_distance` call them with no `reportPrivateUsage` ignore. Still open: `smoothing`
+  reaches `neighbors._EdgePathBallWalk` (check 5 allowlist, plus a scoped `reportUnusedClass`
+  ignore), the same shape as the two allowlisted `_GeodesicBallWalk` uses; a public chunked walk
+  would retire all three entries at once.
 - **Declined, recorded so it is not re-proposed without new evidence:** hole-fill and stitch ties
   against MeshLib (a `float64` DP, MeshLib's triangle-term bits, descending `k` and its start
   vertex; stitch follows its heap order); earcut's serial ear order; MeshLab's Embree ambient
@@ -1310,7 +1322,7 @@ as it stands; an upgrade means adding the reference's own algorithm as an option
 **Same algorithm, small numeric gap.** Each has its own entry: `log_map(method="potpourri3d")`
 (`float32` transport angles) and `relax_approx(method="meshlib")` (planar drift) in
 `Open items from the 2026-10-28 Class C upgrades`; `signed_distance_level_set` against
-`igl.offset_surface` at iso 0.1 and 0.05, same section; `screened_poisson(method="octree")` on an
+`igl.offset_surface` at iso 0.1 (the lattice's `float32` placement) and 0.05, same section; `screened_poisson(method="octree")` on an
 open cloud (`test_poisson_octree_matches_open3d_on_an_open_cloud`: far-field vertices at the
 cube's walls, open3d's wall evaluation untraced; on closed clouds the residual ties are open3d's
 own `float32` rounding, `Open defects`); `triangulate_point_cloud` without normals

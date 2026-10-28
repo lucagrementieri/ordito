@@ -886,6 +886,62 @@ def test_heat_solver_diffuse_stacked(bench_case: BenchCase) -> None:
     assert np.isfinite(solution.numpy()).all()
 
 
+@pytest.mark.benchmark(group="heat_solver_diffuse_tangent_pair")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_heat_solver_diffuse_tangent_pair(bench_case: BenchCase) -> None:
+    """
+    ``HeatSolver.diffuse_tangent_pair``: two tangent fields as one solve.
+
+    What ``log_map(method="potpourri3d")`` runs; warmed twice like ``heat_solver_diffuse_tangent``,
+    so the row is the factored steady state, the vector system solving two columns.
+    """
+    _mesh, solver = _warm_heat_solver(bench_case)
+    n = bench_case.n_vertices
+    rhs_np = np.zeros(4 * n)
+    rhs_np[0] = 1.0
+    rhs_np[2 * n + 1] = 1.0
+    rhs = wp.array(rhs_np, dtype=wp.float64, device=bench_case.device)
+    solution = wp.zeros_like(rhs)
+
+    def run() -> None:
+        solution.zero_()
+        solver.diffuse_tangent_pair(rhs, solution)
+
+    for _ in range(2):
+        run()
+    bench_case.run(run)
+    assert np.isfinite(solution.numpy()).all()
+
+
+@pytest.mark.benchmark(group="heat_solver_diffuse_edge_field")
+@pytest.mark.benchaxis("quality")
+@pytest.mark.benchlibs("ordito")
+def test_heat_solver_diffuse_edge_field(bench_case: BenchCase) -> None:
+    """
+    ``HeatSolver.diffuse_edge_field``: one Crouzeix-Raviart vector diffusion over the edges.
+
+    What ``heat_signed_distance(method="potpourri3d")`` runs; warmed twice like
+    ``heat_solver_diffuse_tangent`` (the first builds the edge system and iterates, the second
+    factors it), so the row is the factored steady state.
+    """
+    mesh, solver = _warm_heat_solver(bench_case)
+    n_edges = mesh.edges_unique.shape[0]
+    rhs_np = np.zeros((n_edges, 2))
+    rhs_np[0] = (1.0, 0.0)
+    rhs = wp.array(rhs_np, dtype=wp.vec2d, device=bench_case.device)
+    solution = wp.zeros_like(rhs)
+
+    def run() -> None:
+        solution.zero_()
+        solver.diffuse_edge_field(rhs, solution)
+
+    for _ in range(2):
+        run()
+    bench_case.run(run)
+    assert np.isfinite(solution.numpy()).all()
+
+
 @pytest.mark.benchmark(group="heat_solver_solve_poisson")
 @pytest.mark.benchaxis("quality")
 @pytest.mark.benchlibs("ordito")

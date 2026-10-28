@@ -2241,6 +2241,18 @@
    "h2h": 1
   }
  },
+ "benchmarks/test_heat.py::test_heat_solver_diffuse_edge_field[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 71,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_solver_diffuse_edge_field[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 71,
+   "h2h": 1
+  }
+ },
  "benchmarks/test_heat.py::test_heat_solver_diffuse_pinned[saddle-ordito-cpu]": {
   "counts": {
    "launch": 56,
@@ -2276,6 +2288,18 @@
  "benchmarks/test_heat.py::test_heat_solver_diffuse_tangent[saddle_graded-ordito-cpu]": {
   "counts": {
    "launch": 66,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_solver_diffuse_tangent_pair[saddle-ordito-cpu]": {
+  "counts": {
+   "launch": 65,
+   "h2h": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_solver_diffuse_tangent_pair[saddle_graded-ordito-cpu]": {
+  "counts": {
+   "launch": 65,
    "h2h": 1
   }
  },

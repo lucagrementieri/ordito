@@ -929,10 +929,11 @@ def _edge_signed_distance(
     ``heat_signed_distance(method="potpourri3d")``: the field diffused on the mesh's edges.
 
     The source is each curve segment's normal on the edge it lies on, diffused by the
-    Crouzeix-Raviart vector heat system ([`_edge_heat_system`]); each face samples its three edges
-    and normalizes, and the Poisson stage is the vertex method's, with the unconstrained field
-    shifted by its mean along the curve's segments (the midpoint rule, length-weighted) rather than
-    over its vertices.
+    Crouzeix-Raviart vector heat system
+    ([`HeatSolver.diffuse_edge_field`][ordito.heat.HeatSolver.diffuse_edge_field]); each face
+    samples its three edges and normalizes, and the Poisson stage is the vertex method's, with the
+    unconstrained field shifted by its mean along the curve's segments (the midpoint rule,
+    length-weighted) rather than over its vertices.
     """
     vertices, faces = mesh.vertices, mesh.faces
     device = vertices.device
@@ -943,7 +944,6 @@ def _edge_signed_distance(
     operators = solver.operators
     edges = mesh.edges_unique
     face_edges = mesh.faces_unique_edges
-    system, preconditioner = _edge_heat_system(mesh, solver, t)
 
     single_curve = wp.int32(1 if curve_offsets is None else 0)
     closed_flag = wp.int32(1 if closed else 0)
@@ -963,11 +963,7 @@ def _edge_signed_distance(
     rhs = cast("wp.array[wp.vec2d]", _launch.finish_group_sums(source))
 
     diffused = _launch.zeros(edges.shape[0], dtype=wp.vec2d, device=device)
-    # The solver's own settled diffusion and rent-or-buy factorization, under the edge system's role
-    # (its slot placed by ``_edge_heat_system``).
-    solver._settle(  # pyright: ignore[reportPrivateUsage]
-        _EDGE_HEAT_ROLE, system, rhs, diffused, preconditioner=preconditioner
-    )
+    solver.diffuse_edge_field(rhs, diffused)
 
     order = _corner_order(mesh, solver)
     divergence, corner_divergence = _corner_outputs(order, n_vertices, n_faces, wp.float64, device)
@@ -998,86 +994,6 @@ def _edge_signed_distance(
     )
     _launch.launch(kernel_heat.shift_by_mean, dim=n_vertices, inputs=[sums, field], device=device)
     return field
-
-
-# The ``HeatSolver`` role of the edge system: its factorization slot, solved and factored by the
-# solver's own rent-or-buy rule.
-_EDGE_HEAT_ROLE = "crouzeix_raviart"
-
-# Each solver's edge system, Jacobi preconditioner and edge midpoints (the positions its
-# factorization orders rows by), keyed weakly so they live exactly as long as the solver -- the
-# mesh's lifetime -- as its operators do, and survive its ``release``.
-_EDGE_HEAT_SYSTEMS: weakref.WeakKeyDictionary[
-    HeatSolver, tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator, wp.array[wp.vec3]]
-] = weakref.WeakKeyDictionary()
-
-
-def _edge_heat_system(
-    mesh: Trimesh, solver: HeatSolver, t: float | None
-) -> tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator]:
-    """
-    Return the Crouzeix-Raviart vector heat system ``M + t L`` and its preconditioner, kept.
-
-    ``wp.mat22d`` blocks over the rows of
-    [`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique], kept per solver and assembled
-    from keys (``kernels/heat.crouzeix_raviart_keys``) and one row kernel; ``t`` defaults to a
-    quarter of the squared mean unique-edge length, geometry-central's ``(h / 2) ** 2``, formed on
-    the device from the scalar bundle's own sums. Also places ``solver``'s factorization slot for
-    the system, which a ``release`` drops.
-    """
-    kept = _EDGE_HEAT_SYSTEMS.get(solver)
-    if kept is None:
-        vertices, faces = mesh.vertices, mesh.faces
-        device = vertices.device
-        edges = mesh.edges_unique
-        face_edges = mesh.faces_unique_edges
-        n_edges = edges.shape[0]
-        n_faces = faces.size // 3
-        count = 12 * n_faces
-        keys, order = od.array.csr_key_buffers(count, device)
-        _launch.launch(
-            kernel_heat.crouzeix_raviart_keys,
-            dim=n_faces,
-            inputs=[face_edges, wp.int32(n_edges)],
-            outputs=[keys, order],
-            device=device,
-        )
-        offsets, columns, starts = od.array.csr_from_keys(keys, order, count, n_edges, n_edges)
-        edge_sums = None
-        if t is None:
-            built = _SCALAR_BUILDS.get(solver.operators[0])
-            edge_sums = built.edge_sums if built is not None else None
-            if edge_sums is None:
-                edge_sums = _edge_length_sums(vertices, mesh.mesh_operator_pattern)
-        values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
-        midpoints = _launch.empty(n_edges, dtype=wp.vec3, device=device)
-        _launch.launch(
-            kernel_heat.crouzeix_raviart_system_rows,
-            dim=n_edges,
-            inputs=[
-                offsets,
-                starts,
-                order,
-                vertices,
-                faces,
-                face_edges,
-                edges,
-                wp.float64(0.25 if t is None else t),
-                edge_sums,
-                wp.int32(1 if t is None else 0),
-            ],
-            outputs=[values, midpoints],
-            device=device,
-        )
-        system = od.array.bsr_from_csr(n_edges, n_edges, offsets, columns, values)
-        kept = _EDGE_HEAT_SYSTEMS[solver] = (system, twl.jacobi_preconditioner(system), midpoints)
-    system, preconditioner, midpoints = kept
-    # The slot is placed here, not by the solver, because its factorization orders the rows by the
-    # edge midpoints, where the solver's own slots take the vertices.
-    systems = solver._systems  # pyright: ignore[reportPrivateUsage]
-    if _EDGE_HEAT_ROLE not in systems:
-        systems[_EDGE_HEAT_ROLE] = _KeptSystem(twl.OperatorFactorization(system, midpoints))
-    return system, preconditioner
 
 
 # --------------------------------------------------------------------------------------
@@ -2210,9 +2126,10 @@ def _log_map_vector_heat(mesh: Trimesh, solver: HeatSolver, source: int) -> wp.a
     ``log_map(method="potpourri3d")``: the vector heat method's radial field and its integral.
 
     Two vector diffusions on the one system, run as one solve over ``[vector system; vector
-    system]`` (``HeatSolver._diffuse_tangent_pair``): the outward ball at the source, whose
-    direction is radial, and the source's reference direction, the angle's zero. The radial field's
-    divergence then integrates into the distance by the Poisson solve ``heat_geodesic`` ends with.
+    system]`` ([`HeatSolver.diffuse_tangent_pair`][ordito.heat.HeatSolver.diffuse_tangent_pair]):
+    the outward ball at the source, whose direction is radial, and the source's reference
+    direction, the angle's zero. The radial field's divergence then integrates into the distance by
+    the Poisson solve ``heat_geodesic`` ends with.
     """
     vertices, faces = mesh.vertices, mesh.faces
     device = vertices.device
@@ -2245,7 +2162,7 @@ def _log_map_vector_heat(mesh: Trimesh, solver: HeatSolver, source: int) -> wp.a
         ],
         device=device,
     )
-    solver._diffuse_tangent_pair(rhs, diffused)  # pyright: ignore[reportPrivateUsage]
+    solver.diffuse_tangent_pair(rhs, diffused)
     radial_raw = _pairs(diffused, n_vertices)
     horizontal_raw = _pairs(_launch.view(diffused, 2 * n_vertices, rows), n_vertices)
 
@@ -2778,6 +2695,11 @@ class HeatSolver:
         self._pinned: (
             tuple[odt.SparseMatrix, wpl.LinearOperator, wp.array[wp.int32]] | tuple[()] | None
         ) = None
+        # The edge system, its preconditioner and the edge midpoints its factorization orders rows
+        # by, once built; like the operators, it outlives ``release``.
+        self._edge_system: (
+            tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator, wp.array[wp.vec3]] | None
+        ) = None
 
     @property
     def operators(self) -> HeatOperators:
@@ -2812,12 +2734,7 @@ class HeatSolver:
             If this solver was built with ``use_robust`` or a ``method`` other than
             ``"potpourri3d"``, the discretization the vector heat method is defined on.
         """
-        if self.use_robust:
-            raise ValueError("HeatSolver: the vector heat operators have no use_robust variant")
-        if self.method != "potpourri3d":
-            raise ValueError(
-                f"HeatSolver: the vector heat operators have no method={self.method!r} variant"
-            )
+        self._require_vector_discretization("the vector heat operators")
         if self._vector_operators is None:
             mesh = self._bound_mesh()
             if self.t is None:
@@ -2991,17 +2908,35 @@ class HeatSolver:
             )
         self._settle(role, kept.factorization.matrix, rhs, solution)
 
-    def _diffuse_tangent_pair(
+    def diffuse_tangent_pair(
         self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64]
     ) -> None:
         """
         Diffuse two tangent fields as one solve over ``[vector system; vector system]``.
 
-        ``rhs`` and ``solution`` hold ``4 * n_vertices`` entries, each field as interleaved
-        ``float64`` pairs, as ``diffuse_stacked`` lays its tangent field out. Factored, when that
-        pays, as the vector system's own slot solving both fields as columns.
+        Two [`diffuse_tangent`][ordito.heat.HeatSolver.diffuse_tangent] calls in the launches of
+        one, as [`diffuse_stacked`][ordito.heat.HeatSolver.diffuse_stacked] runs a tangent field
+        beside scalar ones. Factored, when that pays, as the vector system's own factorization
+        solving both fields as two columns.
+
+        Parameters
+        ----------
+        rhs
+            ``(4 * n_vertices,)`` right-hand side: each tangent field as interleaved ``float64``
+            pairs, the first field's ``2 * n_vertices`` entries then the second's.
+        solution
+            Same layout: the initial guess, overwritten with the diffused fields.
+
+        Raises
+        ------
+        ValueError
+            If this solver was built with ``use_robust`` or a ``method`` other than
+            ``"potpourri3d"``, or if ``rhs`` and ``solution`` do not hold ``4 * n_vertices``
+            entries.
+        RuntimeError
+            If ``rhs``, ``solution`` and the mesh are not all on one device.
         """
-        self._require_fields("HeatSolver._diffuse_tangent_pair", rhs, solution, rhs.size, 4)
+        self._require_fields("HeatSolver.diffuse_tangent_pair", rhs, solution, rhs.size, 4)
         role = "vector_pair"
         kept = self._systems.get(role)
         if kept is None:
@@ -3128,6 +3063,110 @@ class HeatSolver:
         system = od.array.bsr_with_values(heat_system, values)
         return system, twl.jacobi_preconditioner(system), rim
 
+    def diffuse_edge_field(self, rhs: wp.array[wp.vec2d], solution: wp.array[wp.vec2d]) -> None:
+        """
+        Diffuse a tangent field held on the edges: the Crouzeix-Raviart vector heat system.
+
+        Solves ``(M + t_e L) X = rhs`` over the rows of
+        [`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique], each vector in the frame of
+        its edge: the edge-based discretization
+        [`heat_signed_distance`][ordito.heat.heat_signed_distance] diffuses at
+        ``method="potpourri3d"``. ``t_e`` is ``t`` when the solver has one, else
+        ``(h / 2) ** 2`` with ``h`` the mean unique-edge length, geometry-central's. The system is
+        built on first use and kept; it is settled and factored as the solver's other systems are.
+
+        Parameters
+        ----------
+        rhs
+            ``(n_edges,)`` right-hand side, ``n_edges`` the rows of ``edges_unique``.
+        solution
+            ``(n_edges,)`` initial guess, overwritten with the diffused field.
+
+        Raises
+        ------
+        ValueError
+            If this solver was built with ``use_robust`` or a ``method`` other than
+            ``"potpourri3d"``, or if ``rhs`` and ``solution`` do not hold one vector per unique
+            edge.
+        RuntimeError
+            If ``rhs``, ``solution`` and the mesh are not all on one device.
+        """
+        self._require_vector_discretization("the edge vector heat system")
+        mesh = self._bound_mesh()
+        require_same_device(vertices=mesh.vertices, rhs=rhs, solution=solution)
+        n_edges = mesh.edges_unique.shape[0]
+        if rhs.size != n_edges or tuple(solution.shape) != tuple(rhs.shape):
+            raise ValueError(
+                f"HeatSolver.diffuse_edge_field: rhs must hold {n_edges} rows for this mesh and "
+                f"solution its shape, got {tuple(rhs.shape)} and {tuple(solution.shape)}"
+            )
+        if self._edge_system is None:
+            self._edge_system = self._crouzeix_raviart_system()
+        system, preconditioner, midpoints = self._edge_system
+        role = "crouzeix_raviart"
+        if role not in self._systems:
+            # Placed here, not by ``_slot``: its factorization orders the rows by the edge
+            # midpoints, where the vertex systems' slots take the vertices.
+            self._systems[role] = _KeptSystem(twl.OperatorFactorization(system, midpoints))
+        self._settle(role, system, rhs, solution, preconditioner=preconditioner)
+
+    def _crouzeix_raviart_system(
+        self,
+    ) -> tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator, wp.array[wp.vec3]]:
+        """
+        Build ``diffuse_edge_field``'s system, its preconditioner and the edge midpoints.
+
+        ``wp.mat22d`` blocks over the unique edges, assembled from keys
+        (``kernels/heat.crouzeix_raviart_keys``) and one row kernel; the default time is formed on
+        the device from the scalar bundle's own edge-length sums.
+        """
+        mesh = self._bound_mesh()
+        t = self.t
+        vertices, faces = mesh.vertices, mesh.faces
+        device = vertices.device
+        edges = mesh.edges_unique
+        face_edges = mesh.faces_unique_edges
+        n_edges = edges.shape[0]
+        n_faces = faces.size // 3
+        count = 12 * n_faces
+        keys, order = od.array.csr_key_buffers(count, device)
+        _launch.launch(
+            kernel_heat.crouzeix_raviart_keys,
+            dim=n_faces,
+            inputs=[face_edges, wp.int32(n_edges)],
+            outputs=[keys, order],
+            device=device,
+        )
+        offsets, columns, starts = od.array.csr_from_keys(keys, order, count, n_edges, n_edges)
+        edge_sums = None
+        if t is None:
+            built = _SCALAR_BUILDS.get(self.operators[0])
+            edge_sums = built.edge_sums if built is not None else None
+            if edge_sums is None:
+                edge_sums = _edge_length_sums(vertices, mesh.mesh_operator_pattern)
+        values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
+        midpoints = _launch.empty(n_edges, dtype=wp.vec3, device=device)
+        _launch.launch(
+            kernel_heat.crouzeix_raviart_system_rows,
+            dim=n_edges,
+            inputs=[
+                offsets,
+                starts,
+                order,
+                vertices,
+                faces,
+                face_edges,
+                edges,
+                wp.float64(0.25 if t is None else t),
+                edge_sums,
+                wp.int32(1 if t is None else 0),
+            ],
+            outputs=[values, midpoints],
+            device=device,
+        )
+        system = od.array.bsr_from_csr(n_edges, n_edges, offsets, columns, values)
+        return system, twl.jacobi_preconditioner(system), midpoints
+
     def _settle(
         self,
         role: str,
@@ -3205,6 +3244,13 @@ class HeatSolver:
                 f"{caller}: rhs must hold {n_rows} rows for this mesh and solution its shape, got "
                 f"{tuple(rhs.shape)} and {tuple(solution.shape)}"
             )
+
+    def _require_vector_discretization(self, what: str) -> None:
+        """Raise unless this solver's discretization is the one the vector heat method uses."""
+        if self.use_robust:
+            raise ValueError(f"HeatSolver: no use_robust variant of {what}")
+        if self.method != "potpourri3d":
+            raise ValueError(f"HeatSolver: no method={self.method!r} variant of {what}")
 
     def _bound_mesh(self) -> Trimesh:
         """Return the mesh this solver belongs to."""
@@ -3337,7 +3383,7 @@ class _PairedFactorization(twl.OperatorFactorization):
     """
     The factorization of ``block_diag((vector system, vector system))``: the vector system's.
 
-    ``HeatSolver._diffuse_tangent_pair`` iterates the stack as one system; factored, it is the one
+    ``HeatSolver.diffuse_tangent_pair`` iterates the stack as one system; factored, it is the one
     distinct block, the solver's vector slot (its analysis derived from the heat system's when that
     is factored over the shared pattern), solving the two fields as two columns.
     """

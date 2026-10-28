@@ -2368,6 +2368,20 @@
    "d2d": 3
   }
  },
+ "benchmarks/test_heat.py::test_heat_solver_diffuse_edge_field[saddle-ordito-cuda]": {
+  "counts": {
+   "launch": 1,
+   "memset": 1,
+   "d2d": 3
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_solver_diffuse_edge_field[saddle_graded-ordito-cuda]": {
+  "counts": {
+   "launch": 1,
+   "memset": 1,
+   "d2d": 3
+  }
+ },
  "benchmarks/test_heat.py::test_heat_solver_diffuse_pinned[saddle-ordito-cuda]": {
   "counts": {
    "launch": 1,
@@ -2406,6 +2420,18 @@
  "benchmarks/test_heat.py::test_heat_solver_diffuse_tangent[saddle_graded-ordito-cuda]": {
   "counts": {
    "launch": 1,
+   "memset": 1,
+   "d2d": 3
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_solver_diffuse_tangent_pair[saddle-ordito-cuda]": {
+  "counts": {
+   "memset": 1,
+   "d2d": 3
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_solver_diffuse_tangent_pair[saddle_graded-ordito-cuda]": {
+  "counts": {
    "memset": 1,
    "d2d": 3
   }

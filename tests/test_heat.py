@@ -2318,6 +2318,103 @@ def test_diffuse_stacked_factors_a_small_stack_whole(
     assert solver.nbytes == 0
 
 
+def test_diffuse_tangent_pair_is_two_tangent_diffusions(
+    icosphere5: Icosphere5, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the paired diffusion is two ``diffuse_tangent`` solves.
+
+    ``HeatSolver.diffuse_tangent_pair`` (the stack under ``log_map(method="potpourri3d")``)
+    factors on its second solve as the vector system alone (``2 n_vertices`` rows), the solver's own
+    slot, so ``diffuse_tangent`` then builds nothing and agrees with each half to round-off; the
+    first, iterated solve agrees to the settle's tolerance. ``diffuse_tangent``'s own oracle is
+    ``test_diffuse_tangent_field_solves_its_own_system``.
+    """
+    _, vertices_wp, faces_wp = icosphere5
+    n = vertices_wp.size
+    device = vertices_wp.device
+    mesh = od.Trimesh(vertices_wp, faces_wp)
+    solver = mesh.heat_solver()
+    rhs_np = np.random.default_rng(43).random(4 * n)
+    rhs_wp = wp.array(rhs_np, dtype=wp.float64, device=device)
+    built = _count_factorizations(monkeypatch)
+    paired_np = []
+    for _ in range(2):
+        solution_wp = wp.zeros(4 * n, dtype=wp.float64, device=device)
+        solver.diffuse_tangent_pair(rhs_wp, solution_wp)
+        paired_np.append(solution_wp.numpy())
+    assert built == [2 * n]
+
+    separate_np = []
+    for half in range(2):
+        tangent_wp = wp.zeros(n, dtype=wp.vec2d, device=device)
+        solver.diffuse_tangent(
+            wp.array(
+                rhs_np[2 * n * half : 2 * n * (half + 1)].reshape(n, 2),
+                dtype=wp.vec2d,
+                device=device,
+            ),
+            tangent_wp,
+        )
+        separate_np.append(tangent_wp.numpy().ravel())
+    assert built == [2 * n]
+    separate = np.concatenate(separate_np)
+    scale = np.abs(separate).max()
+    assert np.allclose(paired_np[1], separate, rtol=1e-9, atol=1e-12 * scale)
+    assert np.allclose(paired_np[0], separate, rtol=1e-5, atol=1e-6 * scale)
+    mesh.release_factorizations()
+    assert solver.nbytes == 0
+
+
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular"])
+def test_diffuse_edge_field_solves_its_own_system(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Not a library comparison: the edge diffusion solves the Crouzeix-Raviart system it holds.
+
+    potpourri3d keeps its edge system internal, so its comparison is
+    ``test_heat_signed_distance_potpourri3d_method_matches_potpourri3d``, through the whole method;
+    this pins ``HeatSolver.diffuse_edge_field`` against a SciPy direct solve of the solver's own
+    ``(n_edges, n_edges)`` ``mat22d`` system, iterated (first call) and factored (second), on an
+    open and a closed fixture. A field of the wrong length raises before any solve.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    device = mesh_wp.device
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    solver = mesh.heat_solver()
+    n_edges = mesh.edges_unique.shape[0]
+    rhs_np = np.zeros((n_edges, 2))
+    rhs_np[n_edges // 3] = (1.0, -0.5)
+    rhs_wp = wp.array(rhs_np, dtype=wp.vec2d, device=device)
+    with pytest.raises(ValueError, match=r"HeatSolver\.diffuse_edge_field: rhs must hold"):
+        solver.diffuse_edge_field(rhs_wp, wp.zeros(n_edges - 1, dtype=wp.vec2d, device=device))
+    solutions_np = []
+    for _ in range(2):
+        solution_wp = wp.zeros(n_edges, dtype=wp.vec2d, device=device)
+        solver.diffuse_edge_field(rhs_wp, solution_wp)
+        solutions_np.append(solution_wp.numpy().ravel())
+
+    held = solver._edge_system  # pyright: ignore[reportPrivateUsage]
+    assert held is not None
+    system = held[0]
+    offsets_np = system.offsets.numpy()
+    system_sp = sp.bsr_matrix(
+        (
+            system.values.numpy()[: offsets_np[-1]],
+            system.columns.numpy()[: offsets_np[-1]],
+            offsets_np,
+        ),
+        shape=(2 * n_edges, 2 * n_edges),
+    )
+    expected_np = spla.spsolve(system_sp.tocsc(), rhs_np.ravel())
+    scale = np.abs(expected_np).max()
+    for solution_np in solutions_np:
+        assert np.allclose(solution_np, expected_np, rtol=1e-5, atol=1e-6 * scale)
+    with pytest.raises(ValueError, match="no method='meshlab' variant"):
+        mesh.heat_solver(method="meshlab").diffuse_edge_field(rhs_wp, wp.zeros_like(rhs_wp))
+
+
 def test_heat_solver_guards_its_mesh_and_fields(device: str) -> None:
     """
     Not a library comparison: the ``HeatSolver`` guards raise with their documented messages.

@@ -803,7 +803,13 @@ def test_signed_distance_level_set_matches_igl_offset_surface(
     36 564 faces, positions to 1.9e-05 at worst and 4.6e-6 of a cell in the mean, the fields to
     5.9e-07; at ``-0.05`` 8.6e-06). Not every level holds at the standard tolerance, and the two
     measured exceptions are single vertices, not the surfaces: at ``0.1`` the counts and faces
-    agree but one vertex lands 4.8e-05 away (not traced), and at ``0.05`` two vertices of either
+    agree but one vertex lands 4.8e-05 away, on a lattice edge whose two nodes both lie within
+    1.8e-4 of the level (a near-tangent edge), so the crossing moves about 225 times as far as
+    the field does (a 2.9e-4 step over a 0.066 cell). Ordito's field there is 2e-7 from igl's,
+    but a ``float64`` field would not close it: igl's own distance at the lattice ``float32``
+    ``bounds`` describe (each node 1.2e-7 from igl's) still puts that vertex 2.8e-5 away, and a
+    second one 4.7e-5. Only igl's ``float64`` lattice itself reproduces them (traced on both
+    devices). At ``0.05`` two vertices of either
     mesh are nearer each other than the tolerance, so the nearest-vertex map is not a bijection (6
     faces map wrongly; the counts and every position still agree to 1.9e-05).
     [`resample_uniform`][ordito.reconstruction.resample_uniform] builds this lattice itself under
