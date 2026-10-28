@@ -6409,6 +6409,15 @@
    "readback": 1
   }
  },
+ "benchmarks/test_smoothing.py::test_filter_laplacian_pyvista[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 11,
+   "alloc": 15,
+   "readback": 1,
+   "scan": 2,
+   "sort": 1
+  }
+ },
  "benchmarks/test_smoothing.py::test_filter_mut_dif_laplacian[sphere_small-ordito-cpu-novol]": {
   "counts": {
    "launch": 22,

@@ -183,56 +183,210 @@ def test_filter_laplacian_matches_pymeshlab(
     assert np.allclose(smoothed_wp.numpy(), smoothed_pml, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parity("filter_laplacian_integration", "pyvista")
-@pytest.mark.parametrize("iterations", [1, 3])
-def test_filter_laplacian_matches_pyvista_at_small_relaxation(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], iterations: int
+@pytest.mark.parity("filter_laplacian_pyvista", "pyvista")
+@pytest.mark.parametrize(("lamb", "iterations", "edge_angle"), [(0.5, 10, 15), (0.3, 5, 60)])
+@pytest.mark.parametrize("rim_smoothing", [True, False])
+@pytest.mark.parametrize("mesh_name", [*MESHES, "torus_irregular_holes"])
+def test_filter_laplacian_pyvista_matches_pyvista(
+    request: pytest.FixtureRequest,
+    mesh_name: str,
+    rim_smoothing: bool,
+    lamb: float,
+    iterations: int,
+    edge_angle: int,
 ) -> None:
     """
-    Class C: VTK's smoother is the same umbrella step applied in place, vertex by vertex.
+    Class A: ``method="pyvista"`` is ``vtkSmoothPolyDataFilter`` without feature smoothing.
 
-    ``vtkSmoothPolyDataFilter`` moves each vertex toward the mean of its neighbours by the
-    relaxation factor, reading neighbours it has already moved this pass (Gauss-Seidel, index
-    order); ordito moves all of them at once. The two differ at second order in the factor, so the
-    statistic is the largest position difference over the largest displacement: 0.0040 at
-    ``relaxation_factor=0.01`` and 0.0081 at ``0.02`` on ``sphere_irregular``, both devices and
-    1 or 3 passes -- linear in the factor, the in-place signature, asserted as a ratio. The
-    bound, 0.015, is 3.7x the agreement. Excluded bug class: a wrong stencil. Mutation probe:
-    ordito with ``face_weighted_laplacian`` (MeshLab's weighting) reads 0.070, 4.7x past the bound,
-    and is asserted to fail it. The open fixtures are left out: VTK's rim handling (boundary
-    smoothing on or off) is its own rule, measured several displacements away.
+    VTK moves each vertex in index order toward the mean of its neighbours as they stand (a
+    Gauss-Seidel sweep); a rim vertex slides along its two rim neighbours unless the rim turns
+    there by more than the edge angle, and stays put with boundary smoothing off. The open
+    fixtures pin the rim rule at both settings (``torus_irregular_holes``: several rims), and the
+    two angles move vertices between the sliding and fixed classes. The default simultaneous step
+    is asserted to differ, so the sweep order is what agrees.
     """
-    mesh_tm, mesh_wp = sphere_irregular
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    smoothed_pv = np.asarray(
+        trimesh_to_pyvista(mesh_tm)
+        .smooth(
+            n_iter=iterations,
+            relaxation_factor=lamb,
+            edge_angle=edge_angle,
+            boundary_smoothing=rim_smoothing,
+            feature_smoothing=False,
+            convergence=0.0,
+        )
+        .points
+    )
+    assert np.abs(smoothed_pv - mesh_tm.vertices).max() > 1e-2  # non-vacuity: it moved
     vertices, faces = mesh_wp.points, mesh_wp.indices
+    smoothed_wp = od.smoothing.filter_laplacian(
+        vertices,
+        faces,
+        lamb,
+        iterations,
+        volume_constraint=False,
+        method="pyvista",
+        edge_angle=edge_angle,
+        rim_smoothing=rim_smoothing,
+    )
+    assert np.allclose(smoothed_wp.numpy(), smoothed_pv, rtol=1e-5, atol=1e-5)
+    jacobi_wp = od.smoothing.filter_laplacian(
+        vertices, faces, lamb, iterations, volume_constraint=False
+    )
+    assert not np.allclose(jacobi_wp.numpy(), smoothed_pv, rtol=1e-5, atol=1e-5)
 
-    def relative_gap(relaxation: float, operator: odt.BsrMatrix[wp.float32] | None) -> float:
-        smoothed_pv = np.asarray(
-            trimesh_to_pyvista(mesh_tm)
-            .smooth(
-                n_iter=iterations,
-                relaxation_factor=relaxation,
-                boundary_smoothing=False,
-                feature_smoothing=False,
-                convergence=0.0,
-            )
-            .points
-        )
-        displacement = float(np.abs(smoothed_pv - mesh_tm.vertices).max())
-        assert displacement > 1e-4  # non-vacuity: it moved
-        smoothed_wp = od.smoothing.filter_laplacian(
-            vertices,
-            faces,
-            lamb=relaxation,
-            iterations=iterations,
-            volume_constraint=False,
-            laplacian_operator=operator,
-        )
-        return float(np.abs(smoothed_wp.numpy() - smoothed_pv).max()) / displacement
 
-    gap = relative_gap(0.01, None)
-    assert gap < 0.015
-    assert 1.8 < relative_gap(0.02, None) / gap < 2.2
-    assert relative_gap(0.01, od.laplacian.face_weighted_laplacian(vertices, faces)) > 0.015
+def _glued_sheets(seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Three jittered strips meeting along one seam, numbered and ordered at random.
+
+    Each seam edge carries three faces, so the seam vertices take VTK's crowded-edge rule.
+    """
+    rng = np.random.default_rng(seed)
+    xs = np.linspace(0.0, 1.0, 9)
+    vertices = [np.stack([xs, np.zeros_like(xs), np.zeros_like(xs)], axis=1)]
+    faces: list[tuple[int, int, int]] = []
+    for angle in (0.0, 2.0, 4.1):
+        base = sum(rows.shape[0] for rows in vertices)
+        direction = np.array([0.0, math.cos(angle), math.sin(angle)])
+        for row in (1, 2, 3):
+            vertices.append(vertices[0] + 0.15 * row * direction)
+
+        def index(row: int, i: int, base: int = base) -> int:
+            return i if row == 0 else base + (row - 1) * xs.shape[0] + i
+
+        for row in range(3):
+            for i in range(xs.shape[0] - 1):
+                a, b = index(row, i), index(row, i + 1)
+                c, d = index(row + 1, i), index(row + 1, i + 1)
+                faces += [(a, b, d), (a, d, c)]
+    vertices_np = np.concatenate(vertices)
+    vertices_np = vertices_np + rng.normal(0.0, 0.01, vertices_np.shape)
+    order = rng.permutation(vertices_np.shape[0])
+    faces_np = np.argsort(order)[np.asarray(faces)][rng.permutation(len(faces))]
+    return vertices_np[order], faces_np.astype(np.int32)
+
+
+@pytest.mark.parity("filter_laplacian_pyvista", "pyvista")
+@pytest.mark.parametrize("edge_angle", [15, 60])
+@pytest.mark.parametrize("rim_smoothing", [True, False])
+def test_filter_laplacian_pyvista_slides_along_crowded_edges(
+    device: str, rim_smoothing: bool, edge_angle: int
+) -> None:
+    """
+    Class A: VTK slides a vertex on two crowded edges along them, rims or no rim smoothing.
+
+    ``vtkSmoothPolyDataFilter`` treats an edge of three or more faces as a feature edge, like a
+    rim edge but untouched by ``boundary_smoothing``, where ``vtkWindowedSincPolyDataFilter`` fixes
+    its vertices. Three strips glued along a seam put seven vertices on two crowded edges each and
+    the two seam ends on one crowded and one rim edge; the seam's interior is asserted to move.
+    """
+    vertices_np, faces_np = _glued_sheets(seed=0)
+    mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+    smoothed_pv = np.asarray(
+        trimesh_to_pyvista(mesh_tm)
+        .smooth(
+            n_iter=10,
+            relaxation_factor=0.4,
+            edge_angle=edge_angle,
+            boundary_smoothing=rim_smoothing,
+            feature_smoothing=False,
+            convergence=0.0,
+        )
+        .points
+    )
+    edges_tm = mesh_tm.edges_sorted
+    _, inverse, uses = np.unique(edges_tm, axis=0, return_inverse=True, return_counts=True)
+    seam = np.unique(edges_tm[uses[inverse.ravel()] == 3])
+    assert seam.shape[0] == 9
+    assert np.abs(smoothed_pv[seam] - vertices_np[seam]).max() > 1e-3  # the seam slides
+
+    vertices, faces = numpy_to_warp(vertices_np, faces_np, device)
+    smoothed_wp = od.smoothing.filter_laplacian(
+        vertices,
+        faces,
+        0.4,
+        10,
+        volume_constraint=False,
+        method="pyvista",
+        edge_angle=edge_angle,
+        rim_smoothing=rim_smoothing,
+    )
+    assert np.allclose(smoothed_wp.numpy(), smoothed_pv, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("sweeps", [1, 10])
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_filter_laplacian_pyvista_waves_equal_the_serial_sweep(
+    request: pytest.FixtureRequest, mesh_name: str, sweeps: int
+) -> None:
+    """
+    Ordito against ordito: the CUDA wavefront writes the serial sweep's bits.
+
+    The wavefront and the one-thread loop are two schedules of the same updates, and only the
+    serial one has the reference to answer to directly (it is the CPU path). ``saddle_graded`` is
+    numbered row by row, so its waves run past one batch and are read more than once;
+    ``sphere_irregular``'s numbering is scrambled.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    stencil = od.smoothing._umbrella_stencils(  # pyright: ignore[reportPrivateUsage]
+        vertices, faces, 15.0, True, crowded_slides=True
+    )
+    waves = od.array.astype(vertices, wp.vec3d)
+    serial = od.array.astype(vertices, wp.vec3d)
+    od.smoothing._gauss_seidel_sweeps(  # pyright: ignore[reportPrivateUsage]
+        waves, stencil, wp.float64(0.5), sweeps
+    )
+    wp.launch(
+        kernel_smoothing.gauss_seidel_sweeps,
+        dim=1,
+        inputs=[serial, *stencil, wp.float64(0.5), sweeps],
+        device=vertices.device,
+    )
+    assert np.abs(serial.numpy() - vertices.numpy()).max() > 1e-3  # non-vacuity: it moved
+    assert np.array_equal(waves.numpy(), serial.numpy())
+
+
+def test_filter_laplacian_pyvista_keeps_the_volume(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: VTK has no volume constraint; the rescale after each sweep holds it.
+
+    Without the constraint the sweep shrinks the sphere by several per cent, which the assert on
+    the free run excludes.
+    """
+    _, mesh_wp = sphere_irregular
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    volume = od.measures.volume(vertices, faces)
+    free = od.smoothing.filter_laplacian(vertices, faces, volume_constraint=False, method="pyvista")
+    kept = od.smoothing.filter_laplacian(vertices, faces, method="pyvista")
+    assert od.measures.volume(free, faces) < 0.97 * volume
+    assert math.isclose(od.measures.volume(kept, faces), volume, rel_tol=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("case", "match"),
+    [("unknown", "method must be"), ("implicit", "explicit"), ("operator", "laplacian_operator")],
+)
+def test_filter_laplacian_rejects_unsupported_methods(
+    icosahedron: tuple[tm.Trimesh, wp.Mesh], case: str, match: str
+) -> None:
+    """Not a parity assert: an unknown method, or one the pyvista sweep cannot run, raises."""
+    _, mesh_wp = icosahedron
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    kwargs: dict[str, Any] = {
+        "unknown": {"method": "vtk"},
+        "implicit": {"method": "pyvista", "implicit_time_integration": True},
+        "operator": {
+            "method": "pyvista",
+            "laplacian_operator": od.laplacian.laplacian(vertices, faces),
+        },
+    }[case]
+    with pytest.raises(ValueError, match=match):
+        od.smoothing.filter_laplacian(vertices, faces, **kwargs)
 
 
 @pytest.mark.parametrize(("iterations", "force"), [(1, 0.5), (10, 0.5), (5, 0.3)])

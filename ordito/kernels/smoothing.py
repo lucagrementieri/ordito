@@ -5,6 +5,7 @@ import warp as wp
 from ordito.kernels.algorithms.bfs import ball_row_bounds
 from ordito.kernels.array import (
     OverloadTable,
+    append_slot,
     greater,
     inverse_or_one,
     mask_and_not,
@@ -2982,6 +2983,7 @@ STENCIL_MAX_CORNERS = wp.int32(255)
 def tally_stencil_edges(
     edges: wp.array2d[wp.int32],
     uses: wp.array[wp.int32],
+    crowded_slides: wp.int32,
     out_uses: wp.array[wp.int32],
     out_rim_counts: wp.array[wp.int32],
     out_crowded_counts: wp.array[wp.int32],
@@ -2990,19 +2992,34 @@ def tally_stencil_edges(
     # Per unique edge, into both endpoints: the face corners it carries (``out_uses``, twice a
     # vertex's incident faces), whether it is a rim edge (one face; the first two land in
     # ``out_rim_pairs``, and a third makes the vertex fixed whatever they hold) and whether it is
-    # crowded (three or more faces). Integer atomics; every output arrives zeroed.
+    # crowded (three or more faces). With ``crowded_slides`` a crowded edge also takes a slot in the
+    # pair and in ``out_rim_counts``, which then counts both kinds (``classify_stencil_vertices``).
+    # Integer atomics; every output arrives zeroed.
     e = wp.int32(wp.tid())
     m = uses[e]
     for side in range(2):
         v = edges[e, side]
         other = edges[e, 1 - side]
         wp.atomic_add(out_uses, v, m)
-        if m == 1:
+        if m > 2:
+            wp.atomic_add(out_crowded_counts, v, 1)
+        if m == 1 or (m > 2 and crowded_slides != 0):
             slot = wp.atomic_add(out_rim_counts, v, 1)
             if slot < 2:
                 out_rim_pairs[v][slot] = other
-        elif m > 2:
-            wp.atomic_add(out_crowded_counts, v, 1)
+
+
+@wp.func
+def rim_pair_stencil(
+    vertices: wp.array[wp.vec3], v: wp.int32, pair: wp.vec2i, cos_edge_angle: wp.float64
+) -> wp.int32:
+    # ``STENCIL_RIM`` where the path through the pair turns at ``v`` by at most the edge angle,
+    # else ``STENCIL_FIXED``; symmetric in the pair's order. A zero-length edge normalizes to zero
+    # and is fixed, as VTK's ``vtkMath::Normalize`` leaves it.
+    p = wp.vec3d(vertices[v])
+    incoming = wp.normalize(p - wp.vec3d(vertices[pair[0]]))
+    outgoing = wp.normalize(wp.vec3d(vertices[pair[1]]) - p)
+    return wp.where(wp.dot(incoming, outgoing) >= cos_edge_angle, STENCIL_RIM, STENCIL_FIXED)
 
 
 @wp.kernel
@@ -3013,27 +3030,34 @@ def classify_stencil_vertices(
     crowded_counts: wp.array[wp.int32],
     rim_pairs: wp.array[wp.vec2i],
     rim_smoothing: wp.int32,
+    crowded_slides: wp.int32,
     cos_edge_angle: wp.float64,
     out_classes: wp.array[wp.int32],
 ) -> None:
-    # VTK's stencil analysis without feature edges (``vtkWindowedSincPolyDataFilter``'s
-    # ``BuildO1Stencil`` with rim smoothing, ``BuildO2Stencil`` without): an unreferenced vertex, a
-    # hub of ``STENCIL_MAX_CORNERS`` faces or more, and any vertex on a crowded edge are fixed; a
-    # vertex with no rim edge averages its ring; one with exactly two averages them, unless the rim
-    # turns there by more than the edge angle; any other rim count is fixed.
+    # VTK's stencil analyses without feature edges. They differ by ``crowded_slides`` alone.
+    # Off, ``vtkWindowedSincPolyDataFilter``'s (``BuildO1Stencil`` with rim smoothing,
+    # ``BuildO2Stencil`` without): an unreferenced vertex, a hub of ``STENCIL_MAX_CORNERS`` faces
+    # or more, and any vertex on a crowded edge are fixed; a vertex with no rim edge averages its
+    # ring; one with exactly two averages them, unless the rim turns there by more than the edge
+    # angle; any other rim count is fixed. On, ``vtkSmoothPolyDataFilter``'s: a crowded edge is a
+    # feature edge, counted with the rim edges (``rim_counts`` holds both), so a vertex on two of
+    # them slides along them under the same turn test; rim smoothing off fixes only a vertex with a
+    # rim edge among them, and there is no hub bound.
     v = wp.int32(wp.tid())
     stencil = STENCIL_FIXED
-    rims = rim_counts[v]
-    if uses[v] > 0 and uses[v] < 2 * STENCIL_MAX_CORNERS and crowded_counts[v] == 0:
-        if rims == 0:
+    special = rim_counts[v]
+    crowded = crowded_counts[v]
+    if crowded_slides != 0:
+        rims = special - crowded
+        fits = uses[v] > 0
+    else:
+        rims = special
+        fits = uses[v] > 0 and uses[v] < 2 * STENCIL_MAX_CORNERS and crowded == 0
+    if fits:
+        if special == 0:
             stencil = STENCIL_RING
-        elif rims == 2 and rim_smoothing != 0:
-            pair = rim_pairs[v]
-            p = wp.vec3d(vertices[v])
-            incoming = wp.normalize(p - wp.vec3d(vertices[pair[0]]))
-            outgoing = wp.normalize(wp.vec3d(vertices[pair[1]]) - p)
-            if wp.dot(incoming, outgoing) >= cos_edge_angle:
-                stencil = STENCIL_RIM
+        elif special == 2 and (rim_smoothing != 0 or rims == 0):
+            stencil = rim_pair_stencil(vertices, v, rim_pairs[v], cos_edge_angle)
     out_classes[v] = stencil
 
 
@@ -3104,6 +3128,110 @@ def windowed_sinc_pass(
     x2 = x1[v] - x0[v] + x1[v] - delta
     out_x2[v] = x2
     out_sum[v] = out_sum[v] + x2 * c
+
+
+# ---------------------------------------------------------------------------
+# In-place (Gauss-Seidel) umbrella smoothing: VTK's ``vtkSmoothPolyDataFilter``
+# ---------------------------------------------------------------------------
+#
+# Each sweep moves the vertices in index order, each by ``factor`` toward the mean of its stencil
+# as it stands, so a vertex reads its lower-numbered neighbours already moved this sweep and its
+# higher-numbered ones as the last sweep left them. ``gauss_seidel_sweeps`` runs that order on one
+# thread (the CPU device); ``gauss_seidel_wave`` runs it as a dataflow wavefront, one launch a
+# wave, and computes the same values bit for bit, since every update reads the same versions of the
+# same positions. The two kernels differ only by the schedule; the update is ``relax_in_place``.
+
+
+@wp.func
+def relax_in_place(
+    x: wp.array[wp.vec3d],
+    v: wp.int32,
+    factor: wp.float64,
+    neighbors: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    classes: wp.array[wp.int32],
+    rim_pairs: wp.array[wp.vec2i],
+) -> None:
+    # ``x_v += factor (mean(x_stencil) - x_v)``, read from and written to the live buffer.
+    x[v] = x[v] - stencil_laplacian(x, v, neighbors, offsets, classes, rim_pairs) * factor
+
+
+@wp.kernel
+def gauss_seidel_sweeps(
+    x: wp.array[wp.vec3d],
+    neighbors: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    classes: wp.array[wp.int32],
+    rim_pairs: wp.array[wp.vec2i],
+    factor: wp.float64,
+    sweeps: wp.int32,
+) -> None:
+    # Every sweep on one thread (``dim=1``), in index order.
+    n = x.shape[0]
+    for _sweep in range(sweeps):
+        for v in range(n):
+            if classes[v] != STENCIL_FIXED:
+                relax_in_place(x, v, factor, neighbors, offsets, classes, rim_pairs)
+
+
+@wp.kernel
+def gauss_seidel_wave_start(
+    classes: wp.array[wp.int32],
+    sweeps: wp.int32,
+    out_counts: wp.array[wp.int32],
+    out_done: wp.array[wp.int32],
+) -> None:
+    # Each vertex's completed sweep count before the first wave: a fixed vertex never moves, so it
+    # starts done and is counted into ``out_done`` (arrives zeroed), which reaches ``n`` when the
+    # last vertex finishes its last sweep.
+    v = wp.int32(wp.tid())
+    if classes[v] == STENCIL_FIXED:
+        out_counts[v] = sweeps
+        append_slot(out_done, 0)
+    else:
+        out_counts[v] = 0
+
+
+@wp.kernel
+def gauss_seidel_wave(
+    x: wp.array[wp.vec3d],
+    counts: wp.array[wp.int32],
+    neighbors: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    classes: wp.array[wp.int32],
+    rim_pairs: wp.array[wp.vec2i],
+    factor: wp.float64,
+    sweeps: wp.int32,
+    done: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # One wave. A vertex that has completed ``c`` sweeps runs sweep ``c + 1`` once every moving
+    # 1-ring neighbour numbered below it has completed ``c + 1`` and every one above it exactly
+    # ``c``: the versions the serial order reads, and the only ones a neighbour can hold without
+    # waiting on this vertex. Two neighbours are never both ready (each condition contradicts the
+    # other's), so a ready vertex reads positions no thread writes in this launch; the counts are
+    # read from ``counts`` and written to ``out_counts`` for the same reason. A fixed neighbour is
+    # never written and is skipped. A vertex finishing its last sweep is counted into ``done``;
+    # once every vertex has, a wave changes nothing, so the caller may overrun the fixpoint.
+    v = wp.int32(wp.tid())
+    c = counts[v]
+    if c < sweeps:
+        ready = wp.int32(1)
+        start = offsets[v]
+        stop = offsets[v + 1]
+        for k in range(start, stop):
+            u = neighbors[k]
+            if classes[u] != STENCIL_FIXED:
+                want = wp.where(u < v, c + 1, c)
+                if counts[u] != want:
+                    ready = 0
+                    break
+        if ready != 0:
+            relax_in_place(x, v, factor, neighbors, offsets, classes, rim_pairs)
+            c += 1
+            if c == sweeps:
+                append_slot(done, 0)
+    out_counts[v] = c
 
 
 # The concrete handles of the generic pass kernels above, keyed by the dtype of the positions read

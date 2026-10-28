@@ -897,6 +897,7 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
 - **Refuted, do not re-propose:** a single-block BFS drain, a one-block hole-fill DP and merged-level blocked interval DPs (the grid must stay full); voxel aggregation for multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches.
 - **Producer-consumer fusion:** always fuse consecutive same-`dim` launches where the consumer reads the producer only at its own index; every pair measured was faster. Price the fused region, not the call containing it, and cross-check kernel and allocation counts. Also fold a map into its consumer, merge two launches of one kernel into a wider one, and walk-and-reduce neighbour lists in one thread per query. A fusion that changes a slot or box index needs a debug-mode run. Inline single-caller helpers it leaves behind; fold-on-read loses on dependent chases.
 - **Blocked wavefront:** a 2-D DP with local directional dependencies and small per-step work wins as one block per tile and one launch per tile-diagonal, with `wp.tile_sum` as the barrier. It loses where levels are already wide (the fill DP). Test it above 32 lanes and pin it byte for byte to the simple schedule.
+- **Serial-order sweeps as a dataflow wavefront:** an in-place sweep in index order (Gauss-Seidel, `filter_laplacian(method="pyvista")`) runs on CUDA as one launch a wave over all vertices: a vertex with `c` sweeps done runs the next once its lower-index ring neighbours have `c + 1` and its higher-index ones exactly `c`. Two neighbours are never both ready, so positions update in place race-free with only the counts ping-ponged, and the result equals the serial loop bit for bit. The wave count is the numbering's critical path: 13-16 a sweep scrambled; a scan numbering's longest increasing neighbour path plus about 17 a sweep (bunny 255 / 977 waves at 1 / 10 sweeps, dragon 1 132 / 1 301). 10 sweeps, new/VTK: icosphere(6) 1.4 / 54 ms, bunny 8.3 / 46, dragon 21 / 751; one GPU thread would be seconds. Waves go in batches of `16 x sweeps` (at least 128) a readback, so a small mesh pays the batch (sphere_small 1.35 vs VTK 1.56 ms, 160 launches for ~60 waves); graph-capturing the batch is the next lever, unpriced. The CPU device runs the serial loop (waves do `waves x n` work).
 - **Register-blocking outer items:** giving each thread W outer items from registers wins for `(item, slice)` reductions bound by streaming the cloud once per item. Choose W per launch so the grid keeps about `1 << 17` threads; a fixed W loses on small inputs.
 - **Gather-form fusion** (recomputing a neighbour's per-face value from positions instead of reading a table) wins below ~100 k faces and on grid-ordered meshes but loses 1.7-2.1x on scrambled ~1 M-face meshes (`cotmatrix`, `filter_normals`). Price it on a scrambled large mesh.
 - **Independent per-item iterations collapse into one in-thread loop:** a per-round launch plus convergence readback over items that converge independently (`max_tangent_sphere`) became one kernel, 1.1-1.2x device time and no per-round sync. Keep that loop out of a kernel holding another long walk (1.1-1.6x, registers).
@@ -1151,8 +1152,8 @@ it was read for the rule only, and each kernel implements the rule, not the sour
   `annulus` / pymeshlab is Class B: MeshLab's disk is ordito's top cap, vertices to 3e-7, each
   quad split along the other diagonal. `fill_min_weight` / trimesh: trimesh fills only 3- and
   4-edge holes; a triangle hole is Class A, quads Class B through the same quad merge. Class C:
-  VTK's in-place smoother at `relaxation_factor=0.01` (gap / displacement 0.0040, linear in the
-  factor, bound 0.015, the face-weighted stencil reads 0.070); MeshLab's pointwise curvatures
+  VTK's in-place smoother against the simultaneous step (since Class A through
+  `filter_laplacian(method="pyvista")`, `A rule the reference adds`); MeshLab's pointwise curvatures
   against the ball measure over `pi r^2` on a 64 x 32 exact torus at two mean edges (median gap
   1.5 % of the range, bound 5 %; the 400-point `torus_round` is too coarse, 3-5x margin); MeshLib's
   distance volume on an `icosphere(5)` cloud at depth 6, outer shell after origin plus half a voxel
@@ -1355,9 +1356,17 @@ the reference's grid placement, sign rule and post-processing as an option; igl'
 - MeshLab's pointwise curvature: closed by `curvature.vertex_curvatures` (Class B, its `float`
   rounding; `Second pass over the non-A pairs`). The ball measures `discrete_gaussian_curvature` /
   `discrete_mean_curvature` keep their Class C comparison with it.
-- `filter_laplacian` against `vtkSmoothPolyDataFilter`: VTK updates in place, vertex by vertex
-  (Gauss-Seidel in index order), so its answer depends on that order; reproducing it is a serial
-  sweep (Class C at `relaxation_factor=0.01`).
+- `filter_laplacian` against `vtkSmoothPolyDataFilter`: closed (2026-10-28) by
+  `filter_laplacian(method="pyvista")`, VTK 9.7's rule read from its source: Gauss-Seidel in
+  index order; a vertex on rim or crowded (3+ face) edges averages only its neighbours along
+  them, fixed unless exactly two, the path through them turns by at most `edge_angle`, and (rim
+  only) `rim_smoothing`; unlike the windowed-sinc filter, crowded edges slide and there is no hub
+  bound (`kernels/smoothing.classify_stencil_vertices`, `crowded_slides`). Class A to 2.4e-7
+  (CUDA) / 6e-8 (CPU) on both default fixtures and `torus_irregular_holes`, both rim settings,
+  and on three strips glued along a seam. Feature-edge smoothing and VTK's convergence test
+  (which compares the norm of the neighbours' coordinate *sum*, not a displacement, so at
+  `convergence=0` it never stops early) are not ported. Group `filter_laplacian_pyvista` (the
+  pyvista row left `filter_laplacian_integration`). The CUDA schedule is a §14 wavefront.
 
 **MeshLib's "nice" operations (Class C, surface or volume statistics).** `fill_smooth` and
 `refill_region`'s refinement against `fillHoleNicely` / `patchMesh`, `stitch_smooth` against

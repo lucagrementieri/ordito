@@ -193,7 +193,7 @@ def test_filter_mut_dif_laplacian(bench_case: BenchCase, volume_constraint: bool
 
 @pytest.mark.benchmark(group="filter_laplacian_integration")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("ordito", "pymeshlab", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "meshlib")
 @pytest.mark.parametrize("implicit", [False, True], ids=["explicit", "implicit"])
 def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> None:
     """
@@ -227,22 +227,6 @@ def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> 
 
         assert bench_case.run(relax_ml) > 0
         return
-    if bench_case.kind == "pyvista":
-        if implicit:
-            pytest.skip("vtkSmoothPolyDataFilter is explicit only: no backward-Euler variant")
-        # The same umbrella step applied in place, vertex by vertex (Gauss-Seidel): a serial
-        # order, compared at small relaxation in ``tests/test_smoothing.py``.
-        mesh_pv = bench_case.mesh_pv
-        smoothed_pv = bench_case.run(
-            lambda: mesh_pv.smooth(
-                n_iter=_ITERATIONS,
-                relaxation_factor=1.0,
-                boundary_smoothing=False,
-                feature_smoothing=False,
-            )
-        )
-        assert smoothed_pv.n_points == bench_case.n_vertices
-        return
     if bench_case.kind == "pymeshlab":
         if implicit:
             pytest.skip("MeshLab has no implicit / backward-Euler Laplacian smoother")
@@ -263,6 +247,39 @@ def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> 
             implicit_time_integration=implicit,
             volume_constraint=False,
             laplacian_operator=operator,
+        )
+    )
+    assert result.shape == vertices.shape
+
+
+@pytest.mark.benchmark(group="filter_laplacian_pyvista")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "pyvista")
+def test_filter_laplacian_pyvista(bench_case: BenchCase) -> None:
+    """
+    VTK's in-place sweep: one thread in index order there, a dataflow wavefront on CUDA here.
+
+    The wave count follows the numbering, not the size: about 15 waves a sweep on a scrambled
+    numbering, a scan's longest increasing neighbour path on top (bunny 977, dragon 1 301 at 10
+    sweeps), each a launch; the CPU device runs VTK's serial loop. ``relaxation_factor=0.5`` is
+    ordito's default ``lamb``, so both rows compute the same positions.
+    """
+    if bench_case.kind == "pyvista":
+        mesh_pv = bench_case.mesh_pv
+        smoothed_pv = bench_case.run(
+            lambda: mesh_pv.smooth(
+                n_iter=_ITERATIONS,
+                relaxation_factor=0.5,
+                boundary_smoothing=True,
+                feature_smoothing=False,
+            )
+        )
+        assert smoothed_pv.n_points == bench_case.n_vertices
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    result = bench_case.run(
+        lambda: od.smoothing.filter_laplacian(
+            vertices, faces, iterations=_ITERATIONS, volume_constraint=False, method="pyvista"
         )
     )
     assert result.shape == vertices.shape
