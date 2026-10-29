@@ -1307,8 +1307,9 @@ as it stands; an upgrade means adding the reference's own algorithm as an option
 
 - `heat_geodesic` against `igl.exact_geodesic` (the heat method's own error), MeshLib's
   `computeSurfaceDistances` (fast marching) and pyvista's Dijkstra edge distance (a two-sided
-  bound). MeshLib's front is now ported (`Closed 2026-10-28: fast marching as parallel rounds`);
-  MeshLab's and potpourri3d's fronts remain upgrades.
+  bound). MeshLib's and MeshLab's fronts are ported (`Closed 2026-10-28: fast marching as
+  parallel rounds`, `Closed 2026-10-29: MeshLab's geodesic front`); potpourri3d's remains an
+  upgrade.
 - `geodesic_path`: an inequality against `igl.exact_geodesic` and a per-cent of potpourri3d's
   `EdgeFlipGeodesicSolver` on a sphere; an upgrade is an edge-flip shortening option.
 - `trace_from_vertex` (a trimesh distance bound, no oracle); `shorten_loop` against MeshLib's
@@ -1420,6 +1421,53 @@ vertices, 1.2x slower at 10 k (launch-bound). The front is a poor geodesic on ne
 the range from `igl.exact_geodesic` on `sphere_irregular`, vcg's front 4.5 %): it is a
 reproduction, not a better distance. A frontier-restricted pass (only faces touching last round's changes) is the
 unpriced lever for large meshes.
+
+### Closed 2026-10-29: MeshLab's geodesic front
+
+`heat.fast_marching_distance(method="meshlab")` is vcg's `Geodesic::Visit` (MeshLab's
+`compute_scalar_by_geodesic_distance_from_given_point` / `_from_selection` filters): the edge offer
+`d(curr) + |pw curr|`, and across a face the straight line from the virtual source the two
+corners' distances place in the unfolded plane (`GeoDistance`'s Heron half-angles; the edge from
+whichever corner the line would leave past), used only where both corners share a source label and
+pass the `1e-4f` relative triangle-inequality tests. Ported with the reference's NaN behaviour (a
+cosine outside `[-1, 1]` fails its test; `std::min(1.0, NaN)` is `1`), in `float64` (pymeshlab is
+`double`: a serial Python port reproduces it to 1e-15 in `float64`, 6e-6 of the range in
+`float32`), returned as `float32`. Same Jacobi round loop as MeshLib's front
+(`kernels/heat.unfolding_pass`, exact `float64` `atomic_min`).
+
+- **One source is Class A**: 4.8e-8 of the range (the `float32` return) on `sphere_irregular`,
+  `saddle_graded`, `torus_irregular`, `torus_irregular_holes`, from two sources each; CPU and CUDA
+  identical. The fixpoint relaxes both orientations of each face, the serial front only the
+  last-popped corner's; measured equal.
+- **Several sources are Class C, by the reference's own order.** vcg labels a vertex with the
+  source of whichever front lowered it last, in heap pop order, and unfolds only across same-label
+  corners; a serial port popping ties differently is 1.3e-3 of the range off MeshLab on
+  `sphere_irregular`. Rounds cannot replay the order. Measured alternatives, worst / vertices
+  above 1e-6 of the range on the four fixtures: monotone labelled rounds alone 4.1e-2 / up to 165
+  (stale same-label offers survive the min); recomputing every distance each round oscillated on
+  `torus_irregular_holes`; frozen labels from per-source Voronoi settled on a different, worse
+  fixpoint (2.5e-2 on the sphere). Adopted: labelled rounds, then settle with labels frozen and
+  relabel each vertex by its smallest offer's origin until no label moves (3 passes at most
+  measured, capped at 16; a vertex no settled offer reproduces keeps its label): worst 1.75e-2
+  (`saddle_graded`), median at most 1.7e-8. The fixpoint is not unique; this start lands nearest.
+- **The pass is a `float64` latency chain; four changes took it 11-15x** (device time a round,
+  one source, plain-loop probe on icospheres 4 / 5 / 6, against the default front's 6.1 / 3.7 /
+  3.8 µs): the port as written 85 / 87 / 114 µs; no transcendentals (both branch tests as cosine
+  comparisons, `cos(alpha) < 1 - 2q^2`, the line from composed cosines and sines; continuous
+  across each branch boundary, so a rounding flip moves nothing) 53 / 53 / 76; skipping faces none
+  of whose corners the last round lowered (a per-vertex round stamp; a stamp read mid-write only
+  adds a face) 40 / 40 / 46, flat in size, so the active threads' chain set the time; edge
+  lengths and interior cosines shared by a face's six offers 17 / 18 / 19; a thread per corner
+  10 / 11 / 13; a thread per (corner, origin) pair 7.0 / 7.6 / 11.3; the face geometry formed
+  once before the rounds 5.3 / 5.6 / 7.5. Round counts did not move (108 / 204 / 396). The
+  tests that choose edge or unfold (source labels, the `1e-4` triangle tests) still read vcg's
+  quantities exactly; agreement with pymeshlab is unchanged on every fixture and source count.
+  Harness, CUDA, min ms over five runs on a shared GPU: sphere_small / med / large 1.09 / 4.6 /
+  12.3 (was 10.5 / 104 / 343, measured under contention), the default front 0.77 / 2.3 / 5.2,
+  pymeshlab 5.0 / 65 / 352. CPU device `icosphere(5)` 415 -> 100 ms. Census: CUDA 6 launches
+  (one captured graph), CPU 112, sphere_small. Not tried: a `float32` filter ahead of the
+  `float64` offer (a plain `float32` port sits 6.2e-6 of the range from MeshLab on
+  `saddle_graded`, too near the 1e-5 bound).
 
 ### Open items from the 2026-10-23 uncapped sweep: ordito on large meshes
 

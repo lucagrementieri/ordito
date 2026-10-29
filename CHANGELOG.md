@@ -26,7 +26,9 @@ from the one matching its tag — so prose sections do not belong between them.
 
 - `heat.fast_marching_distance`: geodesic distance by a front marched across the faces, as
   MeshLib's `computeSurfaceDistances` computes it with no cap on re-opened vertices, solved in
-  parallel rounds.
+  parallel rounds. `method="meshlab"` is MeshLab's geodesic front instead (vcg's face unfolding,
+  in `float64`), equal to `compute_scalar_by_geodesic_distance_from_given_point_per_vertex` from one
+  source.
 - `curvature.vertex_curvatures`: pointwise mean and Gaussian curvature (Meyer et al.), as MeshLab's
   `compute_scalar_by_discrete_curvature_per_vertex` forms them.
 - `curvature.principal_curvature(method="pyvista")`: VTK's 1-ring extreme curvatures, equal to

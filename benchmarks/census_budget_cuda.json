@@ -2211,6 +2211,16 @@
    "d2h": 1
   }
  },
+ "benchmarks/test_heat.py::test_fast_marching_distance_meshlab[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 8,
+   "memset": 3,
+   "d2d": 2,
+   "h2d": 1,
+   "d2h": 1
+  }
+ },
  "benchmarks/test_heat.py::test_heat_geodesic[sphere_small-ordito-cuda-amortized]": {
   "counts": {
    "launch": 4,

@@ -64,7 +64,7 @@ from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device, run_device_loop
 from ordito.cholesky import SparseCholesky, held_nbytes
 from ordito.config import is_deterministic
-from ordito.constants import TILE_1D
+from ordito.constants import INT64_MAX, TILE_1D
 from ordito.halfedge import vertex_one_rings
 from ordito.kernels import array as kernel_array
 from ordito.kernels import heat as kernel_heat
@@ -526,12 +526,17 @@ def _heat_geodesic(
     return distance
 
 
+FastMarchingMethod = Literal["meshlib", "meshlab"]
+"""The fronts [`fast_marching_distance`][ordito.heat.fast_marching_distance] reproduces:
+the edge-and-plane-wave front (``"meshlib"``) or the face-unfolding one (``"meshlab"``)."""
+
+
 def fast_marching_distance(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     sources: wp.array[wp.int32],
     *,
-    method: Literal["meshlib"] = "meshlib",
+    method: FastMarchingMethod = "meshlib",
 ) -> wp.array[wp.float32]:
     """
     Geodesic distance to the nearest source vertex, by a front marched across the faces.
@@ -546,7 +551,7 @@ def fast_marching_distance(
     Unlike [`heat_geodesic`][ordito.heat.heat_geodesic] there is no linear solve and no diffusion
     time: the field is a first-order approximation of the geodesic distance, within about a per
     cent on well-shaped meshes and coarser across needles and obtuse faces, where the face update
-    is rejected and the front falls back to edges. It runs in ``float32``.
+    is rejected and the front falls back to edges. The default front runs in ``float32``.
 
     ``method`` names whose rules the front reproduces:
 
@@ -555,6 +560,17 @@ def fast_marching_distance(
       origin. Allowed to re-open a vertex 255 times, its serial front reaches this fixpoint and the
       two agree to rounding. At its default of three re-openings a vertex is left where its queue
       happened to stop, up to a few per cent of the range on irregular meshes.
+    - ``"meshlab"``: that library's geodesic front (its per-vertex geodesic distance filters). An
+      edge offer as above, and across a face the straight line from the virtual source that the
+      two corners' distances place in the face's unfolded plane, used only where the corners were
+      reached from the same source and their distances form a triangle with the edge between them;
+      where the line would leave the face past a corner, the offer is that corner's edge. Computed
+      in ``float64``, as the library does, and narrowed on return. From one source its serial front
+      reaches this fixpoint and the two agree to rounding. From several, the library labels each
+      vertex with the source whose front reached it first, which follows its queue's order; the
+      call instead settles on labels each vertex's smallest offer confirms, which differ from the
+      library's only next to where two sources' regions meet, by up to a few per cent of the range
+      there.
 
     Parameters
     ----------
@@ -565,7 +581,7 @@ def fast_marching_distance(
     sources
         ``(n_sources,)`` source vertex indices, at distance zero.
     method
-        ``"meshlib"`` (the only one): whose front to reproduce (above).
+        ``"meshlib"`` or ``"meshlab"``: whose front to reproduce (above).
 
     Returns
     -------
@@ -577,7 +593,7 @@ def fast_marching_distance(
     ------
     ValueError
         If an entry of ``sources`` is not a vertex index in ``[0, n_vertices)``, or ``method`` is
-        not ``"meshlib"``.
+        not ``"meshlib"`` or ``"meshlab"``.
     RuntimeError
         If ``vertices``, ``faces`` and ``sources`` are not all on one device.
 
@@ -587,7 +603,8 @@ def fast_marching_distance(
     is the same on both devices and under any thread order. A round carries the front about one ring
     further, so the number of rounds is about the mesh's diameter in edges, plus the rounds a face
     update takes to undercut an edge path already laid. On CUDA the rounds run as one conditional
-    graph, with no readback between them.
+    graph, with no readback between them. ``"meshlab"`` from several sources settles the rounds
+    again for each relabelling, a few times, with one readback each.
 
     See Also
     --------
@@ -614,8 +631,10 @@ def fast_marching_distance(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, sources=sources)
-    if method != "meshlib":
-        raise ValueError(f"method must be 'meshlib', got {method!r}")
+    if method not in ("meshlib", "meshlab"):
+        raise ValueError(f"method must be 'meshlib' or 'meshlab', got {method!r}")
+    if method == "meshlab":
+        return _unfolding_front(vertices, faces, sources)
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
@@ -658,6 +677,152 @@ def fast_marching_distance(
 
     run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), front_round)
     return labels
+
+
+def _unfolding_front(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], sources: wp.array[wp.int32]
+) -> wp.array[wp.float32]:
+    # ``fast_marching_distance(method="meshlab")``: the round loop over the unfolding offer
+    # (``kernels/heat.unfolding_pass``), in ``float64`` and narrowed at the end. One source needs
+    # no labels, and its fixpoint is the serial front's answer.
+    #
+    # With several sources an offer unfolds only between corners of one source, and the serial
+    # front's labels follow its pop order, which rounds cannot replay. The labelled rounds
+    # (``unfolding_sources_pass`` after each pass) give a first labelling; then the distances are
+    # re-settled from the seeds with the labels frozen, each vertex is relabelled by the origin of
+    # its smallest offer, and the two repeat until no label moves: a fixpoint of both. The fixpoint
+    # depends on the start (several exist), and this start lands nearest the serial front's.
+    device = vertices.device
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
+    labels = _launch.full(n_vertices, math.inf, dtype=wp.float64, device=device)
+    if sources.size == 0:
+        return od.array.astype(labels, wp.float32)
+    several = sources.size > 1
+    keys = _launch.full(n_vertices if several else 0, INT64_MAX, dtype=wp.int64, device=device)
+    invalid = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_heat.seed_unfolding_sources,
+        dim=sources.size,
+        inputs=[sources],
+        outputs=[labels, keys, invalid],
+        device=device,
+    )
+    _require_indices_in_range(invalid, n_vertices, "fast_marching_distance", "sources")
+    if n_faces == 0:
+        return od.array.astype(labels, wp.float32)
+    lengths = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
+    cosines = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
+    _launch.launch(
+        kernel_heat.unfolding_face_geometry,
+        dim=n_faces,
+        inputs=[vertices, faces],
+        outputs=[lengths, cosines],
+        device=device,
+    )
+    geometry = (faces, lengths, cosines)
+    if not several:
+        _unfolding_rounds(geometry, sources, labels, keys, labelled=False)
+        return od.array.astype(labels, wp.float32)
+
+    _unfolding_rounds(geometry, sources, labels, keys, labelled=True)
+    seed_keys = _launch.full(n_vertices, INT64_MAX, dtype=wp.int64, device=device)
+    seeded = _launch.full(n_vertices, math.inf, dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_heat.seed_unfolding_sources,
+        dim=sources.size,
+        inputs=[sources],
+        outputs=[seeded, seed_keys, invalid],
+        device=device,
+    )
+    relabelled = _launch.empty(n_vertices, dtype=wp.int64, device=device)
+    changed = _launch.empty(1, dtype=wp.int32, device=device)
+    for _ in range(_UNFOLDING_RELABEL_CAP):
+        _launch.copy(labels, seeded)
+        _unfolding_rounds(geometry, sources, labels, keys, labelled=False)
+        _launch.copy(relabelled, seed_keys)
+        _launch.launch(
+            kernel_heat.unfolding_argmin_sources,
+            dim=6 * n_faces,
+            inputs=[faces, lengths, cosines, labels, keys],
+            outputs=[relabelled],
+            device=device,
+        )
+        changed.zero_()
+        _launch.launch(
+            kernel_heat.keep_or_flag_relabelled,
+            dim=n_vertices,
+            inputs=[keys],
+            outputs=[relabelled, changed],
+            device=device,
+        )
+        # The relabelling's stop test: one word, read once per settle, which runs a whole round
+        # loop of its own.
+        if not read_scalar(changed):
+            break
+        _launch.copy(keys, relabelled)
+    return od.array.astype(labels, wp.float32)
+
+
+# Settle-and-relabel passes a several-source unfolding front may take; measured stable within 3 on
+# the fixtures, so the cap only bounds a labelling that cycles (the distances stay a settled
+# fixpoint of the last labels either way).
+_UNFOLDING_RELABEL_CAP = 16
+
+
+def _unfolding_rounds(
+    geometry: tuple[wp.array[wp.int32], wp.array[wp.vec3d], wp.array[wp.vec3d]],
+    sources: wp.array[wp.int32],
+    labels: wp.array[wp.float64],
+    keys: wp.array[wp.int64],
+    *,
+    labelled: bool,
+) -> None:
+    # Relax ``labels`` to the unfolding fixpoint in place, as ``fast_marching_distance``'s loop
+    # does, with ``keys`` frozen or (``labelled``) re-keyed each round by the source that lowered
+    # each vertex, double-buffered like the distances. ``labels`` holds the seeded distances of
+    # ``sources`` on entry: each vertex's round stamp starts from them, so the first round runs
+    # only the faces around the sources and each later one only the faces at the moving front.
+    # ``geometry`` is the faces and their lengths and cosines (``unfolding_face_geometry``).
+    faces, lengths, cosines = geometry
+    device = labels.device
+    n_faces = faces.size // 3
+    lowered_round = _launch.full(
+        labels.size, kernel_heat.UNFOLDING_NEVER_LOWERED, dtype=wp.int32, device=device
+    )
+    _launch.launch(
+        kernel_heat.mark_seed_rounds,
+        dim=sources.size,
+        inputs=[sources],
+        outputs=[lowered_round],
+        device=device,
+    )
+    relaxed = _launch.clone(labels)
+    relabelled = _launch.clone(keys) if labelled else keys
+    state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
+    max_rounds = wp.int32(labels.size)
+
+    def front_round() -> None:
+        _launch.launch(
+            kernel_heat.unfolding_pass,
+            dim=6 * n_faces,
+            inputs=[faces, lengths, cosines, labels, keys],
+            outputs=[relaxed, lowered_round, state],
+            device=device,
+        )
+        if labelled:
+            _launch.launch(
+                kernel_heat.unfolding_sources_pass,
+                dim=6 * n_faces,
+                inputs=[faces, lengths, cosines, labels, keys, relaxed, lowered_round, state],
+                outputs=[relabelled],
+                device=device,
+            )
+            _launch.copy(keys, relabelled)
+        _launch.copy(labels, relaxed)
+        _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)
+
+    run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), front_round)
 
 
 # --------------------------------------------------------------------------------------

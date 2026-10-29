@@ -35,6 +35,7 @@ from __future__ import annotations
 import functools
 import gc
 import logging
+import math
 import warnings
 from collections.abc import Callable
 from typing import Any, cast
@@ -42,6 +43,7 @@ from typing import Any, cast
 import igl
 import numpy as np
 import potpourri3d as pp3d
+import pymeshlab as ml
 import pytest
 import scipy.sparse as sp
 import scipy.sparse.linalg as spla
@@ -480,7 +482,7 @@ def test_heat_geodesic_matches_igl(
     benchmarked=False,
     reason="computeSurfaceDistances is fast marching, not the heat method -- it advances a serial "
     "front where ordito solves two sparse systems -- so its row belongs in the "
-    "fast_marching_distance group beside potpourri3d, pymeshlab and igl's exact_geodesic, and that "
+    "fast_marching_distance group beside potpourri3d and igl's exact_geodesic, and that "
     "is where it is timed. Putting it in heat_geodesic would price a different algorithm under "
     "that group's name; there ordito's fast_marching_distance reproduces it (Class A). The values "
     "are nonetheless comparable with the heat method's, which is what this test checks.",
@@ -1039,7 +1041,119 @@ def test_fast_marching_distance_leaves_other_components_unreached(
     assert np.allclose(distance_wp[~unreached_ml], distance_ml[~unreached_ml], rtol=1e-5, atol=1e-5)
 
 
-def test_fast_marching_distance_edge_cases(device: str) -> None:
+def _geodesic_distance_pymeshlab(mesh_tm: tm.Trimesh, sources: list[int]) -> np.ndarray:
+    """MeshLab's geodesic front from the ``sources`` selection, uncut (no ``maxdistance``)."""
+    meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+    meshset_pml.compute_selection_by_condition_per_vertex(
+        condselect=" || ".join(f"(vi == {source})" for source in sources)
+    )
+    meshset_pml.compute_scalar_by_geodesic_distance_from_selection_per_vertex(
+        maxdistance=ml.PureValue(math.inf)
+    )
+    return np.asarray(meshset_pml.current_mesh().vertex_scalar_array())
+
+
+@pytest.mark.parametrize("source", ["first", "middle"])
+@pytest.mark.parametrize("mesh_name", [*MESHES, "torus_irregular", "torus_irregular_holes"])
+@pytest.mark.parity("fast_marching_distance_meshlab", "pymeshlab")
+def test_fast_marching_distance_meshlab_matches_pymeshlab(
+    request: pytest.FixtureRequest, mesh_name: str, source: str
+) -> None:
+    """
+    Class A: MeshLab's geodesic front from one source, vertex for vertex.
+
+    vcg's ``Geodesic::Visit`` pops vertices nearest first and offers each neighbour the face
+    unfolding (or the edge where its tests reject it); one source needs no labels, and its serial
+    front reaches the fixpoint the parallel rounds settle on. Measured worst **4.8e-8** of the
+    range over the four fixtures, both sources and both devices: the ``float32`` rounding of the
+    returned ``float64`` field.
+
+    Mutation probe: the default ``"meshlib"`` front on the same inputs is more than 1e-3 of the
+    range off, asserted here so the comparison cannot pass on either front.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    n_vertices = len(mesh_tm.vertices)
+    source_index = 0 if source == "first" else n_vertices // 2
+    distance_pml = _geodesic_distance_pymeshlab(mesh_tm, [source_index])
+    scale = float(np.ptp(distance_pml))
+    assert scale > 1.0  # non-vacuity: the reference propagated
+    assert np.count_nonzero(distance_pml == 0.0) == 1  # every vertex reached
+
+    sources_wp = wp.array([source_index], dtype=wp.int32, device=mesh_wp.device)
+    distance_wp = od.heat.fast_marching_distance(
+        mesh_wp.points, mesh_wp.indices, sources_wp, method="meshlab"
+    ).numpy()
+    assert np.allclose(distance_wp, distance_pml, rtol=0.0, atol=1e-5 * scale)
+
+    default_wp = od.heat.fast_marching_distance(mesh_wp.points, mesh_wp.indices, sources_wp)
+    assert np.abs(default_wp.numpy() - distance_pml).max() > 1e-3 * scale
+
+
+@pytest.mark.parametrize("mesh_name", [*MESHES, "torus_irregular", "torus_irregular_holes"])
+@pytest.mark.parity("fast_marching_distance_meshlab", "pymeshlab")
+def test_fast_marching_distance_meshlab_from_several_sources(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class C (a bound): MeshLab's geodesic front from three sources, whose labels follow its queue.
+
+    An offer unfolds across a face only when both its corners were reached from the same source,
+    and vcg labels a vertex with whichever source's front lowered it last, in its heap's pop order:
+    two orders give two answers near where the regions meet (a serial Python port of the same
+    rule, popping ties differently, is 1.3e-3 of the range off MeshLab on ``sphere_irregular``).
+    ordito settles on labels each vertex's smallest offer confirms. Measured, of the range, on the
+    CPU device: worst **1.75e-2** (``saddle_graded``; 1.3e-3 to 6.0e-3 on the others), median at
+    most **1.7e-8**, the ``float32`` rounding; the difference is the few boundary vertices whose
+    labels differ, and the vertices downstream of them.
+
+    The worst is bounded at 3.4x its measured value, and the median at 1e-6, which only a field
+    equal away from the boundaries holds. Mutation probes: the field shuffled fails both; the
+    default ``"meshlib"`` front, a different update, fails the median (2.7e-3 to 2.2e-2).
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    n_vertices = len(mesh_tm.vertices)
+    sources = [0, n_vertices // 3, n_vertices // 2]
+    distance_pml = _geodesic_distance_pymeshlab(mesh_tm, sources)
+    scale = float(np.ptp(distance_pml))
+    assert scale > 0.5  # non-vacuity: the reference propagated
+    assert np.count_nonzero(distance_pml == 0.0) == len(sources)  # every vertex reached
+
+    sources_wp = wp.array(sources, dtype=wp.int32, device=mesh_wp.device)
+    distance_wp = od.heat.fast_marching_distance(
+        mesh_wp.points, mesh_wp.indices, sources_wp, method="meshlab"
+    ).numpy()
+    gap = np.abs(distance_wp - distance_pml) / scale
+    assert gap.max() < 6e-2
+    assert np.median(gap) < 1e-6
+
+
+@pytest.mark.parity("fast_marching_distance_meshlab", "pymeshlab")
+def test_fast_marching_distance_meshlab_leaves_other_components_unreached(
+    sphere_irregular_hollow: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class B: MeshLab's unreached vertices, which its filter sets to zero, read as ``inf``.
+
+    ``sphere_irregular_hollow`` is two shells; a source on one never reaches the other, and the
+    reached shell still agrees to the standard tolerance.
+    """
+    mesh_tm, mesh_wp = sphere_irregular_hollow
+    distance_pml = _geodesic_distance_pymeshlab(mesh_tm, [0])
+    distance_wp = od.heat.fast_marching_distance(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.array([0], dtype=wp.int32, device=mesh_wp.device),
+        method="meshlab",
+    ).numpy()
+
+    unreached_wp = np.isinf(distance_wp)
+    assert 0 < unreached_wp.sum() < len(distance_wp)  # both shells present
+    assert np.all(distance_pml[unreached_wp] == 0.0)
+    assert np.allclose(distance_wp[~unreached_wp], distance_pml[~unreached_wp], atol=1e-5)
+
+
+@pytest.mark.parametrize("method", ["meshlib", "meshlab"])
+def test_fast_marching_distance_edge_cases(device: str, method: od.heat.FastMarchingMethod) -> None:
     """
     Not a library comparison: the guards, and the degenerate inputs that skip the rounds.
 
@@ -1050,21 +1164,28 @@ def test_fast_marching_distance_edge_cases(device: str) -> None:
     n_vertices = mesh_wp.points.shape[0]
     none_wp = warp_empty(0, wp.int32, device)
     assert np.all(
-        np.isinf(od.heat.fast_marching_distance(mesh_wp.points, mesh_wp.indices, none_wp).numpy())
+        np.isinf(
+            od.heat.fast_marching_distance(
+                mesh_wp.points, mesh_wp.indices, none_wp, method=method
+            ).numpy()
+        )
     )
 
     no_faces_wp = warp_empty(0, wp.int32, device)
     alone_np = od.heat.fast_marching_distance(
-        mesh_wp.points, no_faces_wp, wp.array([2], dtype=wp.int32, device=device)
+        mesh_wp.points, no_faces_wp, wp.array([2, 5], dtype=wp.int32, device=device), method=method
     ).numpy()
-    assert alone_np[2] == 0.0
-    assert np.isinf(np.delete(alone_np, 2)).all()
+    assert alone_np[2] == alone_np[5] == 0.0
+    assert np.isinf(np.delete(alone_np, [2, 5])).all()
 
     with pytest.raises(ValueError, match=r"every entry of sources must be a vertex index"):
         od.heat.fast_marching_distance(
-            mesh_wp.points, mesh_wp.indices, wp.array([n_vertices], dtype=wp.int32, device=device)
+            mesh_wp.points,
+            mesh_wp.indices,
+            wp.array([n_vertices], dtype=wp.int32, device=device),
+            method=method,
         )
-    with pytest.raises(ValueError, match="method must be 'meshlib'"):
+    with pytest.raises(ValueError, match="method must be 'meshlib' or 'meshlab'"):
         od.heat.fast_marching_distance(
             mesh_wp.points,
             mesh_wp.indices,

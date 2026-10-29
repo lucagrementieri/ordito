@@ -39,8 +39,8 @@ takes longer as factorization has to be built"), so it is the only reference who
 needs no API gymnastics; sources go in as a vertex selection. It is the third independent
 confirmation of the quality axis's point — dead flat across the pair, like the other two direct
 solvers — and it ships a **second, unrelated** algorithm for the same task, a Dijkstra-style front
-over the edge graph, timed in ``fast_marching_distance``. **trimesh** and **open3d** have no
-geodesic distance of any kind.
+unfolding face pairs, timed in ``fast_marching_distance_meshlab``. **trimesh** and **open3d** have
+no geodesic distance of any kind.
 
 All three libraries split this into mesh-dependent setup (assembly, and for the references a
 factorization) and a per-source solve, and the ``heat_geodesic`` group reports both points:
@@ -313,20 +313,13 @@ def _mesh_ml(bench_case: BenchCase) -> mm.Mesh:
 
 @pytest.mark.benchmark(group="fast_marching_distance")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("ordito", "potpourri3d", "pymeshlab", "igl", "meshlib")
+@pytest.mark.benchlibs("ordito", "potpourri3d", "igl", "meshlib")
 @pytest.mark.noparity(
     "potpourri3d",
     reason="D2 another front: geometry-central's fast marching takes a different face update and "
     "acceptance order. Measured from vertex 0, 9.4 % (sphere_irregular), 0.44 % (saddle_graded) "
     "and 6.5 % (torus_irregular) of the range at worst from ordito's field, means 1.8 %, 0.002 % "
     "and 1.5 %; against igl.exact_geodesic potpourri3d itself is 21 %, 2.7 % and 11 % off.",
-)
-@pytest.mark.noparity(
-    "pymeshlab",
-    reason="D2 another front: vcg's geodesic unfolds a face pair per step, a different update. "
-    "Measured from vertex 0, 11 % (sphere_irregular), 2.6 % (saddle_graded) and 7.4 % "
-    "(torus_irregular) of the range at worst from ordito's field; it is the closer of the two to "
-    "igl.exact_geodesic (4.5 %, 0.14 %, 3.8 % against ordito's 12.5 %, 2.7 %, 6.3 %).",
 )
 @pytest.mark.noparity(
     "igl",
@@ -345,15 +338,14 @@ def test_fast_marching_distance(bench_case: BenchCase) -> None:
     diameter in edges, so its work is ``n_faces`` times that diameter where a serial front's is
     ``n log n``: the GPU's width against the extra work is what this row prices.
 
-    Four reference rows, four serial fronts: potpourri3d's fast marching solves the local Eikonal
-    update per triangle, MeshLab's
-    ``compute_scalar_by_geodesic_distance_from_given_point_per_vertex`` advances a Dijkstra-style
-    front unfolding face pairs, **libigl's ``exact_geodesic``** propagates the MMP exact windows --
-    the only one that is exact rather than first-order -- and **meshlib's
-    ``computeSurfaceDistances``** is the front ordito reproduces, the only one of the four that is
-    multi-threaded. meshlib runs at its default ``maxVertUpdates`` of 3, the call a user makes; the
-    cap changes the answer (the parity test runs 255) but not the cost (1.00x either way on a
-    jittered ``icosphere(6)`` and ``icosphere(7)``).
+    Three reference rows, three serial fronts: potpourri3d's fast marching solves the local Eikonal
+    update per triangle, **libigl's ``exact_geodesic``** propagates the MMP exact windows -- the
+    only one that is exact rather than first-order -- and **meshlib's ``computeSurfaceDistances``**
+    is the front ordito reproduces, the only one of the three that is multi-threaded. MeshLab's
+    front, which unfolds face pairs, has its own group (``fast_marching_distance_meshlab``), timed
+    against ordito's reproduction of it. meshlib runs at its default ``maxVertUpdates`` of 3, the
+    call a user makes; the cap changes the answer (the parity test runs 255) but not the cost
+    (1.00x either way on a jittered ``icosphere(6)`` and ``icosphere(7)``).
 
     **igl is capped at ``sphere_small`` with ``rounds=1``, and the slope says why.** At one source
     with every vertex as a target it rises by well over an order of magnitude per 4x step, so the
@@ -405,6 +397,43 @@ def test_fast_marching_distance(bench_case: BenchCase) -> None:
         )
         assert distance_igl.shape == (bench_case.n_vertices,)
         return
+    vertices_np = bench_case.vertices_np
+    faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int32)
+    # One source vertex, as a single-point "curve" of barycentric points.
+    sources_pp = [[(int(_SOURCES[0]), [])]]
+
+    def solve_pp() -> np.ndarray:
+        solver = pp3d.MeshFastMarchingDistanceSolver(vertices_np, faces_np)
+        return np.asarray(solver.compute_distance(sources_pp))
+
+    assert bench_case.run(solve_pp, rounds=_GEODESIC_ROUNDS).shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="fast_marching_distance_meshlab")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+def test_fast_marching_distance_meshlab(bench_case: BenchCase) -> None:
+    """
+    MeshLab's geodesic front from one source, against ordito's ``method="meshlab"`` reproduction.
+
+    MeshLab's ``compute_scalar_by_geodesic_distance_from_given_point_per_vertex`` runs vcg's
+    ``Geodesic`` visit: a Dijkstra-style queue that offers each neighbour the straight line from a
+    virtual source unfolded across the face (``tests/test_heat.py::
+    test_fast_marching_distance_meshlab_matches_pymeshlab``, Class A). ordito relaxes the same
+    offers in parallel rounds in ``float64``, one thread per offer and only at the moving front,
+    so this row prices the unfolding update's ``float64`` chain on top of
+    ``fast_marching_distance``'s round count. One source: the case the filter takes, and the one
+    whose answer the serial queue's order does not decide.
+    """
+    if bench_case.kind == "ordito":
+        vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+        sources = _sources_wp(bench_case)
+        distance = bench_case.run(
+            lambda: od.heat.fast_marching_distance(vertices, faces, sources, method="meshlab"),
+            rounds=_GEODESIC_ROUNDS,
+        )
+        assert distance.shape == (bench_case.n_vertices,)
+        return
     if bench_case.kind == "pymeshlab":
         # An infinite ``maxdistance`` lifts the cut-off, so the front covers the whole mesh: the
         # default 50% of the bbox diagonal stops early, and ``PureValue(0)`` (what this row passed
@@ -418,17 +447,6 @@ def test_fast_marching_distance(bench_case: BenchCase) -> None:
             ),
             rounds=_GEODESIC_ROUNDS,
         )
-        return
-    vertices_np = bench_case.vertices_np
-    faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int32)
-    # One source vertex, as a single-point "curve" of barycentric points.
-    sources_pp = [[(int(_SOURCES[0]), [])]]
-
-    def solve_pp() -> np.ndarray:
-        solver = pp3d.MeshFastMarchingDistanceSolver(vertices_np, faces_np)
-        return np.asarray(solver.compute_distance(sources_pp))
-
-    assert bench_case.run(solve_pp, rounds=_GEODESIC_ROUNDS).shape == (bench_case.n_vertices,)
 
 
 # --------------------------------------------------------------------------
