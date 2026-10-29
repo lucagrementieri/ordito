@@ -22,6 +22,7 @@ from ordito.kernels.array import (
     LOOP_PROGRESS,
     LOOP_ROUND,
     OverloadTable,
+    append_slot,
     binary_search_index,
     cross2,
     csr_key,
@@ -921,6 +922,183 @@ def relabel_unfolded_corner(
     # A corner whose round lowered it takes the source of the offer that set its new distance.
     if relaxed[v] < labels[v] and offer == relaxed[v]:
         wp.atomic_min(out_keys, v, unfolding_key(stamp, label))
+
+
+# The front lists of the list-driven rounds (``unfolding_front_pass``), double-buffered by round
+# parity ``p``: ``front_counts[FRONT_FACES + p]`` faces queued for the rounds of parity ``p``
+# (``front_faces[p * n_faces:]``) and ``front_counts[FRONT_VERTICES + p]`` vertices lowered by the
+# round of parity ``p`` (``front_vertices[p * n_vertices:]``). Round stamps deduplicate both, so
+# neither outgrows its half of the buffer.
+FRONT_FACES = 0
+FRONT_VERTICES = 2
+
+
+@wp.func
+def front_parity(this_round: wp.int32) -> wp.int32:
+    # The half of each front list a round reads or fills: ``0`` or ``1`` by the round's parity.
+    return this_round & 1
+
+
+@wp.func
+def queue_vertex_faces(
+    v: wp.int32,
+    queued_round: wp.int32,
+    vertex_faces: wp.array[wp.int32],
+    vertex_face_offsets: wp.array[wp.int32],
+    out_face_round: wp.array[wp.int32],
+    out_front_faces: wp.array[wp.int32],
+    out_front_counts: wp.array[wp.int32],
+) -> None:
+    # Queue every face around ``v`` for round ``queued_round``, each face once (its stamp swapped
+    # to that round).
+    parity = front_parity(queued_round)
+    n_faces = out_face_round.shape[0]
+    for e in range(vertex_face_offsets[v], vertex_face_offsets[v + 1]):
+        f = vertex_faces[e]
+        if wp.atomic_exch(out_face_round, f, queued_round) != queued_round:
+            slot = append_slot(out_front_counts, FRONT_FACES + parity)
+            out_front_faces[parity * n_faces + slot] = f
+
+
+@wp.kernel
+def queue_source_faces(
+    sources: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex_face_offsets: wp.array[wp.int32],
+    out_lowered_round: wp.array[wp.int32],
+    out_face_round: wp.array[wp.int32],
+    out_front_faces: wp.array[wp.int32],
+    out_front_counts: wp.array[wp.int32],
+) -> None:
+    # The sources as the vertices "lowered" in round ``-1`` (stamped ``-1``, each once however
+    # often it is listed): the faces around them are round 0's.
+    t = wp.int32(wp.tid())
+    v = sources[t]
+    if wp.atomic_exch(out_lowered_round, v, -1) != -1:
+        queue_vertex_faces(
+            v,
+            0,
+            vertex_faces,
+            vertex_face_offsets,
+            out_face_round,
+            out_front_faces,
+            out_front_counts,
+        )
+
+
+@wp.kernel
+def unfolding_front_pass(
+    faces: wp.array[wp.int32],
+    lengths: wp.array[wp.vec3d],
+    cosines: wp.array[wp.vec3d],
+    labels: wp.array[wp.float64],
+    keys: wp.array[wp.int64],
+    vertex_faces: wp.array[wp.int32],
+    vertex_face_offsets: wp.array[wp.int32],
+    lanes: wp.int32,
+    threads: wp.int32,
+    out_labels: wp.array[wp.float64],
+    out_lowered_round: wp.array[wp.int32],
+    out_face_round: wp.array[wp.int32],
+    out_front_vertices: wp.array[wp.int32],
+    out_front_faces: wp.array[wp.int32],
+    out_front_counts: wp.array[wp.int32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # ``unfolding_pass`` over the round's queued faces only: ``threads`` threads stride over
+    # ``lanes`` items a queued face, so the launch has one width every round (a captured loop
+    # replays it) while its work follows the front. A vertex this round lowers for the first time
+    # (its stamp swapped to the round) joins the round's lowered list, for
+    # ``copy_front_vertices``, and queues its faces for the next round.
+    t = wp.int32(wp.tid())
+    this_round = out_state[LOOP_ROUND]
+    parity = front_parity(this_round)
+    n_vertices = out_lowered_round.shape[0]
+    n_faces = out_face_round.shape[0]
+    for item in range(t, out_front_counts[FRONT_FACES + parity] * lanes, threads):
+        f = out_front_faces[parity * n_faces + item // lanes]
+        i, d, s = unfolding_face(faces, labels, keys, f)
+        face_lengths = lengths[f]
+        face_cosines = cosines[f]
+        for j in range(item % lanes, 6, lanes):
+            k = j // 2
+            offer, _label = unfolding_face_corner_offer(face_lengths, face_cosines, d, s, k, j % 2)
+            if offer < d[k]:
+                wp.atomic_min(out_labels, i[k], offer)
+                out_state[LOOP_PROGRESS] = 1
+                if wp.atomic_exch(out_lowered_round, i[k], this_round) != this_round:
+                    slot = append_slot(out_front_counts, FRONT_VERTICES + parity)
+                    out_front_vertices[parity * n_vertices + slot] = i[k]
+                    queue_vertex_faces(
+                        i[k],
+                        this_round + 1,
+                        vertex_faces,
+                        vertex_face_offsets,
+                        out_face_round,
+                        out_front_faces,
+                        out_front_counts,
+                    )
+
+
+@wp.kernel
+def copy_front_vertices(
+    front_vertices: wp.array[wp.int32],
+    relaxed: wp.array[wp.float64],
+    relabelled: wp.array[wp.int64],
+    state: wp.array[wp.int32],
+    threads: wp.int32,
+    out_labels: wp.array[wp.float64],
+    out_keys: wp.array[wp.int64],
+    out_front_counts: wp.array[wp.int32],
+) -> None:
+    # After a round's passes: each vertex it lowered copies its new distance (and, with several
+    # sources, its new key) back into ``out_labels`` and ``out_keys``, the only entries the round
+    # changed. The first thread also empties the face list the round read and the lowered list
+    # the next round fills, which no thread of this launch reads.
+    t = wp.int32(wp.tid())
+    parity = front_parity(state[LOOP_ROUND])
+    n_vertices = out_labels.shape[0]
+    for item in range(t, out_front_counts[FRONT_VERTICES + parity], threads):
+        v = front_vertices[parity * n_vertices + item]
+        out_labels[v] = relaxed[v]
+        if out_keys.shape[0] != 0:
+            out_keys[v] = relabelled[v]
+    if t == 0:
+        out_front_counts[FRONT_FACES + parity] = 0
+        out_front_counts[FRONT_VERTICES + 1 - parity] = 0
+
+
+@wp.kernel
+def unfolding_front_sources_pass(
+    faces: wp.array[wp.int32],
+    lengths: wp.array[wp.vec3d],
+    cosines: wp.array[wp.vec3d],
+    labels: wp.array[wp.float64],
+    keys: wp.array[wp.int64],
+    relaxed: wp.array[wp.float64],
+    front_faces: wp.array[wp.int32],
+    front_counts: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    lanes: wp.int32,
+    threads: wp.int32,
+    out_keys: wp.array[wp.int64],
+) -> None:
+    # ``unfolding_sources_pass`` over the round's queued faces, strided as in
+    # ``unfolding_front_pass``.
+    t = wp.int32(wp.tid())
+    this_round = state[LOOP_ROUND]
+    parity = front_parity(this_round)
+    n_faces = faces.shape[0] // 3
+    stamp = UNFOLDING_SEED_STAMP - wp.int64(1) - wp.int64(this_round)
+    for item in range(t, front_counts[FRONT_FACES + parity] * lanes, threads):
+        f = front_faces[parity * n_faces + item // lanes]
+        i, d, s = unfolding_face(faces, labels, keys, f)
+        face_lengths = lengths[f]
+        face_cosines = cosines[f]
+        for j in range(item % lanes, 6, lanes):
+            k = j // 2
+            offer, source = unfolding_face_corner_offer(face_lengths, face_cosines, d, s, k, j % 2)
+            relabel_unfolded_corner(i[k], offer, source, labels, relaxed, stamp, out_keys)
 
 
 @wp.kernel

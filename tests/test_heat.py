@@ -1129,33 +1129,46 @@ def test_fast_marching_distance_meshlab_from_several_sources(
 
 @pytest.mark.parametrize("n_sources", [1, 3])
 @pytest.mark.parametrize("mesh_name", ["saddle_graded", "torus_irregular_holes"])
-def test_fast_marching_distance_meshlab_is_independent_of_lanes(
+def test_fast_marching_distance_meshlab_is_independent_of_its_schedule(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, mesh_name: str, n_sources: int
 ) -> None:
     """
-    Ordito against ordito: every lane count a face's offers can be spread over gives one field.
+    Ordito against ordito: every round layout gives one field, bit for bit.
 
-    The call picks the lane count by device and mesh size, so the fixtures alone would only ever
-    run one width on each device (six on CUDA below ``2**17`` faces, one on the CPU); the
-    pymeshlab comparison pins that one. Lowering is an exact ``atomic_min`` and the ``float32``
-    filter drops only offers that can neither lower nor label a vertex, so every width must give
-    the same bits; three sources take the labelling passes too. Measured bit-identical, both
-    devices, and against the six-lane form before the filter on ``icosphere(7)``.
+    The call lays its rounds out by device and mesh size (a scan of every face for an active
+    corner, or front lists of the faces the last round touched; lanes a face; the lists' launch
+    width), so the fixtures alone would run one layout per device; the pymeshlab comparison pins
+    that one. Lowering is an exact ``atomic_min``, the ``float32`` filter drops only offers that can
+    neither lower nor label a vertex, and both layouts offer from every face a lowered corner
+    touches, so every layout must give the same bits; three sources take the labelling passes
+    too. Measured bit-identical, both devices, and against the layout before the lists and the
+    filter on ``icosphere(7)``. Mutation probe: a face index hard-wired to six lanes fails every
+    case.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_wp.points.shape[0]
     sources_wp = wp.array(
         [0, n_vertices // 3, n_vertices // 2][:n_sources], dtype=wp.int32, device=mesh_wp.device
     )
-    fields = {}
-    for lanes in (1, 2, 3, 6):
-        monkeypatch.setattr(od.heat, "_unfolding_lanes", lambda _device, _n_faces, n=lanes: n)
-        fields[lanes] = od.heat.fast_marching_distance(
-            mesh_wp.points, mesh_wp.indices, sources_wp, method="meshlab"
-        ).numpy()
-    assert np.isfinite(fields[1]).all()
-    for lanes in (2, 3, 6):
-        assert np.array_equal(fields[lanes].view(np.uint32), fields[1].view(np.uint32))
+    schedules = [
+        (lists, lanes, threads)
+        for lists, threads in ((False, 0), (True, 1), (True, 64), (True, 1 << 17))
+        for lanes in (1, 2, 3, 6)
+    ]
+    fields = []
+    for lists, lanes, threads in schedules:
+        schedule = od.heat._UnfoldingSchedule(  # pyright: ignore[reportPrivateUsage]
+            lists=lists, lanes=lanes, threads=threads
+        )
+        monkeypatch.setattr(od.heat, "_unfolding_schedule", lambda _device, _n, s=schedule: s)
+        fields.append(
+            od.heat.fast_marching_distance(
+                mesh_wp.points, mesh_wp.indices, sources_wp, method="meshlab"
+            ).numpy()
+        )
+    assert np.isfinite(fields[0]).all()
+    for field in fields[1:]:
+        assert np.array_equal(field.view(np.uint32), fields[0].view(np.uint32))
 
 
 @pytest.mark.parity("fast_marching_distance_meshlab", "pymeshlab")

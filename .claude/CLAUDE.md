@@ -1481,14 +1481,34 @@ cosine outside `[-1, 1]` fails its test; `std::min(1.0, NaN)` is `1`), in `float
   19.2 µs there); the looped six-lane form is also slower at `(8)` than the fixed one was (63.9
   against 49.7). Adopted: CUDA six lanes below `1 << 17` faces (`icosphere(6)`, 81 920 faces,
   ties), two from there; CPU one lane (`icosphere(5)` / `(6)`: 38 / 185 ms against 120 / 850 at
-  six). CUDA A/B against the committed six-lane form (detached worktree, two alternations, idle
+  six). Superseded on large meshes and the CPU by front lists (below). CUDA A/B against the committed six-lane form (detached worktree, two alternations, idle
   GPU), µs a round at icospheres 4 / 5 / 6 / 7 / 8: 10.2 / 10.4 / 14.6 / 23.8 / 49.8 -> 10.2 /
   10.6 / 14.3 / 21.4 / 36.6 (1.12x at 164 k vertices, 1.36x at 655 k), bit-identical fields on
   both devices (fixtures and `icosphere(7)`, one and three sources); round counts and census
   counts unchanged. `test_fast_marching_distance_meshlab_is_independent_of_lanes` forces each
-  width on the fixtures (a face index hard-wired to six lanes fails all four cases). Next lever
-  if needed: a compacted active-face list, so a round's launch scales with the front rather than
-  the mesh.
+  width on the fixtures (a face index hard-wired to six lanes fails all four cases).
+- **Front lists replace the scan on large meshes and on the CPU (2026-10-29).** A vertex a round
+  lowers for the first time (its stamp swapped atomically) joins a lowered list and queues its
+  faces for the next round through the vertex-face CSR (`vertex_face_adjacency`, 0.05-0.16 ms
+  once), each face once by a face stamp; both lists double-buffered by round parity, the passes
+  fixed-width and strided over their list (a captured loop replays one width), and the copy-back
+  only over the lowered list, whose launch also empties the next round's counters: three
+  launches a round, as before. Queueing in a separate launch cost ~9 µs a round of latency
+  (`icosphere(4)` 1.5x slower); in the pass, ~7 µs. Whole call, one captured graph, min of 7,
+  committed scan -> lists, ms, one source, icospheres 4-8: 0.97 -> 1.37, 1.6 -> 2.3, 3.7 -> 4.2,
+  9.9 -> 8.2, 30.8 -> 21.0. Adopted on CUDA from `1 << 17` faces (scan below: unchanged there),
+  six lanes (two: 12.9 / 25.1 ms at 7 / 8), launch width `2**17` (`2**19`, `2**21` within 3 %);
+  one source 1.20x / 1.45x at `icosphere(7)` / `(8)`. **Three sources at `(8)` lose 8 %**
+  (143 -> 155 ms): per phase the lists win the labelled rounds (49.5 -> 46.6 ms) and lose each
+  re-settle (23.9-25 -> 26.2), against the committed two-lane filtered scan; not split per phase.
+  CPU: lists with one lane and a *single* strided thread (2**17 threads, a call each a round,
+  ran 2x slower than the scan): one source 7.1 / 31 / 166 -> 8.0 / 22 / 79 ms at 4 / 5 / 6,
+  three sources 711 -> 516 at 6; census sphere_small 112 -> 168 launches (the copy-back kernel),
+  8 -> 15 allocations, host copies 56 -> 2. Fields bit-identical on both devices against the
+  committed layout (fixtures and `icosphere(7)`, one and three sources).
+  `test_fast_marching_distance_meshlab_is_independent_of_its_schedule` forces 16 layouts (scan
+  or lists, 1-6 lanes, widths 1 to `2**17`); a lowered corner-0 vertex left unqueued fails it
+  and the pymeshlab comparison.
 
 ### Open items from the 2026-10-23 uncapped sweep: ordito on large meshes
 

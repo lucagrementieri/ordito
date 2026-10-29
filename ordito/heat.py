@@ -720,8 +720,14 @@ def _unfolding_front(
         outputs=[lengths, cosines],
         device=device,
     )
-    geometry = (faces, lengths, cosines)
-    lanes = _unfolding_lanes(device, n_faces)
+    schedule = _unfolding_schedule(device, n_faces)
+    vertex_faces, vertex_face_offsets = (
+        od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+        if schedule.lists
+        else (faces, faces)
+    )
+    geometry = _UnfoldingMesh(faces, lengths, cosines, vertex_faces, vertex_face_offsets, schedule)
+    lanes = schedule.lanes
     if not several:
         _unfolding_rounds(geometry, sources, labels, keys, labelled=False)
         return od.array.astype(labels, wp.float32)
@@ -770,31 +776,59 @@ def _unfolding_front(
 # fixpoint of the last labels either way).
 _UNFOLDING_RELABEL_CAP = 16
 
-# Threads a face's six unfolding offers are spread over (``kernels/heat.unfolding_pass``). Each
-# offer is a long ``float64`` chain, so on CUDA six lanes keep a round short while the active
-# faces are few; but every lane of an inactive face still runs the activity test, and from about
-# 2**17 faces those launches cost more than the chains (``icosphere(7)``: 25.9 us a round at six
-# lanes, 21.2 at two; ``icosphere(6)``, 81 920 faces, ties). Two lanes also let the ``float32``
-# filter shorten a thread's own chain (1.21-1.28x there; nothing at six lanes, where a warp waits
-# for its slowest lane). The CPU device runs threads one after another, so one lane a face does
-# no repeated work (``icosphere(6)``: 185 ms against 850 at six lanes).
+
+@dataclass(frozen=True)
+class _UnfoldingSchedule:
+    # How a round of the unfolding front is laid out on its device. ``lists``: drive the rounds by
+    # front lists (``_unfolding_front_rounds``: work follows the front, at the cost of queueing
+    # it) rather than by scanning every face for an active corner (``_unfolding_rounds``).
+    # ``lanes``: threads a face's six offers are spread over. ``threads``: the fixed width of a
+    # list-driven launch, which strides over its list.
+    lists: bool
+    lanes: int
+    threads: int
+
+
+# Measured on one and three sources, icospheres 4-8 (2.5 k to 655 k vertices), whole call, one
+# captured graph. CUDA: each offer is a long ``float64`` chain, so six lanes a face keep a round
+# short. Below about 2**17 faces the scan wins: queueing a lowered vertex's faces adds atomic
+# latency to every round (``icosphere(4)``: 1.37 ms against 0.97), and from there the lists win,
+# since the scan's launch grows with the mesh and the front does not (one source,
+# ``icosphere(7)`` / ``(8)``: 8.2 / 21.0 ms against 9.9 / 30.8; three sources level, 154 / 154 ms
+# at ``(8)``). The list width barely matters (``2**17`` to ``2**21`` threads within 3 %), lanes do
+# (two lanes: 12.9 / 25.1 ms). CPU: threads run one after another, so one lane and a single
+# strided thread: every extra thread is a call per round whether or not it finds work
+# (``2**17`` threads: 327 ms at ``icosphere(6)``; one: 73, against the scan's 163).
+_UNFOLDING_LISTS_FROM_FACES_CUDA = 1 << 17
 _UNFOLDING_LANES_CUDA = 6
-_UNFOLDING_LANES_CUDA_LARGE = 2
-_UNFOLDING_LANES_CUDA_LARGE_FROM_FACES = 1 << 17
-_UNFOLDING_LANES_CPU = 1
+_UNFOLDING_THREADS_CUDA = 1 << 17
+_UNFOLDING_CPU = _UnfoldingSchedule(lists=True, lanes=1, threads=1)
 
 
-def _unfolding_lanes(device: wp.DeviceLike, n_faces: int) -> int:
-    # Lanes a face for the unfolding passes on ``device`` (``_UNFOLDING_LANES_CUDA``).
+def _unfolding_schedule(device: wp.DeviceLike, n_faces: int) -> _UnfoldingSchedule:
+    # The round layout for ``n_faces`` faces on ``device`` (``_UNFOLDING_LISTS_FROM_FACES_CUDA``).
     if not wp.get_device(device).is_cuda:
-        return _UNFOLDING_LANES_CPU
-    if n_faces >= _UNFOLDING_LANES_CUDA_LARGE_FROM_FACES:
-        return _UNFOLDING_LANES_CUDA_LARGE
-    return _UNFOLDING_LANES_CUDA
+        return _UNFOLDING_CPU
+    lists = n_faces >= _UNFOLDING_LISTS_FROM_FACES_CUDA
+    threads = min(_UNFOLDING_LANES_CUDA * n_faces, _UNFOLDING_THREADS_CUDA)
+    return _UnfoldingSchedule(lists=lists, lanes=_UNFOLDING_LANES_CUDA, threads=threads)
+
+
+@dataclass(frozen=True)
+class _UnfoldingMesh:
+    # What every round of one call reads: the faces with their ``float64`` geometry
+    # (``kernels/heat.unfolding_face_geometry``), the vertex-face incidence the front lists queue
+    # through (``faces`` itself as a placeholder when ``schedule.lists`` is off), and the layout.
+    faces: wp.array[wp.int32]
+    lengths: wp.array[wp.vec3d]
+    cosines: wp.array[wp.vec3d]
+    vertex_faces: wp.array[wp.int32]
+    vertex_face_offsets: wp.array[wp.int32]
+    schedule: _UnfoldingSchedule
 
 
 def _unfolding_rounds(
-    geometry: tuple[wp.array[wp.int32], wp.array[wp.vec3d], wp.array[wp.vec3d]],
+    geometry: _UnfoldingMesh,
     sources: wp.array[wp.int32],
     labels: wp.array[wp.float64],
     keys: wp.array[wp.int64],
@@ -806,11 +840,13 @@ def _unfolding_rounds(
     # each vertex, double-buffered like the distances. ``labels`` holds the seeded distances of
     # ``sources`` on entry: each vertex's round stamp starts from them, so the first round runs
     # only the faces around the sources and each later one only the faces at the moving front.
-    # ``geometry`` is the faces and their lengths and cosines (``unfolding_face_geometry``).
-    faces, lengths, cosines = geometry
+    if geometry.schedule.lists:
+        _unfolding_front_rounds(geometry, sources, labels, keys, labelled=labelled)
+        return
+    faces, lengths, cosines = geometry.faces, geometry.lengths, geometry.cosines
     device = labels.device
     n_faces = faces.size // 3
-    lanes = _unfolding_lanes(device, n_faces)
+    lanes = geometry.schedule.lanes
     lowered_round = _launch.full(
         labels.size, kernel_heat.UNFOLDING_NEVER_LOWERED, dtype=wp.int32, device=device
     )
@@ -854,6 +890,102 @@ def _unfolding_rounds(
             )
             _launch.copy(keys, relabelled)
         _launch.copy(labels, relaxed)
+        _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)
+
+    run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), front_round)
+
+
+def _unfolding_front_rounds(
+    geometry: _UnfoldingMesh,
+    sources: wp.array[wp.int32],
+    labels: wp.array[wp.float64],
+    keys: wp.array[wp.int64],
+    *,
+    labelled: bool,
+) -> None:
+    # ``_unfolding_rounds`` driven by front lists: each round's passes stride over the faces
+    # around the vertices the previous round lowered (``kernels/heat.unfolding_front_pass``, which
+    # also queues them), and ``copy_front_vertices`` copies back only the vertices it lowered.
+    faces, lengths, cosines = geometry.faces, geometry.lengths, geometry.cosines
+    vertex_faces, vertex_face_offsets = geometry.vertex_faces, geometry.vertex_face_offsets
+    device = labels.device
+    n_vertices = labels.size
+    n_faces = faces.size // 3
+    lanes = geometry.schedule.lanes
+    threads = geometry.schedule.threads
+    vertex_threads = min(n_vertices, threads)
+    never = kernel_heat.UNFOLDING_NEVER_LOWERED
+    lowered_round = _launch.full(n_vertices, never, dtype=wp.int32, device=device)
+    face_round = _launch.full(n_faces, never, dtype=wp.int32, device=device)
+    front_vertices = _launch.empty(2 * n_vertices, dtype=wp.int32, device=device)
+    front_faces = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    front_counts = _launch.zeros(4, dtype=wp.int32, device=device)
+    relaxed = _launch.clone(labels)
+    relabelled = _launch.clone(keys) if labelled else keys
+    # The sources, as round ``-1``'s lowered vertices, queue round 0's faces.
+    _launch.launch(
+        kernel_heat.queue_source_faces,
+        dim=sources.size,
+        inputs=[sources, vertex_faces, vertex_face_offsets],
+        outputs=[lowered_round, face_round, front_faces, front_counts],
+        device=device,
+    )
+    state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
+    max_rounds = wp.int32(n_vertices)
+
+    def front_round() -> None:
+        _launch.launch(
+            kernel_heat.unfolding_front_pass,
+            dim=threads,
+            inputs=[
+                faces,
+                lengths,
+                cosines,
+                labels,
+                keys,
+                vertex_faces,
+                vertex_face_offsets,
+                lanes,
+                threads,
+            ],
+            outputs=[
+                relaxed,
+                lowered_round,
+                face_round,
+                front_vertices,
+                front_faces,
+                front_counts,
+                state,
+            ],
+            device=device,
+        )
+        if labelled:
+            _launch.launch(
+                kernel_heat.unfolding_front_sources_pass,
+                dim=threads,
+                inputs=[
+                    faces,
+                    lengths,
+                    cosines,
+                    labels,
+                    keys,
+                    relaxed,
+                    front_faces,
+                    front_counts,
+                    state,
+                    lanes,
+                    threads,
+                ],
+                outputs=[relabelled],
+                device=device,
+            )
+        _launch.launch(
+            kernel_heat.copy_front_vertices,
+            dim=vertex_threads,
+            inputs=[front_vertices, relaxed, relabelled, state, vertex_threads],
+            outputs=[labels, keys, front_counts],
+            device=device,
+        )
         _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)
 
     run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), front_round)
