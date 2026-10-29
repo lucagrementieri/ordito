@@ -1450,24 +1450,45 @@ cosine outside `[-1, 1]` fails its test; `std::min(1.0, NaN)` is `1`), in `float
   relabel each vertex by its smallest offer's origin until no label moves (3 passes at most
   measured, capped at 16; a vertex no settled offer reproduces keeps its label): worst 1.75e-2
   (`saddle_graded`), median at most 1.7e-8. The fixpoint is not unique; this start lands nearest.
-- **The pass is a `float64` latency chain; four changes took it 11-15x** (device time a round,
-  one source, plain-loop probe on icospheres 4 / 5 / 6, against the default front's 6.1 / 3.7 /
-  3.8 µs): the port as written 85 / 87 / 114 µs; no transcendentals (both branch tests as cosine
-  comparisons, `cos(alpha) < 1 - 2q^2`, the line from composed cosines and sines; continuous
-  across each branch boundary, so a rounding flip moves nothing) 53 / 53 / 76; skipping faces none
-  of whose corners the last round lowered (a per-vertex round stamp; a stamp read mid-write only
-  adds a face) 40 / 40 / 46, flat in size, so the active threads' chain set the time; edge
-  lengths and interior cosines shared by a face's six offers 17 / 18 / 19; a thread per corner
-  10 / 11 / 13; a thread per (corner, origin) pair 7.0 / 7.6 / 11.3; the face geometry formed
-  once before the rounds 5.3 / 5.6 / 7.5. Round counts did not move (108 / 204 / 396). The
-  tests that choose edge or unfold (source labels, the `1e-4` triangle tests) still read vcg's
-  quantities exactly; agreement with pymeshlab is unchanged on every fixture and source count.
-  Harness, CUDA, min ms over five runs on a shared GPU: sphere_small / med / large 1.09 / 4.6 /
-  12.3 (was 10.5 / 104 / 343, measured under contention), the default front 0.77 / 2.3 / 5.2,
-  pymeshlab 5.0 / 65 / 352. CPU device `icosphere(5)` 415 -> 100 ms. Census: CUDA 6 launches
-  (one captured graph), CPU 112, sphere_small. Not tried: a `float32` filter ahead of the
-  `float64` offer (a plain `float32` port sits 6.2e-6 of the range from MeshLab on
-  `saddle_graded`, too near the 1e-5 bound).
+- **The pass is a `float64` latency chain; the changes took a round 11-15x** (device time a
+  round, one source, plain-loop probe on icospheres 4 / 5 / 6, 54 / 102 / 198 rounds, against
+  the default front's 5.7 / 5.5 / 5.5 µs over 49 / 97 / 193): the port as written 170 / 174 /
+  228 µs; no transcendentals (both branch tests as cosine comparisons, `cos(alpha) < 1 - 2q^2`,
+  the line from composed cosines and sines; continuous across each branch boundary, so a rounding
+  flip moves nothing) 106 / 106 / 152; skipping faces none of whose corners the last round
+  lowered (a per-vertex round stamp; a stamp read mid-write only adds a face) 80 / 80 / 92, flat
+  in size, so the active threads' chain set the time; edge lengths and interior cosines shared by
+  a face's six offers 34 / 36 / 38; a thread per corner 20 / 21 / 26; a thread per (corner,
+  origin) pair 14 / 15 / 23; the face geometry formed once before the rounds 10.1 / 10.3 / 14.7.
+  (The probe that first recorded these counted the warm-up call's rounds too and read half these
+  values; ratios unaffected.) The tests that choose edge or unfold (source labels, the `1e-4`
+  triangle tests) still read vcg's quantities exactly; agreement with pymeshlab is unchanged on
+  every fixture and source count. Harness, CUDA, min ms over five runs on a shared GPU:
+  sphere_small / med / large 1.09 / 4.6 / 12.3 (was 10.5 / 104 / 343, measured under
+  contention), the default front 0.77 / 2.3 / 5.2, pymeshlab 5.0 / 65 / 352.
+- **A `float32` first pass pays only where a thread runs several offers; lanes a face are
+  device- and size-gated.** The filter computes the unfolded offer in `float32` and drops it
+  without the `float64` chain when it is finite and above the target's distance by `1e-3` of the
+  distances and edges (`unfolded_distance_exceeds`): such an offer can neither lower (needs `<`)
+  nor label (needs `==`) the target, so the result is bit-identical (CPU A/B, three fixtures, one
+  and three sources). At the front 16.5 % of unfold computations win and the filter drops 74-77 %,
+  but 48-50 % of warps hold a winner, so at six lanes (one offer a thread) it bought nothing,
+  `icosphere(7)` / `(8)` included. Lanes a face, µs a round, filter on (off), icospheres 4 / 5 /
+  6 / 7 / 8: one lane 23 / 24 / 25 / 31 / 46 (29 / 31 / 34 / 40 / 58), two 14 / 14 / 14 / 21 /
+  37 (17 / 18 / 19 / 27 / 44), three 13.5 / 13 / 15 / 22 / 42, six 9.8 / 10.3 / 14.3 / 25.9 /
+  63.9 (unchanged). From `icosphere(7)` six lanes lose because every lane of an inactive face
+  repeats the activity test (the default front, one thread a face doing all its work, is 8.1 /
+  19.2 µs there); the looped six-lane form is also slower at `(8)` than the fixed one was (63.9
+  against 49.7). Adopted: CUDA six lanes below `1 << 17` faces (`icosphere(6)`, 81 920 faces,
+  ties), two from there; CPU one lane (`icosphere(5)` / `(6)`: 38 / 185 ms against 120 / 850 at
+  six). CUDA A/B against the committed six-lane form (detached worktree, two alternations, idle
+  GPU), µs a round at icospheres 4 / 5 / 6 / 7 / 8: 10.2 / 10.4 / 14.6 / 23.8 / 49.8 -> 10.2 /
+  10.6 / 14.3 / 21.4 / 36.6 (1.12x at 164 k vertices, 1.36x at 655 k), bit-identical fields on
+  both devices (fixtures and `icosphere(7)`, one and three sources); round counts and census
+  counts unchanged. `test_fast_marching_distance_meshlab_is_independent_of_lanes` forces each
+  width on the fixtures (a face index hard-wired to six lanes fails all four cases). Next lever
+  if needed: a compacted active-face list, so a round's launch scales with the front rather than
+  the mesh.
 
 ### Open items from the 2026-10-23 uncapped sweep: ordito on large meshes
 

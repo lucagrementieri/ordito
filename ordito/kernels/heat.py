@@ -574,6 +574,9 @@ def fast_marching_pass(
 # The reference's relative tolerance on its triangle-inequality tests, the ``float`` literal
 # ``.0001f`` widened to ``double``.
 UNFOLDING_TOLERANCE = wp.float64(9.999999747378752e-05)
+# How far above a target's distance a ``float32`` unfolded offer must lie to be dropped unrefined,
+# relative to the distances and edges it is formed from (``unfolded_distance_exceeds``).
+UNFOLDING_FILTER_MARGIN = wp.float64(1e-3)
 UNFOLDING_SEED_STAMP = wp.int64(1 << 30)
 # A key no offer has written: the fill of every key buffer.
 UNFOLDING_UNLABELLED = wp.int64(INT64_MAX)
@@ -622,27 +625,27 @@ def mark_seed_rounds(sources: wp.array[wp.int32], out_lowered_round: wp.array[wp
 
 
 @wp.func
-def heron_half_cosine(numerator: wp.float64, denominator: wp.float64) -> wp.float64:
+def heron_half_cosine(numerator: wp.Float, denominator: wp.Float) -> wp.Float:
     # ``min(1, sqrt(numerator / denominator))`` with C's ``std::min`` on a NaN: a negative or
     # undefined ratio yields ``1``. The cosine of half the virtual triangle's angle, which the
     # reference turns into that angle as ``2 acos`` of it.
     ratio = numerator / denominator
-    q = wp.float64(1.0)
-    if ratio >= wp.float64(0.0) and ratio < wp.float64(1.0):
+    q = type(ratio)(1.0)
+    if ratio >= type(ratio)(0.0) and ratio < type(ratio)(1.0):
         q = wp.sqrt(ratio)
     return q
 
 
 @wp.func
 def unfolded_distance(
-    ew_c: wp.float64,
-    ew_w1: wp.float64,
-    ec_w1: wp.float64,
-    cos_alpha: wp.float64,
-    cos_beta: wp.float64,
-    d_partner: wp.float64,
-    d_origin: wp.float64,
-) -> wp.float64:
+    ew_c: wp.Float,
+    ew_w1: wp.Float,
+    ec_w1: wp.Float,
+    cos_alpha: wp.Float,
+    cos_beta: wp.Float,
+    d_partner: wp.Float,
+    d_origin: wp.Float,
+) -> wp.Float:
     # The distance ``target`` is offered across its face from ``origin`` once ``partner`` (the
     # face's third corner) is reached too: the virtual source both distances place on the far side
     # of the edge ``origin partner``, unfolded into the face's plane, and the straight line from it.
@@ -662,8 +665,8 @@ def unfolded_distance(
     # and ``sin = 2 q sqrt(1 - q^2)``. The two forms agree to rounding, and a rounding flip of
     # either test cannot move the offer: at the boundary the line passes through that corner, so
     # both branches give its edge.
-    one = wp.float64(1.0)
-    two = wp.float64(2.0)
+    one = type(ew_c)(1.0)
+    two = type(ew_c)(2.0)
     alpha_defined = cos_alpha >= -one and cos_alpha <= one
     s = (d_origin + d_partner + ec_w1) / two
     a = s / ec_w1
@@ -677,7 +680,7 @@ def unfolded_distance(
         if cos_beta < one - two * q_beta * q_beta:
             return d_partner + ew_w1
     if not alpha_defined:
-        return wp.float64(wp.inf)
+        return type(ew_c)(wp.inf)
     # cos and sin of ``theta = pi - (alpha + alpha_)``.
     sin_alpha = wp.sqrt(one - cos_alpha * cos_alpha)
     cos_alpha_ = two * q_alpha * q_alpha - one
@@ -690,6 +693,38 @@ def unfolded_distance(
 
 
 @wp.func
+def unfolded_distance_exceeds(
+    ew_c: wp.float64,
+    ew_w1: wp.float64,
+    ec_w1: wp.float64,
+    cos_alpha: wp.float64,
+    cos_beta: wp.float64,
+    d_partner: wp.float64,
+    d_origin: wp.float64,
+    d_target: wp.float64,
+) -> wp.bool:
+    # Whether the unfolded offer lies clearly above ``d_target``, judged in ``float32``: such an
+    # offer neither lowers the target (that takes an offer below it) nor labels it (an offer
+    # equal to it), so it can be dropped without its ``float64`` value. ``float32`` is rounded
+    # once per input and the composition loses at most a few hundred ulps where the half-angle's
+    # sine is ill-conditioned, far inside the margin; a non-finite ``float32`` value proves
+    # nothing (a cosine rounded past 1 there may be valid in ``float64``).
+    v = unfolded_distance(
+        wp.float32(ew_c),
+        wp.float32(ew_w1),
+        wp.float32(ec_w1),
+        wp.float32(cos_alpha),
+        wp.float32(cos_beta),
+        wp.float32(d_partner),
+        wp.float32(d_origin),
+    )
+    if not wp.isfinite(v):
+        return False
+    margin = UNFOLDING_FILTER_MARGIN * (d_target + ew_c + ew_w1 + ec_w1)
+    return wp.float64(v) > d_target + margin
+
+
+@wp.func
 def unfolding_offer(
     ew_c: wp.float64,
     ew_w1: wp.float64,
@@ -698,6 +733,7 @@ def unfolding_offer(
     cos_beta: wp.float64,
     d_origin: wp.float64,
     d_partner: wp.float64,
+    d_target: wp.float64,
     same_source: wp.bool,
 ) -> wp.float64:
     # What a reached ``origin`` offers ``target`` through one face whose third corner is
@@ -715,6 +751,10 @@ def unfolding_offer(
         or d_origin + d_partner < inter + tol
     ):
         return d_origin + ew_c
+    if unfolded_distance_exceeds(
+        ew_c, ew_w1, inter, cos_alpha, cos_beta, d_partner, d_origin, d_target
+    ):
+        return wp.float64(wp.inf)
     return unfolded_distance(ew_c, ew_w1, inter, cos_alpha, cos_beta, d_partner, d_origin)
 
 
@@ -727,6 +767,7 @@ def unfolding_corner_offer(
     cos_b: wp.float64,
     da: wp.float64,
     db: wp.float64,
+    dc: wp.float64,
     sa: wp.int32,
     sb: wp.int32,
 ) -> wp.float64:
@@ -734,7 +775,7 @@ def unfolding_corner_offer(
     # the partner (``+inf`` while ``a`` is unreached). ``l_ca``, ``l_cb`` and ``l_ab`` are the
     # face's edges, ``cos_a`` and ``cos_b`` its interior angle cosines.
     if da < wp.inf:
-        return unfolding_offer(l_ca, l_cb, l_ab, cos_a, cos_b, da, db, sa == sb)
+        return unfolding_offer(l_ca, l_cb, l_ab, cos_a, cos_b, da, db, dc, sa == sb)
     return wp.float64(wp.inf)
 
 
@@ -790,7 +831,7 @@ def unfolding_face_corner_offer(
     a = (k + 1 + origin) % 3
     b = (k + 2 - origin) % 3
     offer = unfolding_corner_offer(
-        lengths[b], lengths[a], lengths[k], cosines[a], cosines[b], d[a], d[b], s[a], s[b]
+        lengths[b], lengths[a], lengths[k], cosines[a], cosines[b], d[a], d[b], d[k], s[a], s[b]
     )
     return offer, s[a]
 
@@ -838,6 +879,7 @@ def unfolding_pass(
     cosines: wp.array[wp.vec3d],
     labels: wp.array[wp.float64],
     keys: wp.array[wp.int64],
+    lanes: wp.int32,
     out_labels: wp.array[wp.float64],
     out_lowered_round: wp.array[wp.int32],
     out_state: wp.array[wp.int32],
@@ -851,15 +893,19 @@ def unfolding_pass(
     # thread per (corner, origin) pair (``unfolding_face_corner_offer``), and only the faces at
     # the moving front do any work (``unfolding_face_is_active``).
     t = wp.int32(wp.tid())
-    f = t // 6
-    k = (t % 6) // 2
-    origin = t % 2
+    f = t // lanes
     this_round = out_state[LOOP_ROUND]
     if not unfolding_face_is_active(faces, out_lowered_round, f, this_round):
         return
     i, d, s = unfolding_face(faces, labels, keys, f)
-    offer, _label = unfolding_face_corner_offer(lengths[f], cosines[f], d, s, k, origin)
-    lower_unfolded_corner(i[k], offer, d[k], this_round, out_labels, out_lowered_round, out_state)
+    face_lengths = lengths[f]
+    face_cosines = cosines[f]
+    for j in range(t % lanes, 6, lanes):
+        k = j // 2
+        offer, _label = unfolding_face_corner_offer(face_lengths, face_cosines, d, s, k, j % 2)
+        lower_unfolded_corner(
+            i[k], offer, d[k], this_round, out_labels, out_lowered_round, out_state
+        )
 
 
 @wp.func
@@ -887,6 +933,7 @@ def unfolding_sources_pass(
     relaxed: wp.array[wp.float64],
     lowered_round: wp.array[wp.int32],
     state: wp.array[wp.int32],
+    lanes: wp.int32,
     out_keys: wp.array[wp.int64],
 ) -> None:
     # With several sources, after ``unfolding_pass``: the same offers recomputed from the same
@@ -896,16 +943,18 @@ def unfolding_sources_pass(
     # the smallest offer is unique. A corner the round lowered was lowered from an active face, so
     # the inactive ones are skipped as in ``unfolding_pass``.
     t = wp.int32(wp.tid())
-    f = t // 6
-    k = (t % 6) // 2
-    origin = t % 2
+    f = t // lanes
     this_round = state[LOOP_ROUND]
     if not unfolding_face_is_active(faces, lowered_round, f, this_round):
         return
     stamp = UNFOLDING_SEED_STAMP - wp.int64(1) - wp.int64(this_round)
     i, d, s = unfolding_face(faces, labels, keys, f)
-    offer, source = unfolding_face_corner_offer(lengths[f], cosines[f], d, s, k, origin)
-    relabel_unfolded_corner(i[k], offer, source, labels, relaxed, stamp, out_keys)
+    face_lengths = lengths[f]
+    face_cosines = cosines[f]
+    for j in range(t % lanes, 6, lanes):
+        k = j // 2
+        offer, source = unfolding_face_corner_offer(face_lengths, face_cosines, d, s, k, j % 2)
+        relabel_unfolded_corner(i[k], offer, source, labels, relaxed, stamp, out_keys)
 
 
 @wp.func
@@ -929,18 +978,21 @@ def unfolding_argmin_sources(
     cosines: wp.array[wp.vec3d],
     labels: wp.array[wp.float64],
     keys: wp.array[wp.int64],
+    lanes: wp.int32,
     out_keys: wp.array[wp.int64],
 ) -> None:
     # Each vertex's source re-read off a settled fixpoint: the label of the origin whose offer set
     # its distance (``out_keys`` arrives holding only the sources' own keys, ``INT64_MAX``
     # elsewhere; a source is never offered its zero, so it keeps its own).
     t = wp.int32(wp.tid())
-    f = t // 6
-    k = (t % 6) // 2
-    origin = t % 2
+    f = t // lanes
     i, d, s = unfolding_face(faces, labels, keys, f)
-    offer, source = unfolding_face_corner_offer(lengths[f], cosines[f], d, s, k, origin)
-    label_unfolded_corner(i[k], offer, source, labels, out_keys)
+    face_lengths = lengths[f]
+    face_cosines = cosines[f]
+    for j in range(t % lanes, 6, lanes):
+        k = j // 2
+        offer, source = unfolding_face_corner_offer(face_lengths, face_cosines, d, s, k, j % 2)
+        label_unfolded_corner(i[k], offer, source, labels, out_keys)
 
 
 @wp.kernel

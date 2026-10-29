@@ -721,6 +721,7 @@ def _unfolding_front(
         device=device,
     )
     geometry = (faces, lengths, cosines)
+    lanes = _unfolding_lanes(device, n_faces)
     if not several:
         _unfolding_rounds(geometry, sources, labels, keys, labelled=False)
         return od.array.astype(labels, wp.float32)
@@ -743,8 +744,8 @@ def _unfolding_front(
         _launch.copy(relabelled, seed_keys)
         _launch.launch(
             kernel_heat.unfolding_argmin_sources,
-            dim=6 * n_faces,
-            inputs=[faces, lengths, cosines, labels, keys],
+            dim=lanes * n_faces,
+            inputs=[faces, lengths, cosines, labels, keys, lanes],
             outputs=[relabelled],
             device=device,
         )
@@ -769,6 +770,28 @@ def _unfolding_front(
 # fixpoint of the last labels either way).
 _UNFOLDING_RELABEL_CAP = 16
 
+# Threads a face's six unfolding offers are spread over (``kernels/heat.unfolding_pass``). Each
+# offer is a long ``float64`` chain, so on CUDA six lanes keep a round short while the active
+# faces are few; but every lane of an inactive face still runs the activity test, and from about
+# 2**17 faces those launches cost more than the chains (``icosphere(7)``: 25.9 us a round at six
+# lanes, 21.2 at two; ``icosphere(6)``, 81 920 faces, ties). Two lanes also let the ``float32``
+# filter shorten a thread's own chain (1.21-1.28x there; nothing at six lanes, where a warp waits
+# for its slowest lane). The CPU device runs threads one after another, so one lane a face does
+# no repeated work (``icosphere(6)``: 185 ms against 850 at six lanes).
+_UNFOLDING_LANES_CUDA = 6
+_UNFOLDING_LANES_CUDA_LARGE = 2
+_UNFOLDING_LANES_CUDA_LARGE_FROM_FACES = 1 << 17
+_UNFOLDING_LANES_CPU = 1
+
+
+def _unfolding_lanes(device: wp.DeviceLike, n_faces: int) -> int:
+    # Lanes a face for the unfolding passes on ``device`` (``_UNFOLDING_LANES_CUDA``).
+    if not wp.get_device(device).is_cuda:
+        return _UNFOLDING_LANES_CPU
+    if n_faces >= _UNFOLDING_LANES_CUDA_LARGE_FROM_FACES:
+        return _UNFOLDING_LANES_CUDA_LARGE
+    return _UNFOLDING_LANES_CUDA
+
 
 def _unfolding_rounds(
     geometry: tuple[wp.array[wp.int32], wp.array[wp.vec3d], wp.array[wp.vec3d]],
@@ -787,6 +810,7 @@ def _unfolding_rounds(
     faces, lengths, cosines = geometry
     device = labels.device
     n_faces = faces.size // 3
+    lanes = _unfolding_lanes(device, n_faces)
     lowered_round = _launch.full(
         labels.size, kernel_heat.UNFOLDING_NEVER_LOWERED, dtype=wp.int32, device=device
     )
@@ -805,16 +829,26 @@ def _unfolding_rounds(
     def front_round() -> None:
         _launch.launch(
             kernel_heat.unfolding_pass,
-            dim=6 * n_faces,
-            inputs=[faces, lengths, cosines, labels, keys],
+            dim=lanes * n_faces,
+            inputs=[faces, lengths, cosines, labels, keys, lanes],
             outputs=[relaxed, lowered_round, state],
             device=device,
         )
         if labelled:
             _launch.launch(
                 kernel_heat.unfolding_sources_pass,
-                dim=6 * n_faces,
-                inputs=[faces, lengths, cosines, labels, keys, relaxed, lowered_round, state],
+                dim=lanes * n_faces,
+                inputs=[
+                    faces,
+                    lengths,
+                    cosines,
+                    labels,
+                    keys,
+                    relaxed,
+                    lowered_round,
+                    state,
+                    lanes,
+                ],
                 outputs=[relabelled],
                 device=device,
             )
