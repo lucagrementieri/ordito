@@ -683,22 +683,19 @@ def submeshes_from_face_groups(
     assert unique_keys is not None
     assert inverse is not None
     n_slots = unique_keys.size
-    # One decode per unique slot answers everything its key is needed for: the slot's group, the
-    # group's vertex count (a histogram, so an empty group still gets a zero-length entry and no
-    # host synchronisation is needed to size it), and the source position it names.
+    # One decode per unique slot answers everything its key is needed for: the slot's group and
+    # the source position it names; the same launch searches each group's start in the sorted
+    # keys, so an empty group still gets a zero-length entry and no host synchronisation is needed
+    # to size it.
     slot_groups = _launch.empty(n_slots, dtype=wp.int32, device=device)
-    # The counts land behind the leading zero of the ``k + 1`` offsets buffer and are scanned there
-    # in place, which leaves the total-terminated vertex offsets with no second buffer.
-    vertex_offsets = _launch.zeros(k + 1, dtype=wp.int32, device=device)
-    group_counts = odt.as_dense(vertex_offsets[1:])
+    vertex_offsets = _launch.empty(k + 1, dtype=wp.int32, device=device)
     vertices_all = _launch.empty(n_slots, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel_selection.decode_group_vertex_keys,
-        dim=n_slots,
-        inputs=[unique_keys, wp.int64(radix), vertices, slot_groups, group_counts, vertices_all],
+        dim=max(n_slots, k + 1),
+        inputs=[unique_keys, wp.int64(radix), vertices, slot_groups, vertex_offsets, vertices_all],
         device=device,
     )
-    _launch.array_scan(group_counts, out_array=group_counts, inclusive=True)
 
     faces_all = _launch.empty(n_corners, dtype=wp.int32, device=device)
     _launch.launch(

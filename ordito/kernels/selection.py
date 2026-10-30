@@ -9,6 +9,7 @@ from ordito.kernels.algorithms.connected_components import (
 )
 from ordito.kernels.array import (
     binary_search_index,
+    binary_search_index_left,
     binary_search_sorted_contains,
     masked_at,
     pack_directed_key,
@@ -96,21 +97,24 @@ def decode_group_vertex_keys(
     radix: wp.int64,
     vertices: wp.array[wp.vec3],
     out_slot_groups: wp.array[wp.int32],
-    out_group_counts: wp.array[wp.int32],
+    out_vertex_offsets: wp.array[wp.int32],
     out_vertices: wp.array[wp.vec3],
 ) -> None:
-    # One thread per sorted unique ``(group, vertex)`` slot: record the slot's group, count it
-    # into that group's histogram (the group's vertex count), and gather the source position it
-    # names -- the three things the slot's key is needed for, read off one decode. The vertex id
-    # itself is never stored, since the position gather is its only consumer.
-    slot = wp.int32(wp.tid())
-    key = unique_keys[slot]
-    # The inverse of ``pack_group_vertex_keys``: one divmod.
-    group = wp.int32(key // radix)
-    vertex = wp.int32(key % radix)
-    out_slot_groups[slot] = group
-    wp.atomic_add(out_group_counts, group, wp.int32(1))
-    out_vertices[slot] = vertices[vertex]
+    # One launch over ``max(n_slots, k + 1)`` threads. Slot ``t`` of the sorted unique
+    # ``(group, vertex)`` keys records its group and gathers the source position it names -- the
+    # two things the slot's key is needed for, read off one decode; the vertex id itself is never
+    # stored, since the position gather is its only consumer. Thread ``t <= k`` writes group
+    # ``t``'s start: the keys ascend by group, so it is the first slot whose key reaches
+    # ``t * radix``, which also gives an empty group its zero-length entry and ``k`` the slot
+    # count: the total-terminated vertex offsets, every entry written.
+    t = wp.int32(wp.tid())
+    if t < unique_keys.shape[0]:
+        key = unique_keys[t]
+        # The inverse of ``pack_group_vertex_keys``: one divmod.
+        out_slot_groups[t] = wp.int32(key // radix)
+        out_vertices[t] = vertices[wp.int32(key % radix)]
+    if t < out_vertex_offsets.shape[0]:
+        out_vertex_offsets[t] = binary_search_index_left(unique_keys, wp.int64(t) * radix)
 
 
 @wp.kernel
