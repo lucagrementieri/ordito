@@ -675,31 +675,21 @@ def interval_apex(value: wp.float32, apex: wp.int32) -> wp.int32:
     return wp.where(value >= FLOAT32_INF_CONSTANT, wp.int32(-1), apex)
 
 
-@wp.kernel(enable_backward=False)
-def fill_dp_span(tables: HoleFillTables, span_offset: wp.int32) -> None:
-    # One thread per span-``span`` interval (i, j = i + span) of every loop at once; reads only
-    # strictly smaller spans, so successive launches (span = 2, 3, ...) are the DP barriers.
+@wp.func
+def fill_dp_interval(tables: HoleFillTables, ell: wp.int32, i: wp.int32, span: wp.int32):
+    # The span-``span`` interval (i, j = i + span) of loop ``ell``, by one thread: the apex loop
+    # in ascending ``k`` under ``relax_apex``'s branch and bound. Reads only strictly smaller
+    # spans, so any schedule that finishes span ``s - 1`` of a loop before its span ``s`` agrees
+    # byte for byte: ``fill_dp_span`` (a launch per span) and ``fill_dp_sweep`` (a thread per loop).
+    # Intervals outside the loop, and inactive loops, return at once.
     #
-    # Launched over ``(n_loops, max_B - span)``: threads whose loop is shorter than the current
-    # span exit at once, so a mesh whose loops differ wildly in length wastes some of the grid, but
-    # the launch *count* is ``max_B - 1`` for the whole mesh instead of ``B - 1`` per loop.
-    #
-    # This is the **CPU** engine and the tie-break reference; CUDA runs
-    # ``fill_dp_span_tiled``, which must agree with it apex for apex (see
-    # ``tests/test_holes.py::test_fill_dp_span_tiled_matches_serial``).
-    #
-    # The prologue it shares with the tiled kernel is deliberately not extracted. Three of its
-    # lines are early ``return``s and a ``@wp.func`` cannot return from its caller, so hoisting it
-    # would mean a validity flag plus restructured guards in both kernels -- more code at the call
-    # sites than it removes. What is left after the guards is five independent loads that read
+    # The prologue it shares with ``fill_dp_span_tiled`` is deliberately not extracted. Three of
+    # its lines are early ``return``s and a ``@wp.func`` cannot return from its caller, so hoisting
+    # it would mean a validity flag plus restructured guards in the tiled kernel -- more code at the
+    # call site than it removes. What is left after the guards is five independent loads that read
     # fine where they are; grouping them would name a bag, not a quantity. The genuinely shared
     # arithmetic already moved: ``apex_cost`` went from 19 parameters to 14 when the tables became
     # ``HoleFillTables``.
-    ell, i = wp.tid()
-    # The span is the base the replays have stepped plus this launch's span in the first group, so
-    # that every launch of a recorded group is byte-identical bar one integer -- see
-    # ``HoleFillTables.span_base``.
-    span = tables.span_base[0] + span_offset
     if tables.active[ell] == 0:
         return
     b = tables.loop_offsets[ell + 1] - tables.loop_offsets[ell]
@@ -751,6 +741,41 @@ def fill_dp_span(tables: HoleFillTables, span_offset: wp.int32) -> None:
 
 
 @wp.kernel(enable_backward=False)
+def fill_dp_span(tables: HoleFillTables, span_offset: wp.int32) -> None:
+    # One thread per span-``span`` interval (i, j = i + span) of every loop at once; reads only
+    # strictly smaller spans, so successive launches (span = 2, 3, ...) are the DP barriers.
+    #
+    # Launched over ``(n_loops, max_B - span)``: threads whose loop is shorter than the current
+    # span exit at once, so a mesh whose loops differ wildly in length wastes some of the grid, but
+    # the launch *count* is ``max_B - 1`` for the whole mesh instead of ``B - 1`` per loop.
+    #
+    # This is the tie-break reference on CUDA; ``fill_dp_span_tiled`` must agree with it apex for
+    # apex (see ``tests/test_holes.py::test_fill_dp_span_tiled_matches_serial``). The CPU device
+    # runs the same intervals in one launch, ``fill_dp_sweep``.
+    ell, i = wp.tid()
+    # The span is the base the replays have stepped plus this launch's span in the first group, so
+    # that every launch of a recorded group is byte-identical bar one integer -- see
+    # ``HoleFillTables.span_base``.
+    fill_dp_interval(tables, ell, i, tables.span_base[0] + span_offset)
+
+
+@wp.kernel(enable_backward=False)
+def fill_dp_sweep(tables: HoleFillTables) -> None:
+    # One thread per loop walking its whole interval DP, span by span: the CPU engine. The CPU
+    # device runs a launch's threads one after another, so the span launches of ``fill_dp_span``
+    # bought it no parallelism, only a launch per span (510 on a 512-vertex rim); this is the same
+    # intervals in the same order within each loop, one launch for the mesh. Not for CUDA, where a
+    # thread per loop is the persistent schedule ``holes._run_hole_dp`` documents as losing.
+    ell = wp.int32(wp.tid())
+    if tables.active[ell] == 0:
+        return
+    b = tables.loop_offsets[ell + 1] - tables.loop_offsets[ell]
+    for span in range(2, b):
+        for i in range(b - span):
+            fill_dp_interval(tables, ell, i, span)
+
+
+@wp.kernel(enable_backward=False)
 def fill_dp_span_tiled(tables: HoleFillTables, span_offset: wp.int32) -> None:
     # One *block* per span-``span`` interval, its lanes striding the apex loop. Same DP, same launch
     # count, ``block_dim`` times the parallelism: the serial kernel above puts at most
@@ -793,7 +818,7 @@ def fill_dp_span_tiled(tables: HoleFillTables, span_offset: wp.int32) -> None:
     j = i + span
     base = tables.dp_offsets[ell]
     if tables.forbidden[base + i * b + j] != 0:
-        # True infinity, not ``BAD_METRIC`` — see the identical branch in ``fill_dp_span``.
+        # True infinity, not ``BAD_METRIC`` — see the identical branch in ``fill_dp_interval``.
         if t == 0:
             store_dp(tables, base, b, i, j, FLOAT32_INF_CONSTANT)
             tables.prev[base + i * b + j] = -1

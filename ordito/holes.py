@@ -1189,7 +1189,9 @@ def _run_hole_dp(
     devices, so this is a pure cost knob and ``None`` picks whichever is faster on the device at
     hand -- tiled on CUDA, where a block has lanes to spread the apex loop over; serial on CPU,
     where it has one and the two engines do the same work. ``tiled`` exists so a test can force
-    either and compare them.
+    either and compare them. The serial engine on the CPU device is not a launch per span but one
+    launch for the whole sweep, a thread per loop (``kernels/holes.fill_dp_sweep``): the device
+    runs a launch's threads in turn, so the span launches bought it nothing but their own cost.
 
     That portability rests on ``fill_dp_span_tiled`` striding by ``wp.block_dim()`` rather than by
     the ``HOLE_DP_BLOCK`` it is launched with: the two agree on CUDA, and on CPU the former reads 1,
@@ -1257,6 +1259,13 @@ def _run_hole_dp(
         else:
             _launch.launch(kernel_holes.fill_dp_span, dim=dim, inputs=inputs, device=device)
 
+    if not tiled and resolved.is_cpu:
+        # The CPU device runs a launch's threads in turn, so one thread per loop walking its
+        # spans does the per-span loop's work with one launch.
+        _launch.launch(
+            kernel_holes.fill_dp_sweep, dim=loops.n_loops, inputs=[tables], device=device
+        )
+        return
     if not captured:
         for span in range(2, loops.max_size):
             issue(span, loops.max_size - span)
