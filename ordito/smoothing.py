@@ -1021,8 +1021,7 @@ def _flatten_few_spikes(
     # and the exact count, read back, when that was short.
     capacity = 32 * n_spikes
     while True:
-        keys = _launch.empty(2 * capacity, dtype=wp.uint64, device=device)
-        order = _launch.empty(2 * capacity, dtype=wp.int32, device=device)
+        keys, order = _launch.sort_buffers(capacity, wp.uint64, device)
         _launch.launch(
             kernel_smoothing.spike_neighbor_keys,
             dim=faces.size // 3,
@@ -1183,7 +1182,7 @@ def equalize_triangle_areas(
         if vertex_faces is not None
         else od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
     )
-    region = _without_boundary_vertices(vertices, faces, region)
+    region = _without_boundary_vertices(vertices, faces, region, (vf_indices, offsets))
 
     def equalize_pass(src: wp.array[wp.vec3], dst: wp.array[wp.vec3]) -> None:
         _launch.launch(
@@ -1208,7 +1207,10 @@ def equalize_triangle_areas(
 
 
 def _without_boundary_vertices(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], region: wp.array[wp.bool] | None
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    region: wp.array[wp.bool] | None,
+    vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]],
 ) -> wp.array[wp.bool]:
     """
     ``region`` (every vertex when ``None``) less the boundary vertices.
@@ -1223,7 +1225,7 @@ def _without_boundary_vertices(
     n_vertices = vertices.size
     # Cleared straight off the halfedge mates: the boundary needs no index list, so nothing is
     # scanned or read back, and a closed mesh pays one launch that clears nothing.
-    mates = od.halfedge.halfedge_mates(faces, n_vertices)
+    mates = od.halfedge.halfedge_mates(faces, n_vertices, vertex_faces=vertex_faces)
     movable = (
         _launch.full(n_vertices, True, dtype=wp.bool, device=vertices.device)
         if region is None
@@ -3224,9 +3226,13 @@ def refine_and_smooth_region(
     n = vertices.size
     # One edge grouping serves the boundary mask and both regions' topology: the solves move
     # vertices, never connectivity.
+    counts = None
     if edges is None:
-        edges = od.edges.edges_unique(faces, n_vertices=n, validate=False)
-    bd_mask = _boundary_verts_mask(n, edges, device)
+        unique_edges, inverse, counts = od.edges.edges_unique(
+            faces, n_vertices=n, validate=False, return_counts=True
+        )
+        edges = (unique_edges, inverse)
+    bd_mask = _boundary_verts_mask(n, edges, device, counts)
     # New (interior patch) vertices are the tail appended by subdivision, minus mesh-boundary verts.
     free = _launch.empty(n, dtype=wp.bool, device=device)
     _launch.launch(
@@ -3272,19 +3278,27 @@ def refine_and_smooth_region(
 
 
 def _boundary_verts_mask(
-    n_vertices: int, edges: tuple[odt.Array2dInt32, wp.array[wp.int32]], device: wp.DeviceLike
+    n_vertices: int,
+    edges: tuple[odt.Array2dInt32, wp.array[wp.int32]],
+    device: wp.DeviceLike,
+    counts: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.bool]:
     """
     Length-``n_vertices`` mask of mesh-boundary vertices, from an ``edges_unique`` grouping.
 
     A boundary edge is a unique edge one face uses, so the mask is its endpoints: the use counts
-    are a histogram of the grouping's ``inverse``, and no second edge grouping is built.
+    are the grouping's own (``counts``) or else a histogram of its ``inverse``, and no second edge
+    grouping is built.
     """
     unique_edges, inverse = edges
-    counts = _launch.zeros(int(unique_edges.shape[0]), dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_scatter.count_occurrences, dim=inverse.size, inputs=[inverse, counts], device=device
-    )
+    if counts is None:
+        counts = _launch.zeros(int(unique_edges.shape[0]), dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_scatter.count_occurrences,
+            dim=inverse.size,
+            inputs=[inverse, counts],
+            device=device,
+        )
     mask = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_smoothing.mark_single_use_edge_vertices,
@@ -4480,7 +4494,7 @@ def filter_two_step(
             fit_iterations,
         )
     if mates is None:
-        mates = od.halfedge.halfedge_mates(faces, n)
+        mates = od.halfedge.halfedge_mates(faces, n, vertex_faces=(vertex_faces, vf_offsets))
     normal_pass = (kernel_smoothing.smooth_face_normals_over_mates, [mates])
     # The fit steps ping-pong between two buffers of this call; the input is only ever read.
     positions = vertices
