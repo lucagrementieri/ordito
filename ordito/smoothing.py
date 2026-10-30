@@ -513,9 +513,8 @@ def _gauss_seidel_sweeps(
             device=device,
         )
         return
-    counts = _launch.empty(n, dtype=wp.int32, device=device)
-    spare = _launch.empty(n, dtype=wp.int32, device=device)
-    done = _launch.zeros(1, dtype=wp.int32, device=device)
+    # The sweep counts' ping-pong (written whole by the start) and the finished count, zeroed.
+    counts, spare, done = _launch.carve(wp.int32, (n, n, 1), device, zeroed=True)
     _launch.launch(
         kernel_smoothing.gauss_seidel_wave_start,
         dim=n,
@@ -663,8 +662,7 @@ def inflate(
     )
     positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     displaced = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
-    wide = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
-    diffused = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
+    wide, diffused = _launch.carve(wp.vec3d, (n_vertices, n_vertices), device)
     constraint = _VolumeConstraint(faces, device, anchors=iterations + int(pre_smooth))
     coeff = wp.float64(lamb)
 
@@ -949,7 +947,8 @@ def filter_spikes(
     # Two zeroed counters per pass, so no pass clears one: the spike count and the cursor of the
     # first neighbour-key collection ``_flatten_few_spikes`` runs.
     counts = _launch.zeros(2 * max_iter, dtype=wp.int32, device=device)
-    nxt = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    # The whole-mesh passes' other buffer, allocated by the first such pass.
+    nxt: wp.array[wp.vec3] | None = None
     n_faces = faces.size // 3
     # The spike test is ``angle_sum < min_angle_sum``, applied to the angle *defect*
     # ``2 * pi - angle_sum`` instead: ``defect > 2 * pi - min_angle_sum``, the quantity
@@ -979,6 +978,8 @@ def filter_spikes(
             continue
         if operator is None:
             operator = laplacian.laplacian(vertices, faces, symmetric=True)
+        if nxt is None:
+            nxt = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
         _launch.launch(
             kernel_smoothing.flatten_spikes_pass,
             dim=n_vertices,
@@ -1838,10 +1839,8 @@ def filter_windowed_sinc(
     neighbors, offsets, classes, rim_pairs = _umbrella_stencils(
         vertices, faces, edge_angle, rim_smoothing, crowded_slides=False
     )
-    x0 = od.array.astype(vertices, wp.vec3d)
-    x1 = _launch.empty(n, dtype=wp.vec3d, device=device)
-    x2 = _launch.empty(n, dtype=wp.vec3d, device=device)
-    total = _launch.empty(n, dtype=wp.vec3d, device=device)
+    x0, x1, x2, total = _launch.carve(wp.vec3d, (n, n, n, n), device)
+    od.array.copyto(x0, vertices)
     stencil = [neighbors, offsets, classes, rim_pairs]
     _launch.launch(
         kernel_smoothing.windowed_sinc_first_pass,
@@ -1922,7 +1921,12 @@ def _umbrella_stencils(
     device = vertices.device
     unique, inverse = od.edges.edges_unique(faces, n_vertices=n)
     n_edges = unique.shape[0]
-    uses = _launch.zeros(n_edges, dtype=wp.int32, device=device)
+    # Every table in one zeroed allocation: the edge use counts and the tallies, which die with the
+    # classification, and the rim pairs and classes the stencil keeps.
+    uses, corners, rim_counts, crowded_counts, rim_pair_entries, classes = _launch.carve(
+        wp.int32, (n_edges, n, n, n, 2 * n, n), device, zeroed=True
+    )
+    rim_pairs = rim_pair_entries.reshape((n, 2)).view(wp.vec2i)
     if inverse.size > 0:
         _launch.launch(
             kernel_scatter.count_occurrences,
@@ -1931,10 +1935,6 @@ def _umbrella_stencils(
             outputs=[uses],
             device=device,
         )
-    corners = _launch.zeros(n, dtype=wp.int32, device=device)
-    rim_counts = _launch.zeros(n, dtype=wp.int32, device=device)
-    crowded_counts = _launch.zeros(n, dtype=wp.int32, device=device)
-    rim_pairs = _launch.zeros(n, dtype=wp.vec2i, device=device)
     if n_edges > 0:
         _launch.launch(
             kernel_smoothing.tally_stencil_edges,
@@ -1943,7 +1943,6 @@ def _umbrella_stencils(
             outputs=[corners, rim_counts, crowded_counts, rim_pairs],
             device=device,
         )
-    classes = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_smoothing.classify_stencil_vertices,
         dim=n,
@@ -2166,18 +2165,47 @@ def filter_mut_dif_laplacian(
         return _launch.clone(vertices)
 
     operator = _resolved_operator(vertices, faces, laplacian_operator)
+    derive_normals = face_normals is None or face_areas is None
+    deterministic = is_deterministic()
+    # The call's ``float64`` tables, in one zeroed allocation: the normal sums (when derived), the
+    # sensitivity, the constraint's three volumes and, with determinism off, the per-pass
+    # coefficient slots.
+    zeroed = _launch.carve(
+        wp.float64,
+        (
+            3 * n if derive_normals else 0,
+            1,
+            *((1, 1, 1) if volume_constraint else (0, 0, 0)),
+            0 if deterministic else 2 * iterations,
+        ),
+        device,
+        zeroed=True,
+    )
+    normal_sums_flat, sensitivity, vol_ini, vol_probe, slope, adil_slots = zeroed
+    # The ``float64`` iterates, in one allocation: ``L.v``, then under the constraint the widened
+    # input, the eps probe and the ping-pong's other buffer; without it the (at most two) buffers
+    # the passes between the first and the last ping-pong.
+    spares = 1 if volume_constraint else min(iterations - 1, 2)
+    iterates = _launch.carve(
+        wp.vec3d, (n,) * (1 + (2 if volume_constraint else 0) + spares), device
+    )
+    lv = iterates[0]
     # The ``float64`` iterate. With no volume constraint the first pass reads the ``float32`` input
     # itself, widened as it is read, and the last writes the ``float32`` answer; the constraint
     # sums the input's own volume in ``float64``, so it starts from a widened copy, and its last
     # correction writes the answer.
-    positions: _Positions = _as_vec3d(vertices) if volume_constraint else vertices
+    positions: _Positions = vertices
+    if volume_constraint:
+        positions = iterates[1]
+        od.array.copyto(positions, vertices)
+    spare_iterates = iterates[1 + (2 if volume_constraint else 0) :]
 
     # Vertex normals and eps are computed once from the input mesh and reused every pass, matching
     # the trimesh reference (which reads normals off the un-mutated mesh inside its loop).
     if face_normals is None or face_areas is None:
         # ``mean_vertex_normals`` of the derived face normals, which the scatter forms in its own
         # thread, so no normal table is written; the areas only for the constraint's probe step.
-        normal_sums = _launch.zeros((n, 3), dtype=wp.float64, device=device)
+        normal_sums = normal_sums_flat.reshape((n, 3))
         n_faces = faces.size // 3
         _launch.launch(
             kernel_vertices.SCATTER_UNIT_NORMALS[wp.float64],
@@ -2204,10 +2232,8 @@ def filter_mut_dif_laplacian(
     else:
         normals = mean_vertex_normals(n, faces, face_normals)
 
-    lv = _launch.empty(n, dtype=wp.vec3d, device=device)
-    sensitivity = _launch.zeros(1, dtype=wp.float64, device=device)
     out = _launch.empty(n, dtype=wp.vec3, device=device)
-    # The other ``float64`` iterate of the ping-pong, allocated by the first pass that writes it.
+    # The other ``float64`` iterate of the ping-pong, taken by the first pass that writes it.
     nxt: wp.array[wp.vec3d] | None = None
     # The three volumes the constraint needs, kept on the device for the whole loop: the input's
     # (fixed), this pass's, and the eps-probe's, with the calibrated slope beside them. Reading any
@@ -2233,11 +2259,8 @@ def filter_mut_dif_laplacian(
                 block_dim=TILE_1D,
                 device=device,
             )
-        probe = _launch.empty(n, dtype=wp.vec3d, device=device)
+        probe = iterates[2]
         scratch = _VolumeScratch.for_faces(faces, device)
-        vol_ini, vol_probe, slope = (
-            _launch.zeros(1, dtype=wp.float64, device=device) for _ in range(3)
-        )
         scratch.accumulate(cast("wp.array[wp.vec3d]", positions), faces, vol_ini)
         constraint = (probe, scratch, vol_ini, vol_probe, slope)
     inv_n = wp.float64(1.0 / n)
@@ -2247,14 +2270,12 @@ def filter_mut_dif_laplacian(
     # fixed order into the first two slots, so no pass clears it. With determinism off
     # (``ordito.config``) the commit is two slots the blocks add into by atomics, so each pass
     # takes its own pair of one buffer zeroed once, and no pass clears one.
-    adil_slots = None
-    if is_deterministic():
+    if deterministic:
         adil_sum, _ = _launch.block_partials(n_blocks, 2, wp.float64, device)
     else:
-        adil_slots = _launch.zeros(2 * iterations, dtype=wp.float64, device=device)
         adil_sum = adil_slots
     for index in range(iterations):
-        if adil_slots is not None:
+        if not deterministic:
             adil_sum = _launch.view(adil_slots, 2 * index, 2 * index + 2)
         # The mean diffusion coefficient is summed on device by the pass that applies the operator
         # and consumed by the step kernel directly, so the loop body issues no host synchronisation.
@@ -2270,7 +2291,7 @@ def filter_mut_dif_laplacian(
         probe = constraint[0] if constraint is not None and index == 0 else None
         last = index == iterations - 1
         if nxt is None and (constraint is not None or not last):
-            nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
+            nxt = spare_iterates.pop()
         dst: _Positions = out if constraint is None and last else cast("wp.array[wp.vec3d]", nxt)
         _launch.launch(
             kernel_smoothing.MUT_DIF_STEP_SCALED[positions.dtype, dst.dtype],
@@ -2334,11 +2355,8 @@ class _VolumeScratch(NamedTuple):
     @classmethod
     def for_faces(cls, faces: wp.array[wp.int32], device: wp.DeviceLike) -> _VolumeScratch:
         """Allocate the scratch for ``faces``' face count."""
-        n_faces = faces.size // 3
-        return cls(
-            _launch.empty(n_faces, dtype=wp.float64, device=device),
-            _launch.empty(1, dtype=wp.float64, device=device),
-        )
+        face_volumes, volume = _launch.carve(wp.float64, (faces.size // 3, 1), device)
+        return cls(face_volumes, volume)
 
     def accumulate(
         self,
@@ -2403,15 +2421,16 @@ class _VolumeConstraint:
                 self._moment_blocks, 4, wp.float64, device
             )
         else:
-            self._pools = (
-                _launch.zeros(anchors, dtype=wp.float64, device=device),
-                _launch.zeros(4 * anchors, dtype=wp.float64, device=device),
+            volumes, moments = _launch.carve(
+                wp.float64, (anchors, 4 * anchors), device, zeroed=True
             )
+            self._pools = (volumes, moments)
             self._volume = _launch.view(self._pools[0], 0, 1)
             self._moments = _launch.view(self._pools[1], 0, 4)
             self._volume_stride, self._moment_stride = 1, 4
-        self.state = _launch.empty(4, dtype=wp.float64, device=device)
-        self._scratch = _VolumeScratch.for_faces(faces, device)
+        state, face_volumes, volume = _launch.carve(wp.float64, (4, self._n_faces, 1), device)
+        self.state = state
+        self._scratch = _VolumeScratch(face_volumes, volume)
         self._anchors = 0
 
     @classmethod
@@ -3856,9 +3875,11 @@ def smooth_region_boundary(
     if n_vertices == 0 or n_faces == 0 or iterations == 0:
         return _launch.clone(vertices)
 
-    inside = _incident_vertex_mask(faces, region, n_vertices)
-    free = _region_rim_vertices(faces, region, inside)
-    fixed_mask = _launch.empty(n_vertices, dtype=wp.bool, device=device)
+    # The vertex masks in one zeroed allocation: the region's vertices, its rim band before the
+    # band's isolated components are dropped, and the pinned vertices.
+    inside, band, fixed_mask = _launch.carve(wp.bool, (n_vertices,) * 3, device, zeroed=True)
+    _mark_incident_vertices(faces, region, inside)
+    free = _region_rim_vertices(faces, region, inside, band)
     field = _launch.empty((1, n_vertices), dtype=wp.float64, device=device)
     _launch.map(kernel_smoothing.band_pins, free, inside, out=[fixed_mask, field[0]])
 
@@ -3962,39 +3983,38 @@ def _band_pattern(
     return pattern_offsets, columns
 
 
-def _incident_vertex_mask(
-    faces: wp.array[wp.int32], region: wp.array[wp.bool], n_vertices: int
-) -> wp.array[wp.bool]:
-    """Mark the vertices touched by at least one selected face."""
-    mask = _launch.zeros(n_vertices, dtype=wp.bool, device=faces.device)
+def _mark_incident_vertices(
+    faces: wp.array[wp.int32], region: wp.array[wp.bool], mask: wp.array[wp.bool]
+) -> None:
+    """Mark in the zeroed ``mask`` the vertices touched by at least one selected face."""
     _launch.launch(
         kernel_selection.mark_incident_vertices,
         dim=faces.size // 3,
         inputs=[faces, region, mask],
         device=faces.device,
     )
-    return mask
 
 
 def _region_rim_vertices(
-    faces: wp.array[wp.int32], region: wp.array[wp.bool], inside: wp.array[wp.bool]
+    faces: wp.array[wp.int32],
+    region: wp.array[wp.bool],
+    inside: wp.array[wp.bool],
+    band: wp.array[wp.bool],
 ) -> wp.array[wp.bool]:
     """
     Mark the band touching both a selected and an unselected face: the vertices free to move.
 
-    A connected component lying entirely in the band is dropped from it: with no vertex pinned, the
-    harmonic system over that component has nothing to interpolate and is singular.
+    ``band`` is zeroed scratch the band is marked in. A connected component lying entirely in the
+    band is dropped from it: with no vertex pinned, the harmonic system over that component has
+    nothing to interpolate and is singular.
     """
-    device = faces.device
-    n_vertices = inside.size
-    free = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_smoothing.mark_band_vertices,
         dim=region.size,
-        inputs=[faces, region, inside, free],
-        device=device,
+        inputs=[faces, region, inside, band],
+        device=faces.device,
     )
-    return od.selection.exclude_fully_selected_components(faces, free, n_vertices)
+    return od.selection.exclude_fully_selected_components(faces, band, inside.size)
 
 
 def filter_scalar_laplacian(
@@ -4481,9 +4501,10 @@ def filter_two_step(
     # declined: that pass is 2.1x the face pass plus the plain first pass on a scrambled 1.3 M-face
     # sphere and 1.27x at 82 k faces (four gathered faces' cross products per face against reading
     # a table).
-    face_field = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    face_field, spare_normals = _launch.carve(
+        wp.vec3, (n_faces, n_faces if normal_iterations > 0 else 0), device
+    )
     normal_areas = _launch.empty(n_faces, dtype=wp.float32, device=device)
-    spare_normals: wp.array[wp.vec3] | None = None
     for _ in range(iterations):
         _launch.launch(
             kernel_triangles.face_normals_and_areas,
@@ -4494,8 +4515,6 @@ def filter_two_step(
         )
         normals = face_field
         if normal_iterations > 0:
-            if spare_normals is None:
-                spare_normals = _launch.empty(n_faces, dtype=wp.vec3, device=device)
             normals = _smoothed_face_normals(
                 normals,
                 normal_areas,
@@ -4540,10 +4559,8 @@ def _meshlab_two_step(
     device = vertices.device
     n = vertices.size
     n_faces = faces.size // 3
-    positions = od.array.astype(vertices, wp.vec3d)
-    spare = _launch.empty(n, dtype=wp.vec3d, device=device)
-    field = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
-    spare_field = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
+    positions, spare, field, spare_field = _launch.carve(wp.vec3d, (n, n, n_faces, n_faces), device)
+    od.array.copyto(positions, vertices)
     no_areas = _launch.empty(0, dtype=wp.float32, device=device)
     threshold_cos = wp.float64(math.cos(math.radians(threshold)))
     rows = [faces, vertex_faces, vf_offsets]
@@ -4659,8 +4676,7 @@ class _MumfordShahNormals:
         self._offsets, self._starts, self._order = offsets, starts, order
         self._values = _launch.empty(count, dtype=wp.float64, device=device)
         self._matrix = od.array.bsr_from_csr(n_faces, n_faces, offsets, columns, self._values)
-        self._lengths = _launch.empty(3 * n_faces, dtype=wp.float32, device=device)
-        self._perimeters = _launch.empty(n_faces, dtype=wp.float32, device=device)
+        self._lengths, self._perimeters = _launch.carve(wp.float32, (3 * n_faces, n_faces), device)
         self._rhs = odt.empty_2d((3, n_faces), wp.float64, device=device)
         self._solution = odt.empty_2d((3, n_faces), wp.float64, device=device)
         self._solver: Callable[[], object] | None = None
@@ -4853,11 +4869,12 @@ def _incidence_rows(
     """
     device = indices.device
     n_entries = indices.size
-    offsets = _launch.zeros(n_rows + 1, dtype=wp.int32, device=device)
-    items = _launch.empty(n_entries, dtype=wp.int32, device=device)
+    # One zeroed allocation: the offsets, the items and the row counts.
+    offsets, items, counts = _launch.carve(
+        wp.int32, (n_rows + 1, n_entries, n_rows), device, zeroed=True
+    )
     if n_entries == 0:
         return offsets, items
-    counts = _launch.zeros(n_rows, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_scatter.count_occurrences, dim=n_entries, inputs=[indices, counts], device=device
     )
@@ -5113,7 +5130,7 @@ def _vec3_passes(
     if passes == 0:
         _launch.copy(out, vertices)
         return out
-    scratch = [_launch.empty(n, dtype=wp.vec3d, device=device) for _ in range(min(2, passes - 1))]
+    scratch = _launch.carve(wp.vec3d, (n,) * min(2, passes - 1), device)
     src: _Positions = vertices
     for index in range(passes):
         dst: _Positions = out if index == passes - 1 else scratch[index % 2]
