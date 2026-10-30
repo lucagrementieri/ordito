@@ -164,6 +164,9 @@ def ecl_hook_edges(edges: wp.array2d[wp.int32], parents: wp.array[wp.int32]) -> 
 
 @wp.kernel
 def ecl_flatten(parents: wp.array[wp.int32], out_labels: wp.array[wp.int32]) -> None:
+    # Not in place (``out_labels`` aliasing ``parents``, one allocation fewer): a concurrent find's
+    # path-halving store can land on a node after that node's thread stored its root, putting a
+    # stale ancestor back in its label. Measured on CUDA: 31-43 components on a one-component mesh.
     v = wp.int32(wp.tid())
     out_labels[v] = find_representative(parents, v)
 
