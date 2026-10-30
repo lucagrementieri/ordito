@@ -137,12 +137,13 @@ def rasterize_owner(
     Resolve per-pixel triangle ownership, and validate the vertices, over ``max(n_faces, n_uv)``.
 
     A face thread takes the pixels its triangle covers with ``wp.atomic_min``, so the lowest face
-    index covering each pixel wins. A vertex thread is the rasterizers' input check:
-    ``out_flags[0] = 1`` for an out-of-range finite UV and, given ``labels`` (empty for the
-    continuous rasterizer), ``out_flags[1] = 1`` for a label below 0. The two halves share a
-    launch because neither reads what the other writes: an out-of-range UV only lands its pixel
-    window on the clamped image border, and the wrapper reads the flags before anything reads the
-    owners.
+    index covering each pixel wins. A vertex thread is the rasterizers' input check: it lowers
+    ``out_flags[0]`` to ``0`` for an out-of-range finite UV and, given ``labels`` (empty for the
+    continuous rasterizer), ``out_flags[1]`` for a label below 0. The flags are the two slots
+    behind the owner image in its allocation, so they arrive holding the owner sentinel and a flag
+    is raised when it no longer does. The two halves share a launch because neither reads what the
+    other writes: an out-of-range UV only lands its pixel window on the clamped image border, and
+    the wrapper reads the flags before anything reads the owners.
     """
     t = wp.int32(wp.tid())
     if t < faces.shape[0] // 3:
@@ -153,10 +154,11 @@ def rasterize_owner(
                 if _covered(bary):
                     wp.atomic_min(out_owner, row, col, t)
     if t < uv.shape[0]:
-        flag_uv_out_of_range(uv[t], out_flags)
+        if _uv_out_of_range(uv[t]):
+            wp.atomic_min(out_flags, 0, wp.int32(0))
         if labels.shape[0] > 0:
             if labels[t] < 0:
-                wp.atomic_max(out_flags, 1, wp.int32(1))
+                wp.atomic_min(out_flags, 1, wp.int32(0))
 
 
 @wp.kernel

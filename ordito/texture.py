@@ -282,22 +282,32 @@ def _rasterize_owner(
         If any finite UV lies outside ``[0, 1]``, or any of ``labels`` is negative.
     """
     device = uv.device
-    owner = _launch.full((resolution, resolution), _OWNER_SENTINEL, dtype=wp.int32, device=device)
+    # The owner image and, behind it, the owner pass's two flags: one allocation and one fill,
+    # the flags raised by lowering them below the sentinel.
+    n_pixels = resolution * resolution
+    owner_and_flags = _launch.full(n_pixels + 2, _OWNER_SENTINEL, dtype=wp.int32, device=device)
+    owner = _launch.view(owner_and_flags, 0, n_pixels).reshape((resolution, resolution))
     n_threads = max(faces.size // 3, uv.size)
     if n_threads == 0:
         return odt.as_array2d(owner, wp.int32)
-    flags = _launch.zeros(2, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_texture.rasterize_owner,
         dim=n_threads,
-        inputs=[uv, faces, labels, resolution, owner, flags],
+        inputs=[
+            uv,
+            faces,
+            labels,
+            resolution,
+            owner,
+            _launch.view(owner_and_flags, n_pixels, n_pixels + 2),
+        ],
         device=device,
     )
     # One readback of both flags: nothing can raise without bringing them to the host.
-    uv_flag, label_flag = (int(flag) for flag in read_values(flags, 0, 2))
-    if uv_flag != 0:
+    uv_flag, label_flag = (int(flag) for flag in read_values(owner_and_flags, n_pixels, 2))
+    if uv_flag != _OWNER_SENTINEL:
         raise ValueError("UV coordinates must be in the range [0, 1]")
-    if label_flag != 0:
+    if label_flag != _OWNER_SENTINEL:
         raise ValueError("Attribute values must be greater than or equal to 0")
     return odt.as_array2d(owner, wp.int32)
 
