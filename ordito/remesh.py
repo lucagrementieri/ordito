@@ -5636,15 +5636,19 @@ def _split_ranked_edges(
     # The same launch fills the vertex buffer: the prefix copy, and the caller's positions or else
     # the midpoints.
     new_vertices = _launch.empty(n_vertices + n_split, dtype=wp.vec3, device=device)
-    child_counts = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    # ``array.counts_to_offsets``' total-terminated form, the counts written straight into its tail.
+    face_offsets = _launch.empty(n_faces + 1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_remesh.split_child_counts_and_midpoints,
         dim=max(n_faces, n_edges, n_vertices),
         inputs=[corner_edge, split_mask, vertices, edges, offsets, split_positions],
-        outputs=[child_counts, new_vertices],
+        outputs=[face_offsets, new_vertices],
         device=device,
     )
-    face_offsets, n_out_faces = od.array.counts_to_offsets(child_counts)
+    tail = _launch.view(face_offsets, 1, n_faces + 1)
+    _launch.array_scan(tail, out_array=tail, inclusive=True)
+    # The face total sizes the outputs.
+    n_out_faces = int(read_scalar(face_offsets, n_faces))
     out_faces = odt.empty_2d((n_out_faces, 3), wp.int32, device=device)
     # ``None`` reaches the kernel as an empty array, which ``write_split_children`` skips.
     out_index = (

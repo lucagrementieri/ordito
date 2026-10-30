@@ -458,15 +458,17 @@ def split_child_counts_and_midpoints(
     unique_edges: wp.array2d[wp.int32],
     offsets: wp.array[wp.int32],
     split_positions: wp.array[wp.vec3],
-    out_counts: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
     out_vertices: wp.array[wp.vec3],
 ) -> None:
     # Three independent writes of one refine pass, over ``max(n_faces, n_edges, n_vertices)``
     # threads:
     #
     # - how many triangles face ``t`` becomes under ``emit_size_faces``' templates: one more than
-    #   the number of its edges being split. Scanned, this is each face's first output row, so the
-    #   emit pass writes the compact buffer directly rather than four fixed slots and a compaction;
+    #   the number of its edges being split, into entry ``t + 1`` of the ``n_faces + 1`` offsets,
+    #   behind the leading zero thread 0 writes, so the buffer needs no fill. Its tail scanned in
+    #   place, entry ``t`` is each face's first output row, so the emit pass writes the compact
+    #   buffer directly rather than four fixed slots and a compaction;
     # - vertex ``t`` copied into the prefix of the grown vertex buffer;
     # - the new vertices in its tail: with an empty ``split_positions`` (``None`` at launch), each
     #   split edge ``t``'s midpoint at its rank -- the rule ``split_corner_midpoints`` reads from
@@ -474,12 +476,14 @@ def split_child_counts_and_midpoints(
     #   ``t``, one per split edge in rank order.
     t = wp.int32(wp.tid())
     n_vertices = vertices.shape[0]
-    if t < out_counts.shape[0]:
+    if t == 0:
+        out_offsets[0] = wp.int32(0)
+    if t < out_offsets.shape[0] - 1:
         count = wp.int32(1)
         for k in range(3):
             if split_mask[corner_edge[t * 3 + k]]:
                 count += 1
-        out_counts[t] = count
+        out_offsets[t + 1] = count
     if t < n_vertices:
         out_vertices[t] = vertices[t]
     if split_positions.shape[0] > 0:
