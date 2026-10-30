@@ -146,6 +146,24 @@ def gl_context() -> Iterator[moderngl.Context]:
     ctx.release()
 
 
+def _gl_subpixel_bits(ctx: moderngl.Context) -> int | None:
+    """
+    Return the sub-pixel bits ``ctx``'s renderer snaps vertices to before interpolating.
+
+    Measured on the anisotropic lattice below, both resolutions: NVIDIA's driver interpolates at
+    vertices snapped to 8 bits, rounding to nearest (ordito snapped at 8 bits within 6e-07, at 6 or
+    10 bits 1.8e-03 / 3.4e-04); Mesa's llvmpipe (CI's renderer) interpolates at the unsnapped
+    positions (ordito unsnapped within 1.3e-06, at 8 bits 3.2e-04). ``None`` is no snapping. An
+    unmeasured renderer skips, naming itself, rather than guessing a rule.
+    """
+    renderer = ctx.info["GL_RENDERER"]
+    if "NVIDIA" in renderer:
+        return 8
+    if "llvmpipe" in renderer:
+        return None
+    pytest.skip(f"no measured sub-pixel snapping rule for the OpenGL renderer {renderer!r}")
+
+
 def _grid_uv_mesh(
     n: int, pad: float = 0.05
 ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.int32]]:
@@ -204,14 +222,16 @@ def test_rasterize_attribute_matches_opengl(
     gl_context: moderngl.Context, device: str, resolution: int, unsnapped_atol: float
 ):
     """
-    Class A at ``subpixel_bits=8``: OpenGL's image, coverage and values, on NVIDIA's driver.
+    Class A at the renderer's own snapping: OpenGL's image, coverage and values.
 
-    OpenGL snaps every vertex to its sub-pixel grid before it tests coverage and interpolates, and
-    the driver here keeps 8 bits, rounding to nearest: snapped the same way, ordito's image equals
-    it at the standard tolerance (measured 3.9e-07 in a NumPy transcription, both resolutions).
-    Unsnapped, the values carry that position error times the field's gradient, measured max
-    **3.03e-04** at 64 px and **6.84e-05** at 256 px (attributes in ``[1, 2]``), which the second
-    half still bounds, at ``unsnapped_atol`` (3.3x and 3.7x), so the default stays pinned.
+    A renderer may snap every vertex to a sub-pixel grid before it interpolates. NVIDIA's driver
+    keeps 8 bits, rounding to nearest; Mesa's llvmpipe (CI's renderer) interpolates unsnapped
+    (``_gl_subpixel_bits``). Snapped the renderer's way, ordito's image equals it at the standard
+    tolerance (measured 3.9e-07 in a NumPy transcription, both resolutions). Against NVIDIA's
+    snapped image the unsnapped default carries that position error times the field's gradient,
+    measured max **3.03e-04** at 64 px and **6.84e-05** at 256 px (attributes in ``[1, 2]``),
+    which the second half still bounds, at ``unsnapped_atol`` (3.3x and 3.7x), so the default stays
+    pinned.
 
     The coverage masks are compared with ``array_equal``. OpenGL's top-left fill rule and ordito's
     lowest-face owner only part ways on a pixel centre lying exactly on a *boundary* edge; on a
@@ -231,7 +251,8 @@ def test_rasterize_attribute_matches_opengl(
 
     The bug class this excludes: a wrong barycentric interpolation, a channel permutation, an
     off-by-one in the pixel-centre offset, a UV-to-NDC sign error or axis swap, a snapping scale
-    off by a factor of two (6 or 10 bits read 1.8e-03 and 3.4e-04 at 64 px), and any coverage rule
+    off by a factor of two (on NVIDIA's driver 6 or 10 bits read 1.8e-03 and 3.4e-04 at 64 px), and
+    any coverage rule
     that differs on a single pixel.
     """
     n_channels = 5
@@ -249,7 +270,7 @@ def test_rasterize_attribute_matches_opengl(
     uv_wp, faces_wp = _upload_uv_mesh(uv_np, faces_np, device)
     attribute_wp = _float_rows(attribute_np, device)
     snapped_wp = od.texture.rasterize_attribute(
-        uv_wp, faces_wp, attribute_wp, resolution, subpixel_bits=8
+        uv_wp, faces_wp, attribute_wp, resolution, subpixel_bits=_gl_subpixel_bits(gl_context)
     ).numpy()
     image_wp = od.texture.rasterize_attribute(uv_wp, faces_wp, attribute_wp, resolution).numpy()
 
@@ -279,8 +300,8 @@ def test_rasterize_discrete_attribute_matches_opengl(
     """
     Class B (equal coverage; equal labels outside a named argmax-tie band), via one-hot.
 
-    Snapped as OpenGL snaps (``subpixel_bits=8``, see the continuous test above) the labels are
-    equal at every covered pixel but exact ties, which the reference breaks by its own rounding;
+    Snapped as the renderer snaps (``_gl_subpixel_bits``, see the continuous test above) the labels
+    are equal at every covered pixel but exact ties, which the reference breaks by its own rounding;
     the default, unsnapped, is what the rest of this docstring describes.
 
     OpenGL has no per-pixel argmax, so the reference rasterizes the labels **one-hot** as a
@@ -335,7 +356,7 @@ def test_rasterize_discrete_attribute_matches_opengl(
     assert np.array_equal(class_wp[decided], class_gl[decided])
 
     snapped_wp = od.texture.rasterize_discrete_attribute(
-        uv_wp, faces_wp, labels_wp, resolution, subpixel_bits=8
+        uv_wp, faces_wp, labels_wp, resolution, subpixel_bits=_gl_subpixel_bits(gl_context)
     ).numpy()
     tied = covered_gl & (top_two[:, :, 1] - top_two[:, :, 0] < 1e-5)
     assert np.array_equal(snapped_wp >= 0, covered_gl)
