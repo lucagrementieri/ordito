@@ -362,13 +362,31 @@ def vertex_face_adjacency(
             _launch.zeros(row_count + 1, dtype=wp.int32, device=device),
         )
 
-    counts = _launch.zeros(row_count, dtype=wp.int32, device=device)
     # A flat face buffer *is* the corner -> vertex map, so one launch over all 3 * n_faces corners
-    # gives each vertex its incident-face count.
+    # gives each vertex its incident-face count. The counts are taken in the offsets' own buffer
+    # and scanned there in place: behind the leading zero for the sorted fill, one slot further
+    # on for the scatter, whose atomics advance each row's start to its end.
+    deterministic = is_deterministic()
+    lead = 1 if deterministic else 2
+    buffer = _launch.zeros(row_count + lead, dtype=wp.int32, device=device)
+    counts = _launch.view(buffer, lead, row_count + lead)
     _launch.launch(
         kernel_scatter.count_occurrences, dim=3 * n_faces, inputs=[faces, counts], device=device
     )
-    return vertex_face_adjacency_from_counts(faces, counts)
+    _launch.array_scan(counts, out_array=counts, inclusive=True)
+    offsets = _launch.view(buffer, 0, row_count + 1)
+    vertex_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    if deterministic:
+        _fill_sorted_vertex_faces(faces, row_count, vertex_faces)
+    else:
+        _launch.launch(
+            kernel_adjacency.scatter_vertex_faces_to_offsets,
+            dim=n_faces,
+            inputs=[faces],
+            outputs=[buffer, vertex_faces],
+            device=device,
+        )
+    return vertex_faces, offsets
 
 
 def vertex_face_adjacency_from_counts(
@@ -438,13 +456,7 @@ def vertex_face_adjacency_from_counts(
     tail = _launch.view(offsets, 1, row_count + 1)
     _launch.array_scan(counts, out_array=tail, inclusive=True)
     if is_deterministic():
-        # The stable sort of the face buffer lists each vertex's corners in ascending order, so its
-        # permutation's faces are the rows in ascending face order: the same on every run, where
-        # the scatter below fills each row in the order its atomics commit.
-        _, corner_order = od.array.sort_and_argsort(
-            faces, end_bit=max(1, (row_count - 1).bit_length())
-        )
-        _launch.map(kernel_adjacency.corner_face, corner_order, out=vertex_faces)
+        _fill_sorted_vertex_faces(faces, row_count, vertex_faces)
         return vertex_faces, offsets
     # The counts are spent once scanned, so their buffer becomes the scatter's per-row cursor,
     # counting each row's free slots down to zero: no second buffer and no re-zeroing.
@@ -455,6 +467,20 @@ def vertex_face_adjacency_from_counts(
         device=device,
     )
     return vertex_faces, offsets
+
+
+def _fill_sorted_vertex_faces(
+    faces: wp.array[wp.int32], row_count: int, out_vertex_faces: wp.array[wp.int32]
+) -> None:
+    """
+    Fill the vertex-face rows in ascending face order, from one stable sort of the face buffer.
+
+    The sort lists each vertex's corners in ascending order, so its permutation's faces are the
+    rows in ascending face order: the same on every run, where the atomic scatter fills each row
+    in the order its atomics commit.
+    """
+    _, corner_order = od.array.sort_and_argsort(faces, end_bit=max(1, (row_count - 1).bit_length()))
+    _launch.map(kernel_adjacency.corner_face, corner_order, out=out_vertex_faces)
 
 
 def face_adjacency_unshared(

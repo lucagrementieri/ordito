@@ -380,6 +380,21 @@ def scatter_vertex_faces(
         out_vertex_faces[offsets[v + 1] - wp.atomic_add(cursor, v, -1)] = f
 
 
+@wp.kernel
+def scatter_vertex_faces_to_offsets(
+    faces: wp.array[wp.int32], out_offsets: wp.array[wp.int32], out_vertex_faces: wp.array[wp.int32]
+) -> None:
+    # ``scatter_vertex_faces`` without its cursor buffer, for a caller that counted the corners
+    # into ``out_offsets[2:]`` and scanned them there: ``out_offsets[v + 1]`` then holds row
+    # ``v``'s start, each atomic hands out the row's next slot from the front (the slots go in the
+    # same order as there), and the entry ends at row ``v``'s end, row ``v + 1``'s start. So
+    # ``out_offsets[: n_vertices + 1]`` ends as the CSR offsets, its leading zero never written.
+    f = wp.int32(wp.tid())
+    for k in range(3):
+        v = faces[f * 3 + k]
+        out_vertex_faces[wp.atomic_add(out_offsets, v + 1, 1)] = f
+
+
 @wp.func
 def corner_face(corner: wp.int32) -> wp.int32:
     """Return the face a flat face-buffer corner belongs to."""
