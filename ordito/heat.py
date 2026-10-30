@@ -1635,9 +1635,19 @@ def vector_heat_operators(
         else:
             edge_sums = _edge_length_sums(vertices, pattern)
 
+    vector_values = None
     if scalar_operators is None:
-        scalar_operators, mass = _heat_operators(
-            vertices, faces, t, edge_sums=edge_sums, pattern=pattern
+        # The scalar bundle is assembled here, so its row kernel writes the vector system's rows
+        # too, from the transport angles formed first.
+        if pattern is not None and transport_angles is None:
+            transport_angles, rings = _transport_angles_and_rings(vertices, faces)
+        scalar_operators, mass, vector_values = _heat_operators(
+            vertices,
+            faces,
+            t,
+            edge_sums=edge_sums,
+            pattern=pattern,
+            transport_angles=transport_angles,
         )
         built = _SCALAR_BUILDS[scalar_operators[0]]
     elif built is not None:
@@ -1656,36 +1666,37 @@ def vector_heat_operators(
         # are ``cotmatrix_entries``': the ``float32`` table a bundle assembled from positions
         # already holds (the ``float64`` one is that table widened on write, and the row kernel
         # widens on read), formed here for any other bundle.
-        cot_entries = (
-            scalar_operators[5]
-            if built is not None and built.extrinsic_cot
-            else cotmatrix_entries(vertices, faces, dtype=wp.float64)
-        )
-        if transport_angles is None:
-            transport_angles, rings = _transport_angles_and_rings(vertices, faces)
         _, _, offsets, columns, run_start, keys, count, order = pattern
-        vector_values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
-        _launch.launch(
-            kernel_heat.VECTOR_HEAT_SYSTEM_ROWS[cot_entries.dtype],
-            dim=n_vertices,
-            inputs=[
-                offsets,
-                columns,
-                run_start,
-                keys,
-                wp.int32(count),
-                order,
-                faces,
-                cot_entries,
-                transport_angles,
-                mass,
-                wp.float64(1.0 if t is None else t),
-                edge_sums,
-                wp.int32(1 if t is None else 0),
-            ],
-            outputs=[vector_values],
-            device=device,
-        )
+        if vector_values is None:
+            cot_entries = (
+                scalar_operators[5]
+                if built is not None and built.extrinsic_cot
+                else cotmatrix_entries(vertices, faces, dtype=wp.float64)
+            )
+            if transport_angles is None:
+                transport_angles, rings = _transport_angles_and_rings(vertices, faces)
+            vector_values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
+            _launch.launch(
+                kernel_heat.VECTOR_HEAT_SYSTEM_ROWS[cot_entries.dtype],
+                dim=n_vertices,
+                inputs=[
+                    offsets,
+                    columns,
+                    run_start,
+                    keys,
+                    wp.int32(count),
+                    order,
+                    faces,
+                    cot_entries,
+                    transport_angles,
+                    mass,
+                    wp.float64(1.0 if t is None else t),
+                    edge_sums,
+                    wp.int32(1 if t is None else 0),
+                ],
+                outputs=[vector_values],
+                device=device,
+            )
         vector_system = od.array.bsr_from_csr(
             n_vertices, n_vertices, offsets, columns, vector_values
         )
@@ -1756,14 +1767,17 @@ def _heat_operators(
     pattern: MeshOperatorPattern | None = None,
     mass: Literal["barycentric", "voronoi"] = "barycentric",
     timestep: Literal["unique_edges", "face_edges"] = "unique_edges",
-) -> tuple[HeatOperators, wp.array[wp.float64]]:
+    transport_angles: wp.array[wp.float32] | None = None,
+) -> tuple[HeatOperators, wp.array[wp.float64], wp.array[wp.mat22d] | None]:
     """
     ``heat_operators``' assembly, returning the ``float64`` lumped mass it built alongside.
 
     ``vector_heat_operators`` reuses the mass for its own system, and hands over the edge-length
     sums it already reduced for the default timestep as ``edge_sums``: the connection Laplacian's
     sparsity is the cotangent Laplacian's, so the sums are the ones this would reduce -- and the
-    ``pattern`` it built them over, so the sparsity is built once for both.
+    ``pattern`` it built them over, so the sparsity is built once for both. Given its
+    ``transport_angles``, the row kernel also writes the vector system's values over the pattern,
+    returned third (``None`` otherwise, or for a mesh with no faces).
     """
     # Per-face half-cotangent weights (float32, O(1) and safe) reused for both the Laplacian and
     # the divergence. The cotangent stiffness follows the igl convention (negative diagonal, so
@@ -1809,6 +1823,7 @@ def _heat_operators(
     # The two preconditioners are mesh-only, so they belong here rather than in every solve. See
     # Notes.
     n_vertices = vertices.size
+    vector_values = None
     if n_faces == 0:
         laplacian = od.array.empty_square_bsr(n_vertices, wp.float64, device)
         heat_values = _launch.empty_like(laplacian.values)
@@ -1836,6 +1851,8 @@ def _heat_operators(
         laplacian_values = _launch.view(values, 0, n_slots)
         heat_values = _launch.view(values, n_slots, 2 * n_slots)
         poisson_values = _launch.view(values, 2 * n_slots, 3 * n_slots)
+        if transport_angles is not None:
+            vector_values = _launch.empty(n_slots, dtype=wp.mat22d, device=device)
         _launch.launch(
             kernel_heat.HEAT_SYSTEM_ROWS[cot_entries.dtype],
             dim=n_vertices,
@@ -1852,9 +1869,11 @@ def _heat_operators(
                 wp.int32(1 if t is None else 0),
                 lumped,
                 wp.float64(1.0 if mass == "voronoi" else 3.0),
+                faces,
+                transport_angles,
             ],
             # The lumped mass over its own area sums, in place.
-            outputs=[laplacian_values, heat_values, poisson_values, lumped],
+            outputs=[laplacian_values, heat_values, poisson_values, lumped, vector_values],
             device=device,
         )
         laplacian = od.array.bsr_from_csr(
@@ -1882,7 +1901,7 @@ def _heat_operators(
         areas,
     )
     _SCALAR_BUILDS[heat_system] = _ScalarBuild(lumped, edge_sums, write_cot and not use_robust)
-    return operators, lumped
+    return operators, lumped, vector_values
 
 
 def _face_table(

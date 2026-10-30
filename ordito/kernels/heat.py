@@ -142,6 +142,44 @@ def upper_edge_length_sum_and_count(
     store_sum_and_count(i, t, total, n_edges, out_sum_and_count, stride)
 
 
+@wp.func
+def vector_heat_row(
+    i: wp.int32,
+    start: wp.int32,
+    end: wp.int32,
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.Float],
+    transport_angles: wp.array[wp.float32],
+    m: wp.float64,
+    factor: wp.float64,
+    out_values: wp.array[wp.mat22d],
+) -> None:
+    # Row ``i`` (pattern entries ``start`` to ``end``, not empty) of the vector heat system
+    # ``M + factor L_connection``: ``laplacian.connection_laplacian_rows``' entries
+    # (``connection_offdiagonal``, the diagonal ``sum w * I``) shifted as they are formed
+    # (``linalg.shifted_block_entry``), ``m`` the vertex's scalar lumped mass, which both of its
+    # tangent unknowns take.
+    weight = wp.float64(0.0)
+    slot = wp.int32(-1)
+    for k in range(start, end):
+        if columns[k] == i:
+            slot = k
+            continue
+        value, weight = connection_offdiagonal(
+            i, k, run_start, keys, count, order, faces, cot_entries, transport_angles, weight
+        )
+        out_values[k] = shifted_block_entry(value, factor, False, m)
+    if slot >= 0:
+        # The flag read off the pattern for the reason ``heat_system_rows`` gives.
+        diagonal = weight * wp.mat22d(1.0, 0.0, 0.0, 1.0)
+        out_values[slot] = shifted_block_entry(diagonal, factor, columns[slot] == i, m)
+
+
 @wp.kernel
 def heat_system_rows(
     offsets: wp.array[wp.int32],
@@ -156,10 +194,13 @@ def heat_system_rows(
     from_edges: wp.int32,
     area_sums: wp.array[wp.float64],
     mass_divisor: wp.float64,
+    faces: wp.array[wp.int32],
+    transport_angles: wp.array[wp.float32],
     out_laplacian: wp.array[wp.float64],
     out_heat: wp.array[wp.float64],
     out_poisson: wp.array[wp.float64],
     out_mass: wp.array[wp.float64],
+    out_vector: wp.array[wp.mat22d],
 ) -> None:
     # One row of the scalar heat method's three operators over a mesh operator pattern, one thread
     # per vertex: the ``float64`` cotangent Laplacian ``L`` (``laplacian.cotmatrix_rows``' entries,
@@ -170,6 +211,11 @@ def heat_system_rows(
     # ``heat_face_terms``' exact ``area_sums`` over ``mass_divisor`` -- three for the barycentric
     # lumping (``scatter.scale_face_sums``), one for the Voronoi shares, already the mass -- and
     # may be ``area_sums`` itself: each thread reads its own vertex's sum before it writes its mass.
+    #
+    # A non-empty ``out_vector`` also takes the row of the vector heat system at ``t`` (``-scale``)
+    # over the same pattern and table, ``vector_heat_system_rows``' (``vector_heat_row``), for a
+    # vector assembly that builds its scalar bundle alongside: the two kernels differ only in that
+    # this one has the mass in hand rather than reading it back.
     i = wp.int32(wp.tid())
     m = area_sums[i] / mass_divisor
     out_mass[i] = m
@@ -178,6 +224,23 @@ def heat_system_rows(
     if end == start:
         return
     factor = shift_factor(scale, edge_sum_and_count, from_edges)
+    if out_vector.shape[0] > 0:
+        vector_heat_row(
+            i,
+            start,
+            end,
+            columns,
+            run_start,
+            keys,
+            count,
+            order,
+            faces,
+            cot_entries,
+            transport_angles,
+            m,
+            shift_factor(-scale, edge_sum_and_count, from_edges),
+            out_vector,
+        )
     total = wp.float64(0.0)
     slot = wp.int32(-1)
     for k in range(start, end):
@@ -274,32 +337,31 @@ def vector_heat_system_rows(
     from_edges: wp.int32,
     out_values: wp.array[wp.mat22d],
 ) -> None:
-    # One row of the vector heat system ``M + factor L_connection`` over a mesh operator pattern:
-    # ``laplacian.connection_laplacian_rows``' entries (``connection_offdiagonal``, the diagonal
-    # ``sum w * I``) shifted as they are formed (``linalg.shift_factor`` and
-    # ``shifted_block_entry``, ``factor = t``), so the connection Laplacian itself is never stored.
-    # ``mass`` is the scalar lumped mass, which both of a vertex's tangent unknowns take.
+    # One row of the vector heat system ``M + factor L_connection`` over a mesh operator pattern
+    # (``vector_heat_row``, ``linalg.shift_factor`` with ``factor = t``), so the connection
+    # Laplacian itself is never stored, beside a scalar bundle built earlier: ``mass`` is its
+    # lumped mass. ``heat_system_rows`` writes the same row when it builds that bundle alongside.
     i = wp.int32(wp.tid())
     start = offsets[i]
     end = offsets[i + 1]
     if end == start:
         return
-    factor = shift_factor(scale, edge_sum_and_count, from_edges)
-    m = mass[i]
-    weight = wp.float64(0.0)
-    slot = wp.int32(-1)
-    for k in range(start, end):
-        if columns[k] == i:
-            slot = k
-            continue
-        value, weight = connection_offdiagonal(
-            i, k, run_start, keys, count, order, faces, cot_entries, transport_angles, weight
-        )
-        out_values[k] = shifted_block_entry(value, factor, False, m)
-    if slot >= 0:
-        # The flag read off the pattern for the reason ``heat_system_rows`` gives.
-        diagonal = weight * wp.mat22d(1.0, 0.0, 0.0, 1.0)
-        out_values[slot] = shifted_block_entry(diagonal, factor, columns[slot] == i, m)
+    vector_heat_row(
+        i,
+        start,
+        end,
+        columns,
+        run_start,
+        keys,
+        count,
+        order,
+        faces,
+        cot_entries,
+        transport_angles,
+        mass[i],
+        shift_factor(scale, edge_sum_and_count, from_edges),
+        out_values,
+    )
 
 
 @wp.func
@@ -2074,10 +2136,13 @@ def _register_overloads() -> None:
                 wp.int32,
                 f64,
                 wp.float64,
+                i32,
+                wp.array[wp.float32],
                 f64,
                 f64,
                 f64,
                 f64,
+                wp.array[wp.mat22d],
             ]
             for d in (wp.float32, wp.float64)
         },
