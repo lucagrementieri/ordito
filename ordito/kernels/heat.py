@@ -587,7 +587,11 @@ def lower_front_label(
 ) -> None:
     # Commit an offer below the round's label of ``v``: an ``atomic_min``, exact and independent of
     # arrival order, and the round's progress flag (a plain store; every writer stores ``1``).
-    if offer < labels[v]:
+    # ``out_labels[v]`` is first lowered to the round's own label, which it may still be above.
+    label = labels[v]
+    if label < out_labels[v]:
+        wp.atomic_min(out_labels, v, label)
+    if offer < label:
         wp.atomic_min(out_labels, v, offer)
         out_state[LOOP_PROGRESS] = 1
 
@@ -601,8 +605,10 @@ def fast_marching_pass(
     out_state: wp.array[wp.int32],
 ) -> None:
     # One face's offers to its three corners from the round's ``labels``, lowered into
-    # ``out_labels`` (which holds ``labels`` on entry: the wrapper copies each round's answer
-    # back over its input). Every offer reads the previous round only, so a round is a pure
+    # ``out_labels``, which holds the round before ``labels`` on entry (the wrapper alternates
+    # the two buffers): labels only fall, so lowering each corner to ``labels`` first
+    # (``lower_front_label``) makes the result ``labels`` lowered by the offers, a vertex on no
+    # face never changing. Every offer reads the previous round only, so a round is a pure
     # function of ``labels``, the same on both devices and under any interleaving.
     #
     # The serial label-correcting front pops the nearest vertex and offers its neighbours the
@@ -610,6 +616,10 @@ def fast_marching_pass(
     # run uncapped, its answer is this fixpoint (the triangle offer it skips is never below the
     # edge offer it made instead). A serial front that caps the times a vertex is re-opened
     # answers differently, by the order its queue happened to pop in.
+    #
+    # Declined (2026-10-30): choosing the direction here by the round's parity, so a captured
+    # body is one pass rather than two: 0.97-1.07x the copy-back it replaced on CUDA
+    # (``icosphere(4)`` to ``(7)``), where two passes a body ran 0.75-0.82x.
     f = wp.int32(wp.tid())
     i0 = faces[3 * f]
     i1 = faces[3 * f + 1]

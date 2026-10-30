@@ -655,27 +655,27 @@ def fast_marching_distance(
 
     relaxed = _launch.clone(labels)
     # The shared round-loop word (``kernels/array.py``), its condition seeded non-zero because
-    # ``wp.capture_while`` reads it before the first round. Each round lowers at least one distance
-    # or ends the loop; the cap of ``n_vertices`` rounds is insurance for a captured loop, never
-    # met on a mesh (rounds track the diameter in edges).
+    # ``wp.capture_while`` reads it before the first round. Each pair of rounds lowers at least one
+    # distance or ends the loop; the cap of ``n_vertices`` pairs is insurance for a captured loop,
+    # never met on a mesh (rounds track the diameter in edges).
     state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
     max_rounds = wp.int32(n_vertices)
 
-    def front_round() -> None:
-        # One pass into ``relaxed``, then its answer copied back over ``labels``: a captured body
-        # replays the pointers it recorded, so the two buffers cannot swap names between rounds,
-        # and the pass needs ``relaxed`` to hold ``labels`` on entry.
-        _launch.launch(
-            kernel_heat.fast_marching_pass,
-            dim=n_faces,
-            inputs=[vertices, faces, labels],
-            outputs=[relaxed, state],
-            device=device,
-        )
-        _launch.copy(labels, relaxed)
+    def front_rounds() -> None:
+        # Two rounds, ``labels`` into ``relaxed`` and back: a captured body replays the pointers it
+        # recorded, so the buffers cannot swap names between bodies, and the second round leaves
+        # the answer in ``labels``. A round past the fixpoint changes nothing.
+        for source, target in ((labels, relaxed), (relaxed, labels)):
+            _launch.launch(
+                kernel_heat.fast_marching_pass,
+                dim=n_faces,
+                inputs=[vertices, faces, source],
+                outputs=[target, state],
+                device=device,
+            )
         _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)
 
-    run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), front_round)
+    run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), front_rounds)
     return labels
 
 
