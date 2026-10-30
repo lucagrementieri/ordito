@@ -22,8 +22,10 @@ Modes:
 * ``--census-update``: rewrite the budget from this run, keeping each row's ``exempt`` reason. The
   run's rows are merged into the budget; with ``--census-strict`` too, the run is the whole budget
   and a row it did not count is dropped.
-* ``--census-report=PATH``: also write every row's counts and launch sequence (kernel, dim, the
-  ``ordito`` line that issued it) as JSON lines -- an exploration aid, not part of the gate.
+* ``--census-report=PATH``: also write every row's counts and sequence as JSON lines: each launch
+  (kernel, dim, the ``ordito`` line that issued it) and each other counted operation (``<alloc>``,
+  ``<readback>``, ``<d2h>``, ...) with its ``ordito`` line -- an exploration aid, not part of the
+  gate.
 
 A budget row may carry ``"exempt": "<reason>"`` when its counts depend on convergence (an iterative
 solver's round count), which keeps it out of the comparison while still listing it.
@@ -129,7 +131,7 @@ def _count_native(core: Any, name: str, key: str) -> None:
     def counted(*args: Any) -> Any:
         if _STATE["armed"]:
             _COUNTS[key] += 1
-            if key in ("scan", "sort", "d2h", "sync", "graph_launch"):
+            if key != "launch":
                 _SEQUENCE.append((f"<{key}>", "-", _ordito_site()))
         return original(*args)
 
@@ -154,6 +156,7 @@ def _count_readbacks() -> None:
                 caller = frame.f_back if frame is not None else None
                 if caller is not None and caller.f_code.co_filename.startswith(_PACKAGE):
                     _COUNTS["readback"] += 1
+                    _SEQUENCE.append(("<readback>", "-", _ordito_site()))
             return _original(self, *args, **kwargs)
 
         setattr(wp.array, method, counted)
