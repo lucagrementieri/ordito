@@ -37,6 +37,11 @@ _BUCKETED_PAIRING_ON_CPU = False
 # sort. Below it the bucket build's extra launches outweigh the sort it replaces
 # (kernels/halfedge.py). The twin table takes the buckets at every size.
 _BUCKETED_MATES_FROM_HALFEDGES = 1 << 19
+# Below this many halfedges a CUDA ``halfedge_mates`` given a vertex-face CSR scans its rows
+# instead of sorting (kernels/halfedge.vertex_face_halfedge_mates); the CPU device scans them only
+# when the flag says so, the sort being cheaper there.
+_ROW_MATES_BELOW_HALFEDGES = 1 << 18
+_ROW_PAIRING_ON_CPU = False
 
 
 def halfedge_twins(
@@ -475,17 +480,26 @@ def halfedge_mates(
     n_vertices: int | None = None,
     *,
     return_key_order: Literal[False] = False,
+    vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
 ) -> wp.array[wp.int32]: ...
 
 
 @overload
 def halfedge_mates(
-    faces: wp.array[wp.int32], n_vertices: int | None = None, *, return_key_order: Literal[True]
+    faces: wp.array[wp.int32],
+    n_vertices: int | None = None,
+    *,
+    return_key_order: Literal[True],
+    vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32] | None]: ...
 
 
 def halfedge_mates(
-    faces: wp.array[wp.int32], n_vertices: int | None = None, *, return_key_order: bool = False
+    faces: wp.array[wp.int32],
+    n_vertices: int | None = None,
+    *,
+    return_key_order: bool = False,
+    vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
 ) -> wp.array[wp.int32] | tuple[wp.array[wp.int32], wp.array[wp.int32] | None]:
     """
     Every halfedge's partner on its undirected edge, whatever its direction, or how many share it.
@@ -515,6 +529,12 @@ def halfedge_mates(
         Also return the sort's permutation when the pairing sorted the edge keys, for a caller
         that wants some of the halfedges in key order
         ([`key_ordered_halfedges`][ordito.halfedge.key_ordered_halfedges]).
+    vertex_faces
+        ``(vertex_faces, offsets)`` of
+        [`vertex_face_adjacency`][ordito.adjacency.vertex_face_adjacency] over ``faces``, when the
+        caller holds them. A small mesh on a CUDA device then pairs its halfedges by scanning the
+        smaller of each edge's endpoint rows, with no sort; elsewhere they are not read. Trusted,
+        not checked. Either way the table is the same.
 
     Returns
     -------
@@ -525,6 +545,11 @@ def halfedge_mates(
         undirected key order, ties by index -- the order of
         [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys] -- or ``None`` when the
         pairing bucketed instead of sorting.
+
+    Raises
+    ------
+    RuntimeError
+        If ``faces`` and ``vertex_faces`` are not all on one device.
 
     See Also
     --------
@@ -548,12 +573,30 @@ def halfedge_mates(
     print(od.halfedge.halfedge_mates(faces).numpy().tolist())  # [3, -1, -1, 0, -1, -1]
     faces = wp.array([0, 1, 2, 0, 1, 3, 1, 0, 4], dtype=wp.int32)
     print(od.halfedge.halfedge_mates(faces).numpy()[[0, 3, 6]].tolist())  # [-2, -2, -2]
+    rows = od.adjacency.vertex_face_adjacency(faces)
+    mates = od.halfedge.halfedge_mates(faces, vertex_faces=rows)
+    print(mates.numpy()[[0, 3, 6]].tolist())  # [-2, -2, -2]
     ```
     """
+    require_same_device(faces=faces, vertex_faces=vertex_faces)
     device = faces.device
     n_halfedges = faces.size // 3 * 3
     mates = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
     key_order: wp.array[wp.int32] | None = None
+    if (
+        vertex_faces is not None
+        and not return_key_order
+        and 0 < n_halfedges < _ROW_MATES_BELOW_HALFEDGES
+        and (wp.get_device(device).is_cuda or _ROW_PAIRING_ON_CPU)
+    ):
+        _launch.launch(
+            kernel_halfedge.vertex_face_halfedge_mates,
+            dim=n_halfedges,
+            inputs=[faces, *vertex_faces],
+            outputs=[mates],
+            device=device,
+        )
+        return mates
     sorted_pairing = _sorted_pairing(faces, n_vertices)
     if n_halfedges == 0:
         key_order = mates

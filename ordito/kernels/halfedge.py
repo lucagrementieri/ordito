@@ -227,6 +227,63 @@ def bucketed_halfedge_mates(
 
 
 @wp.func
+def vertex_face_halfedge_mate(
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    h: wp.int32,
+) -> wp.int32:
+    # ``bucketed_halfedge_mate`` from a vertex-face CSR (``adjacency.vertex_face_adjacency``) the
+    # caller holds: every face on the undirected edge of ``h`` lies in both endpoints' rows, so the
+    # smaller row (``edge_bucket_owner``'s choice: the row length is the corner count) is scanned
+    # for the face halfedges on the edge. A row names a face once per corner it has at the owner,
+    # so a degenerate face is visited up to three times: each visit adds ``6 / m`` per halfedge
+    # found, ``m`` the face's corners at the owner, and the sum is six times the count.
+    a, b = halfedge_endpoints(faces, h)
+    owner = a
+    other = b
+    if offsets[b + 1] - offsets[b] < offsets[a + 1] - offsets[a] or (
+        offsets[b + 1] - offsets[b] == offsets[a + 1] - offsets[a] and b < a
+    ):
+        owner = b
+        other = a
+    sixths = wp.int32(6)
+    partner = wp.int32(-1)
+    lowest = h
+    for slot in range(offsets[owner], offsets[owner + 1]):
+        g = vertex_faces[slot]
+        visits = wp.int32(0)
+        for k in range(3):
+            if faces[3 * g + k] == owner:
+                visits += 1
+        for k in range(3):
+            j = 3 * g + k
+            if j != h:
+                tail, head = halfedge_endpoints(faces, j)
+                if (tail == owner and head == other) or (tail == other and head == owner):
+                    sixths += 6 // visits
+                    partner = j
+                    lowest = wp.min(lowest, j)
+    return mate_from_run(sixths // 6, partner, lowest)
+
+
+@wp.kernel
+def vertex_face_halfedge_mates(
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    out_mates: wp.array[wp.int32],
+) -> None:
+    # ``halfedge.halfedge_mates(vertex_faces=)``: the table ``sorted_halfedge_mates`` and
+    # ``bucketed_halfedge_mates`` write, from a vertex-face CSR the caller already built, so
+    # neither the edge-key sort nor the buckets' counting sort is made. Against the sort on
+    # scrambled icospheres, CUDA: 0.23x at 5 k faces, 0.44x at 82 k, 1.39x at 0.33 M, 1.55x at
+    # 1.3 M (``halfedge._ROW_MATES_BELOW_HALFEDGES``); CPU 5.7-8.3x at every size, so the CPU sorts.
+    h = wp.int32(wp.tid())
+    out_mates[h] = vertex_face_halfedge_mate(faces, vertex_faces, offsets, h)
+
+
+@wp.func
 def sorted_run_mate(
     sorted_keys: wp.array[wp.uint64], order: wp.array[wp.int32], i: wp.int32
 ) -> wp.int32:

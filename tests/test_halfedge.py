@@ -639,11 +639,25 @@ def _expected_mates(faces_np: np.ndarray) -> np.ndarray:
     return expected
 
 
-@pytest.mark.usefixtures("force_halfedge_buckets")
-@pytest.mark.parametrize("bounded", [True, False], ids=["buckets", "sort"])
+@pytest.fixture
+def force_row_mates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pair through a given vertex-face CSR on both devices (CUDA alone does by default)."""
+    monkeypatch.setattr(od.halfedge, "_ROW_PAIRING_ON_CPU", True)
+
+
+def _mates_by(faces: wp.array[wp.int32], n_vertices: int, builder: str) -> np.ndarray:
+    """``halfedge_mates`` through one builder: buckets, the key sort, or vertex-face rows."""
+    if builder == "vertex_faces":
+        rows = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+        return od.halfedge.halfedge_mates(faces, vertex_faces=rows).numpy()
+    return od.halfedge.halfedge_mates(faces, n_vertices if builder == "buckets" else None).numpy()
+
+
+@pytest.mark.usefixtures("force_halfedge_buckets", "force_row_mates")
+@pytest.mark.parametrize("builder", ["buckets", "sort", "vertex_faces"])
 @pytest.mark.parametrize("mesh_name", [*MESHES, "mobius"])
 def test_halfedge_mates_match_numpy_edge_grouping(
-    request: pytest.FixtureRequest, mesh_name: str, bounded: bool
+    request: pytest.FixtureRequest, mesh_name: str, builder: str
 ) -> None:
     """
     Class B: the mates are NumPy's grouping of trimesh's halfedge rows by undirected edge.
@@ -652,18 +666,17 @@ def test_halfedge_mates_match_numpy_edge_grouping(
     its sorted rows with ``np.unique`` gives each edge's halfedges, which name the codes (the
     partner of a pair, ``-1`` alone, ``-2 - lowest`` for three or more). Run through both
     builders on both devices: the per-vertex buckets (a vertex count given, size gate and CPU
-    forced open) and the key sort (no vertex count). ``mobius`` carries pairs wound the same
-    way, which a mate keeps and a twin does not.
+    forced open), the key sort (no vertex count) and a vertex-face CSR's rows (CPU forced open).
+    ``mobius`` carries pairs wound the same way, which a mate keeps and a twin does not.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = len(mesh_tm.vertices) if bounded else None
-    mates = od.halfedge.halfedge_mates(mesh_wp.indices, n_vertices).numpy()
+    mates = _mates_by(mesh_wp.indices, len(mesh_tm.vertices), builder)
     expected = _expected_mates(np.asarray(mesh_tm.faces))
     assert np.count_nonzero(expected >= 0) > 0
     assert np.array_equal(mates, expected)
 
 
-@pytest.mark.parametrize("bounded", [True, False], ids=["buckets", "sort"])
+@pytest.mark.parametrize("builder", ["buckets", "sort", "vertex_faces"])
 @pytest.mark.parametrize(
     ("faces", "n_vertices"),
     [
@@ -672,11 +685,13 @@ def test_halfedge_mates_match_numpy_edge_grouping(
         pytest.param([0, 1, 2, 1, 2, 3], 4, id="pair-wound-the-same-way"),
         pytest.param([0, 1, 2, 0, 1, 2], 3, id="duplicated-face"),
         pytest.param([0, 0, 1], 2, id="repeated-vertex"),
+        pytest.param([0, 0, 1, 1, 0, 2, 0, 1, 0], 3, id="repeated-vertex-pair"),
+        pytest.param([0, 0, 0, 0, 0, 1], 2, id="collapsed-face"),
     ],
 )
-@pytest.mark.usefixtures("force_halfedge_buckets")
+@pytest.mark.usefixtures("force_halfedge_buckets", "force_row_mates")
 def test_halfedge_mates_on_defects(
-    faces: list[int], n_vertices: int, bounded: bool, device: str
+    faces: list[int], n_vertices: int, builder: str, device: str
 ) -> None:
     """
     Class B: on each defect the mates are NumPy's grouping, by both builders.
@@ -684,11 +699,12 @@ def test_halfedge_mates_on_defects(
     The edges of three and four faces carry the ``-2 - lowest`` code on every member, which is
     what lets a consumer act on such an edge once (a leading unrelated face keeps ``lowest`` off
     halfedge 0, where a bare ``-2`` would read the same); the same-way pair and the duplicated face
-    are pairs, where ``halfedge_twins`` would reject them.
+    are pairs, where ``halfedge_twins`` would reject them. The repeated-vertex faces list a face
+    in a vertex-face row once per corner there, which the rows builder must not count twice.
     """
     faces_np = np.array(faces, dtype=np.int32)
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-    mates = od.halfedge.halfedge_mates(faces_wp, n_vertices if bounded else None).numpy()
+    mates = _mates_by(faces_wp, n_vertices, builder)
     assert np.array_equal(mates, _expected_mates(faces_np))
 
 
