@@ -433,6 +433,11 @@ def trace_from_vertices(
     out_counts: wp.array[wp.int32],
     out_points: wp.array[wp.vec3],
 ) -> None:
+    # Declined (2026-10-30): forming the start vertex's frame here from the angle-weighted normal
+    # sums instead of reading ``vertex_tangent_frames`` (one launch and three allocations fewer a
+    # call) was bit-identical but lengthened every ray's serial chain, in both the counting and the
+    # writing launch, more than the frame pass costs: CUDA, ``icosphere(6)``, 0.97-1.0x at 1-64
+    # rays, 1.05x at 256-4 096, 1.07x at one ray a vertex.
     r = wp.int32(wp.tid())
     length_epsilon = mean_length_epsilon(edge_length_total, n_halfedges)
     v = start_vertices[r]
