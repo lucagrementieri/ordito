@@ -1648,12 +1648,19 @@ class _FlipTopology:
         self._key_bits = max(1, (n_vertices * n_vertices - 1).bit_length())
         n = self._n_corners
         # ``radix_sort_pairs`` ping-pongs through the upper half of both buffers, so each is
-        # double width and only ``[:n]`` is data. One allocation per dtype: the keys and the face
-        # claims, then the order, the pair starts and their ranks.
-        self._keys, self.face_claim = _split_buffer(
-            _launch.empty(2 * n + self._n_faces, dtype=wp.uint64, device=self._device),
+        # double width and only ``[:n]`` is data. One allocation per dtype: the keys, the face
+        # claims and the edge-claim table, then the order, the pair starts and their ranks. The
+        # edge-claim table is sized from the row count a build reads back, but each row is two of
+        # the ``n`` halfedges, so ``_claim_table(n // 2)`` bounds it and a build only takes a
+        # prefix -- the whole table on a closed mesh.
+        self._edge_claim_store: wp.array[wp.uint64]
+        self._keys, self.face_claim, self._edge_claim_store = _split_buffer(
+            _launch.empty(
+                2 * n + self._n_faces + _claim_table(n // 2), dtype=wp.uint64, device=self._device
+            ),
             2 * n,
             self._n_faces,
+            _claim_table(n // 2),
         )
         # The order, the pair starts and their ranks, then the halfedge -> row map an incremental
         # build adopts (carved here so adopting it allocates nothing).
@@ -1944,12 +1951,18 @@ class _FlipTopology:
         self.unshared = odt.as_array2d(unshared.reshape((m, 2)), wp.int32)
         self.flip = _launch.empty(m, dtype=wp.bool, device=self._device)
         self.quad = odt.as_array2d(quad.reshape((m, 4)), wp.int32)
-        table = 1
-        while table < 4 * m + 1:
-            table <<= 1
-        self.edge_claim = _launch.empty(table, dtype=wp.uint64, device=self._device)
+        table = _claim_table(m)
+        self.edge_claim = _launch.view(self._edge_claim_store, 0, table)
         self.edge_claim_mask = table - 1
         self.claims_armed = False
+
+
+def _claim_table(rows: int) -> int:
+    """Return the edge-claim table size for ``rows`` flip rows: a power of two over ``4 * rows``."""
+    table = 1
+    while table < 4 * rows + 1:
+        table <<= 1
+    return table
 
 
 def _split_buffer(buffer: wp.array[odt.DType], *widths: int) -> list[wp.array[odt.DType]]:
