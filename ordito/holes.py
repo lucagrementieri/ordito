@@ -4091,13 +4091,18 @@ def join_closest_components(
     if rim is None or rim.rounds == 0:
         return _launch.clone(faces)
     rounds = rim.rounds
-    for done in range(1, rounds + 1):
-        rim.join(max_distance_sq)
-        # Only a distance bound can stop the joins before the components run out: then look at
-        # the device's verdict after rounds 1, 2, 4, ..., so a stop wastes at most as many rounds
-        # as it ran.
-        if max_distance is not None and done < rounds and done & (done - 1) == 0 and rim.done():
-            break
+    if wp.get_device(faces.device).is_cpu:
+        # The CPU device runs every round in one launch, which stops itself at the first round
+        # with no admissible pair.
+        rim.join(max_distance_sq, rounds)
+    else:
+        for done in range(1, rounds + 1):
+            rim.join(max_distance_sq)
+            # Only a distance bound can stop the joins before the components run out: then look
+            # at the device's verdict after rounds 1, 2, 4, ..., so a stop wastes at most as many
+            # rounds as it ran.
+            if max_distance is not None and done < rounds and done & (done - 1) == 0 and rim.done():
+                break
 
     # The patch triangles, appended in join order: one read of how many there are.
     n_patch = rim.patch_size()
@@ -4133,8 +4138,9 @@ class _JoinRim:
     change in the count of each key.
 
     The table, the labels and the patch live on the device and each round is one launch of
-    ``kernels/holes.join_round``, which pairs and bridges with nothing crossing to the host; the
-    rim is read once, to rank its labels, and the patch size once at the end.
+    ``kernels/holes.join_round``, which pairs and bridges with nothing crossing to the host (on the
+    CPU device every round is one launch, ``join_rounds``); the rim is read once, to rank its
+    labels, and the patch size once at the end.
     """
 
     def __init__(
@@ -4231,27 +4237,57 @@ class _JoinRim:
         table_wp = _launch.array(upload, dtype=wp.int32, device=device)
         return _JoinRim(vertices, table_wp, n_rows, n_labels, rounds)
 
-    def join(self, max_distance_sq: wp.float32) -> None:
-        """Launch one round: bridge the closest cross-component pair, if one is admissible."""
-        _launch.launch_tiled(
-            kernel_holes.join_round,
-            dim=[self._n_rows],
-            inputs=[
-                self._vertices,
-                self._rows,
-                self._component,
-                self._vertex_label,
-                max_distance_sq,
-                self._radix,
-                wp.int64(_NEAREST_KEY_SEED),
-                self._state,
-                self._best,
-                self._partner,
-                self.patch,
-            ],
-            block_dim=kernel_holes.CLOSEST_PAIR_BLOCK,
-            device=self._vertices.device,
-        )
+    def join(
+        self, max_distance_sq: wp.float32, rounds: int = 1, *, serial: bool | None = None
+    ) -> None:
+        """
+        Run ``rounds`` rounds: each bridges the closest cross-component pair, if one is admissible.
+
+        ``serial`` runs them in one launch of one block (``kernels/holes.join_rounds``), else one
+        launch a round with a block a row (``join_round``); the two edit alike. ``None`` takes the
+        one launch on the CPU device, whose blocks run in turn, and a launch a round elsewhere.
+        """
+        device = self._vertices.device
+        if serial is None:
+            serial = wp.get_device(device).is_cpu
+        seed = wp.int64(_NEAREST_KEY_SEED)
+        tables = [self._state, self._best, self._partner, self.patch]
+        if serial:
+            _launch.launch_tiled(
+                kernel_holes.join_rounds,
+                dim=[1],
+                inputs=[
+                    self._vertices,
+                    self._rows,
+                    self._component,
+                    self._vertex_label,
+                    max_distance_sq,
+                    self._radix,
+                    seed,
+                    wp.int32(rounds),
+                    *tables,
+                ],
+                block_dim=kernel_holes.CLOSEST_PAIR_BLOCK,
+                device=device,
+            )
+            return
+        for _ in range(rounds):
+            _launch.launch_tiled(
+                kernel_holes.join_round,
+                dim=[self._n_rows],
+                inputs=[
+                    self._vertices,
+                    self._rows,
+                    self._component,
+                    self._vertex_label,
+                    max_distance_sq,
+                    self._radix,
+                    seed,
+                    *tables,
+                ],
+                block_dim=kernel_holes.CLOSEST_PAIR_BLOCK,
+                device=device,
+            )
 
     def done(self) -> bool:
         """Whether a round has found no admissible pair (a readback)."""

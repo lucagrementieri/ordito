@@ -2185,75 +2185,53 @@ def holds_value(values: vec6i, value: wp.int32) -> wp.bool:
     return found
 
 
-@wp.kernel(enable_backward=False)
-def join_round(
+@wp.func
+def join_row_nearest(
     vertices: wp.array[wp.vec3],
+    rows: wp.array3d[wp.int32],
+    half: wp.int32,
+    n: wp.int32,
+    i: wp.int32,
+    lane: wp.int32,
+    max_distance_sq: wp.float32,
+    partner: wp.array[wp.int32],
+    best: wp.array[wp.int64],
+):
+    # Row ``i``'s nearest cross-component row, by the block's lanes (``partner[i]``), and its key
+    # offered to the round's best. Block-collective: every lane of the block calls it.
+    label = rows[half, i, 2]
+    position = vertices[rows[half, i, 0]]
+    best_sq = FLOAT32_INF_CONSTANT
+    best_row = wp.int32(-1)
+    for j in range(lane, n, wp.block_dim()):
+        if rows[half, j, 2] == label:
+            continue
+        update_argmin(best_sq, best_row, wp.length_sq(vertices[rows[half, j, 0]] - position), j)
+    best_sq, best_row = block_argmin(best_sq, best_row)
+    if lane == 0:
+        partner[i] = best_row
+        if best_row >= 0 and best_sq <= max_distance_sq:
+            wp.atomic_min(best, 0, pack_nearest_key(wp.sqrt(best_sq), i))
+
+
+@wp.func
+def join_bridge(
     rows: wp.array3d[wp.int32],
     component: wp.array[wp.int32],
     vertex_label: wp.array[wp.int32],
-    max_distance_sq: wp.float32,
     radix: wp.int64,
     seed: wp.int64,
+    half: wp.int32,
+    n: wp.int32,
+    lane: wp.int32,
     state: wp.array[wp.int32],
     best: wp.array[wp.int64],
     partner: wp.array[wp.int32],
     out_patch: wp.array[wp.int32],
-) -> None:
-    # One round of ``join_closest_components``: pick the closest cross-component pair of rim rows
-    # and bridge it, the whole round in one launch with nothing read back.
-    #
-    # The rim table lives on the device as ``rows[half, r] = (tail, head, component)``, sorted by
-    # ``rim_edge_key`` -- the order ``boundary.oriented_boundary_edges`` emits, whose row index is
-    # the pairing's tie-break -- with ``state[JOIN_PARITY]`` naming the current half and
-    # ``state[JOIN_COUNT]`` its rows. ``component`` maps each original rim label to its current
-    # component and ``vertex_label`` each rim vertex to its original label (``-1`` off the rim, read
-    # as the last label, the host's negative index). A component is a name only equality reads.
-    #
-    # The pairing: the globally closest pair of row tails carrying **different** components,
-    # reduced into one ``int64`` by ``pack_nearest_key`` -- "smallest distance, lowest row on a
-    # tie", so the answer is deterministic whatever the thread order. Block ``i`` finds row ``i``'s
-    # nearest cross-component partner (``partner[i]``), so the winning pair is the key's low half
-    # plus one lookup. Lanes stride the rows by ``wp.block_dim()`` with the serial walk's
-    # strict-``<`` ``update_argmin`` and ``block_argmin`` keeps the lowest across lanes: the serial
-    # walk's answer exactly, on the one CPU lane too. The scan is exhaustive, ``O(B^2)`` for ``B``
-    # rim rows: they are split across the components that exist, and an accelerated query would
-    # need a structure per round and a label predicate inside it, which nothing has measured a
-    # need for. One block per row because one thread per row walking every row was a short grid of
-    # long dependent chains.
-    #
-    # The bridge, by the block drawing the last ticket (the ``reduce.store_block_*`` pattern): the
-    # patch (``bridge_patch``) is appended to ``out_patch``; its edges that are rows close and the
-    # others open, wound as the patch winds them (``join_patch_edits``); every component a patch
-    # corner lies in merges into the smallest. The edited table is written, still key-sorted, into
-    # the other half: a kept row moves down past the closed rows below it and up past the opened
-    # keys below its own. A round with no admissible pair sets ``JOIN_DONE``, and every later
-    # launch returns at once.
-    i, lane = wp.tid()
-    if state[JOIN_DONE] != 0:
-        return
-    half = state[JOIN_PARITY]
-    n = state[JOIN_COUNT]
-    if i < n:
-        label = rows[half, i, 2]
-        position = vertices[rows[half, i, 0]]
-        best_sq = FLOAT32_INF_CONSTANT
-        best_row = wp.int32(-1)
-        for j in range(lane, n, wp.block_dim()):
-            if rows[half, j, 2] == label:
-                continue
-            update_argmin(best_sq, best_row, wp.length_sq(vertices[rows[half, j, 0]] - position), j)
-        best_sq, best_row = block_argmin(best_sq, best_row)
-        if lane == 0:
-            partner[i] = best_row
-            if best_row >= 0 and best_sq <= max_distance_sq:
-                wp.atomic_min(best, 0, pack_nearest_key(wp.sqrt(best_sq), i))
-    last = wp.int32(0)
-    if lane == 0:
-        last = last_ticket(take_ticket(state, JOIN_TICKET, wp.int32(0)), rows.shape[1])
-    if block_max(last) == 0:
-        return
-    thread_fence()
-
+):
+    # The round's bridge once every row has offered its key, by one block (every lane calls it):
+    # the patch, the edited table in the other half and the merged components, or ``JOIN_DONE``
+    # when no pair was admissible.
     key = best[0]
     if key == seed:
         if lane == 0:
@@ -2320,3 +2298,113 @@ def join_round(
         state[JOIN_PARITY] = other
         state[JOIN_TICKET] = 0
         best[0] = seed
+
+
+@wp.kernel(enable_backward=False)
+def join_round(
+    vertices: wp.array[wp.vec3],
+    rows: wp.array3d[wp.int32],
+    component: wp.array[wp.int32],
+    vertex_label: wp.array[wp.int32],
+    max_distance_sq: wp.float32,
+    radix: wp.int64,
+    seed: wp.int64,
+    state: wp.array[wp.int32],
+    best: wp.array[wp.int64],
+    partner: wp.array[wp.int32],
+    out_patch: wp.array[wp.int32],
+) -> None:
+    # One round of ``join_closest_components``: pick the closest cross-component pair of rim rows
+    # and bridge it, the whole round in one launch with nothing read back.
+    #
+    # The rim table lives on the device as ``rows[half, r] = (tail, head, component)``, sorted by
+    # ``rim_edge_key`` -- the order ``boundary.oriented_boundary_edges`` emits, whose row index is
+    # the pairing's tie-break -- with ``state[JOIN_PARITY]`` naming the current half and
+    # ``state[JOIN_COUNT]`` its rows. ``component`` maps each original rim label to its current
+    # component and ``vertex_label`` each rim vertex to its original label (``-1`` off the rim, read
+    # as the last label, the host's negative index). A component is a name only equality reads.
+    #
+    # The pairing: the globally closest pair of row tails carrying **different** components,
+    # reduced into one ``int64`` by ``pack_nearest_key`` -- "smallest distance, lowest row on a
+    # tie", so the answer is deterministic whatever the thread order. Block ``i`` finds row ``i``'s
+    # nearest cross-component partner (``partner[i]``), so the winning pair is the key's low half
+    # plus one lookup. Lanes stride the rows by ``wp.block_dim()`` with the serial walk's
+    # strict-``<`` ``update_argmin`` and ``block_argmin`` keeps the lowest across lanes: the serial
+    # walk's answer exactly, on the one CPU lane too. The scan is exhaustive, ``O(B^2)`` for ``B``
+    # rim rows: they are split across the components that exist, and an accelerated query would
+    # need a structure per round and a label predicate inside it, which nothing has measured a
+    # need for. One block per row because one thread per row walking every row was a short grid of
+    # long dependent chains.
+    #
+    # The bridge, by the block drawing the last ticket (the ``reduce.store_block_*`` pattern): the
+    # patch (``bridge_patch``) is appended to ``out_patch``; its edges that are rows close and the
+    # others open, wound as the patch winds them (``join_patch_edits``); every component a patch
+    # corner lies in merges into the smallest. The edited table is written, still key-sorted, into
+    # the other half: a kept row moves down past the closed rows below it and up past the opened
+    # keys below its own. A round with no admissible pair sets ``JOIN_DONE``, and every later
+    # launch returns at once.
+    i, lane = wp.tid()
+    if state[JOIN_DONE] != 0:
+        return
+    half = state[JOIN_PARITY]
+    n = state[JOIN_COUNT]
+    if i < n:
+        join_row_nearest(vertices, rows, half, n, i, lane, max_distance_sq, partner, best)
+    last = wp.int32(0)
+    if lane == 0:
+        last = last_ticket(take_ticket(state, JOIN_TICKET, wp.int32(0)), rows.shape[1])
+    if block_max(last) == 0:
+        return
+    thread_fence()
+    join_bridge(
+        rows, component, vertex_label, radix, seed, half, n, lane, state, best, partner, out_patch
+    )
+
+
+@wp.kernel(enable_backward=False)
+def join_rounds(
+    vertices: wp.array[wp.vec3],
+    rows: wp.array3d[wp.int32],
+    component: wp.array[wp.int32],
+    vertex_label: wp.array[wp.int32],
+    max_distance_sq: wp.float32,
+    radix: wp.int64,
+    seed: wp.int64,
+    rounds: wp.int32,
+    state: wp.array[wp.int32],
+    best: wp.array[wp.int64],
+    partner: wp.array[wp.int32],
+    out_patch: wp.array[wp.int32],
+) -> None:
+    # Up to ``rounds`` rounds of ``join_round`` by one block (``dim=1``): the rows' offers one row
+    # after another, then the bridge, until a round finds no admissible pair. The CPU engine: the
+    # CPU device runs a launch's blocks in turn, so a launch a round bought it no parallelism. Not
+    # for CUDA, where a round's rows are a block each.
+    # Rows offer through the same ``atomic_min`` of ``pack_nearest_key``, an order-free minimum, so
+    # every round's pair and edit are ``join_round``'s.
+    _block, lane = wp.tid()
+    for _round in range(rounds):
+        if state[JOIN_DONE] != 0:
+            return
+        half = state[JOIN_PARITY]
+        n = state[JOIN_COUNT]
+        for i in range(n):
+            join_row_nearest(vertices, rows, half, n, i, lane, max_distance_sq, partner, best)
+        # Lane 0's offers, then its edits and the state it advances, are read by every lane after
+        # each barrier; with one lane (the CPU device) both are free.
+        block_barrier()
+        join_bridge(
+            rows,
+            component,
+            vertex_label,
+            radix,
+            seed,
+            half,
+            n,
+            lane,
+            state,
+            best,
+            partner,
+            out_patch,
+        )
+        block_barrier()

@@ -595,10 +595,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("heat", "shift_and_orient"): frozenset({"phi"}),
     # The edge-based signed heat method's ``none`` constraint shifts its field the same way.
     ("heat", "shift_by_mean"): frozenset({"phi"}),
-    # ``join_closest_components``' round state, carried across its launches: the rim table edited
-    # in place, the component map, the state word, the running best key (decoded, then re-armed)
-    # and the per-row partners the decode reads.
-    ("holes", "join_round"): frozenset({"rows", "component", "state", "best", "partner"}),
     ("holes", "fill_dp_span_tiled"): frozenset({"tables"}),
     # ``quadric_decimate``'s hub sums are added in place to the boundary planes the gather left in
     # each hub's quadric, so the array is read and written, not an output.

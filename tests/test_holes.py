@@ -3703,6 +3703,37 @@ def test_join_closest_components_rim_tracks_the_regrouped_boundary(
     assert rim.done()
 
 
+@pytest.mark.parametrize("max_distance", [None, 0.2])
+def test_join_closest_components_one_launch_matches_a_launch_a_round(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], device: str, max_distance: float | None
+) -> None:
+    """
+    Ordito against ordito: every round in one launch edits the rim as a launch a round does.
+
+    The CPU device runs ``kernels/holes.join_rounds`` (one block walking the rows, then the
+    bridge, round after round); the other schedule is ``join_round``, a block a row and a launch a
+    round. Both run here on either device, ``join_rounds`` with the block's full lane count on
+    CUDA. That does not pin its two barriers: removing the first passed three runs out of three
+    (the race is real but rarely lost at 64 lanes). The pymeshfix comparison carries the oracle
+    for the joins. ``max_distance=0.2`` admits the first join only, so the rounds stop early,
+    which the one-launch form must do by itself.
+    """
+    mesh_tm = _open_shells_tm(saddle_graded, 5, gap=2.2)
+    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    max_distance_sq = wp.float32(float("inf") if max_distance is None else max_distance**2)
+    edits = []
+    for serial in (True, False):
+        rim = od.holes._JoinRim.of(vertices_wp, faces_wp)  # pyright: ignore[reportPrivateUsage]
+        assert rim is not None
+        rim.join(max_distance_sq, rim.rounds, serial=serial)
+        edits.append((rim.patch.numpy()[: rim.patch_size()], rim.rows(), rim.done()))
+    assert edits[0][0].size > 0, "fixture joined nothing"
+    assert edits[0][2] == (max_distance is not None), "the bound did not stop the rounds early"
+    assert np.array_equal(edits[0][0], edits[1][0])
+    assert np.array_equal(edits[0][1], edits[1][1])
+    assert edits[0][2] == edits[1][2]
+
+
 def test_join_closest_components_joins_the_nearest_pair(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh], device: str
 ) -> None:
