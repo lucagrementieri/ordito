@@ -343,20 +343,21 @@ def finalize_rim_metrics_ordered(
             out_perimeter[ell] = perimeter
 
 
-@wp.kernel
-def init_dp_base(
+@wp.func
+def init_dp_row(
     loop_offsets: wp.array[wp.int32],
     dp_offsets: wp.array[wp.int32],
     active: wp.array[wp.int32],
+    ell: wp.int32,
+    i: wp.int32,
     out_dp: wp.array[wp.float32],
     out_prev: wp.array[wp.int32],
-) -> None:
+):
     # dp[i, j] = min metric to triangulate the sub-polygon on chord (i, j) and the arc i..j;
     # adjacent spans (rim edges) cost 0, everything else starts unfilled. The ragged table packs
     # every loop's ``B x B`` block end to end, so loop ``ell`` owns
-    # ``out_dp[dp_offsets[ell] + i * B + j]``. Launched over ``(n_loops, max_B)`` with one thread
-    # per row: rows past a loop's own ``B`` exit immediately.
-    ell, i = wp.tid()
+    # ``out_dp[dp_offsets[ell] + i * B + j]``. Row ``i`` of loop ``ell``; rows past the loop's own
+    # ``B``, and inactive loops, return at once. Shared by ``init_dp_base`` and ``fill_dp_sweep``.
     if active[ell] == 0:
         return
     b = loop_offsets[ell + 1] - loop_offsets[ell]
@@ -371,6 +372,19 @@ def init_dp_base(
             out_dp[row + j] = 0.0
         else:
             out_dp[row + j] = BAD_METRIC
+
+
+@wp.kernel
+def init_dp_base(
+    loop_offsets: wp.array[wp.int32],
+    dp_offsets: wp.array[wp.int32],
+    active: wp.array[wp.int32],
+    out_dp: wp.array[wp.float32],
+    out_prev: wp.array[wp.int32],
+) -> None:
+    # ``init_dp_row`` over ``(n_loops, max_B)``, one thread per row.
+    ell, i = wp.tid()
+    init_dp_row(loop_offsets, dp_offsets, active, ell, i, out_dp, out_prev)
 
 
 # Slots of the min-weight fill's one ``wp.int32`` state buffer, which the host reads twice: whether
@@ -766,10 +780,15 @@ def fill_dp_sweep(tables: HoleFillTables) -> None:
     # bought it no parallelism, only a launch per span (510 on a 512-vertex rim); this is the same
     # intervals in the same order within each loop, one launch for the mesh. Not for CUDA, where a
     # thread per loop is the persistent schedule ``holes._run_hole_dp`` documents as losing.
+    # The loop's base table comes first, in the same thread (``init_dp_row``).
     ell = wp.int32(wp.tid())
     if tables.active[ell] == 0:
         return
     b = tables.loop_offsets[ell + 1] - tables.loop_offsets[ell]
+    for i in range(b):
+        init_dp_row(
+            tables.loop_offsets, tables.dp_offsets, tables.active, ell, i, tables.dp, tables.prev
+        )
     for span in range(2, b):
         for i in range(b - span):
             fill_dp_interval(tables, ell, i, span)

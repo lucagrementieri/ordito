@@ -1190,8 +1190,9 @@ def _run_hole_dp(
     hand -- tiled on CUDA, where a block has lanes to spread the apex loop over; serial on CPU,
     where it has one and the two engines do the same work. ``tiled`` exists so a test can force
     either and compare them. The serial engine on the CPU device is not a launch per span but one
-    launch for the whole sweep, a thread per loop (``kernels/holes.fill_dp_sweep``): the device
-    runs a launch's threads in turn, so the span launches bought it nothing but their own cost.
+    launch for the base table and the whole sweep, a thread per loop
+    (``kernels/holes.fill_dp_sweep``): the device runs a launch's threads in turn, so the span
+    launches bought it nothing but their own cost.
 
     That portability rests on ``fill_dp_span_tiled`` striding by ``wp.block_dim()`` rather than by
     the ``HOLE_DP_BLOCK`` it is launched with: the two agree on CUDA, and on CPU the former reads 1,
@@ -1211,15 +1212,19 @@ def _run_hole_dp(
     # ``kernels/holes.hole_dp_block``, whose table shows why both matter. Read once here rather
     # than per span so the whole sweep shares one module hash.
     block = kernel_holes.hole_dp_block(loops.max_size, loops.n_loops)
-    _launch.launch(
-        kernel_holes.init_dp_base,
-        dim=(loops.n_loops, loops.max_size),
-        inputs=[loops.offsets, loops.dp_offsets, active, dp, prev],
-        device=device,
-    )
-    if n_spans <= 0:
-        # Every rim is a triangle or smaller, so the base table is already the whole answer.
-        return
+    # The CPU device runs a launch's threads in turn, so one thread per loop writing its base table
+    # and walking its spans does the per-span loop's work with one launch.
+    swept = not tiled and resolved.is_cpu
+    if not swept:
+        _launch.launch(
+            kernel_holes.init_dp_base,
+            dim=(loops.n_loops, loops.max_size),
+            inputs=[loops.offsets, loops.dp_offsets, active, dp, prev],
+            device=device,
+        )
+        if n_spans <= 0:
+            # Every rim is a triangle or smaller, so the base table is already the whole answer.
+            return
     # Built once, outside the loop: every field is invariant across spans, and a wp.launch argument
     # costs host time whatever it holds. Rebuilding it per span would give the saving straight back.
     tables = kernel_holes.HoleFillTables()
@@ -1259,9 +1264,7 @@ def _run_hole_dp(
         else:
             _launch.launch(kernel_holes.fill_dp_span, dim=dim, inputs=inputs, device=device)
 
-    if not tiled and resolved.is_cpu:
-        # The CPU device runs a launch's threads in turn, so one thread per loop walking its
-        # spans does the per-span loop's work with one launch.
+    if swept:
         _launch.launch(
             kernel_holes.fill_dp_sweep, dim=loops.n_loops, inputs=[tables], device=device
         )
