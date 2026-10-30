@@ -1295,19 +1295,19 @@ def _smooth_pass(
             ring_neighbors, ring_offsets = od.graph.edges_to_neighbor_lists(
                 n_vertices, unique_edges, validate=False, sort_rows=True
             )
-        ring = _launch.empty(n_vertices, dtype=wp.vec4, device=device)
+        ring_sums = _launch.empty(n_vertices, dtype=wp.vec4, device=device)
         _launch.launch(
             kernel_remesh.gather_one_ring,
             dim=n_vertices,
-            inputs=[ring_offsets, ring_neighbors, vertices, area_sums, ring],
+            inputs=[ring_offsets, ring_neighbors, vertices, area_sums, ring_sums],
             device=device,
         )
     else:
-        ring = _launch.zeros(n_vertices, dtype=wp.vec4, device=device)
+        ring_sums = _launch.zeros(n_vertices, dtype=wp.vec4, device=device)
         _launch.launch(
             kernel_remesh.accumulate_one_ring,
             dim=int(unique_edges.shape[0]),
-            inputs=[unique_edges, vertices, area_sums, ring],
+            inputs=[unique_edges, vertices, area_sums, ring_sums],
             device=device,
         )
     out_positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
@@ -1319,7 +1319,7 @@ def _smooth_pass(
             faces,
             feature_count,
             normal_sums,
-            ring,
+            ring_sums,
             face_offsets,
             incident_faces,
             wp.float32(1.0),
