@@ -2081,23 +2081,29 @@ def box_diagonal_d(corners: wp.array[wp.float32], box: wp.int32) -> wp.float64:
 def contains_points_sign_parity(
     mesh_id: wp.uint64,
     points: wp.array[wp.vec3],
-    corners: wp.array[wp.float32],
     n_sample: wp.int32,
     perturbation_scale: wp.float32,
     out_contains: wp.array[wp.bool],
 ) -> None:
-    # ``corners`` is the mesh's box (``reduce.minmax_vec3_chunked``'s packing, upper corner
-    # negated), read here rather than on the host: a point outside it is outside the mesh, and its
-    # diagonal caps the parity query, which no point inside the box needs to search past.
+    # The mesh's box is its BVH root's bound, the exact box of its faces' corners on every
+    # builder (CPU; CUDA SAH, median and LBVH): a point outside it is outside the mesh, and its
+    # diagonal (``float64``, where the corners' differences and squares are exact) caps the
+    # parity query, which no point inside the box needs to search past.
     tid = wp.int32(wp.tid())
     p = points[tid]
-    mesh_min = wp.vec3(corners[0], corners[1], corners[2])
-    mesh_max = wp.vec3(-corners[3], -corners[4], -corners[5])
+    bvh = wp.mesh_get_bvh(mesh_id)
+    root = bvh_root(bvh)
+    mesh_min = bvh_node_bound(bvh, root, 0)
+    mesh_max = bvh_node_bound(bvh, root, 1)
 
     if not is_strictly_inside_aabb(p, mesh_min, mesh_max):
         out_contains[tid] = False
         return
 
-    max_dist = wp.float32(box_diagonal_d(corners, wp.int32(0)))
+    total = wp.float64(0.0)
+    for axis in range(3):
+        extent = wp.float64(mesh_max[axis]) - wp.float64(mesh_min[axis])
+        total += extent * extent
+    max_dist = wp.float32(wp.sqrt(total))
     query = wp.mesh_query_point_sign_parity(mesh_id, p, max_dist, n_sample, perturbation_scale)
     out_contains[tid] = query.result and query.sign < wp.float32(0.0)

@@ -13,7 +13,6 @@ from ordito.config import is_deterministic
 from ordito.constants import TOLERANCE_PLANAR
 from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import ray as kernel_ray
-from ordito.kernels import reduce as kernel_reduce
 
 
 def intersects_location(
@@ -503,27 +502,13 @@ def contains_points(
     n = points.size
     if n == 0:
         return _launch.empty(0, dtype=wp.bool, device=points.device)
-    # The mesh's box stays on the device: the kernel reads it for the box rejection and for the
-    # query cap, its diagonal, so the call reads nothing back.
-    corners = _launch.full(6, math.inf, dtype=wp.float32, device=points.device)
-    _launch.launch(
-        kernel_reduce.minmax_vec3_chunked,
-        dim=kernel_reduce.chunks_1d(mesh.points.size),
-        inputs=[mesh.points, corners],
-        device=points.device,
-    )
+    # The kernel reads the mesh's box off its BVH root for the box rejection and for the query
+    # cap, its diagonal, so the call reads nothing back.
     out_contains = _launch.empty(n, dtype=wp.bool, device=points.device)
     _launch.launch(
         kernel_proximity.contains_points_sign_parity,
         dim=n,
-        inputs=[
-            mesh.id,
-            points,
-            corners,
-            wp.int32(n_sample),
-            wp.float32(perturbation_scale),
-            out_contains,
-        ],
+        inputs=[mesh.id, points, wp.int32(n_sample), wp.float32(perturbation_scale), out_contains],
         device=points.device,
     )
     return out_contains
