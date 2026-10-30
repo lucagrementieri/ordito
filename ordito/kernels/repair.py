@@ -1446,28 +1446,25 @@ def sever_barrier_twins(
     faces: wp.array[wp.int32],
     twins: wp.array[wp.int32],
     barrier_keys: wp.array[wp.uint64],
-    out_pairs: wp.array2d[wp.int32],
+    out_mates: wp.array[wp.int32],
     out_barrier: wp.array[wp.bool],
 ) -> None:
-    # The face pairs across every twinned edge, read straight off the halfedge twins, with every
-    # pair across a barrier edge turned into a self-loop, so a labelling over them sees the barrier
-    # as cut: a self-loop joins nothing, and every row keeps its slot, so no compaction is needed.
-    # A pair is written once, by its lower halfedge; the upper one and a boundary halfedge write a
-    # self-loop. A pair is across a barrier when its edge's ``array.pack_edge_key`` at
-    # ``INDEX_RADIX_PAIR`` is in the sorted ``barrier_keys`` -- a few hundred loop edges, searched
-    # here rather than hashed and matched in a pass of their own. The mask beside the pairs lets the
-    # caller find the faces across each barrier edge (halfedge ``h`` and its twin).
+    # The halfedge twins with every pair across a barrier edge severed, as mate codes a face
+    # labelling (``adjacency.face_connected_component_labels``) reads: a pair is hooked by its
+    # lower halfedge, and by the upper one only when the lower names it back, so the lower one
+    # writing ``-1`` cuts the pair, and every other halfedge keeps its twin. No pair table is
+    # written and nothing is compacted. A pair is across a barrier when its edge's
+    # ``array.pack_edge_key`` at ``INDEX_RADIX_PAIR`` is in the sorted ``barrier_keys`` -- a few
+    # hundred loop edges, searched here rather than hashed and matched in a pass of their own. The
+    # mask beside the mates lets the caller find the faces across each barrier edge (halfedge ``h``
+    # and its twin).
     h = wp.int32(wp.tid())
-    f = h // 3
     t = twins[h]
-    partner = f
     cut = False
     if t > h:
         key = pack_edge_key(faces[h], faces[halfedge_next(h)], wp.uint64(INDEX_RADIX_PAIR))
         cut = binary_search_sorted_contains(barrier_keys, key)
-        partner = wp.where(cut, f, t // 3)
-    out_pairs[h, 0] = f
-    out_pairs[h, 1] = partner
+    out_mates[h] = wp.where(cut, wp.int32(-1), t)
     out_barrier[h] = cut
 
 

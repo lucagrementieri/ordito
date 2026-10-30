@@ -3986,17 +3986,16 @@ def _cut_face_labels(
         device=device,
     )
     n_halfedges = twins.size
-    severed = odt.empty_2d((n_halfedges, 2), wp.int32, device=device)
+    severed = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
     barrier = _launch.empty(n_halfedges, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_repair.sever_barrier_twins,
         dim=n_halfedges,
-        inputs=[faces, twins, barrier_keys, severed, barrier],
+        inputs=[faces, twins, barrier_keys],
+        outputs=[severed, barrier],
         device=device,
     )
-    labels = od.graph.connected_component_labels_from_edges(
-        severed, node_count=faces.size // 3, validate=False
-    )
+    labels = od.adjacency.face_connected_component_labels(faces, mates=severed)
 
     def sides() -> dict[tuple[int, int], tuple[int, int]]:
         # A loop edge is one pair of a few hundred; the readbacks are of the mesh-sized buffers
