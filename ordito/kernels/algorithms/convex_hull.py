@@ -492,8 +492,9 @@ def split_faces(
             adj[far[0]][far[1]] = 3 * children[k]
 
 
-@wp.kernel
-def assign_points(
+@wp.func
+def assign_points_at(
+    j: wp.int32,
     points: wp.array[wp.vec3],
     kernel_point: wp.array[wp.vec3d],
     tri: wp.array[wp.vec3i],
@@ -508,7 +509,7 @@ def assign_points(
     follow: wp.int32,
     last: wp.int32,
     out_live: wp.array[wp.vec2i],
-) -> None:
+):
     # With ``follow`` set, a follow pass after a further flip round of the same growth round: the
     # list is the previous pass's output, its length in ``COUNT_FOLLOW``, and no face was split.
     # Only the round's ``last`` pass bids, into the bids and flags the split cleared, and appends
@@ -523,7 +524,6 @@ def assign_points(
     # into ones whose cones tile the same region, so one of the flip's live faces holds it.
     # Launched over an upper bound on the list's length: the host learns the real one only at the
     # round's single readback.
-    j = wp.int32(wp.tid())
     if j >= counters[wp.where(follow != 0, COUNT_FOLLOW, COUNT_LIVE)]:
         return
     entry = live[j]
@@ -577,6 +577,42 @@ def assign_points(
             flags,
             out_live,
         )
+
+
+@wp.kernel
+def assign_points(
+    points: wp.array[wp.vec3],
+    kernel_point: wp.array[wp.vec3d],
+    tri: wp.array[wp.vec3i],
+    child: wp.array[wp.int32],
+    split_corners: wp.array[wp.vec4i],
+    changed: wp.array[wp.int32],
+    group: wp.array[wp.vec3i],
+    live: wp.array[wp.vec2i],
+    counters: wp.array[wp.int32],
+    best: wp.array[wp.int64],
+    flags: wp.array[wp.int32],
+    follow: wp.int32,
+    last: wp.int32,
+    out_live: wp.array[wp.vec2i],
+) -> None:
+    assign_points_at(
+        wp.int32(wp.tid()),
+        points,
+        kernel_point,
+        tri,
+        child,
+        split_corners,
+        changed,
+        group,
+        live,
+        counters,
+        best,
+        flags,
+        follow,
+        last,
+        out_live,
+    )
 
 
 # --- Flip-Flop -------------------------------------------------------------------------------
@@ -723,8 +759,9 @@ def flip_proposal(
     return out
 
 
-@wp.kernel
-def propose_flips(
+@wp.func
+def propose_flips_at(
+    f: wp.int32,
     points: wp.array[wp.vec3],
     kernel_point: wp.array[wp.vec3d],
     tri: wp.array[wp.vec3i],
@@ -736,13 +773,12 @@ def propose_flips(
     lock: wp.array[wp.int32],
     labels: wp.int32,
     out_proposal: wp.array[wp.vec3i],
-) -> None:
+):
     # Each dirty live face proposes at most one flip, over the edges it owns (the lower face index
     # of the two), and bids for every triangle that flip rewrites. A face that proposes nothing is
     # clean until something it reads changes. With ``labels`` zero (the flip round interleaved with
     # growth) nothing is labelled, so only the V-criterion flips: volume only grows, and the points
     # it encloses can be dropped as soon as the next pass sees them.
-    f = wp.int32(wp.tid())
     changed[f] = 0
     proposal = wp.vec3i(FLIP_NONE, 0, 0)
     if dirty[f] != 0 and tri[f][0] >= 0:
@@ -770,6 +806,36 @@ def propose_flips(
     out_proposal[f] = proposal
 
 
+@wp.kernel
+def propose_flips(
+    points: wp.array[wp.vec3],
+    kernel_point: wp.array[wp.vec3d],
+    tri: wp.array[wp.vec3i],
+    adj: wp.array[wp.vec3i],
+    label: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    dirty: wp.array[wp.int32],
+    changed: wp.array[wp.int32],
+    lock: wp.array[wp.int32],
+    labels: wp.int32,
+    out_proposal: wp.array[wp.vec3i],
+) -> None:
+    propose_flips_at(
+        wp.int32(wp.tid()),
+        points,
+        kernel_point,
+        tri,
+        adj,
+        label,
+        state,
+        dirty,
+        changed,
+        lock,
+        labels,
+        out_proposal,
+    )
+
+
 @wp.func
 def find_edge(t: wp.vec3i, x: wp.int32, y: wp.int32) -> wp.int32:
     # Local index of the directed edge ``(x, y)`` in ``t``, or ``-1``.
@@ -780,8 +846,9 @@ def find_edge(t: wp.vec3i, x: wp.int32, y: wp.int32) -> wp.int32:
     return out
 
 
-@wp.kernel
-def apply_flips(
+@wp.func
+def apply_flips_at(
+    f: wp.int32,
     proposal: wp.array[wp.vec3i],
     lock: wp.array[wp.int32],
     tri: wp.array[wp.vec3i],
@@ -789,11 +856,10 @@ def apply_flips(
     state: wp.array[wp.int32],
     changed: wp.array[wp.int32],
     group: wp.array[wp.vec3i],
-) -> None:
+):
     # Flip where the proposer holds every lock. The new triangles keep their *old* outer
     # neighbours in ``adj``; ``repair_flip_adjacency`` resolves those that flipped too, through
     # ``group``, the slots each flip rewrote.
-    f = wp.int32(wp.tid())
     p = proposal[f]
     code = p[0]
     if code == FLIP_NONE:
@@ -844,7 +910,21 @@ def apply_flips(
 
 
 @wp.kernel
-def repair_flip_adjacency(
+def apply_flips(
+    proposal: wp.array[wp.vec3i],
+    lock: wp.array[wp.int32],
+    tri: wp.array[wp.vec3i],
+    adj: wp.array[wp.vec3i],
+    state: wp.array[wp.int32],
+    changed: wp.array[wp.int32],
+    group: wp.array[wp.vec3i],
+) -> None:
+    apply_flips_at(wp.int32(wp.tid()), proposal, lock, tri, adj, state, changed, group)
+
+
+@wp.func
+def repair_flip_adjacency_at(
+    t: wp.int32,
     changed: wp.array[wp.int32],
     group: wp.array[wp.vec3i],
     label: wp.array[wp.int32],
@@ -853,12 +933,11 @@ def repair_flip_adjacency(
     adj: wp.array[wp.vec3i],
     lock: wp.array[wp.int32],
     dirty: wp.array[wp.int32],
-) -> None:
+):
     # Close a flip round. A rewritten triangle's outer neighbour either flipped too -- then the
     # edge now lives in one of that flip's slots, found by searching its group -- or did not, and
     # then this thread, the edge's only writer, points it back. A rewritten face, or one with a
     # corner labelled this round, marks itself and its neighbours dirty. Locks are freed.
-    t = wp.int32(wp.tid())
     lock[t] = LOCK_FREE
     corners = tri[t]
     if corners[0] < 0:
@@ -889,6 +968,84 @@ def repair_flip_adjacency(
         dirty[t] = 1
         for k in range(3):
             dirty[adj[t][k] // 3] = 1
+
+
+@wp.kernel
+def repair_flip_adjacency(
+    changed: wp.array[wp.int32],
+    group: wp.array[wp.vec3i],
+    label: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    tri: wp.array[wp.vec3i],
+    adj: wp.array[wp.vec3i],
+    lock: wp.array[wp.int32],
+    dirty: wp.array[wp.int32],
+) -> None:
+    repair_flip_adjacency_at(
+        wp.int32(wp.tid()), changed, group, label, state, tri, adj, lock, dirty
+    )
+
+
+@wp.kernel
+def follow_growth_round_serial(
+    points: wp.array[wp.vec3],
+    kernel_point: wp.array[wp.vec3d],
+    tri: wp.array[wp.vec3i],
+    adj: wp.array[wp.vec3i],
+    label: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    dirty: wp.array[wp.int32],
+    changed: wp.array[wp.int32],
+    lock: wp.array[wp.int32],
+    group: wp.array[wp.vec3i],
+    proposal: wp.array[wp.vec3i],
+    child: wp.array[wp.int32],
+    split_corners: wp.array[wp.vec4i],
+    counters: wp.array[wp.int32],
+    best: wp.array[wp.int64],
+    flags: wp.array[wp.int32],
+    n_faces: wp.int32,
+    n_live: wp.int32,
+    rounds: wp.int32,
+    live_first: wp.int32,
+    lists: wp.array[wp.vec2i],
+) -> None:
+    # ``dim=1``, the CPU device's passes after a growth round's split: ``rounds`` unlabelled flip
+    # rounds over ``n_faces`` faces, each followed by an ``assign_points`` pass over ``n_live``
+    # entries, every launch of them in launch order and each launch's threads in turn, as the CPU
+    # device runs them. ``lists`` holds the two point lists back to back, the first pass reading
+    # the one from ``live_first`` and each pass writing the other.
+    half = lists.shape[0] // 2
+    live = live_first
+    for follow in range(rounds):
+        for f in range(n_faces):
+            propose_flips_at(
+                f, points, kernel_point, tri, adj, label, state, dirty, changed, lock, 0, proposal
+            )
+        for f in range(n_faces):
+            apply_flips_at(f, proposal, lock, tri, adj, state, changed, group)
+        for t in range(n_faces):
+            repair_flip_adjacency_at(t, changed, group, label, state, tri, adj, lock, dirty)
+        target = half - live
+        for j in range(n_live):
+            assign_points_at(
+                j,
+                points,
+                kernel_point,
+                tri,
+                child,
+                split_corners,
+                changed,
+                group,
+                lists[live : live + half],
+                counters,
+                best,
+                flags,
+                wp.where(follow != 0, 1, 0),
+                wp.where(follow == rounds - 1, 1, 0),
+                lists[target : target + half],
+            )
+        live = target
 
 
 # --- Extreme vertices and output -------------------------------------------------------------

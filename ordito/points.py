@@ -1742,6 +1742,9 @@ def _grow_star_surface(points: wp.array[wp.vec3]) -> _HullSurface:
     )
     n_faces = 4
     n_live = n_points
+    # Where ``live`` starts in ``lists``, for the CPU device's one-thread passes.
+    live_first = 0
+    serial = wp.get_device(device).is_cpu
     while True:
         # A round splits at most one face per live point, and every split adds two faces.
         needed = n_faces + 2 * min(n_faces, n_live)
@@ -1806,30 +1809,65 @@ def _grow_star_surface(points: wp.array[wp.vec3]) -> _HullSurface:
             tables.offsets,
         )
         flags, next_flags = next_flags, flags
-        for follow in range(_GROWTH_FLIP_ROUNDS):
-            _flip_round(points, surface, no_labels, growth_state, 0)
+        if serial:
+            # The CPU device runs a launch's threads one after another: the round's flips and
+            # passes in one thread, in the same order.
             _launch.launch(
-                kernel_hull.assign_points,
-                dim=n_live,
+                kernel_hull.follow_growth_round_serial,
+                dim=1,
                 inputs=[
                     points,
                     kernel_point,
                     tri,
+                    adj,
+                    no_labels,
+                    growth_state,
+                    dirty,
+                    tables.changed,
+                    tables.lock,
+                    tables.group,
+                    tables.proposal,
                     tables.child,
                     tables.split_corners,
-                    tables.changed,
-                    tables.group,
-                    live,
                     counters,
                     best,
                     flags,
-                    int(follow != 0),
-                    int(follow == _GROWTH_FLIP_ROUNDS - 1),
-                    next_live,
+                    needed,
+                    int(n_live),
+                    _GROWTH_FLIP_ROUNDS,
+                    live_first,
+                    lists,
                 ],
                 device=device,
             )
-            live, next_live = next_live, live
+            for _ in range(_GROWTH_FLIP_ROUNDS):
+                live, next_live = next_live, live
+                live_first = n_points - live_first
+        else:
+            for follow in range(_GROWTH_FLIP_ROUNDS):
+                _flip_round(points, surface, no_labels, growth_state, 0)
+                _launch.launch(
+                    kernel_hull.assign_points,
+                    dim=n_live,
+                    inputs=[
+                        points,
+                        kernel_point,
+                        tri,
+                        tables.child,
+                        tables.split_corners,
+                        tables.changed,
+                        tables.group,
+                        live,
+                        counters,
+                        best,
+                        flags,
+                        int(follow != 0),
+                        int(follow == _GROWTH_FLIP_ROUNDS - 1),
+                        next_live,
+                    ],
+                    device=device,
+                )
+                live, next_live = next_live, live
         # Readback: the round's splits size the face arrays, the survivors the next round.
         n_live, splits, _, status = read_values(counters, 0, 4)
         if status != int(kernel_hull.STATUS_OK):

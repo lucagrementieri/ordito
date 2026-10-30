@@ -757,12 +757,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.convex_hull", "split_faces"): frozenset(
         {"tri", "adj", "best", "child", "counters", "dirty"}
     ),
-    ("algorithms.convex_hull", "propose_flips"): frozenset({"changed", "dirty", "lock"}),
-    # A follow pass's reset: the growth loop's ``counters`` word, bids and split flags (above).
-    ("algorithms.convex_hull", "apply_flips"): frozenset(
-        {"tri", "adj", "state", "changed", "group"}
-    ),
-    ("algorithms.convex_hull", "repair_flip_adjacency"): frozenset({"adj", "lock", "dirty"}),
     ("repair", "emit_degree3_replacement"): frozenset({"cursor"}),
     # The flip loop's incremental state, carried across rounds and kept current by the commit that
     # rewrites the faces: the row <-> halfedge maps and the tracked valences. Neither an input nor
