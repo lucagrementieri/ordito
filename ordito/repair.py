@@ -263,10 +263,15 @@ def make_solid(
     # why leaving it out is dangerous: skipping it can leave a mesh at the right Euler
     # characteristic and one component while still **not watertight**, because nothing downstream
     # addresses a non-manifold edge.
-    vertices, faces, _remap = remove_unreferenced_vertices(vertices, faces)
     # ``make_winding_consistent`` then ``split_non_manifold_vertices`` over one pairing of the
-    # halfedges: the flip carries the mates over to the wound faces, which the split reads.
-    vertices, faces, _source = _split_corners(vertices, *_wound_with_mates(faces, vertices.size))
+    # halfedges: the flip carries the mates over to the wound faces, which the split reads. The
+    # split keeps only the vertices a face names, so it is the unreferenced-vertex removal too: the
+    # pairing and the winding read vertex indices only for equality, and the split numbers its
+    # vertices by corner, so a compaction first would change nothing it returns. It also turns
+    # the mates into twins, which pair the split faces into their components without a pairing of
+    # their own for the component filter.
+    wound, twins = _wound_with_mates(faces, vertices.size)
+    vertices, faces, _source = _split_corners(vertices, wound, twins, twins)
 
     # Every stage below is a deterministic function of the mesh it is handed, and ``version`` counts
     # the changes made to the mesh, so a stage is skipped while the mesh is still one it is known
@@ -282,7 +287,7 @@ def make_solid(
         return vertices.size, faces.size
 
     if keep_largest:
-        vertices, faces = remove_small_components(vertices, faces, keep_largest=True)
+        vertices, faces = _remove_small_components(vertices, faces, mates=twins)
         clean_after["components"] = version
     if join_components:
         faces = od.holes.join_closest_components(vertices, faces)
@@ -1435,7 +1440,33 @@ def remove_small_components(
             "pass exactly one of keep_largest, min_faces, min_area or min_diameter, "
             f"got {sum(given)}"
         )
+    return _remove_small_components(
+        vertices,
+        faces,
+        min_faces=min_faces,
+        min_area=min_area,
+        min_diameter=min_diameter,
+        labels=labels,
+    )
 
+
+def _remove_small_components(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    min_faces: int | None = None,
+    min_area: float | None = None,
+    min_diameter: float | None = None,
+    labels: wp.array[wp.int32] | None = None,
+    mates: wp.array[wp.int32] | None = None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    [`remove_small_components`][ordito.repair.remove_small_components] past its checks.
+
+    At most one ``min_*`` bound; with none it keeps the largest component. ``mates`` are halfedge
+    mates of ``faces`` -- or any table whose pairs connect the same faces -- for the labelling
+    when ``labels`` is not given, trusted.
+    """
     device = vertices.device
     n_faces = faces.size // 3
     if n_faces == 0:
@@ -1445,7 +1476,7 @@ def remove_small_components(
     counts = None
     if labels is None and counts_faces:
         # The face-count criteria histogram the labels in the flatten that writes them.
-        parents = _face_component_forest(faces, vertices.size, None)
+        parents = _face_component_forest(faces, vertices.size, mates)
         labels = _launch.empty(n_faces, dtype=wp.int32, device=device)
         counts = _launch.zeros(n_faces, dtype=wp.int32, device=device)
         _launch.launch(
@@ -1455,7 +1486,9 @@ def remove_small_components(
             device=device,
         )
     elif labels is None:
-        labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
+        labels = od.adjacency.face_connected_component_labels(
+            faces, n_vertices=vertices.size, mates=mates
+        )
 
     # Each criterion accumulates one per-component table; the others stay ``None`` and are never
     # read. The table is then thresholded inside the submesh extraction's own marking pass, so no
@@ -1657,13 +1690,19 @@ def split_non_manifold_vertices(
 
 
 def _split_corners(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], mates: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    out_twins: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]:
     """
     [`split_non_manifold_vertices`][ordito.repair.split_non_manifold_vertices] over given mates.
 
     Nonempty ``faces`` and their [`halfedge_mates`][ordito.halfedge.halfedge_mates], which a
-    caller that already paired the halfedges passes rather than sorting them again.
+    caller that already paired the halfedges passes rather than sorting them again. ``out_twins``,
+    ``(3 * n_faces,)`` and possibly ``mates`` itself, receives each halfedge's twin (``-1`` where
+    none): mates of the returned faces as far as their face components go
+    (``kernels/repair.scatter_split_corners``), for a caller labelling those next.
     """
     device = faces.device
     n_corners = faces.size // 3 * 3
@@ -1694,7 +1733,8 @@ def _split_corners(
     _launch.launch(
         kernel_repair.scatter_split_corners,
         dim=n_corners,
-        inputs=[faces, vertices, roots, root_ranks, new_faces, source, new_vertices],
+        inputs=[faces, vertices, roots, root_ranks, mates, new_faces, source, new_vertices],
+        outputs=[out_twins],
         device=device,
     )
     return new_vertices, new_faces, source

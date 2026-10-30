@@ -977,19 +977,32 @@ def scatter_split_corners(
     vertices: wp.array[wp.vec3],
     roots: wp.array[wp.int32],
     root_ranks: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
     out_new_faces: wp.array[wp.int32],
     out_source: wp.array[wp.int32],
     out_new_vertices: wp.array[wp.vec3],
+    out_twins: wp.array[wp.int32],
 ) -> None:
     # Number each corner's component and, from its root corner alone, write the component's source
     # vertex and position. ``seams.scatter_corner_values`` is the same ranking for a value the
     # corners share, with no source map and no root test.
+    #
+    # A non-empty ``out_twins`` (``None`` at launch otherwise; it may be ``mates`` itself, each
+    # thread reading and writing only entry ``h``) also gets each halfedge's twin, ``-1`` where it
+    # has none: a mate table of the split faces whose pairs connect exactly the faces the split
+    # faces' own ``halfedge.halfedge_mates`` pairs connect. A twin pair joins its corners at both
+    # ends, so it still pairs after the split, and any other two halfedges sharing both copies
+    # share a copy only through a chain of twin-joined corners, whose faces the twins connect
+    # already. A face-component labelling over it is the split faces' own, without pairing them.
     h = wp.int32(wp.tid())
     root, rank = write_corner_component_rank(roots, root_ranks, h, out_new_faces)
     if root == h:
         v = faces[h]
         out_source[rank] = v
         out_new_vertices[rank] = vertices[v]
+    if out_twins.shape[0] > 0:
+        twin, _defect = mate_twin_defect(faces, mates[h], h)
+        out_twins[h] = twin
 
 
 @wp.func
