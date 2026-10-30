@@ -17,7 +17,10 @@ side from the original one and every descendant's contribution, ``forward_partia
 row of a solve block by ``CHUNK`` gathered entries, ``forward_finalize`` sums each row's chunks;
 then ``backward_partial`` / ``backward_finalize`` run the transposed product from the root down.
 Every partial product lands in its own slot and every sum reads its slots in a fixed order, so a
-solve is bit-reproducible on each device (no float atomics).
+solve is bit-reproducible on each device (no float atomics). The CPU device keeps these launches,
+unlike the factorization's: one thread walking a level's gather, partials and sums in turn (in the
+launches' order, or a column at a time) ran 1.1-1.5x slower than the five launches a level
+(icospheres of 2 562 to 40 962 rows, three columns).
 
 ``ordito.cholesky`` refines every solve against the operator itself (``residual_test``, one more
 solve, whose last level adds the correction) until the residual passes its test.
