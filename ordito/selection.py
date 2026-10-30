@@ -13,6 +13,7 @@ from ordito._device import read_scalar, read_values, require_same_device
 from ordito.constants import INDEX_RADIX_PAIR
 from ordito.grouping import _unique_sorted_runs  # pyright: ignore[reportPrivateUsage]
 from ordito.halfedge import halfedge_twins, require_matching_twins
+from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import selection as kernel_selection
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
@@ -365,8 +366,10 @@ def exclude_fully_selected_components(
     # A union-find labels every component by its smallest vertex whatever the order and
     # multiplicity of the unions, so the faces' own edges, formed in the thread, give the identical
     # labels without an edge table. The endpoints are the face buffer's indices, which this
-    # function trusts to be below ``n_vertices`` as the rest of its caller's pipeline does.
-    parents = od.array.arange(n_vertices, device=device)
+    # function trusts to be below ``n_vertices`` as the rest of its caller's pipeline does. The
+    # forest and the labels its flatten writes share one allocation.
+    parents, labels = _launch.carve(wp.int32, [n_vertices, n_vertices], device)
+    _launch.launch(kernel_array.ARANGE[wp.int32], dim=n_vertices, inputs=[parents], device=device)
     if unique_edges is None:
         n_faces = faces.size // 3
         if n_faces > 0:
@@ -411,7 +414,6 @@ def exclude_fully_selected_components(
         )
     # One flatten that also flags each component holding an unselected vertex -- one that is not
     # fully selected, and so keeps its selection.
-    labels = _launch.empty(n_vertices, dtype=wp.int32, device=device)
     keep = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_selection.label_flagged_components,
