@@ -1419,6 +1419,14 @@ What it took, in order:
   words (a field and a word a component, 32 bytes a cell) over every stored cell were the on
   mode's peak: depth 9 458 -> 291 MiB (the off mode's), 1 M points 467 -> 323, depth 8 122 -> 79,
   at par in time; the off mode, whose accumulator is the field, is unchanged.
+- **Point counts, position sums and screening records are packed by occupied rank**
+  (`occupied_rank`: one bit a stored cell holding a sample, ranked): about 0.37 M of 12.3 M stored
+  cells at depth 9, replacing the per-cell counts and positions (107 MiB), the finest sample
+  slots (20) and the coarse screening index (27); records are numbered by that rank, not by an
+  atomic counter (the numbering never decided a value). The sweeps still read a record a stored
+  cell (`record_index`, built after the constraints): through the rank each row's eight lookups
+  cost 1.14x the sweeps. Constraints phase on a unit-sphere cloud at depth 9 347 -> 228 MiB,
+  cascade 301 -> 190, splat 291 -> 173; time at par.
 - Also: the splat's exact accumulator released after its finish, `prolongeds` formed again
   (`prolonged_at`), `owners` a bitset walked to the creating edge (`edge_owner`). Restriction and
   prolongation keep the dense sums' bits because their weights are powers of two
@@ -1426,9 +1434,13 @@ What it took, in order:
 
 Verified with temporary prints on every invariant (no unstored field read, splat or density
 target, carried-up window cell or parent, corner source, edge or finer half) over the octree tests
-and dense and sparse clouds (down to 500 points at depth 6). **Open:** in both modes the peak is
-the constraints phase (347 MiB on a unit-sphere cloud at depth 9: the normal field, counts and
-positions, flags, the node right-hand sides). The extraction's
+and dense and sparse clouds (down to 500 points at depth 6). **Open:** at depth 9 the peak is
+the extraction on dense clouds (273 MiB on an ellipsoid cloud: its band of leaf cells found by a
+launch over every cell, one bit a cell, and its segment, loop and face tables) or the
+constraints phase (228 on a unit sphere: the normal field over every stored cell, 141 MiB, and
+the node right-hand sides). The splat reaches about 0.97 M cells of the 12.3 M stored: the finest
+depth's coefficients could be packed by target rank (about -50 MiB there), at a rank in every
+finest window read; the coarser depths need the field for the carried-up values. The extraction's
 band of leaf cells is still found by a launch over every cell (one bit a cell). Depth 10 would
 need `int64` dense edge slots for the vertex order.
 

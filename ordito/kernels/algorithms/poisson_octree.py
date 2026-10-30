@@ -157,19 +157,21 @@ def splat_target(d: wp.int32, o: wp.vec3i) -> wp.vec2i:
 # Storage by brick
 # ---------------------------------------------------------------------------------------------
 #
-# Every per-cell table (point counts and position sums, density, normal coefficients, flags,
-# screening indices, sample slots) and every per-node one (right-hand sides, fields) is stored by
-# ``4**3`` brick, per depth, for the bricks a write or a read can reach; an entry not stored reads
-# zero, which is what it held. ``cells`` and ``node_bricks`` hold the depths' brick tables after a
-# header of ``depth + 2`` offsets into themselves, then each depth's first entry and their total,
-# each table entry a brick's number among the stored ones, numbered depth by depth, or -1.
+# Every per-cell table (density, normal coefficients, flags) and every per-node one (right-hand
+# sides, fields) is stored by ``4**3`` brick, per depth, for the bricks a write or a read can
+# reach; an entry not stored reads zero, which is what it held. The tables only a cell holding a
+# sample has (point counts, position sums, screening records) are packed by that cell's rank
+# among the occupied ones (``occupied_rank``). ``cells`` and ``node_bricks`` hold the depths' brick
+# tables after a header of ``depth + 2`` offsets into themselves, then each depth's first entry and
+# their total, each table entry a brick's number among the stored ones, numbered depth by depth,
+# or -1.
 # Cells are indexed by ``c + 1`` (``-1 ..= 2**d``, the flags' padding); nodes by ``0 ..= 2**d``.
 #
 # What is stored, each a superset of where its tables can be nonzero or are read (the marking
 # kernels below, all from the samples, before any value exists):
 #
 # - cells: every depth's 27-cell window around each sample's ancestor, through ``splat_target``
-#   (counts and positions, the density and normal splats and the density reads); a bound on the
+#   (the occupied cells, the density and normal splats and the density reads); a bound on the
 #   flags, finest first (a flag comes from a child's normal or flag, or the dilation from within
 #   two); and the coarser data the divergence at a stored node reads, with the parents its
 #   carried-up value reads (``accumulated``, formed in place over the normal coefficients).
@@ -270,14 +272,20 @@ def cell_vector(
 
 
 @wp.func
-def sample_slot(
-    slots: wp.array[wp.int32], cells: wp.array[wp.int32], depth: wp.int32, c: wp.vec3i
+def occupied_rank(
+    occupied: wp.array[wp.uint32],
+    occupied_ranks: wp.array[wp.int32],
+    cells: wp.array[wp.int32],
+    d: wp.int32,
+    c: wp.vec3i,
 ) -> wp.int32:
-    # The sample merged into finest cell ``c``, -1 for none (``slots`` holds the finest entries).
-    entry = cell_entry(cells, depth, c)
-    if entry < 0:
+    # Depth ``d`` cell ``c``'s rank among the stored cells holding a sample (``occupied``, one bit
+    # a stored cell), -1 when it holds none: the index of its count, position sum and screening
+    # record.
+    entry = cell_entry(cells, d, c)
+    if entry < 0 or not bit_is_set(occupied, entry):
         return -1
-    return slots[entry - cell_first(cells, depth, depth)]
+    return bit_rank(occupied, occupied_ranks, entry)
 
 
 @wp.func
@@ -691,56 +699,76 @@ def octree_point_keys(
 
 
 @wp.kernel
-def octree_sample_slots(
-    keys: wp.array[wp.int32],
-    cells: wp.array[wp.int32],
+def octree_occupied_cells(
+    sample_keys: wp.array[wp.int32],
     depth: wp.int32,
-    out_slots: wp.array[wp.int32],
+    cells: wp.array[wp.int32],
+    out_occupied: wp.array[wp.uint32],
 ) -> None:
-    # The finest lattice's cell-to-sample map over its stored cells (cells without a sample keep
-    # -1).
+    # Mark a sample's cell and every ancestor of it: the cells with a point count.
     s = wp.int32(wp.tid())
     n = 1 << depth
-    k = keys[s]
-    entry = cell_entry(cells, depth, wp.vec3i(k // (n * n), (k // n) % n, k % n))
-    out_slots[entry - cell_first(cells, depth, depth)] = s
+    k = sample_keys[s]
+    cell = wp.vec3i(k // (n * n), (k // n) % n, k % n)
+    for d in range(depth + 1):
+        shift = depth - d
+        entry = cell_entry(cells, d, wp.vec3i(cell[0] >> shift, cell[1] >> shift, cell[2] >> shift))
+        wp.atomic_or(out_occupied, entry >> 5, wp.uint32(1) << wp.uint32(entry & 31))
+
+
+@wp.kernel
+def octree_sample_aggregates(
+    sample_keys: wp.array[wp.int32],
+    sample_counts: wp.array[wp.int32],
+    sample_positions: wp.array[wp.vec3],
+    depth: wp.int32,
+    cells: wp.array[wp.int32],
+    occupied: wp.array[wp.uint32],
+    occupied_ranks: wp.array[wp.int32],
+    out_counts: wp.array[wp.float32],
+    out_position_sums: wp.array[wp.vec3],
+) -> None:
+    # A finest cell's point count and summed position: its sample's.
+    s = wp.int32(wp.tid())
+    n = 1 << depth
+    k = sample_keys[s]
+    cell = wp.vec3i(k // (n * n), (k // n) % n, k % n)
+    r = occupied_rank(occupied, occupied_ranks, cells, depth, cell)
+    out_counts[r] = wp.float32(sample_counts[s])
+    out_position_sums[r] = sample_positions[s]
 
 
 @wp.kernel
 def octree_child_aggregates(
     depth: wp.int32,
     first: wp.int32,
-    slots: wp.array[wp.int32],
     cells: wp.array[wp.int32],
     cell_slots: wp.array[wp.int32],
-    sample_counts: wp.array[wp.int32],
-    sample_positions: wp.array[wp.vec3],
+    occupied: wp.array[wp.uint32],
+    occupied_ranks: wp.array[wp.int32],
     counts: wp.array[wp.float32],
     position_sums: wp.array[wp.vec3],
 ) -> None:
-    # A stored depth ``d`` cell's point count and summed position (entries from ``first``, one
-    # depth below the finest), gathered from its eight children in a fixed order: the samples at
-    # the finest depth, the depth ``d + 1`` aggregates above it (zero where not stored). A padding
-    # cell holds zero.
+    # An occupied depth ``d`` cell's point count and summed position (stored entries from
+    # ``first``, one depth below the finest), gathered from its occupied children in a fixed order
+    # (an unoccupied child would add a zero, which changes no bit of these non-negative sums).
     e = wp.int32(wp.tid()) + first
+    if not bit_is_set(occupied, e):
+        return
     at = stored_cell(cells, cell_slots, depth, e)
     d = at[0]
     c = wp.vec3i(at[1], at[2], at[3])
     total = wp.float32(0.0)
     position = wp.vec3(0.0, 0.0, 0.0)
-    if d >= 0 and octree_inside(d, c):
-        for child in range(8):
-            cc = 2 * c + wp.vec3i(child >> 2, (child >> 1) & 1, child & 1)
-            if d + 1 == depth:
-                s = sample_slot(slots, cells, depth, cc)
-                if s >= 0:
-                    total += wp.float32(sample_counts[s])
-                    position += sample_positions[s]
-            else:
-                total += cell_value(counts, cells, d + 1, cc)
-                position += cell_vector(position_sums, cells, d + 1, cc)
-    counts[e] = total
-    position_sums[e] = position
+    for child in range(8):
+        cc = 2 * c + wp.vec3i(child >> 2, (child >> 1) & 1, child & 1)
+        r = occupied_rank(occupied, occupied_ranks, cells, d + 1, cc)
+        if r >= 0:
+            total += counts[r]
+            position += position_sums[r]
+    r = bit_rank(occupied, occupied_ranks, e)
+    counts[r] = total
+    position_sums[r] = position
 
 
 @wp.kernel
@@ -750,14 +778,19 @@ def octree_density_splat(
     position_sums: wp.array[wp.vec3],
     cells: wp.array[wp.int32],
     cell_slots: wp.array[wp.int32],
+    occupied: wp.array[wp.uint32],
+    occupied_ranks: wp.array[wp.int32],
     sums: GroupSumPass,
     out_density: wp.array[wp.float32],
 ) -> None:
-    # One stored child cell of depths ``1 ..= kernel_depth + 1`` (threads index the stored
+    # One occupied child cell of depths ``1 ..= kernel_depth + 1`` (threads index the stored
     # entries from depth 1's): its ``count / samples_per_node`` splatted at its centroid into the
     # 27 B-splines around its parent cell.
     e = wp.int32(wp.tid()) + cell_first(cells, depth, 1)
-    count = counts[e]
+    if not bit_is_set(occupied, e):
+        return
+    r = bit_rank(occupied, occupied_ranks, e)
+    count = counts[r]
     if count <= 0.0:
         return
     at = stored_cell(cells, cell_slots, depth, e)
@@ -765,7 +798,7 @@ def octree_density_splat(
     d = child_depth - 1
     child = wp.vec3i(at[1], at[2], at[3])
     parent = wp.vec3i(child[0] >> 1, child[1] >> 1, child[2] >> 1)
-    p = position_sums[e] / count
+    p = position_sums[r] / count
     scale = wp.float32(1 << d)
     vx = quadratic_bspline_values(p[0] * scale - wp.float32(parent[0]))
     vy = quadratic_bspline_values(p[1] * scale - wp.float32(parent[1]))
@@ -1402,9 +1435,8 @@ def cell_screen(
     cells: wp.array[wp.int32],
     counts: wp.array[wp.float32],
     position_sums: wp.array[wp.vec3],
-    slots: wp.array[wp.int32],
-    sample_counts: wp.array[wp.int32],
-    sample_positions: wp.array[wp.vec3],
+    occupied: wp.array[wp.uint32],
+    occupied_ranks: wp.array[wp.int32],
 ) -> wp.vec4:
     # Depth ``d`` cell ``c``'s screening sample: ``(centroid, point count)``, a zero count when the
     # cell is outside the lattice, inactive or empty.
@@ -1416,16 +1448,10 @@ def cell_screen(
         return result
     count = wp.float32(0.0)
     position = wp.vec3(0.0, 0.0, 0.0)
-    if d == depth:
-        s = sample_slot(slots, cells, depth, c)
-        if s >= 0:
-            count = wp.float32(sample_counts[s])
-            position = sample_positions[s]
-    else:
-        entry = cell_entry(cells, d, c)
-        if entry >= 0:
-            count = counts[entry]
-            position = position_sums[entry]
+    r = occupied_rank(occupied, occupied_ranks, cells, d, c)
+    if r >= 0:
+        count = counts[r]
+        position = position_sums[r]
     if count > 0.0:
         p = position / count
         result = wp.vec4(p[0], p[1], p[2], count)
@@ -1474,20 +1500,17 @@ def screen_record(
     depth: wp.int32,
     c: wp.vec3i,
     cells: wp.array[wp.int32],
-    slots: wp.array[wp.int32],
-    screen_index: wp.array[wp.int32],
+    record_index: wp.array[wp.int32],
 ) -> wp.int32:
-    # Depth ``d`` cell ``c``'s record in the screening table, -1 for none: the finest depth's are
-    # its samples' (``slots``), a coarser depth's are indexed per cell (``screen_index``).
-    n = 1 << d
-    if c[0] < 0 or c[1] < 0 or c[2] < 0 or c[0] >= n or c[1] >= n or c[2] >= n:
+    # Depth ``d`` cell ``c``'s record in the screening table, -1 for none (``record_index``, one a
+    # stored cell, written by ``octree_screen_records``): one table read, as the sweeps read it
+    # for every row.
+    if not octree_inside(d, c):
         return -1
-    if d == depth:
-        return sample_slot(slots, cells, depth, c)
     entry = cell_entry(cells, d, c)
     if entry < 0:
         return -1
-    return screen_index[entry]
+    return record_index[entry]
 
 
 @wp.kernel
@@ -1495,56 +1518,32 @@ def octree_screen_records(
     depth: wp.int32,
     full_depth: wp.int32,
     alpha: wp.float32,
-    n_samples: wp.int32,
     cell_slots: wp.array[wp.int32],
     flags: wp.array[wp.uint32],
     cells: wp.array[wp.int32],
     counts: wp.array[wp.float32],
     position_sums: wp.array[wp.vec3],
-    slots: wp.array[wp.int32],
-    sample_counts: wp.array[wp.int32],
-    sample_positions: wp.array[wp.vec3],
+    occupied: wp.array[wp.uint32],
+    occupied_ranks: wp.array[wp.int32],
     out_index: wp.array[wp.int32],
-    out_count: wp.array[wp.int32],
     out_records: wp.array[wp.float32],
 ) -> None:
-    # Every depth's screened cells' records, one thread a stored cell of every depth. A finest
-    # cell's record sits at its sample's slot (weight 0 when the cell is inactive, which
-    # ``cell_screen`` reports as a zero count); a coarser cell with samples takes the next record
-    # after the samples', and ``out_index`` points its cell at it (-1 for none, padding cells
-    # included). The arrival order only numbers the records, so it changes no value a row reads.
+    # Every occupied cell's screening record, at its rank among the occupied cells, one thread a
+    # stored cell of every depth: weight 0 when the cell is inactive, which ``cell_screen``
+    # reports as a zero count. ``out_index`` points every stored cell at its record (-1 for
+    # none), the table ``screen_record`` reads.
     flat = wp.int32(wp.tid())
+    if not bit_is_set(occupied, flat):
+        out_index[flat] = -1
+        return
     at = stored_cell(cells, cell_slots, depth, flat)
     d = at[0]
     c = wp.vec3i(at[1], at[2], at[3])
-    if d < 0:
-        return
-    if not octree_inside(d, c):
-        if d < depth:
-            out_index[flat] = -1
-        return
-    record = wp.int32(-1)
-    if d == depth:
-        record = sample_slot(slots, cells, depth, c)
+    record = bit_rank(occupied, occupied_ranks, flat)
+    out_index[flat] = record
     sample = cell_screen(
-        d,
-        depth,
-        full_depth,
-        c,
-        flags,
-        cells,
-        counts,
-        position_sums,
-        slots,
-        sample_counts,
-        sample_positions,
+        d, depth, full_depth, c, flags, cells, counts, position_sums, occupied, occupied_ranks
     )
-    if d < depth:
-        if sample[3] > 0.0:
-            record = n_samples + wp.atomic_add(out_count, 0, 1)
-        out_index[flat] = record
-    if record < 0:
-        return
     base = record * SCREEN_RECORD
     scale = alpha * wp.float32(1 << d)
     out_records[base] = scale * sample[3]
@@ -1562,8 +1561,7 @@ def octree_row(
     field: wp.array[wp.float32],
     node_bricks: wp.array[wp.int32],
     cells: wp.array[wp.int32],
-    slots: wp.array[wp.int32],
-    screen_index: wp.array[wp.int32],
+    record_index: wp.array[wp.int32],
     screen: wp.array[wp.float32],
 ) -> wp.vec2:
     # ``(row . field, diagonal)`` of depth ``d``'s operator at ``node``: the hat stiffness (27
@@ -1613,7 +1611,7 @@ def octree_row(
     records = _Corners8i()
     for corner in range(8):
         cell = node - wp.vec3i(corner >> 2, (corner >> 1) & 1, corner & 1)
-        records[corner] = screen_record(d, depth, cell, cells, slots, screen_index)
+        records[corner] = screen_record(d, depth, cell, cells, record_index)
     weights = _Corners8f()
     for corner in range(8):
         weights[corner] = wp.where(
@@ -1647,9 +1645,8 @@ def screening_term(
     cells: wp.array[wp.int32],
     counts: wp.array[wp.float32],
     position_sums: wp.array[wp.vec3],
-    slots: wp.array[wp.int32],
-    sample_counts: wp.array[wp.int32],
-    sample_positions: wp.array[wp.vec3],
+    occupied: wp.array[wp.uint32],
+    occupied_ranks: wp.array[wp.int32],
 ) -> wp.float32:
     # The screening's right-hand side at depth ``d`` node ``node``: target value 1/2 at every
     # screening sample.
@@ -1666,9 +1663,8 @@ def screening_term(
             cells,
             counts,
             position_sums,
-            slots,
-            sample_counts,
-            sample_positions,
+            occupied,
+            occupied_ranks,
         )
         if sample[3] > 0.0:
             total += (
@@ -1687,9 +1683,8 @@ def octree_coarse_screening_constraints(
     cells: wp.array[wp.int32],
     counts: wp.array[wp.float32],
     position_sums: wp.array[wp.vec3],
-    slots: wp.array[wp.int32],
-    sample_counts: wp.array[wp.int32],
-    sample_positions: wp.array[wp.vec3],
+    occupied: wp.array[wp.uint32],
+    occupied_ranks: wp.array[wp.int32],
     node_bricks: wp.array[wp.int32],
     brick_slots: wp.array[wp.int32],
     integrals: wp.array[wp.vec2d],
@@ -1719,18 +1714,17 @@ def octree_coarse_screening_constraints(
         cells,
         counts,
         position_sums,
-        slots,
-        sample_counts,
-        sample_positions,
+        occupied,
+        occupied_ranks,
     )
     out_b[e] = b
     if d == 0:
         flat = lattice_index(0, node)
         out_base[flat] = b
         if flat == 0:
-            root = wp.vec3i(0, 0, 0)
-            out_base[8] = cell_value(counts, cells, 0, root)
-            p = cell_vector(position_sums, cells, 0, root)
+            root = occupied_rank(occupied, occupied_ranks, cells, 0, wp.vec3i(0, 0, 0))
+            out_base[8] = counts[root]
+            p = position_sums[root]
             out_base[9] = p[0]
             out_base[10] = p[1]
             out_base[11] = p[2]
@@ -1804,8 +1798,7 @@ def gauss_seidel_node(
     b: wp.array[wp.float32],
     flags: wp.array[wp.uint32],
     cells: wp.array[wp.int32],
-    slots: wp.array[wp.int32],
-    screen_index: wp.array[wp.int32],
+    record_index: wp.array[wp.int32],
     screen: wp.array[wp.float32],
     node_bricks: wp.array[wp.int32],
     field: wp.array[wp.float32],
@@ -1829,7 +1822,7 @@ def gauss_seidel_node(
     node = wp.vec3i(x, y, z)
     if not node_active(flags, cells, full_depth, d, node):
         return
-    row = octree_row(d, depth, node, field, node_bricks, cells, slots, screen_index, screen)
+    row = octree_row(d, depth, node, field, node_bricks, cells, record_index, screen)
     index = node_entry(node_bricks, d, node)
     field[index] = field[index] + (b[index] - row[0]) / row[1]
 
@@ -1845,8 +1838,7 @@ def octree_gauss_seidel_wave(
     b: wp.array[wp.float32],
     flags: wp.array[wp.uint32],
     cells: wp.array[wp.int32],
-    slots: wp.array[wp.int32],
-    screen_index: wp.array[wp.int32],
+    record_index: wp.array[wp.int32],
     screen: wp.array[wp.float32],
     node_bricks: wp.array[wp.int32],
     field: wp.array[wp.float32],
@@ -1874,8 +1866,7 @@ def octree_gauss_seidel_wave(
         b,
         flags,
         cells,
-        slots,
-        screen_index,
+        record_index,
         screen,
         node_bricks,
         field,
@@ -1891,8 +1882,7 @@ def octree_gauss_seidel_depth(
     b: wp.array[wp.float32],
     flags: wp.array[wp.uint32],
     cells: wp.array[wp.int32],
-    slots: wp.array[wp.int32],
-    screen_index: wp.array[wp.int32],
+    record_index: wp.array[wp.int32],
     screen: wp.array[wp.float32],
     node_bricks: wp.array[wp.int32],
     field: wp.array[wp.float32],
@@ -1921,8 +1911,7 @@ def octree_gauss_seidel_depth(
                             b,
                             flags,
                             cells,
-                            slots,
-                            screen_index,
+                            record_index,
                             screen,
                             node_bricks,
                             field,

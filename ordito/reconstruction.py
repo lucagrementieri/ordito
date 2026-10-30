@@ -1347,34 +1347,36 @@ def _screened_poisson_octree(
     cells = _octree_cells(sample_keys, n_samples, depth, full_depth)
     cell_tables = [cells.bricks, cells.slots]
     n_coarse_cells = cells.firsts[depth]
-    slots = _launch.full(
-        cells.firsts[depth + 1] - n_coarse_cells, -1, dtype=wp.int32, device=device
-    )
+    # The cells holding a sample (a sample's cell and its ancestors), one bit a stored cell: their
+    # ranks index the point counts, the position sums and the screening records.
+    occupied = _launch.zeros((cells.firsts[depth + 1] + 31) // 32, dtype=wp.uint32, device=device)
     _launch.launch(
-        kernel_octree.octree_sample_slots,
+        kernel_octree.octree_occupied_cells,
         dim=n_samples,
-        inputs=[sample_keys, cells.bricks, depth],
-        outputs=[slots],
+        inputs=[sample_keys, depth, cells.bricks],
+        outputs=[occupied],
         device=device,
     )
+    occupied_ranks = _bit_ranks(occupied)
+    # One read sizes the occupied cells' tables.
+    n_occupied = int(read_scalar(occupied_ranks))
+    occupancy = [occupied, occupied_ranks]
 
-    # Every stored coarser cell's point count and position sum, finest first.
-    counts = _launch.empty(n_coarse_cells, dtype=wp.float32, device=device)
-    position_sums = _launch.empty(n_coarse_cells, dtype=wp.vec3, device=device)
+    # Every occupied cell's point count and position sum: the samples', then finest first.
+    counts = _launch.empty(n_occupied, dtype=wp.float32, device=device)
+    position_sums = _launch.empty(n_occupied, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_octree.octree_sample_aggregates,
+        dim=n_samples,
+        inputs=[sample_keys, sample_counts, sample_positions, depth, cells.bricks, *occupancy],
+        outputs=[counts, position_sums],
+        device=device,
+    )
     for d in reversed(range(depth)):
         _launch.launch(
             kernel_octree.octree_child_aggregates,
             dim=cells.firsts[d + 1] - cells.firsts[d],
-            inputs=[
-                depth,
-                cells.firsts[d],
-                slots,
-                *cell_tables,
-                sample_counts,
-                sample_positions,
-                counts,
-                position_sums,
-            ],
+            inputs=[depth, cells.firsts[d], *cell_tables, *occupancy, counts, position_sums],
             device=device,
         )
 
@@ -1384,7 +1386,7 @@ def _screened_poisson_octree(
     _launch.launch_group_sums(
         kernel_octree.octree_density_splat,
         dim=cells.firsts[kernel_depth + 2] - cells.firsts[1],
-        inputs=[depth, counts, position_sums, *cell_tables],
+        inputs=[depth, counts, position_sums, *cell_tables, *occupancy],
         sums=density_sums,
         device=device,
     )
@@ -1446,36 +1448,32 @@ def _screened_poisson_octree(
     nodes = _octree_nodes(sample_keys, n_samples, depth, full_depth, cells.bricks, flags)
 
     system = [depth, full_depth, wp.float32(alpha)]
-    screen_args = [flags, cells.bricks, counts, position_sums, slots, sample_counts]
-    screen_args.append(sample_positions)
+    screen_args = [flags, cells.bricks, counts, position_sums, *occupancy]
     constraints, base = _octree_constraints(normal_field, cells, nodes, system, screen_args)
     # The normal field (carried up in place) is read only by the flags and the constraints:
     # released before the solve.
     del normal_field
-    # Every screened cell's weight and corner hat values, formed once for every sweep that reads
-    # them. A coarser cell with samples holds at least one, so its depth has at most
-    # ``n_samples`` such cells.
-    n_coarse = sum(min(8**d, n_samples) for d in range(depth))
+    # Every occupied cell's screening weight and corner hat values, at its rank, formed once for
+    # every sweep that reads them, and every stored cell's record (-1 for none): a rank would cost
+    # each sweep row a bitset read, and the cascade has the memory the constraints have freed.
     screen = _launch.empty(
-        (n_samples + n_coarse) * kernel_octree.SCREEN_RECORD, dtype=wp.float32, device=device
+        n_occupied * kernel_octree.SCREEN_RECORD, dtype=wp.float32, device=device
     )
-    screen_index = _launch.empty(n_coarse_cells, dtype=wp.int32, device=device)
-    screen_count = _launch.zeros(1, dtype=wp.int32, device=device)
+    record_index = _launch.empty(cells.firsts[depth + 1], dtype=wp.int32, device=device)
     _launch.launch(
         kernel_octree.octree_screen_records,
         dim=cells.firsts[depth + 1],
-        inputs=[*system, n_samples, cells.slots, *screen_args],
-        outputs=[screen_index, screen_count, screen],
+        inputs=[*system, cells.slots, *screen_args],
+        outputs=[record_index, screen],
         device=device,
     )
-    sweep_args = [flags, cells.bricks, slots, screen_index, screen, nodes.bricks]
+    sweep_args = [flags, cells.bricks, record_index, screen, nodes.bricks]
     fields = _octree_cascade(
         constraints, base, nodes, depth, full_depth, iterations, alpha, sweep_args
     )
     # The solve's inputs are dead: released before the extraction allocates, which is where the
     # call's memory would otherwise peak.
-    del sweep_args, screen_args, constraints, slots, counts, position_sums
-    del screen, screen_index, screen_count
+    del sweep_args, screen_args, constraints, counts, position_sums, screen, record_index
 
     iso_terms = area_terms
     _launch.launch(
@@ -1856,7 +1854,8 @@ def _octree_cascade(
 
     ``constraints`` holds every stored node's right-hand side, and ``base`` depth 0's eight
     entries, its cell's point count and position sum. ``sweep_args`` are the sweeps' tables: the
-    activity flags, the cell offsets, the sample slots, the screening records and the node bricks.
+    activity flags, the cell bricks, the occupied cells and their ranks, the screening records and
+    the node bricks.
     Returns every stored node's field (the extraction's slopes form each depth's prolonged coarser
     field again from it).
     """
