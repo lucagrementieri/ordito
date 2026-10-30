@@ -1578,10 +1578,11 @@ def stitch_dp_diag(
     # One thread per cell (i, j) on anti-diagonal ``diag = i + j``; each reads only the previous
     # diagonal, so launching diag = 1, 2, ... in order are the DP barriers.
     #
-    # This is the reference schedule and the one the CPU device takes. ``stitch_dp_tile`` below
-    # computes the identical cells in a different order -- the difference is *only* where the
-    # barriers come from, a launch boundary here against a block barrier there -- and
-    # ``tests/test_holes.py::test_stitch_dp_tile_matches_diagonal`` pins the two to each other.
+    # This is the reference schedule. ``stitch_dp_tile`` below computes the identical cells in a
+    # different order -- the difference is *only* where the barriers come from, a launch boundary
+    # here against a block barrier there -- and
+    # ``tests/test_holes.py::test_stitch_dp_tile_matches_diagonal`` pins the two to each other (on
+    # the CPU device, the tiled schedule against ``stitch_dp_sweep``, which that device runs).
     i_lo = wp.max(0, diag - tables.n_b)
     i = i_lo + wp.int32(wp.tid())
     j = diag - i
@@ -1590,6 +1591,22 @@ def stitch_dp_diag(
     best, best_came = stitch_dp_cell(tables, i, j, out_dp, out_came)
     out_dp[i, j] = best
     out_came[i, j] = best_came
+
+
+@wp.kernel(enable_backward=False)
+def stitch_dp_sweep(
+    tables: StitchTables, out_dp: wp.array2d[wp.float32], out_came: wp.array2d[wp.int32]
+) -> None:
+    # dim=1. Every cell by one thread in row-major order, which reaches ``(i - 1, j)`` and
+    # ``(i, j - 1)`` before ``(i, j)``: the CPU engine. The CPU device runs a launch's threads in
+    # turn, so the diagonal and tiled schedules' launches bought it no parallelism; this computes
+    # the same cells with the same ``stitch_dp_cell`` in one launch.
+    for i in range(tables.n_a + 1):
+        for j in range(tables.n_b + 1):
+            if i != 0 or j != 0:
+                best, best_came = stitch_dp_cell(tables, i, j, out_dp, out_came)
+                out_dp[i, j] = best
+                out_came[i, j] = best_came
 
 
 # Side of the square grid tile ``stitch_dp_tile`` gives one block, and the block's lane count with

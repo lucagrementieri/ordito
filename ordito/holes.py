@@ -3483,11 +3483,20 @@ def _run_stitch_dp(
     * ``True`` gives one **block** a ``tile x tile`` square and launches one tile-diagonal at a
       time, so all but ``2 * ceil(n / tile)`` of the barriers become block-local. That is the whole
       cost of this DP -- the per-cell work is small and the sweep was launch-bound -- and it is the
-      default on **both** devices, unlike the fill DP's tiled engine: the CPU device runs one lane
-      per block, so its gain is the launch count alone rather than the lanes, and it still takes it.
+      default on CUDA.
+
+    The CPU device runs a launch's threads in turn, so its untiled schedule is one launch with one
+    thread walking the grid in row-major order (``kernels/holes.stitch_dp_sweep``), and that is its
+    default.
     """
+    is_cpu = wp.get_device(device).is_cpu
     if tiled is None:
-        tiled = True
+        tiled = not is_cpu
+    if not tiled and is_cpu:
+        _launch.launch(
+            kernel_holes.stitch_dp_sweep, dim=1, inputs=[tables, dp, came], device=device
+        )
+        return
     if not tiled:
         for diag in range(1, n_a + n_b + 1):
             _launch.launch(

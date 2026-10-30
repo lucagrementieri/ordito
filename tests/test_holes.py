@@ -2513,8 +2513,9 @@ def test_stitch_dp_tile_matches_diagonal(
     Ordito against ordito: the tiled band DP must emit the **identical band** as the diagonal one.
 
     ``stitch_dp_diag`` carries the oracle here -- it is the straight reading of the recurrence, one
-    launch per anti-diagonal -- and ``stitch_dp_tile`` is the fast schedule that has to agree with
-    it. Both call the same ``stitch_dp_cell``, so the only thing that can differ is *ordering*: the
+    launch per anti-diagonal (on the CPU device ``stitch_dp_sweep``, the same reading in one
+    row-major launch) -- and ``stitch_dp_tile`` is the fast schedule that has to agree with it.
+    Both call the same ``stitch_dp_cell``, so the only thing that can differ is *ordering*: the
     tiled kernel replaces all but ``2 * ceil(n / tile)`` of the launch barriers with a block
     barrier, and a missing or mis-placed one would let a cell read a predecessor that a lane in
     another warp had not written yet. Nothing else in this file would see that -- the band would
