@@ -1379,9 +1379,10 @@ Laplacian fairing; a port would follow that schedule.
 
 ### Octree memory (2026-10-30): every solver and extraction table stored by brick
 
-`screened_poisson(method="octree")` (200 k points, CUDA) peaks at **71-79 MiB at depth 8** with
-the deterministic setting off and 79 with it on (was 461 / 1 026; 2 036 before `7498cad1`), and
-at **291 MiB at depth 9** either way (was 3 471 / 8 152). Bit-identical with the setting on, CPU
+`screened_poisson(method="octree")` (200 k points, CUDA) peaks at **56 MiB at depth 8** with
+the deterministic setting off (was 461; 1 026 on; 2 036 before `7498cad1`), and at **189 / 184
+MiB at depth 9** off / on (was 3 471 / 8 152; 229 for 1 M points), 19 MiB at depth 7 (dense
+layout 21). Bit-identical with the setting on, CPU
 (depths 6-8, dense and sparse clouds) and CUDA (depths 8-9); the `dense` and `adaptive` backends,
 which share the trilinear and restriction helpers, too. With it off the CPU's float atomics in the
 density splat arrive in brick order, so its CPU off-mode bits differ from the dense layout's
@@ -1427,6 +1428,21 @@ What it took, in order:
   cell (`record_index`, built after the constraints): through the rank each row's eight lookups
   cost 1.14x the sweeps. Constraints phase on a unit-sphere cloud at depth 9 347 -> 228 MiB,
   cascade 301 -> 190, splat 291 -> 173; time at par.
+- **The finest depth's normal coefficients are packed by splat-target rank** (`finest_normal`):
+  the splat reaches about 0.97 M of the 12.3 M stored cells at depth 9, so it sums into the
+  targets alone in both modes (each target's terms arrive in the same order, so the off mode's
+  CPU bits hold) and only the coarser depths become a field, which the carry-up needs. The
+  finest-window reads take the rank: CUDA 1.01-1.02x, CPU 1.05x at depth 7. Constraints phase
+  228 -> 182 MiB (unit sphere), 178 -> 160 (ellipsoid).
+- **The extraction is split where the solve's tables die** (`_octree_segments`,
+  `_octree_triangulate`): the fields, sources, edge bits, flags and the cell and node tables are
+  released before the loops and faces, the band bits after the band. Extraction 273 -> 158 MiB
+  on the ellipsoid cloud.
+- **Occupancy is one packed array** (each 32-cell word beside the rank before it,
+  `octree_pack_occupancy`): a rank is one 8-byte read. The sweeps still read `record_index`
+  (4 bytes a stored cell): through the packed rank, even with a native popcount
+  (`native_popcount32`; `popcount32`'s SWAR sequence cost more), they took 1.05x. The counts and
+  positions are released before the cascade.
 - Also: the splat's exact accumulator released after its finish, `prolongeds` formed again
   (`prolonged_at`), `owners` a bitset walked to the creating edge (`edge_owner`). Restriction and
   prolongation keep the dense sums' bits because their weights are powers of two
@@ -1434,13 +1450,12 @@ What it took, in order:
 
 Verified with temporary prints on every invariant (no unstored field read, splat or density
 target, carried-up window cell or parent, corner source, edge or finer half) over the octree tests
-and dense and sparse clouds (down to 500 points at depth 6). **Open:** at depth 9 the peak is
-the extraction on dense clouds (273 MiB on an ellipsoid cloud: its band of leaf cells found by a
-launch over every cell, one bit a cell, and its segment, loop and face tables) or the
-constraints phase (228 on a unit sphere: the normal field over every stored cell, 141 MiB, and
-the node right-hand sides). The splat reaches about 0.97 M cells of the 12.3 M stored: the finest
-depth's coefficients could be packed by target rank (about -50 MiB there), at a rank in every
-finest window read; the coarser depths need the field for the carried-up values. The extraction's
+and dense and sparse clouds (down to 500 points at depth 6). **Open:** at depth 9 the phases
+are balanced (unit sphere / ellipsoid, MiB): constraints 182 / 160 (the coarser depths' field,
+80 at depth 9, which the carry-up needs; the node right-hand sides, 43), cascade 185 / 169
+(fields, right-hand sides, `record_index` 47: the packed rank would save it at 1.05x the
+sweeps), extraction 149 / 158 (the band of leaf cells found by a launch over every cell, one
+bit a cell; the faces themselves, 42). The extraction's
 band of leaf cells is still found by a launch over every cell (one bit a cell). Depth 10 would
 need `int64` dense edge slots for the vertex order.
 
