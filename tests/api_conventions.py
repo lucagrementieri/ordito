@@ -788,10 +788,10 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("validation", "signed_forest_candidates"): frozenset({"best"}),
     ("validation", "signed_forest_hook"): frozenset({"parents", "in_forest", "hooked"}),
     ("validation", "forest_flatten"): frozenset({"parents"}),
-    # ``compute_ears`` raises the round's "some ear is good" flag in the ear loop's carried
-    # ``state`` (``select_independent`` reads it, ``clip_selected`` lowers it with the round's
-    # loop control); the answer is ``out_is_ear``.
-    ("polyline", "compute_ears"): frozenset({"state"}),
+    # ``ear_clip_rounds`` (the CPU's one-launch ear loop) writes each round's selection into the
+    # scratch the multi-launch loop hands ``select_independent`` as ``out_selected``; the answers
+    # are ``out_faces`` and the loop's carried ``out_state``.
+    ("polyline", "ear_clip_rounds"): frozenset({"selected"}),
     # The packed round loop's carried scratch, the one-ring loop's under other names: ``ring`` is
     # the ``(RING_SCRATCH_ROWS, n_points)`` links / ear grades / selections and each point's loop
     # (``ring_ear_grid_cells`` writes the loop row once), ``rounds`` the loops' state rows behind

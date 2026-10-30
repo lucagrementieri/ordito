@@ -2016,10 +2016,12 @@ def _triangulate_ring(
         device=device,
     )
 
-    def clip_round() -> None:
+    if wp.get_device(device).is_cpu:
+        # The CPU device runs a launch's threads in turn: one thread runs every round, the same
+        # steps in the same order as the round loop below.
         _launch.launch(
-            kernel_polyline.compute_ears,
-            dim=n_ring,
+            kernel_polyline.ear_clip_rounds,
+            dim=1,
             inputs=[
                 points2d,
                 left,
@@ -2031,27 +2033,52 @@ def _triangulate_ring(
                 shift,
                 inv_cell,
                 dims_wp,
-                state,
                 is_ear,
+                selected,
+                wp.int32(n_ring - 2),
+                wp.int32(n_ring),
             ],
-            device=device,
-        )
-        _launch.launch(
-            kernel_polyline.select_independent,
-            dim=n_ring,
-            inputs=[is_ear, left, right, state, selected],
-            device=device,
-        )
-        _launch.launch(
-            kernel_polyline.clip_selected,
-            dim=n_ring,
-            inputs=[selected, left, right, active, wp.int32(n_ring - 2), wp.int32(n_ring)],
             outputs=[out_faces, state],
             device=device,
         )
+    else:
 
-    condition = odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW])
-    run_device_loop(device, condition, clip_round)
+        def clip_round() -> None:
+            _launch.launch(
+                kernel_polyline.compute_ears,
+                dim=n_ring,
+                inputs=[
+                    points2d,
+                    left,
+                    right,
+                    active,
+                    mirror,
+                    cell_starts,
+                    cell_points,
+                    shift,
+                    inv_cell,
+                    dims_wp,
+                    state,
+                    is_ear,
+                ],
+                device=device,
+            )
+            _launch.launch(
+                kernel_polyline.select_independent,
+                dim=n_ring,
+                inputs=[is_ear, left, right, state, selected],
+                device=device,
+            )
+            _launch.launch(
+                kernel_polyline.clip_selected,
+                dim=n_ring,
+                inputs=[selected, left, right, active, wp.int32(n_ring - 2), wp.int32(n_ring)],
+                outputs=[out_faces, state],
+                device=device,
+            )
+
+        condition = odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW])
+        run_device_loop(device, condition, clip_round)
 
     count = int(read_scalar(state, int(kernel_polyline.EAR_COUNT)))
     return n_ring, _clipped_faces(out_faces, count, n_ring), clockwise

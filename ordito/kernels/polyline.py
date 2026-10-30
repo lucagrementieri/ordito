@@ -2039,8 +2039,8 @@ def ear_flag(
     return flag
 
 
-@wp.kernel
-def compute_ears(
+@wp.func
+def grade_ear_at(
     points2d: wp.array[wp.vec2],
     left: wp.array[wp.int32],
     right: wp.array[wp.int32],
@@ -2052,12 +2052,13 @@ def compute_ears(
     inv_cell: wp.float32,
     dims: wp.vec2i,
     state: wp.array[wp.int32],
+    i: wp.int32,
     out_is_ear: wp.array[wp.int32],
-) -> None:
-    # ``ear_flag`` with the grid's containment test (``ear_grade_grid``): the multi-launch path's
-    # grading step. ``state`` is the loop's carried scratch (``EAR_ANY_GOOD`` is raised here, every
-    # writer storing the same 1), not a fresh per-call answer.
-    i = wp.int32(wp.tid())
+):
+    # Corner ``i``'s grade with the grid's containment test (``ear_grade_grid``), the round loop's
+    # grading step, shared by ``compute_ears`` (a thread a corner) and ``ear_clip_rounds`` (the
+    # CPU's one thread). ``state`` is the loop's carried scratch (``EAR_ANY_GOOD`` is raised here,
+    # every writer storing the same 1), not a fresh per-call answer.
     grade = EAR_NONE
     if active[i] != 0:
         grade = ear_grade_grid(
@@ -2079,6 +2080,40 @@ def compute_ears(
     out_is_ear[i] = grade
     if grade == EAR_GOOD:
         state[EAR_ANY_GOOD] = wp.int32(1)
+
+
+@wp.kernel
+def compute_ears(
+    points2d: wp.array[wp.vec2],
+    left: wp.array[wp.int32],
+    right: wp.array[wp.int32],
+    active: wp.array[wp.int32],
+    mirror: wp.int32,
+    cell_starts: wp.array[wp.int32],
+    cell_points: wp.array[wp.int32],
+    shift: wp.vec2,
+    inv_cell: wp.float32,
+    dims: wp.vec2i,
+    state: wp.array[wp.int32],
+    out_is_ear: wp.array[wp.int32],
+) -> None:
+    # ``grade_ear_at`` a thread a corner: the multi-launch path's grading step.
+    i = wp.int32(wp.tid())
+    grade_ear_at(
+        points2d,
+        left,
+        right,
+        active,
+        mirror,
+        cell_starts,
+        cell_points,
+        shift,
+        inv_cell,
+        dims,
+        state,
+        i,
+        out_is_ear,
+    )
 
 
 @wp.func
@@ -2185,17 +2220,18 @@ def clip_ear(
     return slot
 
 
-@wp.kernel
-def clip_selected(
+@wp.func
+def clip_selected_at(
     selected: wp.array[wp.int32],
     left: wp.array[wp.int32],
     right: wp.array[wp.int32],
     active: wp.array[wp.int32],
     target: wp.int32,
     max_rounds: wp.int32,
+    i: wp.int32,
     out_faces: wp.array2d[wp.int32],
     out_state: wp.array[wp.int32],
-) -> None:
+):
     # The round's clips, and the ear loop's control, kept on device so ``wp.capture_while`` can
     # drive the rounds without a readback each time (the slot table is ``array.LOOP_ROUND`` /
     # ``LOOP_CONDITION``). The control needs no launch of its own: thread 0 advances the round and
@@ -2206,7 +2242,7 @@ def clip_selected(
     # both after the clips would. The round cap is what stops a degenerate or self-intersecting
     # loop that never retires an ear -- the same bound the host-driven form got from iterating
     # ``range(n)``.
-    i = wp.int32(wp.tid())
+    # Shared by ``clip_selected`` (a thread a corner) and ``ear_clip_rounds``.
     if i == 0:
         round_next = out_state[LOOP_ROUND] + 1
         out_state[LOOP_ROUND] = round_next
@@ -2218,6 +2254,73 @@ def clip_selected(
         slot = clip_ear(left, right, active, i, out_state, EAR_COUNT, out_faces)
         if slot + 1 >= target:
             out_state[LOOP_CONDITION] = wp.int32(0)
+
+
+@wp.kernel
+def clip_selected(
+    selected: wp.array[wp.int32],
+    left: wp.array[wp.int32],
+    right: wp.array[wp.int32],
+    active: wp.array[wp.int32],
+    target: wp.int32,
+    max_rounds: wp.int32,
+    out_faces: wp.array2d[wp.int32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # ``clip_selected_at`` a thread a corner: the round's clips and the loop control.
+    i = wp.int32(wp.tid())
+    clip_selected_at(selected, left, right, active, target, max_rounds, i, out_faces, out_state)
+
+
+@wp.kernel
+def ear_clip_rounds(
+    points2d: wp.array[wp.vec2],
+    left: wp.array[wp.int32],
+    right: wp.array[wp.int32],
+    active: wp.array[wp.int32],
+    mirror: wp.int32,
+    cell_starts: wp.array[wp.int32],
+    cell_points: wp.array[wp.int32],
+    shift: wp.vec2,
+    inv_cell: wp.float32,
+    dims: wp.vec2i,
+    is_ear: wp.array[wp.int32],
+    selected: wp.array[wp.int32],
+    target: wp.int32,
+    max_rounds: wp.int32,
+    out_faces: wp.array2d[wp.int32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # dim=1. Every round of ``compute_ears`` -> ``select_independent`` -> ``clip_selected`` by one
+    # thread, each step walking the corners in index order: the CPU engine. The CPU device runs a
+    # launch's threads in turn, so the three launches a round (and the condition read before each)
+    # bought it no parallelism; this is the same steps in the same order, in one launch, stopping
+    # where the round loop's ``LOOP_CONDITION`` stops it.
+    n = active.shape[0]
+    while out_state[LOOP_CONDITION] != 0:
+        for i in range(n):
+            grade_ear_at(
+                points2d,
+                left,
+                right,
+                active,
+                mirror,
+                cell_starts,
+                cell_points,
+                shift,
+                inv_cell,
+                dims,
+                out_state,
+                i,
+                is_ear,
+            )
+        any_good = out_state[EAR_ANY_GOOD]
+        for i in range(n):
+            selected[i] = ear_selected(is_ear, left, right, i, any_good, 0)
+        for i in range(n):
+            clip_selected_at(
+                selected, left, right, active, target, max_rounds, i, out_faces, out_state
+            )
 
 
 # Rings up to this length are clipped by ``ear_clip_block`` -- the whole round loop as one block --
