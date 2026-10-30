@@ -719,12 +719,17 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.poisson_octree", "octree_clip_flags"): frozenset({"flags"}),
     ("algorithms.poisson_octree", "octree_dilate_flags"): frozenset({"flags"}),
     ("algorithms.poisson_octree", "octree_upsample_coarse_data"): frozenset({"accumulated"}),
+    # The stored node bricks, marked finest first (a depth keeps what its next depth prolongs
+    # from); a depth's right-hand sides gathering the next depth's, and a depth's field prolonged
+    # from the one before it, in the one buffer every depth's stored nodes share.
+    ("algorithms.poisson_octree", "octree_node_bricks"): frozenset({"marks"}),
+    ("algorithms.poisson_octree", "octree_restrict_add"): frozenset({"b"}),
+    ("algorithms.poisson_octree", "octree_prolong"): frozenset({"fields"}),
     # The extraction's per-depth tables, each depth's launch reading the finer depth's entries
-    # (corner sources, edge owners) or adding to one buffer every depth shares (pairs, created
-    # flags); counts written by a kernel's count pass and read back by its emit pass; a leaf's
-    # segments consumed by its own loop walk; the minimal-area search's working space.
+    # (corner sources) or adding to one buffer every depth shares (pairs); counts written by a
+    # kernel's count pass and read back by its emit pass; a leaf's segments consumed by its own
+    # loop walk; the minimal-area search's working space.
     ("algorithms.poisson_octree", "corner_sources"): frozenset({"sources"}),
-    ("algorithms.poisson_octree", "classify_edges"): frozenset({"owners"}),
     ("algorithms.poisson_octree", "borrowed_faces"): frozenset({"offsets"}),
     ("algorithms.poisson_octree", "cell_segments"): frozenset({"offsets"}),
     ("algorithms.poisson_octree", "cell_loops"): frozenset({"segments"}),

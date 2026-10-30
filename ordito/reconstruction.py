@@ -25,6 +25,7 @@ its consumers in [`ordito.levelset`][ordito.levelset], and ``screened_poisson`` 
 from __future__ import annotations
 
 import functools
+import itertools
 import math
 import warnings
 from collections.abc import Callable, Sequence
@@ -1278,8 +1279,9 @@ def screened_poisson(
     return vertices, faces
 
 
-# ``method="octree"`` keeps every depth's node lattice dense: depth 9 is a few GB of lattices,
-# depth 10 eight times that.
+# ``method="octree"`` keeps its cell tables below the finest depth and its extraction's per-node
+# tables dense: depth 9 peaks near 1 GB, and depth 10's edge table would pass the ``int32`` index
+# range.
 _OCTREE_MAX_DEPTH = 9
 
 
@@ -1343,15 +1345,33 @@ def _screened_poisson_octree(
         raise ValueError("screened_poisson requires at least one point with a nonzero normal.")
     sample_positions = _octree_group_sums(positions, inverse, n_groups)
     sample_normals = _octree_group_sums(unit_normals, inverse, n_groups)
-    slots = _launch.full(8**depth, -1, dtype=wp.int32, device=device)
+    # The finest depth's tables are stored by brick, for the bricks a sample or a finest-depth
+    # normal splat reaches: numbered by the inclusive scan of their marks.
+    bricks = _launch.zeros(
+        8 ** max(depth - kernel_octree.BRICK_SHIFT, 0), dtype=wp.int32, device=device
+    )
+    _launch.launch(
+        kernel_octree.octree_finest_bricks,
+        dim=n_samples,
+        inputs=[sample_keys, depth],
+        outputs=[bricks],
+        device=device,
+    )
+    brick_ranks = _launch.empty(bricks.size, dtype=wp.int32, device=device)
+    _launch.array_scan(bricks, brick_ranks, inclusive=True)
+    # One read sizes the stored bricks.
+    n_brick_cells = int(read_scalar(brick_ranks)) * kernel_octree.BRICK_CELLS
+    _launch.map(kernel_octree.brick_number, bricks, brick_ranks, out=bricks)
+    del brick_ranks
+    slots = _launch.full(n_brick_cells, -1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_octree.octree_sample_slots,
         dim=n_samples,
-        inputs=[sample_keys],
+        inputs=[sample_keys, bricks, depth],
         outputs=[slots],
         device=device,
     )
-    sample_args = [slots, sample_counts, sample_positions]
+    sample_args = [slots, bricks, sample_counts, sample_positions]
 
     # Every coarser cell's point count and position sum, finest first.
     counts = _launch.empty(cell_offsets_host[depth], dtype=wp.float32, device=device)
@@ -1410,7 +1430,10 @@ def _screened_poisson_octree(
     # The density is read only by the weights: released before the normal splat allocates.
     del density_sums, density
 
-    normal_sums = _launch.group_sums(cell_offsets_host[depth + 1], wp.vec3, 2 * n_samples, device)
+    # Every coarser depth's coefficients dense, then the finest depth's stored bricks.
+    normal_sums = _launch.group_sums(
+        cell_offsets_host[depth] + n_brick_cells, wp.vec3, 2 * n_samples, device
+    )
     _launch.launch_group_sums(
         kernel_octree.octree_normal_splat,
         dim=n_samples,
@@ -1421,19 +1444,22 @@ def _screened_poisson_octree(
             sample_normals,
             sample_depths,
             cell_offsets,
+            bricks,
             depth,
         ],
         sums=normal_sums,
         device=device,
     )
     normal_field = _launch.finish_group_sums(normal_sums)
+    # The exact sums' words (setting on) are dead once finished: released before the constraints.
+    del normal_sums
 
     flags = _launch.empty(flag_offsets_host[depth], dtype=wp.int32, device=device)
     for d in reversed(range(depth)):
         _launch.launch(
             kernel_octree.octree_clip_flags,
             dim=(2**d + 2) ** 3,
-            inputs=[d, depth, full_depth, normal_field, cell_offsets, flag_offsets, flags],
+            inputs=[d, depth, full_depth, normal_field, cell_offsets, bricks, flag_offsets, flags],
             device=device,
         )
     for d in range(depth - 1, full_depth, -1):
@@ -1444,20 +1470,14 @@ def _screened_poisson_octree(
             device=device,
         )
 
+    nodes = _octree_node_bricks(sample_keys, n_samples, depth, full_depth, flags, flag_offsets)
     system = [depth, full_depth, wp.float32(alpha)]
     screen_args = [flags, flag_offsets, counts, position_sums, cell_offsets, *sample_args]
     constraints, base = _octree_constraints(
-        normal_field,
-        cell_offsets,
-        cell_offsets_host,
-        node_offsets,
-        node_offsets_host,
-        depth,
-        system,
-        screen_args,
+        normal_field, bricks, cell_offsets, cell_offsets_host, nodes, system, screen_args
     )
     # The normal field is read only by the flags and the constraints: released before the solve.
-    del normal_sums, normal_field
+    del normal_field
     # Every screened cell's weight and corner hat values, formed once for every sweep that reads
     # them. A coarser cell with samples holds at least one, so its depth has at most
     # ``n_samples`` such cells.
@@ -1474,34 +1494,39 @@ def _screened_poisson_octree(
         outputs=[screen_index, screen_count, screen],
         device=device,
     )
-    sweep_args = [flags, flag_offsets, cell_offsets, slots, screen_index, screen]
-    prolongeds, fields = _octree_cascade(
-        constraints, base, node_offsets_host, depth, full_depth, iterations, alpha, sweep_args
+    sweep_args = [
+        flags,
+        flag_offsets,
+        cell_offsets,
+        slots,
+        bricks,
+        screen_index,
+        screen,
+        nodes.bricks,
+    ]
+    fields = _octree_cascade(
+        constraints, base, nodes, depth, full_depth, iterations, alpha, sweep_args
     )
     # The solve's inputs are dead: released before the extraction allocates, which is where the
     # call's memory would otherwise peak.
-    del sweep_args, screen_args, sample_args, constraints, slots, counts, position_sums
+    del sweep_args, screen_args, sample_args, constraints, slots, bricks, counts, position_sums
     del screen, screen_index, screen_count
 
-    res = 2**depth + 1
+    node_bricks = nodes.bricks
+    del nodes
     iso_terms = area_terms
     _launch.launch(
         kernel_octree.octree_iso_terms,
         dim=n_samples,
-        inputs=[
-            sample_counts,
-            sample_positions,
-            _launch.view(fields, node_offsets_host[depth], node_offsets_host[depth + 1]),
-            res,
-        ],
+        inputs=[sample_counts, sample_positions, fields, node_bricks, depth],
         outputs=[iso_terms],
         device=device,
     )
     # The extraction takes the iso-value as a host scalar.
     iso = od.reduce.sum(iso_terms) / n_merged
     unit_vertices, faces = _octree_extract(
-        prolongeds,
         fields,
+        node_bricks,
         node_offsets,
         node_offsets_host,
         edge_offsets,
@@ -1582,13 +1607,84 @@ def _octree_unit_transform(
     return wp.float32(float(inverse)), wp.vec3(*(-corner * inverse).tolist())
 
 
+class _OctreeNodes(NamedTuple):
+    """The octree backend's stored nodes (``kernels/algorithms/poisson_octree``'s note)."""
+
+    bricks: wp.array[wp.int32]
+    """The per-depth node brick tables after their ``depth + 2`` offsets."""
+    slots: wp.array[wp.int32]
+    """``(n_bricks,)`` each stored brick's entry of ``bricks``."""
+    firsts: list[int]
+    """Each depth's first entry in the brick-packed node values, then their count."""
+
+
+def _octree_node_bricks(
+    sample_keys: wp.array[wp.int32],
+    n_samples: int,
+    depth: int,
+    full_depth: int,
+    flags: wp.array[wp.int32],
+    flag_offsets: wp.array[wp.int32],
+) -> _OctreeNodes:
+    """
+    Mark, number and size the node bricks the right-hand sides and the fields are stored in.
+
+    Finest depth first, since a depth keeps the bricks its next depth's stored nodes prolong
+    from. One read sizes each depth's share.
+    """
+    device = sample_keys.device
+    per_axis = [(2**d >> kernel_octree.BRICK_SHIFT) + 1 for d in range(depth + 1)]
+    head = depth + 2
+    offsets = np.cumsum([head] + [n**3 for n in per_axis]).astype(np.int32)
+    bricks = _launch.zeros(int(offsets[-1]), dtype=wp.int32, device=device)
+    _launch.copy(bricks, _launch.array(offsets, wp.int32, device=device), count=head)
+    _launch.launch(
+        kernel_octree.octree_sample_node_bricks,
+        dim=n_samples,
+        inputs=[sample_keys, depth],
+        outputs=[bricks],
+        device=device,
+    )
+    for d in reversed(range(depth + 1)):
+        _launch.launch(
+            kernel_octree.octree_node_bricks,
+            dim=per_axis[d] ** 3,
+            inputs=[d, depth, full_depth, flags, flag_offsets, bricks],
+            device=device,
+        )
+    tables = _launch.view(bricks, head, int(offsets[-1]))
+    ranks = _launch.empty(tables.size, dtype=wp.int32, device=device)
+    _launch.array_scan(tables, ranks, inclusive=True)
+    ends = _launch.empty(depth + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_octree.octree_node_brick_ends,
+        dim=depth + 1,
+        inputs=[bricks, ranks],
+        outputs=[ends],
+        device=device,
+    )
+    # One read sizes every depth's stored nodes.
+    counts = [int(n) for n in read_values(ends, 0, depth + 1)]
+    _launch.map(kernel_octree.brick_number, tables, ranks, out=tables)
+    del ranks
+    slots = _launch.empty(max(counts[-1], 1), dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_octree.octree_node_brick_slots,
+        dim=tables.size,
+        inputs=[bricks, head],
+        outputs=[slots],
+        device=device,
+    )
+    firsts = [0] + [kernel_octree.BRICK_CELLS * n for n in counts]
+    return _OctreeNodes(bricks, slots, firsts)
+
+
 def _octree_constraints(
     normal_field: wp.array[wp.vec3],
+    bricks: wp.array[wp.int32],
     cell_offsets: wp.array[wp.int32],
     cell_offsets_host: list[int],
-    node_offsets: wp.array[wp.int32],
-    node_offsets_host: list[int],
-    depth: int,
+    nodes: _OctreeNodes,
     system: Sequence[object],
     screen_args: Sequence[object],
 ) -> tuple[wp.array[wp.float32], list[float]]:
@@ -1597,12 +1693,14 @@ def _octree_constraints(
 
     Own and finer data first, restricted down depth by depth; coarser data enters only through the
     parent depth's coefficients carried up (``octree_upsample_coarse_data``), after the
-    restriction so it is not restricted twice. Returns the right-hand sides packed at the node
-    offsets, and depth 0's eight entries followed by its one cell's point count and position sum.
+    restriction so it is not restricted twice. Returns the right-hand sides at the stored nodes,
+    and depth 0's eight entries followed by its one cell's point count and position sum.
     """
     device = normal_field.device
-    n_nodes = node_offsets_host[depth + 1]
-    constraints = _launch.empty(n_nodes, dtype=wp.float32, device=device)
+    depth = len(nodes.firsts) - 2
+    n_entries = nodes.firsts[-1]
+    tables = [nodes.bricks, nodes.slots]
+    constraints = _launch.empty(n_entries, dtype=wp.float32, device=device)
     # Every depth's 1-D hat-against-B-spline integrals, which both divergences read.
     n_integrals = 8 * (2 ** (depth + 1) - 1 + depth + 1)
     integrals = _launch.empty(n_integrals, dtype=wp.vec2d, device=device)
@@ -1615,22 +1713,17 @@ def _octree_constraints(
     )
     _launch.launch(
         kernel_octree.octree_own_constraints,
-        dim=n_nodes,
-        inputs=[depth, normal_field, cell_offsets, node_offsets, integrals],
+        dim=n_entries,
+        inputs=[depth, normal_field, cell_offsets, bricks, *tables, integrals],
         outputs=[constraints],
         device=device,
     )
     for d in reversed(range(depth)):
-        res_c = 2**d + 1
+        first = nodes.firsts[d]
         _launch.launch(
             kernel_octree.octree_restrict_add,
-            dim=(res_c, res_c, res_c),
-            inputs=[
-                _launch.view(constraints, node_offsets_host[d + 1], node_offsets_host[d + 2]),
-                2 ** (d + 1) + 1,
-                res_c,
-            ],
-            outputs=[_launch.view(constraints, node_offsets_host[d], node_offsets_host[d + 1])],
+            dim=nodes.firsts[d + 1] - first,
+            inputs=[depth, first, *tables, constraints],
             device=device,
         )
     accumulated = _launch.empty(cell_offsets_host[depth], dtype=wp.vec3, device=device)
@@ -1645,8 +1738,8 @@ def _octree_constraints(
     base = _launch.empty(12, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_octree.octree_coarse_screening_constraints,
-        dim=n_nodes,
-        inputs=[*system, accumulated, *screen_args, node_offsets, integrals],
+        dim=n_entries,
+        inputs=[*system, accumulated, *screen_args, *tables, integrals],
         outputs=[constraints, base],
         device=device,
     )
@@ -1657,54 +1750,53 @@ def _octree_constraints(
 def _octree_cascade(
     constraints: wp.array[wp.float32],
     base: list[float],
-    node_offsets: list[int],
+    nodes: _OctreeNodes,
     depth: int,
     full_depth: int,
     iterations: int,
     alpha: float,
     sweep_args: Sequence[object],
-) -> tuple[wp.array[wp.float32], wp.array[wp.float32]]:
+) -> wp.array[wp.float32]:
     """
     Run the cascade: depth 0 on the host, then ``iterations`` wavefront Gauss-Seidel sweeps a depth.
 
-    ``constraints`` holds every depth's right-hand side at ``node_offsets``, and ``base`` depth 0's
-    eight entries, its cell's point count and position sum. ``sweep_args`` are the sweeps' tables:
-    the activity flags, the cell offsets, the sample slots and the screening records. Returns
-    every depth's prolonged coarser field and its own field, packed at the same offsets (a field
-    minus its prolonged field is the depth's correction, which the extraction's slopes read).
+    ``constraints`` holds every stored node's right-hand side, and ``base`` depth 0's eight
+    entries, its cell's point count and position sum. ``sweep_args`` are the sweeps' tables: the
+    activity flags, the cell offsets, the sample slots, the screening records and the node bricks.
+    Returns every stored node's field (the extraction's slopes form each depth's prolonged coarser
+    field again from it).
     """
     device = constraints.device
-    fields = _launch.empty(node_offsets[-1], dtype=wp.float32, device=device)
-    prolongeds = _launch.zeros(node_offsets[-1], dtype=wp.float32, device=device)
+    fields = _launch.empty(nodes.firsts[-1], dtype=wp.float32, device=device)
 
-    def level(buffer: wp.array[wp.float32], d: int) -> wp.array[wp.float32]:
-        return _launch.view(buffer, node_offsets[d], node_offsets[d + 1])
-
-    # Depth 0's eight unknowns: its right-hand side and its one cell's screening sample.
+    # Depth 0's eight unknowns: its right-hand side and its one cell's screening sample. They fill
+    # depth 0's one brick, the first stored, at their in-brick slots.
     b0 = np.asarray(base[:8], dtype=np.float64)
     count0 = base[8]
     centroid0 = np.asarray(base[9:12], dtype=np.float64) / max(count0, 1.0)
     x0 = _octree_base_solve(b0, alpha * count0, centroid0)
-    _launch.copy(level(fields, 0), _launch.array(x0.astype(np.float32), wp.float32, device=device))
+    side = 2**kernel_octree.BRICK_SHIFT
+    brick0 = np.zeros(kernel_octree.BRICK_CELLS, dtype=np.float32)
+    for i, j, k in itertools.product(range(2), repeat=3):
+        brick0[(i * side + j) * side + k] = x0[4 * i + 2 * j + k]
+    _launch.copy(fields, _launch.array(brick0, wp.float32, device=device), count=brick0.size)
     serial = not wp.get_device(device).is_cuda
     for d in range(1, depth + 1):
         res = 2**d + 1
-        field = level(fields, d)
+        start = nodes.firsts[d]
         _launch.launch(
             kernel_octree.octree_prolong,
-            dim=(res, res, res),
-            inputs=[level(fields, d - 1), 2 ** (d - 1) + 1, res],
-            outputs=[level(prolongeds, d), field],
+            dim=nodes.firsts[d + 1] - start,
+            inputs=[depth, start, nodes.bricks, nodes.slots, fields],
             device=device,
         )
-        b = level(constraints, d)
         if serial:
             # The CPU runs a launch's threads in order anyway: every wave in one launch.
             _launch.launch(
                 kernel_octree.octree_gauss_seidel_depth,
                 dim=1,
-                inputs=[d, depth, full_depth, iterations, b, *sweep_args],
-                outputs=[field],
+                inputs=[d, depth, full_depth, iterations, constraints, *sweep_args],
+                outputs=[fields],
                 device=device,
             )
             continue
@@ -1718,11 +1810,11 @@ def _octree_cascade(
                 _launch.launch(
                     kernel_octree.octree_gauss_seidel_wave,
                     dim=(last - first + 1, half, half),
-                    inputs=[d, depth, full_depth, wave, first, colour, b, *sweep_args],
-                    outputs=[field],
+                    inputs=[d, depth, full_depth, wave, first, colour, constraints, *sweep_args],
+                    outputs=[fields],
                     device=device,
                 )
-    return prolongeds, fields
+    return fields
 
 
 def _octree_base_solve(b: np.ndarray, screen: float, centroid: np.ndarray) -> np.ndarray:
@@ -1767,8 +1859,8 @@ def _octree_base_solve(b: np.ndarray, screen: float, centroid: np.ndarray) -> np
 
 
 def _octree_extract(
-    prolongeds: wp.array[wp.float32],
     fields: wp.array[wp.float32],
+    node_bricks: wp.array[wp.int32],
     node_offsets: wp.array[wp.int32],
     node_offsets_host: list[int],
     edge_offsets: wp.array[wp.int32],
@@ -1795,11 +1887,10 @@ def _octree_extract(
 
     # A depth or -1 a node: ``int8`` holds it.
     sources = _launch.empty(node_offsets_host[-1], dtype=wp.int8, device=device)
-    # The vertex each edge holds, named by the edge that created it.
-    n_edges = edge_offsets_host[-1]
-    owners = _launch.full(n_edges, -1, dtype=wp.int32, device=device)
-    # One bit an edge: whether it creates a vertex.
-    created = _launch.zeros((n_edges + 31) // 32, dtype=wp.uint32, device=device)
+    # One bit an edge each: whether it holds a vertex (``edge_owner`` names it), and whether it
+    # creates one.
+    n_words = (edge_offsets_host[-1] + 31) // 32
+    holds, created = _launch.carve(wp.uint32, [n_words, n_words], device, zeroed=True)
     activity = [flags, flag_offsets]
     for d in range(depth, first - 1, -1):
         res = 2**d + 1
@@ -1819,12 +1910,13 @@ def _octree_extract(
                 full_depth,
                 iso32,
                 fields,
+                node_bricks,
                 sources,
                 node_offsets,
                 *activity,
                 edge_offsets,
             ],
-            outputs=[owners, created],
+            outputs=[holds, created],
             device=device,
         )
     # The vertices' numbers: the created edges' ranks.
@@ -1838,7 +1930,7 @@ def _octree_extract(
         _launch.launch(
             kernel_octree.pair_edge_vertices,
             dim=edge_offsets_host[depth] - edge_offsets_host[first],
-            inputs=[first, depth, full_depth, *activity, edge_offsets, owners, created, ranks],
+            inputs=[first, depth, full_depth, *activity, edge_offsets, holds, created, ranks],
             outputs=[partners],
             device=device,
         )
@@ -1853,7 +1945,7 @@ def _octree_extract(
                 iso32,
                 wp.float32(margin),
                 fields,
-                prolongeds,
+                node_bricks,
                 sources,
                 node_offsets,
                 edge_offsets,
@@ -1867,7 +1959,17 @@ def _octree_extract(
     # The leaves that can have segments, in cell order: the per-cell passes below run over these
     # alone, and every count and slot they scan follows the same order.
     n_cells = cell_offsets_host[depth + 1] - cell_offsets_host[first]
-    common = [first, depth, full_depth, iso32, fields, sources, node_offsets, *activity]
+    common = [
+        first,
+        depth,
+        full_depth,
+        iso32,
+        fields,
+        node_bricks,
+        sources,
+        node_offsets,
+        *activity,
+    ]
     band_bits = _launch.zeros((n_cells + 31) // 32, dtype=wp.uint32, device=device)
     _launch.launch(
         kernel_octree.extraction_band,
@@ -1891,7 +1993,7 @@ def _octree_extract(
     )
 
     n_faces = 6 * n_band
-    face_args = [*common, cell_offsets, table, owners, edge_offsets]
+    face_args = [*common, cell_offsets, table, holds, created, edge_offsets]
     face_offsets = _launch.empty(n_faces, dtype=wp.int32, device=device)
     # The counting pass: no key buffer (a null array reads as empty in the kernel).
     _launch.launch(

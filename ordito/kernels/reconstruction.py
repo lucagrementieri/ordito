@@ -1662,6 +1662,21 @@ def poisson_grid_index(i: wp.int32, j: wp.int32, k: wp.int32, res: wp.int32) -> 
 
 
 @wp.func
+def poisson_lerp_corners(low: wp.vec4, high: wp.vec4, fractions: wp.vec3) -> wp.float32:
+    # The nested ``wp.lerp`` of a cell's eight corner values at ``fractions``: ``low`` holds the
+    # corners at the cell's lower ``z`` in the order ``000, 100, 010, 110`` (``xyz``), ``high``
+    # those at its upper ``z``. ``poisson_sample_grid``'s evaluation, shared with the octree
+    # backend, which gathers its corners from a sparse layout.
+    c00 = wp.lerp(low[0], low[1], fractions[0])
+    c10 = wp.lerp(low[2], low[3], fractions[0])
+    c01 = wp.lerp(high[0], high[1], fractions[0])
+    c11 = wp.lerp(high[2], high[3], fractions[0])
+    c0 = wp.lerp(c00, c10, fractions[1])
+    c1 = wp.lerp(c01, c11, fractions[1])
+    return wp.lerp(c0, c1, fractions[2])
+
+
+@wp.func
 def poisson_sample_grid(
     field: wp.array[wp.float32], res: wp.int32, gx: wp.float32, gy: wp.float32, gz: wp.float32
 ) -> wp.float32:
@@ -1670,32 +1685,29 @@ def poisson_sample_grid(
     # The cell decomposition is shared with ``splat_normals`` below and with
     # ``kernels/interpolation.sample_grid_trilinear`` / ``kernels/scatter.splat_grid_trilinear``.
     # What is *not* shared is the evaluation: this reads a **flat** ``res**3`` float32 buffer and
-    # nests ``wp.lerp``, where the public pair reads a rank-3 array of any dtype and sums the eight
-    # corner weights. The two are the same function of the same inputs and differ only in float32
-    # summation order, so they are deliberately not merged: this one's arithmetic is what the
-    # Poisson iso-value was measured against, and the storage differs anyway.
+    # nests ``wp.lerp`` (``poisson_lerp_corners``), where the public pair reads a rank-3 array of
+    # any dtype and sums the eight corner weights. The two are the same function of the same inputs
+    # and differ only in float32 summation order, so they are deliberately not merged: this one's
+    # arithmetic is what the Poisson iso-value was measured against, and the storage differs anyway.
     base, next_corner, fractions = trilinear_cell(wp.vec3(gx, gy, gz), wp.vec3i(res, res, res))
     i0, j0, k0 = base[0], base[1], base[2]
     # The far corner comes from ``trilinear_cell`` rather than being written ``i0 + 1`` here, so a
     # ``res == 1`` grid cannot index past this flat ``res**3`` buffer. Identical to ``i0 + 1`` at
     # every ``res >= 2``, which is every resolution the Poisson solver builds.
     i1, j1, k1 = next_corner[0], next_corner[1], next_corner[2]
-    fx, fy, fz = fractions[0], fractions[1], fractions[2]
-    c000 = field[poisson_grid_index(i0, j0, k0, res)]
-    c100 = field[poisson_grid_index(i1, j0, k0, res)]
-    c010 = field[poisson_grid_index(i0, j1, k0, res)]
-    c110 = field[poisson_grid_index(i1, j1, k0, res)]
-    c001 = field[poisson_grid_index(i0, j0, k1, res)]
-    c101 = field[poisson_grid_index(i1, j0, k1, res)]
-    c011 = field[poisson_grid_index(i0, j1, k1, res)]
-    c111 = field[poisson_grid_index(i1, j1, k1, res)]
-    c00 = wp.lerp(c000, c100, fx)
-    c10 = wp.lerp(c010, c110, fx)
-    c01 = wp.lerp(c001, c101, fx)
-    c11 = wp.lerp(c011, c111, fx)
-    c0 = wp.lerp(c00, c10, fy)
-    c1 = wp.lerp(c01, c11, fy)
-    return wp.lerp(c0, c1, fz)
+    low = wp.vec4(
+        field[poisson_grid_index(i0, j0, k0, res)],
+        field[poisson_grid_index(i1, j0, k0, res)],
+        field[poisson_grid_index(i0, j1, k0, res)],
+        field[poisson_grid_index(i1, j1, k0, res)],
+    )
+    high = wp.vec4(
+        field[poisson_grid_index(i0, j0, k1, res)],
+        field[poisson_grid_index(i1, j0, k1, res)],
+        field[poisson_grid_index(i0, j1, k1, res)],
+        field[poisson_grid_index(i1, j1, k1, res)],
+    )
+    return poisson_lerp_corners(low, high, fractions)
 
 
 @wp.func
@@ -2220,6 +2232,18 @@ def prolong_grid(
 
 
 @wp.func
+def poisson_restrict_weight(di: wp.int32, dj: wp.int32, dk: wp.int32) -> wp.float32:
+    # The restriction's weight of the fine node at offset ``(di, dj, dk)`` (each in ``-1..1``) from
+    # a coarse node's: ``1`` per axis on the node itself, ``1/2`` either side. Powers of two, so
+    # every product with it is exact and a sum of them takes the same bits in any kernel (the
+    # octree backend restricts over a sparse layout in the same order).
+    wi = wp.where(di == 0, wp.float32(1.0), wp.float32(0.5))
+    wj = wp.where(dj == 0, wp.float32(1.0), wp.float32(0.5))
+    wk = wp.where(dk == 0, wp.float32(1.0), wp.float32(0.5))
+    return wi * wj * wk
+
+
+@wp.func
 def poisson_restrict_node(
     fine: wp.array[wp.float32], res_f: wp.int32, ci: wp.int32, cj: wp.int32, ck: wp.int32
 ) -> wp.float32:
@@ -2231,16 +2255,16 @@ def poisson_restrict_node(
     for di in range(-1, 2):
         fi = 2 * ci + di
         if fi >= 0 and fi < res_f:
-            wi = wp.where(di == 0, wp.float32(1.0), wp.float32(0.5))
             for dj in range(-1, 2):
                 fj = 2 * cj + dj
                 if fj >= 0 and fj < res_f:
-                    wij = wi * wp.where(dj == 0, wp.float32(1.0), wp.float32(0.5))
                     for dk in range(-1, 2):
                         fk = 2 * ck + dk
                         if fk >= 0 and fk < res_f:
-                            wk = wp.where(dk == 0, wp.float32(1.0), wp.float32(0.5))
-                            acc += wij * wk * fine[poisson_grid_index(fi, fj, fk, res_f)]
+                            acc += (
+                                poisson_restrict_weight(di, dj, dk)
+                                * fine[poisson_grid_index(fi, fj, fk, res_f)]
+                            )
     return acc
 
 

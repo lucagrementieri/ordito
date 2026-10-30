@@ -1377,20 +1377,41 @@ construction) and `smooth_region_boundary` against `smoothRegionBoundary`. Each 
 minimum-weight fill followed by MeshLib's own subdivision schedule (a serial priority queue) and
 Laplacian fairing; a port would follow that schedule.
 
-### Open item from the 2026-10-27 octree memory work: a sparse solve
+### Octree memory (2026-10-30): finest cells and every node lattice stored by brick
 
-`screened_poisson(method="octree")` at depth 8 now peaks at 484 MiB, down from 2 036 (`7498cad1`
-to `59e49998`: `created` a bitset, `int8` corner sources, per-cell passes over the surface band,
-`partners` per vertex, the solve's buffers released before the extraction; bit-identical on both
-devices, 0.99-1.13x faster). The peak by phase is splat 341, constraints 443, cascade 367,
-extraction 484 MiB. **Proposed: make the solve sparse, then the extraction's `owners`.** The
-constraints phase is the solver's own dense storage: a normal field over every cell of every depth
-(219 MiB) plus the per-depth lattices; storing them over the occupied cells only is a solver
-redesign, not an extraction change. The last dense extraction table, the per-edge `owners`
-(222 MiB), would take the extraction to about 260 MiB, but alone it buys only about 40 MiB (8 %),
-since the constraints phase then sets the peak; it pays once the solve is sparse. Gate either step
-on byte-identical output against the dense form (CPU hash A/B at depths 6-8, the sphere at depth 8
-pairs 16 vertices) and on time at depth 8.
+`screened_poisson(method="octree")` (200 k points, CUDA) peaks at **139 MiB at depth 8** with the
+deterministic setting off and 196 with it on (was 461 / 1 026; 2 036 before `7498cad1`), and at
+**950 / 1 296 MiB at depth 9** (was 3 471 / 8 152). Bit-identical: CPU hashes at depths 6-8 on
+dense and sparse clouds (3 000 points at depth 7), CUDA with the setting on at depths 8-9; the
+`dense` and `adaptive` backends, which share the trilinear and restriction helpers, too. Faster:
+CUDA 0.98x at depth 7, 0.80-0.86x at depth 8, 0.62-0.69x at depth 9; CPU 0.77x at depth 7, 0.6x at
+depth 8, 0.5x on a sparse cloud. What moved it:
+
+- **The right-hand sides and the fields are stored by `4**3`-node brick per depth**
+  (`kernels/algorithms/poisson_octree`, the stored nodes section): every node within three of an
+  active node, the finest corners of each sample cell, and every coarser node a stored node
+  prolongs from. Within three holds every nonzero own-or-restricted right-hand side (two past a
+  data cell's active brood, three restricted) and every field read (the sweeps' stencils one, the
+  extraction's slopes two); a node outside reads `+0.0`, which its dense right-hand side held. A
+  temporary print on every unstored field read found none over the octree tests and the clouds
+  above. Restriction and prolongation keep the dense sums' bits because their weights are powers
+  of two (`kernels/reconstruction.poisson_restrict_weight`, `poisson_lerp_corners`).
+- **A sweep row looks its 27 neighbours up once** (`octree_row`'s window): its stencil and its
+  screening read only those. Looked up per read (91 a row) the CUDA sweeps lost 1.46x at depth 7.
+- **The finest depth's cell tables are stored by `4**3` brick** (`octree_finest_bricks`): the
+  bricks of the samples' cells and of every finest-depth normal splat target. A finest divergence
+  window first tests its at most eight bricks (`window_has_brick`), or the CPU lost 1.2x.
+- **The normal splat's exact accumulator is released after its finish; `prolongeds` is not kept**
+  (the slopes form it again, `prolonged_at`); **`owners` is a bitset** (`holds`, `edge_owner`
+  walks a held edge's finer halves down to the edge that created its vertex).
+
+Peak by phase now: depth 8 splat 92, constraints 149, cascade 120, extraction 134 MiB; depth 9
+608 / 956 / 598 / 558. **Open: the dense cell tables below the finest depth**, which set the
+constraints phase at depth 9: the coarser point counts and position sums (307 MiB), the coarser
+normal coefficients (230), `accumulated` (219), `screen_index` (77) and the flags (77). They are
+`8**(depth - 1)`-cell lattices; the same per-depth brick tables would take them. The extraction's
+`sources` (`int8`) and edge bitsets are dense over every node, and depth 10 would also need `int64`
+edge slots.
 
 ### Closed 2026-10-28: the unoriented triangulation path
 
