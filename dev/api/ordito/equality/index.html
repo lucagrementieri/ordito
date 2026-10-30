@@ -7476,13 +7476,7 @@ corner, in ascending lexicographic order of their rows.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/equality.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">345</span>
-<span class="normal">346</span>
-<span class="normal">347</span>
-<span class="normal">348</span>
-<span class="normal">349</span>
-<span class="normal">350</span>
-<span class="normal">351</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">351</span>
 <span class="normal">352</span>
 <span class="normal">353</span>
 <span class="normal">354</span>
@@ -7532,7 +7526,13 @@ corner, in ascending lexicographic order of their rows.</p>
 <span class="normal">398</span>
 <span class="normal">399</span>
 <span class="normal">400</span>
-<span class="normal">401</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">canonical_faces</span><span class="p">(</span>
+<span class="normal">401</span>
+<span class="normal">402</span>
+<span class="normal">403</span>
+<span class="normal">404</span>
+<span class="normal">405</span>
+<span class="normal">406</span>
+<span class="normal">407</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">canonical_faces</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7747,33 +7747,7 @@ a row counts. For a row whose entries are unordered (an undirected edge), sort e
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/equality.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">457</span>
-<span class="normal">458</span>
-<span class="normal">459</span>
-<span class="normal">460</span>
-<span class="normal">461</span>
-<span class="normal">462</span>
-<span class="normal">463</span>
-<span class="normal">464</span>
-<span class="normal">465</span>
-<span class="normal">466</span>
-<span class="normal">467</span>
-<span class="normal">468</span>
-<span class="normal">469</span>
-<span class="normal">470</span>
-<span class="normal">471</span>
-<span class="normal">472</span>
-<span class="normal">473</span>
-<span class="normal">474</span>
-<span class="normal">475</span>
-<span class="normal">476</span>
-<span class="normal">477</span>
-<span class="normal">478</span>
-<span class="normal">479</span>
-<span class="normal">480</span>
-<span class="normal">481</span>
-<span class="normal">482</span>
-<span class="normal">483</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">483</span>
 <span class="normal">484</span>
 <span class="normal">485</span>
 <span class="normal">486</span>
@@ -7807,7 +7781,33 @@ a row counts. For a row whose entries are unordered (an undirected edge), sort e
 <span class="normal">514</span>
 <span class="normal">515</span>
 <span class="normal">516</span>
-<span class="normal">517</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rows_equal</span><span class="p">(</span><span class="n">rows_a</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">rows_b</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">517</span>
+<span class="normal">518</span>
+<span class="normal">519</span>
+<span class="normal">520</span>
+<span class="normal">521</span>
+<span class="normal">522</span>
+<span class="normal">523</span>
+<span class="normal">524</span>
+<span class="normal">525</span>
+<span class="normal">526</span>
+<span class="normal">527</span>
+<span class="normal">528</span>
+<span class="normal">529</span>
+<span class="normal">530</span>
+<span class="normal">531</span>
+<span class="normal">532</span>
+<span class="normal">533</span>
+<span class="normal">534</span>
+<span class="normal">535</span>
+<span class="normal">536</span>
+<span class="normal">537</span>
+<span class="normal">538</span>
+<span class="normal">539</span>
+<span class="normal">540</span>
+<span class="normal">541</span>
+<span class="normal">542</span>
+<span class="normal">543</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">rows_equal</span><span class="p">(</span><span class="n">rows_a</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">rows_b</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Test whether two tables hold the same integer rows, up to the order of the rows.</span>
 
@@ -7990,8 +7990,8 @@ the other: the labels correspond one to one, whatever their values.</p>
 
 <details class="note" open>
   <summary>Notes</summary>
-  <p>The partitions are equal exactly when the labellings, and the pairs of labels item by item,
-all have the same number of distinct values; the three counts are three host readbacks.</p>
+  <p>The partitions are equal exactly when every label of one labelling meets a single label of
+the other, both ways: two sorts of the item's label pairs and one host readback.</p>
 </details>
 
 <p><span class="doc-section-title">Examples:</span></p>
@@ -8016,33 +8016,7 @@ all have the same number of distinct values; the three counts are three host rea
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/equality.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">545</span>
-<span class="normal">546</span>
-<span class="normal">547</span>
-<span class="normal">548</span>
-<span class="normal">549</span>
-<span class="normal">550</span>
-<span class="normal">551</span>
-<span class="normal">552</span>
-<span class="normal">553</span>
-<span class="normal">554</span>
-<span class="normal">555</span>
-<span class="normal">556</span>
-<span class="normal">557</span>
-<span class="normal">558</span>
-<span class="normal">559</span>
-<span class="normal">560</span>
-<span class="normal">561</span>
-<span class="normal">562</span>
-<span class="normal">563</span>
-<span class="normal">564</span>
-<span class="normal">565</span>
-<span class="normal">566</span>
-<span class="normal">567</span>
-<span class="normal">568</span>
-<span class="normal">569</span>
-<span class="normal">570</span>
-<span class="normal">571</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">571</span>
 <span class="normal">572</span>
 <span class="normal">573</span>
 <span class="normal">574</span>
@@ -8077,7 +8051,54 @@ all have the same number of distinct values; the three counts are three host rea
 <span class="normal">603</span>
 <span class="normal">604</span>
 <span class="normal">605</span>
-<span class="normal">606</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">partitions_equal</span><span class="p">(</span><span class="n">labels_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">labels_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
+<span class="normal">606</span>
+<span class="normal">607</span>
+<span class="normal">608</span>
+<span class="normal">609</span>
+<span class="normal">610</span>
+<span class="normal">611</span>
+<span class="normal">612</span>
+<span class="normal">613</span>
+<span class="normal">614</span>
+<span class="normal">615</span>
+<span class="normal">616</span>
+<span class="normal">617</span>
+<span class="normal">618</span>
+<span class="normal">619</span>
+<span class="normal">620</span>
+<span class="normal">621</span>
+<span class="normal">622</span>
+<span class="normal">623</span>
+<span class="normal">624</span>
+<span class="normal">625</span>
+<span class="normal">626</span>
+<span class="normal">627</span>
+<span class="normal">628</span>
+<span class="normal">629</span>
+<span class="normal">630</span>
+<span class="normal">631</span>
+<span class="normal">632</span>
+<span class="normal">633</span>
+<span class="normal">634</span>
+<span class="normal">635</span>
+<span class="normal">636</span>
+<span class="normal">637</span>
+<span class="normal">638</span>
+<span class="normal">639</span>
+<span class="normal">640</span>
+<span class="normal">641</span>
+<span class="normal">642</span>
+<span class="normal">643</span>
+<span class="normal">644</span>
+<span class="normal">645</span>
+<span class="normal">646</span>
+<span class="normal">647</span>
+<span class="normal">648</span>
+<span class="normal">649</span>
+<span class="normal">650</span>
+<span class="normal">651</span>
+<span class="normal">652</span>
+<span class="normal">653</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">partitions_equal</span><span class="p">(</span><span class="n">labels_a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">labels_b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">bool</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Test whether two labellings induce the same partition, up to the names of the labels.</span>
 
@@ -8104,8 +8125,8 @@ all have the same number of distinct values; the three counts are three host rea
 
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
-<span class="sd">    The partitions are equal exactly when the labellings, and the pairs of labels item by item,</span>
-<span class="sd">    all have the same number of distinct values; the three counts are three host readbacks.</span>
+<span class="sd">    The partitions are equal exactly when every label of one labelling meets a single label of</span>
+<span class="sd">    the other, both ways: two sorts of the item's label pairs and one host readback.</span>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
@@ -8126,19 +8147,40 @@ all have the same number of distinct values; the three counts are three host rea
         <span class="k">return</span> <span class="kc">False</span>
     <span class="k">if</span> <span class="n">labels_a</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="kc">True</span>
-    <span class="n">pairs</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">labels_a</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">labels_a</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">labels_a</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">n</span> <span class="o">=</span> <span class="n">labels_a</span><span class="o">.</span><span class="n">size</span>
+    <span class="c1"># The partitions are equal when every ``a`` label meets one ``b`` label and every ``b`` label</span>
+    <span class="c1"># one ``a`` label: each holds when no run of one label in the pairs sorted by it holds two</span>
+    <span class="c1"># distinct pairs. Two sorts of packed pairs, ``a`` major then ``b`` major, each checked by a</span>
+    <span class="c1"># pass over its neighbours, raise one flag, read once; nothing reads the sorts' payloads.</span>
+    <span class="n">keys_ab</span><span class="p">,</span> <span class="n">order_ab</span><span class="p">,</span> <span class="n">keys_ba</span><span class="p">,</span> <span class="n">order_ba</span><span class="p">,</span> <span class="n">unequal</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve_typed</span><span class="p">(</span>
+        <span class="p">(</span>
+            <span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span>
+        <span class="p">),</span>
+        <span class="n">device</span><span class="p">,</span>
+    <span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_equality</span><span class="o">.</span><span class="n">label_pair_keys</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">labels_a</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">labels_a</span><span class="p">,</span> <span class="n">labels_b</span><span class="p">,</span> <span class="n">pairs</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">labels_a</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">n</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">labels_a</span><span class="p">,</span> <span class="n">labels_b</span><span class="p">],</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">keys_ab</span><span class="p">,</span> <span class="n">unequal</span><span class="p">],</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="c1"># Each distinct count sizes ``unique_1d``'s output, so each is a readback inside it.</span>
-    <span class="n">n_pairs</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">grouping</span><span class="o">.</span><span class="n">unique_1d</span><span class="p">(</span><span class="n">pairs</span><span class="p">)</span><span class="o">.</span><span class="n">size</span>
-    <span class="k">return</span> <span class="p">(</span>
-        <span class="n">od</span><span class="o">.</span><span class="n">grouping</span><span class="o">.</span><span class="n">unique_1d</span><span class="p">(</span><span class="n">labels_a</span><span class="p">)</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="n">n_pairs</span>
-        <span class="ow">and</span> <span class="n">od</span><span class="o">.</span><span class="n">grouping</span><span class="o">.</span><span class="n">unique_1d</span><span class="p">(</span><span class="n">labels_b</span><span class="p">)</span><span class="o">.</span><span class="n">size</span> <span class="o">==</span> <span class="n">n_pairs</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">radix_sort_pairs</span><span class="p">(</span><span class="n">keys_ab</span><span class="p">,</span> <span class="n">order_ab</span><span class="p">,</span> <span class="n">count</span><span class="o">=</span><span class="n">n</span><span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+        <span class="n">kernel_equality</span><span class="o">.</span><span class="n">check_pairs_and_swap_keys</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">n</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">keys_ab</span><span class="p">,</span> <span class="n">labels_a</span><span class="p">,</span> <span class="n">labels_b</span><span class="p">,</span> <span class="n">keys_ba</span><span class="p">,</span> <span class="n">unequal</span><span class="p">],</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">radix_sort_pairs</span><span class="p">(</span><span class="n">keys_ba</span><span class="p">,</span> <span class="n">order_ba</span><span class="p">,</span> <span class="n">count</span><span class="o">=</span><span class="n">n</span><span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span><span class="n">kernel_equality</span><span class="o">.</span><span class="n">check_pairs</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="n">n</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">keys_ba</span><span class="p">,</span> <span class="n">unequal</span><span class="p">],</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># The answer is a host ``bool``.</span>
+    <span class="k">return</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">unequal</span><span class="p">,</span> <span class="mi">0</span><span class="p">))</span> <span class="o">==</span> <span class="mi">0</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

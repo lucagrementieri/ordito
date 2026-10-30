@@ -9884,50 +9884,7 @@ grid's diagonals run corner to corner, so the far corner is at distance <code>sq
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/graph.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1027</span>
-<span class="normal">1028</span>
-<span class="normal">1029</span>
-<span class="normal">1030</span>
-<span class="normal">1031</span>
-<span class="normal">1032</span>
-<span class="normal">1033</span>
-<span class="normal">1034</span>
-<span class="normal">1035</span>
-<span class="normal">1036</span>
-<span class="normal">1037</span>
-<span class="normal">1038</span>
-<span class="normal">1039</span>
-<span class="normal">1040</span>
-<span class="normal">1041</span>
-<span class="normal">1042</span>
-<span class="normal">1043</span>
-<span class="normal">1044</span>
-<span class="normal">1045</span>
-<span class="normal">1046</span>
-<span class="normal">1047</span>
-<span class="normal">1048</span>
-<span class="normal">1049</span>
-<span class="normal">1050</span>
-<span class="normal">1051</span>
-<span class="normal">1052</span>
-<span class="normal">1053</span>
-<span class="normal">1054</span>
-<span class="normal">1055</span>
-<span class="normal">1056</span>
-<span class="normal">1057</span>
-<span class="normal">1058</span>
-<span class="normal">1059</span>
-<span class="normal">1060</span>
-<span class="normal">1061</span>
-<span class="normal">1062</span>
-<span class="normal">1063</span>
-<span class="normal">1064</span>
-<span class="normal">1065</span>
-<span class="normal">1066</span>
-<span class="normal">1067</span>
-<span class="normal">1068</span>
-<span class="normal">1069</span>
-<span class="normal">1070</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1070</span>
 <span class="normal">1071</span>
 <span class="normal">1072</span>
 <span class="normal">1073</span>
@@ -10091,7 +10048,38 @@ grid's diagonals run corner to corner, so the far corner is at distance <code>sq
 <span class="normal">1231</span>
 <span class="normal">1232</span>
 <span class="normal">1233</span>
-<span class="normal">1234</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shortest_path_envelope</span><span class="p">(</span>
+<span class="normal">1234</span>
+<span class="normal">1235</span>
+<span class="normal">1236</span>
+<span class="normal">1237</span>
+<span class="normal">1238</span>
+<span class="normal">1239</span>
+<span class="normal">1240</span>
+<span class="normal">1241</span>
+<span class="normal">1242</span>
+<span class="normal">1243</span>
+<span class="normal">1244</span>
+<span class="normal">1245</span>
+<span class="normal">1246</span>
+<span class="normal">1247</span>
+<span class="normal">1248</span>
+<span class="normal">1249</span>
+<span class="normal">1250</span>
+<span class="normal">1251</span>
+<span class="normal">1252</span>
+<span class="normal">1253</span>
+<span class="normal">1254</span>
+<span class="normal">1255</span>
+<span class="normal">1256</span>
+<span class="normal">1257</span>
+<span class="normal">1258</span>
+<span class="normal">1259</span>
+<span class="normal">1260</span>
+<span class="normal">1261</span>
+<span class="normal">1262</span>
+<span class="normal">1263</span>
+<span class="normal">1264</span>
+<span class="normal">1265</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shortest_path_envelope</span><span class="p">(</span>
     <span class="n">adjacency</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">max_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -10228,31 +10216,19 @@ grid's diagonals run corner to corner, so the far corner is at distance <code>sq
 
     <span class="n">max_pass_count</span> <span class="o">=</span> <span class="n">max_iterations</span> <span class="ow">or</span> <span class="n">node_count</span>
     <span class="n">relaxed</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">device</span><span class="o">.</span><span class="n">is_cuda</span><span class="p">:</span>
+        <span class="c1"># The CPU device runs a launch's threads one after another, so a launch and a progress</span>
+        <span class="c1"># readback a pass buy nothing: every pass runs in one single-thread launch, bit for bit the</span>
+        <span class="c1"># per-pass loop's labels (``kernels/graph.shortest_path_envelope_serial``).</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_graph</span><span class="o">.</span><span class="n">shortest_path_envelope_serial</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">weights</span><span class="p">,</span> <span class="n">max_pass_count</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">relaxed</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="k">return</span> <span class="n">labels</span>
     <span class="c1"># The shared round-loop state word (``kernels/array.py``): the relaxation pass raises</span>
     <span class="c1"># ``LOOP_PROGRESS`` and ``array.loop_advance`` publishes the condition against the pass cap.</span>
-    <span class="c1"># Allocated inside each branch because the two seed it differently -- the host loop tests</span>
-    <span class="c1"># ``LOOP_PROGRESS`` itself and needs no condition, while the captured loop must start with a</span>
-    <span class="c1"># non-zero one. Allocating zeroed above and re-seeding below would be an allocation plus a</span>
-    <span class="c1"># whole second upload of the same twelve bytes.</span>
-    <span class="k">if</span> <span class="ow">not</span> <span class="n">device</span><span class="o">.</span><span class="n">is_cuda</span><span class="p">:</span>
-        <span class="n">state</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_ADVANCE_STATE_SIZE</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-        <span class="c1"># No conditional-graph capture on the CPU backend, so the pass loop runs on the host;</span>
-        <span class="c1"># the plain per-pass loop below, with its one 4-byte readback per pass, is already the</span>
-        <span class="c1"># cheapest thing a CPU launch can do here.</span>
-        <span class="n">progress</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">state</span><span class="p">[</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_PROGRESS_VIEW</span><span class="p">])</span>
-        <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">max_pass_count</span><span class="p">):</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">zero_</span><span class="p">(</span><span class="n">progress</span><span class="p">)</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-                <span class="n">kernel_graph</span><span class="o">.</span><span class="n">shortest_path_envelope_pass</span><span class="p">,</span>
-                <span class="n">dim</span><span class="o">=</span><span class="n">node_count</span><span class="p">,</span>
-                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">weights</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">relaxed</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span>
-                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-            <span class="p">)</span>
-            <span class="n">labels</span><span class="p">,</span> <span class="n">relaxed</span> <span class="o">=</span> <span class="n">relaxed</span><span class="p">,</span> <span class="n">labels</span>
-            <span class="k">if</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">progress</span><span class="p">,</span> <span class="mi">0</span><span class="p">))</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-                <span class="k">break</span>
-        <span class="k">return</span> <span class="n">labels</span>
-
     <span class="c1"># CUDA: the whole pass loop runs on-device via ``wp.capture_while``, so the</span>
     <span class="c1"># only host sync in the common case is none at all -- each pass's convergence check and</span>
     <span class="c1"># iteration cap are folded into ``array.loop_advance``, the package's shared round-closing</span>

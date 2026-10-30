@@ -6954,7 +6954,18 @@ component, <code>root</code> is not a referenced vertex, or only one of <code>un
 <span class="normal">326</span>
 <span class="normal">327</span>
 <span class="normal">328</span>
-<span class="normal">329</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">homology_generators_with_offsets</span><span class="p">(</span>
+<span class="normal">329</span>
+<span class="normal">330</span>
+<span class="normal">331</span>
+<span class="normal">332</span>
+<span class="normal">333</span>
+<span class="normal">334</span>
+<span class="normal">335</span>
+<span class="normal">336</span>
+<span class="normal">337</span>
+<span class="normal">338</span>
+<span class="normal">339</span>
+<span class="normal">340</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">homology_generators_with_offsets</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7049,11 +7060,20 @@ component, <code>root</code> is not a referenced vertex, or only one of <code>un
         <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty_packed</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="c1"># Every ``int32`` table the decomposition works in dies with the call, so they are carved from</span>
     <span class="c1"># one allocation: the incidence below, the dual forest's labels and roots, the primal tree's</span>
-    <span class="c1"># parents and depths (and on the CPU its traversal's queue) and the loops' apexes.</span>
+    <span class="c1"># parents and depths (and on the CPU its traversal's queue), the loops' apexes and their</span>
+    <span class="c1"># ``(1, length)`` counts.</span>
     <span class="n">serial</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">get_device</span><span class="p">(</span><span class="n">device</span><span class="p">)</span><span class="o">.</span><span class="n">is_cpu</span>
-    <span class="n">edge_face_count</span><span class="p">,</span> <span class="n">edge_faces_flat</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">roots</span><span class="p">,</span> <span class="n">tree</span><span class="p">,</span> <span class="n">apex</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span>
+    <span class="n">edge_face_count</span><span class="p">,</span> <span class="n">edge_faces_flat</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">roots</span><span class="p">,</span> <span class="n">tree</span><span class="p">,</span> <span class="n">apex</span><span class="p">,</span> <span class="n">loop_counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span>
         <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span>
-        <span class="p">[</span><span class="n">n_edges</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n_edges</span><span class="p">,</span> <span class="n">n_faces</span><span class="p">,</span> <span class="n">n_faces</span><span class="p">,</span> <span class="p">(</span><span class="mi">3</span> <span class="k">if</span> <span class="n">serial</span> <span class="k">else</span> <span class="mi">2</span><span class="p">)</span> <span class="o">*</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_edges</span><span class="p">],</span>
+        <span class="p">[</span>
+            <span class="n">n_edges</span><span class="p">,</span>
+            <span class="mi">2</span> <span class="o">*</span> <span class="n">n_edges</span><span class="p">,</span>
+            <span class="n">n_faces</span><span class="p">,</span>
+            <span class="n">n_faces</span><span class="p">,</span>
+            <span class="p">(</span><span class="mi">3</span> <span class="k">if</span> <span class="n">serial</span> <span class="k">else</span> <span class="mi">2</span><span class="p">)</span> <span class="o">*</span> <span class="n">n_vertices</span><span class="p">,</span>
+            <span class="n">n_edges</span><span class="p">,</span>
+            <span class="mi">2</span> <span class="o">*</span> <span class="n">n_edges</span><span class="p">,</span>
+        <span class="p">],</span>
         <span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">zero_</span><span class="p">(</span><span class="n">edge_face_count</span><span class="p">)</span>
@@ -7143,7 +7163,9 @@ component, <code>root</code> is not a referenced vertex, or only one of <code>un
         <span class="n">roots</span><span class="p">,</span>
         <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">small</span><span class="p">[</span><span class="n">_FOREST_STATE</span><span class="p">]),</span>
     <span class="p">)</span>
-    <span class="k">return</span> <span class="n">_trace_generator_loops</span><span class="p">(</span><span class="n">candidate</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">parents</span><span class="p">,</span> <span class="n">distances</span><span class="p">,</span> <span class="n">apex</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_trace_generator_loops</span><span class="p">(</span>
+        <span class="n">candidate</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">parents</span><span class="p">,</span> <span class="n">distances</span><span class="p">,</span> <span class="n">apex</span><span class="p">,</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view_as</span><span class="p">(</span><span class="n">loop_counts</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec2i</span><span class="p">)</span>
+    <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
