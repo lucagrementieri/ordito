@@ -1734,7 +1734,10 @@ def split_mesh_with_plane(
     else:
         key_base = wp.int64(n_vertices)
         keys = _launch.empty(2 * n_halfedges, dtype=wp.int64, device=device)
-        halfedges = _launch.empty(2 * n_halfedges, dtype=wp.int32, device=device)
+        # The sort's payload, the crossed-edge ranks and each halfedge's new vertex: one allocation.
+        halfedges, rank, cut_vertices = _launch.carve(
+            wp.int32, [2 * n_halfedges, n_halfedges, n_halfedges], device
+        )
         _launch.launch(
             kernel_intersections.plane_crossed_halfedge_keys,
             dim=n_faces,
@@ -1754,7 +1757,6 @@ def split_mesh_with_plane(
         _launch.radix_sort_pairs(
             keys, halfedges, n_halfedges, end_bit=max(1, (n_vertices * n_vertices).bit_length())
         )
-        rank = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_intersections.split_crossed_edge_flags,
             dim=n_halfedges,
@@ -1763,7 +1765,6 @@ def split_mesh_with_plane(
         )
         n_new = _scan_cut_flags(rank)
         new_vertices = _launch.empty(n_vertices + n_new, dtype=wp.vec3, device=device)
-        cut_vertices = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
         # The same launch copies the input positions to the front of ``new_vertices``.
         _launch.launch(
             kernel_intersections.split_crossed_edge_vertices,
@@ -2289,7 +2290,10 @@ def _split_with_vertex_field(
     n_halfedges = 3 * n_cut
     key_base = wp.int64(n_vertices)
     keys = _launch.empty(2 * n_halfedges, dtype=wp.int64, device=device)
-    halfedges = _launch.empty(2 * n_halfedges, dtype=wp.int32, device=device)
+    # The sort's payload, the crossed-edge ranks and each halfedge's new vertex: one allocation.
+    halfedges, rank, cut_vertices = _launch.carve(
+        wp.int32, [2 * n_halfedges, n_halfedges, n_halfedges], device
+    )
     _launch.launch(
         kernel_intersections.split_crossed_halfedge_keys,
         dim=(n_faces, 3),
@@ -2300,7 +2304,6 @@ def _split_with_vertex_field(
     _launch.radix_sort_pairs(
         keys, halfedges, n_halfedges, end_bit=max(1, (n_vertices * n_vertices).bit_length())
     )
-    rank = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_intersections.split_crossed_edge_flags,
         dim=n_halfedges,
@@ -2309,7 +2312,6 @@ def _split_with_vertex_field(
     )
     n_new = _scan_cut_flags(rank)
     all_vertices = _launch.empty(n_vertices + n_new, dtype=wp.vec3, device=device)
-    cut_vertices = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
     # The same launch copies the input positions to the front of ``all_vertices``.
     _launch.launch(
         kernel_intersections.split_crossed_edge_vertices,
