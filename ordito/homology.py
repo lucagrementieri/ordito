@@ -230,8 +230,17 @@ def homology_generators_with_offsets(
         # A face carries three edges, so no edges means no faces: vacuously closed, nothing to span
         # and nothing left over.
         return _launch.empty_packed(wp.int32, device)
-    edge_face_count = _launch.zeros(n_edges, dtype=wp.int32, device=device)
-    edge_faces = odt.empty_2d((n_edges, 2), wp.int32, device=device)
+    # Every ``int32`` table the decomposition works in dies with the call, so they are carved from
+    # one allocation: the incidence below, the dual forest's labels and roots, the primal tree's
+    # parents and depths (and on the CPU its traversal's queue) and the loops' apexes.
+    serial = wp.get_device(device).is_cpu
+    edge_face_count, edge_faces_flat, labels, roots, tree, apex = _launch.carve(
+        wp.int32,
+        [n_edges, 2 * n_edges, n_faces, n_faces, (3 if serial else 2) * n_vertices, n_edges],
+        device,
+    )
+    _launch.zero_(edge_face_count)
+    edge_faces = odt.as_array2d(edge_faces_flat.reshape((n_edges, 2)), wp.int32)
     _launch.launch(
         kernel_scatter.scatter_edge_incidence,
         dim=inverse.size,
@@ -252,13 +261,13 @@ def homology_generators_with_offsets(
         device=device,
     )
     count_end = _FOREST_STATE.stop + kernel_homology.COUNT_SIZE
-    labels = _launch.empty(n_faces, dtype=wp.int32, device=device)
     parents, distances = _primal_spanning_tree(
         offsets,
         neighbors,
         odt.as_dense(unique_edges[0] if root is None else small[count_end:]),
         odt.as_dense(small[_PRIMAL_STATE]),
         labels,
+        tree,
     )
 
     # Both preconditions are counting questions, and both are answered on the device into one
@@ -309,9 +318,15 @@ def homology_generators_with_offsets(
         )
 
     _remove_dual_spanning_forest(
-        candidate, edge_faces, unique_edges, distances, labels, odt.as_dense(small[_FOREST_STATE])
+        candidate,
+        edge_faces,
+        unique_edges,
+        distances,
+        labels,
+        roots,
+        odt.as_dense(small[_FOREST_STATE]),
     )
-    return _trace_generator_loops(candidate, unique_edges, parents, distances)
+    return _trace_generator_loops(candidate, unique_edges, parents, distances, apex)
 
 
 def _primal_spanning_tree(
@@ -320,9 +335,10 @@ def _primal_spanning_tree(
     seed: wp.array[wp.int32],
     state: wp.array[wp.int32],
     dual_labels: wp.array[wp.int32],
+    tree: wp.array[wp.int32],
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
-    Rooted spanning tree of the vertex graph as ``(parents, distances)``.
+    Rooted spanning tree of the vertex graph as ``(parents, distances)``, views of ``tree``.
 
     A breadth-first level loop, pushed from the frontier, two launches per level and no host
     synchronization at all; on the CPU, one first-in first-out traversal in a single launch that
@@ -343,6 +359,9 @@ def _primal_spanning_tree(
     seeds the tree also writes the identity of ``dual_labels``, the dual forest's starting
     components, so that setup costs no launch of its own.
 
+    ``tree`` holds ``2 * n_vertices`` entries, ``3 * n_vertices`` on the CPU, where the
+    traversal's queue follows the two tables.
+
     The depth is kept although a spanning tree does not need it: it is what lets
     [`_trace_generator_loops`][ordito.homology._trace_generator_loops] size a loop without walking
     it, and the level loop writes it either way.
@@ -350,9 +369,7 @@ def _primal_spanning_tree(
     device = wp.get_device(offsets.device)
     n_vertices = offsets.size - 1
     n_faces = dual_labels.size
-    # One allocation holds both tables, and on the CPU the traversal's queue behind them.
     serial = device.is_cpu
-    tree = _launch.empty((3 if serial else 2) * n_vertices, dtype=wp.int32, device=device)
     parents = _launch.view(tree, 0, n_vertices)
     distances = _launch.view(tree, n_vertices, 2 * n_vertices)
     if serial:
@@ -403,6 +420,7 @@ def _remove_dual_spanning_forest(
     unique_edges: odt.Array2dInt32,
     distances: wp.array[wp.int32],
     labels: wp.array[wp.int32],
+    roots: wp.array[wp.int32],
     state: wp.array[wp.int32],
 ) -> None:
     """
@@ -424,15 +442,14 @@ def _remove_dual_spanning_forest(
     is free to choose. Breadth-first is the expensive shape here: the dual graph restricted to
     non-primal-tree edges is already nearly a tree, so its diameter is enormous.
 
-    ``labels`` arrives as the identity over the faces and ``state`` as the round word
-    ``[0, 1, 0]``.
+    ``labels`` arrives as the identity over the faces, ``roots`` as ``(n_faces,)`` scratch and
+    ``state`` as the round word ``[0, 1, 0]``.
     """
     device = candidate.device
     n_candidates = candidate.size
     n_faces = labels.size
     if n_candidates == 0 or n_faces == 0:
         return
-    roots = _launch.empty(n_faces, dtype=wp.int32, device=device)
     proposal = _launch.empty(n_faces, dtype=wp.uint64, device=device)
     # The component count at least halves per round, so ``bit_length`` -- ``ceil(log2)`` plus one --
     # caps a loop the halving argument already bounds; it can only be reached by a logic error.
@@ -478,6 +495,7 @@ def _trace_generator_loops(
     unique_edges: odt.Array2dInt32,
     parents: wp.array[wp.int32],
     distances: wp.array[wp.int32],
+    apex: wp.array[wp.int32],
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Close each generator edge into a loop through the primal tree, on the device.
@@ -485,13 +503,13 @@ def _trace_generator_loops(
     Two launches and a scan over the edge-space generator mask ``candidate``: one thread per edge
     finds a generator's apex (the lowest common ancestor of the edge's endpoints) and the loop's
     length from the two depths, the ``(1, length)`` pairs scan into every generator's rank and
-    offset at once, and a second thread per edge fills its generator's slice from both ends. One
+    offset at once, and a second thread per edge fills its generator's slice from both ends
+    (``apex`` is ``(n_edges,)`` scratch). One
     readback, of the generator count and the packed length together; the generators come out in
     ascending edge order, as a compaction of the mask would list them.
     """
     device = unique_edges.device
     n_edges = candidate.size
-    apex = _launch.empty(n_edges, dtype=wp.int32, device=device)
     counts = _launch.empty(n_edges, dtype=wp.vec2i, device=device)
     _launch.launch(
         kernel_homology.generator_loop_counts,
