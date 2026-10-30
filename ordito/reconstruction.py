@@ -1889,7 +1889,7 @@ def _octree_cascade(
     depth's apart (``_octree_constraints``), and ``base`` depth 0's eight entries, its cell's
     point count and position sum. ``screening`` is the activity flags, the
     packed occupancy and the screening records; each depth's sweeps look a cell's record up in a
-    table of that depth's stored cells (``octree_record_index``), one buffer every depth reuses.
+    table of that depth's stored cells (``octree_prolong``), one buffer every depth reuses.
     Every stored node's field is written (the extraction's slopes form each depth's prolonged
     coarser field again from it).
     """
@@ -1920,16 +1920,22 @@ def _octree_cascade(
         b = [finest_b, -nodes.firsts[depth]] if d == depth else [coarse_b, 0]
         res = 2**d + 1
         start = nodes.firsts[d]
+        n_nodes = nodes.firsts[d + 1] - start
+        n_cells = cells.firsts[d + 1] - cells.firsts[d]
         _launch.launch(
             kernel_octree.octree_prolong,
-            dim=nodes.firsts[d + 1] - start,
-            inputs=[depth, start, nodes.bricks, nodes.slots, fields],
-            device=device,
-        )
-        _launch.launch(
-            kernel_octree.octree_record_index,
-            dim=cells.firsts[d + 1] - cells.firsts[d],
-            inputs=[cells.firsts[d], occupancy],
+            dim=max(n_nodes, n_cells),
+            inputs=[
+                depth,
+                start,
+                n_nodes,
+                nodes.bricks,
+                nodes.slots,
+                cells.firsts[d],
+                n_cells,
+                occupancy,
+                fields,
+            ],
             outputs=[record_index],
             device=device,
         )

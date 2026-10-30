@@ -1590,7 +1590,7 @@ def screen_record(
     record_index: wp.array[wp.int32],
 ) -> wp.int32:
     # Depth ``d`` cell ``c``'s record in the screening table, -1 for none (``record_index``, one a
-    # stored depth ``d`` cell, written by ``octree_record_index``): one 4-byte read, where the
+    # stored depth ``d`` cell, written by ``octree_prolong``): one 4-byte read, where the
     # occupied rank (``occupied_rank``) costs the sweeps, which look eight up a row, 1.05x.
     if not octree_inside(d, c):
         return -1
@@ -1631,18 +1631,6 @@ def octree_screen_records(
     for q in range(8):
         corner = c + wp.vec3i(q >> 2, (q >> 1) & 1, q & 1)
         out_records[base + 1 + q] = hat_value(d, corner, p)
-
-
-@wp.kernel
-def octree_record_index(
-    first: wp.int32, occupancy: wp.array[wp.uint64], out_index: wp.array[wp.int32]
-) -> None:
-    # The table ``screen_record`` reads for one depth, whose stored cells start at entry
-    # ``first``: each cell's record (its occupied rank), -1 for none. Formed before the depth's
-    # sweeps, into one buffer every depth reuses.
-    t = wp.int32(wp.tid())
-    e = t + first
-    out_index[t] = wp.where(occupancy_bit(occupancy, e), occupancy_rank(occupancy, e), -1)
 
 
 @wp.func
@@ -1860,16 +1848,29 @@ def prolonged_at(
 def octree_prolong(
     depth: wp.int32,
     first: wp.int32,
+    n_nodes: wp.int32,
     node_bricks: wp.array[wp.int32],
     brick_slots: wp.array[wp.int32],
+    cell_first: wp.int32,
+    n_cells: wp.int32,
+    occupancy: wp.array[wp.uint64],
     fields: wp.array[wp.float32],
+    out_index: wp.array[wp.int32],
 ) -> None:
-    # One depth's stored nodes (from entry ``first``) start at the coarser field prolonged, the
-    # start of its Gauss-Seidel sweeps.
-    e = wp.int32(wp.tid()) + first
-    at = stored_node(node_bricks, brick_slots, depth, e)
-    if at[0] >= 0:
-        fields[e] = prolonged_at(fields, node_bricks, at[0], wp.vec3i(at[1], at[2], at[3]))
+    # The start of one depth's Gauss-Seidel sweeps, over the larger of its two counts: its
+    # ``n_nodes`` stored nodes (from entry ``first``) take the coarser field prolonged, and its
+    # ``n_cells`` stored cells (from ``cell_first``) their screening records into ``out_index``,
+    # the table ``screen_record`` reads, one buffer every depth reuses: a cell's occupied rank, -1
+    # for none. Neither half reads what the other writes, so one launch does both.
+    t = wp.int32(wp.tid())
+    if t < n_nodes:
+        e = t + first
+        at = stored_node(node_bricks, brick_slots, depth, e)
+        if at[0] >= 0:
+            fields[e] = prolonged_at(fields, node_bricks, at[0], wp.vec3i(at[1], at[2], at[3]))
+    if t < n_cells:
+        c = t + cell_first
+        out_index[t] = wp.where(occupancy_bit(occupancy, c), occupancy_rank(occupancy, c), -1)
 
 
 @wp.func
