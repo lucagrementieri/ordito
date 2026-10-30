@@ -1911,7 +1911,7 @@ def _umbrella_stencils(
     """
     Each vertex's smoothing stencil: its sorted 1-ring, its class and its two rim neighbours.
 
-    A unique edge's face count is how often the edge inverse names it; the tally scatters, per
+    A unique edge's face count is its run in the edge grouping; the tally scatters, per
     vertex, the corners, rim edges, crowded edges and the first two rim neighbours, and the
     classification reads them. ``crowded_slides`` selects ``vtkSmoothPolyDataFilter``'s rule (a
     crowded edge is slid along like a rim edge) over ``vtkWindowedSincPolyDataFilter``'s (it fixes
@@ -1919,22 +1919,14 @@ def _umbrella_stencils(
     """
     n = vertices.size
     device = vertices.device
-    unique, inverse = od.edges.edges_unique(faces, n_vertices=n)
+    unique, _, uses = od.edges.edges_unique(faces, n_vertices=n, return_counts=True)
     n_edges = unique.shape[0]
-    # Every table in one zeroed allocation: the edge use counts and the tallies, which die with the
-    # classification, and the rim pairs and classes the stencil keeps.
-    uses, corners, rim_counts, crowded_counts, rim_pair_entries, classes = _launch.carve(
-        wp.int32, (n_edges, n, n, n, 2 * n, n), device, zeroed=True
+    # Every table in one zeroed allocation: the tallies, which die with the classification, and the
+    # rim pairs and classes the stencil keeps.
+    corners, rim_counts, crowded_counts, rim_pair_entries, classes = _launch.carve(
+        wp.int32, (n, n, n, 2 * n, n), device, zeroed=True
     )
     rim_pairs = rim_pair_entries.reshape((n, 2)).view(wp.vec2i)
-    if inverse.size > 0:
-        _launch.launch(
-            kernel_scatter.count_occurrences,
-            dim=inverse.size,
-            inputs=[inverse],
-            outputs=[uses],
-            device=device,
-        )
     if n_edges > 0:
         _launch.launch(
             kernel_smoothing.tally_stencil_edges,

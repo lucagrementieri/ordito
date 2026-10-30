@@ -15,6 +15,8 @@ Three representations, and which one a caller wants depends on what an edge mean
 
 from __future__ import annotations
 
+from typing import Literal, overload
+
 import warp as wp
 
 import ordito as od
@@ -118,13 +120,35 @@ def edges_face(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     return arange_repeat(n_faces * 3, 3, faces.device)
 
 
+@overload
 def edges_unique(
     faces: wp.array[wp.int32],
     edges_sorted: odt.Array2dInt32 | None = None,
     n_vertices: int | None = None,
     *,
     validate: bool = True,
-) -> tuple[odt.Array2dInt32, wp.array[wp.int32]]:
+    return_counts: Literal[False] = False,
+) -> tuple[odt.Array2dInt32, wp.array[wp.int32]]: ...
+@overload
+def edges_unique(
+    faces: wp.array[wp.int32],
+    edges_sorted: odt.Array2dInt32 | None = None,
+    n_vertices: int | None = None,
+    *,
+    validate: bool = True,
+    return_counts: Literal[True],
+) -> tuple[odt.Array2dInt32, wp.array[wp.int32], wp.array[wp.int32]]: ...
+def edges_unique(
+    faces: wp.array[wp.int32],
+    edges_sorted: odt.Array2dInt32 | None = None,
+    n_vertices: int | None = None,
+    *,
+    validate: bool = True,
+    return_counts: bool = False,
+) -> (
+    tuple[odt.Array2dInt32, wp.array[wp.int32]]
+    | tuple[odt.Array2dInt32, wp.array[wp.int32], wp.array[wp.int32]]
+):
     """
     Return unique undirected edges and their inverse mapping into the sorted edge list.
 
@@ -154,6 +178,10 @@ def edges_unique(
         itself, or one an entry point has already validated. A ``False`` that is wrong does not
         raise: indices at or above ``n_vertices`` collide in the packing and silently group two
         different edges as one, and a negative index is read as a huge unsigned digit.
+    return_counts
+        Also return how many rows of ``edges_sorted`` each unique edge has (``numpy.unique``'s
+        ``return_counts``): its face count on a mesh, ``1`` on a boundary edge. Counted in the pass
+        that writes the inverse.
 
     Returns
     -------
@@ -161,6 +189,9 @@ def edges_unique(
         ``(m, 2)`` unique undirected vertex pairs, ``m <= 3 * n_faces``.
     inverse : wp.array[wp.int32]
         ``(3 * n_faces,)`` inverse indices, ``unique_edges[inverse[i]] == edges_sorted[i]``.
+    counts : wp.array[wp.int32]
+        ``(m,)`` occurrences of each unique edge, ``numpy.bincount(inverse)``. Only with
+        ``return_counts``.
 
     Raises
     ------
@@ -193,6 +224,8 @@ def edges_unique(
     print(unique_edges.shape)  # (18, 2)
     print(inverse.shape)  # (36,)
     print(np.bincount(inverse.numpy()).tolist() == [2] * 18)  # True
+    unique_edges, inverse, counts = od.edges.edges_unique(faces, return_counts=True)
+    print(counts.numpy().tolist() == [2] * 18)  # True
     ```
     """
     require_same_device(faces=faces, edges_sorted=edges_sorted)
@@ -204,6 +237,8 @@ def edges_unique(
     if n_faces == 0:
         empty_edges = odt.empty_2d((0, 2), wp.int32, device=device)
         empty_inv = _launch.empty(0, dtype=wp.int32, device=device)
+        if return_counts:
+            return empty_edges, empty_inv, _launch.empty(0, dtype=wp.int32, device=device)
         return empty_edges, empty_inv
 
     if edges_sorted is None:
@@ -212,34 +247,43 @@ def edges_unique(
         # the ``(3 * n_faces, 2)`` table is never written or read back, and any range check reduces
         # the ``3 * n_faces`` face buffer -- the same values, half the entries.
         radix, check = _face_edge_radix(faces, n_faces, n_vertices, validate)
-        return _unique_edges_from_faces(faces, n_faces, radix, check)
-
-    if n_vertices is None:
-        if validate:
-            # Inferring the bound from this very buffer already reduces it, and the packing's own
-            # check would reduce it again to re-test a bound derived from it -- only the negative
-            # half could ever fire. One reduction answers both.
-            n_vertices = od.array.index_bound(edges_sorted, require_non_negative=True)
-            validate = False
-        else:
-            # Nothing is being checked, so the only thing the count would be used for is the
-            # radix -- and the pair radix bounds every ``int32`` without reducing the rows to find
-            # out. Row order is unchanged; the emit below unpacks against whichever
-            # radix packed them.
-            n_vertices = INDEX_RADIX_PAIR
-    elif n_vertices <= 0:
-        raise ValueError(f"n_vertices must be positive, got {n_vertices}")
-    elif validate:
-        # The packing's range check: the reduction's readback, then the same two raises as the
-        # face path's key-pass check.
-        low, high = od.reduce.minmax(edges_sorted)
-        if low < 0:
-            raise ValueError(f"edge indices must be non-negative, got a minimum of {low}")
-        if high >= n_vertices:
-            raise ValueError(
-                f"edge indices must be less than n_vertices {n_vertices}, got a maximum of {high}"
-            )
-    return _unique_edges_from_sorted_rows(edges_sorted, n_vertices)
+        unique_edges, inverse, counts = _unique_edges_from_faces(
+            faces, n_faces, radix, check, return_counts
+        )
+    else:
+        if n_vertices is None:
+            if validate:
+                # Inferring the bound from this very buffer already reduces it, and the packing's
+                # own check would reduce it again to re-test a bound derived from it -- only the
+                # negative half could ever fire. One reduction answers both.
+                n_vertices = od.array.index_bound(edges_sorted, require_non_negative=True)
+                validate = False
+            else:
+                # Nothing is being checked, so the only thing the count would be used for is the
+                # radix -- and the pair radix bounds every ``int32`` without reducing the rows to
+                # find out. Row order is unchanged; the emit below unpacks against whichever radix
+                # packed them.
+                n_vertices = INDEX_RADIX_PAIR
+        elif n_vertices <= 0:
+            raise ValueError(f"n_vertices must be positive, got {n_vertices}")
+        elif validate:
+            # The packing's range check: the reduction's readback, then the same two raises as
+            # the face path's key-pass check.
+            low, high = od.reduce.minmax(edges_sorted)
+            if low < 0:
+                raise ValueError(f"edge indices must be non-negative, got a minimum of {low}")
+            if high >= n_vertices:
+                raise ValueError(
+                    f"edge indices must be less than n_vertices {n_vertices}, "
+                    f"got a maximum of {high}"
+                )
+        unique_edges, inverse, counts = _unique_edges_from_sorted_rows(
+            edges_sorted, n_vertices, return_counts
+        )
+    if return_counts:
+        assert counts is not None
+        return unique_edges, inverse, counts
+    return unique_edges, inverse
 
 
 def unique_edge_count(
@@ -323,8 +367,8 @@ def _face_edge_radix(
 
 
 def _unique_edges_from_faces(
-    faces: wp.array[wp.int32], n_faces: int, radix: int, check: bool
-) -> tuple[odt.Array2dInt32, wp.array[wp.int32]]:
+    faces: wp.array[wp.int32], n_faces: int, radix: int, check: bool, return_counts: bool
+) -> tuple[odt.Array2dInt32, wp.array[wp.int32], wp.array[wp.int32] | None]:
     """
     ``(unique_edges, inverse)`` from one radix sort of every corner's packed edge key.
 
@@ -333,20 +377,29 @@ def _unique_edges_from_faces(
     rows and the corner map into them -- without its open-addressing table, whose ~``2 * 3 *
     n_faces`` slots take random atomics where the sort streams. The emit re-derives each run start
     from the sorted keys; the edge count (and, with ``check``, the range flag) comes back in one
-    read before it.
+    read before it. With ``return_counts`` the emit also sums each run's length into the counts.
     """
     device = faces.device
     n = 3 * n_faces
     keys, order, ranks, n_edges = _sorted_edge_run_ranks(faces, n_faces, radix, check)
     unique_edges = odt.empty_2d((n_edges, 2), wp.int32, device=device)
     inverse = _launch.empty(n, dtype=wp.int32, device=device)
+    if not return_counts:
+        _launch.launch(
+            kernel_edges.emit_sorted_unique_edges,
+            dim=n,
+            inputs=[faces, keys, order, ranks, unique_edges, inverse],
+            device=device,
+        )
+        return unique_edges, inverse, None
+    counts = _launch.zeros(n_edges, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_edges.emit_sorted_unique_edges,
+        kernel_edges.emit_sorted_unique_edges_counts,
         dim=n,
-        inputs=[faces, keys, order, ranks, unique_edges, inverse],
+        inputs=[faces, keys, order, ranks, unique_edges, inverse, counts],
         device=device,
     )
-    return unique_edges, inverse
+    return unique_edges, inverse, counts
 
 
 def _sorted_edge_run_ranks(
@@ -404,8 +457,8 @@ def _sorted_face_edge_keys(
 
 
 def _unique_edges_from_sorted_rows(
-    edges_sorted: odt.Array2dInt32, n_vertices: int
-) -> tuple[odt.Array2dInt32, wp.array[wp.int32]]:
+    edges_sorted: odt.Array2dInt32, n_vertices: int, return_counts: bool
+) -> tuple[odt.Array2dInt32, wp.array[wp.int32], wp.array[wp.int32] | None]:
     """
     ``(unique_edges, inverse)`` of precomputed min-first rows, packed by ``n_vertices``.
 
@@ -418,9 +471,8 @@ def _unique_edges_from_sorted_rows(
     device = edges_sorted.device
     n = int(edges_sorted.shape[0])
     if n == 0:
-        return odt.empty_2d((0, 2), wp.int32, device=device), _launch.empty(
-            0, dtype=wp.int32, device=device
-        )
+        nothing = _launch.empty(0, dtype=wp.int32, device=device)
+        return odt.empty_2d((0, 2), wp.int32, device=device), nothing, nothing
     keys, order = _launch.sort_buffers(n, wp.uint64, device)
     _launch.launch(
         kernel_grouping.pack_indices_and_order,
@@ -435,14 +487,15 @@ def _unique_edges_from_sorted_rows(
     ranks, n_edges = _sorted_run_ranks(keys, order, n, None)
     unique_edges = odt.empty_2d((n_edges, 2), wp.int32, device=device)
     inverse = _launch.empty(n, dtype=wp.int32, device=device)
+    counts = _launch.zeros(n_edges, dtype=wp.int32, device=device) if return_counts else None
     _launch.launch(
         kernel_edges.emit_sorted_unique_edges_from_keys,
         dim=n,
         inputs=[keys, order, ranks, wp.uint64(n_vertices)],
-        outputs=[unique_edges, inverse],
+        outputs=[unique_edges, inverse, counts],
         device=device,
     )
-    return odt.as_array2d(unique_edges, wp.int32), inverse
+    return odt.as_array2d(unique_edges, wp.int32), inverse, counts
 
 
 def _sorted_run_ranks(

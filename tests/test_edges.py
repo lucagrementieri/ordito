@@ -243,6 +243,35 @@ def test_edges_unique_inverse(request: pytest.FixtureRequest, mesh_name: str) ->
     assert np.array_equal(reconstructed, edges_sorted_wp.numpy())
 
 
+@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
+@pytest.mark.parametrize("from_rows", [False, True], ids=["faces", "edges_sorted"])
+def test_edges_unique_counts_match_trimesh(
+    request: pytest.FixtureRequest, mesh_name: str, from_rows: bool
+) -> None:
+    """
+    Class A against trimesh: ``return_counts`` is the occurrence count of trimesh's unique rows.
+
+    trimesh's ``unique_rows`` orders its rows as ordito does (see [`test_edges_unique`]), so the
+    counts compare as returned, over both the face path and the ``edges_sorted`` path. The open
+    fixture has rim edges (count 1) and interior ones (count 2), so a constant count fails; the
+    rows and inverse must equal the call without counts.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    edges_sorted = od.edges.faces_to_edges(mesh_wp.indices, sorted=True) if from_rows else None
+
+    _, inverse_tm = tm_grouping.unique_rows(np.sort(mesh_tm.edges, axis=1))
+    counts_tm = np.bincount(inverse_tm)
+    assert set(np.unique(counts_tm).tolist()) == {1, 2}
+
+    unique_wp, inverse_wp, counts_wp = od.edges.edges_unique(
+        mesh_wp.indices, edges_sorted, return_counts=True
+    )
+    plain_unique_wp, plain_inverse_wp = od.edges.edges_unique(mesh_wp.indices, edges_sorted)
+    assert np.array_equal(counts_wp.numpy(), counts_tm)
+    assert np.array_equal(unique_wp.numpy(), plain_unique_wp.numpy())
+    assert np.array_equal(inverse_wp.numpy(), plain_inverse_wp.numpy())
+
+
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("edges_unique", "igl")
 @pytest.mark.parity("edges_unique_auto_nv", "igl")
