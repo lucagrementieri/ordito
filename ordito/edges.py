@@ -380,9 +380,8 @@ def _sorted_face_edge_keys(
     """
     device = faces.device
     n = 3 * n_faces
-    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
     if bound is None:
-        order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+        keys, order = _launch.sort_buffers(n, wp.uint64, device)
         _launch.launch(
             kernel_adjacency.face_edge_keys_and_order,
             dim=n_faces,
@@ -390,6 +389,7 @@ def _sorted_face_edge_keys(
             device=device,
         )
     else:
+        keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
         order = _launch.zeros(2 * n + 1, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_edges.face_edge_keys_checked,
@@ -421,8 +421,7 @@ def _unique_edges_from_sorted_rows(
         return odt.empty_2d((0, 2), wp.int32, device=device), _launch.empty(
             0, dtype=wp.int32, device=device
         )
-    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(n, wp.uint64, device)
     _launch.launch(
         kernel_grouping.pack_indices_and_order,
         dim=n,

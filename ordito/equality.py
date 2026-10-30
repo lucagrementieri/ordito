@@ -423,8 +423,7 @@ def _canonical_faces(
     base = max(n_vertices, 1)
     whole_row = base**3 <= 1 << 64
     index_bits = max(1, (base - 1).bit_length())
-    keys = _launch.empty(2 * n_faces, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(n_faces, wp.uint64, device)
     _launch.launch(
         kernel_equality.canonical_face_keys,
         dim=n_faces,
@@ -436,8 +435,7 @@ def _canonical_faces(
         _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=end_bit)
     else:
         _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=32 + index_bits)
-        leading = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
-        leading_order = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+        leading, leading_order = _launch.sort_buffers(n_faces, wp.int32, device)
         _launch.launch(
             kernel_equality.leading_corner_keys,
             dim=n_faces,
@@ -528,8 +526,7 @@ def _lexicographic_row_order(rows: odt.Array2dInt32) -> wp.array[wp.int32]:
     """
     device = rows.device
     n_rows, width = int(rows.shape[0]), int(rows.shape[1])
-    keys = _launch.empty(2 * n_rows, dtype=wp.int32, device=device)
-    order = _launch.empty(2 * n_rows, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(n_rows, wp.int32, device)
     previous: wp.array[wp.int32] | None = None
     spare = _launch.empty(2 * n_rows, dtype=wp.int32, device=device)
     for column in range(width - 1, -1, -1):

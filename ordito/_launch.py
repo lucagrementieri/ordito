@@ -1587,7 +1587,11 @@ def view(src: ArrayT, start: int, stop: int) -> ArrayT:
         return cast("ArrayT", s[start:stop])
     strides: Any = s.strides
     itemsize = int(strides[0])
-    count = stop - start
+    return cast("ArrayT", _stamp_view(s, s.dtype, itemsize, start * itemsize, stop - start))
+
+
+def _stamp_view(s: Any, dtype: Any, itemsize: int, byte_start: int, count: int) -> Any:
+    """``count`` contiguous ``dtype`` elements of ``s`` from ``byte_start``, ``s`` their owner."""
     arr = _new_array(_ARRAY)
     arr.__dict__.update(
         _array_interface=None,
@@ -1603,17 +1607,17 @@ def view(src: ArrayT, start: int, stop: int) -> ArrayT:
         ctype=None,
         deleter=None,
         device=s.device,
-        dtype=s.dtype,
+        dtype=dtype,
         is_contiguous=True,
         is_transposed=False,
         ndim=1,
         pinned=s.pinned,
-        ptr=None if s.ptr is None else s.ptr + start * itemsize,
+        ptr=None if s.ptr is None else s.ptr + byte_start,
         shape=(count,),
         size=count,
         strides=(itemsize,),
     )
-    return cast("ArrayT", arr)
+    return arr
 
 
 # Each view ``carve`` cuts starts on a multiple of this many elements, at least 128 bytes for every
@@ -1648,6 +1652,32 @@ def carve(
         view(buffer, start, start + size) if size > 0 else empty(0, dtype=dtype, device=device)
         for start, size in zip(starts, sizes, strict=True)
     ]
+
+
+def sort_buffers(
+    count: int, key_dtype: type[DType], device: wp.DeviceLike, payload_dtype: Any = wp.int32
+) -> tuple[wp.array[DType], wp.array[Any]]:
+    """
+    ``(keys, payload)`` for one [`radix_sort_pairs`][ordito._launch.radix_sort_pairs] of ``count``.
+
+    Both are ``2 * count`` long, the upper halves being the sort's scratch, and both are cut from
+    one allocation (the keys first, the payload on the next 128-byte boundary): the pair is
+    written, sorted and read together, so one buffer serves where each took its own. Either view
+    holds the whole buffer alive. Neither is initialized.
+    """
+    key_size = _type_size(key_dtype)
+    payload_size = _type_size(payload_dtype)
+    if count <= 0 or key_size % 4 != 0 or payload_size % 4 != 0:
+        return (
+            empty(2 * count, dtype=key_dtype, device=device),
+            empty(2 * count, dtype=payload_dtype, device=device),
+        )
+    key_bytes = -(-2 * count * key_size // 128) * 128
+    buffer = empty((key_bytes + 2 * count * payload_size + 3) // 4, dtype=wp.int32, device=device)
+    return (
+        _stamp_view(buffer, key_dtype, key_size, 0, 2 * count),
+        _stamp_view(buffer, payload_dtype, payload_size, key_bytes, 2 * count),
+    )
 
 
 # -- host upload ----------------------------------------------------------------------------------

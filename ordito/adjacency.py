@@ -1162,8 +1162,7 @@ def _sorted_face_edge_buffers(
     # The keys and the identity payload are written straight into the leading halves of the radix
     # sort's double-width buffers in one launch, so no staging copy of every halfedge key is made
     # and the scratch halves are never filled; a known radix bounds the sorted bits.
-    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(n, wp.uint64, device)
     if n == 0:
         return keys, order, 0
     _launch.launch(

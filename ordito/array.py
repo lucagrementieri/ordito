@@ -972,8 +972,7 @@ def sort_and_argsort(
     n = keys.size
     if n == 0:
         return keys, _launch.empty(0, dtype=wp.int32, device=device)
-    keys_buffer = _launch.empty(2 * n, dtype=keys.dtype, device=device)
-    order_buffer = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    keys_buffer, order_buffer = _launch.sort_buffers(n, keys.dtype, device)
     # The keys and the identity payload into the sort's leading halves in one launch.
     _launch.launch(
         kernel_array.KEYS_AND_IDENTITY[keys.dtype],
@@ -1679,8 +1678,7 @@ def csr_key_buffers(
     print(keys.shape, order.shape)  # (6,) (6,)
     ```
     """
-    keys = _launch.empty(2 * count, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * count, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(count, wp.uint64, device)
     return keys, order
 
 

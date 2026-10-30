@@ -694,8 +694,7 @@ def key_ordered_halfedges(
         if n_classes > 1:
             raise ValueError("n_vertices is required to sort more than one class of halfedges")
         n_vertices = INDEX_RADIX_PAIR
-    keys = _launch.empty(2 * count, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * count, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(count, wp.uint64, device)
     if count == 0:
         return order
     _launch.launch(

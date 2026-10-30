@@ -144,8 +144,7 @@ def group_int_rows(
     assert radix is not None  # resolved whenever ``n > 0``
     # The keys go straight into the sort's double-width buffers -- no key array to copy in -- and
     # the sort runs over only the bits ``radix ** width`` needs rather than all 64.
-    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(n, wp.uint64, device)
     _launch.launch(
         kernel_grouping.pack_indices_and_order,
         dim=n,
@@ -361,8 +360,7 @@ def _unique_sorted(
     """
     device = data.device
     dtype = data.dtype
-    keys = _launch.empty(2 * n, dtype=dtype, device=device)
-    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(n, dtype, device)
     _launch.launch(
         kernel_grouping.KEYS_AND_IDENTITY[dtype], dim=n, inputs=[data, keys, order], device=device
     )
@@ -696,8 +694,7 @@ def unique_rows(
 
     # The row keys and the identity payload go into the leading halves of the sort's double-width
     # buffers.
-    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(n, wp.uint64, device)
     if data.dtype == wp.int32:
         odt.ensure_ndim(data, 2)
         rows = cast("odt.Array2dInt32", data)
@@ -819,8 +816,7 @@ def unique_faces(
         max_index = max_value + 1
     # The orientation-free face keys and the identity payload, written straight into the leading
     # halves of the radix sort's double-width buffers.
-    keys = _launch.empty(2 * n_faces, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(n_faces, wp.uint64, device)
     _launch.launch(
         kernel_grouping.pack_sorted_face_keys_and_order,
         dim=n_faces,
