@@ -4813,7 +4813,10 @@ class _ChebyshevApply:
         self._stride = stride
         self._steps = steps
         self._device = device
+        self._n_columns = n_columns
         self._dim = n_columns * n
+        # The CPU device runs every step of a polynomial in one launch (``_polynomial``).
+        self._serial = wp.get_device(device).is_cpu
         # Zeroed: every step writes the ``n`` live rows of a column and nothing in the pad, which
         # the conjugate-gradient state reduces over.
         self._dofs = n_columns * stride
@@ -4835,11 +4838,32 @@ class _ChebyshevApply:
         row_scale: wp.array[wp.float64] | None = None,
     ) -> None:
         """
-        ``destination = p(factor) source``, one launch per Chebyshev step.
+        ``destination = p(factor) source``, one launch per Chebyshev step (on the CPU, one).
 
         With ``row_scale``, ``p(diag(row_scale) factor) source`` instead, scaled inside each step.
         """
         steps = self._steps
+        if self._serial:
+            # The same steps and rotation, every one in a single launch of a thread a column.
+            spare_0, spare_1, spare_2 = self._spare
+            _launch.launch(
+                kernel_mg.chebyshev_polynomial_serial,
+                dim=self._n_columns,
+                inputs=[
+                    wp.int32(self._n),
+                    wp.int32(self._stride),
+                    steps,
+                    factor.offsets,
+                    factor.columns,
+                    factor.values,
+                    wp.int32(0 if row_scale is None else 1),
+                    row_scale,
+                    source,
+                ],
+                outputs=[spare_0, spare_1, spare_2, destination],
+                device=self._device,
+            )
+            return
         # Three rotating iterates: a step reads the current and the previous one and writes a
         # third, so none of the three may be ``source`` or ``destination`` until the last write.
         # The first two steps read ``source`` in the place of the iterates no launch writes; see
