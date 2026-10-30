@@ -1539,10 +1539,13 @@ class _Solve:
                 return
             # A caller solving into the same buffers again (or one solved many times, whose
             # buffers are fixed) is recorded against them, once per operator storage: the replay
-            # then copies nothing. Any other recording replays this solve's own storage, the
-            # caller's arrays copied in and out.
+            # then copies nothing. Not once this storage has a recording of its own: a caller
+            # passing fresh buffers already took that one, and the allocator handing the same
+            # addresses back later is no promise of more. Any other recording replays this
+            # solve's own storage, the caller's arrays copied in and out.
             if (
                 (same_buffers or at_once)
+                and (self.graph is None or self.recorded_for != identity)
                 and (self.caller_recorded_for is None or self.caller_recorded_for[0] != identity)
                 and not _overlap(rhs, solution)
             ):
