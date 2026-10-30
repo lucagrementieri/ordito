@@ -5619,14 +5619,14 @@
  },
  "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cuda-octree-7]": {
   "counts": {
-   "launch": 1552,
-   "alloc": 58,
+   "launch": 1554,
+   "alloc": 59,
    "memset": 18,
    "d2d": 4,
    "h2d": 5,
    "d2h": 13,
    "scan": 8,
-   "sort": 1
+   "sort": 2
   }
  },
  "benchmarks/test_reconstruction.py::test_triangulate_point_cloud[sphere_small-ordito-cuda]": {

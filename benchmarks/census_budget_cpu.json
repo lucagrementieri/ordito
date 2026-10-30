@@ -5185,12 +5185,12 @@
  },
  "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cpu-octree-7]": {
   "counts": {
-   "launch": 123,
-   "alloc": 58,
+   "launch": 125,
+   "alloc": 59,
    "h2h": 9,
    "readback": 13,
    "scan": 8,
-   "sort": 1
+   "sort": 2
   }
  },
  "benchmarks/test_reconstruction.py::test_triangulate_point_cloud[sphere_small-ordito-cpu]": {

@@ -1377,49 +1377,54 @@ construction) and `smooth_region_boundary` against `smoothRegionBoundary`. Each 
 minimum-weight fill followed by MeshLib's own subdivision schedule (a serial priority queue) and
 Laplacian fairing; a port would follow that schedule.
 
-### Octree memory (2026-10-30): every solver table stored by brick
+### Octree memory (2026-10-30): every solver and extraction table stored by brick
 
-`screened_poisson(method="octree")` (200 k points, CUDA) peaks at **103-109 MiB at depth 8** with
+`screened_poisson(method="octree")` (200 k points, CUDA) peaks at **71-79 MiB at depth 8** with
 the deterministic setting off and 122 with it on (was 461 / 1 026; 2 036 before `7498cad1`), and
-at **577 MiB at depth 9** either way (was 3 471 / 8 152). Bit-identical with the setting on, CPU
+at **291 / 458 MiB at depth 9** (was 3 471 / 8 152). Bit-identical with the setting on, CPU
 (depths 6-8, dense and sparse clouds) and CUDA (depths 8-9); the `dense` and `adaptive` backends,
 which share the trilinear and restriction helpers, too. With it off the CPU's float atomics in the
-density splat now arrive in brick order, so its CPU off-mode bits differ from the dense layout's
-(§2.2: off is arrival-ordered by design). Time: CUDA 0.93-0.98x at depths 8-9, 0.69x at depth 9
-against the dense layout; CPU at par at depth 7 (0.97-1.04x). Depth 7 grows 23 -> 26 MiB (the
-brick headers and the flag bitset). What it took:
+density splat arrive in brick order, so its CPU off-mode bits differ from the dense layout's
+(§2.2: off is arrival-ordered by design). Time: CUDA 0.81-0.83x at depth 9 and 0.90-0.96x at
+depth 8 against the previous step, about 0.57x at depth 9 against the dense layout; CPU 0.92x at
+depth 7 (0.73-0.81x on a sparse cloud). Depth 7 grows 21 -> 25 MiB (brick headers and bitsets).
+What it took, in order:
 
 - **Every per-cell and per-node table is stored by `4**3` brick per depth**
   (`kernels/algorithms/poisson_octree`, storage by brick): counts, positions, density, normal
-  coefficients, screening indices and slots through a padded cell brick table; right-hand sides
-  and fields through a node brick table. Cells are marked from the samples before any value
-  exists: every depth's 27-cell window around each ancestor through `splat_target` (every count,
-  density and normal splat target and density read), a fine-to-coarse flag bound, and what the
+  coefficients, screening indices and slots through a padded cell brick table; right-hand sides,
+  fields, corner sources and the edge bitsets (three bits a stored node) through a node brick
+  table. Cells are marked from the samples before any value exists: every depth's 27-cell
+  window around each ancestor through `splat_target`, a fine-to-coarse flag bound, and what the
   coarse-data divergence at a superset of the stored nodes reads, closed under the parents its
   carry-up reads. Nodes are marked from the real flags (within three of an active node), the
   samples' corners and their coarser nodes. A node marked from the flag *bound* instead stored
   3.6x the nodes (40 M against 11 M entries at depth 9) and cost the coarse screening 2.3x.
+- **The extraction runs over the stored nodes**: `corner_sources`, `classify_edges`,
+  `place_edge_vertices` and `pair_edge_vertices` launch over stored entries, not whole lattices.
+  An edge's bit is `3 * entry + axis`; the vertices keep the dense edge order's numbering (the
+  created edges' dense slots sorted once, `octree_vertex_keys`), so the output is the same bytes.
+  Owner names are compared only for equality, so they need not be dense slots.
 - **`accumulated` is formed in place** over the normal coefficients, which every right-hand side
   has read by then (219 MiB at depth 9).
 - **The flags are a bitset**, each depth a dense padded lattice starting at its brick table's bit
-  offset (`flag_bit`): one word a read, 2.5 MiB at depth 9 for the dense `int32` table's 77. A
-  layout by brick cost the CPU 1.4x in the extraction's flag-bound kernels.
+  offset (`flag_bit`): one word a read. A layout by brick cost the CPU 1.4x in the extraction.
 - **A divergence window reads its at most eight brick numbers once** (`window_bricks`) and picks
-  each cell's by per-axis selects (`window_axis`): looked up per cell the windows cost the CPU
-  1.6x.
-- Earlier the same day: a sweep row's 27 neighbours looked up once (per read lost 1.46x), the
-  splat's exact accumulator released after its finish, `prolongeds` formed again
+  each cell's by per-axis selects (`window_axis`); per cell the CPU lost 1.6x. A sweep row looks
+  its 27 neighbours up once (per read lost 1.46x).
+- Also: the splat's exact accumulator released after its finish, `prolongeds` formed again
   (`prolonged_at`), `owners` a bitset walked to the creating edge (`edge_owner`). Restriction and
   prolongation keep the dense sums' bits because their weights are powers of two
   (`kernels/reconstruction.poisson_restrict_weight`, `poisson_lerp_corners`).
 
 Verified with temporary prints on every invariant (no unstored field read, splat or density
-target, carried-up window cell or parent) over the octree tests and dense and sparse clouds
-(down to 500 points at depth 6). Peak by phase at depth 9: splat 291, constraints 347, cascade
-301, **extraction 501 MiB**; depth 8 78 / 98 / 102 / 131. **Open: the extraction's dense
-numberings**: `sources` (`int8` per node), the `holds` and `created` edge bitsets and the ranks of
-`created` (`int32` a word), and its launches over every node and edge of every depth; the same
-node bricks would take them. Depth 10 would also need `int64` edge slots.
+target, carried-up window cell or parent, corner source, edge or finer half) over the octree tests
+and dense and sparse clouds (down to 500 points at depth 6). **Open:** with the setting on, the
+peak is the normal splat's exact fixed-point accumulator (one per stored cell, released after its
+finish; 666 MiB on a unit-sphere cloud at depth 9); with it off, the constraints phase (347 MiB
+there: the normal field, counts and positions, flags, the node right-hand sides). The extraction's
+band of leaf cells is still found by a launch over every cell (one bit a cell). Depth 10 would
+need `int64` dense edge slots for the vertex order.
 
 ### Closed 2026-10-28: the unoriented triangulation path
 
