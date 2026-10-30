@@ -2455,8 +2455,8 @@ def remove_degree3_vertices(
         state, bounds
     )
     tables = state[per_pass:]
-    fans = odt.empty_2d((n_vertices, 3), wp.int32, device=device)
-    face_slots = _launch.empty(3 * n_slots, dtype=wp.int32, device=device)
+    fan_rows, face_slots = _launch.carve(wp.int32, [3 * n_vertices, 3 * n_slots], device)
+    fans = odt.as_array2d(fan_rows.reshape((n_vertices, 3)), wp.int32)
     new_faces = odt.as_dense(face_slots[3 * n_input :]).reshape((n_slots - n_input, 3))
     emit_inputs = [
         face_slots,
@@ -2664,7 +2664,8 @@ def flatten_degree3_vertices(
     ring_halfedges, ring_offsets, is_boundary = (
         rings if rings is not None else od.halfedge.vertex_one_rings(faces, n_vertices=n_vertices)
     )
-    candidate = _launch.empty(n_vertices, dtype=wp.bool, device=device)
+    # The two candidate masks the passes alternate between, in one allocation.
+    candidate, remaining = _launch.carve(wp.bool, [n_vertices, n_vertices], device)
     if region is None:
         _launch.map(
             kernel_repair.is_interior_degree3,
@@ -2689,7 +2690,6 @@ def flatten_degree3_vertices(
     # the caller's own ``vertices`` is never written -- pass 0 reads it and writes ``buffers[0]``,
     # pass 1 reads that and writes ``buffers[1]``, and so on -- and the two candidate masks
     # alternate the same way, each pass writing the next one's.
-    remaining = _launch.empty(n_vertices, dtype=wp.bool, device=device)
     # Allocated on first use, not upfront: the common mesh has no two candidates adjacent, so the
     # loop runs a single pass and only ever needs one of the two.
     buffers: dict[int, wp.array[wp.vec3]] = {}
