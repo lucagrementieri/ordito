@@ -134,7 +134,8 @@ def renumber_classes_by_first_occurrence(
     # ``ranks`` is ``flag_class_first_occurrences`` scanned inclusively, so a class whose first
     # vertex is ``v`` becomes ``ranks[v] - 1``. The pair and its scan cost a flat host overhead:
     # measured 1.12-1.20x the key-order weld on CUDA at 61 k and 983 k soup vertices, both
-    # tolerance modes.
+    # tolerance modes. ``out_inverse`` may be ``inverse`` itself: thread ``i`` reads and writes
+    # only entry ``i`` of it.
     i = wp.int32(wp.tid())
     representative = first[inverse[i]]
     label = ranks[representative] - 1

@@ -647,8 +647,9 @@ def _vertex_classes(
             device=device,
         )
     inverse, first, _counts = _unique_keys_core(keys, order, None, False)
-    # The classes come out in key order; renumber them by first occurrence.
-    ranks = _launch.empty(n, dtype=wp.int32, device=device)
+    # The classes come out in key order; renumber them by first occurrence. The sort's payload is
+    # spent, so it takes the ranks, and each vertex's class is renumbered in place.
+    ranks = _launch.view(order, 0, n)
     _launch.launch(
         kernel_repair.flag_class_first_occurrences,
         dim=n,
@@ -656,16 +657,15 @@ def _vertex_classes(
         device=device,
     )
     _launch.array_scan(ranks, ranks, inclusive=True)
-    inverse_by_first = _launch.empty(n, dtype=wp.int32, device=device)
     first_ascending = _launch.empty(first.size, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_repair.renumber_classes_by_first_occurrence,
         dim=n,
         inputs=[inverse, first, ranks],
-        outputs=[inverse_by_first, first_ascending],
+        outputs=[inverse, first_ascending],
         device=device,
     )
-    return inverse_by_first, first_ascending
+    return inverse, first_ascending
 
 
 def resolve_duplicated_faces(
@@ -1712,8 +1712,7 @@ def _split_corners(
     # Every root is its component's smallest corner, and a corner *is* a node, so a root's vertex
     # is the original its copy came from.
     parents = _corner_parents_from_mates(faces, mates, False, None, oriented=True)
-    roots = _launch.empty(n_corners, dtype=wp.int32, device=device)
-    root_ranks = _launch.empty(n_corners, dtype=wp.int32, device=device)
+    roots, root_ranks = _launch.carve(wp.int32, [n_corners, n_corners], device)
     _launch.launch(
         kernel_connected_components.ecl_flatten_root_flags,
         dim=n_corners,
