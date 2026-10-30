@@ -780,7 +780,10 @@ def resolve_duplicated_faces(
     # statistics are written between the sort and the decision. Three sorted indices below
     # ``n_vertices`` pack below ``n_vertices ** 3``.
     keys = _launch.empty(2 * n_faces, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    # The sort's payload and, behind it, the keep flags with the error word right behind them, so
+    # one readback takes the kept count and the error together: one zeroed allocation, as only
+    # the error word needs its zero (the flags are written whole).
+    order, flags = _launch.carve(wp.int32, [2 * n_faces, n_faces + 1], device, zeroed=True)
     _launch.launch(
         kernel_repair.pack_lexicographic_face_keys_and_order,
         dim=n_faces,
@@ -789,10 +792,8 @@ def resolve_duplicated_faces(
     )
     end_bit = max(1, (min(n_vertices**3, 1 << 64) - 1).bit_length())
     _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=end_bit)
-    # The keep flags at the sorted positions with the error word right behind them, so one readback
-    # takes the kept count and the error together; the decided face of each run start beside them,
-    # in the payload's upper half, the sort's scratch until now.
-    flags = _launch.zeros(n_faces + 1, dtype=wp.int32, device=device)
+    # The keep flags at the sorted positions; the decided face of each run start beside them, in
+    # the payload's upper half, the sort's scratch until now.
     keep = _launch.view(order, n_faces, 2 * n_faces)
     _launch.launch(
         kernel_repair.resolve_duplicate_runs,
@@ -844,7 +845,8 @@ def _first_occurrence_faces(
     )
     end_bit = max(1, (min(n_vertices**3, 1 << 64) - 1).bit_length())
     _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=end_bit)
-    ranks = _launch.zeros(n_faces, dtype=wp.int32, device=device)
+    # The payload's upper half, the sort's scratch until now; every entry is written.
+    ranks = _launch.view(order, n_faces, 2 * n_faces)
     _launch.launch(
         kernel_repair.flag_first_sorted_members,
         dim=n_faces,

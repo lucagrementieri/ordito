@@ -305,14 +305,15 @@ def pack_face_keys_and_order(
 def flag_first_sorted_members(
     sorted_keys: wp.array[wp.uint64], order: wp.array[wp.int32], out_flags: wp.array[wp.int32]
 ) -> None:
-    # 1 at the input index of each run's first member: ``order`` is the stable sort of the identity,
-    # so that is the class's first occurrence. ``out_flags`` arrives zeroed and is indexed by input
-    # face, so its inclusive scan numbers the kept faces in input order.
+    # 1 at the input index of each run's first member, 0 at every other: ``order`` is the stable
+    # sort of the identity, so that is the class's first occurrence, and as a permutation it
+    # writes every entry once, so ``out_flags`` needs no zeroing. Indexed by input face, so its
+    # inclusive scan numbers the kept faces in input order.
     i = wp.int32(wp.tid())
-    if i > 0:
-        if sorted_keys[i] == sorted_keys[i - 1]:
-            return
-    out_flags[order[i]] = 1
+    first = i == 0
+    if not first:
+        first = sorted_keys[i] != sorted_keys[i - 1]
+    out_flags[order[i]] = wp.where(first, wp.int32(1), wp.int32(0))
 
 
 @wp.kernel
