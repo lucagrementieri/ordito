@@ -1377,41 +1377,49 @@ construction) and `smooth_region_boundary` against `smoothRegionBoundary`. Each 
 minimum-weight fill followed by MeshLib's own subdivision schedule (a serial priority queue) and
 Laplacian fairing; a port would follow that schedule.
 
-### Octree memory (2026-10-30): finest cells and every node lattice stored by brick
+### Octree memory (2026-10-30): every solver table stored by brick
 
-`screened_poisson(method="octree")` (200 k points, CUDA) peaks at **139 MiB at depth 8** with the
-deterministic setting off and 196 with it on (was 461 / 1 026; 2 036 before `7498cad1`), and at
-**950 / 1 296 MiB at depth 9** (was 3 471 / 8 152). Bit-identical: CPU hashes at depths 6-8 on
-dense and sparse clouds (3 000 points at depth 7), CUDA with the setting on at depths 8-9; the
-`dense` and `adaptive` backends, which share the trilinear and restriction helpers, too. Faster:
-CUDA 0.98x at depth 7, 0.80-0.86x at depth 8, 0.62-0.69x at depth 9; CPU 0.77x at depth 7, 0.6x at
-depth 8, 0.5x on a sparse cloud. What moved it:
+`screened_poisson(method="octree")` (200 k points, CUDA) peaks at **103-109 MiB at depth 8** with
+the deterministic setting off and 122 with it on (was 461 / 1 026; 2 036 before `7498cad1`), and
+at **577 MiB at depth 9** either way (was 3 471 / 8 152). Bit-identical with the setting on, CPU
+(depths 6-8, dense and sparse clouds) and CUDA (depths 8-9); the `dense` and `adaptive` backends,
+which share the trilinear and restriction helpers, too. With it off the CPU's float atomics in the
+density splat now arrive in brick order, so its CPU off-mode bits differ from the dense layout's
+(§2.2: off is arrival-ordered by design). Time: CUDA 0.93-0.98x at depths 8-9, 0.69x at depth 9
+against the dense layout; CPU at par at depth 7 (0.97-1.04x). Depth 7 grows 23 -> 26 MiB (the
+brick headers and the flag bitset). What it took:
 
-- **The right-hand sides and the fields are stored by `4**3`-node brick per depth**
-  (`kernels/algorithms/poisson_octree`, the stored nodes section): every node within three of an
-  active node, the finest corners of each sample cell, and every coarser node a stored node
-  prolongs from. Within three holds every nonzero own-or-restricted right-hand side (two past a
-  data cell's active brood, three restricted) and every field read (the sweeps' stencils one, the
-  extraction's slopes two); a node outside reads `+0.0`, which its dense right-hand side held. A
-  temporary print on every unstored field read found none over the octree tests and the clouds
-  above. Restriction and prolongation keep the dense sums' bits because their weights are powers
-  of two (`kernels/reconstruction.poisson_restrict_weight`, `poisson_lerp_corners`).
-- **A sweep row looks its 27 neighbours up once** (`octree_row`'s window): its stencil and its
-  screening read only those. Looked up per read (91 a row) the CUDA sweeps lost 1.46x at depth 7.
-- **The finest depth's cell tables are stored by `4**3` brick** (`octree_finest_bricks`): the
-  bricks of the samples' cells and of every finest-depth normal splat target. A finest divergence
-  window first tests its at most eight bricks (`window_has_brick`), or the CPU lost 1.2x.
-- **The normal splat's exact accumulator is released after its finish; `prolongeds` is not kept**
-  (the slopes form it again, `prolonged_at`); **`owners` is a bitset** (`holds`, `edge_owner`
-  walks a held edge's finer halves down to the edge that created its vertex).
+- **Every per-cell and per-node table is stored by `4**3` brick per depth**
+  (`kernels/algorithms/poisson_octree`, storage by brick): counts, positions, density, normal
+  coefficients, screening indices and slots through a padded cell brick table; right-hand sides
+  and fields through a node brick table. Cells are marked from the samples before any value
+  exists: every depth's 27-cell window around each ancestor through `splat_target` (every count,
+  density and normal splat target and density read), a fine-to-coarse flag bound, and what the
+  coarse-data divergence at a superset of the stored nodes reads, closed under the parents its
+  carry-up reads. Nodes are marked from the real flags (within three of an active node), the
+  samples' corners and their coarser nodes. A node marked from the flag *bound* instead stored
+  3.6x the nodes (40 M against 11 M entries at depth 9) and cost the coarse screening 2.3x.
+- **`accumulated` is formed in place** over the normal coefficients, which every right-hand side
+  has read by then (219 MiB at depth 9).
+- **The flags are a bitset**, each depth a dense padded lattice starting at its brick table's bit
+  offset (`flag_bit`): one word a read, 2.5 MiB at depth 9 for the dense `int32` table's 77. A
+  layout by brick cost the CPU 1.4x in the extraction's flag-bound kernels.
+- **A divergence window reads its at most eight brick numbers once** (`window_bricks`) and picks
+  each cell's by per-axis selects (`window_axis`): looked up per cell the windows cost the CPU
+  1.6x.
+- Earlier the same day: a sweep row's 27 neighbours looked up once (per read lost 1.46x), the
+  splat's exact accumulator released after its finish, `prolongeds` formed again
+  (`prolonged_at`), `owners` a bitset walked to the creating edge (`edge_owner`). Restriction and
+  prolongation keep the dense sums' bits because their weights are powers of two
+  (`kernels/reconstruction.poisson_restrict_weight`, `poisson_lerp_corners`).
 
-Peak by phase now: depth 8 splat 92, constraints 149, cascade 120, extraction 134 MiB; depth 9
-608 / 956 / 598 / 558. **Open: the dense cell tables below the finest depth**, which set the
-constraints phase at depth 9: the coarser point counts and position sums (307 MiB), the coarser
-normal coefficients (230), `accumulated` (219), `screen_index` (77) and the flags (77). They are
-`8**(depth - 1)`-cell lattices; the same per-depth brick tables would take them. The extraction's
-`sources` (`int8`) and edge bitsets are dense over every node, and depth 10 would also need `int64`
-edge slots.
+Verified with temporary prints on every invariant (no unstored field read, splat or density
+target, carried-up window cell or parent) over the octree tests and dense and sparse clouds
+(down to 500 points at depth 6). Peak by phase at depth 9: splat 291, constraints 347, cascade
+301, **extraction 501 MiB**; depth 8 78 / 98 / 102 / 131. **Open: the extraction's dense
+numberings**: `sources` (`int8` per node), the `holds` and `created` edge bitsets and the ranks of
+`created` (`int32` a word), and its launches over every node and edge of every depth; the same
+node bricks would take them. Depth 10 would also need `int64` edge slots.
 
 ### Closed 2026-10-28: the unoriented triangulation path
 

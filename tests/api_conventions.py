@@ -711,17 +711,19 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # in-place: the coarse solution, overwritten by the finer band's where that band covers it.
     ("algorithms.poisson_band", "fas_inject"): frozenset({"coarse_x"}),
     # in-place: the octree backend's per-depth buffers packed in one, each depth's launch reading
-    # the depth before it (aggregates and flags finest first, the carried-up normal coefficients
-    # coarsest first), and a depth's field relaxed in place by its Gauss-Seidel wavefronts.
+    # the depth before it (aggregates finest first, the carried-up normal coefficients coarsest
+    # first, over the depth's own), and a depth's field relaxed in place by its Gauss-Seidel
+    # wavefronts.
     ("algorithms.poisson_octree", "octree_child_aggregates"): frozenset(
         {"counts", "position_sums"}
     ),
-    ("algorithms.poisson_octree", "octree_clip_flags"): frozenset({"flags"}),
-    ("algorithms.poisson_octree", "octree_dilate_flags"): frozenset({"flags"}),
-    ("algorithms.poisson_octree", "octree_upsample_coarse_data"): frozenset({"accumulated"}),
-    # The stored node bricks, marked finest first (a depth keeps what its next depth prolongs
-    # from); a depth's right-hand sides gathering the next depth's, and a depth's field prolonged
-    # from the one before it, in the one buffer every depth's stored nodes share.
+    ("algorithms.poisson_octree", "octree_upsample_coarse_data"): frozenset({"normals"}),
+    # The stored cell and node bricks, marked finest first (a depth keeps what its next depth
+    # needs), each pass adding its bit to the marks; a depth's right-hand sides gathering the next
+    # depth's, and a depth's field prolonged from the one before it, in the one buffer every
+    # depth's stored nodes share.
+    ("algorithms.poisson_octree", "octree_flag_cells"): frozenset({"marks"}),
+    ("algorithms.poisson_octree", "octree_carried_cells"): frozenset({"marks"}),
     ("algorithms.poisson_octree", "octree_node_bricks"): frozenset({"marks"}),
     ("algorithms.poisson_octree", "octree_restrict_add"): frozenset({"b"}),
     ("algorithms.poisson_octree", "octree_prolong"): frozenset({"fields"}),
