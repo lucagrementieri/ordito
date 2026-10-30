@@ -667,9 +667,11 @@ def compact_kept_loops(
     out_offsets: wp.array[wp.int32],
 ) -> None:
     # One thread per input loop, copying a kept loop to its scanned place and writing the end of
-    # its run as the next offset: the terminated offsets of the kept loops, with ``out_offsets[0]``
-    # the zero the caller allocated. Loops are few and short (see ``loops_are_input_rims``).
+    # its run as the next offset, the first thread also writing ``out_offsets[0]``: the terminated
+    # offsets of the kept loops. Loops are few and short (see ``loops_are_input_rims``).
     ell = wp.int32(wp.tid())
+    if ell == 0:
+        out_offsets[0] = 0
     end = kept_scan[ell]
     before = wp.vec3i(0, 0, 0)
     if ell > 0:

@@ -1078,7 +1078,7 @@ def _delete_region_loops(
     if n_new == 0:
         return no_loops()
     loops = _launch.empty(n_values, dtype=wp.int32, device=device)
-    offsets = _launch.zeros(n_new + 1, dtype=wp.int32, device=device)
+    offsets = _launch.empty(n_new + 1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_selection.compact_kept_loops,
         dim=n_loops,
