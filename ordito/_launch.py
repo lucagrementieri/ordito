@@ -1654,6 +1654,34 @@ def carve(
     ]
 
 
+def carve_typed(parts: Sequence[tuple[Any, int]], device: wp.DeviceLike) -> list[wp.array[Any]]:
+    """
+    One uninitialized allocation cut into consecutive 1-D views of ``(dtype, size)`` each.
+
+    [`carve`][ordito._launch.carve] for tables of different dtypes that live and die together,
+    each view starting on a 128-byte boundary. Any view holds the whole buffer alive, so a table
+    that outlives the call does not belong in one. A part whose element is not a whole number of
+    4-byte words, a zero size, or a buffer reaching Warp's largest array takes an allocation of
+    its own instead.
+    """
+    sizes = [_type_size(dtype) for dtype, _ in parts]
+    starts: list[int] = []
+    total = 0
+    for (_, count), size in zip(parts, sizes, strict=True):
+        starts.append(total)
+        total += -(-count * size // 128) * 128
+    if (
+        any(count <= 0 or size % 4 for (_, count), size in zip(parts, sizes, strict=True))
+        or total // 4 >= _CARVE_MAX_ELEMENTS
+    ):
+        return [empty(count, dtype=dtype, device=device) for dtype, count in parts]
+    buffer = empty(total // 4, dtype=wp.int32, device=device)
+    return [
+        _stamp_view(buffer, dtype, size, start, count)
+        for (dtype, count), size, start in zip(parts, sizes, starts, strict=True)
+    ]
+
+
 def sort_buffers(
     count: int, key_dtype: type[DType], device: wp.DeviceLike, payload_dtype: Any = wp.int32
 ) -> tuple[wp.array[DType], wp.array[Any]]:
@@ -1661,23 +1689,11 @@ def sort_buffers(
     ``(keys, payload)`` for one [`radix_sort_pairs`][ordito._launch.radix_sort_pairs] of ``count``.
 
     Both are ``2 * count`` long, the upper halves being the sort's scratch, and both are cut from
-    one allocation (the keys first, the payload on the next 128-byte boundary): the pair is
-    written, sorted and read together, so one buffer serves where each took its own. Either view
-    holds the whole buffer alive. Neither is initialized.
+    one allocation ([`carve_typed`][ordito._launch.carve_typed]): the pair is written, sorted and
+    read together, so one buffer serves where each took its own. Neither is initialized.
     """
-    key_size = _type_size(key_dtype)
-    payload_size = _type_size(payload_dtype)
-    if count <= 0 or key_size % 4 != 0 or payload_size % 4 != 0:
-        return (
-            empty(2 * count, dtype=key_dtype, device=device),
-            empty(2 * count, dtype=payload_dtype, device=device),
-        )
-    key_bytes = -(-2 * count * key_size // 128) * 128
-    buffer = empty((key_bytes + 2 * count * payload_size + 3) // 4, dtype=wp.int32, device=device)
-    return (
-        _stamp_view(buffer, key_dtype, key_size, 0, 2 * count),
-        _stamp_view(buffer, payload_dtype, payload_size, key_bytes, 2 * count),
-    )
+    keys, payload = carve_typed(((key_dtype, 2 * count), (payload_dtype, 2 * count)), device)
+    return keys, payload
 
 
 # -- host upload ----------------------------------------------------------------------------------

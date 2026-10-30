@@ -958,17 +958,19 @@ def _ranked_successor_cycles(
     m = tails.size
     node_count = next_node.size
     hops, rounds = kernel_graph.pointer_jump_schedule(max_length)
-    # The ranking's windows and, past one round, their ping-pong partner: one allocation.
-    pair = _launch.empty(
-        node_count if rounds == 1 else 2 * node_count, dtype=wp.vec3i, device=device
-    )
-    windows = _launch.view(pair, 0, node_count)
-    # Per cycle start, ``(1, length)``, accumulated by the last round and scanned in place.
+    # The ranking's windows and, past one round, their ping-pong partner, and per cycle start
+    # ``(1, length)``, accumulated by the last round and scanned in place: one allocation.
+    pair_size = node_count if rounds == 1 else 2 * node_count
     flagged = cycle_counts
     if cycle_counts is None:
-        cycle_counts = _launch.zeros(node_count, dtype=wp.vec2i, device=device)
+        pair, cycle_counts = _launch.carve_typed(
+            ((wp.vec3i, pair_size), (wp.vec2i, node_count)), device
+        )
+        _launch.zero_(cycle_counts)
     else:
+        pair = _launch.empty(pair_size, dtype=wp.vec3i, device=device)
         cycle_counts = _launch.view(cycle_counts, 0, node_count)
+    windows = _launch.view(pair, 0, node_count)
     _launch.launch(
         kernel_graph.closed_cycle_windows,
         dim=m,
