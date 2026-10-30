@@ -1192,55 +1192,52 @@ class _Plan:
         panel = int(kernel_cholesky.PANEL)
         for h in range(self.n_levels):
             big = self.big[h]
-            if big is not None:
+            if big is not None and not cuda:
+                # Every panel of the level in one launch, a front a one-lane block walking its
+                # panels' steps in turn: the CPU device runs a launch's threads one after another,
+                # so the three launches a panel buy it nothing.
+                nodes, work, rows_below, _ = big
+                _launch.launch_tiled(
+                    kernel_cholesky.factor_level_panels,
+                    dim=[nodes.size],
+                    inputs=[nodes, self.front_offset, self.ncol, self.front_size,
+                            self.block_offset, wp.int32(len(work)), wp.int32(rows_below)],
+                    outputs=[fronts, numeric.blocks, numeric.status],
+                    block_dim=1,
+                    device=device,
+                )  # fmt: skip
+            elif big is not None:
                 nodes, work, rows_below, max_ncol = big
                 for p, width in enumerate(work):
                     row_dim = (nodes.size, rows_below + min((p + 1) * panel, max_ncol))
-                    if cuda:
-                        # The diagonal block as a tile, and the rows by its inverse. Three
-                        # launches a panel: the factor is device-bound, and every fusion measured
-                        # (the next block factored inside the update or rows launch, or per row
-                        # group) slowed it. The tile factor's latency is least at 64 lanes.
-                        _launch.launch_tiled(
-                            kernel_cholesky.factor_panel_tiled,
-                            dim=[nodes.size],
-                            inputs=[
-                                nodes,
-                                *tables,
-                                wp.int32(p),
-                                fronts,
-                                numeric.status,
-                                self.panel_scratch,
-                            ],
-                            outputs=[self.panel_inverse_tiles],
-                            block_dim=64,
-                            device=device,
-                        )
-                        _launch.launch_tiled(
-                            kernel_cholesky.panel_rows_inverse,
-                            dim=[nodes.size, -(-row_dim[1] // panel)],
-                            inputs=[nodes, self.front_offset, self.ncol, self.front_size,
-                                    self.block_offset, wp.int32(p), wp.int32(rows_below),
-                                    self.panel_inverse, fronts, numeric.blocks],
-                            block_dim=panel * panel,
-                            device=device,
-                        )  # fmt: skip
-                    else:
-                        _launch.launch_tiled(
-                            kernel_cholesky.factor_panel,
-                            dim=[nodes.size],
-                            inputs=[nodes, *tables, wp.int32(p), fronts, numeric.status],
-                            block_dim=1,
-                            device=device,
-                        )
-                        _launch.launch(
-                            kernel_cholesky.panel_rows,
-                            dim=row_dim,
-                            inputs=[nodes, self.front_offset, self.ncol, self.front_size,
-                                    self.block_offset, wp.int32(p), wp.int32(rows_below),
-                                    fronts, numeric.blocks],
-                            device=device,
-                        )  # fmt: skip
+                    # The diagonal block as a tile, and the rows by its inverse. Three launches a
+                    # panel: the factor is device-bound, and every fusion measured (the next block
+                    # factored inside the update or rows launch, or per row group) slowed it. The
+                    # tile factor's latency is least at 64 lanes.
+                    _launch.launch_tiled(
+                        kernel_cholesky.factor_panel_tiled,
+                        dim=[nodes.size],
+                        inputs=[
+                            nodes,
+                            *tables,
+                            wp.int32(p),
+                            fronts,
+                            numeric.status,
+                            self.panel_scratch,
+                        ],
+                        outputs=[self.panel_inverse_tiles],
+                        block_dim=64,
+                        device=device,
+                    )
+                    _launch.launch_tiled(
+                        kernel_cholesky.panel_rows_inverse,
+                        dim=[nodes.size, -(-row_dim[1] // panel)],
+                        inputs=[nodes, self.front_offset, self.ncol, self.front_size,
+                                self.block_offset, wp.int32(p), wp.int32(rows_below),
+                                self.panel_inverse, fronts, numeric.blocks],
+                        block_dim=panel * panel,
+                        device=device,
+                    )  # fmt: skip
                     _launch.launch(
                         kernel_cholesky.update_panel,
                         dim=(nodes.size, width),

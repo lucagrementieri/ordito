@@ -3,10 +3,10 @@ Kernels for ``ordito/cholesky.py``: a multifrontal sparse Cholesky and its trian
 
 **Numeric factorization.** The fronts are dense ``float64`` matrices, one per supernode of the
 nested-dissection tree, stored row-major in one arena and factored level by level from the leaves:
-``scatter_entries`` writes the operator's lower entries into their fronts, ``factor_panel``,
-``panel_rows`` and ``update_panel`` (three launches per ``PANEL`` columns, every front of the
-level at once, the rows and the update spread over the device) factor each front's own columns,
-and ``extend_add``
+``scatter_entries`` writes the operator's lower entries into their fronts, ``factor_panel_tiled``,
+``panel_rows_inverse`` and ``update_panel`` (three launches per ``PANEL`` columns, every front of
+the level at once, the rows and the update spread over the device; on the CPU device
+``factor_level_panels``, one launch a level) factor each front's own columns, and ``extend_add``
 folds the Schur complement left in the front's trailing block into its parent. Alongside the factor
 each front writes its **solve block** ``[L11^-1; -L21 L11^-1]`` (column-major, leading dimension
 the front's size), so the triangular solves are matrix-vector products rather than substitutions:
@@ -271,7 +271,7 @@ def substitute_panel(
     # Forward substitution of ``target[target_base + j]``, ``j`` in ``[first, last)``, against the
     # factored panel's own lower triangle, in place, the solved entries held in registers. Entries
     # below ``start`` are left alone and enter the later rows as zero: a solve-block column ``c``
-    # of ``L11^-1`` is zero above its diagonal. ``panel_rows`` calls it for a row of the front
+    # of ``L11^-1`` is zero above its diagonal. ``panel_row`` calls it for a row of the front
     # below the panel (``target`` the front itself) and for a column of the solve block.
     values = panel_vector()
     for q1 in range(PANEL):
@@ -285,48 +285,23 @@ def substitute_panel(
             target[target_base + wp.int64(j)] = values[q1]
 
 
-@wp.kernel
-def factor_panel(
-    level: wp.array[wp.int32],
-    front_offset: wp.array[wp.int64],
-    ncol: wp.array[wp.int32],
-    front_size: wp.array[wp.int32],
+@wp.func
+def panel_row(
+    k: wp.int32,
     panel: wp.int32,
-    fronts: wp.array[wp.float64],
-    status: wp.array[wp.int32],
-) -> None:
-    # A large front's panel ``panel``: the Cholesky of its ``PANEL``-square diagonal block, one
-    # block per front. ``panel_rows`` then forms the panel's rows below it and its rows of the solve
-    # block, and ``update_panel`` spreads the panel's rank-``PANEL`` update.
-    b, lane = wp.tid()
-    k = level[b]
-    first, last = panel_span(ncol[k], panel)
-    if last <= first:
-        return
-    base = front_offset[k]
-    size = front_size[k]
-    width = wp.block_dim()
-    factor_columns(base, size, last, first, last, lane, width, fronts, status)
-
-
-@wp.kernel
-def panel_rows(
-    level: wp.array[wp.int32],
+    rows_below: wp.int32,
+    t: wp.int32,
     front_offset: wp.array[wp.int64],
     ncol: wp.array[wp.int32],
     front_size: wp.array[wp.int32],
     block_offset: wp.array[wp.int64],
-    panel: wp.int32,
-    rows_below: wp.int32,
     fronts: wp.array[wp.float64],
     blocks: wp.array[wp.float64],
 ) -> None:
-    # After ``factor_panel``, one thread per row below the panel's diagonal block (``L[i, panel] =
-    # A[i, panel] L_pp^-T``, forward substitution against the factored block) and, past
-    # ``rows_below``, one per solve-block column (the panel rows' own triangle). Both are
-    # ``substitute_panel``.
-    b, t = wp.tid()
-    k = level[b]
+    # After front ``k``'s panel ``panel`` is factored, its entry ``t``: a row below the panel's
+    # diagonal block (``L[i, panel] = A[i, panel] L_pp^-T``, forward substitution against the
+    # factored block) and, past ``rows_below``, a solve-block column (the panel rows' own
+    # triangle). Both are ``substitute_panel``; no entry reads another's.
     first, last = panel_span(ncol[k], panel)
     if last <= first:
         return
@@ -362,7 +337,7 @@ def factor_panel_tiled(
     scratch: wp.array2d[wp.float64],
     out_inverse: wp.array2d[wp.float64],
 ) -> None:
-    # ``factor_panel`` on CUDA: the ``PANEL``-square diagonal block staged in ``scratch`` (a tile a
+    # A panel's ``PANEL``-square diagonal block on CUDA, staged in ``scratch`` (a tile a
     # front of the level, padded with the identity past the panel's width) and factored as one
     # shared-memory tile. Its Cholesky goes back to the front and its inverse to
     # ``out_inverse``, which ``panel_rows_inverse`` multiplies by instead of substituting, so
@@ -417,7 +392,7 @@ def panel_rows_inverse(
     fronts: wp.array[wp.float64],
     blocks: wp.array[wp.float64],
 ) -> None:
-    # ``panel_rows`` after ``factor_panel_tiled``: a row below the panel is ``A[i, panel]
+    # ``panel_row`` after ``factor_panel_tiled``: a row below the panel is ``A[i, panel]
     # L_pp^-T`` and a solve-block column's panel rows ``L_pp^-1 x``, both products with the
     # panel's inverse (its upper triangle zero). One lane an entry, ``PANEL`` rows a block of
     # ``PANEL * PANEL`` lanes (launched over ``(front, row group)``): every lane reads its row
@@ -457,6 +432,50 @@ def panel_rows_inverse(
         target[target_base + wp.int64(first + q1)] = total
 
 
+@wp.func
+def panel_front_product(
+    base: wp.int64,
+    m64: wp.int64,
+    first: wp.int32,
+    last: wp.int32,
+    row: wp.int32,
+    column: wp.int32,
+    fronts: wp.array[wp.float64],
+) -> wp.float64:
+    # The panel's rank-sixteen product at a front's trailing entry ``(row, column)``: the two
+    # rows' dot over the panel's columns ``[first, last)``.
+    row_base = front_index(base, m64, row, first)
+    column_base = front_index(base, m64, column, first)
+    total = wp.float64(0.0)
+    for q1 in range(PANEL):
+        if first + wp.int32(q1) < last:
+            total += fronts[row_base + wp.int64(q1)] * fronts[column_base + wp.int64(q1)]
+    return total
+
+
+@wp.func
+def panel_block_product(
+    base: wp.int64,
+    m64: wp.int64,
+    block: wp.int64,
+    first: wp.int32,
+    last: wp.int32,
+    row: wp.int32,
+    column: wp.int32,
+    fronts: wp.array[wp.float64],
+    blocks: wp.array[wp.float64],
+) -> wp.float64:
+    # The panel's product at a solve-block entry ``(row, column)`` below it: the front's row
+    # against the solve-block column's panel rows.
+    row_base = front_index(base, m64, row, first)
+    column_base = block + wp.int64(column) * m64 + wp.int64(first)
+    total = wp.float64(0.0)
+    for q2 in range(PANEL):
+        if first + wp.int32(q2) < last:
+            total += fronts[row_base + wp.int64(q2)] * blocks[column_base + wp.int64(q2)]
+    return total
+
+
 @wp.kernel
 def update_panel(
     level: wp.array[wp.int32],
@@ -468,8 +487,9 @@ def update_panel(
     fronts: wp.array[wp.float64],
     blocks: wp.array[wp.float64],
 ) -> None:
-    # The rank-sixteen update after ``factor_panel``: one thread per updated entry, of the front's
-    # trailing lower triangle and of the solve block's rows below the panel.
+    # The rank-sixteen update after ``factor_panel_tiled``: one thread per updated entry, of the
+    # front's trailing lower triangle and of the solve block's rows below the panel. No entry
+    # reads what another writes: each reads only the panel's columns.
     b, t = wp.tid()
     k = level[b]
     first, last = panel_span(ncol[k], panel)
@@ -483,28 +503,69 @@ def update_panel(
         row = last + t // span
         column = last + t % span
         if column <= row:
-            row_base = front_index(base, m64, row, first)
-            column_base = front_index(base, m64, column, first)
-            total = wp.float64(0.0)
-            for q1 in range(PANEL):
-                if first + wp.int32(q1) < last:
-                    total += fronts[row_base + wp.int64(q1)] * fronts[column_base + wp.int64(q1)]
             target = front_index(base, m64, row, column)
-            fronts[target] = fronts[target] - total
+            fronts[target] = fronts[target] - panel_front_product(
+                base, m64, first, last, row, column, fronts
+            )
         return
     t2 = t - span * span
     if t2 < span * last:
         block = block_offset[k]
         row = last + t2 % span
         column = t2 // span
-        row_base = front_index(base, m64, row, first)
-        column_base = block + wp.int64(column) * m64 + wp.int64(first)
-        total = wp.float64(0.0)
-        for q2 in range(PANEL):
-            if first + wp.int32(q2) < last:
-                total += fronts[row_base + wp.int64(q2)] * blocks[column_base + wp.int64(q2)]
         target = block + wp.int64(column) * m64 + wp.int64(row)
-        blocks[target] = blocks[target] - total
+        blocks[target] = blocks[target] - panel_block_product(
+            base, m64, block, first, last, row, column, fronts, blocks
+        )
+
+
+@wp.kernel
+def factor_level_panels(
+    level: wp.array[wp.int32],
+    front_offset: wp.array[wp.int64],
+    ncol: wp.array[wp.int32],
+    front_size: wp.array[wp.int32],
+    block_offset: wp.array[wp.int64],
+    n_panels: wp.int32,
+    rows_below: wp.int32,
+    out_fronts: wp.array[wp.float64],
+    out_blocks: wp.array[wp.float64],
+    out_status: wp.array[wp.int32],
+) -> None:
+    # A level's every panel on the CPU device, one block (of one lane there) a front: each panel's
+    # diagonal block (``factor_columns``), its rows (``panel_row``) and its update (the products
+    # ``update_panel`` subtracts, over the trailing lower triangle alone) in turn. A front's
+    # entries of one step neither read nor write another front's, nor read what another entry of
+    # the step writes, so walking them in turn is the CUDA path's step launches
+    # (``factor_panel_tiled``, ``panel_rows_inverse``, ``update_panel``) at one launch a level.
+    # ``out_fronts`` and ``out_blocks`` are factored in place.
+    b, lane = wp.tid()
+    k = level[b]
+    size = front_size[k]
+    base = front_offset[k]
+    block = block_offset[k]
+    m64 = wp.int64(size)
+    for p in range(n_panels):
+        panel = wp.int32(p)
+        first, last = panel_span(ncol[k], panel)
+        if last > first:
+            factor_columns(base, size, last, first, last, lane, wp.block_dim(), out_fronts,
+                           out_status)  # fmt: skip
+            for t in range(rows_below + last):
+                panel_row(k, panel, rows_below, t, front_offset, ncol, front_size, block_offset,
+                          out_fronts, out_blocks)  # fmt: skip
+            for row in range(last, size):
+                for column in range(last, row + 1):
+                    target = front_index(base, m64, row, column)
+                    out_fronts[target] = out_fronts[target] - panel_front_product(
+                        base, m64, first, last, row, column, out_fronts
+                    )
+            for column in range(last):
+                for row in range(last, size):
+                    target = block + wp.int64(column) * m64 + wp.int64(row)
+                    out_blocks[target] = out_blocks[target] - panel_block_product(
+                        base, m64, block, first, last, row, column, out_fronts, out_blocks
+                    )
 
 
 # --------------------------------------------------------------------------------------
