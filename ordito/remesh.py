@@ -2671,6 +2671,8 @@ class _DecimationBuffers:
         # Read once, so every pass of one call, captured or issued, sums its quadrics one way.
         self._exact = is_deterministic()
         self._graph = None
+        # The issued first pass's round loop, recorded on its own; kept until the call ends.
+        self._rounds_graph = None
         self._passes = 0
         self._retain: list[object] = []
         self.n_faces = faces.size // 3
@@ -3224,6 +3226,12 @@ class _DecimationBuffers:
         last the locks and re-armed keys are scratch nobody reads again. A budget-exhausted pass
         stops the way a saturated one does -- nothing commits, and ``end_collapse_round`` sees no
         progress.
+
+        The issued first pass records the loop on its own and launches it once on a
+        conditional-graph device, rather than letting ``wp.capture_while`` run it from the host,
+        which reads and synchronizes on the condition every round and issues every launch again:
+        the same device work, five launches recorded instead of five a round, and no host
+        synchronization.
         """
         device = self._device
         m = self.n_edges
@@ -3294,9 +3302,15 @@ class _DecimationBuffers:
                 device=device,
             )
 
-        wp.capture_while(
-            odt.as_dense(self._round_state[kernel_array.LOOP_CONDITION_VIEW]), round_body
-        )
+        condition = odt.as_dense(self._round_state[kernel_array.LOOP_CONDITION_VIEW])
+        if device.is_cuda and not device.is_capturing and wp.is_conditional_graph_supported():
+            with wp.ScopedCapture(device) as capture:
+                wp.capture_while(condition, round_body)
+            self._rounds_graph = capture.graph
+            assert self._rounds_graph is not None
+            wp.capture_launch(self._rounds_graph)
+        else:
+            wp.capture_while(condition, round_body)
 
     def _compact(self) -> None:
         """
