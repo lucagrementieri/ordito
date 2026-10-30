@@ -1452,8 +1452,8 @@ def _face_box_candidates(
     n_query = query_faces.size // 3
     stride = min(capacity, max(1, _MAX_CANDIDATE_SLOTS // max(n_query, 1)))
     n_table = n_query * stride
-    lower = _launch.empty(n_query, dtype=wp.vec3, device=device)
-    upper = _launch.empty(n_query, dtype=wp.vec3, device=device)
+    # The query boxes are read by the walks alone, so both corners share one allocation.
+    lower, upper = _launch.carve(wp.vec3, [n_query, n_query], device)
     _launch.launch(
         kernel_triangles.face_aabb_bounds,
         dim=n_query,
