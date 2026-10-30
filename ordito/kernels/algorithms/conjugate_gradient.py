@@ -282,6 +282,44 @@ def cg_threshold(tol_sq: wp.float64, atol_sq: wp.float64, b_norm_sq: wp.float64)
     return wp.max(tol_sq * b_norm_sq, atol_sq)
 
 
+@wp.func
+def cg_matvec_dots_block(
+    c: wp.int32,
+    blk: wp.int32,
+    t: wp.int32,
+    n: wp.int32,
+    stride: wp.int32,
+    span: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: Any,
+    r: Any,
+    u: Any,
+    gamma_new: wp.array[wp.float64],
+    alpha_new: wp.array[wp.float64],
+    w: Any,
+    partials: wp.array3d[wp.float64],
+    gamma_old: wp.array[wp.float64],
+    alpha_old: wp.array[wp.float64],
+    state: wp.array[wp.int32],
+) -> None:
+    # Block ``(c, blk)`` of ``cg_matvec_dots``, lane ``t``: its rows' ``w = A u`` and the block's
+    # three dots, then the shared tail. Block-collective.
+    acc = cg_round_terms(r.dtype(0.0), r.dtype(0.0), r.dtype(0.0))
+    for k in range(t, span, wp.block_dim()):
+        local = blk * span + k
+        i = c * stride + local
+        wi = w.dtype(0.0)
+        if local < n:
+            wi = csr_row_dot(local, c * stride, offsets, columns, values, u)
+        w[i] = wi
+        acc += cg_round_terms(r[i], u[i], wi)
+    total = cg_widen(block_sum(acc))
+    cg_publish_round_dots(
+        total, c, blk, t, gamma_new, alpha_new, partials, gamma_old, alpha_old, state
+    )
+
+
 @wp.kernel
 def cg_matvec_dots(
     n: wp.int32,
@@ -317,28 +355,10 @@ def cg_matvec_dots(
     # precision and the partials are ``float64`` (``cg_round_terms``). The carry and the round
     # count are ``cg_publish_round_dots``.
     c, blk, t = wp.tid()
-    acc = cg_round_terms(r.dtype(0.0), r.dtype(0.0), r.dtype(0.0))
-    for k in range(t, span, wp.block_dim()):
-        local = blk * span + k
-        i = c * stride + local
-        wi = out_w.dtype(0.0)
-        if local < n:
-            wi = csr_row_dot(local, c * stride, offsets, columns, values, u)
-        out_w[i] = wi
-        acc += cg_round_terms(r[i], u[i], wi)
-    total = cg_widen(block_sum(acc))
-    cg_publish_round_dots(
-        total,
-        c,
-        blk,
-        t,
-        gamma_new,
-        alpha_new,
-        out_partials,
-        out_gamma_old,
-        out_alpha_old,
-        out_state,
-    )
+    cg_matvec_dots_block(
+        c, blk, t, n, stride, span, offsets, columns, values, r, u, gamma_new, alpha_new, out_w,
+        out_partials, out_gamma_old, out_alpha_old, out_state,
+    )  # fmt: skip
 
 
 @wp.kernel
@@ -494,6 +514,50 @@ def cg_close_round(
         out_state[LOOP_CONDITION] = keep
 
 
+@wp.func
+def cg_coefficients_column(
+    c: wp.int32,
+    t: wp.int32,
+    n_columns: wp.int32,
+    maxiter: wp.int32,
+    n_blocks: wp.int32,
+    partials: wp.array3d[wp.float64],
+    gamma_old: wp.array[wp.float64],
+    alpha_old: wp.array[wp.float64],
+    atol_sq: wp.array[wp.float64],
+    state: wp.array[wp.int32],
+    coefficients: wp.array2d[wp.float64],
+    gamma_new: wp.array[wp.float64],
+    alpha_new: wp.array[wp.float64],
+    dots_out: wp.array2d[wp.float64],
+    iterations: wp.array[wp.int32],
+) -> None:
+    # Column ``c``'s block of ``cg_coefficients``, lane ``t``. Block-collective.
+    round_index = state[LOOP_ROUND]
+    dots = cg_fold_column(c, t, n_blocks, partials)
+    step = cg_step_scalars(dots, gamma_old[c], alpha_old[c], atol_sq[c], round_index, maxiter)
+    if t == 0:
+        coefficients[0, c] = step[0]
+        coefficients[1, c] = step[1]
+        coefficients[2, c] = step[2]
+        cg_publish_column(c, dots, step, gamma_new, alpha_new, dots_out)
+    if c == 0:
+        cg_close_round(
+            step,
+            t,
+            n_columns,
+            n_blocks,
+            partials,
+            gamma_old,
+            alpha_old,
+            atol_sq,
+            round_index,
+            maxiter,
+            iterations,
+            state,
+        )
+
+
 @wp.kernel
 def cg_coefficients(
     n_columns: wp.int32,
@@ -516,29 +580,87 @@ def cg_coefficients(
     # ``cg_update`` does besides the vectors, done once per column instead of once per block and
     # thread. Taken where a column is longer than ``linalg.CG_FOLD_MAX_BLOCKS`` tiles.
     c, t = wp.tid()
+    cg_coefficients_column(
+        c, t, n_columns, maxiter, n_blocks, partials, gamma_old, alpha_old, atol_sq, state,
+        out_coefficients, out_gamma_new, out_alpha_new, out_dots, out_iterations,
+    )  # fmt: skip
+
+
+@wp.func
+def cg_update_block(
+    c: wp.int32,
+    blk: wp.int32,
+    t: wp.int32,
+    stride: wp.int32,
+    span: wp.int32,
+    n: wp.int32,
+    n_columns: wp.int32,
+    maxiter: wp.int32,
+    fold: wp.int32,
+    n_blocks: wp.int32,
+    jacobi: wp.int32,
+    partials: wp.array3d[wp.float64],
+    coefficients: wp.array2d[wp.float64],
+    gamma_old: wp.array[wp.float64],
+    alpha_old: wp.array[wp.float64],
+    atol_sq: wp.array[wp.float64],
+    inv_diag: Any,
+    w: Any,
+    p: Any,
+    s: Any,
+    r: Any,
+    u: Any,
+    state: wp.array[wp.int32],
+    x: Any,
+    scaled: Any,
+    gamma_new: wp.array[wp.float64],
+    alpha_new: wp.array[wp.float64],
+    dots_out: wp.array2d[wp.float64],
+    iterations: wp.array[wp.int32],
+) -> None:
+    # Block ``(c, blk)`` of ``cg_update``, lane ``t``. Block-collective under ``fold``.
     round_index = state[LOOP_ROUND]
-    dots = cg_fold_column(c, t, n_blocks, partials)
-    step = cg_step_scalars(dots, gamma_old[c], alpha_old[c], atol_sq[c], round_index, maxiter)
-    if t == 0:
-        out_coefficients[0, c] = step[0]
-        out_coefficients[1, c] = step[1]
-        out_coefficients[2, c] = step[2]
-        cg_publish_column(c, dots, step, out_gamma_new, out_alpha_new, out_dots)
-    if c == 0:
-        cg_close_round(
-            step,
-            t,
-            n_columns,
-            n_blocks,
-            partials,
-            gamma_old,
-            alpha_old,
-            atol_sq,
-            round_index,
-            maxiter,
-            out_iterations,
-            state,
-        )
+    dots = wp.vec3d(0.0, 0.0, 0.0)
+    step = wp.vec3d(coefficients[0, c], coefficients[1, c], coefficients[2, c])
+    if fold != 0:
+        dots = cg_fold_column(c, t, n_blocks, partials)
+        step = cg_step_scalars(dots, gamma_old[c], alpha_old[c], atol_sq[c], round_index, maxiter)
+    # The scalars are rounded to the storage precision once and the element updates run there:
+    # on ``float32`` storage the grid's L2-resident levels are bound by arithmetic rather than
+    # bytes, and widening every element to ``float64`` measured slower than Warp's own solver there.
+    alpha = p.dtype(step[0])
+    beta = p.dtype(step[1])
+    if step[2] != wp.float64(0.0):
+        for k in range(t, span, wp.block_dim()):
+            local = blk * span + k
+            i = c * stride + local
+            pk, sk, residual = cg_advance(u[i], w[i], p[i], s[i], r[i], alpha, beta)
+            p[i] = pk
+            s[i] = sk
+            if local < n:
+                slot = c * n + local
+                x[slot] = x[slot] + alpha * pk
+            r[i] = residual
+            if jacobi != 0 and local < n:
+                scaled[i] = inv_diag[local] * residual
+    if fold != 0:
+        if blk == 0 and t == 0:
+            cg_publish_column(c, dots, step, gamma_new, alpha_new, dots_out)
+        if c == 0 and blk == 0:
+            cg_close_round(
+                step,
+                t,
+                n_columns,
+                n_blocks,
+                partials,
+                gamma_old,
+                alpha_old,
+                atol_sq,
+                round_index,
+                maxiter,
+                iterations,
+                state,
+            )
 
 
 @wp.kernel
@@ -605,48 +727,76 @@ def cg_update(
     # ``float32`` storage is what sets the floor. On ``float64`` storage every conversion is the
     # identity.
     c, blk, t = wp.tid()
-    round_index = state[LOOP_ROUND]
-    dots = wp.vec3d(0.0, 0.0, 0.0)
-    step = wp.vec3d(coefficients[0, c], coefficients[1, c], coefficients[2, c])
-    if fold != 0:
-        dots = cg_fold_column(c, t, n_blocks, partials)
-        step = cg_step_scalars(dots, gamma_old[c], alpha_old[c], atol_sq[c], round_index, maxiter)
-    # The scalars are rounded to the storage precision once and the element updates run there:
-    # on ``float32`` storage the grid's L2-resident levels are bound by arithmetic rather than
-    # bytes, and widening every element to ``float64`` measured slower than Warp's own solver there.
-    alpha = p.dtype(step[0])
-    beta = p.dtype(step[1])
-    if step[2] != wp.float64(0.0):
-        for k in range(t, span, wp.block_dim()):
-            local = blk * span + k
-            i = c * stride + local
-            pk, sk, residual = cg_advance(u[i], w[i], p[i], s[i], r[i], alpha, beta)
-            p[i] = pk
-            s[i] = sk
-            if local < n:
-                slot = c * n + local
-                out_x[slot] = out_x[slot] + alpha * pk
-            r[i] = residual
-            if jacobi != 0 and local < n:
-                out_scaled[i] = inv_diag[local] * residual
-    if fold != 0:
-        if blk == 0 and t == 0:
-            cg_publish_column(c, dots, step, out_gamma_new, out_alpha_new, out_dots)
-        if c == 0 and blk == 0:
-            cg_close_round(
-                step,
-                t,
-                n_columns,
-                n_blocks,
-                partials,
-                gamma_old,
-                alpha_old,
-                atol_sq,
-                round_index,
-                maxiter,
+    cg_update_block(
+        c, blk, t, stride, span, n, n_columns, maxiter, fold, n_blocks, jacobi, partials,
+        coefficients, gamma_old, alpha_old, atol_sq, inv_diag, w, p, s, r, u, state, out_x,
+        out_scaled, out_gamma_new, out_alpha_new, out_dots, out_iterations,
+    )  # fmt: skip
+
+
+@wp.kernel
+def cg_round_serial(
+    n: wp.int32,
+    stride: wp.int32,
+    span: wp.int32,
+    update_span: wp.int32,
+    n_columns: wp.int32,
+    maxiter: wp.int32,
+    fold: wp.int32,
+    n_blocks: wp.int32,
+    update_blocks: wp.int32,
+    jacobi: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.Float],
+    atol_sq: wp.array[wp.float64],
+    inv_diag: wp.array[wp.Float],
+    u: wp.array[wp.Float],
+    p: wp.array[wp.Float],
+    s: wp.array[wp.Float],
+    r: wp.array[wp.Float],
+    gamma_old: wp.array[wp.float64],
+    alpha_old: wp.array[wp.float64],
+    gamma_new: wp.array[wp.float64],
+    alpha_new: wp.array[wp.float64],
+    state: wp.array[wp.int32],
+    out_w: wp.array[wp.Float],
+    out_partials: wp.array3d[wp.float64],
+    out_coefficients: wp.array2d[wp.float64],
+    out_x: wp.array[wp.Float],
+    out_scaled: wp.array[wp.Float],
+    out_dots: wp.array2d[wp.float64],
+    out_iterations: wp.array[wp.int32],
+) -> None:
+    # A whole round on the CPU device in one launch of one one-lane block: ``cg_matvec_dots``'s
+    # blocks, then (unfolded) ``cg_coefficients``' columns, then ``cg_update``'s blocks, each in
+    # its launch's order. On that device a launch's blocks run one after another, and a step's
+    # blocks read only what earlier steps wrote (the fold reads every block's partials in a fixed
+    # order), so this is those launches' round to the bit. ``p``, ``s = A p`` and ``r``, the
+    # carried ``gamma`` / ``alpha`` and the loop's ``state`` are the iteration's state, read and
+    # rewritten in place, not its answer; ``out_scaled`` may be ``u``, which the mat-vec has
+    # finished reading before the update writes it.
+    for c in range(n_columns):
+        for blk in range(n_blocks):
+            cg_matvec_dots_block(
+                c, blk, 0, n, stride, span, offsets, columns, values, r, u, gamma_new,
+                alpha_new, out_w, out_partials, gamma_old, alpha_old, state,
+            )  # fmt: skip
+    if fold == 0:
+        for c in range(n_columns):
+            cg_coefficients_column(
+                c, 0, n_columns, maxiter, n_blocks, out_partials, gamma_old, alpha_old,
+                atol_sq, state, out_coefficients, gamma_new, alpha_new, out_dots,
                 out_iterations,
-                state,
-            )
+            )  # fmt: skip
+    for c in range(n_columns):
+        for blk in range(update_blocks):
+            cg_update_block(
+                c, blk, 0, stride, update_span, n, n_columns, maxiter, fold, n_blocks, jacobi,
+                out_partials, out_coefficients, gamma_old, alpha_old, atol_sq, inv_diag,
+                out_w, p, s, r, u, state, out_x, out_scaled, gamma_new,
+                alpha_new, out_dots, out_iterations,
+            )  # fmt: skip
 
 
 @wp.kernel
@@ -1060,7 +1210,8 @@ _CG_STORAGE = ((wp.float32, wp.float32), (wp.float64, wp.float64), (wp.float64, 
 
 def _register_overloads() -> None:
     """Instantiate the generic round kernels at every storage precision, keyed by the dtype."""
-    global CG_INITIAL, CG_MATVEC_DOTS, CG_ROUND_DOTS, CG_UPDATE, CG_CAPPED_RESIDUAL
+    global CG_INITIAL, CG_MATVEC_DOTS, CG_ROUND_DOTS, CG_UPDATE, CG_ROUND_SERIAL
+    global CG_CAPPED_RESIDUAL
     f64 = wp.float64
     CG_INITIAL = OverloadTable(
         cg_initial,
@@ -1102,6 +1253,18 @@ def _register_overloads() -> None:
             + [wp.array[wp.int32], wp.array[d], wp.array[d]]
             + [wp.array[f64], wp.array[f64], wp.array2d[f64], wp.array[wp.int32]]
             for d in _CG_DTYPES
+        },
+    )
+    CG_ROUND_SERIAL = OverloadTable(
+        cg_round_serial,
+        {
+            (d, v): [wp.int32] * 10
+            + [wp.array[wp.int32], wp.array[wp.int32], wp.array[v], wp.array[f64]]
+            + [wp.array[d]] * 5
+            + [wp.array[f64]] * 4
+            + [wp.array[wp.int32], wp.array[d], wp.array3d[f64], wp.array2d[f64]]
+            + [wp.array[d], wp.array[d], wp.array2d[f64], wp.array[wp.int32]]
+            for d, v in _CG_STORAGE
         },
     )
     CG_CAPPED_RESIDUAL = OverloadTable(

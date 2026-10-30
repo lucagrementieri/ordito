@@ -574,13 +574,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("levelset", "take_exact_winding"): frozenset({"winding", "slots"}),
     ("levelset", "warp_winding_sign"): frozenset({"winding"}),
     ("homology", "bfs_push_level"): frozenset({"state"}),
-    # A Chronopoulos-Gear round updates its recurrence in place: ``p``, ``s = A p`` and ``r`` are
-    # each read and overwritten by the one lane that owns the entry. They are the iteration's state,
-    # not its answer (``x``, and the published scalars), so ``out_`` would read as write-only.
-    # ``state`` -- the round loop's word, whose round count ``cg_update`` / ``cg_coefficients`` read
-    # and whose condition slot they write -- is the same kind of argument and deliberately absent:
-    # the write happens in ``cg_close_round``, a ``@wp.func`` this scan cannot see into.
-    ("algorithms.conjugate_gradient", "cg_update"): frozenset({"p", "s", "r"}),
     # ``previous`` is a settle monitor's snapshot of the field at the last check, compared against
     # and then advanced to the current one: loop state carried across launches, not the answer.
     ("algorithms.conjugate_gradient", "cg_settle_change"): frozenset({"previous"}),

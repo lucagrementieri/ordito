@@ -3522,8 +3522,63 @@ class _BatchedCg:
         Two launches under Jacobi and ``fold``: the mat-vec with its three dots, then the update
         with the preconditioner apply fused in. A preconditioner with launches of its own adds
         them after the update, and a column long enough to lose ``fold`` adds a finalize between
-        the two. See ``kernels/algorithms/conjugate_gradient.py``.
+        the two. See ``kernels/algorithms/conjugate_gradient.py``. On the CPU device every
+        launch but the preconditioner's is one.
         """
+        tile = int(kernel_cg.CG_TILE)
+        if not self._heavy and self._device.is_cpu:
+            # The CPU device runs a launch's blocks one after another: the round's launches in
+            # one, block by block in their order (``cg_round_serial``).
+            _launch.launch_tiled(
+                kernel_cg.CG_ROUND_SERIAL[self._dtype, self._round_values.dtype],
+                dim=[1],
+                inputs=[
+                    wp.int32(self._n),
+                    wp.int32(self._stride),
+                    wp.int32(self._span),
+                    wp.int32(tile),
+                    wp.int32(self._n_columns),
+                    wp.int32(self._maxiter),
+                    wp.int32(1 if self._fold else 0),
+                    wp.int32(self._blocks),
+                    wp.int32(self._stride // tile),
+                    wp.int32(0 if self._inv_diag is None else 1),
+                    self._matrix.offsets,
+                    self._matrix.columns,
+                    self._round_values,
+                    self._atol_sq,
+                    self._inv_diag,
+                    self._u,
+                    self._p,
+                    self._s,
+                    self._r,
+                    self._gamma_old,
+                    self._alpha_old,
+                    self._gamma_new,
+                    self._alpha_new,
+                    self._state,
+                ],
+                outputs=[
+                    self._w,
+                    self._partials,
+                    self._coefficients,
+                    self._solution_flat,
+                    self._scaled,
+                    self._dots,
+                    self.iterations,
+                ],
+                block_dim=1,
+                device=self._device,
+            )
+        else:
+            self._round_launches()
+        if isinstance(self._cycle, _JacobiChebyshevApply):
+            self._cycle.apply_scaled(self._u)
+        elif self._cycle is not None:
+            self._cycle.apply(self._r, self._u)
+
+    def _round_launches(self) -> None:
+        """Issue ``_iteration``'s launches up to the preconditioner, one per node of the round."""
         tile = int(kernel_cg.CG_TILE)
         grid = (self._n_columns, self._blocks)
         if self._heavy:
@@ -3628,10 +3683,6 @@ class _BatchedCg:
             block_dim=tile,
             device=self._device,
         )
-        if isinstance(self._cycle, _JacobiChebyshevApply):
-            self._cycle.apply_scaled(self._u)
-        elif self._cycle is not None:
-            self._cycle.apply(self._r, self._u)
 
     def _initialize(self, initial: odt.ArrayNdFloat | None) -> None:
         """
