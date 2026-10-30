@@ -256,10 +256,12 @@ def test_carve_splits_tables_past_the_largest_array(
     tables = _launch.carve(wp.int32, sizes, device, zeroed=True)
     assert [table.size for table in tables] == sizes
     assert all(not table.numpy().any() for table in tables)
-    first, last = tables[0].ptr, tables[2].ptr
-    assert first is not None
-    assert last is not None
-    assert (last - first == 64 * 4) == (limit > 64)
+    # Ownership, not addresses: two separate CPU allocations can land 256 bytes apart by chance.
+    first, last = tables[0]._ref, tables[2]._ref  # pyright: ignore[reportPrivateUsage]
+    shared = first is not None and first is last
+    assert shared == (limit > 64)
+    if shared:
+        assert tables[2].ptr == tables[0].ptr + 64 * 4  # pyright: ignore[reportOptionalOperand]
 
 
 @pytest.mark.parametrize("inclusive", [True, False])
