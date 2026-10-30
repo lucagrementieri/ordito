@@ -835,8 +835,7 @@ def _first_occurrence_faces(
     """
     n_faces = faces.size // 3
     device = faces.device
-    keys = _launch.empty(2 * n_faces, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(n_faces, wp.uint64, device)
     _launch.launch(
         kernel_repair.pack_face_keys_and_order,
         dim=n_faces,

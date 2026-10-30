@@ -2379,8 +2379,7 @@ def _sorted_vertex_adjacency(
     # Double width, as the radix sort wants. The payload carries nothing: its upper half, free once
     # the sort has run, holds the slot counts and their scan. The returned adjacency shares one
     # allocation, which the payload stays out of so the result does not hold it.
-    keys = _launch.empty(2 * n_keys, dtype=wp.uint64, device=device)
-    payload = _launch.empty(2 * n_keys, dtype=wp.int32, device=device)
+    keys, payload = _launch.sort_buffers(n_keys, wp.uint64, device)
     columns, offsets = _launch.carve(wp.int32, [n_keys, n_vertices + 1], device)
     base = wp.uint64(n_vertices)
     _launch.launch(

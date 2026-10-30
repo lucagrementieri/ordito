@@ -747,8 +747,7 @@ def _dart_throw_blue_noise(
     # straight into the sort's double-width buffers, and the sort orders only the bits a key below
     # ``grid_w ** 3`` can set. The run marks and their scan live in the payload's upper half, free
     # once the sort has run; the scan doubles as every sorted point's cell index.
-    keys = _launch.empty(2 * n_pool, dtype=wp.int64, device=device)
-    order = _launch.empty(2 * n_pool, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(n_pool, wp.int64, device)
     _launch.launch(
         kernel_blue_noise.pool_cell_keys_and_order,
         dim=n_pool,

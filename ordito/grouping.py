@@ -68,11 +68,10 @@ def group(values: wp.array[wp.Int], length: int) -> odt.Array2dInt32:
         return odt.as_array2d(odt.empty_2d((0, max(length, 0)), wp.int32, device=device), wp.int32)
 
     sort_dtype = odt.sortable_dtype(values.dtype)
-    values_buffer = _launch.empty(2 * n, dtype=sort_dtype, device=device)
     if sort_dtype == values.dtype:
         # The keys and the identity payload into the sort's leading halves in one launch; the upper
         # halves are sort scratch and then the run flags, so nothing pads them.
-        indices_buffer = _launch.empty(2 * n, dtype=wp.int32, device=device)
+        values_buffer, indices_buffer = _launch.sort_buffers(n, sort_dtype, device)
         _launch.launch(
             kernel_grouping.KEYS_AND_IDENTITY[sort_dtype],
             dim=n,
@@ -80,6 +79,7 @@ def group(values: wp.array[wp.Int], length: int) -> odt.Array2dInt32:
             device=device,
         )
     else:
+        values_buffer = _launch.empty(2 * n, dtype=sort_dtype, device=device)
         copyto(odt.as_dense(values_buffer[:n]), values)
         indices_buffer = sort_pair_indices(n, -1, device)
     _launch.radix_sort_pairs(values_buffer, indices_buffer, count=n)

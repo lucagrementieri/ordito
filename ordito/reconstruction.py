@@ -189,8 +189,7 @@ def _lexicographic_triangulation(points: wp.array[wp.vec2]) -> wp.array[wp.int32
     n = points.size
     # The lex order is a stable radix sort of one packed sortable key per point, on the points'
     # own device, which is ``numpy.lexsort((y, x))`` exactly.
-    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(n, wp.uint64, device)
     _launch.launch(
         kernel_reconstruction.lexicographic_keys, dim=n, inputs=[points, keys, order], device=device
     )
@@ -598,11 +597,10 @@ def _orient_fans(
     diagonal_sq = extent[0] * extent[0] + extent[1] * extent[1] + extent[2] * extent[2]
     max_distance_sq = diagonal_sq / np.float32(4.0) * np.float32(1.1)
 
-    flipped, visited, touched, inert, margin, far_order, frontier = _launch.carve(
-        wp.int32, [n] * 5 + [2 * n, 2 * n], device
+    flipped, visited, touched, inert, margin, far_order, frontier, far_keys = _launch.carve_typed(
+        [(wp.int32, n)] * 5 + [(wp.int32, 2 * n), (wp.int32, 2 * n), (wp.uint64, 2 * n)], device
     )
     stale, chosen, votes = _launch.carve(wp.int32, [n, n, 2 * n], device, zeroed=True)
-    far_keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
     _launch.launch(
         kernel_reconstruction.start_fan_flood,
         dim=n,
@@ -773,9 +771,9 @@ def _oriented_candidate_rows(
     rows = odt.empty_2d((m, 3), wp.int32, device=device)
     if m == 0:
         return rows, 0
-    low = _launch.empty(2 * m, dtype=wp.uint64, device=device)
-    high = _launch.empty(2 * m, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * m, dtype=wp.int32, device=device)
+    low, high, high_sorted, order = _launch.carve_typed(
+        ((wp.uint64, 2 * m), (wp.uint64, 2 * m), (wp.uint64, 2 * m), (wp.int32, 2 * m)), device
+    )
     _launch.launch(
         kernel_reconstruction.emit_oriented_repeats,
         dim=n_candidates,
@@ -785,7 +783,6 @@ def _oriented_candidate_rows(
     )
     # Least significant key first: the stable second sort keeps the first one's order on ties.
     _launch.radix_sort_pairs(low, order, count=m, end_bit=max(1, (n * n - 1).bit_length()))
-    high_sorted = _launch.empty(2 * m, dtype=wp.uint64, device=device)
     _launch.copy(high_sorted, od.array.gather(_launch.view(high, 0, m), _launch.view(order, 0, m)))
     _launch.radix_sort_pairs(high_sorted, order, count=m, end_bit=max(1, (2 * n - 1).bit_length()))
     ordered = od.array.gather(rows, _launch.view(order, 0, m))
@@ -819,8 +816,7 @@ def _contested_rows_kept(
     device = rows.device
     m = rows.shape[0]
     n = points.size
-    keys = _launch.empty(6 * m, dtype=wp.uint64, device=device)
-    edge_rows = _launch.empty(6 * m, dtype=wp.int32, device=device)
+    keys, edge_rows = _launch.sort_buffers(3 * m, wp.uint64, device)
     _launch.launch(
         kernel_reconstruction.directed_edge_keys,
         dim=(m, 3),
@@ -967,8 +963,7 @@ def _sorted_candidate_keys(
     their upper halves, which the classes reuse.
     """
     device = tris.device
-    keys = _launch.empty(2 * n_candidates, dtype=wp.uint64, device=device)
-    slots = _launch.empty(2 * n_candidates, dtype=wp.int32, device=device)
+    keys, slots = _launch.sort_buffers(n_candidates, wp.uint64, device)
     _launch.launch(
         kernel_reconstruction.candidate_triangle_keys,
         dim=(int(tris.shape[0]), int(tris.shape[1])),
@@ -3535,8 +3530,7 @@ def _splat_ordered(
     """
     device = points.device
     count = 8 * points.size
-    keys = _launch.empty(2 * count, dtype=wp.int32, device=device)
-    order = _launch.empty(2 * count, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(count, wp.int32, device)
     _launch.launch(
         key_kernel, dim=points.size, inputs=key_inputs, outputs=[keys, order], device=device
     )

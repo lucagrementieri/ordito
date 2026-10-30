@@ -669,8 +669,7 @@ def _pool_by_voxel(
         return pooled, slots
 
     # The launch seeds the sort's two double buffers, keys and identity payload.
-    buckets = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
-    order = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
+    buckets, order = _launch.sort_buffers(n_points, wp.int32, device)
     _launch.launch(
         kernel_voxels.bucket_point_slots,
         dim=n_points,

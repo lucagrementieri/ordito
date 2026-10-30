@@ -607,8 +607,7 @@ def _link_on_device(
     n = n_segments
     m = 2 * n
     hit_segments = odt.empty_2d((n, 2), wp.vec3, device=device)
-    keys = _launch.empty(2 * m, dtype=wp.int64, device=device)
-    endpoints = _launch.empty(2 * m, dtype=wp.int32, device=device)
+    keys, endpoints = _launch.sort_buffers(m, wp.int64, device)
     _launch.launch(
         kernel_intersections.compact_cut_segment_keys,
         dim=inclusive.size,
@@ -1733,10 +1732,16 @@ def split_mesh_with_plane(
         new_vertices, new_faces = _launch.clone(vertices), _launch.clone(faces)
     else:
         key_base = wp.int64(n_vertices)
-        keys = _launch.empty(2 * n_halfedges, dtype=wp.int64, device=device)
-        # The sort's payload, the crossed-edge ranks and each halfedge's new vertex: one allocation.
-        halfedges, rank, cut_vertices = _launch.carve(
-            wp.int32, [2 * n_halfedges, n_halfedges, n_halfedges], device
+        # The sort's keys and payload, the crossed-edge ranks and each halfedge's new vertex: one
+        # allocation.
+        keys, halfedges, rank, cut_vertices = _launch.carve_typed(
+            (
+                (wp.int64, 2 * n_halfedges),
+                (wp.int32, 2 * n_halfedges),
+                (wp.int32, n_halfedges),
+                (wp.int32, n_halfedges),
+            ),
+            device,
         )
         _launch.launch(
             kernel_intersections.plane_crossed_halfedge_keys,
@@ -2289,10 +2294,16 @@ def _split_with_vertex_field(
     n_emitted = n_uncut + 3 * n_edges + 2 * n_corner
     n_halfedges = 3 * n_cut
     key_base = wp.int64(n_vertices)
-    keys = _launch.empty(2 * n_halfedges, dtype=wp.int64, device=device)
-    # The sort's payload, the crossed-edge ranks and each halfedge's new vertex: one allocation.
-    halfedges, rank, cut_vertices = _launch.carve(
-        wp.int32, [2 * n_halfedges, n_halfedges, n_halfedges], device
+    # The sort's keys and payload, the crossed-edge ranks and each halfedge's new vertex: one
+    # allocation.
+    keys, halfedges, rank, cut_vertices = _launch.carve_typed(
+        (
+            (wp.int64, 2 * n_halfedges),
+            (wp.int32, 2 * n_halfedges),
+            (wp.int32, n_halfedges),
+            (wp.int32, n_halfedges),
+        ),
+        device,
     )
     _launch.launch(
         kernel_intersections.split_crossed_halfedge_keys,

@@ -384,7 +384,7 @@ def euler_characteristic(faces: wp.array[wp.int32], *, n_vertices: int | None = 
     # mask is marked in the pass that packs the halfedge keys into the sort's buffer, over the
     # bits a key below ``n_vertices ** 2`` can set; the sort's payload is never read.
     referenced = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
-    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+    keys, payload = _launch.sort_buffers(n, wp.uint64, device)
     _launch.launch(
         kernel_measures.face_edge_keys_and_referenced,
         dim=n_faces,
@@ -392,10 +392,7 @@ def euler_characteristic(faces: wp.array[wp.int32], *, n_vertices: int | None = 
         device=device,
     )
     _launch.radix_sort_pairs(
-        keys,
-        _launch.empty(2 * n, dtype=wp.int32, device=device),
-        count=n,
-        end_bit=min(64, max(1, (n_vertices * n_vertices - 1).bit_length())),
+        keys, payload, count=n, end_bit=min(64, max(1, (n_vertices * n_vertices - 1).bit_length()))
     )
     sorted_keys = _launch.view(keys, 0, n)
     # The unique edges are the sorted halfedge keys' runs, so only their count is formed: no run

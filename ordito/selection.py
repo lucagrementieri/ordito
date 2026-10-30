@@ -249,9 +249,16 @@ def faces_left_of_contour(
     # Directed contour keys, sorted, and small: the kernels probe this once or twice per halfedge,
     # so a `k`-entry binary search replaces sorting a key per halfedge to look 320 of them up. The
     # keys are packed straight into the sort's double-width buffer; the payload is never read.
-    # It shares one allocation with the fill's union-find parents and labels, all dying here.
-    contour_keys = _launch.empty(2 * n_contour, dtype=wp.uint64, device=device)
-    payload, parents, labels = _launch.carve(wp.int32, [2 * n_contour, n_faces, n_faces], device)
+    # Both share one allocation with the fill's union-find parents and labels, all dying here.
+    contour_keys, payload, parents, labels = _launch.carve_typed(
+        (
+            (wp.uint64, 2 * n_contour),
+            (wp.int32, 2 * n_contour),
+            (wp.int32, n_faces),
+            (wp.int32, n_faces),
+        ),
+        device,
+    )
     _launch.launch(
         kernel_grouping.pack_directed_index_keys,
         dim=n_contour,

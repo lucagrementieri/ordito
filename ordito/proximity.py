@@ -1373,13 +1373,38 @@ def _winding_number_tree(
         inputs=[vertices, corners_box],
         device=device,
     )
-    # The build's ``int32`` tables in one allocation, its ``vec3`` and ``vec4`` ones in one each,
-    # and the two zeroed edge counters in one: they all live exactly as long as this call.
-    keys, order, rank, count, first, cap_offsets = _launch.carve(
-        wp.int32, [2 * n_faces, 2 * n_faces, n_faces, n_nodes, n_nodes, n_nodes + 1], device
+    # The build's tables in one allocation and the two zeroed edge counters in another: they all
+    # live exactly as long as this call.
+    (
+        keys,
+        order,
+        rank,
+        count,
+        first,
+        cap_offsets,
+        corners,
+        lower,
+        upper,
+        slab_lower,
+        slab_upper,
+        corner_sum,
+    ) = _launch.carve_typed(
+        (
+            (wp.int32, 2 * n_faces),
+            (wp.int32, 2 * n_faces),
+            (wp.int32, n_faces),
+            (wp.int32, n_nodes),
+            (wp.int32, n_nodes),
+            (wp.int32, n_nodes + 1),
+            (wp.vec3, 3 * n_faces),
+            (wp.vec3, n_nodes),
+            (wp.vec3, n_nodes),
+            (wp.vec4, n_nodes),
+            (wp.vec4, n_nodes),
+            (wp.vec3d, n_nodes),
+        ),
+        device,
     )
-    corners, lower, upper = _launch.carve(wp.vec3, [3 * n_faces, n_nodes, n_nodes], device)
-    slab_lower, slab_upper = _launch.carve(wp.vec4, [n_nodes, n_nodes], device)
     perimeter, fill = _launch.carve(wp.int32, [n_nodes, n_nodes], device, zeroed=True)
     _launch.launch(
         kernel_proximity.winding_face_keys,
@@ -1395,7 +1420,6 @@ def _winding_number_tree(
         device=device,
     )
 
-    corner_sum = _launch.empty(n_nodes, dtype=wp.vec3d, device=device)
     nodes = [lower, upper, slab_lower, slab_upper, corner_sum, count, first]
     _launch.launch(
         kernel_proximity.winding_leaves,

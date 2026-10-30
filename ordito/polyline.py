@@ -1768,8 +1768,7 @@ def _triangulate_long_rings(
         kernel_polyline.RING_CELLS_PER_POINT * n_points
         + kernel_polyline.RING_CELLS_PER_LOOP * n_loops
     )
-    cell_keys = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
-    cell_points = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
+    cell_keys, cell_points = _launch.sort_buffers(n_points, wp.int32, device)
     _launch.launch(
         kernel_polyline.ring_ear_grid_cells,
         dim=n_points,
@@ -1987,8 +1986,7 @@ def _triangulate_ring(
     shift = wp.vec2(below_x, below_y)
     inv_cell = wp.float32(1.0 / cell)
     dims_wp = wp.vec2i(wp.int32(dims[0]), wp.int32(dims[1]))
-    cell_keys = _launch.empty(2 * n_ring, dtype=wp.int32, device=device)
-    cell_points = _launch.empty(2 * n_ring, dtype=wp.int32, device=device)
+    cell_keys, cell_points = _launch.sort_buffers(n_ring, wp.int32, device)
     _launch.launch(
         kernel_polyline.ear_grid_cells,
         dim=n_ring,
@@ -2106,8 +2104,7 @@ def _faces_in_tip_order(faces: odt.Array2dInt32, n_tips: int) -> odt.Array2dInt3
     """
     device = faces.device
     n_faces = faces.shape[0]
-    keys = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
-    rows = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    keys, rows = _launch.sort_buffers(n_faces, wp.int32, device)
     _launch.launch(
         kernel_polyline.face_tip_keys,
         dim=n_faces,

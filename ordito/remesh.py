@@ -2233,8 +2233,7 @@ def cluster_decimate(
     # by now and serve the face sort whenever they are wide enough, which they are unless almost
     # nothing merged.
     if 2 * n_unique > sort_keys.size:
-        sort_keys = _launch.empty(2 * n_unique, dtype=wp.uint64, device=device)
-        kept_cells = _launch.empty(2 * n_unique, dtype=wp.int32, device=device)
+        sort_keys, kept_cells = _launch.sort_buffers(n_unique, wp.uint64, device)
     _launch.launch(
         kernel_remesh.cluster_gather_and_face_keys,
         dim=max(n_items, n_unique),
@@ -4631,8 +4630,7 @@ def _sorted_corner_edges(
     device = faces.device
     n = faces.size
     if keys is None:
-        key_buffer = _launch.empty(2 * n, dtype=wp.uint64, device=device)
-        order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+        key_buffer, order = _launch.sort_buffers(n, wp.uint64, device)
         base = n_vertices
         _launch.launch(
             kernel_adjacency.face_edge_keys_and_order,
@@ -5301,8 +5299,7 @@ def _vertex_scale_attribute(
     # attribute measures is chosen on the device and nothing is compacted or read back. The sort's
     # buffers are double width, the upper halves its scratch; its payload is carried and never
     # read, so it is not initialized.
-    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(n, wp.uint64, device)
     base = wp.uint64(n_vertices)
     _launch.launch(
         kernel_remesh.scale_attribute_edge_keys,

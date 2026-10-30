@@ -1003,10 +1003,12 @@ def _robust_scale_from_residuals(
     """
     device = current.device
     n = current.size
-    # Radix-sort buffers: keys and a payload the sort needs and nobody reads, both ``2n`` long.
-    keys = _launch.empty(2 * n, dtype=wp.float32, device=device)
-    payload = _launch.empty(2 * n, dtype=wp.int32, device=device)
-    stats = _launch.empty(kernel_registration.MAD_STATS_SIZE, dtype=wp.float64, device=device)
+    # Radix-sort buffers, keys and a payload the sort needs and nobody reads, both ``2n`` long,
+    # and the statistics, in one allocation.
+    keys, payload, stats = _launch.carve_typed(
+        ((wp.float32, 2 * n), (wp.int32, 2 * n), (wp.float64, kernel_registration.MAD_STATS_SIZE)),
+        device,
+    )
     _launch.launch(
         kernel_registration.robust_residual_keys,
         dim=n,
