@@ -673,20 +673,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("boundary", "cross_pinch_gaps"): frozenset({"next_node"}),
     # The seed distances grow ring by ring in place, one launch a ring.
     ("reconstruction", "grow_seed_rings"): frozenset({"distance"}),
-    # The fan flood's round state: each fan's winding, votes, margin, staleness and visited,
-    # touched and chosen flags, the two frontiers and the state words (the cursor, the going flag,
-    # the first unvisited position and each round parity's largest margin, seed, frontier count
-    # and largest inert fan), all read and rewritten round after round.
-    ("reconstruction", "count_flood_votes"): frozenset({"votes"}),
-    ("reconstruction", "settle_flood_fans"): frozenset(
-        {"flipped", "stale", "votes", "margin", "state"}
-    ),
-    ("reconstruction", "pick_touched_seed"): frozenset({"state"}),
-    ("reconstruction", "pick_farthest_seed"): frozenset({"state"}),
-    # ``choose_flood_visits`` writes its touched, stale, frontier and state words, and
-    # ``spread_flood_visits`` all of its own, through ``touch_flood_neighbour``, out of this
-    # check's sight.
-    ("reconstruction", "choose_flood_visits"): frozenset({"visited", "chosen"}),
     # The flood's flips then reverse the fan slots in place.
     ("reconstruction", "flip_fan_windings"): frozenset({"tris"}),
     # The serial builder's half-edge records and its per-round marks are its working state across

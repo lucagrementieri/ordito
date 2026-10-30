@@ -703,22 +703,15 @@ def _orient_fans(
         )
 
     if wp.get_device(device).is_cpu:
-        # The CPU device runs a launch's threads one after another, so each round launches over
-        # its frontier exactly, read back every round (a host read there costs no synchronization).
-        words = kernel_reconstruction.FLOOD_SLOTS + 2 * kernel_reconstruction.FLOOD_SLOT_WORDS
-        rounds = 0
-        while True:
-            slot = rounds % 2
-            # Readback: the going flag and the frontier's count, the round's launch width.
-            values = read_values(state, 0, words)
-            if not values[kernel_reconstruction.FLOOD_GOING]:
-                break
-            count = kernel_reconstruction.FLOOD_SLOTS + kernel_reconstruction.FLOOD_COUNT
-            # One thread at least: the seed's visit is thread 0's.
-            flood_round(
-                slot, max(1, int(values[count + kernel_reconstruction.FLOOD_SLOT_WORDS * slot]))
-            )
-            rounds += 1
+        # The CPU device runs a launch's threads one after another, so every round runs in one
+        # thread, each round's lanes exactly its frontier's: no launch or readback a round.
+        _launch.launch(
+            kernel_reconstruction.flood_rounds_serial,
+            dim=1,
+            inputs=[rows, inclusive_counts, partners, codes, inert, far_order, fan_width],
+            outputs=[flipped, visited, touched, stale, votes, margin, chosen, frontier, state],
+            device=device,
+        )
     else:
         # CUDA runs the rounds as one recorded device loop until the going flag clears, every
         # launch ``_FLOOD_CUDA_LANES`` threads striding over the frontier, whose count the kernels
