@@ -2571,7 +2571,7 @@ def _solve_screened_poisson(
     span, blocks, fold = kernel_cg.cg_layout(n, od.linalg.CG_FOLD_MAX_BLOCKS)
     stride = blocks * span
     # The V-cycle's vectors and coarse operators ride in the solve's ``float32`` allocation.
-    work = _cg_workspace(stride, blocks, _PoissonMultigrid.widths(res), 0, device)
+    work = _cg_workspace(stride, blocks, [_PoissonMultigrid.footprint(res)], 0, device)
     r, u, w, p, s = work.vectors
     partials, atol_sq, dots, coefficients = (
         work.partials,
@@ -2582,7 +2582,7 @@ def _solve_screened_poisson(
     gamma_old, alpha_old, gamma_new, alpha_new = work.recurrence
     state = work.state
     screen_f = wp.float32(screen)
-    multigrid = _PoissonMultigrid(weights, screen, res, smoother, work.extra, device)
+    multigrid = _PoissonMultigrid(weights, screen, res, smoother, work.extra[0], device)
     # The V-cycle's first pre-smoothing sweep is pointwise, so the launches that produce the
     # residual write it too -- this one and every round's ``cg_update``, whose Jacobi apply with
     # ``smoother`` as the scaling is that sweep exactly.
@@ -2708,7 +2708,8 @@ class _PoissonMultigrid:
     neighbour, so it is not a launch of its own: the launch that writes a level's right-hand side
     writes that sweep into the level's ``start`` too (``poisson_mg_restrict`` on the coarse levels;
     on the finest, the caller -- the conjugate gradient's initial-residual and update kernels --
-    into ``start`` before each ``apply``). A cycle is then four launches a level.
+    into ``start`` before each ``apply``). A cycle is then four launches a level, which the CPU
+    device runs as one (``kernels/reconstruction.poisson_mg_vcycle_serial``).
     """
 
     def __init__(
@@ -2717,14 +2718,20 @@ class _PoissonMultigrid:
         screen: float,
         res: int,
         smoother: wp.array[wp.float32],
-        storage: list[wp.array[wp.float32]],
+        storage: wp.array[wp.float32],
         device: wp.DeviceLike,
     ) -> None:
-        """Build the hierarchy below ``res`` in ``storage``, the views ``widths(res)`` lists."""
+        """Build the hierarchy below ``res`` in ``storage``, cut into the views ``widths(res)``."""
         self._device = device
         self._screen = wp.float32(screen)
+        self._storage = storage
         self._levels: list[_GridLevel] = []
-        views = iter(storage)
+        widths = _PoissonMultigrid.widths(res)
+        starts = itertools.accumulate((_mg_stride(width) for width in widths), initial=0)
+        views = (
+            _launch.view(storage, start, start + width)
+            for start, width in zip(starts, widths, strict=False)
+        )
         lap = 1.0
         w, smooth = weights, smoother
         finest = True
@@ -2754,7 +2761,9 @@ class _PoissonMultigrid:
         """
         Return the widths of the vectors below a ``res`` grid, in the order ``__init__`` takes them.
 
-        Every vector is one buffer's view, so the whole hierarchy is one allocation (the caller's).
+        Every vector is a view of one buffer (``footprint(res)`` long), each starting on a multiple
+        of ``kernels/reconstruction.POISSON_MG_ALIGN``, so the whole hierarchy is one allocation
+        (the caller's), laid out as ``kernels/reconstruction.poisson_mg_level_layout`` reads it.
         """
         widths = [res**3] * 3
         while res > _MG_COARSEST:
@@ -2762,6 +2771,11 @@ class _PoissonMultigrid:
             widths += [res**3] * 2
             widths += [res**3] * 5
         return widths
+
+    @staticmethod
+    def footprint(res: int) -> int:
+        """Return the length of the one buffer the vectors of ``widths(res)`` are cut from."""
+        return sum(_mg_stride(width) for width in _PoissonMultigrid.widths(res))
 
     @property
     def start(self) -> wp.array[wp.float32]:
@@ -2847,7 +2861,32 @@ class _PoissonMultigrid:
 
     def apply(self, source: wp.array[wp.float32], destination: wp.array[wp.float32]) -> None:
         """``destination = M^-1 source`` by one V-cycle from zero; ``start`` must hold its sweep."""
+        if _MG_SWEEPS == 1 and wp.get_device(self._device).is_cpu:
+            finest = self._levels[0]
+            _launch.launch(
+                kernel_reconstruction.poisson_mg_vcycle_serial,
+                dim=1,
+                inputs=[
+                    finest.res,
+                    self._screen,
+                    _MG_COARSEST,
+                    _MG_COARSE_SWEEPS,
+                    finest.weights,
+                    finest.smoother,
+                    source,
+                    self._storage,
+                ],
+                outputs=[destination],
+                device=self._device,
+            )
+            return
         self._cycle(0, source, destination)
+
+
+def _mg_stride(width: int) -> int:
+    """``width`` rounded up to ``kernels/reconstruction.POISSON_MG_ALIGN``."""
+    align = kernel_reconstruction.POISSON_MG_ALIGN
+    return -(-width // align) * align
 
 
 # Levels below ``depth`` solved on the dense base lattice by the band backend, and the conjugate-
