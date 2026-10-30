@@ -513,8 +513,9 @@ def discrete_mean_curvature(
 
     # Per adjacent pair: the dihedral angle signed by convexity, and the shared edge's bounds for
     # the BVH -- one launch over the pairs, reading one set of face normals.
-    signed_angles = _launch.empty(m, dtype=wp.float32, device=device)
-    edge_lower, edge_upper = _launch.carve(wp.vec3, [m, m], device)
+    signed_angles, edge_lower, edge_upper = _launch.carve_typed(
+        ((wp.float32, m), (wp.vec3, m), (wp.vec3, m)), device
+    )
     _launch.launch(
         kernel_curvature.face_pair_dihedrals,
         dim=m,

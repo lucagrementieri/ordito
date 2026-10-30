@@ -527,6 +527,43 @@ def icp(
         ticket,
     ]
 
+    if wp.get_device(device).is_cpu:
+        # The CPU device runs a launch's threads and blocks one after another: the whole loop in
+        # one launch (``icp_point_to_point_serial``). A weightless round 0 stops it and leaves
+        # ``total`` the seed and the kept cost ``inf``, the gated early return's answer.
+        _launch.launch_tiled(
+            kernel_registration.icp_point_to_point_serial,
+            dim=[1],
+            inputs=[
+                int(max_iterations > 1),
+                blocks,
+                search_index.id,
+                target_vertices,
+                a,
+                mesh is None,
+                wp.float32(query_max),
+                wp.float32(max_distance if max_distance is not None else 0.0),
+                reflection,
+                translation,
+                scale,
+                stride,
+                wp.float64(threshold),
+                wp.int32(max_iterations),
+                _zero_length(wp.vec3, device),
+                closest,
+                weights,
+                acc,
+                fitted,
+                total,
+                state,
+                ticket,
+            ],
+            block_dim=1,
+            device=device,
+        )
+        _apply_transform(a, total, transformed)
+        return total, transformed, float(read_scalar(acc, int(kernel_registration.ACC_KEPT_COST)))
+
     def iterate() -> None:
         _launch.launch(
             kernel_registration.point_to_point_correspondence_pass,
@@ -953,7 +990,39 @@ def icp_point_to_plane(
         # positive). So those two configurations read the round counter, which a weightless round
         # does not advance, and return the seed's answer; the others never pay the read.
         replay = None
-        if max_iterations > 1:
+        if max_iterations > 1 and wp.get_device(device).is_cpu:
+            # The CPU device runs a launch's threads and blocks one after another: every later
+            # round in one launch (``icp_point_to_plane_rounds_serial``).
+            def rounds_serial() -> None:
+                _launch.launch_tiled(
+                    kernel_registration.icp_point_to_plane_rounds_serial,
+                    dim=[1],
+                    inputs=[
+                        blocks,
+                        *search_target,
+                        *search_options,
+                        normal_table,
+                        wp.float32(max_d),
+                        wp.int32(kind),
+                        wp.float32(scale_value if scale_value is not None else 0.0),
+                        stride,
+                        *round_inputs,
+                        current,
+                        closest,
+                        distance,
+                        triangle_id,
+                        acc,
+                        total,
+                        step,
+                        state,
+                        ticket,
+                    ],
+                    block_dim=1,
+                    device=device,
+                )
+
+            replay = rounds_serial
+        elif max_iterations > 1:
             replay = record_device_loop(
                 device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), iterate
             )

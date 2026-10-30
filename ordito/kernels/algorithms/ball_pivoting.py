@@ -454,8 +454,8 @@ def reset_wave_counters(counters: wp.array[wp.int32]) -> None:
     counters[CNT_PREV_SEED_FAILED] = counters[CNT_SEED_FAILED]
 
 
-@wp.kernel(enable_backward=False)
-def begin_wave(counters: wp.array[wp.int32]) -> None:
+@wp.func
+def begin_wave_step(counters: wp.array[wp.int32]) -> None:
     # The first wave of a batch's reset. Every later wave's is the tail of the ``end_wave`` before
     # it, which resets whenever the loop keeps going; this launch covers the start of a run and a
     # restart after the host grew the budget or compacted the front, where the previous
@@ -463,6 +463,12 @@ def begin_wave(counters: wp.array[wp.int32]) -> None:
     if counters[CNT_CONTINUE] == 0:
         return
     reset_wave_counters(counters)
+
+
+@wp.kernel(enable_backward=False)
+def begin_wave(counters: wp.array[wp.int32]) -> None:
+    # ``dim=1``: ``begin_wave_step``.
+    begin_wave_step(counters)
 
 
 @wp.func
@@ -522,8 +528,9 @@ def propose_triangle(
     out_c[slot] = c
 
 
-@wp.kernel(enable_backward=False)
-def seed_triangles(
+@wp.func
+def seed_triangle(
+    p: wp.int32,
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
     point_used: wp.array[wp.bool],
@@ -539,9 +546,9 @@ def seed_triangles(
     out_b: wp.array[wp.int32],
     out_c: wp.array[wp.int32],
 ) -> None:
+    # Point ``p`` of ``seed_triangles``.
     if counters[CNT_CONTINUE] == 0 or counters[CNT_SEEDING] == 0:
         return
-    p = wp.int32(wp.tid())
     if point_used[p]:
         return
     # The deferral below, remembered: ``seed_blocker[p]`` is the neighbour this point last yielded
@@ -683,6 +690,43 @@ def seed_triangles(
         wp.atomic_add(counters, CNT_SEED_FAILED, 1)
     if not truncated:
         seed_blocker[p] = SEED_EXHAUSTED
+
+
+@wp.kernel(enable_backward=False)
+def seed_triangles(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    point_used: wp.array[wp.bool],
+    seed_failed: wp.array[wp.bool],
+    seed_blocker: wp.array[wp.int32],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    clustering: wp.float32,
+    front_capacity: wp.int32,
+    counters: wp.array[wp.int32],
+    out_owner: wp.array[wp.uint64],
+    out_a: wp.array[wp.int32],
+    out_b: wp.array[wp.int32],
+    out_c: wp.array[wp.int32],
+) -> None:
+    # One thread a point: ``seed_triangle``.
+    seed_triangle(
+        wp.int32(wp.tid()),
+        points,
+        normals,
+        point_used,
+        seed_failed,
+        seed_blocker,
+        grid_id,
+        radius,
+        clustering,
+        front_capacity,
+        counters,
+        out_owner,
+        out_a,
+        out_b,
+        out_c,
+    )
 
 
 @wp.func
@@ -846,8 +890,10 @@ def pivot_candidate(
     return best_angle, best
 
 
-@wp.kernel(enable_backward=False)
-def pivot_front_edges(
+@wp.func
+def pivot_front_edges_block(
+    block: wp.int32,
+    lane: wp.int32,
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
     grid_id: wp.uint64,
@@ -890,7 +936,6 @@ def pivot_front_edges(
     # from.
     if counters[CNT_CONTINUE] == 0:
         return
-    block, lane = wp.tid()
     seeding = counters[CNT_SEEDING] != 0
     min_cluster_sq = (clustering * radius) * (clustering * radius)
     # Grid-stride over the front so the launch dimension is a fixed constant — a hard requirement
@@ -1013,6 +1058,57 @@ def pivot_front_edges(
             )
 
 
+@wp.kernel(enable_backward=False)
+def pivot_front_edges(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    bvh_id: wp.uint64,
+    overfull: wp.array[wp.int32],
+    radius: wp.float32,
+    clustering: wp.float32,
+    crease_cos: wp.float32,
+    point_used: wp.array[wp.bool],
+    boundary_degree: wp.array[wp.int32],
+    front_in: wp.array[wp.int32],
+    grid_stride: wp.int32,
+    front_capacity: wp.int32,
+    counters: wp.array[wp.int32],
+    edges: BpaEdgeTable,
+    out_owner: wp.array[wp.uint64],
+    front_out: wp.array[wp.int32],
+    out_a: wp.array[wp.int32],
+    out_b: wp.array[wp.int32],
+    out_c: wp.array[wp.int32],
+) -> None:
+    # ``pivot_front_edges_block``, one block per front edge, grid-strided.
+    block, lane = wp.tid()
+    pivot_front_edges_block(
+        block,
+        lane,
+        points,
+        normals,
+        grid_id,
+        bvh_id,
+        overfull,
+        radius,
+        clustering,
+        crease_cos,
+        point_used,
+        boundary_degree,
+        front_in,
+        grid_stride,
+        front_capacity,
+        counters,
+        edges,
+        out_owner,
+        front_out,
+        out_a,
+        out_b,
+        out_c,
+    )
+
+
 @wp.func
 def wave_salt(wave: wp.int32) -> wp.int32:
     # Per-wave permutation seed for ``proposal_key``. Knuth's multiplicative hash, so consecutive
@@ -1072,6 +1168,34 @@ def proposal_key(a: wp.int32, b: wp.int32, salt: wp.int32) -> wp.uint64:
     return hi * wp.uint64(4294967296) + lo * wp.uint64(2) + descending
 
 
+@wp.func
+def claim_triangle_vertices_from(
+    thread: wp.int32,
+    tri_a: wp.array[wp.int32],
+    tri_b: wp.array[wp.int32],
+    tri_c: wp.array[wp.int32],
+    grid_stride: wp.int32,
+    proposal_capacity: wp.int32,
+    counters: wp.array[wp.int32],
+    out_owner: wp.array[wp.uint64],
+) -> None:
+    # Thread ``thread`` of ``claim_triangle_vertices``.
+    # Priority claim (lowest ``proposal_key`` wins) on all three vertices of each proposed triangle.
+    if counters[CNT_CONTINUE] == 0:
+        return
+    # ``propose_triangle`` increments the counter past the capacity before dropping, so the count
+    # is not a safe bound on the list it indexes.
+    proposals = wp.min(counters[CNT_PROPOSAL], proposal_capacity)
+    # Same wave index, and so the same salt, as ``commit_triangles`` reads: ``end_wave`` is what
+    # advances ``CNT_WAVE`` and it runs after both.
+    salt = wave_salt(counters[CNT_WAVE])
+    for t in range(thread, proposals, grid_stride):
+        key = proposal_key(tri_a[t], tri_b[t], salt)
+        wp.atomic_min(out_owner, tri_a[t], key)
+        wp.atomic_min(out_owner, tri_b[t], key)
+        wp.atomic_min(out_owner, tri_c[t], key)
+
+
 @wp.kernel(enable_backward=False)
 def claim_triangle_vertices(
     tri_a: wp.array[wp.int32],
@@ -1082,20 +1206,10 @@ def claim_triangle_vertices(
     counters: wp.array[wp.int32],
     out_owner: wp.array[wp.uint64],
 ) -> None:
-    # Priority claim (lowest ``proposal_key`` wins) on all three vertices of each proposed triangle.
-    if counters[CNT_CONTINUE] == 0:
-        return
-    # ``propose_triangle`` increments the counter past the capacity before dropping, so the count
-    # is not a safe bound on the list it indexes.
-    proposals = wp.min(counters[CNT_PROPOSAL], proposal_capacity)
-    # Same wave index, and so the same salt, as ``commit_triangles`` reads: ``end_wave`` is what
-    # advances ``CNT_WAVE`` and it runs after both.
-    salt = wave_salt(counters[CNT_WAVE])
-    for t in range(wp.int32(wp.tid()), proposals, grid_stride):
-        key = proposal_key(tri_a[t], tri_b[t], salt)
-        wp.atomic_min(out_owner, tri_a[t], key)
-        wp.atomic_min(out_owner, tri_b[t], key)
-        wp.atomic_min(out_owner, tri_c[t], key)
+    # ``claim_triangle_vertices_from``, one thread a grid-stride slot.
+    claim_triangle_vertices_from(
+        wp.int32(wp.tid()), tri_a, tri_b, tri_c, grid_stride, proposal_capacity, counters, out_owner
+    )
 
 
 @wp.func
@@ -1130,8 +1244,9 @@ def register_face_edge(
         wp.atomic_add(boundary_degree, v, -1)
 
 
-@wp.kernel(enable_backward=False)
-def commit_triangles(
+@wp.func
+def commit_triangles_from(
+    thread: wp.int32,
     tri_a: wp.array[wp.int32],
     tri_b: wp.array[wp.int32],
     tri_c: wp.array[wp.int32],
@@ -1146,6 +1261,7 @@ def commit_triangles(
     front_out: wp.array[wp.int32],
     out_faces: wp.array[wp.int32],
 ) -> None:
+    # Thread ``thread`` of ``commit_triangles``.
     # The single mutator of the persistent state: a proposal that owns all three of its vertices
     # this wave becomes a triangle, and the same thread folds it into the face buffer, the used
     # mask, the edge table, the boundary degrees and the outgoing front.
@@ -1171,7 +1287,7 @@ def commit_triangles(
         counters[CNT_GROW] = 1
         return
     salt = wave_salt(counters[CNT_WAVE])
-    for t in range(wp.int32(wp.tid()), proposals, grid_stride):
+    for t in range(thread, proposals, grid_stride):
         a = tri_a[t]
         b = tri_b[t]
         c = tri_c[t]
@@ -1192,7 +1308,42 @@ def commit_triangles(
 
 
 @wp.kernel(enable_backward=False)
-def end_wave(max_waves: wp.int32, counters: wp.array[wp.int32]) -> None:
+def commit_triangles(
+    tri_a: wp.array[wp.int32],
+    tri_b: wp.array[wp.int32],
+    tri_c: wp.array[wp.int32],
+    owner: wp.array[wp.uint64],
+    max_faces: wp.int32,
+    grid_stride: wp.int32,
+    point_used: wp.array[wp.bool],
+    boundary_degree: wp.array[wp.int32],
+    front_capacity: wp.int32,
+    counters: wp.array[wp.int32],
+    edges: BpaEdgeTable,
+    front_out: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # ``commit_triangles_from``, one thread a grid-stride slot.
+    commit_triangles_from(
+        wp.int32(wp.tid()),
+        tri_a,
+        tri_b,
+        tri_c,
+        owner,
+        max_faces,
+        grid_stride,
+        point_used,
+        boundary_degree,
+        front_capacity,
+        counters,
+        edges,
+        front_out,
+        out_faces,
+    )
+
+
+@wp.func
+def end_wave_step(max_waves: wp.int32, counters: wp.array[wp.int32]) -> None:
     # Advance the device-resident wave state and decide whether the loop keeps going.
     #
     # A wave either pivots the current front or seeds orphans; seeding runs whenever the previous
@@ -1238,6 +1389,127 @@ def end_wave(max_waves: wp.int32, counters: wp.array[wp.int32]) -> None:
     # host's growth and compaction read; the batch that resumes it opens with ``begin_wave``.
     if counters[CNT_CONTINUE] != 0:
         reset_wave_counters(counters)
+
+
+@wp.kernel(enable_backward=False)
+def end_wave(max_waves: wp.int32, counters: wp.array[wp.int32]) -> None:
+    # ``dim=1``: ``end_wave_step``.
+    end_wave_step(max_waves, counters)
+
+
+@wp.func
+def wave_serial(
+    n: wp.int32,
+    front_grid: wp.int32,
+    claim_grid: wp.int32,
+    max_waves: wp.int32,
+    max_faces: wp.int32,
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    point_used: wp.array[wp.bool],
+    seed_failed: wp.array[wp.bool],
+    seed_blocker: wp.array[wp.int32],
+    grid_id: wp.uint64,
+    bvh_id: wp.uint64,
+    overfull: wp.array[wp.int32],
+    radius: wp.float32,
+    clustering: wp.float32,
+    crease_cos: wp.float32,
+    boundary_degree: wp.array[wp.int32],
+    front_in: wp.array[wp.int32],
+    front_capacity: wp.int32,
+    counters: wp.array[wp.int32],
+    edges: BpaEdgeTable,
+    owner: wp.array[wp.uint64],
+    front_out: wp.array[wp.int32],
+    tri_a: wp.array[wp.int32],
+    tri_b: wp.array[wp.int32],
+    tri_c: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+) -> None:
+    # One wave as ``reconstruction._bpa_wave`` launches it -- ``seed_triangles``,
+    # ``pivot_front_edges``, ``claim_triangle_vertices``, ``commit_triangles``, ``end_wave`` --
+    # every thread and block of each in launch order, on one lane.
+    for p in range(n):
+        seed_triangle(
+            p, points, normals, point_used, seed_failed, seed_blocker, grid_id, radius,
+            clustering, front_capacity, counters, owner, tri_a, tri_b, tri_c,
+        )  # fmt: skip
+    for block in range(front_grid):
+        pivot_front_edges_block(
+            block, 0, points, normals, grid_id, bvh_id, overfull, radius, clustering, crease_cos,
+            point_used, boundary_degree, front_in, front_grid, front_capacity, counters, edges,
+            owner, front_out, tri_a, tri_b, tri_c,
+        )  # fmt: skip
+    for thread in range(claim_grid):
+        claim_triangle_vertices_from(
+            thread, tri_a, tri_b, tri_c, claim_grid, front_capacity, counters, owner
+        )
+    for thread in range(claim_grid):
+        commit_triangles_from(
+            thread, tri_a, tri_b, tri_c, owner, max_faces, claim_grid, point_used,
+            boundary_degree, front_capacity, counters, edges, front_out, faces,
+        )  # fmt: skip
+    end_wave_step(max_waves, counters)
+
+
+@wp.kernel(enable_backward=False)
+def waves_serial(
+    waves: wp.int32,
+    begin: wp.int32,
+    n: wp.int32,
+    front_grid: wp.int32,
+    claim_grid: wp.int32,
+    max_waves: wp.int32,
+    max_faces: wp.int32,
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    seed_failed: wp.array[wp.bool],
+    seed_blocker: wp.array[wp.int32],
+    grid_id: wp.uint64,
+    bvh_id: wp.uint64,
+    overfull: wp.array[wp.int32],
+    radius: wp.float32,
+    clustering: wp.float32,
+    crease_cos: wp.float32,
+    front_capacity: wp.int32,
+    point_used: wp.array[wp.bool],
+    boundary_degree: wp.array[wp.int32],
+    counters: wp.array[wp.int32],
+    edges: BpaEdgeTable,
+    owner: wp.array[wp.uint64],
+    front_a: wp.array[wp.int32],
+    front_b: wp.array[wp.int32],
+    tri_a: wp.array[wp.int32],
+    tri_b: wp.array[wp.int32],
+    tri_c: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # ``waves`` waves on the CPU device in one launch of one one-lane block, ``begin_wave`` first
+    # under ``begin``: that device runs a launch's threads and blocks one after another, so this
+    # is the launched batch to the bit. Wave ``k`` reads ``front_a`` and writes ``front_b`` when
+    # ``k`` is even and the other way round when odd, the host's swap after each launched wave.
+    # Once ``CNT_CONTINUE`` clears every launched kernel returns at its first test, so the rest of
+    # the batch is skipped.
+    if begin != 0:
+        begin_wave_step(counters)
+    for wave in range(waves):
+        if counters[CNT_CONTINUE] == 0:
+            break
+        if wave % 2 == 0:
+            wave_serial(
+                n, front_grid, claim_grid, max_waves, max_faces, points, normals, point_used,
+                seed_failed, seed_blocker, grid_id, bvh_id, overfull, radius, clustering,
+                crease_cos, boundary_degree, front_a, front_capacity, counters, edges, owner,
+                front_b, tri_a, tri_b, tri_c, out_faces,
+            )  # fmt: skip
+        else:
+            wave_serial(
+                n, front_grid, claim_grid, max_waves, max_faces, points, normals, point_used,
+                seed_failed, seed_blocker, grid_id, bvh_id, overfull, radius, clustering,
+                crease_cos, boundary_degree, front_b, front_capacity, counters, edges, owner,
+                front_a, tri_a, tri_b, tri_c, out_faces,
+            )  # fmt: skip
 
 
 @wp.kernel(enable_backward=False)

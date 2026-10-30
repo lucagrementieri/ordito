@@ -213,6 +213,14 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "the boundary flags form each mate from the edge-key sort in their own launch; the public "
         "halfedge_mates would store the table in a launch of its own first"
     ),
+    ("halfedge", "adjacency._sorted_face_edge_buffers"): (
+        "the boundary detection borrows the edge-key sort's free upper halves for its mates, flags "
+        "and successor tails; sorted_face_edge_keys returns only the sorted halves"
+    ),
+    ("adjacency", "halfedge._sorted_pairing"): (
+        "the face component forest takes the edge-key sort's free upper halves for the mates and "
+        "the union-find parents; halfedge_mates returns a table of its own, as a public return must"
+    ),
     ("combine", "adjacency._face_component_forest"): (
         "split_with_offsets sorts the component labels, so its flatten writes them straight into "
         "the radix sort's double-width buffers; face_connected_component_labels would store them "
@@ -509,10 +517,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # condition, round and scale words, read and rewritten every round; the solution is corrected
     # (``backward_finalize``'s ``refined``) and shifted (``null_space_shift``) in place. A panel's
     # tiled factor stages its diagonal block in ``scratch`` and flags a bad pivot in ``status``.
-    # The supernodal elimination tree's union-find forest: every round of
-    # ``elimination_tree_hook`` finds roots in it, splits its paths and hooks roots onto the
-    # round's supernodes, so it is read and written across launches; the tree is ``out_parent``.
-    ("cholesky", "elimination_tree_hook"): frozenset({"ancestor"}),
     # ``remove_non_manifold_faces(method="meshlab")``'s round state, rewritten in place by every
     # commit: each face's fate, the live face count of each crowded edge, and the kept mask the
     # survivors are compacted from.
@@ -521,15 +525,11 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # composed one on exit, as in ``icp``'s other loop; ``closest`` holds each landmark's match
     # between the passes of one round.
     ("registration", "landmark_icp"): frozenset({"closest", "total"}),
-    ("cholesky", "extend_add"): frozenset({"fronts"}),
     ("cholesky", "factor_panel_tiled"): frozenset({"fronts", "scratch", "status"}),
-    ("cholesky", "mark_components_and_seed_blocks"): frozenset({"blocks"}),
     ("cholesky", "update_panel"): frozenset({"fronts", "blocks"}),
     ("cholesky", "refine_start"): frozenset({"state", "rhs_scale"}),
     ("cholesky", "residual_test"): frozenset({"state"}),
-    ("cholesky", "refine_advance"): frozenset({"state"}),
     ("cholesky", "backward_finalize"): frozenset({"refined"}),
-    ("cholesky", "null_space_shift"): frozenset({"solution"}),
     # The dissection's per-depth state, carried across its depths in place: the partial moments'
     # per-segment tickets and the crossing counts, each cleared by the block that reads it last,
     # and the depth's table and node / depth words its last launch clears and advances. The
@@ -542,6 +542,11 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("cholesky", "breadth_first_advance"): frozenset({"state"}),
     # in-place
     ("array", "sort_rows_insertion"): frozenset({"data"}),
+    # The CPU one-launch CSR placements count each position's run into ``inclusive``, sort
+    # scratch in the payload's upper half, then read it back as the parallel placement reads its
+    # scan.
+    ("array", "csr_from_sorted_keys_serial"): frozenset({"inclusive"}),
+    ("array", "csr_from_coo_keys_serial"): frozenset({"inclusive"}),
     # ``neighbors`` is sorted in place: this kernel only orders the two slots each vertex already
     # holds, so it is both the input and the result and ``out_`` would read as write-only.
     ("combine", "offset_packed_faces"): frozenset({"faces"}),
@@ -566,6 +571,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # range flag in the one entry past the forest.
     ("graph", "ecl_init_parent_edges_checked"): frozenset({"parents"}),
     ("graph", "ecl_hook_parity_checked"): frozenset({"words"}),
+    # ``shortest_path_envelope_serial`` relaxes ``labels`` in place across its passes, ping-ponging
+    # through ``scratch``, whose contents are meaningless after the launch.
+    ("graph", "shortest_path_envelope_serial"): frozenset({"labels", "scratch"}),
     # ``signed_distance_level_set``'s winding lattice: ``column_suffix_sums`` turns each column's
     # per-node crossing deltas into suffix sums where they lie; ``take_exact_winding`` and
     # ``warp_winding_sign`` overwrite the lattice winding number of the nodes in doubt, and the
@@ -577,10 +585,11 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``previous`` is a settle monitor's snapshot of the field at the last check, compared against
     # and then advanced to the current one: loop state carried across launches, not the answer.
     ("algorithms.conjugate_gradient", "cg_settle_change"): frozenset({"previous"}),
-    # A settle monitor's verdict reads and advances its own state word (the last reached count, the
-    # checks so far) and may clear the round loop's condition in ``state``, which the solve's own
-    # launches also read and write: both are the loop's persistent state, not the answer.
-    ("algorithms.conjugate_gradient", "cg_settle_decide"): frozenset({"settle", "state"}),
+    # The CPU device's one-launch solve runs the settle monitor itself: its snapshot of the field
+    # and its state words are the loop's persistent state, carried across solves, not the answer.
+    ("algorithms.conjugate_gradient", "cg_solve_serial"): frozenset(
+        {"settle_previous", "settle_state"}
+    ),
     # A one-launch solve's working vectors -- the residual, the search direction and their
     # images, the narrowed polynomial iterates -- are caller-allocated scratch, not the answer.
     ("algorithms.conjugate_gradient", "cg_one_block"): frozenset({"scratch", "narrow"}),
@@ -595,16 +604,13 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``robust_laplacian``'s exact rounding check keeps each face's terms between the group sum's
     # two passes: scratch the first pass writes and the second reads, not an output.
     ("laplacian", "intrinsic_rounding_rows"): frozenset({"terms"}),
-    # ``quadric_decimate``'s provenance column, folded one pass at a time: the array is the previous
-    # pass's answer *and* this pass's, so it is in place and ``out_`` would read as write-only.
-    ("remesh", "compact_decimation_pass"): frozenset({"index"}),
-    # ``isotropic_remesh``'s fused topology fill: ``cursor`` is the spent count buffer counting each
-    # CSR row's free slots down, ``graph.scatter_neighbor_lists``' argument of that name.
-    ("remesh", "fill_edge_topology"): frozenset({"cursor"}),
-    # The collapse pass's candidate list, retired in place between its independent-set rounds:
-    # the claim drops a candidate a committed neighbour locked, the commit the committed one.
-    ("remesh", "claim_collapse_key"): frozenset({"survivor"}),
-    ("remesh", "commit_collapses"): frozenset({"survivor"}),
+    # ``quadric_pass_head`` (the CPU's one-launch grouping) clears the deterministic setting's hub
+    # count as ``count_pass_edges_exact`` does: per-pass scratch the exact gather appends to.
+    ("remesh", "quadric_pass_head"): frozenset({"hub_count"}),
+    # ``collapse_pass`` (the CPU's one-launch collapse pass) scans the run starts in place in the
+    # sort's payload half and re-arms the claim table between its rounds, both of which the
+    # multi-launch pass does from the host; the answers are its ``out_`` mesh and sort keys.
+    ("remesh", "collapse_pass"): frozenset({"claim", "ranks"}),
     # ``intrinsic_delaunay``'s halfedge-twin flip engine mutates the mesh it was handed rather than
     # producing a fresh one each round: ``edge_lengths`` is the caller's own metric, read pre-flip
     # and overwritten in the same launch, and ``twin`` is the incrementally-maintained twin table
@@ -693,14 +699,14 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ),
     ("algorithms.poisson_octree", "octree_upsample_coarse_data"): frozenset({"normals"}),
     # The stored cell and node bricks, marked finest first (a depth keeps what its next depth
-    # needs), each pass adding its bit to the marks; a depth's right-hand sides gathering the next
-    # depth's, and a depth's field prolonged from the one before it, in the one buffer every
-    # depth's stored nodes share.
+    # needs), each pass adding its bit to the marks; and a depth's right-hand sides gathering the
+    # next depth's, in the one buffer every depth's stored nodes share. (``octree_prolong`` writes
+    # a depth's field from the one before it in that buffer through ``octree_prolong_at``, which
+    # check 13 does not follow.)
     ("algorithms.poisson_octree", "octree_flag_cells"): frozenset({"marks"}),
     ("algorithms.poisson_octree", "octree_carried_cells"): frozenset({"marks"}),
     ("algorithms.poisson_octree", "octree_node_bricks"): frozenset({"marks"}),
     ("algorithms.poisson_octree", "octree_restrict_add"): frozenset({"b"}),
-    ("algorithms.poisson_octree", "octree_prolong"): frozenset({"fields"}),
     # The extraction's per-depth tables, each depth's launch reading the finer depth's entries
     # (corner sources) or adding to one buffer every depth shares (pairs); counts written by a
     # kernel's count pass and read back by its emit pass; a leaf's segments consumed by its own
@@ -710,24 +716,13 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.poisson_octree", "cell_segments"): frozenset({"offsets"}),
     ("algorithms.poisson_octree", "cell_loops"): frozenset({"segments"}),
     ("algorithms.poisson_octree", "triangulate_loops"): frozenset({"scratch", "choices"}),
-    # ``edges`` is absent deliberately: this kernel mutates the table only through
-    # ``register_face_edge``, and check 13 does not follow writes into a called ``@wp.func``.
-    ("algorithms.ball_pivoting", "commit_triangles"): frozenset({"counters", "point_used"}),
-    ("algorithms.ball_pivoting", "end_wave"): frozenset({"counters"}),
-    # ``seed_failed`` is persistent per-point state, carried across every seeding wave for the
-    # run's whole lifetime -- the ``point_used`` case one level up, not a fresh per-call answer.
-    # ``seed_blocker`` is the same kind: the orphan each point last deferred to, a per-run cache.
-    ("algorithms.ball_pivoting", "seed_triangles"): frozenset(
-        {"counters", "seed_failed", "seed_blocker"}
-    ),
-    # ``edges`` is the open-addressing edge table (``BpaEdgeTable``): persistent state carried
-    # across every wave, mutated in place by the pivot and commit kernels and read by both. It is
-    # the ``front_out`` case one level up -- neither an input nor the answer -- so it keeps the name
-    # of what it holds. Check 13 sees writes through its fields since ``_subscript_base`` resolves
-    # ``edges.count[slot] = 1`` to ``edges``.
-    ("algorithms.ball_pivoting", "pivot_front_edges"): frozenset(
-        {"counters", "edges", "front_out"}
-    ),
+    # The wave kernels (``seed_triangles``, ``pivot_front_edges``, ``claim_triangle_vertices``,
+    # ``commit_triangles``, ``end_wave``) are absent: each is a thin wrapper of the ``@wp.func``
+    # the CPU device's ``waves_serial`` also runs, and check 13 does not follow writes into a
+    # called function. What they mutate in place is persistent per-run state: ``counters``,
+    # ``point_used``, ``seed_failed`` / ``seed_blocker`` (per-point caches), the edge table and
+    # the outgoing front.
+    ("algorithms.ball_pivoting", "pivot_front_edges"): frozenset({"front_out"}),
     ("algorithms.ball_pivoting", "rehash_edges"): frozenset(
         {"new_cand", "new_count", "new_opp", "new_src", "new_state", "new_tgt"}
     ),
@@ -739,17 +734,14 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # dependent corner picks, each sweep reading the earlier slots. Flip-Flop's per-face round state
     # -- ``changed``, ``dirty``, ``lock``, ``group`` -- is cleared and set by different kernels of
     # one round, and ``state`` is the shared loop word. ``seed_points`` and ``assign_points`` bid
-    # into ``best`` and flag through ``commit_beyond``, which check 13 does not follow.
+    # into ``best`` and flag through ``commit_beyond``, which check 13 does not follow, and
+    # ``split_faces`` rewrites them through ``split_face_at``, which the CPU device's
+    # ``growth_round_serial`` shares; that kernel's ``offsets`` is the split's scan, written in
+    # place where the launched round's ``array_scan`` writes it.
     ("algorithms.convex_hull", "pick_tetrahedron_corner"): frozenset({"keys"}),
+    ("algorithms.convex_hull", "growth_round_serial"): frozenset({"offsets"}),
     ("algorithms.convex_hull", "start_tetrahedron"): frozenset({"tri", "adj", "best", "counters"}),
-    ("algorithms.convex_hull", "split_faces"): frozenset(
-        {"tri", "adj", "best", "child", "counters", "dirty"}
-    ),
     ("repair", "emit_degree3_replacement"): frozenset({"cursor"}),
-    # The flip loop's incremental state, carried across rounds and kept current by the commit that
-    # rewrites the faces: the row <-> halfedge maps and the tracked valences. Neither an input nor
-    # the answer (the answer is the face buffer), so they keep the names of what they hold.
-    ("remesh", "commit_flips"): frozenset({"halfedge_row", "row_halfedges", "valence"}),
     ("repair", "emit_straighten_faces"): frozenset({"cursor"}),
     # ``counter`` and ``overflow`` are the work list the capped first pass hands the tiled second
     # one -- scratch, not the answer.
@@ -817,9 +809,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # The shrink runs each seeded sphere to convergence in place: ``radii`` / ``centers`` hold the
     # seed on entry and the answer on exit.
     ("visibility", "shrink_tangent_spheres"): frozenset({"radii", "centers"}),
-    # A multi-round vertex dilation grows one hop buffer in place, a launch per round: each round
-    # reads the earlier rounds' values and lowers the newly reached ones.
-    ("selection", "dilate_vertex_hops"): frozenset({"hops"}),
 }
 
 

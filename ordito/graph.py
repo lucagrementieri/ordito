@@ -960,7 +960,10 @@ def _ranked_successor_cycles(
     hops, rounds = kernel_graph.pointer_jump_schedule(max_length)
     # The ranking's windows and, past one round, their ping-pong partner, and per cycle start
     # ``(1, length)``, accumulated by the last round and scanned in place: one allocation.
-    pair_size = node_count if rounds == 1 else 2 * node_count
+    # The CPU device runs every round in one thread (``closed_cycle_windows_serial``), the second
+    # half of the pair its walk scratch.
+    serial = not wp.get_device(device).is_cuda
+    pair_size = node_count if rounds == 1 and not serial else 2 * node_count
     flagged = cycle_counts
     if cycle_counts is None:
         pair, cycle_counts = _launch.carve_typed(
@@ -970,6 +973,70 @@ def _ranked_successor_cycles(
     else:
         pair = _launch.empty(pair_size, dtype=wp.vec3i, device=device)
         cycle_counts = _launch.view(cycle_counts, 0, node_count)
+    windows = _launch.view(pair, 0, node_count)
+    if serial:
+        _launch.launch(
+            kernel_graph.closed_cycle_windows_serial,
+            dim=1,
+            inputs=[
+                tails,
+                next_node,
+                mode,
+                windows,
+                _launch.view(pair, node_count, 2 * node_count),
+            ],
+            outputs=[cycle_counts],
+            device=device,
+        )
+    else:
+        windows = _closed_cycle_rounds(
+            tails, next_node, mode, pair, cycle_counts, node_count, hops, rounds
+        )
+        _launch.array_scan(cycle_counts, out_array=cycle_counts, inclusive=True)
+    # Sizes both outputs: the cycle count and the ranked node count, in one read, with the
+    # caller's flag beside them when it has one.
+    if flagged is None:
+        total = read_scalar(cycle_counts)
+    else:
+        total, flag = read_values(flagged, node_count - 1, 2)
+        if on_flag is not None and int(flag[0]) != 0:
+            on_flag()
+    n_cycles, n_ranked = int(total[0]), int(total[1])
+    if n_cycles == 0:
+        return _launch.empty_packed(wp.int32, device)
+    # Both outputs in one allocation, the offsets after the nodes. Every offset, the leading zero
+    # and the total included, is written by the cycle it bounds.
+    allocate = _launch.zeros if zero_unwritten else _launch.empty
+    packed = allocate(n_ranked + n_cycles + 1, dtype=wp.int32, device=device)
+    flat = _launch.view(packed, 0, n_ranked)
+    offsets = _launch.view(packed, n_ranked, n_ranked + n_cycles + 1)
+    _launch.launch(
+        kernel_graph.scatter_closed_cycles,
+        dim=m,
+        inputs=[tails, windows, cycle_counts, mode, node_values, flat, offsets],
+        device=device,
+    )
+    return flat, offsets
+
+
+def _closed_cycle_rounds(
+    tails: wp.array[wp.int32],
+    next_node: wp.array[wp.int32],
+    mode: int,
+    pair: wp.array[wp.vec3i],
+    cycle_counts: wp.array[wp.vec2i],
+    node_count: int,
+    hops: int,
+    rounds: int,
+) -> wp.array[wp.vec3i]:
+    """
+    Run ``_ranked_successor_cycles``' pointer-jumping rounds, returning the finished windows.
+
+    ``pair`` holds the windows and, past one round, their ping-pong partner; the last round
+    accumulates ``cycle_counts``.
+    """
+    device = tails.device
+    m = tails.size
     windows = _launch.view(pair, 0, node_count)
     _launch.launch(
         kernel_graph.closed_cycle_windows,
@@ -997,31 +1064,7 @@ def _ranked_successor_cycles(
             )
             windows, spare = spare, windows
             window *= hops
-    _launch.array_scan(cycle_counts, out_array=cycle_counts, inclusive=True)
-    # Sizes both outputs: the cycle count and the ranked node count, in one read, with the
-    # caller's flag beside them when it has one.
-    if flagged is None:
-        total = read_scalar(cycle_counts)
-    else:
-        total, flag = read_values(flagged, node_count - 1, 2)
-        if on_flag is not None and int(flag[0]) != 0:
-            on_flag()
-    n_cycles, n_ranked = int(total[0]), int(total[1])
-    if n_cycles == 0:
-        return _launch.empty_packed(wp.int32, device)
-    # Both outputs in one allocation, the offsets after the nodes. Every offset, the leading zero
-    # and the total included, is written by the cycle it bounds.
-    allocate = _launch.zeros if zero_unwritten else _launch.empty
-    packed = allocate(n_ranked + n_cycles + 1, dtype=wp.int32, device=device)
-    flat = _launch.view(packed, 0, n_ranked)
-    offsets = _launch.view(packed, n_ranked, n_ranked + n_cycles + 1)
-    _launch.launch(
-        kernel_graph.scatter_closed_cycles,
-        dim=m,
-        inputs=[tails, windows, cycle_counts, mode, node_values, flat, offsets],
-        device=device,
-    )
-    return flat, offsets
+    return windows
 
 
 def shortest_path_envelope(
@@ -1161,31 +1204,19 @@ def shortest_path_envelope(
 
     max_pass_count = max_iterations or node_count
     relaxed = _launch.empty(node_count, dtype=wp.float32, device=device)
+    if not device.is_cuda:
+        # The CPU device runs a launch's threads one after another, so a launch and a progress
+        # readback a pass buy nothing: every pass runs in one single-thread launch, bit for bit the
+        # per-pass loop's labels (``kernels/graph.shortest_path_envelope_serial``).
+        _launch.launch(
+            kernel_graph.shortest_path_envelope_serial,
+            dim=1,
+            inputs=[offsets, columns, weights, max_pass_count, labels, relaxed],
+            device=device,
+        )
+        return labels
     # The shared round-loop state word (``kernels/array.py``): the relaxation pass raises
     # ``LOOP_PROGRESS`` and ``array.loop_advance`` publishes the condition against the pass cap.
-    # Allocated inside each branch because the two seed it differently -- the host loop tests
-    # ``LOOP_PROGRESS`` itself and needs no condition, while the captured loop must start with a
-    # non-zero one. Allocating zeroed above and re-seeding below would be an allocation plus a
-    # whole second upload of the same twelve bytes.
-    if not device.is_cuda:
-        state = _launch.zeros(kernel_array.LOOP_ADVANCE_STATE_SIZE, dtype=wp.int32, device=device)
-        # No conditional-graph capture on the CPU backend, so the pass loop runs on the host;
-        # the plain per-pass loop below, with its one 4-byte readback per pass, is already the
-        # cheapest thing a CPU launch can do here.
-        progress = odt.as_dense(state[kernel_array.LOOP_PROGRESS_VIEW])
-        for _ in range(max_pass_count):
-            _launch.zero_(progress)
-            _launch.launch(
-                kernel_graph.shortest_path_envelope_pass,
-                dim=node_count,
-                inputs=[offsets, columns, weights, labels, relaxed, state],
-                device=device,
-            )
-            labels, relaxed = relaxed, labels
-            if int(read_scalar(progress, 0)) == 0:
-                break
-        return labels
-
     # CUDA: the whole pass loop runs on-device via ``wp.capture_while``, so the
     # only host sync in the common case is none at all -- each pass's convergence check and
     # iteration cap are folded into ``array.loop_advance``, the package's shared round-closing

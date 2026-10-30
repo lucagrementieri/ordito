@@ -19,9 +19,11 @@ import warp as wp
 
 from ordito.constants import INT64_MAX, TOLERANCE_ZERO_CONSTANT
 from ordito.kernels.array import (
+    LOOP_CONDITION,
     LOOP_PROGRESS,
     LOOP_ROUND,
     OverloadTable,
+    advance_round_loop,
     append_slot,
     binary_search_index,
     cross2,
@@ -596,6 +598,30 @@ def lower_front_label(
         out_state[LOOP_PROGRESS] = 1
 
 
+@wp.func
+def fast_marching_face(
+    f: wp.int32,
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    labels: wp.array[wp.float32],
+    out_labels: wp.array[wp.float32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # One thread of ``fast_marching_pass``: face ``f``'s offers to its three corners.
+    i0 = faces[3 * f]
+    i1 = faces[3 * f + 1]
+    i2 = faces[3 * f + 2]
+    p0 = vertices[i0]
+    p1 = vertices[i1]
+    p2 = vertices[i2]
+    v0 = labels[i0]
+    v1 = labels[i1]
+    v2 = labels[i2]
+    lower_front_label(labels, i0, front_corner_label(p1, p2, p0, v1, v2, v0), out_labels, out_state)
+    lower_front_label(labels, i1, front_corner_label(p2, p0, p1, v2, v0, v1), out_labels, out_state)
+    lower_front_label(labels, i2, front_corner_label(p0, p1, p2, v0, v1, v2), out_labels, out_state)
+
+
 @wp.kernel
 def fast_marching_pass(
     vertices: wp.array[wp.vec3],
@@ -620,19 +646,29 @@ def fast_marching_pass(
     # Declined (2026-10-30): choosing the direction here by the round's parity, so a captured
     # body is one pass rather than two: 0.97-1.07x the copy-back it replaced on CUDA
     # (``icosphere(4)`` to ``(7)``), where two passes a body ran 0.75-0.82x.
-    f = wp.int32(wp.tid())
-    i0 = faces[3 * f]
-    i1 = faces[3 * f + 1]
-    i2 = faces[3 * f + 2]
-    p0 = vertices[i0]
-    p1 = vertices[i1]
-    p2 = vertices[i2]
-    v0 = labels[i0]
-    v1 = labels[i1]
-    v2 = labels[i2]
-    lower_front_label(labels, i0, front_corner_label(p1, p2, p0, v1, v2, v0), out_labels, out_state)
-    lower_front_label(labels, i1, front_corner_label(p2, p0, p1, v2, v0, v1), out_labels, out_state)
-    lower_front_label(labels, i2, front_corner_label(p0, p1, p2, v0, v1, v2), out_labels, out_state)
+    fast_marching_face(wp.int32(wp.tid()), vertices, faces, labels, out_labels, out_state)
+
+
+@wp.kernel
+def fast_marching_rounds_serial(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_rounds: wp.int32,
+    labels: wp.array[wp.float32],
+    relaxed: wp.array[wp.float32],
+    state: wp.array[wp.int32],
+) -> None:
+    # dim=1, the CPU device's round loop: each round's two ``fast_marching_pass`` launches and its
+    # ``loop_advance``, as one thread's loops in the order a device running each launch's threads
+    # one after another runs them, until the state's condition stops the loop -- so ``labels``
+    # (the answer) and ``relaxed`` come out as the launched loop leaves them.
+    n_faces = faces.shape[0] // 3
+    while state[LOOP_CONDITION] != 0:
+        for f in range(n_faces):
+            fast_marching_face(f, vertices, faces, labels, relaxed, state)
+        for f in range(n_faces):
+            fast_marching_face(f, vertices, faces, relaxed, labels, state)
+        advance_round_loop(max_rounds, state)
 
 
 # The unfolding front (``method="meshlab"``) runs in ``float64``, as the reference does: its tests
@@ -1058,8 +1094,9 @@ def queue_source_faces(
         )
 
 
-@wp.kernel
-def unfolding_front_pass(
+@wp.func
+def unfolding_front_thread(
+    t: wp.int32,
     faces: wp.array[wp.int32],
     lengths: wp.array[wp.vec3d],
     cosines: wp.array[wp.vec3d],
@@ -1081,8 +1118,8 @@ def unfolding_front_pass(
     # ``lanes`` items a queued face, so the launch has one width every round (a captured loop
     # replays it) while its work follows the front. A vertex this round lowers for the first time
     # (its stamp swapped to the round) joins the round's lowered list, for
-    # ``copy_front_vertices``, and queues its faces for the next round.
-    t = wp.int32(wp.tid())
+    # ``copy_front_vertices``, and queues its faces for the next round. Thread ``t``'s share of
+    # the launch (``unfolding_front_pass``).
     this_round = out_state[LOOP_ROUND]
     parity = front_parity(this_round)
     n_vertices = out_lowered_round.shape[0]
@@ -1113,7 +1150,49 @@ def unfolding_front_pass(
 
 
 @wp.kernel
-def copy_front_vertices(
+def unfolding_front_pass(
+    faces: wp.array[wp.int32],
+    lengths: wp.array[wp.vec3d],
+    cosines: wp.array[wp.vec3d],
+    labels: wp.array[wp.float64],
+    keys: wp.array[wp.int64],
+    vertex_faces: wp.array[wp.int32],
+    vertex_face_offsets: wp.array[wp.int32],
+    lanes: wp.int32,
+    threads: wp.int32,
+    out_labels: wp.array[wp.float64],
+    out_lowered_round: wp.array[wp.int32],
+    out_face_round: wp.array[wp.int32],
+    out_front_vertices: wp.array[wp.int32],
+    out_front_faces: wp.array[wp.int32],
+    out_front_counts: wp.array[wp.int32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # ``unfolding_pass`` over the round's queued faces only: ``unfolding_front_thread``.
+    unfolding_front_thread(
+        wp.int32(wp.tid()),
+        faces,
+        lengths,
+        cosines,
+        labels,
+        keys,
+        vertex_faces,
+        vertex_face_offsets,
+        lanes,
+        threads,
+        out_labels,
+        out_lowered_round,
+        out_face_round,
+        out_front_vertices,
+        out_front_faces,
+        out_front_counts,
+        out_state,
+    )
+
+
+@wp.func
+def copy_front_thread(
+    t: wp.int32,
     front_vertices: wp.array[wp.int32],
     relaxed: wp.array[wp.float64],
     relabelled: wp.array[wp.int64],
@@ -1126,8 +1205,8 @@ def copy_front_vertices(
     # After a round's passes: each vertex it lowered copies its new distance (and, with several
     # sources, its new key) back into ``out_labels`` and ``out_keys``, the only entries the round
     # changed. The first thread also empties the face list the round read and the lowered list
-    # the next round fills, which no thread of this launch reads.
-    t = wp.int32(wp.tid())
+    # the next round fills, which no thread of this launch reads. Thread ``t``'s share of the
+    # launch (``copy_front_vertices``).
     parity = front_parity(state[LOOP_ROUND])
     n_vertices = out_labels.shape[0]
     for item in range(t, out_front_counts[FRONT_VERTICES + parity], threads):
@@ -1138,6 +1217,65 @@ def copy_front_vertices(
     if t == 0:
         out_front_counts[FRONT_FACES + parity] = 0
         out_front_counts[FRONT_VERTICES + 1 - parity] = 0
+
+
+@wp.kernel
+def copy_front_vertices(
+    front_vertices: wp.array[wp.int32],
+    relaxed: wp.array[wp.float64],
+    relabelled: wp.array[wp.int64],
+    state: wp.array[wp.int32],
+    threads: wp.int32,
+    out_labels: wp.array[wp.float64],
+    out_keys: wp.array[wp.int64],
+    out_front_counts: wp.array[wp.int32],
+) -> None:
+    # After a round's passes, the copy-back: ``copy_front_thread``.
+    copy_front_thread(
+        wp.int32(wp.tid()),
+        front_vertices,
+        relaxed,
+        relabelled,
+        state,
+        threads,
+        out_labels,
+        out_keys,
+        out_front_counts,
+    )
+
+
+@wp.func
+def unfolding_front_sources_thread(
+    t: wp.int32,
+    faces: wp.array[wp.int32],
+    lengths: wp.array[wp.vec3d],
+    cosines: wp.array[wp.vec3d],
+    labels: wp.array[wp.float64],
+    keys: wp.array[wp.int64],
+    relaxed: wp.array[wp.float64],
+    front_faces: wp.array[wp.int32],
+    front_counts: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    lanes: wp.int32,
+    threads: wp.int32,
+    out_keys: wp.array[wp.int64],
+) -> None:
+    # ``unfolding_sources_pass`` over the round's queued faces, strided as in
+    # ``unfolding_front_pass``. Thread ``t``'s share of the launch
+    # (``unfolding_front_sources_pass``).
+    this_round = state[LOOP_ROUND]
+    parity = front_parity(this_round)
+    n_faces = faces.shape[0] // 3
+    stamp = UNFOLDING_SEED_STAMP - wp.int64(1) - wp.int64(this_round)
+    for item in range(t, front_counts[FRONT_FACES + parity] * lanes, threads):
+        f = front_faces[parity * n_faces + item // lanes]
+        i, d, s = unfolding_face(faces, labels, keys, f)
+        face_lengths = lengths[f]
+        face_cosines = cosines[f]
+        for j in range(item % lanes, 6, lanes):
+            k = j // 2
+            offer, source = unfolding_face_corner_offer(face_lengths, face_cosines, d, s, k, j % 2)
+            relabel_unfolded_corner(i[k], offer, source, labels, relaxed, stamp, out_keys)
 
 
 @wp.kernel
@@ -1155,22 +1293,103 @@ def unfolding_front_sources_pass(
     threads: wp.int32,
     out_keys: wp.array[wp.int64],
 ) -> None:
-    # ``unfolding_sources_pass`` over the round's queued faces, strided as in
-    # ``unfolding_front_pass``.
-    t = wp.int32(wp.tid())
-    this_round = state[LOOP_ROUND]
-    parity = front_parity(this_round)
-    n_faces = faces.shape[0] // 3
-    stamp = UNFOLDING_SEED_STAMP - wp.int64(1) - wp.int64(this_round)
-    for item in range(t, front_counts[FRONT_FACES + parity] * lanes, threads):
-        f = front_faces[parity * n_faces + item // lanes]
-        i, d, s = unfolding_face(faces, labels, keys, f)
-        face_lengths = lengths[f]
-        face_cosines = cosines[f]
-        for j in range(item % lanes, 6, lanes):
-            k = j // 2
-            offer, source = unfolding_face_corner_offer(face_lengths, face_cosines, d, s, k, j % 2)
-            relabel_unfolded_corner(i[k], offer, source, labels, relaxed, stamp, out_keys)
+    # The labelled rounds' relabelling over the queued faces: ``unfolding_front_sources_thread``.
+    unfolding_front_sources_thread(
+        wp.int32(wp.tid()),
+        faces,
+        lengths,
+        cosines,
+        labels,
+        keys,
+        relaxed,
+        front_faces,
+        front_counts,
+        state,
+        lanes,
+        threads,
+        out_keys,
+    )
+
+
+@wp.kernel
+def unfolding_front_rounds_serial(
+    faces: wp.array[wp.int32],
+    lengths: wp.array[wp.vec3d],
+    cosines: wp.array[wp.vec3d],
+    vertex_faces: wp.array[wp.int32],
+    vertex_face_offsets: wp.array[wp.int32],
+    lanes: wp.int32,
+    threads: wp.int32,
+    vertex_threads: wp.int32,
+    labelled: wp.int32,
+    max_rounds: wp.int32,
+    labels: wp.array[wp.float64],
+    keys: wp.array[wp.int64],
+    relaxed: wp.array[wp.float64],
+    relabelled: wp.array[wp.int64],
+    lowered_round: wp.array[wp.int32],
+    face_round: wp.array[wp.int32],
+    front_vertices: wp.array[wp.int32],
+    front_faces: wp.array[wp.int32],
+    front_counts: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+) -> None:
+    # dim=1, the CPU device's front-list round loop: each round's ``unfolding_front_pass``, its
+    # ``unfolding_front_sources_pass`` when ``labelled``, ``copy_front_vertices`` and
+    # ``loop_advance``, as one thread's loops over each launch's threads in the order a device
+    # running them one after another runs them, until the state's condition stops the loop -- so
+    # every buffer comes out as the launched loop leaves it.
+    while state[LOOP_CONDITION] != 0:
+        for t in range(threads):
+            unfolding_front_thread(
+                t,
+                faces,
+                lengths,
+                cosines,
+                labels,
+                keys,
+                vertex_faces,
+                vertex_face_offsets,
+                lanes,
+                threads,
+                relaxed,
+                lowered_round,
+                face_round,
+                front_vertices,
+                front_faces,
+                front_counts,
+                state,
+            )
+        if labelled != 0:
+            for t in range(threads):
+                unfolding_front_sources_thread(
+                    t,
+                    faces,
+                    lengths,
+                    cosines,
+                    labels,
+                    keys,
+                    relaxed,
+                    front_faces,
+                    front_counts,
+                    state,
+                    lanes,
+                    threads,
+                    relabelled,
+                )
+        for t in range(vertex_threads):
+            copy_front_thread(
+                t,
+                front_vertices,
+                relaxed,
+                relabelled,
+                state,
+                vertex_threads,
+                labels,
+                keys,
+                front_counts,
+            )
+        advance_round_loop(max_rounds, state)
 
 
 @wp.kernel

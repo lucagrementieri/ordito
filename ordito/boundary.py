@@ -1313,6 +1313,11 @@ class _BoundaryHalfedges:
         # their own; ``mates`` stores them on a later read.
         self._mates: wp.array[wp.int32] | None = None
         self._sorted_keys: wp.array[wp.uint64] | None = None
+        # Where the pairing sorts here, the sort's free upper halves: ``(n,)`` from the payload's,
+        # which takes the mates, and ``(2 * n,)`` ``int32`` from the keys', which takes the
+        # unscanned-census flags and the successor tails. Each would be an allocation of its own.
+        self._spare_order: wp.array[wp.int32] | None = None
+        self._spare_keys: wp.array[wp.int32] | None = None
         if mates is not None:
             self._mates = mates
             self.key_order = key_order
@@ -1323,8 +1328,14 @@ class _BoundaryHalfedges:
                     faces, n_vertices, return_key_order=True
                 )
             else:
-                self._sorted_keys, self.key_order = sorted_pairing
+                keys, order = sorted_pairing
+                n = self.n
+                self._sorted_keys = _launch.view(keys, 0, n)
+                self.key_order = _launch.view(order, 0, n)
+                self._spare_order = _launch.view(order, n, 2 * n)
+                self._spare_keys = _launch.view_as(_launch.view(keys, n, 2 * n), wp.int32)
         self._inclusive: wp.array[wp.int32] | None = None
+        self._degree_scratch: wp.array[wp.int32] | None = None
         self._count = 0
         self.defects = (False, False)
 
@@ -1340,7 +1351,9 @@ class _BoundaryHalfedges:
             device = self.faces.device
             n = self.n
             degrees: odt.Array2dInt32 | None = None
-            if census is None:
+            if census is None and self._spare_keys is not None:
+                flags = _launch.view(self._spare_keys, 0, n)
+            elif census is None:
                 flags = _launch.empty(n, dtype=wp.int32, device=device)
             else:
                 n_vertices = census
@@ -1351,9 +1364,12 @@ class _BoundaryHalfedges:
                 degrees = odt.as_array2d(
                     odt.as_dense(flags[n + 2 :]).reshape((n_vertices, 2)), wp.int32
                 )
+                # Dead once the census bits are read: ``successors`` refills it as its table.
+                self._degree_scratch = _launch.view(flags, n + 2, n + 2 + 2 * n_vertices)
             if self._mates is None:
                 assert self._sorted_keys is not None
-                self._mates = _launch.empty(n, dtype=wp.int32, device=device)
+                assert self._spare_order is not None
+                self._mates = self._spare_order
                 _launch.launch(
                     kernel_boundary.mark_sorted_boundary_halfedges,
                     dim=n,
@@ -1426,9 +1442,18 @@ class _BoundaryHalfedges:
         """
         device = self.faces.device
         k = self.count()
-        tails = _launch.empty(k, dtype=wp.int32, device=device)
-        # ``-1`` off the nodes: the ranking reads it to tell where a chain ends.
-        next_node = _launch.full(node_count, -1, dtype=wp.int32, device=device)
+        if self._spare_keys is not None:
+            tails = _launch.view(self._spare_keys, self.n, self.n + k)
+        else:
+            tails = _launch.empty(k, dtype=wp.int32, device=device)
+        # ``-1`` off the nodes: the ranking reads it to tell where a chain ends. The census' degree
+        # table, read only by the flagging launch, holds it where it is long enough.
+        scratch = self._degree_scratch
+        if scratch is not None and 0 < node_count <= scratch.size:
+            next_node = _launch.view(scratch, 0, node_count)
+            _launch.fill_(next_node, -1)
+        else:
+            next_node = _launch.full(node_count, -1, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_boundary.emit_boundary_successors,
             dim=self.n,
@@ -1470,7 +1495,8 @@ class _BoundaryHalfedges:
         if self._mates is None:
             assert self._sorted_keys is not None
             assert self.key_order is not None
-            self._mates = _launch.empty(self.n, dtype=wp.int32, device=self.faces.device)
+            assert self._spare_order is not None
+            self._mates = self._spare_order
             _launch.launch(
                 kernel_halfedge.sorted_halfedge_mates,
                 dim=self.n,

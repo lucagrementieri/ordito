@@ -291,8 +291,7 @@ def split_with_offsets(
         # The labelling's flatten writes the labels and the identity payload straight into the
         # sort's double-width buffers.
         parents = _face_component_forest(faces, vertices.size, None)
-        keys_buffer = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
-        order_buffer = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+        keys_buffer, order_buffer = _launch.sort_buffers(n_faces, wp.int32, device)
         _launch.launch(
             kernel_combine.flatten_labels_and_identity,
             dim=n_faces,

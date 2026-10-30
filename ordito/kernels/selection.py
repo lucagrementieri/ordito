@@ -325,6 +325,30 @@ def vertex_hops_from_mask(
     out_mask[v] = seed
 
 
+@wp.func
+def dilate_face_hop(
+    faces: wp.array[wp.int32],
+    f: wp.int32,
+    hop: wp.int32,
+    value: wp.bool,
+    hops: wp.array[wp.int32],
+    out_mask: wp.array[wp.bool],
+) -> None:
+    # Face ``f``'s share of dilation round ``hop``: ``dilate_vertex_hops``' body, shared with the
+    # one-launch ``dilate_vertex_hops_serial``.
+    a, b, c = corner_triple(faces, f)
+    if hops[a] < hop or hops[b] < hop or hops[c] < hop:
+        if hops[a] > hop:
+            hops[a] = hop
+            out_mask[a] = value
+        if hops[b] > hop:
+            hops[b] = hop
+            out_mask[b] = value
+        if hops[c] > hop:
+            hops[c] = hop
+            out_mask[c] = value
+
+
 @wp.kernel
 def dilate_vertex_hops(
     faces: wp.array[wp.int32],
@@ -351,17 +375,24 @@ def dilate_vertex_hops(
     # all three -- which is ``shrink_vertex_mask``'s erosion without forming the complement on the
     # way in or out.
     f = wp.int32(wp.tid())
-    a, b, c = corner_triple(faces, f)
-    if hops[a] < hop or hops[b] < hop or hops[c] < hop:
-        if hops[a] > hop:
-            hops[a] = hop
-            out_mask[a] = value
-        if hops[b] > hop:
-            hops[b] = hop
-            out_mask[b] = value
-        if hops[c] > hop:
-            hops[c] = hop
-            out_mask[c] = value
+    dilate_face_hop(faces, f, hop, value, hops, out_mask)
+
+
+@wp.kernel
+def dilate_vertex_hops_serial(
+    faces: wp.array[wp.int32],
+    n_hops: wp.int32,
+    value: wp.bool,
+    hops: wp.array[wp.int32],
+    out_mask: wp.array[wp.bool],
+) -> None:
+    # Every ``dilate_vertex_hops`` round in one launch and one thread, the faces of each round in
+    # launch order: the CPU device's form, where a launch's threads run one after another anyway.
+    # A round's reach is decided by values below ``hop`` only, so the result is the per-round
+    # launches' to the bit.
+    for hop in range(1, n_hops + 1):
+        for f in range(faces.shape[0] // 3):
+            dilate_face_hop(faces, f, hop, value, hops, out_mask)
 
 
 @wp.kernel

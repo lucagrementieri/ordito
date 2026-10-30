@@ -1844,8 +1844,9 @@ def prolonged_at(
     )
 
 
-@wp.kernel
-def octree_prolong(
+@wp.func
+def octree_prolong_at(
+    t: wp.int32,
     depth: wp.int32,
     first: wp.int32,
     n_nodes: wp.int32,
@@ -1862,7 +1863,6 @@ def octree_prolong(
     # ``n_cells`` stored cells (from ``cell_first``) their screening records into ``out_index``,
     # the table ``screen_record`` reads, one buffer every depth reuses: a cell's occupied rank, -1
     # for none. Neither half reads what the other writes, so one launch does both.
-    t = wp.int32(wp.tid())
     if t < n_nodes:
         e = t + first
         at = stored_node(node_bricks, brick_slots, depth, e)
@@ -1871,6 +1871,36 @@ def octree_prolong(
     if t < n_cells:
         c = t + cell_first
         out_index[t] = wp.where(occupancy_bit(occupancy, c), occupancy_rank(occupancy, c), -1)
+
+
+@wp.kernel
+def octree_prolong(
+    depth: wp.int32,
+    first: wp.int32,
+    n_nodes: wp.int32,
+    node_bricks: wp.array[wp.int32],
+    brick_slots: wp.array[wp.int32],
+    cell_first: wp.int32,
+    n_cells: wp.int32,
+    occupancy: wp.array[wp.uint64],
+    fields: wp.array[wp.float32],
+    out_index: wp.array[wp.int32],
+) -> None:
+    # ``octree_prolong_at`` at this thread.
+    t = wp.int32(wp.tid())
+    octree_prolong_at(
+        t,
+        depth,
+        first,
+        n_nodes,
+        node_bricks,
+        brick_slots,
+        cell_first,
+        n_cells,
+        occupancy,
+        fields,
+        out_index,
+    )
 
 
 @wp.func
@@ -1978,11 +2008,23 @@ def octree_gauss_seidel_depth(
     record_index: wp.array[wp.int32],
     screen: wp.array[wp.float32],
     node_bricks: wp.array[wp.int32],
+    first: wp.int32,
+    n_nodes: wp.int32,
+    brick_slots: wp.array[wp.int32],
+    cell_first: wp.int32,
+    n_cells: wp.int32,
+    occupancy: wp.array[wp.uint64],
     field: wp.array[wp.float32],
 ) -> None:
-    # Every wave and colour of depth ``d`` in one thread, in ``octree_gauss_seidel_wave``'s launch
-    # order: the CPU device runs a launch's threads one after another anyway, so this is those
-    # launches' arithmetic in one launch.
+    # Depth ``d``'s ``octree_prolong`` and then every wave and colour of its sweeps in one
+    # thread, in ``octree_prolong``'s and ``octree_gauss_seidel_wave``'s launch order: the CPU
+    # device runs a launch's threads one after another anyway, so this is those launches'
+    # arithmetic in one launch.
+    for t in range(wp.max(n_nodes, n_cells)):
+        octree_prolong_at(
+            t, depth, first, n_nodes, node_bricks, brick_slots, cell_first, n_cells, occupancy,
+            field, record_index,
+        )  # fmt: skip
     res = (1 << d) + 1
     half = (res + 1) // 2
     for wave in range(res + 2 * (iterations - 1)):

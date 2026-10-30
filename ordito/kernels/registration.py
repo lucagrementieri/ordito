@@ -122,8 +122,10 @@ def make_affine44(rotation: wp.mat33, translation: wp.vec3) -> wp.mat44:
     )
 
 
-@wp.kernel
-def accumulate_procrustes_moments(
+@wp.func
+def accumulate_procrustes_moments_block(
+    chunk: wp.int32,
+    lane: wp.int32,
     a: wp.array[wp.vec3],
     b: wp.array[wp.vec3],
     weights: wp.array[wp.float32],
@@ -157,7 +159,6 @@ def accumulate_procrustes_moments(
     # there too.
     #
     # A zero-length ``weights`` means uniform weights (``sample_weight``).
-    chunk, lane = wp.tid()
     offset, count = block_chunk_1d(a.shape[0], chunk)
     if count <= 0:
         return
@@ -207,6 +208,22 @@ def accumulate_procrustes_moments(
         for r in range(3):
             packed[ACC_COV + c * 3 + r] = cov[c, r]
     store_block_sum(chunk, lane, packed, out_acc, 0, stride)
+
+
+@wp.kernel
+def accumulate_procrustes_moments(
+    a: wp.array[wp.vec3],
+    b: wp.array[wp.vec3],
+    weights: wp.array[wp.float32],
+    use_translation: wp.bool,
+    stride: wp.int32,
+    out_acc: wp.array[wp.float32],
+) -> None:
+    # ``accumulate_procrustes_moments_block`` at this thread.
+    chunk, lane = wp.tid()
+    accumulate_procrustes_moments_block(
+        chunk, lane, a, b, weights, use_translation, stride, out_acc
+    )
 
 
 @wp.func
@@ -407,8 +424,10 @@ def last_atomic_block(
     return last
 
 
-@wp.kernel
-def fit_transform_and_accumulate_cost(
+@wp.func
+def fit_transform_and_accumulate_cost_block(
+    chunk: wp.int32,
+    lane: wp.int32,
     a: wp.array[wp.vec3],
     b: wp.array[wp.vec3],
     weights: wp.array[wp.float32],
@@ -447,7 +466,6 @@ def fit_transform_and_accumulate_cost(
     # constant slot it dominated, and at a launch floor removing a launch is most of the pair.
     # ``apply_transform_mat44`` keeps its other callers; the shared arithmetic is its own
     # ``transform_point_mat44`` helper, called here rather than copied.
-    chunk, lane = wp.tid()
     transform = procrustes_matrix(a, b, acc, use_reflection, use_translation, use_scale)
     if chunk == 0 and lane == 0:
         out_matrix[0] = transform
@@ -478,6 +496,49 @@ def fit_transform_and_accumulate_cost(
         finish_block_total(lane, acc, ACC_COST, stride, n_blocks, wp.float32(0.0))
     if last != 0 and lane == 0:
         close_point_to_point_round(threshold, max_iterations, transform, acc, out_total, out_state)
+
+
+@wp.kernel
+def fit_transform_and_accumulate_cost(
+    a: wp.array[wp.vec3],
+    b: wp.array[wp.vec3],
+    weights: wp.array[wp.float32],
+    acc: wp.array[wp.float32],
+    use_reflection: wp.bool,
+    use_translation: wp.bool,
+    use_scale: wp.bool,
+    stride: wp.int32,
+    n_blocks: wp.int32,
+    threshold: wp.float64,
+    max_iterations: wp.int32,
+    out_matrix: wp.array[wp.mat44],
+    out_transformed: wp.array[wp.vec3],
+    out_total: wp.array[wp.mat44],
+    out_state: wp.array[wp.int32],
+    out_ticket: wp.array[wp.int32],
+) -> None:
+    # ``fit_transform_and_accumulate_cost_block`` at this thread.
+    chunk, lane = wp.tid()
+    fit_transform_and_accumulate_cost_block(
+        chunk,
+        lane,
+        a,
+        b,
+        weights,
+        acc,
+        use_reflection,
+        use_translation,
+        use_scale,
+        stride,
+        n_blocks,
+        threshold,
+        max_iterations,
+        out_matrix,
+        out_transformed,
+        out_total,
+        out_state,
+        out_ticket,
+    )
 
 
 # --- Iterative closest point (ICP) -----------------------------------------
@@ -546,8 +607,9 @@ def icp_match(
     return closest_point_query(index_id, q, query_max)
 
 
-@wp.kernel
-def point_to_plane_correspondence_pass(
+@wp.func
+def point_to_plane_correspondence_at(
+    tid: wp.int32,
     index_id: wp.uint64,
     target_points: wp.array[wp.vec3],
     points: wp.array[wp.vec3],
@@ -571,7 +633,6 @@ def point_to_plane_correspondence_pass(
     # The step is ``apply_transform_mat44``'s own ``transform_point_mat44`` on the same operands,
     # so ``out_points`` holds the bits that kernel wrote when it ran as its own launch at the tail
     # of the previous iteration; the loop now applies the last step once after it exits instead.
-    tid = wp.int32(wp.tid())
     q = transform_point_mat44(points[tid], step[0])
     out_points[tid] = q
     closest, distance, index = icp_match(index_id, target_points, cloud, q, query_max)
@@ -581,7 +642,38 @@ def point_to_plane_correspondence_pass(
 
 
 @wp.kernel
-def point_to_point_correspondence_pass(
+def point_to_plane_correspondence_pass(
+    index_id: wp.uint64,
+    target_points: wp.array[wp.vec3],
+    points: wp.array[wp.vec3],
+    step: wp.array[wp.mat44],
+    cloud: wp.bool,
+    query_max: wp.float32,
+    out_points: wp.array[wp.vec3],
+    out_closest: wp.array[wp.vec3],
+    out_distance: wp.array[wp.float32],
+    out_index: wp.array[wp.int32],
+) -> None:
+    # ``point_to_plane_correspondence_at`` at this thread.
+    tid = wp.int32(wp.tid())
+    point_to_plane_correspondence_at(
+        tid,
+        index_id,
+        target_points,
+        points,
+        step,
+        cloud,
+        query_max,
+        out_points,
+        out_closest,
+        out_distance,
+        out_index,
+    )
+
+
+@wp.func
+def point_to_point_correspondence_at(
+    tid: wp.int32,
     index_id: wp.uint64,
     target_points: wp.array[wp.vec3],
     source: wp.array[wp.vec3],
@@ -599,12 +691,127 @@ def point_to_point_correspondence_pass(
     #
     # The move is ``transform_point_mat44`` on the operands the host loop's fit applied when it
     # published the points this search then read, so the query sees the same bits.
-    tid = wp.int32(wp.tid())
     q = transform_point_mat44(source[tid], total[0])
     closest, distance, index = icp_match(index_id, target_points, cloud, q, query_max)
     out_closest[tid] = closest
     if out_weights.shape[0] > 0:
         out_weights[tid] = distance_threshold_weight(distance, index, max_distance)
+
+
+@wp.kernel
+def point_to_point_correspondence_pass(
+    index_id: wp.uint64,
+    target_points: wp.array[wp.vec3],
+    source: wp.array[wp.vec3],
+    total: wp.array[wp.mat44],
+    cloud: wp.bool,
+    query_max: wp.float32,
+    max_distance: wp.float32,
+    out_closest: wp.array[wp.vec3],
+    out_weights: wp.array[wp.float32],
+) -> None:
+    # ``point_to_point_correspondence_at`` at this thread.
+    tid = wp.int32(wp.tid())
+    point_to_point_correspondence_at(
+        tid,
+        index_id,
+        target_points,
+        source,
+        total,
+        cloud,
+        query_max,
+        max_distance,
+        out_closest,
+        out_weights,
+    )
+
+
+@wp.func
+def point_to_point_round_serial(
+    n_blocks: wp.int32,
+    index_id: wp.uint64,
+    target_points: wp.array[wp.vec3],
+    source: wp.array[wp.vec3],
+    cloud: wp.bool,
+    query_max: wp.float32,
+    max_distance: wp.float32,
+    use_reflection: wp.bool,
+    use_translation: wp.bool,
+    use_scale: wp.bool,
+    stride: wp.int32,
+    threshold: wp.float64,
+    max_iterations: wp.int32,
+    no_points: wp.array[wp.vec3],
+    closest: wp.array[wp.vec3],
+    weights: wp.array[wp.float32],
+    acc: wp.array[wp.float32],
+    fitted: wp.array[wp.mat44],
+    total: wp.array[wp.mat44],
+    state: wp.array[wp.int32],
+    ticket: wp.array[wp.int32],
+) -> None:
+    # One ``registration.icp`` round as its three launches run on the CPU device, every thread and
+    # block in launch order on one lane: ``point_to_point_correspondence_pass``,
+    # ``accumulate_procrustes_moments``, ``fit_transform_and_accumulate_cost``.
+    for tid in range(source.shape[0]):
+        point_to_point_correspondence_at(
+            tid, index_id, target_points, source, total, cloud, query_max, max_distance, closest,
+            weights,
+        )  # fmt: skip
+    for chunk in range(n_blocks):
+        accumulate_procrustes_moments_block(
+            chunk, 0, source, closest, weights, use_translation, stride, acc
+        )
+    for chunk in range(n_blocks):
+        fit_transform_and_accumulate_cost_block(
+            chunk, 0, source, closest, weights, acc, use_reflection, use_translation, use_scale,
+            stride, n_blocks, threshold, max_iterations, fitted, no_points, total, state, ticket,
+        )  # fmt: skip
+
+
+@wp.kernel
+def icp_point_to_point_serial(
+    loop: wp.int32,
+    n_blocks: wp.int32,
+    index_id: wp.uint64,
+    target_points: wp.array[wp.vec3],
+    source: wp.array[wp.vec3],
+    cloud: wp.bool,
+    query_max: wp.float32,
+    max_distance: wp.float32,
+    use_reflection: wp.bool,
+    use_translation: wp.bool,
+    use_scale: wp.bool,
+    stride: wp.int32,
+    threshold: wp.float64,
+    max_iterations: wp.int32,
+    no_points: wp.array[wp.vec3],
+    closest: wp.array[wp.vec3],
+    weights: wp.array[wp.float32],
+    acc: wp.array[wp.float32],
+    fitted: wp.array[wp.mat44],
+    total: wp.array[wp.mat44],
+    state: wp.array[wp.int32],
+    ticket: wp.array[wp.int32],
+) -> None:
+    # ``registration.icp``'s whole loop on the CPU device in one launch of one one-lane block:
+    # round 0, then, under ``loop``, a round while the state's condition holds, as
+    # ``wp.capture_while`` tests it there before each replayed round. That device runs a launch's
+    # threads and blocks one after another, so this is the launched loop to the bit. ``closest``,
+    # ``weights``, ``acc``, ``fitted``, ``total``, ``state`` and ``ticket`` are the loop's state,
+    # rewritten in place every round.
+    point_to_point_round_serial(
+        n_blocks, index_id, target_points, source, cloud, query_max, max_distance, use_reflection,
+        use_translation, use_scale, stride, threshold, max_iterations, no_points, closest, weights,
+        acc, fitted, total, state, ticket,
+    )  # fmt: skip
+    if loop != 0:
+        while state[LOOP_CONDITION] != 0:
+            point_to_point_round_serial(
+                n_blocks, index_id, target_points, source, cloud, query_max, max_distance,
+                use_reflection, use_translation, use_scale, stride, threshold, max_iterations,
+                no_points, closest, weights, acc, fitted, total, state, ticket,
+            )  # fmt: skip
 
 
 # --- ``registration.icp(method="pyvista")``: VTK's landmark ICP in one block -----------------
@@ -1160,8 +1367,10 @@ def close_point_to_plane_round(
     continue_icp_loop(old_cost, wp.float64(cost), threshold, max_iterations, out_state)
 
 
-@wp.kernel
-def accumulate_point_to_plane(
+@wp.func
+def accumulate_point_to_plane_block(
+    i: wp.int32,
+    lane: wp.int32,
     source: wp.array[wp.vec3],
     target: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
@@ -1197,7 +1406,6 @@ def accumulate_point_to_plane(
     # the three accumulators are one buffer. The tree is the *more* accurate arm on every
     # component, which matters here because the normal matrix is what ``point_to_plane_round``
     # factorizes.
-    i, lane = wp.tid()
     offset, remaining = block_chunk_1d(source.shape[0], i)
     if remaining <= 0:
         return
@@ -1236,3 +1444,95 @@ def accumulate_point_to_plane(
         close_point_to_plane_round(
             damping, threshold, max_iterations, out_acc, out_total, out_step, out_state
         )
+
+
+@wp.kernel
+def accumulate_point_to_plane(
+    source: wp.array[wp.vec3],
+    target: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    distance: wp.array[wp.float32],
+    triangle_id: wp.array[wp.int32],
+    max_distance: wp.float32,
+    robust_kind: wp.int32,
+    robust_scale: wp.float32,
+    stride: wp.int32,
+    n_blocks: wp.int32,
+    damping: wp.float32,
+    threshold: wp.float64,
+    max_iterations: wp.int32,
+    out_acc: wp.array[wp.float32],
+    out_total: wp.array[wp.mat44],
+    out_step: wp.array[wp.mat44],
+    out_state: wp.array[wp.int32],
+    out_ticket: wp.array[wp.int32],
+) -> None:
+    # ``accumulate_point_to_plane_block`` at this thread.
+    i, lane = wp.tid()
+    accumulate_point_to_plane_block(
+        i,
+        lane,
+        source,
+        target,
+        normals,
+        distance,
+        triangle_id,
+        max_distance,
+        robust_kind,
+        robust_scale,
+        stride,
+        n_blocks,
+        damping,
+        threshold,
+        max_iterations,
+        out_acc,
+        out_total,
+        out_step,
+        out_state,
+        out_ticket,
+    )
+
+
+@wp.kernel
+def icp_point_to_plane_rounds_serial(
+    n_blocks: wp.int32,
+    index_id: wp.uint64,
+    target_points: wp.array[wp.vec3],
+    cloud: wp.bool,
+    query_max: wp.float32,
+    normals: wp.array[wp.vec3],
+    max_distance: wp.float32,
+    robust_kind: wp.int32,
+    robust_scale: wp.float32,
+    stride: wp.int32,
+    damping: wp.float32,
+    threshold: wp.float64,
+    max_iterations: wp.int32,
+    current: wp.array[wp.vec3],
+    closest: wp.array[wp.vec3],
+    distance: wp.array[wp.float32],
+    triangle_id: wp.array[wp.int32],
+    acc: wp.array[wp.float32],
+    total: wp.array[wp.mat44],
+    step: wp.array[wp.mat44],
+    state: wp.array[wp.int32],
+    ticket: wp.array[wp.int32],
+) -> None:
+    # ``registration.icp_point_to_plane``'s rounds after round 0 on the CPU device, in one launch
+    # of one one-lane block: while the state's condition holds -- ``wp.capture_while``'s test
+    # before each replayed round there -- ``point_to_plane_correspondence_pass`` moving
+    # ``current`` by ``step`` in place, then ``accumulate_point_to_plane`` closing the round, every
+    # thread and block in launch order. That device runs them one after another, so this is the
+    # replayed loop to the bit. Every array is the loop's state, rewritten in place every round.
+    while state[LOOP_CONDITION] != 0:
+        for tid in range(current.shape[0]):
+            point_to_plane_correspondence_at(
+                tid, index_id, target_points, current, step, cloud, query_max, current, closest,
+                distance, triangle_id,
+            )  # fmt: skip
+        for block in range(n_blocks):
+            accumulate_point_to_plane_block(
+                block, 0, current, closest, normals, distance, triangle_id, max_distance,
+                robust_kind, robust_scale, stride, n_blocks, damping, threshold, max_iterations,
+                acc, total, step, state, ticket,
+            )  # fmt: skip

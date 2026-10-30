@@ -1554,7 +1554,15 @@ def _dilate_vertex_mask(
         outputs=[hop_of, out_mask],
         device=device,
     )
-    if n_faces > 0:
+    if n_faces > 0 and not wp.get_device(device).is_cuda:
+        # The CPU device runs a launch's threads one after another: every round in one launch.
+        _launch.launch(
+            kernel_selection.dilate_vertex_hops_serial,
+            dim=1,
+            inputs=[faces, hops, value, hop_of, out_mask],
+            device=device,
+        )
+    elif n_faces > 0:
         for hop in range(1, hops + 1):
             _launch.launch(
                 kernel_selection.dilate_vertex_hops,

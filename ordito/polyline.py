@@ -1686,11 +1686,21 @@ def _triangulate_rings(
     device = polylines.device
     n_loops = offsets.size - 1
     n_points = polylines.size
-    points2d = _launch.empty(n_points, dtype=wp.vec2, device=device)
-    faces = odt.empty_2d((max(n_reserved, 1), 3), wp.int32, device=device)
     rows = kernel_polyline.RING_SCRATCH_ROWS if n_long > 0 else 5
-    ring = odt.empty_2d((rows, n_points), wp.int32, device=device)
-    ends = _launch.empty(n_loops, dtype=wp.int32, device=device)
+    n_face_rows = max(n_reserved, 1)
+    # The projected points, reserved faces, ring scratch and end rows die with the caller's
+    # compaction, so they are cut from one allocation.
+    points2d, faces_flat, ring_flat, ends = _launch.carve_typed(
+        (
+            (wp.vec2, n_points),
+            (wp.int32, 3 * n_face_rows),
+            (wp.int32, rows * n_points),
+            (wp.int32, n_loops),
+        ),
+        device,
+    )
+    faces = odt.as_array2d(faces_flat.reshape((n_face_rows, 3)), wp.int32)
+    ring = odt.as_array2d(ring_flat.reshape((rows, n_points)), wp.int32)
     _launch.launch_tiled(
         kernel_polyline.triangulate_rings,
         dim=(n_loops,),
@@ -1744,7 +1754,14 @@ def _triangulate_long_rings(
         dtype=wp.int32,
         device=device,
     )
-    grid = _launch.empty(n_loops * kernel_polyline.RING_GRID_SIZE, dtype=wp.float32, device=device)
+    n_cells = (
+        kernel_polyline.RING_CELLS_PER_POINT * n_points
+        + kernel_polyline.RING_CELLS_PER_LOOP * n_loops
+    )
+    # The loops' grids and their shared cell table: one allocation.
+    grid, cell_starts = _launch.carve_typed(
+        ((wp.float32, n_loops * kernel_polyline.RING_GRID_SIZE), (wp.int32, n_cells + 1)), device
+    )
     _launch.launch_tiled(
         kernel_polyline.seed_long_rings,
         dim=(n_loops,),
@@ -1764,10 +1781,6 @@ def _triangulate_long_rings(
         block_dim=kernel_polyline.LONG_RING_BLOCK_DIM,
         device=device,
     )
-    n_cells = (
-        kernel_polyline.RING_CELLS_PER_POINT * n_points
-        + kernel_polyline.RING_CELLS_PER_LOOP * n_loops
-    )
     cell_keys, cell_points = _launch.sort_buffers(n_points, wp.int32, device)
     _launch.launch(
         kernel_polyline.ring_ear_grid_cells,
@@ -1777,7 +1790,6 @@ def _triangulate_long_rings(
         device=device,
     )
     _launch.radix_sort_pairs(cell_keys, cell_points, count=n_points, end_bit=n_cells.bit_length())
-    cell_starts = _launch.empty(n_cells + 1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_polyline.init_ring_ear_clips,
         dim=n_cells + 1,
@@ -1956,8 +1968,8 @@ def _triangulate_ring(
     # One block runs every round (see ``ear_clip_block``): no graph to record, one launch, but an
     # O(ring) containment walk per corner, so only short rings take it (``EAR_ONE_BLOCK_MAX``).
     if n_ring <= kernel_polyline.EAR_ONE_BLOCK_MAX:
-        ring = odt.empty_2d((5, n_ring), wp.int32, device=device)
-        count_wp = _launch.empty(1, dtype=wp.int32, device=device)
+        ring_flat, count_wp = _launch.carve(wp.int32, (5 * n_ring, 1), device)
+        ring = odt.as_array2d(ring_flat.reshape((5, n_ring)), wp.int32)
         _launch.launch_tiled(
             kernel_polyline.ear_clip_block,
             dim=1,
@@ -1986,7 +1998,16 @@ def _triangulate_ring(
     shift = wp.vec2(below_x, below_y)
     inv_cell = wp.float32(1.0 / cell)
     dims_wp = wp.vec2i(wp.int32(dims[0]), wp.int32(dims[1]))
-    cell_keys, cell_points = _launch.sort_buffers(n_ring, wp.int32, device)
+    # The grid sort's buffers and the clip's tables live and die with this call, so they are cut
+    # from one allocation. ``state`` is [rounds run, loop condition, face count, some ear good],
+    # seeded by ``init_ear_clip`` with the grid's cell starts and the ring's links.
+    cell_keys, cell_points, cell_starts, left, right, active, is_ear, selected, state = (
+        _launch.carve(
+            wp.int32,
+            (2 * n_ring, 2 * n_ring, n_cells + 1, *(n_ring,) * 5, kernel_polyline.EAR_STATE_SIZE),
+            device,
+        )
+    )
     _launch.launch(
         kernel_polyline.ear_grid_cells,
         dim=n_ring,
@@ -1997,15 +2018,6 @@ def _triangulate_ring(
     _launch.radix_sort_pairs(
         cell_keys, cell_points, count=n_ring, end_bit=max(1, (n_cells - 1).bit_length())
     )
-    cell_starts = _launch.empty(n_cells + 1, dtype=wp.int32, device=device)
-    left = _launch.empty(n_ring, dtype=wp.int32, device=device)
-    right = _launch.empty(n_ring, dtype=wp.int32, device=device)
-    active = _launch.empty(n_ring, dtype=wp.int32, device=device)
-    is_ear = _launch.empty(n_ring, dtype=wp.int32, device=device)
-    selected = _launch.empty(n_ring, dtype=wp.int32, device=device)
-    # [rounds run, loop condition, face count, some ear good], seeded by ``init_ear_clip`` with
-    # the grid's cell starts and the ring's links.
-    state = _launch.empty(kernel_polyline.EAR_STATE_SIZE, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_polyline.init_ear_clip,
         dim=n_ring,

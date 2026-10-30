@@ -33,6 +33,7 @@ from ordito.config import is_deterministic
 from ordito.constants import INDEX_RADIX_PAIR, TOLERANCE_MERGE_CONSTANT
 from ordito.kernels import adjacency as kernel_adjacency
 from ordito.kernels import grouping as kernel_grouping
+from ordito.kernels import halfedge as kernel_halfedge
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 
@@ -368,14 +369,16 @@ def vertex_face_adjacency(
     # on for the scatter, whose atomics advance each row's start to its end.
     deterministic = is_deterministic()
     lead = 1 if deterministic else 2
-    buffer = _launch.zeros(row_count + lead, dtype=wp.int32, device=device)
+    # The rows share the offsets' allocation (a CSR pair is held and dropped together); only the
+    # counts are zeroed, as the rows are written whole before they are read.
+    buffer, vertex_faces = _launch.carve(wp.int32, (row_count + lead, 3 * n_faces), device)
+    _launch.zero_(buffer)
     counts = _launch.view(buffer, lead, row_count + lead)
     _launch.launch(
         kernel_scatter.count_occurrences, dim=3 * n_faces, inputs=[faces, counts], device=device
     )
     _launch.array_scan(counts, out_array=counts, inclusive=True)
     offsets = _launch.view(buffer, 0, row_count + 1)
-    vertex_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
     if deterministic:
         _fill_sorted_vertex_faces(faces, row_count, vertex_faces)
     else:
@@ -1100,10 +1103,15 @@ def _face_component_forest(
     # back twice. The labels are each component's smallest face id whatever edges are hooked.
     device = faces.device
     n_faces = faces.size // 3
+    spare: wp.array[wp.int32] | None = None
     if mates is None:
-        mates = od.halfedge.halfedge_mates(faces, n_vertices)
+        # Paired by the edge-key sort, the mates and the forest take the sort's free upper halves.
+        mates, spare = _mates_and_spare(faces, n_vertices)
     n = mates.size
-    parents = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    if spare is not None:
+        parents = _launch.view(spare, 0, n_faces)
+    else:
+        parents = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_adjacency.mate_pair_prehook, dim=n_faces, inputs=[mates, parents], device=device
     )
@@ -1113,6 +1121,33 @@ def _face_component_forest(
         )
     _launch.launch(kernel_adjacency.mate_pair_hook, dim=n, inputs=[mates, parents], device=device)
     return parents
+
+
+def _mates_and_spare(
+    faces: wp.array[wp.int32], n_vertices: int | None
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32] | None]:
+    """
+    ``halfedge_mates(faces, n_vertices)`` for a caller that also needs scratch, and that scratch.
+
+    Where the pairing sorts, the mates are formed into the sort payload's free upper half and the
+    keys' free upper half comes back as ``(2 * 3 * n_faces,)`` ``int32`` scratch, so neither is an
+    allocation of its own; the mates then hold the sort's buffer alive, so they are for this
+    module's own use, not a return. ``None`` scratch where the pairing buckets or there are no
+    halfedges.
+    """
+    sorted_pairing = od.halfedge._sorted_pairing(faces, n_vertices)  # pyright: ignore[reportPrivateUsage]
+    if sorted_pairing is None:
+        return od.halfedge.halfedge_mates(faces, n_vertices), None
+    keys, order = sorted_pairing
+    n = faces.size // 3 * 3
+    mates = _launch.view(order, n, 2 * n)
+    _launch.launch(
+        kernel_halfedge.sorted_halfedge_mates,
+        dim=n,
+        inputs=[_launch.view(keys, 0, n), _launch.view(order, 0, n), mates],
+        device=faces.device,
+    )
+    return mates, _launch.view_as(_launch.view(keys, n, 2 * n), wp.int32)
 
 
 def sorted_face_edge_keys(

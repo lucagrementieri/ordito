@@ -240,8 +240,9 @@ def dart_point_setup(
     wp.atomic_min(out_cell_min_priority, cell, priority)
 
 
-@wp.kernel
-def dart_select_minima(
+@wp.func
+def dart_select_minimum_at(
+    t: wp.int32,
     pool_points: wp.array[wp.vec3],
     priority: wp.array[wp.uint32],
     point_cell: wp.array[wp.int32],
@@ -268,7 +269,6 @@ def dart_select_minima(
     # the unsorted pool, and it takes ``bucket`` out of the hot path -- it is read only on the
     # priority-tie branch, which is what preserves the *original* pool index as the tie-break so
     # the accepted set is unchanged by the renumbering.
-    t = wp.int32(wp.tid())
     i = alive[t]
     my_key = priority[i]
     p = pool_points[i]
@@ -296,7 +296,40 @@ def dart_select_minima(
 
 
 @wp.kernel
-def dart_cover_neighbors(
+def dart_select_minima(
+    pool_points: wp.array[wp.vec3],
+    priority: wp.array[wp.uint32],
+    point_cell: wp.array[wp.int32],
+    cell_neighbors: wp.array2d[wp.int32],
+    bucket: wp.array[wp.int32],
+    cell_offsets: wp.array[wp.int32],
+    alive: wp.array[wp.int32],
+    cell_min_priority: wp.array[wp.uint32],
+    rr: wp.float32,
+    out_state: wp.array[wp.int32],
+    out_cell_accepted: wp.array[wp.bool],
+) -> None:
+    # ``dart_select_minimum_at`` at this thread.
+    t = wp.int32(wp.tid())
+    dart_select_minimum_at(
+        t,
+        pool_points,
+        priority,
+        point_cell,
+        cell_neighbors,
+        bucket,
+        cell_offsets,
+        alive,
+        cell_min_priority,
+        rr,
+        out_state,
+        out_cell_accepted,
+    )
+
+
+@wp.func
+def dart_cover_neighbors_at(
+    t: wp.int32,
     pool_points: wp.array[wp.vec3],
     point_cell: wp.array[wp.int32],
     cell_neighbors: wp.array2d[wp.int32],
@@ -327,7 +360,6 @@ def dart_cover_neighbors(
     # and no second read is needed to recover it -- the same one-tail-read shape
     # ``array.flatnonzero`` uses, and for the same reason: a host readback costs about as much as
     # the whole rest of a round.
-    t = wp.int32(wp.tid())
     i = alive[t]
     out_cell_min_priority[point_cell[i]] = DART_NO_PRIORITY
     if out_state[i] != DART_ALIVE:
@@ -357,7 +389,38 @@ def dart_cover_neighbors(
 
 
 @wp.kernel
-def dart_compact_alive(
+def dart_cover_neighbors(
+    pool_points: wp.array[wp.vec3],
+    point_cell: wp.array[wp.int32],
+    cell_neighbors: wp.array2d[wp.int32],
+    cell_offsets: wp.array[wp.int32],
+    alive: wp.array[wp.int32],
+    cell_accepted: wp.array[wp.bool],
+    rr: wp.float32,
+    out_state: wp.array[wp.int32],
+    out_flag: wp.array[wp.int32],
+    out_cell_min_priority: wp.array[wp.uint32],
+) -> None:
+    # ``dart_cover_neighbors_at`` at this thread.
+    t = wp.int32(wp.tid())
+    dart_cover_neighbors_at(
+        t,
+        pool_points,
+        point_cell,
+        cell_neighbors,
+        cell_offsets,
+        alive,
+        cell_accepted,
+        rr,
+        out_state,
+        out_flag,
+        out_cell_min_priority,
+    )
+
+
+@wp.func
+def dart_compact_alive_at(
+    t: wp.int32,
     alive: wp.array[wp.int32],
     state: wp.array[wp.int32],
     positions: wp.array[wp.int32],
@@ -379,7 +442,6 @@ def dart_compact_alive(
     # next one's. And it clears the covering sweep's summary for the next round: every cell it
     # marks holds a point this round accepted, which is on this round's list, and nothing here reads
     # it, so no fill precedes the next selection sweep. Every writer stores the same value.
-    t = wp.int32(wp.tid())
     i = alive[t]
     state_i = state[i]
     if state_i == DART_ALIVE:
@@ -387,6 +449,118 @@ def dart_compact_alive(
         summarize_min_priority(priority, point_cell, i, out_cell_min_priority)
     elif state_i == DART_ACCEPTED:
         out_cell_accepted[point_cell[i]] = False
+
+
+@wp.kernel
+def dart_compact_alive(
+    alive: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    positions: wp.array[wp.int32],
+    priority: wp.array[wp.uint32],
+    point_cell: wp.array[wp.int32],
+    out_next: wp.array[wp.int32],
+    out_cell_min_priority: wp.array[wp.uint32],
+    out_cell_accepted: wp.array[wp.bool],
+) -> None:
+    # ``dart_compact_alive_at`` at this thread.
+    t = wp.int32(wp.tid())
+    dart_compact_alive_at(
+        t,
+        alive,
+        state,
+        positions,
+        priority,
+        point_cell,
+        out_next,
+        out_cell_min_priority,
+        out_cell_accepted,
+    )
+
+
+@wp.func
+def dart_round_serial(
+    count: wp.int32,
+    pool_points: wp.array[wp.vec3],
+    priority: wp.array[wp.uint32],
+    point_cell: wp.array[wp.int32],
+    cell_neighbors: wp.array2d[wp.int32],
+    bucket: wp.array[wp.int32],
+    cell_offsets: wp.array[wp.int32],
+    rr: wp.float32,
+    alive: wp.array[wp.int32],
+    next_alive: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    cell_min_priority: wp.array[wp.uint32],
+    cell_accepted: wp.array[wp.bool],
+    flags: wp.array[wp.int32],
+    positions: wp.array[wp.int32],
+) -> wp.int32:
+    # One round of ``sample._dart_throw_blue_noise`` over the ``count`` points of ``alive``, as its
+    # launches run on the CPU device, every thread in launch order: the selection, the covering
+    # sweep, the inclusive scan of the survivor flags (a running sum, the exact integer scan) and,
+    # when anything survives, the compaction into ``next_alive``. Returns the survivor count.
+    for t in range(count):
+        dart_select_minimum_at(
+            t, pool_points, priority, point_cell, cell_neighbors, bucket, cell_offsets, alive,
+            cell_min_priority, rr, state, cell_accepted,
+        )  # fmt: skip
+    for t in range(count):
+        dart_cover_neighbors_at(
+            t, pool_points, point_cell, cell_neighbors, cell_offsets, alive, cell_accepted, rr,
+            state, flags, cell_min_priority,
+        )  # fmt: skip
+    total = wp.int32(0)
+    for t in range(count):
+        total += flags[t]
+        positions[t] = total
+    if total > 0:
+        for t in range(count):
+            dart_compact_alive_at(
+                t, alive, state, positions, priority, point_cell, next_alive, cell_min_priority,
+                cell_accepted,
+            )  # fmt: skip
+    return total
+
+
+@wp.kernel
+def dart_rounds_serial(
+    alive_count: wp.int32,
+    pool_points: wp.array[wp.vec3],
+    priority: wp.array[wp.uint32],
+    point_cell: wp.array[wp.int32],
+    cell_neighbors: wp.array2d[wp.int32],
+    bucket: wp.array[wp.int32],
+    cell_offsets: wp.array[wp.int32],
+    rr: wp.float32,
+    alive_a: wp.array[wp.int32],
+    alive_b: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    cell_min_priority: wp.array[wp.uint32],
+    cell_accepted: wp.array[wp.bool],
+    flags: wp.array[wp.int32],
+    positions: wp.array[wp.int32],
+) -> None:
+    # ``dim=1``: every round of ``sample._dart_throw_blue_noise`` on the CPU device, which runs a
+    # launch's threads one after another, so this is the launched loop to the bit. The work list
+    # starts in ``alive_a`` and moves between the two lists as the host's swap moves it, after a
+    # round with survivors; the loop ends when a round leaves none.
+    count = alive_count
+    in_a = wp.int32(1)
+    while count > 0:
+        total = wp.int32(0)
+        if in_a != 0:
+            total = dart_round_serial(
+                count, pool_points, priority, point_cell, cell_neighbors, bucket, cell_offsets,
+                rr, alive_a, alive_b, state, cell_min_priority, cell_accepted, flags, positions,
+            )  # fmt: skip
+        else:
+            total = dart_round_serial(
+                count, pool_points, priority, point_cell, cell_neighbors, bucket, cell_offsets,
+                rr, alive_b, alive_a, state, cell_min_priority, cell_accepted, flags, positions,
+            )  # fmt: skip
+        if total > 0:
+            in_a = 1 - in_a
+        count = total
 
 
 @wp.kernel

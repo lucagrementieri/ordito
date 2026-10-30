@@ -452,14 +452,15 @@ def trace_from_vertices(
         # An isolated vertex, or a direction pointing out of a boundary vertex's fan: nowhere to go.
         if write_begin >= wp.int32(0):
             out_points[write_begin] = vertices[v]
-        out_counts[r] = wp.int32(1)
+        else:
+            out_counts[r] = wp.int32(1)
         return
     # The trace length is measured in the *vertex's* tangent plane, not in the plane of whichever
     # incident face the walk starts in -- the vertex has one tangent space and the fan's faces each
     # tilt differently out of it.
     normal = vertex_normals[v]
     arc_length = wp.length(project_out_normal(direction, normal))
-    out_counts[r] = trace_walk(
+    count = trace_walk(
         vertices,
         faces,
         twins,
@@ -472,6 +473,8 @@ def trace_from_vertices(
         write_begin,
         out_points,
     )
+    if write_begin < wp.int32(0):
+        out_counts[r] = count
 
 
 @wp.kernel
@@ -490,7 +493,8 @@ def trace_from_faces(
     out_points: wp.array[wp.vec3],
 ) -> None:
     # One ray per thread. ``offsets`` is empty on the counting pass, which is how the two passes
-    # share ``trace_walk``.
+    # share ``trace_walk``. Only the counting pass writes ``out_counts``: the wrapper counts into
+    # the offsets' own tail and scans it in place, so the writing pass reads it as ``offsets``.
     r = wp.int32(wp.tid())
     length_epsilon = mean_length_epsilon(edge_length_total, n_halfedges)
     f = start_faces[r]
@@ -508,7 +512,7 @@ def trace_from_faces(
     direction = directions[r]
     normal = face_normal(vertices, faces, f)
     arc_length = wp.length(project_out_normal(direction, normal))
-    out_counts[r] = trace_walk(
+    count = trace_walk(
         vertices,
         faces,
         twins,
@@ -521,6 +525,8 @@ def trace_from_faces(
         write_begin,
         out_points,
     )
+    if write_begin < wp.int32(0):
+        out_counts[r] = count
 
 
 @wp.func
@@ -950,7 +956,8 @@ def descent_paths(
     #   only their lengths change; the rest keep their counts. Slot ``n_paths + 1`` counts the
     #   paths the completion finished (those a source reaches), and the total takes each walked
     #   path's change.
-    # * Writing, ``offsets`` given: every path walks and writes its points.
+    # * Writing, ``offsets`` given: every path walks and writes its points, and leaves
+    #   ``out_counts`` alone: the counts are the offsets' tail, scanned in place.
     r = wp.int32(wp.tid())
     length_epsilon = mean_length_epsilon(edge_length_total, n_halfedges)
     n_paths = starts.shape[0]
@@ -988,7 +995,8 @@ def descent_paths(
         wp.atomic_add(short_paths, n_paths + 2, count - out_counts[r])
         if stopped_short == wp.int32(2):
             wp.atomic_add(short_paths, n_paths + 1, wp.int32(1))
-    out_counts[r] = count
+    if write_begin < wp.int32(0):
+        out_counts[r] = count
 
 
 @wp.func

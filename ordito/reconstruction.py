@@ -573,9 +573,10 @@ def _orient_fans(
     """
     device = points.device
     n = points.size
-    rows = odt.empty_2d((n_candidates, 3), wp.int32, device=device)
-    partners = _launch.empty(n_candidates, dtype=wp.vec2i, device=device)
-    codes = _launch.empty(n_candidates, dtype=wp.int32, device=device)
+    flat_rows, partners, codes = _launch.carve_typed(
+        ((wp.int32, 3 * n_candidates), (wp.vec2i, n_candidates), (wp.int32, n_candidates)), device
+    )
+    rows = odt.as_array2d(flat_rows.reshape((n_candidates, 3)), wp.int32)
     _launch.launch(
         kernel_reconstruction.pack_flood_candidates,
         dim=n_candidates,
@@ -825,7 +826,10 @@ def _contested_rows_kept(
         device=device,
     )
     _launch.radix_sort_pairs(keys, edge_rows, count=3 * m, end_bit=max(1, (n * n - 1).bit_length()))
-    conflict = _launch.zeros(m, dtype=wp.int32, device=device)
+    # The zeroed tables (the row conflicts, the contested vertices) in one allocation, and the
+    # unfilled ones (each vertex's ring distance and hole successor, the contested rows) in another.
+    conflict, vertex_flags = _launch.carve(wp.int32, [m, n], device, zeroed=True)
+    distance, hole_next, row_flags = _launch.carve(wp.int32, [n, n, m], device)
     _launch.launch(
         kernel_reconstruction.mark_shared_directed_edges,
         dim=3 * m,
@@ -835,8 +839,6 @@ def _contested_rows_kept(
     )
     flat_rows = cast(wp.array[wp.int32], rows.flatten())
     vertex_rows, offsets = od.adjacency.vertex_face_adjacency(flat_rows, n_vertices=n)
-    distance = _launch.empty(n, dtype=wp.int32, device=device)
-    hole_next = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_reconstruction.classify_candidate_stars,
         dim=n,
@@ -852,8 +854,6 @@ def _contested_rows_kept(
             inputs=[rows, wp.int32(ring), distance],
             device=device,
         )
-    row_flags = _launch.empty(m, dtype=wp.int32, device=device)
-    vertex_flags = _launch.zeros(n, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_reconstruction.mark_contested_rows,
         dim=m,
@@ -1917,6 +1917,30 @@ def _octree_cascade(
         start = nodes.firsts[d]
         n_nodes = nodes.firsts[d + 1] - start
         n_cells = cells.firsts[d + 1] - cells.firsts[d]
+        if serial:
+            # The CPU runs a launch's threads in order anyway: the prolongation and every wave in
+            # one launch.
+            _launch.launch(
+                kernel_octree.octree_gauss_seidel_depth,
+                dim=1,
+                inputs=[
+                    d,
+                    depth,
+                    full_depth,
+                    iterations,
+                    *b,
+                    *sweep_args,
+                    start,
+                    n_nodes,
+                    nodes.slots,
+                    cells.firsts[d],
+                    n_cells,
+                    occupancy,
+                ],
+                outputs=[fields],
+                device=device,
+            )
+            continue
         _launch.launch(
             kernel_octree.octree_prolong,
             dim=max(n_nodes, n_cells),
@@ -1934,16 +1958,6 @@ def _octree_cascade(
             outputs=[record_index],
             device=device,
         )
-        if serial:
-            # The CPU runs a launch's threads in order anyway: every wave in one launch.
-            _launch.launch(
-                kernel_octree.octree_gauss_seidel_depth,
-                dim=1,
-                inputs=[d, depth, full_depth, iterations, *b, *sweep_args],
-                outputs=[fields],
-                device=device,
-            )
-            continue
         half = (res + 1) // 2
         for wave in range(res + 2 * (iterations - 1)):
             first = max(0, (wave - res + 2) // 2)
@@ -2519,7 +2533,10 @@ def _poisson_solve_level(
             ],
             device=device,
         )
-    rhs, smoother = _launch.carve(wp.float32, [n_nodes] * 2, device)
+    # The right-hand side and the smoother live as long as the solve: they ride in its ``float32``
+    # allocation, after the V-cycle's storage.
+    work = _poisson_workspace(res, [n_nodes] * 2, device)
+    rhs, smoother = work.extra[1:]
     _launch.launch(
         kernel_reconstruction.poisson_level_setup,
         dim=(res, res, res),
@@ -2539,6 +2556,19 @@ def _poisson_solve_level(
         solver_tolerance,
         iterations,
         device,
+        work,
+    )
+
+
+def _poisson_workspace(res: int, tables: list[int], device: wp.DeviceLike) -> _CgWorkspace:
+    """
+    ``_solve_screened_poisson``'s workspace on a ``res**3`` grid, with ``tables`` more views.
+
+    The V-cycle's storage is ``extra[0]``; the caller's ``tables`` follow it.
+    """
+    span, blocks, _fold = kernel_cg.cg_layout(res * res * res, od.linalg.CG_FOLD_MAX_BLOCKS)
+    return _cg_workspace(
+        blocks * span, blocks, [_PoissonMultigrid.footprint(res), *tables], 0, device
     )
 
 
@@ -2553,6 +2583,7 @@ def _solve_screened_poisson(
     tol: float,
     iterations: wp.array[wp.int32],
     device: wp.DeviceLike,
+    work: _CgWorkspace | None = None,
 ) -> wp.array[wp.float64]:
     """
     Multigrid-preconditioned conjugate gradient on the grid's screened Laplacian, from ``solution``.
@@ -2566,13 +2597,16 @@ def _solve_screened_poisson(
     ``tol`` or ``maxiter`` rounds -- tested on device, so the loop is one recorded graph and nothing
     is read back: the round count lands in ``iterations`` and the squared threshold and residual in
     the returned length-2 array, for the caller to test once every level has been issued.
+    ``work`` is ``_poisson_workspace(res, ...)``'s, when the caller allocated it.
     """
     n = res * res * res
     tile = int(kernel_cg.CG_TILE)
     span, blocks, fold = kernel_cg.cg_layout(n, od.linalg.CG_FOLD_MAX_BLOCKS)
     stride = blocks * span
-    # The V-cycle's vectors and coarse operators ride in the solve's ``float32`` allocation.
-    work = _cg_workspace(stride, blocks, [_PoissonMultigrid.footprint(res)], 0, device)
+    # The V-cycle's vectors and coarse operators ride in the solve's ``float32`` allocation, which
+    # ``work`` is when the caller cut its own tables from it too.
+    if work is None:
+        work = _poisson_workspace(res, [], device)
     r, u, w, p, s = work.vectors
     partials, atol_sq, dots, coefficients = (
         work.partials,
@@ -2604,7 +2638,46 @@ def _solve_screened_poisson(
         block_dim=tile,
         device=device,
     )
-    multigrid.apply(r, u)
+    if not (_MG_SWEEPS == 1 and wp.get_device(device).is_cpu):
+        multigrid.apply(r, u)
+    else:
+        # The CPU device runs a launch's blocks one after another: the first V-cycle and every
+        # round, its V-cycle included, in one launch, block by block in the launches' order
+        # (``poisson_cg_rounds_serial``).
+        _launch.launch_tiled(
+            kernel_reconstruction.poisson_cg_rounds_serial,
+            dim=[1],
+            inputs=[
+                n,
+                span,
+                stride,
+                tile,
+                maxiter,
+                1 if fold else 0,
+                blocks,
+                res,
+                weights,
+                screen_f,
+                _MG_COARSEST,
+                _MG_COARSE_SWEEPS,
+                smoother,
+                work.extra[0],
+                atol_sq,
+                r,
+                u,
+                p,
+                s,
+                gamma_old,
+                alpha_old,
+                gamma_new,
+                alpha_new,
+                state,
+            ],
+            outputs=[w, partials, coefficients, solution, dots, iterations],
+            block_dim=1,
+            device=device,
+        )
+        return work.residual_pair
 
     def round_() -> None:
         _launch.launch_tiled(
@@ -2736,6 +2809,9 @@ class _PoissonMultigrid:
         lap = 1.0
         w, smooth = weights, smoother
         finest = True
+        # The CPU device runs a launch's threads one after another: every level's coarsening in
+        # one launch (``poisson_mg_coarsen_serial``), after the views are cut.
+        serial = wp.get_device(device).is_cpu
         while True:
             owned = 3 if finest else 5
             vectors = [next(views) for _ in range(owned)]
@@ -2748,14 +2824,30 @@ class _PoissonMultigrid:
             lap *= 2.0
             w_c = next(views)
             smooth_c = next(views)
+            if not serial:
+                _launch.launch(
+                    kernel_reconstruction.poisson_mg_coarsen,
+                    dim=(res_c, res_c, res_c),
+                    inputs=[w, res, res_c, wp.float32(lap), self._screen, wp.float32(_MG_OMEGA)],
+                    outputs=[w_c, smooth_c],
+                    device=device,
+                )
+            res, w, smooth = res_c, w_c, smooth_c
+        if serial and len(self._levels) > 1:
+            finest_level = self._levels[0]
             _launch.launch(
-                kernel_reconstruction.poisson_mg_coarsen,
-                dim=(res_c, res_c, res_c),
-                inputs=[w, res, res_c, wp.float32(lap), self._screen, wp.float32(_MG_OMEGA)],
-                outputs=[w_c, smooth_c],
+                kernel_reconstruction.poisson_mg_coarsen_serial,
+                dim=1,
+                inputs=[
+                    finest_level.res,
+                    self._screen,
+                    _MG_COARSEST,
+                    wp.float32(_MG_OMEGA),
+                    finest_level.weights,
+                    storage,
+                ],
                 device=device,
             )
-            res, w, smooth = res_c, w_c, smooth_c
 
     @staticmethod
     def widths(res: int) -> list[int]:
@@ -3676,6 +3768,39 @@ def _solve_band_level(
         block_dim=tile,
         device=device,
     )
+    if wp.get_device(device).is_cpu:
+        # The CPU device runs a launch's blocks one after another: every round in one launch,
+        # block by block in the launches' order (``band_cg_rounds_serial``).
+        _launch.launch_tiled(
+            kernel_poisson_band.band_cg_rounds_serial,
+            dim=[1],
+            inputs=[
+                n,
+                span,
+                stride,
+                tile,
+                maxiter,
+                1 if fold else 0,
+                blocks,
+                *level,
+                screen_f,
+                atol_sq,
+                inv_diag,
+                r,
+                u,
+                p,
+                s,
+                gamma_old,
+                alpha_old,
+                gamma_new,
+                alpha_new,
+                state,
+            ],
+            outputs=[w, partials, coefficients, solution, dots, iterations],
+            block_dim=1,
+            device=device,
+        )
+        return
 
     def round_() -> None:
         _launch.launch_tiled(
@@ -3732,18 +3857,21 @@ def _cg_workspace(
     stride: int, blocks: int, extra: list[int], counts: int, device: wp.DeviceLike
 ) -> _CgWorkspace:
     """
-    One conjugate-gradient solve's buffers, one allocation per dtype.
+    One conjugate-gradient solve's buffers in two allocations.
 
     The five ``float32`` vectors of ``stride`` entries, then a view per ``extra`` width (a
-    preconditioner's vectors); the ``(3, 1, blocks)`` dot partials and the ten per-solve scalars
-    in ``float64``; the loop state and ``counts`` more ``int32`` slots. Every entry is written
-    before it is read, by the solve's initial launch or the seed.
+    preconditioner's vectors, or the caller's own tables of the solve's lifetime); and, cut from
+    one smaller allocation, the ``(3, 1, blocks)`` dot partials and the ten per-solve scalars in
+    ``float64`` and the loop state and ``counts`` more ``int32`` slots. The small one is apart
+    because the caller keeps the residual pair past the solve, which must not hold the vectors.
+    Every entry is written before it is read, by the solve's initial launch or the seed.
     """
     widths = [stride] * 5 + extra
     vectors = _launch.carve(wp.float32, widths, device)
-    reals = _launch.empty(3 * blocks + 10, dtype=wp.float64, device=device)
+    reals, ints = _launch.carve_typed(
+        ((wp.float64, 3 * blocks + 10), (wp.int32, kernel_array.LOOP_STATE_SIZE + counts)), device
+    )
     scalars = _launch.view(reals, 3 * blocks, 3 * blocks + 10)
-    ints = _launch.empty(kernel_array.LOOP_STATE_SIZE + counts, dtype=wp.int32, device=device)
     return _CgWorkspace(
         vectors[:5],
         vectors[5:],
@@ -4186,8 +4314,12 @@ class _BpaState:
         # On the plain cpu device the cooperative walk is a serial query with no result buffer to
         # overrun, so the bitset stays zero there and every pivot search takes the builtin.
         n_nodes = 2 * self.n
-        state_words = _launch.zeros(
-            kernel_bpa.BPA_COUNTERS + (n_nodes + 31) // 32, dtype=wp.int32, device=self.device
+        # ``boundary_degree`` is zeroed too, and rides in the same allocation.
+        state_words, self.boundary_degree = _launch.carve(
+            wp.int32,
+            [kernel_bpa.BPA_COUNTERS + (n_nodes + 31) // 32, self.n],
+            self.device,
+            zeroed=True,
         )
         self.counters = odt.as_dense(state_words[: kernel_bpa.BPA_COUNTERS])
         self.overfull = odt.as_dense(state_words[kernel_bpa.BPA_COUNTERS :])
@@ -4210,7 +4342,6 @@ class _BpaState:
         self.seed_blocker = _launch.full(
             self.n, int(kernel_bpa.SEED_UNKNOWN), dtype=wp.int32, device=self.device
         )
-        self.boundary_degree = _launch.zeros(self.n, dtype=wp.int32, device=self.device)
         # ``uint64`` because the per-wave vertex claim is a ``wp.atomic_min`` over a *packed vertex
         # pair* rather than over a proposal index — see ``kernel_bpa.proposal_key``, which is what
         # makes a run reproducible. Doubling one n-sized buffer is the whole memory cost.
@@ -4226,10 +4357,11 @@ class _BpaState:
         capacity = 1 << (6 * max_faces - 1).bit_length()
         front_capacity = 3 * max_faces + self.n
         self.edge_mask = wp.int32(capacity - 1)
-        self.edge_key = _launch.zeros(capacity, dtype=wp.uint64, device=self.device)
-        # The zeroed ``int32`` tables in one allocation, and the unfilled ones in another.
-        self.edge_count, self.edge_state = _launch.carve(
-            wp.int32, [capacity] * 2, self.device, zeroed=True
+        # The zeroed tables in one allocation, and the unfilled ones in another.
+        self.edge_key, self.edge_count, self.edge_state = _launch.carve_typed(
+            ((wp.uint64, capacity), (wp.int32, capacity), (wp.int32, capacity)),
+            self.device,
+            zeroed=True,
         )
         unfilled = [max_faces * 3] + [capacity] * 4 + [front_capacity] * 5
         (
@@ -4430,9 +4562,14 @@ def _bpa_run(state: _BpaState, max_waves: int) -> int:
     # ``end_wave`` did, so only the first batch and one resuming a loop the host stopped open with
     # ``begin_wave``.
     resumed = True
+    # The CPU device runs a launch's threads one after another, so a batch is one launch there.
+    serial = wp.get_device(state.device).is_cpu
     for _ in range(_BPA_MAX_BATCHES):
+        if serial:
+            _bpa_waves_serial(state, max_waves, begin=resumed)
         for wave in range(_BPA_WAVES_PER_BATCH):
-            _bpa_wave(state, max_waves, begin=resumed and wave == 0)
+            if not serial:
+                _bpa_wave(state, max_waves, begin=resumed and wave == 0)
             state.front_in, state.front_out = state.front_out, state.front_in
         resumed = False
         counters = state.counters.numpy()
@@ -4452,6 +4589,53 @@ def _bpa_run(state: _BpaState, max_waves: int) -> int:
         resumed = True
     # Out of batches: the counters have moved since the last read.
     return int(read_scalar(state.counters, kernel_bpa.CNT_FACE))
+
+
+def _bpa_waves_serial(state: _BpaState, max_waves: int, *, begin: bool) -> None:
+    """
+    Queue a batch of ``_BPA_WAVES_PER_BATCH`` waves on the CPU device as one launch.
+
+    That device runs a launch's threads and blocks one after another, so the five launches a wave
+    buy no parallelism there: ``waves_serial`` runs each wave's kernels' bodies in launch order,
+    alternating the front buffers as the host's per-wave swap does.
+    """
+    _launch.launch_tiled(
+        kernel_bpa.waves_serial,
+        dim=[1],
+        inputs=[
+            _BPA_WAVES_PER_BATCH,
+            1 if begin else 0,
+            state.n,
+            state.front_grid,
+            state.claim_grid,
+            max_waves,
+            state.max_faces,
+            state.points,
+            state.normals,
+            state.seed_failed,
+            state.seed_blocker,
+            state.grid.id,
+            state.bvh.id,
+            state.overfull,
+            state.radius,
+            state.clustering,
+            state.crease_cos,
+            wp.int32(state.front_capacity),
+            state.point_used,
+            state.boundary_degree,
+            state.counters,
+            state.edge_table,
+            state.owner,
+            state.front_in,
+            state.front_out,
+            state.tri_a,
+            state.tri_b,
+            state.tri_c,
+        ],
+        outputs=[state.all_faces],
+        block_dim=1,
+        device=state.device,
+    )
 
 
 def _bpa_wave(state: _BpaState, max_waves: int, *, begin: bool) -> None:

@@ -264,6 +264,19 @@ def test_carve_splits_tables_past_the_largest_array(
         assert tables[2].ptr == tables[0].ptr + 64 * 4  # pyright: ignore[reportOptionalOperand]
 
 
+def test_alias_reads_the_source_bytes(device: str) -> None:
+    """``alias`` reads a view's bytes as another dtype, and writes through."""
+    buffer = wp.zeros(8, dtype=wp.float64, device=device)
+    word = _launch.view(buffer, 2, 3)
+    flag = _launch.alias(word, wp.int32, 0, 2)
+    assert flag.size == 2
+    assert flag.ptr == word.ptr
+    assert not flag.numpy().any()
+    flag.fill_(-1)
+    assert np.array_equal(buffer.numpy().view(np.int32)[4:6], [-1, -1])
+    assert not buffer.numpy()[[0, 1, 3]].any()
+
+
 @pytest.mark.parametrize("inclusive", [True, False])
 @pytest.mark.parametrize("dtype", [np.int32, np.float64])
 def test_array_scan_matches_warp(device: str, inclusive: bool, dtype: type) -> None:

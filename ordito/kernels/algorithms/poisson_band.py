@@ -48,11 +48,13 @@ the sample-scale dimples the fine system has (``bunny_decimated`` depth 9: 0.92x
 import warp as wp
 
 from ordito.kernels.algorithms.conjugate_gradient import (
+    cg_coefficients_column,
     cg_publish_round_dots,
     cg_round_terms,
+    cg_update_block,
     cg_widen,
 )
-from ordito.kernels.array import trilinear_cell, trilinear_corner, trilinear_weight
+from ordito.kernels.array import LOOP_CONDITION, trilinear_cell, trilinear_corner, trilinear_weight
 from ordito.kernels.levelset import (
     MC_CORNERS,
     mc_case_corner,
@@ -995,6 +997,44 @@ def band_cg_initial(
         out_partials[0, 0, blk] = total
 
 
+@wp.func
+def band_cg_matvec_dots_block(
+    blk: wp.int32,
+    t: wp.int32,
+    n: wp.int32,
+    span: wp.int32,
+    brick_coords: wp.array[wp.vec3i],
+    brick_map: wp.array[wp.int32],
+    nbk: wp.int32,
+    res: wp.int32,
+    lap: wp.float32,
+    weights: wp.array[wp.float32],
+    screen: wp.float32,
+    r: wp.array[wp.float32],
+    u: wp.array[wp.float32],
+    gamma_new: wp.array[wp.float64],
+    alpha_new: wp.array[wp.float64],
+    w: wp.array[wp.float32],
+    partials: wp.array3d[wp.float64],
+    gamma_old: wp.array[wp.float64],
+    alpha_old: wp.array[wp.float64],
+    state: wp.array[wp.int32],
+) -> None:
+    # Block ``blk`` of ``band_cg_matvec_dots``, lane ``t``. Block-collective.
+    acc = wp.vec3(0.0, 0.0, 0.0)
+    for kk in range(t, span, wp.block_dim()):
+        local = blk * span + kk
+        wl = wp.float32(0.0)
+        if local < n:
+            wl = band_row(brick_coords, brick_map, nbk, res, lap, weights, screen, u, local)
+        w[local] = wl
+        acc += cg_round_terms(r[local], u[local], wl)
+    total = cg_widen(block_sum(acc))
+    cg_publish_round_dots(
+        total, 0, blk, t, gamma_new, alpha_new, partials, gamma_old, alpha_old, state
+    )
+
+
 @wp.kernel
 def band_cg_matvec_dots(
     n: wp.int32,
@@ -1019,27 +1059,70 @@ def band_cg_matvec_dots(
     # ``poisson_cg_matvec_dots`` on a band level: ``w = A u`` with the band row, the round's three
     # dots (``cg_round_terms``) and the shared tail (``cg_publish_round_dots``).
     blk, t = wp.tid()
-    acc = wp.vec3(0.0, 0.0, 0.0)
-    for kk in range(t, span, wp.block_dim()):
-        local = blk * span + kk
-        w = wp.float32(0.0)
-        if local < n:
-            w = band_row(brick_coords, brick_map, nbk, res, lap, weights, screen, u, local)
-        out_w[local] = w
-        acc += cg_round_terms(r[local], u[local], w)
-    total = cg_widen(block_sum(acc))
-    cg_publish_round_dots(
-        total,
-        0,
-        blk,
-        t,
-        gamma_new,
-        alpha_new,
-        out_partials,
-        out_gamma_old,
-        out_alpha_old,
-        out_state,
-    )
+    band_cg_matvec_dots_block(
+        blk, t, n, span, brick_coords, brick_map, nbk, res, lap, weights, screen, r, u,
+        gamma_new, alpha_new, out_w, out_partials, out_gamma_old, out_alpha_old, out_state,
+    )  # fmt: skip
+
+
+@wp.kernel
+def band_cg_rounds_serial(
+    n: wp.int32,
+    span: wp.int32,
+    stride: wp.int32,
+    update_span: wp.int32,
+    maxiter: wp.int32,
+    fold: wp.int32,
+    n_blocks: wp.int32,
+    brick_coords: wp.array[wp.vec3i],
+    brick_map: wp.array[wp.int32],
+    nbk: wp.int32,
+    res: wp.int32,
+    lap: wp.float32,
+    weights: wp.array[wp.float32],
+    screen: wp.float32,
+    atol_sq: wp.array[wp.float64],
+    inv_diag: wp.array[wp.float32],
+    r: wp.array[wp.float32],
+    u: wp.array[wp.float32],
+    p: wp.array[wp.float32],
+    s: wp.array[wp.float32],
+    gamma_old: wp.array[wp.float64],
+    alpha_old: wp.array[wp.float64],
+    gamma_new: wp.array[wp.float64],
+    alpha_new: wp.array[wp.float64],
+    state: wp.array[wp.int32],
+    out_w: wp.array[wp.float32],
+    out_partials: wp.array3d[wp.float64],
+    out_coefficients: wp.array2d[wp.float64],
+    out_x: wp.array[wp.float32],
+    out_dots: wp.array2d[wp.float64],
+    out_iterations: wp.array[wp.int32],
+) -> None:
+    # Every round of ``reconstruction._solve_band_level`` on the CPU device, in one launch of one
+    # one-lane block: while the loop state's condition holds, ``band_cg_matvec_dots``' blocks,
+    # then (unfolded) ``cg_coefficients``' one column, then ``cg_update``'s blocks under Jacobi,
+    # each in its launch's order. That device runs a launch's blocks one after another and
+    # ``wp.capture_while`` there tests the same condition word before each round, so this is the
+    # launched loop to the bit (``conjugate_gradient.cg_round_serial``'s argument, for the whole
+    # loop). The band operator is the only difference from that kernel.
+    while state[LOOP_CONDITION] != 0:
+        for blk in range(n_blocks):
+            band_cg_matvec_dots_block(
+                blk, 0, n, span, brick_coords, brick_map, nbk, res, lap, weights, screen, r, u,
+                gamma_new, alpha_new, out_w, out_partials, gamma_old, alpha_old, state,
+            )  # fmt: skip
+        if fold == 0:
+            cg_coefficients_column(
+                0, 0, 1, maxiter, n_blocks, out_partials, gamma_old, alpha_old, atol_sq, state,
+                out_coefficients, gamma_new, alpha_new, out_dots, out_iterations,
+            )  # fmt: skip
+        for blk in range(stride // update_span):
+            cg_update_block(
+                0, blk, 0, stride, update_span, n, 1, maxiter, fold, n_blocks, 1, out_partials,
+                out_coefficients, gamma_old, alpha_old, atol_sq, inv_diag, out_w, p, s, r, u,
+                state, out_x, u, gamma_new, alpha_new, out_dots, out_iterations,
+            )  # fmt: skip
 
 
 # ---------------------------------------------------------------------------------------------

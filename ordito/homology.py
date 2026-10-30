@@ -232,11 +232,20 @@ def homology_generators_with_offsets(
         return _launch.empty_packed(wp.int32, device)
     # Every ``int32`` table the decomposition works in dies with the call, so they are carved from
     # one allocation: the incidence below, the dual forest's labels and roots, the primal tree's
-    # parents and depths (and on the CPU its traversal's queue) and the loops' apexes.
+    # parents and depths (and on the CPU its traversal's queue), the loops' apexes and their
+    # ``(1, length)`` counts.
     serial = wp.get_device(device).is_cpu
-    edge_face_count, edge_faces_flat, labels, roots, tree, apex = _launch.carve(
+    edge_face_count, edge_faces_flat, labels, roots, tree, apex, loop_counts = _launch.carve(
         wp.int32,
-        [n_edges, 2 * n_edges, n_faces, n_faces, (3 if serial else 2) * n_vertices, n_edges],
+        [
+            n_edges,
+            2 * n_edges,
+            n_faces,
+            n_faces,
+            (3 if serial else 2) * n_vertices,
+            n_edges,
+            2 * n_edges,
+        ],
         device,
     )
     _launch.zero_(edge_face_count)
@@ -326,7 +335,9 @@ def homology_generators_with_offsets(
         roots,
         odt.as_dense(small[_FOREST_STATE]),
     )
-    return _trace_generator_loops(candidate, unique_edges, parents, distances, apex)
+    return _trace_generator_loops(
+        candidate, unique_edges, parents, distances, apex, _launch.view_as(loop_counts, wp.vec2i)
+    )
 
 
 def _primal_spanning_tree(
@@ -496,6 +507,7 @@ def _trace_generator_loops(
     parents: wp.array[wp.int32],
     distances: wp.array[wp.int32],
     apex: wp.array[wp.int32],
+    counts: wp.array[wp.vec2i],
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Close each generator edge into a loop through the primal tree, on the device.
@@ -504,13 +516,12 @@ def _trace_generator_loops(
     finds a generator's apex (the lowest common ancestor of the edge's endpoints) and the loop's
     length from the two depths, the ``(1, length)`` pairs scan into every generator's rank and
     offset at once, and a second thread per edge fills its generator's slice from both ends
-    (``apex`` is ``(n_edges,)`` scratch). One
+    (``apex`` and ``counts``, the pairs' ``(n_edges,)`` buffer, are scratch). One
     readback, of the generator count and the packed length together; the generators come out in
     ascending edge order, as a compaction of the mask would list them.
     """
     device = unique_edges.device
     n_edges = candidate.size
-    counts = _launch.empty(n_edges, dtype=wp.vec2i, device=device)
     _launch.launch(
         kernel_homology.generator_loop_counts,
         dim=n_edges,
@@ -523,8 +534,8 @@ def _trace_generator_loops(
     n_generators, n_packed = int(total[0]), int(total[1])
     if n_generators == 0:
         return _launch.empty_packed(wp.int32, device)
-    offsets = _launch.empty(n_generators + 1, dtype=wp.int32, device=device)
-    loops = _launch.empty(n_packed, dtype=wp.int32, device=device)
+    # The packed pair in one allocation, held and dropped together.
+    loops, offsets = _launch.carve(wp.int32, (n_packed, n_generators + 1), device)
     _launch.launch(
         kernel_homology.write_generator_loops,
         dim=n_edges,

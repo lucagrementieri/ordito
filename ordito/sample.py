@@ -831,6 +831,32 @@ def _dart_throw_blue_noise(
     positions = _launch.empty(n_pool, dtype=wp.int32, device=device)
     alive_count = n_pool
     rr = wp.float32(radius * radius)
+    if wp.get_device(device).is_cpu:
+        # The CPU device runs a launch's threads one after another: every round in one launch,
+        # each launch's threads in turn (``dart_rounds_serial``), with no per-round readback.
+        _launch.launch(
+            kernel_blue_noise.dart_rounds_serial,
+            dim=1,
+            inputs=[
+                alive_count,
+                sorted_points,
+                priority,
+                sorted_cell,
+                cell_neighbors,
+                bucket,
+                cell_offsets,
+                rr,
+                alive,
+                next_alive,
+                state,
+                cell_min_priority,
+                cell_accepted,
+                survivor_flag,
+                positions,
+            ],
+            device=device,
+        )
+        alive_count = 0
 
     while alive_count > 0:
         view = alive[:alive_count]

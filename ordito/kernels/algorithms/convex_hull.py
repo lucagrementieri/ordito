@@ -431,8 +431,9 @@ def split_neighbor_ref(
     return out
 
 
-@wp.kernel
-def split_faces(
+@wp.func
+def split_face_at(
+    f: wp.int32,
     n_faces: wp.int32,
     flags: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
@@ -442,20 +443,19 @@ def split_faces(
     child: wp.array[wp.int32],
     counters: wp.array[wp.int32],
     dirty: wp.array[wp.int32],
-    out_next_flags: wp.array[wp.int32],
-    out_split_corners: wp.array[wp.vec4i],
+    next_flags: wp.array[wp.int32],
+    split_corners: wp.array[wp.vec4i],
 ) -> None:
     # Split every flagged face 1-3 at its winning point ``v``: ``(a, b, v)`` keeps the slot,
     # ``(b, c, v)`` and ``(c, a, v)`` take the two slots its inclusive scan entry reserves past
     # ``n_faces``. ``child`` tells the next pass where a face's points went (``-1``: nowhere), and
     # the next round's flags are cleared here because this round's are still being read.
-    f = wp.int32(wp.tid())
     if f == 0:
         counters[COUNT_SPLITS] = offsets[n_faces - 1]
         counters[COUNT_LIVE] = counters[COUNT_APPENDED]
         counters[COUNT_APPENDED] = 0
         counters[COUNT_FOLLOW] = 0
-    out_next_flags[f] = 0
+    next_flags[f] = 0
     if flags[f] == 0:
         child[f] = -1
         return
@@ -474,15 +474,15 @@ def split_faces(
     adj[base + 1] = wp.vec3i(edge2, 3 * f + 2, 3 * base + 1)
     child[f] = base
     # The split's corners, for the next pass: the flip round between them may rewrite these slots.
-    out_split_corners[f] = wp.vec4i(t[0], t[1], t[2], v)
+    split_corners[f] = wp.vec4i(t[0], t[1], t[2], v)
     dirty[f] = 1
     dirty[base] = 1
     dirty[base + 1] = 1
     best[f] = wp.int64(-1)
     best[base] = wp.int64(-1)
     best[base + 1] = wp.int64(-1)
-    out_next_flags[base] = 0
-    out_next_flags[base + 1] = 0
+    next_flags[base] = 0
+    next_flags[base + 1] = 0
     # An unsplit neighbour learns its new neighbour from this thread, the only writer of that edge.
     children = wp.vec3i(f, base, base + 1)
     for k in range(3):
@@ -490,6 +490,37 @@ def split_faces(
         dirty[far[0]] = 1
         if flags[far[0]] == 0:
             adj[far[0]][far[1]] = 3 * children[k]
+
+
+@wp.kernel
+def split_faces(
+    n_faces: wp.int32,
+    flags: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    tri: wp.array[wp.vec3i],
+    adj: wp.array[wp.vec3i],
+    best: wp.array[wp.int64],
+    child: wp.array[wp.int32],
+    counters: wp.array[wp.int32],
+    dirty: wp.array[wp.int32],
+    out_next_flags: wp.array[wp.int32],
+    out_split_corners: wp.array[wp.vec4i],
+) -> None:
+    # One thread a face: ``split_face_at``.
+    split_face_at(
+        wp.int32(wp.tid()),
+        n_faces,
+        flags,
+        offsets,
+        tri,
+        adj,
+        best,
+        child,
+        counters,
+        dirty,
+        out_next_flags,
+        out_split_corners,
+    )
 
 
 @wp.func
@@ -987,7 +1018,10 @@ def repair_flip_adjacency(
 
 
 @wp.kernel
-def follow_growth_round_serial(
+def growth_round_serial(
+    split_count: wp.int32,
+    split_flags: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
     points: wp.array[wp.vec3],
     kernel_point: wp.array[wp.vec3d],
     tri: wp.array[wp.vec3i],
@@ -1010,11 +1044,22 @@ def follow_growth_round_serial(
     live_first: wp.int32,
     lists: wp.array[wp.vec2i],
 ) -> None:
-    # ``dim=1``, the CPU device's passes after a growth round's split: ``rounds`` unlabelled flip
-    # rounds over ``n_faces`` faces, each followed by an ``assign_points`` pass over ``n_live``
-    # entries, every launch of them in launch order and each launch's threads in turn, as the CPU
-    # device runs them. ``lists`` holds the two point lists back to back, the first pass reading
-    # the one from ``live_first`` and each pass writing the other.
+    # ``dim=1``, the CPU device's growth round: the inclusive scan of the ``split_count`` faces'
+    # ``split_flags`` into ``offsets`` and ``split_faces`` over them (which clears ``flags``, the
+    # next round's), then ``rounds`` unlabelled flip rounds over ``n_faces`` faces, each followed
+    # by an ``assign_points`` pass over ``n_live`` entries, every launch of them in launch order
+    # and each launch's threads in turn, as the CPU device runs them. The integer scan is exact,
+    # so a running sum is the launched scan. ``lists`` holds the two point lists back to back,
+    # the first pass reading the one from ``live_first`` and each pass writing the other.
+    running = wp.int32(0)
+    for f in range(split_count):
+        running += split_flags[f]
+        offsets[f] = running
+    for f in range(split_count):
+        split_face_at(
+            f, split_count, split_flags, offsets, tri, adj, best, child, counters, dirty, flags,
+            split_corners,
+        )  # fmt: skip
     half = lists.shape[0] // 2
     live = live_first
     for follow in range(rounds):

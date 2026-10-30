@@ -1964,8 +1964,9 @@ def _vertex_manifold_check(
     """
     device = faces.device
     n_corners = faces.size // 3 * 3
-    labels = _launch.empty(n_corners, dtype=wp.int32, device=device)
-    min_label = _launch.full(n_vertices, odt.dtype_max(wp.int32), dtype=wp.int32, device=device)
+    # Both tables die here: one allocation, the vertex minima seeded above every label.
+    labels, min_label = _launch.carve(wp.int32, (n_corners, n_vertices), device)
+    _launch.fill_(min_label, odt.dtype_max(wp.int32))
     _launch.launch(
         kernel_validation.corner_labels_and_vertex_min,
         dim=n_corners,

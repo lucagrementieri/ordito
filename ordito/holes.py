@@ -880,7 +880,30 @@ def _fill_packed_loops(
     # points (see ``kernels/holes.py::FILL_STATE_SLOTS``), and behind them the ragged chord mask:
     # both arrive zeroed, so they share one allocation.
     n_slots = kernel_holes.FILL_STATE_SLOTS
-    zeroed = _launch.zeros(n_slots + loops.dp_total, dtype=wp.int32, device=device)
+    total = loops.total
+    n_loops = loops.n_loops
+    # Every zeroed table of the call in one allocation (the state and chord mask, the positions
+    # below, the ``char_area`` scales), and every uninitialized one in another (the rim sort's
+    # keys, the ``dp`` / ``prev`` pair and the traceback's interval stack): each lives until the
+    # traceback has run.
+    zeroed, positions, rim_floats = _launch.carve_typed(
+        (
+            (wp.int32, n_slots + loops.dp_total),
+            (wp.vec3, 2 * total + n_loops),
+            (wp.float32, 2 * n_loops if measure_perimeters else n_loops),
+        ),
+        device,
+        zeroed=True,
+    )
+    rim_keys, dp, prev_and_counts, stack = _launch.carve_typed(
+        (
+            (wp.uint64, 2 * total),
+            (wp.float32, loops.dp_total),
+            (wp.int32, loops.dp_total + 2 * n_loops),
+            (wp.vec2i, total),
+        ),
+        device,
+    )
     state = _launch.view(zeroed, 0, n_slots)
     forbidden = _table_view(zeroed, n_slots, n_slots + loops.dp_total)
     bad_index = kernel_holes.FILL_STATE_BAD_INDEX
@@ -892,18 +915,17 @@ def _fill_packed_loops(
     min_area_id = _METRIC_IDS["min_area"]
 
     # The rim positions, their opposite vertices' positions and the per-loop plane normals: one
-    # allocation, zeroed for the normals' accumulation (the rest is overwritten).
-    total = loops.total
-    n_loops = loops.n_loops
-    positions = _launch.zeros(2 * total + n_loops, dtype=wp.vec3, device=device)
+    # table, zeroed for the normals' accumulation (the rest is overwritten).
     loop_pos = _launch.view(positions, 0, total)
     # The rim sort's slots and the rim-opposite table, then the chord test's vertex-to-slot
     # scratch, which the same rim pass fills: all arrive ``-1`` (``RIM_NO_FACE``, and "no slot"),
-    # so one fill covers them.
+    # so one fill covers them. Behind them the DP's per-loop active mask, which the sweeps read
+    # as "not zero", so ``-1`` marks every loop active as well.
     n_slot_scratch = edge_table.n_vertices if resolve_multiple_edges else 0
-    rim_ints = edge_table.rim_int_scratch(4 * total + n_slot_scratch)
+    n_ints = 4 * total + n_slot_scratch
+    rim_ints = edge_table.rim_int_scratch(n_ints + n_loops)
     rim_keys, rim_slots = edge_table.rim_sort_buffers(
-        total, ints=_table_view(rim_ints, 0, 4 * total)
+        total, keys=rim_keys, ints=_table_view(rim_ints, 0, 4 * total)
     )
     # Accumulated into, then finished in place: the finalize pass reads each loop's sum and writes
     # that loop's slot, so the plane normals overwrite the Newell sums and the ``char_area`` scales
@@ -913,10 +935,7 @@ def _fill_packed_loops(
     # arrival order, and on a rim with exact metric ties the last bits of the plane pick the
     # triangulation.
     plane_normals = _launch.view(positions, 2 * total, 2 * total + n_loops)
-    # The perimeters, when measured, are the zeroed tail of the ``char_area`` scales' buffer.
-    rim_floats = _launch.zeros(
-        2 * n_loops if measure_perimeters else n_loops, dtype=wp.float32, device=device
-    )
+    # The perimeters, when measured, are the zeroed tail of the ``char_area`` scales' table.
     char_areas = _launch.view(rim_floats, 0, n_loops) if measure_perimeters else rim_floats
     perimeters = _launch.view(rim_floats, n_loops, 2 * n_loops) if measure_perimeters else None
     flat_slot = _table_view(rim_ints, 4 * total, 4 * total + n_slot_scratch)
@@ -972,11 +991,9 @@ def _fill_packed_loops(
         total, (rim_keys, rim_slots), _launch.view(positions, total, 2 * total)
     )
 
-    dp = _launch.empty(loops.dp_total, dtype=wp.float32, device=device)
-    # The predecessor table, then the traceback's per-loop counts and their scan: one allocation.
-    prev_and_counts = _launch.empty(loops.dp_total + 2 * n_loops, dtype=wp.int32, device=device)
+    # The predecessor table, then the traceback's per-loop counts and their scan: one table.
     prev = _launch.view(prev_and_counts, 0, loops.dp_total)
-    active = _launch.ones(loops.n_loops, dtype=wp.int32, device=device)
+    active = _table_view(rim_ints, n_ints, n_ints + n_loops)
     _run_hole_dp(
         loops,
         loop_pos,
@@ -1038,7 +1055,7 @@ def _fill_packed_loops(
 
     counts = _launch.view(prev_and_counts, loops.dp_total, loops.dp_total + 2 * n_loops)
     return _traceback_fill_faces(
-        faces, loops, prev, state, edge_table.n_vertices, counts, all_or_nothing
+        faces, loops, prev, state, edge_table.n_vertices, counts, stack, all_or_nothing
     )
 
 
@@ -1049,6 +1066,7 @@ def _traceback_fill_faces(
     state: wp.array[wp.int32],
     n_vertices: int,
     counts_scratch: wp.array[wp.int32],
+    stack: wp.array[wp.vec2i],
     all_or_nothing: bool,
 ) -> wp.array[wp.int32]:
     """
@@ -1066,7 +1084,10 @@ def _traceback_fill_faces(
     scan place the compacted blocks and a second buffer receive them. The same read carries the
     rim-edge passes' face range flag, which raises for ``faces`` indexing outside
     ``[0, n_vertices)``. ``counts_scratch`` is ``(2 * n_loops,)``: the counts, then their scan.
-    ``all_or_nothing`` is [`_fill_packed_loops`][ordito.holes._fill_packed_loops]'s.
+    ``stack`` is the walk's ``(loops.total,)`` pending intervals: one slot per packed rim vertex,
+    which is exactly enough (see ``traceback_fill_triangles``), caller-allocated because a kernel
+    local cannot be sized by a runtime rim length. ``all_or_nothing`` is
+    [`_fill_packed_loops`][ordito.holes._fill_packed_loops]'s.
     """
     device = loops.device
     triangle_sizes_np = np.maximum(loops.sizes_np - 2, 0)
@@ -1079,10 +1100,6 @@ def _traceback_fill_faces(
     padded = odt.as_dense(filled[n_face_indices:]).reshape((n_padded, 3))
     triangle_offsets = loops.triangle_offsets
     counts = _launch.view(counts_scratch, 0, loops.n_loops)
-    # The walk's pending intervals: one slot per packed rim vertex, which is exactly enough
-    # (see ``traceback_fill_triangles``), and caller-allocated because a kernel local cannot be
-    # sized by a runtime rim length.
-    stack = _launch.empty(loops.total, dtype=wp.vec2i, device=device)
     _launch.launch(
         kernel_holes.traceback_fill_triangles,
         dim=loops.n_loops,

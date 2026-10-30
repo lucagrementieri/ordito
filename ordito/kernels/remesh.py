@@ -594,6 +594,23 @@ def mark_long_edges(
     )
 
 
+@wp.func
+def publish_unique_edge_count(
+    ranks: wp.array[wp.int32], i: wp.int32, zero_tail: wp.bool, out_flags: wp.array[wp.int32]
+) -> None:
+    # Sorted position ``i``'s share of a rank buffer sized for the ``n`` sorted corners, which
+    # bound the ``m`` unique edges: the last position writes ``m`` (its run rank) into the last
+    # entry of ``out_flags``, and with ``zero_tail`` (``out_flags`` the whole ``n + 2`` buffer,
+    # edge ``e``'s flag at ``e + 1``) the flag slots past the unique edges are written zero, so a
+    # scan over all ``n`` ends in the flagged count.
+    n = ranks.shape[0]
+    m = ranks[n - 1]
+    if zero_tail and i >= m:
+        out_flags[i + 1] = wp.int32(0)
+    if i == n - 1:
+        out_flags[out_flags.shape[0] - 1] = m
+
+
 @wp.kernel
 def emit_long_edges(
     faces: wp.array[wp.int32],
@@ -612,6 +629,11 @@ def emit_long_edges(
     # ``edges.emit_sorted_unique_edges`` and ``mark_long_edges`` in one pass over the sorted
     # corners: the position starting an edge's run writes its row and tests it, reading back the
     # row it wrote, so the verdict is ``mark_long_edges``' over the same table bit for bit.
+    #
+    # The tables are sized for the ``n`` corners, which bound the ``m`` unique edges, so the host
+    # need not read ``m`` back before allocating them: ``out_flags`` is ``n + 2`` long, the flags
+    # past edge ``m - 1`` are written zero here (``publish_unique_edge_count``), and ``m`` goes in
+    # its last entry, to come back in the split count's readback.
     i = wp.int32(wp.tid())
     _corner, e, start = emit_sorted_unique_edge(
         faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse
@@ -620,6 +642,7 @@ def emit_long_edges(
         mark_long_edge(
             vertices, out_unique_edges, e, max_edge, sizing, use_sizing, out_long, out_flags
         )
+    publish_unique_edge_count(ranks, i, wp.bool(True), out_flags)
 
 
 @wp.func
@@ -802,6 +825,9 @@ def emit_long_region_edges(
     # corners. A corner measures its edge from its own endpoints, the row the run's first position
     # writes (``adjacency.edge_endpoints``), in ``unique_edge_length``'s subtraction order, so the
     # test is ``mark_long_region_edges``' bit for bit without waiting on that row.
+    #
+    # ``out_flags`` is the zeroed rank buffer past its leading zero, sized for the corners as
+    # ``emit_long_edges``' is, with the unique-edge count published in its last entry.
     i = wp.int32(wp.tid())
     corner, e, _start = emit_sorted_unique_edge(
         faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse
@@ -810,6 +836,7 @@ def emit_long_region_edges(
         a, b = edge_endpoints(faces, corner)
         if wp.length(vertices[b] - vertices[a]) > max_edge:
             mark_long_region_edge(e, out_long, out_flags)
+    publish_unique_edge_count(ranks, i, wp.bool(False), out_flags)
 
 
 @wp.kernel
@@ -1652,6 +1679,30 @@ def flip_claim_won(
     return f0, f1, True
 
 
+@wp.func
+def claim_flips_at(
+    flip: wp.array[wp.bool],
+    quad: wp.array2d[wp.int32],
+    adjacency: wp.array2d[wp.int32],
+    adjacency_edges: wp.array2d[wp.int32],
+    edge_claim_mask: wp.int32,
+    key_base: wp.uint64,
+    k: wp.int32,
+    out_face_claim: wp.array[wp.uint64],
+    out_edge_claim: wp.array[wp.uint64],
+):
+    # Row ``k``'s claim on both its faces and its new diagonal's slot. Shared by ``claim_flips`` (a
+    # thread a row) and ``claim_and_commit_flips`` (the CPU's one thread).
+    if not flip[k]:
+        return
+    priority = flip_priority(adjacency_edges, key_base, k)
+    wp.atomic_min(out_face_claim, adjacency[k, 0], priority)
+    wp.atomic_min(out_face_claim, adjacency[k, 1], priority)
+    wp.atomic_min(
+        out_edge_claim, new_diagonal_claim_slot(quad, key_base, edge_claim_mask, k), priority
+    )
+
+
 @wp.kernel
 def claim_flips(
     flip: wp.array[wp.bool],
@@ -1663,14 +1714,18 @@ def claim_flips(
     out_face_claim: wp.array[wp.uint64],
     out_edge_claim: wp.array[wp.uint64],
 ) -> None:
+    # ``claim_flips_at`` a thread a row.
     k = wp.int32(wp.tid())
-    if not flip[k]:
-        return
-    priority = flip_priority(adjacency_edges, key_base, k)
-    wp.atomic_min(out_face_claim, adjacency[k, 0], priority)
-    wp.atomic_min(out_face_claim, adjacency[k, 1], priority)
-    wp.atomic_min(
-        out_edge_claim, new_diagonal_claim_slot(quad, key_base, edge_claim_mask, k), priority
+    claim_flips_at(
+        flip,
+        quad,
+        adjacency,
+        adjacency_edges,
+        edge_claim_mask,
+        key_base,
+        k,
+        out_face_claim,
+        out_edge_claim,
     )
 
 
@@ -1726,8 +1781,8 @@ def move_row_halfedge(
         row_halfedges[row, 1] = new
 
 
-@wp.kernel
-def commit_flips(
+@wp.func
+def commit_flips_at(
     flip: wp.array[wp.bool],
     quad: wp.array2d[wp.int32],
     adjacency: wp.array2d[wp.int32],
@@ -1741,9 +1796,10 @@ def commit_flips(
     halfedge_row: wp.array[wp.int32],
     edge_set: wp.array[wp.uint64],
     valence: wp.array[wp.int32],
+    k: wp.int32,
     out_faces: wp.array[wp.int32],
     out_count: wp.array[wp.int32],
-) -> None:
+):
     # Commit the winning flips, and keep the loop's state describing the new faces: the halfedge
     # <-> row maps every build keeps (so ``refresh_flip_rows`` can rebuild every row without a
     # regroup),
@@ -1756,8 +1812,8 @@ def commit_flips(
     # traversing ``c -> a`` and apex ``b`` (``_resolve_flip_quad``); ``write_flipped_quad`` turns
     # them into ``(a, b, d)`` and ``(c, d, b)``. Each side edge keeps its row but changes halfedge:
     # ``a-b`` and ``b-c`` were ``f1``'s, ``c-d`` and ``d-a`` ``f0``'s, and afterwards ``a-b`` and
-    # ``d-a`` are ``f0``'s, ``c-d`` and ``b-c`` ``f1``'s.
-    k = wp.int32(wp.tid())
+    # ``d-a`` are ``f0``'s, ``c-d`` and ``b-c`` ``f1``'s. Shared by ``commit_flips`` (a thread a
+    # row) and ``claim_and_commit_flips``.
     f0, f1, won = flip_claim_won(
         flip, quad, adjacency, adjacency_edges, face_claim, edge_claim, edge_claim_mask, key_base, k
     )
@@ -1808,6 +1864,102 @@ def commit_flips(
         wp.atomic_add(valence, b, 1)
         wp.atomic_add(valence, d, 1)
     wp.atomic_add(out_count, 0, 1)
+
+
+@wp.kernel
+def commit_flips(
+    flip: wp.array[wp.bool],
+    quad: wp.array2d[wp.int32],
+    adjacency: wp.array2d[wp.int32],
+    adjacency_edges: wp.array2d[wp.int32],
+    face_claim: wp.array[wp.uint64],
+    edge_claim: wp.array[wp.uint64],
+    edge_claim_mask: wp.int32,
+    key_base: wp.uint64,
+    edge_set_mask: wp.int32,
+    row_halfedges: wp.array2d[wp.int32],
+    halfedge_row: wp.array[wp.int32],
+    edge_set: wp.array[wp.uint64],
+    valence: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # ``commit_flips_at`` a thread a row.
+    k = wp.int32(wp.tid())
+    commit_flips_at(
+        flip,
+        quad,
+        adjacency,
+        adjacency_edges,
+        face_claim,
+        edge_claim,
+        edge_claim_mask,
+        key_base,
+        edge_set_mask,
+        row_halfedges,
+        halfedge_row,
+        edge_set,
+        valence,
+        k,
+        out_faces,
+        out_count,
+    )
+
+
+@wp.kernel
+def claim_and_commit_flips(
+    flip: wp.array[wp.bool],
+    quad: wp.array2d[wp.int32],
+    adjacency: wp.array2d[wp.int32],
+    adjacency_edges: wp.array2d[wp.int32],
+    edge_claim_mask: wp.int32,
+    key_base: wp.uint64,
+    edge_set_mask: wp.int32,
+    rows: wp.int32,
+    face_claim: wp.array[wp.uint64],
+    edge_claim: wp.array[wp.uint64],
+    row_halfedges: wp.array2d[wp.int32],
+    halfedge_row: wp.array[wp.int32],
+    edge_set: wp.array[wp.uint64],
+    valence: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # dim=1. ``claim_flips`` then ``commit_flips`` by one thread, each walking the rows in index
+    # order: the CPU engine. The CPU device runs a launch's threads in turn, so the two launches
+    # bought it no parallelism; this is the same steps in the same order, in one launch over the
+    # first ``rows`` rows.
+    for k in range(rows):
+        claim_flips_at(
+            flip,
+            quad,
+            adjacency,
+            adjacency_edges,
+            edge_claim_mask,
+            key_base,
+            k,
+            face_claim,
+            edge_claim,
+        )
+    for k in range(rows):
+        commit_flips_at(
+            flip,
+            quad,
+            adjacency,
+            adjacency_edges,
+            face_claim,
+            edge_claim,
+            edge_claim_mask,
+            key_base,
+            edge_set_mask,
+            row_halfedges,
+            halfedge_row,
+            edge_set,
+            valence,
+            k,
+            out_faces,
+            out_count,
+        )
 
 
 # ===========================================================================
@@ -1956,6 +2108,31 @@ def count_edge_degrees(out_counts: wp.array[wp.int32], u: wp.int32, v: wp.int32)
     wp.atomic_add(out_counts, v, 1)
 
 
+@wp.func
+def count_edge_topology_at(
+    inverse: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    ring: wp.int32,
+    c: wp.int32,
+    out_edge_face_count: wp.array[wp.int32],
+    out_edge_faces: wp.array2d[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+):
+    # One thread per corner of a grouping the caller holds (``count_corner_topology``), and --
+    # with ``ring`` (warp-uniform) -- the edge onto both endpoints' degrees, by the one corner that
+    # drew the edge's first slot. ``emit_edge_topology`` is the same count fused into the emit of a
+    # grouping it builds: the two differ only in where the edge comes from and which corner counts
+    # its degrees.
+    e = inverse[c]
+    slot = count_corner_topology(
+        c, e, faces, out_edge_face_count, out_edge_faces, out_counts, out_offsets
+    )
+    if ring != 0 and slot == 0:
+        count_edge_degrees(out_counts, unique_edges[e, 0], unique_edges[e, 1])
+
+
 @wp.kernel
 def count_edge_topology(
     inverse: wp.array[wp.int32],
@@ -1967,28 +2144,30 @@ def count_edge_topology(
     out_counts: wp.array[wp.int32],
     out_offsets: wp.array[wp.int32],
 ) -> None:
-    # One thread per corner of a grouping the caller holds (``count_corner_topology``), and --
-    # with ``ring`` (warp-uniform) -- the edge onto both endpoints' degrees, by the one corner that
-    # drew the edge's first slot. ``emit_edge_topology`` is the same count fused into the emit of a
-    # grouping it builds: the two differ only in where the edge comes from and which corner counts
-    # its degrees.
+    # ``count_edge_topology_at`` a thread a corner.
     c = wp.int32(wp.tid())
-    e = inverse[c]
-    slot = count_corner_topology(
-        c, e, faces, out_edge_face_count, out_edge_faces, out_counts, out_offsets
+    count_edge_topology_at(
+        inverse,
+        faces,
+        unique_edges,
+        ring,
+        c,
+        out_edge_face_count,
+        out_edge_faces,
+        out_counts,
+        out_offsets,
     )
-    if ring != 0 and slot == 0:
-        count_edge_degrees(out_counts, unique_edges[e, 0], unique_edges[e, 1])
 
 
-@wp.kernel
-def emit_edge_topology(
+@wp.func
+def emit_edge_topology_at(
     faces: wp.array[wp.int32],
     sorted_keys: wp.array[wp.uint64],
     order: wp.array[wp.int32],
     ranks: wp.array[wp.int32],
     ring: wp.int32,
     state: wp.array[wp.int32],
+    i: wp.int32,
     out_unique_edges: wp.array2d[wp.int32],
     out_inverse: wp.array[wp.int32],
     out_edge_face_count: wp.array[wp.int32],
@@ -1996,7 +2175,7 @@ def emit_edge_topology(
     out_counts: wp.array[wp.int32],
     out_offsets: wp.array[wp.int32],
     out_state: wp.array[wp.int32],
-) -> None:
+):
     # ``edges.emit_sorted_unique_edges`` and ``count_edge_topology`` in one pass over the sorted
     # corners: each position emits its corner's inverse entry (and the run start its edge's row),
     # then counts the corner as ``count_edge_topology`` does, the run start counting the degrees.
@@ -2006,7 +2185,6 @@ def emit_edge_topology(
     # With a ``state`` (the same buffer as ``out_state``) the sort ran over a fixed width whose
     # dead corners hold ``EDGE_KEY_PAD`` (``compact_surviving_faces``) and so sorted last: only the
     # live positions emit, and the last of them publishes the unique-edge count, which is its rank.
-    i = wp.int32(wp.tid())
     if state.shape[0] > 0:
         live = 3 * state[COLLAPSE_PASS_FACES]
         if i >= live:
@@ -2027,7 +2205,43 @@ def emit_edge_topology(
 
 
 @wp.kernel
-def fill_edge_topology(
+def emit_edge_topology(
+    faces: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    ring: wp.int32,
+    state: wp.array[wp.int32],
+    out_unique_edges: wp.array2d[wp.int32],
+    out_inverse: wp.array[wp.int32],
+    out_edge_face_count: wp.array[wp.int32],
+    out_edge_faces: wp.array2d[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # ``emit_edge_topology_at`` a thread a sorted corner.
+    i = wp.int32(wp.tid())
+    emit_edge_topology_at(
+        faces,
+        sorted_keys,
+        order,
+        ranks,
+        ring,
+        state,
+        i,
+        out_unique_edges,
+        out_inverse,
+        out_edge_face_count,
+        out_edge_faces,
+        out_counts,
+        out_offsets,
+        out_state,
+    )
+
+
+@wp.func
+def fill_edge_topology_at(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     unique_edges: wp.array2d[wp.int32],
@@ -2038,9 +2252,10 @@ def fill_edge_topology(
     ring: wp.int32,
     state: wp.array[wp.int32],
     cursor: wp.array[wp.int32],
+    t: wp.int32,
     out_columns: wp.array[wp.int32],
     out_feature_count: wp.array[wp.int32],
-) -> None:
+):
     # Over ``max(m, n_faces)`` threads, after the scan of ``count_edge_topology``'s counts: edge
     # ``t`` writes both directed ring entries (with ``ring``) and adds one to both endpoints'
     # feature counts when it is a feature edge (``is_feature_edge``; an empty
@@ -2049,7 +2264,6 @@ def fill_edge_topology(
     # vertices' face rows. ``cursor`` is the spent count buffer, counting each row's free slots down
     # as in ``graph.scatter_neighbor_lists`` and ``adjacency.scatter_vertex_faces``. A ``state``
     # holds the live edge and face counts of fixed-width arrays (``emit_edge_topology``).
-    t = wp.int32(wp.tid())
     n_vertices = cursor.shape[0] // 2
     n_edges = unique_edges.shape[0]
     n_faces = faces.shape[0] // 3
@@ -2071,6 +2285,40 @@ def fill_edge_topology(
         for k in range(3):
             row = n_vertices + faces[t * 3 + k]
             out_columns[offsets[row + 1] - wp.atomic_add(cursor, row, -1)] = t
+
+
+@wp.kernel
+def fill_edge_topology(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    edge_face_count: wp.array[wp.int32],
+    edge_faces: wp.array2d[wp.int32],
+    offsets: wp.array[wp.int32],
+    feature_angle: wp.float32,
+    ring: wp.int32,
+    state: wp.array[wp.int32],
+    cursor: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_feature_count: wp.array[wp.int32],
+) -> None:
+    # ``fill_edge_topology_at`` a thread an edge or face.
+    t = wp.int32(wp.tid())
+    fill_edge_topology_at(
+        vertices,
+        faces,
+        unique_edges,
+        edge_face_count,
+        edge_faces,
+        offsets,
+        feature_angle,
+        ring,
+        state,
+        cursor,
+        t,
+        out_columns,
+        out_feature_count,
+    )
 
 
 @wp.func
@@ -2362,8 +2610,8 @@ def endpoint_collapse_cost(
     return cost, worst_before, worst_after
 
 
-@wp.kernel(enable_backward=False)
-def collapse_candidates(
+@wp.func
+def collapse_candidates_at(
     unique_edges: wp.array2d[wp.int32],
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -2381,6 +2629,7 @@ def collapse_candidates(
     select: wp.int32,
     degeneracy: wp.vec3,
     state: wp.array[wp.int32],
+    k: wp.int32,
     out_survivor: wp.array[wp.int32],
     out_removed: wp.array[wp.int32],
     out_pos: wp.array[wp.vec3],
@@ -2388,7 +2637,7 @@ def collapse_candidates(
     out_remap: wp.array[wp.int32],
     out_positions: wp.array[wp.vec3],
     out_state: wp.array[wp.int32],
-) -> None:
+):
     # ``select`` picks the candidates: ``COLLAPSE_SELECT_LENGTH`` reads the length bands below,
     # ``COLLAPSE_SELECT_DEGENERATE`` reads ``degeneracy`` = ``(tiny_edge_length, max_length,
     # critical_aspect_ratio)`` instead, with ``low`` as the per-vertex region
@@ -2410,7 +2659,6 @@ def collapse_candidates(
     # its slot, and only the live edges go on: the claim and the commit skip a retired slot. Thread
     # 0 also zeroes the pass's commit count, which ``commit_collapses`` counts into and nothing
     # reads before.
-    k = wp.int32(wp.tid())
     for t in range(k, out_remap.shape[0], unique_edges.shape[0]):
         out_claim[t] = UNCLAIMED_KEY
         out_remap[t] = t
@@ -2509,6 +2757,64 @@ def collapse_candidates(
     out_pos[k] = p
 
 
+@wp.kernel(enable_backward=False)
+def collapse_candidates(
+    unique_edges: wp.array2d[wp.int32],
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    feature_count: wp.array[wp.int32],
+    edge_face_count: wp.array[wp.int32],
+    edge_faces: wp.array2d[wp.int32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    vertex_face_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    low: wp.array[wp.float32],
+    high: wp.array[wp.float32],
+    low_uniform: wp.float32,
+    high_uniform: wp.float32,
+    select: wp.int32,
+    degeneracy: wp.vec3,
+    state: wp.array[wp.int32],
+    out_survivor: wp.array[wp.int32],
+    out_removed: wp.array[wp.int32],
+    out_pos: wp.array[wp.vec3],
+    out_claim: wp.array[wp.int64],
+    out_remap: wp.array[wp.int32],
+    out_positions: wp.array[wp.vec3],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # ``collapse_candidates_at`` a thread an edge.
+    k = wp.int32(wp.tid())
+    collapse_candidates_at(
+        unique_edges,
+        vertices,
+        faces,
+        feature_count,
+        edge_face_count,
+        edge_faces,
+        offsets,
+        columns,
+        vertex_face_offsets,
+        vertex_faces,
+        low,
+        high,
+        low_uniform,
+        high_uniform,
+        select,
+        degeneracy,
+        state,
+        k,
+        out_survivor,
+        out_removed,
+        out_pos,
+        out_claim,
+        out_remap,
+        out_positions,
+        out_state,
+    )
+
+
 @wp.func
 def scramble_index(index: wp.int32) -> wp.int64:
     # Spatially incoherent *and injective* lock key for the independent-set pass, from the
@@ -2562,15 +2868,16 @@ def bucketed_lock_key(index: wp.int32, cost: wp.float32, reference: wp.float32) 
     return (wp.int64(level) << wp.int64(58)) | (hashed << wp.int64(32)) | wp.int64(index)
 
 
-@wp.kernel(enable_backward=False)
-def claim_collapse_key(
+@wp.func
+def claim_collapse_key_at(
     survivor: wp.array[wp.int32],
     removed: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     locked: wp.array[wp.int32],
+    k: wp.int32,
     out_min_key: wp.array[wp.int64],
-) -> None:
+):
     # The winning (smallest scrambled) key over the closed 1-rings of both endpoints, read back at
     # the two endpoints by ``commit_collapses`` (``scatter.endpoints_hold``): no two winners have
     # an endpoint in each other's closed 1-rings, which is exactly the conflict to exclude. The
@@ -2586,8 +2893,8 @@ def claim_collapse_key(
     # ``locked``, when not empty, marks the closed 1-rings of the collapses an earlier round of the
     # same pass committed (``commit_collapses``): a candidate with an endpoint there is retired
     # until the next topology rebuild, the ``unlocked_candidate`` rule, and every other one is
-    # still scored against unchanged faces, so it claims again.
-    k = wp.int32(wp.tid())
+    # still scored against unchanged faces, so it claims again. Shared by ``claim_collapse_key`` (a
+    # thread an edge) and ``collapse_rounds`` (the CPU's one thread).
     s = survivor[k]
     if s < 0:
         return
@@ -2596,6 +2903,51 @@ def claim_collapse_key(
         survivor[k] = -1
         return
     lock_two_rings(offsets, columns, s, r, scramble_index(k), out_min_key)
+
+
+@wp.kernel(enable_backward=False)
+def claim_collapse_key(
+    survivor: wp.array[wp.int32],
+    removed: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    locked: wp.array[wp.int32],
+    out_min_key: wp.array[wp.int64],
+) -> None:
+    # ``claim_collapse_key_at`` a thread an edge.
+    k = wp.int32(wp.tid())
+    claim_collapse_key_at(survivor, removed, offsets, columns, locked, k, out_min_key)
+
+
+@wp.func
+def commit_collapses_at(
+    survivor: wp.array[wp.int32],
+    removed: wp.array[wp.int32],
+    pos: wp.array[wp.vec3],
+    claim: wp.array[wp.int64],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    k: wp.int32,
+    out_remap: wp.array[wp.int32],
+    out_positions: wp.array[wp.vec3],
+    out_count: wp.array[wp.int32],
+    out_locked: wp.array[wp.int32],
+):
+    # A non-empty ``out_locked`` runs the pass in rounds: each commit retires its candidate and
+    # stamps its closed 1-rings for the next round's ``claim_collapse_key``. Shared by
+    # ``commit_collapses`` and ``collapse_rounds``.
+    s = survivor[k]
+    if s < 0:
+        return
+    r = removed[k]
+    if not endpoints_hold(claim, s, r, scramble_index(k)):
+        return
+    out_remap[r] = s
+    out_positions[s] = pos[k]
+    wp.atomic_add(out_count, 0, 1)
+    if out_locked.shape[0] > 0:
+        survivor[k] = -1
+        stamp_two_rings(offsets, columns, s, r, wp.int32(1), out_locked)
 
 
 @wp.kernel(enable_backward=False)
@@ -2611,21 +2963,21 @@ def commit_collapses(
     out_count: wp.array[wp.int32],
     out_locked: wp.array[wp.int32],
 ) -> None:
-    # A non-empty ``out_locked`` runs the pass in rounds: each commit retires its candidate and
-    # stamps its closed 1-rings for the next round's ``claim_collapse_key``.
+    # ``commit_collapses_at`` a thread an edge.
     k = wp.int32(wp.tid())
-    s = survivor[k]
-    if s < 0:
-        return
-    r = removed[k]
-    if not endpoints_hold(claim, s, r, scramble_index(k)):
-        return
-    out_remap[r] = s
-    out_positions[s] = pos[k]
-    wp.atomic_add(out_count, 0, 1)
-    if out_locked.shape[0] > 0:
-        survivor[k] = -1
-        stamp_two_rings(offsets, columns, s, r, wp.int32(1), out_locked)
+    commit_collapses_at(
+        survivor,
+        removed,
+        pos,
+        claim,
+        offsets,
+        columns,
+        k,
+        out_remap,
+        out_positions,
+        out_count,
+        out_locked,
+    )
 
 
 @wp.func
@@ -3799,13 +4151,14 @@ def mark_surviving_face(
     return i0, i1, i2, distinct
 
 
-@wp.kernel
-def mark_surviving_faces(
+@wp.func
+def mark_surviving_faces_at(
     faces: wp.array[wp.int32],
     remap: wp.array[wp.int32],
     state: wp.array[wp.int32],
+    f: wp.int32,
     out_flags: wp.array[wp.int32],
-) -> None:
+):
     # Which faces survive a vertex remap (vertex clustering's cell labels, an edge collapse's
     # survivor map) and which targets they still name, so both compactions are one scan of
     # ``out_flags`` rather than a face gather and a sort-based dedup of the corners. The remapped
@@ -3813,7 +4166,6 @@ def mark_surviving_faces(
     # faces that survive. ``remap_and_mark_faces`` is the same marking with the corners written.
     # A ``state`` holds the live face count of a fixed-width face buffer, whose dead rows keep the
     # zeroed flags they arrive with (``emit_edge_topology``).
-    f = wp.int32(wp.tid())
     if state.shape[0] > 0:
         if f >= state[COLLAPSE_PASS_FACES]:
             return
@@ -3821,7 +4173,19 @@ def mark_surviving_faces(
 
 
 @wp.kernel
-def compact_surviving_faces(
+def mark_surviving_faces(
+    faces: wp.array[wp.int32],
+    remap: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``mark_surviving_faces_at`` a thread a face.
+    f = wp.int32(wp.tid())
+    mark_surviving_faces_at(faces, remap, state, f, out_flags)
+
+
+@wp.func
+def compact_surviving_faces_at(
     faces: wp.array[wp.int32],
     remap: wp.array[wp.int32],
     face_offsets: wp.array[wp.int32],
@@ -3830,6 +4194,7 @@ def compact_surviving_faces(
     low: wp.array[wp.float32],
     high: wp.array[wp.float32],
     key_base: wp.uint64,
+    t: wp.int32,
     out_faces: wp.array[wp.int32],
     out_totals: wp.array[wp.int32],
     out_positions: wp.array[wp.vec3],
@@ -3837,7 +4202,7 @@ def compact_surviving_faces(
     out_high: wp.array[wp.float32],
     out_keys: wp.array[wp.uint64],
     out_order: wp.array[wp.int32],
-) -> None:
+):
     # A collapse pass's whole compaction, over ``max(n_faces, n_targets)`` threads. ``face_offsets``
     # and ``ranks`` are the two halves of one inclusive scan over ``mark_surviving_faces``' face
     # flags followed by its target marks, behind a leading zero, each read as an exclusive scan with
@@ -3859,7 +4224,6 @@ def compact_surviving_faces(
     #   every face row past the survivors writes ``EDGE_KEY_PAD``, which sorts after every real
     #   key: the next sort runs over the whole width, and its live prefix is exactly the sort of
     #   the live corners.
-    t = wp.int32(wp.tid())
     n_faces = face_offsets.shape[0] - 1
     if t < ranks.shape[0] - 1:
         slot, kept = scanned_slot(ranks, t)
@@ -3888,6 +4252,238 @@ def compact_surviving_faces(
     write_corner_triple(out_faces, row, s0, s1, s2)
     if out_keys.shape[0] > 0:
         write_face_edge_keys_and_order(out_faces, row, key_base, out_keys, out_order)
+
+
+@wp.kernel
+def compact_surviving_faces(
+    faces: wp.array[wp.int32],
+    remap: wp.array[wp.int32],
+    face_offsets: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    positions: wp.array[wp.vec3],
+    low: wp.array[wp.float32],
+    high: wp.array[wp.float32],
+    key_base: wp.uint64,
+    out_faces: wp.array[wp.int32],
+    out_totals: wp.array[wp.int32],
+    out_positions: wp.array[wp.vec3],
+    out_low: wp.array[wp.float32],
+    out_high: wp.array[wp.float32],
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # ``compact_surviving_faces_at`` a thread a face or target.
+    t = wp.int32(wp.tid())
+    compact_surviving_faces_at(
+        faces,
+        remap,
+        face_offsets,
+        ranks,
+        positions,
+        low,
+        high,
+        key_base,
+        t,
+        out_faces,
+        out_totals,
+        out_positions,
+        out_low,
+        out_high,
+        out_keys,
+        out_order,
+    )
+
+
+@wp.func
+def inclusive_scan_serial(values: wp.array[wp.int32], out_scan: wp.array[wp.int32]):
+    # ``_launch.array_scan(values, out_scan, inclusive=True)`` by one thread (``out_scan`` may be
+    # ``values``): an integer scan is exact in any order.
+    running = wp.int32(0)
+    for i in range(values.shape[0]):
+        running += values[i]
+        out_scan[i] = running
+
+
+@wp.kernel(enable_backward=False)
+def collapse_pass(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    low: wp.array[wp.float32],
+    high: wp.array[wp.float32],
+    grouping_inverse: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    feature_angle: wp.float32,
+    low_uniform: wp.float32,
+    high_uniform: wp.float32,
+    select: wp.int32,
+    degeneracy: wp.vec3,
+    rounds: wp.int32,
+    key_base: wp.uint64,
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    inverse: wp.array[wp.int32],
+    face_count: wp.array[wp.int32],
+    edge_faces: wp.array2d[wp.int32],
+    counts: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    offset_tail: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    face_offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    feature_count: wp.array[wp.int32],
+    survivor: wp.array[wp.int32],
+    removed: wp.array[wp.int32],
+    target_pos: wp.array[wp.vec3],
+    claim: wp.array[wp.int64],
+    remap: wp.array[wp.int32],
+    positions: wp.array[wp.vec3],
+    locked: wp.array[wp.int32],
+    commits: wp.array[wp.int32],
+    mark_tail: wp.array[wp.int32],
+    face_scan: wp.array[wp.int32],
+    target_scan: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    totals: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_vertices: wp.array[wp.vec3],
+    out_low: wp.array[wp.float32],
+    out_high: wp.array[wp.float32],
+    out_keys: wp.array[wp.uint64],
+) -> None:
+    # dim=1. One ``remesh._CollapseBuffers`` pass from its corner sort on, by one thread, each step
+    # walking its launch's threads in index order: the topology build (``count_edge_topology`` over
+    # a grouping in hand, a non-empty ``grouping_inverse``, else the run starts, their scan and
+    # ``emit_edge_topology``), the count scan, ``fill_edge_topology``, ``collapse_candidates``,
+    # ``rounds`` rounds of ``claim_collapse_key`` -> ``commit_collapses`` (a later one re-arming the
+    # claim table), ``mark_surviving_faces``, the mark scan and ``compact_surviving_faces``: the
+    # CPU engine. The CPU device runs a launch's threads in turn, so those launches bought it no
+    # parallelism. ``state`` is read and written in place, as the launches do.
+    n = order.shape[0] // 2
+    e_cap = unique_edges.shape[0]
+    f_cap = n // 3
+    v_cap = remap.shape[0]
+    if grouping_inverse.shape[0] > 0:
+        for c in range(n):
+            count_edge_topology_at(
+                grouping_inverse,
+                faces,
+                unique_edges,
+                wp.int32(1),
+                c,
+                face_count,
+                edge_faces,
+                counts,
+                offsets,
+            )
+    else:
+        for i in range(n):
+            ranks[i] = wp.where(sorted_run_start(sorted_keys, i), wp.int32(1), wp.int32(0))
+        inclusive_scan_serial(ranks, ranks)
+        for i in range(n):
+            emit_edge_topology_at(
+                faces,
+                sorted_keys,
+                order,
+                ranks,
+                wp.int32(1),
+                state,
+                i,
+                unique_edges,
+                inverse,
+                face_count,
+                edge_faces,
+                counts,
+                offsets,
+                state,
+            )
+    inclusive_scan_serial(counts, offset_tail)
+    for t in range(wp.max(e_cap, f_cap)):
+        fill_edge_topology_at(
+            vertices,
+            faces,
+            unique_edges,
+            face_count,
+            edge_faces,
+            offsets,
+            feature_angle,
+            wp.int32(1),
+            state,
+            counts,
+            t,
+            columns,
+            feature_count,
+        )
+    for k in range(e_cap):
+        collapse_candidates_at(
+            unique_edges,
+            vertices,
+            faces,
+            feature_count,
+            face_count,
+            edge_faces,
+            ring_offsets,
+            columns,
+            face_offsets,
+            columns,
+            low,
+            high,
+            low_uniform,
+            high_uniform,
+            select,
+            degeneracy,
+            state,
+            k,
+            survivor,
+            removed,
+            target_pos,
+            claim,
+            remap,
+            positions,
+            state,
+        )
+    for round_index in range(rounds):
+        if round_index > 0:
+            for i in range(claim.shape[0]):
+                claim[i] = UNCLAIMED_KEY
+        for k in range(e_cap):
+            claim_collapse_key_at(survivor, removed, ring_offsets, columns, locked, k, claim)
+        for k in range(e_cap):
+            commit_collapses_at(
+                survivor,
+                removed,
+                target_pos,
+                claim,
+                ring_offsets,
+                columns,
+                k,
+                remap,
+                positions,
+                commits,
+                locked,
+            )
+    for f in range(f_cap):
+        mark_surviving_faces_at(faces, remap, state, f, mark_tail)
+    inclusive_scan_serial(mark_tail, mark_tail)
+    for t in range(wp.max(f_cap, v_cap)):
+        compact_surviving_faces_at(
+            faces,
+            remap,
+            face_scan,
+            target_scan,
+            positions,
+            low,
+            high,
+            key_base,
+            t,
+            out_faces,
+            totals,
+            out_vertices,
+            out_low,
+            out_high,
+            out_keys,
+            order,
+        )
 
 
 # Objective for ``objective_flip_candidates``. A warp-uniform kernel argument rather than a
@@ -4349,6 +4945,30 @@ def scanned_prefix(
 
 
 @wp.func
+def scan_chunks_serial(
+    values: wp.array[wp.int32],
+    out_prefix: wp.array[wp.int32],
+    out_chunk_totals: wp.array[wp.int32],
+    out_chunk_offsets: wp.array[wp.int32],
+):
+    # ``scan_chunks_exclusive`` by one thread: the same three tables ``scanned_prefix`` reads (each
+    # chunk's own exclusive scan, the chunk totals and their exclusive scan). ``scan_word_counts_
+    # serial`` is the same walk over a bitmask's set-bit counts.
+    n = values.shape[0]
+    running = wp.int32(0)
+    for chunk in range(out_chunk_totals.shape[0]):
+        out_chunk_offsets[chunk] = running
+        lo = chunk * SCAN_CHUNK
+        hi = wp.min(lo + SCAN_CHUNK, n)
+        total = wp.int32(0)
+        for w in range(lo, hi):
+            out_prefix[w] = total
+            total += values[w]
+        out_chunk_totals[chunk] = total
+        running += total
+
+
+@wp.func
 def set_bits_before(
     words: wp.array[wp.uint32],
     prefix: wp.array[wp.int32],
@@ -4361,6 +4981,21 @@ def set_bits_before(
     w = base + (p >> 5)
     below = (wp.uint32(1) << wp.uint32(p & 31)) - wp.uint32(1)
     return scanned_prefix(prefix, chunk_offsets, w) + popcount32(words[w] & below)
+
+
+@wp.func
+def mark_unique_edge_start_at(
+    sorted_keys: wp.array[wp.uint64],
+    state: wp.array[wp.int32],
+    i: wp.int32,
+    out_starts: wp.array[wp.int32],
+):
+    # Sorted position ``i``'s run-start flag, for ``mark_unique_edge_starts`` and
+    # ``quadric_pass_head``.
+    start = wp.int32(0)
+    if i < state[DECIMATION_FACES] * 3 and sorted_run_start(sorted_keys, i):
+        start = wp.int32(1)
+    out_starts[i] = start
 
 
 @wp.kernel
@@ -4378,10 +5013,55 @@ def mark_unique_edge_starts(
     # which collapses to one lane per block on the CPU device. The saving
     # is one replayed node a pass, about half a percent of a decimation.
     i = wp.int32(wp.tid())
-    start = wp.int32(0)
-    if i < state[DECIMATION_FACES] * 3 and sorted_run_start(sorted_keys, i):
-        start = wp.int32(1)
-    out_starts[i] = start
+    mark_unique_edge_start_at(sorted_keys, state, i, out_starts)
+
+
+@wp.func
+def emit_pass_edges_at(
+    faces: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    start_prefix: wp.array[wp.int32],
+    start_chunk_offsets: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    edge_capacity: wp.int32,
+    vertex_capacity: wp.int32,
+    i: wp.int32,
+    out_unique_edges: wp.array2d[wp.int32],
+    out_edge_face_count: wp.array[wp.int32],
+    out_edge_faces: wp.array2d[wp.int32],
+    out_adjacency_counts: wp.array[wp.int32],
+    out_corner_slots: wp.array[wp.int32],
+    out_state: wp.array[wp.int32],
+):
+    # One launch per sorted live corner for everything the corner itself decides: the ascending
+    # unique edge rows (the same ascending-key order ``unique_1d`` produces, which is what keeps the
+    # edge numbering -- and so the hash in the lock keys -- identical to the composed path),
+    # the edge's incident faces (``scatter.scatter_edge_incidence``, reached without the corner ->
+    # edge map it reads), the corner's slot in its vertex's face list, and, from the last live
+    # position, the live edge count. The exclusive scan of ``starts`` at ``i`` is the unique index
+    # of the key at sorted position ``i`` once that position has started its run.
+    #
+    # Padded corners are skipped rather than sent to a dummy slot: every one of them names the same
+    # dummy vertex and edge, so counting them would put thousands of atomics on one address.
+    # Shared by ``emit_pass_edges`` (a thread a sorted corner) and ``quadric_pass_head``.
+    live = state[DECIMATION_FACES] * 3
+    if i >= live:
+        return
+    corner = order[i]
+    # The capacity is a bound the *previous* pass measured, and a collapse removes at least three
+    # undirected edges and adds none, so an overflow cannot fire. Handled anyway: an overflowing
+    # corner goes to the dummy slot one past the capacity, in the incidence count as in the rows.
+    run_starts = scanned_prefix(start_prefix, start_chunk_offsets, i) + starts[i]
+    e = wp.min(run_starts - 1, edge_capacity)
+    if starts[i] != 0 and e < edge_capacity:
+        write_edge_row(faces, corner, e, out_unique_edges)
+    record_edge_incidence(e, corner, out_edge_face_count, out_edge_faces)
+    out_corner_slots[corner] = wp.atomic_add(
+        out_adjacency_counts, vertex_capacity + faces[corner], 1
+    )
+    if i + 1 == live:
+        out_state[DECIMATION_EDGES] = wp.min(run_starts, edge_capacity)
 
 
 @wp.kernel
@@ -4401,34 +5081,25 @@ def emit_pass_edges(
     out_corner_slots: wp.array[wp.int32],
     out_state: wp.array[wp.int32],
 ) -> None:
-    # One launch per sorted live corner for everything the corner itself decides: the ascending
-    # unique edge rows (the same ascending-key order ``unique_1d`` produces, which is what keeps the
-    # edge numbering -- and so the hash in the lock keys -- identical to the composed path),
-    # the edge's incident faces (``scatter.scatter_edge_incidence``, reached without the corner ->
-    # edge map it reads), the corner's slot in its vertex's face list, and, from the last live
-    # position, the live edge count. The exclusive scan of ``starts`` at ``i`` is the unique index
-    # of the key at sorted position ``i`` once that position has started its run.
-    #
-    # Padded corners are skipped rather than sent to a dummy slot: every one of them names the same
-    # dummy vertex and edge, so counting them would put thousands of atomics on one address.
+    # ``emit_pass_edges_at`` a thread a sorted corner.
     i = wp.int32(wp.tid())
-    live = state[DECIMATION_FACES] * 3
-    if i >= live:
-        return
-    corner = order[i]
-    # The capacity is a bound the *previous* pass measured, and a collapse removes at least three
-    # undirected edges and adds none, so an overflow cannot fire. Handled anyway: an overflowing
-    # corner goes to the dummy slot one past the capacity, in the incidence count as in the rows.
-    run_starts = scanned_prefix(start_prefix, start_chunk_offsets, i) + starts[i]
-    e = wp.min(run_starts - 1, edge_capacity)
-    if starts[i] != 0 and e < edge_capacity:
-        write_edge_row(faces, corner, e, out_unique_edges)
-    record_edge_incidence(e, corner, out_edge_face_count, out_edge_faces)
-    out_corner_slots[corner] = wp.atomic_add(
-        out_adjacency_counts, vertex_capacity + faces[corner], 1
+    emit_pass_edges_at(
+        faces,
+        order,
+        starts,
+        start_prefix,
+        start_chunk_offsets,
+        state,
+        edge_capacity,
+        vertex_capacity,
+        i,
+        out_unique_edges,
+        out_edge_face_count,
+        out_edge_faces,
+        out_adjacency_counts,
+        out_corner_slots,
+        out_state,
     )
-    if i + 1 == live:
-        out_state[DECIMATION_EDGES] = wp.min(run_starts, edge_capacity)
 
 
 @wp.func
@@ -4558,8 +5229,8 @@ def count_pass_edges_exact(
     )
 
 
-@wp.kernel
-def scatter_pass_adjacency(
+@wp.func
+def scatter_pass_adjacency_at(
     faces: wp.array[wp.int32],
     unique_edges: wp.array2d[wp.int32],
     edge_slots: wp.array[wp.vec2i],
@@ -4568,14 +5239,15 @@ def scatter_pass_adjacency(
     count_chunk_offsets: wp.array[wp.int32],
     state: wp.array[wp.int32],
     vertex_capacity: wp.int32,
+    t: wp.int32,
     out_adjacency: wp.array[wp.int32],
     out_offsets: wp.array[wp.int32],
-) -> None:
-    # Launched over the corners or the offset table, whichever is longer. Thread ``t`` places live
-    # edge ``t``'s two vertex-vertex entries and live corner ``t``'s vertex-face entry at the slots
-    # the counting kernels drew, and writes entry ``t`` of the offset table the scan left split in
-    # two -- independent work that only needs the counts, so it shares this one launch.
-    t = wp.int32(wp.tid())
+):
+    # Run over the corners or the offset table, whichever is longer. Thread ``t`` places live edge
+    # ``t``'s two vertex-vertex entries and live corner ``t``'s vertex-face entry at the slots the
+    # counting kernels drew, and writes entry ``t`` of the offset table the scan left split in two
+    # -- independent work that only needs the counts, so it shares one launch. Shared by
+    # ``scatter_pass_adjacency`` and ``quadric_pass_head``.
     if t < out_offsets.shape[0]:
         out_offsets[t] = scanned_prefix(count_prefix, count_chunk_offsets, t)
     if t < state[DECIMATION_EDGES]:
@@ -4589,6 +5261,36 @@ def scatter_pass_adjacency(
     if t < live_faces * 3:
         row = scanned_prefix(count_prefix, count_chunk_offsets, vertex_capacity + faces[t])
         out_adjacency[row + corner_slots[t]] = t // 3
+
+
+@wp.kernel
+def scatter_pass_adjacency(
+    faces: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    edge_slots: wp.array[wp.vec2i],
+    corner_slots: wp.array[wp.int32],
+    count_prefix: wp.array[wp.int32],
+    count_chunk_offsets: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    vertex_capacity: wp.int32,
+    out_adjacency: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+) -> None:
+    # ``scatter_pass_adjacency_at`` a thread a corner or offset entry.
+    t = wp.int32(wp.tid())
+    scatter_pass_adjacency_at(
+        faces,
+        unique_edges,
+        edge_slots,
+        corner_slots,
+        count_prefix,
+        count_chunk_offsets,
+        state,
+        vertex_capacity,
+        t,
+        out_adjacency,
+        out_offsets,
+    )
 
 
 # Rows longer than this are summed in their stored order instead of ascending face order:
@@ -4634,15 +5336,16 @@ def take_boundary_quadric(
     return q
 
 
-@wp.kernel
-def gather_vertex_quadrics(
+@wp.func
+def gather_vertex_quadric_at(
     face_quadrics: wp.array[SymmetricQuadric],
     vertex_face_offsets: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
     boundary_quadrics: wp.array[SymmetricQuadric],
     boundary_flags: wp.array[wp.int32],
+    v: wp.int32,
     out_quadrics: wp.array[SymmetricQuadric],
-) -> None:
+):
     # Each vertex's quadric: its faces' planes, summed by one thread over its vertex-face row
     # (``ordered_face_quadric_sum``), so every cost and placement read from it is the same run to
     # run on every device, then the boundary planes ``count_pass_edges`` accumulated for it, whose
@@ -4653,14 +5356,36 @@ def gather_vertex_quadrics(
     # Two sums stay in arrival order on CUDA: a row longer than ``QUADRIC_ORDERED_ROW_MAX``, and
     # the boundary table of a vertex where three or more boundary edges meet. The form for
     # ``ordito.config``'s deterministic setting off; ``gather_vertex_quadrics_exact`` is the form
-    # for it on.
-    v = wp.int32(wp.tid())
+    # for it on. Shared by ``gather_vertex_quadrics`` (a thread a vertex) and
+    # ``quadric_pass_head``.
     q = ordered_face_quadric_sum(
         face_quadrics, vertex_faces, vertex_face_offsets[v], vertex_face_offsets[v + 1]
     )
     if boundary_flags[v] != 0:
         q = q + take_boundary_quadric(boundary_quadrics, boundary_flags, v)
     out_quadrics[v] = q
+
+
+@wp.kernel
+def gather_vertex_quadrics(
+    face_quadrics: wp.array[SymmetricQuadric],
+    vertex_face_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    boundary_quadrics: wp.array[SymmetricQuadric],
+    boundary_flags: wp.array[wp.int32],
+    out_quadrics: wp.array[SymmetricQuadric],
+) -> None:
+    # ``gather_vertex_quadric_at`` a thread a vertex.
+    v = wp.int32(wp.tid())
+    gather_vertex_quadric_at(
+        face_quadrics,
+        vertex_face_offsets,
+        vertex_faces,
+        boundary_quadrics,
+        boundary_flags,
+        v,
+        out_quadrics,
+    )
 
 
 @wp.func
@@ -4879,8 +5604,8 @@ def gather_hub_quadrics(
         h += HUB_BLOCKS
 
 
-@wp.kernel
-def quadric_collapse_candidates(
+@wp.func
+def quadric_collapse_candidate_at(
     unique_edges: wp.array2d[wp.int32],
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -4892,17 +5617,18 @@ def quadric_collapse_candidates(
     vertex_face_offsets: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
     state: wp.array[wp.int32],
+    k: wp.int32,
     out_survivor: wp.array[wp.int32],
     out_removed: wp.array[wp.int32],
     out_pos: wp.array[wp.vec3],
     out_sort_keys: wp.array[wp.float32],
     out_sort_order: wp.array[wp.int32],
-) -> None:
-    # Garland-Heckbert candidate: the cost of collapsing this edge and where its survivor lands.
+):
+    # Garland-Heckbert candidate: the cost of collapsing edge ``k`` and where its survivor lands.
     # The cost goes straight into the sort's key buffer beside an identity payload, so nothing is
     # copied between here and that sort; it is left at +inf for a rejected edge (and for every
     # padded row past the live edge count), so the sort puts every rejection past every candidate.
-    k = wp.int32(wp.tid())
+    # Shared by ``quadric_collapse_candidates`` (a thread an edge) and ``quadric_pass_head``.
     out_survivor[k] = -1
     out_sort_keys[k] = wp.inf
     out_sort_order[k] = k
@@ -4953,14 +5679,196 @@ def quadric_collapse_candidates(
 
 
 @wp.kernel
-def drop_past_half(
+def quadric_collapse_candidates(
+    unique_edges: wp.array2d[wp.int32],
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    quadrics: wp.array[SymmetricQuadric],
+    feature_count: wp.array[wp.int32],
+    edge_face_count: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    vertex_face_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    out_survivor: wp.array[wp.int32],
+    out_removed: wp.array[wp.int32],
+    out_pos: wp.array[wp.vec3],
+    out_sort_keys: wp.array[wp.float32],
+    out_sort_order: wp.array[wp.int32],
+) -> None:
+    # ``quadric_collapse_candidate_at`` a thread an edge.
+    k = wp.int32(wp.tid())
+    quadric_collapse_candidate_at(
+        unique_edges,
+        vertices,
+        faces,
+        quadrics,
+        feature_count,
+        edge_face_count,
+        offsets,
+        columns,
+        vertex_face_offsets,
+        vertex_faces,
+        state,
+        k,
+        out_survivor,
+        out_removed,
+        out_pos,
+        out_sort_keys,
+        out_sort_order,
+    )
+
+
+@wp.kernel
+def quadric_pass_head(
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    feature_angle: wp.float32,
+    edge_capacity: wp.int32,
+    vertex_capacity: wp.int32,
+    tally_boundary: wp.int32,
+    scatter_width: wp.int32,
+    starts: wp.array[wp.int32],
+    start_prefix: wp.array[wp.int32],
+    start_chunk_totals: wp.array[wp.int32],
+    start_chunk_offsets: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    edge_face_count: wp.array[wp.int32],
+    edge_faces: wp.array2d[wp.int32],
+    adjacency_counts: wp.array[wp.int32],
+    corner_slots: wp.array[wp.int32],
+    feature_count: wp.array[wp.int32],
+    edge_slots: wp.array[wp.vec2i],
+    boundary_quadrics: wp.array[SymmetricQuadric],
+    boundary_flags: wp.array[wp.int32],
+    hub_count: wp.array[wp.int32],
+    count_prefix: wp.array[wp.int32],
+    count_chunk_totals: wp.array[wp.int32],
+    count_chunk_offsets: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    score: wp.int32,
+    vertex_face_offsets: wp.array[wp.int32],
+    face_quadrics: wp.array[SymmetricQuadric],
+    quadrics: wp.array[SymmetricQuadric],
+    candidates: wp.array[wp.int32],
+    removed: wp.array[wp.int32],
+    target_pos: wp.array[wp.vec3],
+    sort_keys: wp.array[wp.float32],
+    sort_order: wp.array[wp.int32],
+    out_adjacency: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+) -> None:
+    # dim=1. A quadric decimation pass's grouping from its corner sort on, by one thread, each step
+    # walking its launch's threads in index order: ``mark_unique_edge_starts``, the start scan,
+    # ``emit_pass_edges``, ``count_pass_edges`` (``count_pass_edges_exact`` with
+    # ``tally_boundary``, which clears the hub count), the adjacency count scan and
+    # ``scatter_pass_adjacency``: the CPU engine. The CPU device runs a launch's threads in turn, so
+    # those launches bought it no parallelism. ``state`` is read and written in place, as the
+    # launches do. With ``score`` (the deterministic setting off) it goes on through
+    # ``gather_vertex_quadrics`` and ``quadric_collapse_candidates``; the setting's exact gather
+    # has a tiled step, which stays a launch of its own. ``vertex_face_offsets`` is the tail of
+    # ``out_offsets`` from ``vertex_capacity``.
+    n = starts.shape[0]
+    for i in range(n):
+        mark_unique_edge_start_at(sorted_keys, state, i, starts)
+    scan_chunks_serial(starts, start_prefix, start_chunk_totals, start_chunk_offsets)
+    for i in range(n):
+        emit_pass_edges_at(
+            faces,
+            order,
+            starts,
+            start_prefix,
+            start_chunk_offsets,
+            state,
+            edge_capacity,
+            vertex_capacity,
+            i,
+            unique_edges,
+            edge_face_count,
+            edge_faces,
+            adjacency_counts,
+            corner_slots,
+            state,
+        )
+    if tally_boundary != 0:
+        hub_count[0] = 0
+    for e in range(state[DECIMATION_EDGES]):
+        count_pass_edge(
+            vertices,
+            faces,
+            unique_edges,
+            edge_face_count,
+            edge_faces,
+            feature_angle,
+            e,
+            tally_boundary,
+            feature_count,
+            adjacency_counts,
+            edge_slots,
+            boundary_quadrics,
+            boundary_flags,
+        )
+    scan_chunks_serial(adjacency_counts, count_prefix, count_chunk_totals, count_chunk_offsets)
+    for t in range(scatter_width):
+        scatter_pass_adjacency_at(
+            faces,
+            unique_edges,
+            edge_slots,
+            corner_slots,
+            count_prefix,
+            count_chunk_offsets,
+            state,
+            vertex_capacity,
+            t,
+            out_adjacency,
+            out_offsets,
+        )
+    if score != 0:
+        for v in range(vertex_capacity):
+            gather_vertex_quadric_at(
+                face_quadrics,
+                vertex_face_offsets,
+                out_adjacency,
+                boundary_quadrics,
+                boundary_flags,
+                v,
+                quadrics,
+            )
+        for k in range(edge_capacity):
+            quadric_collapse_candidate_at(
+                unique_edges,
+                vertices,
+                faces,
+                quadrics,
+                feature_count,
+                edge_face_count,
+                out_offsets,
+                out_adjacency,
+                vertex_face_offsets,
+                out_adjacency,
+                state,
+                k,
+                candidates,
+                removed,
+                target_pos,
+                sort_keys,
+                sort_order,
+            )
+
+
+@wp.func
+def drop_past_half_at(
     order: wp.array[wp.int32],
     sorted_cost: wp.array[wp.float32],
     state: wp.array[wp.int32],
+    i: wp.int32,
     out_rank: wp.array[wp.int32],
     out_candidates: wp.array[wp.int32],
     out_lock_key: wp.array[wp.int64],
-) -> None:
+):
     # Stage one of the selection: retire every candidate outside the cheapest half of the live
     # edges, ``order`` being the ascending cost ranking and ``sorted_cost`` the costs in it.
     # Ranking by cost rather than by edge index is the whole difference between a quadric
@@ -4969,7 +5877,7 @@ def drop_past_half(
     # It also records each edge's position in that ranking, which is what lets every round rank its
     # winners with a scan rather than a sort (``commit_budgeted_collapses``), and its lock key for
     # the pass, bucketed against the most expensive candidate of the half (``bucketed_lock_key``).
-    i = wp.int32(wp.tid())
+    # Shared by ``drop_past_half`` (a thread a sorted position) and ``quadric_pass_tail``.
     e = order[i]
     out_rank[e] = i
     pool = wp.max(wp.int32(1), state[DECIMATION_EDGES] // 2)
@@ -4977,6 +5885,20 @@ def drop_past_half(
         out_candidates[e] = -1
         return
     out_lock_key[e] = bucketed_lock_key(e, sorted_cost[i], sorted_cost[pool - 1])
+
+
+@wp.kernel
+def drop_past_half(
+    order: wp.array[wp.int32],
+    sorted_cost: wp.array[wp.float32],
+    state: wp.array[wp.int32],
+    out_rank: wp.array[wp.int32],
+    out_candidates: wp.array[wp.int32],
+    out_lock_key: wp.array[wp.int64],
+) -> None:
+    # ``drop_past_half_at`` a thread a sorted position.
+    i = wp.int32(wp.tid())
+    drop_past_half_at(order, sorted_cost, state, i, out_rank, out_candidates, out_lock_key)
 
 
 @wp.func
@@ -5006,6 +5928,37 @@ def unlocked_candidate(
     return s
 
 
+@wp.func
+def drop_locked_and_claim_at(
+    candidates: wp.array[wp.int32],
+    removed: wp.array[wp.int32],
+    lock_key: wp.array[wp.int64],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    locked: wp.array[wp.int32],
+    k: wp.int32,
+    out_survivor: wp.array[wp.int32],
+    out_min_key: wp.array[wp.int64],
+    out_winner_words: wp.array[wp.uint32],
+):
+    # First step of a round, at thread ``k``: restore the pass's candidate list minus the ones a
+    # commit invalidated (``unlocked_candidate``), and claim each survivor's closed 1-rings under
+    # its lock key (``scatter.lock_two_rings``), which reads only this candidate's own survivor and
+    # so needs no barrier after the restore. On the first round ``locked`` is all-zero and the
+    # restore is the candidate list unchanged. Also clears the winner bitmask
+    # ``mark_collapse_winners`` sets, whose last reader was the previous round's commit; run over
+    # the edges or the mask's words, whichever is more. Shared by ``drop_locked_and_claim`` (a
+    # thread an edge) and ``quadric_collapse_rounds`` (the CPU's one thread).
+    if k < out_winner_words.shape[0]:
+        out_winner_words[k] = wp.uint32(0)
+    if k >= candidates.shape[0]:
+        return
+    s = unlocked_candidate(candidates, removed, offsets, columns, locked, k)
+    out_survivor[k] = s
+    if s >= 0:
+        lock_two_rings(offsets, columns, s, removed[k], lock_key[k], out_min_key)
+
+
 @wp.kernel(enable_backward=False)
 def drop_locked_and_claim(
     candidates: wp.array[wp.int32],
@@ -5018,22 +5971,54 @@ def drop_locked_and_claim(
     out_min_key: wp.array[wp.int64],
     out_winner_words: wp.array[wp.uint32],
 ) -> None:
-    # First launch of a round: restore the pass's candidate list minus the ones a commit
-    # invalidated (``unlocked_candidate``), and claim each survivor's closed 1-rings under its lock
-    # key (``scatter.lock_two_rings``), which reads only this candidate's own survivor and so needs
-    # no barrier after the restore. On the first round ``locked`` is all-zero and the restore is the
-    # candidate list unchanged. Also clears the winner bitmask ``mark_collapse_winners`` sets, whose
-    # last reader was the previous round's commit; launched over the edges or the mask's words,
-    # whichever is more.
+    # ``drop_locked_and_claim_at`` a thread an edge or word: the first launch of a round.
     k = wp.int32(wp.tid())
-    if k < out_winner_words.shape[0]:
-        out_winner_words[k] = wp.uint32(0)
-    if k >= candidates.shape[0]:
+    drop_locked_and_claim_at(
+        candidates,
+        removed,
+        lock_key,
+        offsets,
+        columns,
+        locked,
+        k,
+        out_survivor,
+        out_min_key,
+        out_winner_words,
+    )
+
+
+@wp.func
+def mark_collapse_winners_at(
+    survivor: wp.array[wp.int32],
+    removed: wp.array[wp.int32],
+    lock_key: wp.array[wp.int64],
+    min_key: wp.array[wp.int64],
+    edge_face_count: wp.array[wp.int32],
+    rank: wp.array[wp.int32],
+    k: wp.int32,
+    out_survivor: wp.array[wp.int32],
+    out_winner_words: wp.array[wp.uint32],
+):
+    # The win test at edge ``k``, kept separate from the commit so the round can apply its budget
+    # *after* the independent set is known. Trimming members from an independent set keeps it
+    # independent; trimming the candidate list beforehand would change which set is found.
+    #
+    # Each winner sets bit ``rank[k]`` -- its place in the pass's cost order -- of the first half of
+    # one bitmask, and a winner that removes a single face (a boundary edge's collapse) sets the
+    # same bit of the second half, so one word scan gives every winner the count of winners, and
+    # of single-face winners, cheaper than itself (``winner_faces_before``). Shared by
+    # ``mark_collapse_winners`` and ``quadric_collapse_rounds``.
+    s = survivor[k]
+    if s < 0:
         return
-    s = unlocked_candidate(candidates, removed, offsets, columns, locked, k)
-    out_survivor[k] = s
-    if s >= 0:
-        lock_two_rings(offsets, columns, s, removed[k], lock_key[k], out_min_key)
+    if not endpoints_hold(min_key, s, removed[k], lock_key[k]):
+        out_survivor[k] = -1
+        return
+    p = rank[k]
+    bit = wp.uint32(1) << wp.uint32(p & 31)
+    wp.atomic_or(out_winner_words, p >> 5, bit)
+    if edge_face_count[k] == 1:
+        wp.atomic_or(out_winner_words, out_winner_words.shape[0] // 2 + (p >> 5), bit)
 
 
 @wp.kernel(enable_backward=False)
@@ -5047,26 +6032,19 @@ def mark_collapse_winners(
     out_survivor: wp.array[wp.int32],
     out_winner_words: wp.array[wp.uint32],
 ) -> None:
-    # The win test, kept separate from the commit so the round can apply its budget *after* the
-    # independent set is known. Trimming members from an independent set keeps it independent;
-    # trimming the candidate list beforehand would change which set is found.
-    #
-    # Each winner sets bit ``rank[k]`` -- its place in the pass's cost order -- of the first half of
-    # one bitmask, and a winner that removes a single face (a boundary edge's collapse) sets the
-    # same bit of the second half, so one word scan gives every winner the count of winners, and
-    # of single-face winners, cheaper than itself (``winner_faces_before``).
+    # ``mark_collapse_winners_at`` a thread an edge.
     k = wp.int32(wp.tid())
-    s = survivor[k]
-    if s < 0:
-        return
-    if not endpoints_hold(min_key, s, removed[k], lock_key[k]):
-        out_survivor[k] = -1
-        return
-    p = rank[k]
-    bit = wp.uint32(1) << wp.uint32(p & 31)
-    wp.atomic_or(out_winner_words, p >> 5, bit)
-    if edge_face_count[k] == 1:
-        wp.atomic_or(out_winner_words, out_winner_words.shape[0] // 2 + (p >> 5), bit)
+    mark_collapse_winners_at(
+        survivor,
+        removed,
+        lock_key,
+        min_key,
+        edge_face_count,
+        rank,
+        k,
+        out_survivor,
+        out_winner_words,
+    )
 
 
 @wp.func
@@ -5083,6 +6061,65 @@ def winner_faces_before(
     winners = set_bits_before(words, prefix, chunk_offsets, 0, rank)
     single = set_bits_before(words, prefix, chunk_offsets, words.shape[0] // 2, rank)
     return 2 * winners - (single - scanned_prefix(prefix, chunk_offsets, words.shape[0] // 2))
+
+
+@wp.func
+def commit_budgeted_collapses_at(
+    survivor: wp.array[wp.int32],
+    removed: wp.array[wp.int32],
+    target_pos: wp.array[wp.vec3],
+    edge_face_count: wp.array[wp.int32],
+    rank: wp.array[wp.int32],
+    winner_words: wp.array[wp.uint32],
+    prefix: wp.array[wp.int32],
+    chunk_offsets: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    target_faces: wp.int32,
+    round_state: wp.array[wp.int32],
+    k: wp.int32,
+    out_remap: wp.array[wp.int32],
+    out_positions: wp.array[wp.vec3],
+    out_count: wp.array[wp.int32],
+    out_locked: wp.array[wp.int32],
+    out_min_key: wp.array[wp.int64],
+):
+    # Apply the round's independent set up to its face budget, cheapest first, then mark the closed
+    # 1-rings of every commit for the next round's conflict test (``unlocked_candidate``). Run over
+    # the edges or the vertices, whichever is wider: the vertex threads re-arm the claim keys for
+    # the next round, which is legal here because ``mark_collapse_winners`` was their last reader.
+    # Plain stores for the marks: every write is the same value.
+    #
+    # The budget is in **faces**, shared by the pass's rounds: ``n_faces - target`` less the faces
+    # every earlier round removed, which ``end_collapse_round`` has stored. A collapse removes the
+    # faces on its edge -- two, or one on a boundary -- and a winner commits when the cheaper
+    # winners and itself fit. Counted in collapses instead, a boundary collapse would be charged
+    # two faces and every pass but the last would stop short of its share, leaving a tail of passes
+    # that commit one collapse each. A winner that would overshoot is still committed when it is the
+    # pass's first, so a pass with a surplus of one face on a closed mesh still finishes the job;
+    # that cannot manufacture a commit, because the budget only *trims* a chosen independent set.
+    # ``out_count`` is ``[commits, removed faces]`` for the pass. Shared by
+    # ``commit_budgeted_collapses`` and ``quadric_collapse_rounds``.
+    if k < out_min_key.shape[0]:
+        out_min_key[k] = UNCLAIMED_KEY
+    if k >= survivor.shape[0]:
+        return
+    s = survivor[k]
+    if s < 0:
+        return
+    removed_faces = round_state[COLLAPSE_REMOVED_FACES]
+    budget = state[DECIMATION_FACES] - target_faces - removed_faces
+    before = winner_faces_before(rank[k], winner_words, prefix, chunk_offsets)
+    own = wp.max(wp.int32(1), wp.min(edge_face_count[k], wp.int32(2)))
+    if before + own > budget and not (removed_faces == 0 and before == 0 and budget > 0):
+        return
+    r = removed[k]
+    out_remap[r] = s
+    out_positions[s] = target_pos[k]
+    wp.atomic_add(out_count, 0, 1)
+    wp.atomic_add(out_count, 1, own)
+    stamp_two_rings(offsets, columns, s, r, 1, out_locked)
 
 
 @wp.kernel(enable_backward=False)
@@ -5106,61 +6143,81 @@ def commit_budgeted_collapses(
     out_locked: wp.array[wp.int32],
     out_min_key: wp.array[wp.int64],
 ) -> None:
-    # Apply the round's independent set up to its face budget, cheapest first, then mark the closed
-    # 1-rings of every commit for the next round's conflict test (``unlocked_candidate``). Launched
-    # over the edges or the vertices, whichever is wider: the vertex threads re-arm the claim keys
-    # for the next round, which is legal here because ``mark_collapse_winners`` was their last
-    # reader. Plain stores for the marks: every write is the same value.
-    #
-    # The budget is in **faces**, shared by the pass's rounds: ``n_faces - target`` less the faces
-    # every earlier round removed, which ``end_collapse_round`` has stored. A collapse removes the
-    # faces on its edge -- two, or one on a boundary -- and a winner commits when the cheaper
-    # winners and itself fit. Counted in collapses instead, a boundary collapse would be charged
-    # two faces and every pass but the last would stop short of its share, leaving a tail of passes
-    # that commit one collapse each. A winner that would overshoot is still committed when it is the
-    # pass's first, so a pass with a surplus of one face on a closed mesh still finishes the job;
-    # that cannot manufacture a commit, because the budget only *trims* a chosen independent set.
-    # ``out_count`` is ``[commits, removed faces]`` for the pass.
+    # ``commit_budgeted_collapses_at`` a thread an edge or vertex.
     k = wp.int32(wp.tid())
-    if k < out_min_key.shape[0]:
-        out_min_key[k] = UNCLAIMED_KEY
-    if k >= survivor.shape[0]:
-        return
-    s = survivor[k]
-    if s < 0:
-        return
-    removed_faces = round_state[COLLAPSE_REMOVED_FACES]
-    budget = state[DECIMATION_FACES] - target_faces - removed_faces
-    before = winner_faces_before(rank[k], winner_words, prefix, chunk_offsets)
-    own = wp.max(wp.int32(1), wp.min(edge_face_count[k], wp.int32(2)))
-    if before + own > budget and not (removed_faces == 0 and before == 0 and budget > 0):
-        return
-    r = removed[k]
-    out_remap[r] = s
-    out_positions[s] = target_pos[k]
-    wp.atomic_add(out_count, 0, 1)
-    wp.atomic_add(out_count, 1, own)
-    stamp_two_rings(offsets, columns, s, r, 1, out_locked)
+    commit_budgeted_collapses_at(
+        survivor,
+        removed,
+        target_pos,
+        edge_face_count,
+        rank,
+        winner_words,
+        prefix,
+        chunk_offsets,
+        offsets,
+        columns,
+        state,
+        target_faces,
+        round_state,
+        k,
+        out_remap,
+        out_positions,
+        out_count,
+        out_locked,
+        out_min_key,
+    )
 
 
-@wp.kernel
-def end_collapse_round(
+@wp.func
+def end_collapse_round_at(
     max_rounds: wp.int32, count: wp.array[wp.int32], out_state: wp.array[wp.int32]
-) -> None:
-    # dim=1, last op of a round: decide whether another round against this same scoring is worth
+):
+    # Last step of a round: decide whether another round against this same scoring is worth
     # running, and store the round's totals for the next one's budget. ``begin_decimation_pass``
     # seeds the slot table.
     #
     # It stops when the round committed nothing -- a further round cannot, since the state it
     # reads is then unchanged -- or at the round cap. A budget-exhausted pass stops through that
     # same test: its budget is zero, so nothing commits.
-    _ = wp.int32(wp.tid())
     out_state[LOOP_ROUND] = out_state[LOOP_ROUND] + wp.int32(1)
     progressed = count[0] > out_state[COLLAPSE_COMMITS]
     out_state[COLLAPSE_COMMITS] = count[0]
     out_state[COLLAPSE_REMOVED_FACES] = count[1]
     keep_going = progressed and out_state[LOOP_ROUND] < max_rounds
     out_state[LOOP_CONDITION] = wp.where(keep_going, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def end_collapse_round(
+    max_rounds: wp.int32, count: wp.array[wp.int32], out_state: wp.array[wp.int32]
+) -> None:
+    # dim=1, ``end_collapse_round_at``: the last launch of a round.
+    _ = wp.int32(wp.tid())
+    end_collapse_round_at(max_rounds, count, out_state)
+
+
+@wp.func
+def scan_word_counts_serial(
+    words: wp.array[wp.uint32],
+    out_prefix: wp.array[wp.int32],
+    out_chunk_totals: wp.array[wp.int32],
+    out_chunk_offsets: wp.array[wp.int32],
+):
+    # ``scan_word_counts_exclusive`` by one thread: the same three tables ``scanned_prefix`` reads
+    # (each chunk's own exclusive scan, the chunk totals and their exclusive scan), and no ticket
+    # drawn, which the tiled scan leaves re-armed anyway.
+    n = words.shape[0]
+    running = wp.int32(0)
+    for chunk in range(out_chunk_totals.shape[0]):
+        out_chunk_offsets[chunk] = running
+        lo = chunk * SCAN_CHUNK
+        hi = wp.min(lo + SCAN_CHUNK, n)
+        total = wp.int32(0)
+        for w in range(lo, hi):
+            out_prefix[w] = total
+            total += popcount32(words[w])
+        out_chunk_totals[chunk] = total
+        running += total
 
 
 @wp.kernel
@@ -5173,7 +6230,7 @@ def remap_and_mark_faces(
     # ``mark_surviving_faces`` for the pass's compaction, also writing the remapped corners, which
     # the pass's own compaction reads (the marks are over ``begin_decimation_pass``' zeroing). A
     # padded face is the dummy triangle, never distinct, so it keeps neither itself nor the dummy
-    # vertex.
+    # vertex. ``quadric_pass_tail`` runs the same two calls a face.
     f = wp.int32(wp.tid())
     i0, i1, i2, _distinct = mark_surviving_face(faces, remap, f, out_flags)
     write_corner_triple(out_faces, f, i0, i1, i2)
@@ -5196,8 +6253,8 @@ def compacted_vertex(
     )
 
 
-@wp.kernel
-def compact_decimation_pass(
+@wp.func
+def compact_decimation_pass_at(
     remapped: wp.array[wp.int32],
     positions: wp.array[wp.vec3],
     flags: wp.array[wp.int32],
@@ -5207,11 +6264,12 @@ def compact_decimation_pass(
     collapse_remap: wp.array[wp.int32],
     source: wp.array[wp.int32],
     index: wp.array[wp.int32],
+    t: wp.int32,
     out_faces: wp.array[wp.int32],
     out_vertices: wp.array[wp.vec3],
     out_source: wp.array[wp.int32],
     out_state: wp.array[wp.int32],
-) -> None:
+):
     # Both compactions at once, publishing both counts. The exclusive scan of
     # ``remap_and_mark_faces``' flags runs faces first and vertices after, so a surviving face's
     # row is its scan entry and a kept vertex's slot is ``compacted_vertex``; launched over the
@@ -5234,7 +6292,8 @@ def compact_decimation_pass(
     #   the map a single array of the *input* length -- fixed width, so the pass stays capturable --
     #   instead of a chain of per-pass maps the caller would have to fold itself. ``index`` is
     #   genuinely in place, which is why it carries no ``out_`` prefix.
-    t = wp.int32(wp.tid())
+    #
+    # Shared by ``compact_decimation_pass`` (a thread a face or vertex) and ``quadric_pass_tail``.
     n_faces = out_faces.shape[0] // 3
     n_vertices = flags.shape[0] - n_faces
     kept_faces = scanned_prefix(prefix, chunk_offsets, n_faces)
@@ -5270,3 +6329,167 @@ def compact_decimation_pass(
         if current >= 0:
             survivor = collapse_remap[current]
             index[t] = compacted_vertex(flags, prefix, chunk_offsets, n_faces, survivor)
+
+
+@wp.kernel
+def compact_decimation_pass(
+    remapped: wp.array[wp.int32],
+    positions: wp.array[wp.vec3],
+    flags: wp.array[wp.int32],
+    prefix: wp.array[wp.int32],
+    chunk_offsets: wp.array[wp.int32],
+    dummy_vertex: wp.int32,
+    collapse_remap: wp.array[wp.int32],
+    source: wp.array[wp.int32],
+    index: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_vertices: wp.array[wp.vec3],
+    out_source: wp.array[wp.int32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # ``compact_decimation_pass_at`` a thread a face or vertex, whichever is more.
+    t = wp.int32(wp.tid())
+    compact_decimation_pass_at(
+        remapped,
+        positions,
+        flags,
+        prefix,
+        chunk_offsets,
+        dummy_vertex,
+        collapse_remap,
+        source,
+        index,
+        t,
+        out_faces,
+        out_vertices,
+        out_source,
+        out_state,
+    )
+
+
+@wp.kernel(enable_backward=False)
+def quadric_pass_tail(
+    sort_order: wp.array[wp.int32],
+    sort_keys: wp.array[wp.float32],
+    removed: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    target_pos: wp.array[wp.vec3],
+    edge_face_count: wp.array[wp.int32],
+    target_faces: wp.int32,
+    max_rounds: wp.int32,
+    n_edges: wp.int32,
+    commit_width: wp.int32,
+    compact_width: wp.int32,
+    dummy_vertex: wp.int32,
+    face_source: wp.array[wp.int32],
+    candidates: wp.array[wp.int32],
+    rank: wp.array[wp.int32],
+    lock_key: wp.array[wp.int64],
+    survivor: wp.array[wp.int32],
+    min_key: wp.array[wp.int64],
+    winner_words: wp.array[wp.uint32],
+    winner_prefix: wp.array[wp.int32],
+    winner_chunk_totals: wp.array[wp.int32],
+    winner_chunk_offsets: wp.array[wp.int32],
+    locked: wp.array[wp.int32],
+    count: wp.array[wp.int32],
+    round_state: wp.array[wp.int32],
+    collapse_remap: wp.array[wp.int32],
+    positions: wp.array[wp.vec3],
+    remapped: wp.array[wp.int32],
+    compact_flags: wp.array[wp.int32],
+    compact_prefix: wp.array[wp.int32],
+    compact_chunk_totals: wp.array[wp.int32],
+    compact_chunk_offsets: wp.array[wp.int32],
+    vertex_index: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    state: wp.array[wp.int32],
+    out_face_source: wp.array[wp.int32],
+) -> None:
+    # dim=1. A quadric decimation pass from its candidate sort on, by one thread, each step walking
+    # its launch's threads in index order: ``drop_past_half``; every round of
+    # ``drop_locked_and_claim`` -> ``mark_collapse_winners`` -> the winner word scan ->
+    # ``commit_budgeted_collapses`` -> ``end_collapse_round`` until the round loop's
+    # ``LOOP_CONDITION`` stops it; ``remap_and_mark_faces``, the compaction scan and
+    # ``compact_decimation_pass``: the CPU engine. The CPU device runs a launch's threads in turn,
+    # so those launches (five a round) bought it no parallelism. ``faces`` and ``state`` are read
+    # and rewritten in place, as the launches do.
+    for i in range(n_edges):
+        drop_past_half_at(sort_order, sort_keys, state, i, rank, candidates, lock_key)
+    m = candidates.shape[0]
+    claim_width = wp.max(m, winner_words.shape[0])
+    while round_state[LOOP_CONDITION] != 0:
+        for k in range(claim_width):
+            drop_locked_and_claim_at(
+                candidates,
+                removed,
+                lock_key,
+                offsets,
+                columns,
+                locked,
+                k,
+                survivor,
+                min_key,
+                winner_words,
+            )
+        for k in range(m):
+            mark_collapse_winners_at(
+                survivor,
+                removed,
+                lock_key,
+                min_key,
+                edge_face_count,
+                rank,
+                k,
+                survivor,
+                winner_words,
+            )
+        scan_word_counts_serial(
+            winner_words, winner_prefix, winner_chunk_totals, winner_chunk_offsets
+        )
+        for k in range(commit_width):
+            commit_budgeted_collapses_at(
+                survivor,
+                removed,
+                target_pos,
+                edge_face_count,
+                rank,
+                winner_words,
+                winner_prefix,
+                winner_chunk_offsets,
+                offsets,
+                columns,
+                state,
+                target_faces,
+                round_state,
+                k,
+                collapse_remap,
+                positions,
+                count,
+                locked,
+                min_key,
+            )
+        end_collapse_round_at(max_rounds, count, round_state)
+    for f in range(faces.shape[0] // 3):
+        i0, i1, i2, _distinct = mark_surviving_face(faces, collapse_remap, f, compact_flags)
+        write_corner_triple(remapped, f, i0, i1, i2)
+    scan_chunks_serial(compact_flags, compact_prefix, compact_chunk_totals, compact_chunk_offsets)
+    for t in range(compact_width):
+        compact_decimation_pass_at(
+            remapped,
+            positions,
+            compact_flags,
+            compact_prefix,
+            compact_chunk_offsets,
+            dummy_vertex,
+            collapse_remap,
+            face_source,
+            vertex_index,
+            t,
+            faces,
+            vertices,
+            out_face_source,
+            state,
+        )

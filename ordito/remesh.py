@@ -940,6 +940,9 @@ class _CollapseBuffers:
         ring = wp.int32(1)
         unique_edges, _inverse = self._topology(pass_index)
         _launch.zero_(self._zeroed)
+        if device.is_cpu:
+            self._pass_serial(pass_index, mesh, out, unique_edges)
+            return
         if pass_index == 0 and self._grouping is not None:
             _launch.launch(
                 kernel_remesh.count_edge_topology,
@@ -1110,6 +1113,80 @@ class _CollapseBuffers:
                 self._keys,
                 self._order,
             ],
+            device=device,
+        )
+
+    def _pass_serial(
+        self,
+        pass_index: int,
+        mesh: _CollapseMesh,
+        out: _CollapseMesh,
+        unique_edges: odt.Array2dInt32,
+    ) -> None:
+        """
+        Issue one pass as ``_pass`` does, from its corner sort on in one launch: the CPU's engine.
+
+        The CPU device runs a launch's threads in turn, so the pass's launches and scans buy it no
+        parallelism; one thread runs them all in the same order (``kernel_remesh.collapse_pass``),
+        bit for bit. Called after the pass's zeroing.
+        """
+        device = self._device
+        n = 3 * self.n_faces
+        grouped = pass_index == 0 and self._grouping is not None
+        if not grouped:
+            if pass_index == 0:
+                _launch.launch(
+                    kernel_adjacency.face_edge_keys_and_order,
+                    dim=self.n_faces,
+                    inputs=[mesh.faces, self._key_base, self._keys, self._order],
+                    device=device,
+                )
+            _launch.radix_sort_pairs(self._keys, self._order, count=n, end_bit=self._key_bits)
+        _launch.launch(
+            kernel_remesh.collapse_pass,
+            dim=1,
+            inputs=[
+                mesh.vertices,
+                mesh.faces,
+                mesh.low,
+                mesh.high,
+                self._grouping[1] if grouped and self._grouping is not None else None,
+                self._keys,
+                self._feature,
+                self._low_uniform,
+                self._high_uniform,
+                self._select,
+                self._degeneracy,
+                wp.int32(self._rounds),
+                self._key_base,
+                self._order,
+                self._ranks,
+                unique_edges,
+                self._inverse,
+                self._face_count,
+                self._edge_faces,
+                self._counts,
+                self._offsets,
+                self._offset_tail,
+                self._ring_offsets,
+                self._face_offsets,
+                self._columns,
+                self._feature_count,
+                self._survivor,
+                self._removed,
+                self._target_pos,
+                self._claim,
+                self._remap,
+                self._positions,
+                self._locked,
+                self._commits,
+                self._mark_tail,
+                self._face_scan,
+                self._target_scan,
+                self.state,
+                self._totals,
+            ],
+            outputs=[out.faces, out.vertices, out.low, out.high, self._keys],
             device=device,
         )
 
@@ -1441,6 +1518,35 @@ def _flip_interior_edges(
         # A refresh re-arms both claim tables for the round after it, so only a round that follows
         # a build or another issued round fills them itself.
         topology.arm_claims()
+        if wp.get_device(device).is_cpu:
+            # The CPU device runs a launch's threads in turn: one thread claims and commits, the
+            # same steps in the same order as the two launches below.
+            _launch.launch(
+                kernel_remesh.claim_and_commit_flips,
+                dim=1,
+                inputs=[
+                    topology.flip,
+                    topology.quad,
+                    topology.adjacency,
+                    topology.adjacency_edges,
+                    wp.int32(topology.edge_claim_mask),
+                    key_base,
+                    wp.int32(topology.active_edge_set_mask),
+                    wp.int32(m),
+                    topology.face_claim,
+                    topology.edge_claim,
+                    topology.row_halfedges,
+                    topology.halfedge_row,
+                    topology.edge_set,
+                    valence,
+                ],
+                outputs=[faces, progress],
+                device=device,
+            )
+            topology.claims_armed = False
+            if refresh:
+                topology.refresh()
+            return
         _launch.launch(
             kernel_remesh.claim_flips,
             dim=m,
@@ -3029,10 +3135,12 @@ class _DecimationBuffers:
             ],
             device=device,
         )
-        offsets = self._group_edges()
+        offsets = self._adjacency_offsets
         csr_offsets = odt.as_dense(offsets[: v_cap + 1])
-        face_offsets = offsets[v_cap:]
-        if self._exact:
+        face_offsets = odt.as_dense(offsets[v_cap:])
+        # ``scored``: the CPU device ran the gather and the candidates with the grouping.
+        scored = self._group_edges(face_offsets)
+        if not scored and self._exact:
             # The two sums the plain gather leaves in arrival order -- a vertex-face row past
             # ``QUADRIC_ORDERED_ROW_MAX`` and three or more boundary planes -- summed exactly.
             _launch.launch(
@@ -3071,7 +3179,7 @@ class _DecimationBuffers:
                 block_dim=kernel_remesh.HUB_BLOCK_DIM,
                 device=device,
             )
-        else:
+        elif not scored:
             _launch.launch(
                 kernel_remesh.gather_vertex_quadrics,
                 dim=v_cap,
@@ -3085,29 +3193,30 @@ class _DecimationBuffers:
                 outputs=[self._quadrics],
                 device=device,
             )
-        _launch.launch(
-            kernel_remesh.quadric_collapse_candidates,
-            dim=self.n_edges,
-            inputs=[
-                self._unique_edges,
-                self.vertices,
-                self.faces,
-                self._quadrics,
-                self._feature_count,
-                self._edge_face_count,
-                csr_offsets,
-                self._adjacency,
-                face_offsets,
-                self._adjacency,
-                self.state,
-                self._candidates,
-                self._removed,
-                self._target_pos,
-                self._sort_keys,
-                self._sort_order,
-            ],
-            device=device,
-        )
+        if not scored:
+            _launch.launch(
+                kernel_remesh.quadric_collapse_candidates,
+                dim=self.n_edges,
+                inputs=[
+                    self._unique_edges,
+                    self.vertices,
+                    self.faces,
+                    self._quadrics,
+                    self._feature_count,
+                    self._edge_face_count,
+                    csr_offsets,
+                    self._adjacency,
+                    face_offsets,
+                    self._adjacency,
+                    self.state,
+                    self._candidates,
+                    self._removed,
+                    self._target_pos,
+                    self._sort_keys,
+                    self._sort_order,
+                ],
+                device=device,
+            )
 
         # Two-stage selection, and both stages matter.
         #
@@ -3116,6 +3225,10 @@ class _DecimationBuffers:
         # under a lock key that is a coarse cost bucket over a hash -- see ``bucketed_lock_key`` for
         # why neither the cost alone nor a hash alone will do.
         _launch.radix_sort_pairs(self._sort_keys, self._sort_order, count=self.n_edges)
+        if device.is_cpu:
+            self._issue_pass_tail_serial(csr_offsets)
+            self._retain = [offsets, csr_offsets, face_offsets]
+            return
         _launch.launch(
             kernel_remesh.drop_past_half,
             dim=self.n_edges,
@@ -3127,7 +3240,66 @@ class _DecimationBuffers:
         self._compact()
         self._retain = [offsets, csr_offsets, face_offsets]
 
-    def _group_edges(self) -> wp.array[wp.int32]:
+    def _issue_pass_tail_serial(self, csr_offsets: wp.array[wp.int32]) -> None:
+        """
+        Issue the pass from its candidate sort on as one launch: the CPU device's engine.
+
+        The CPU device runs a launch's threads in turn, so ``drop_past_half``, the collapse rounds
+        (five launches a round) and the compaction buy it no parallelism; one thread runs them all
+        in the same order (``kernel_remesh.quadric_pass_tail``), bit for bit.
+        """
+        device = self._device
+        if self._track_index:
+            # The compaction moves the provenance column with the faces, so it reads a copy; no
+            # step before it touches the column.
+            _launch.copy(self._face_source_scratch, self.face_source)
+        _launch.launch(
+            kernel_remesh.quadric_pass_tail,
+            dim=1,
+            inputs=[
+                self._sort_order,
+                self._sort_keys,
+                self._removed,
+                csr_offsets,
+                self._adjacency,
+                self._target_pos,
+                self._edge_face_count,
+                wp.int32(self._target),
+                wp.int32(_QUADRIC_ROUNDS),
+                wp.int32(self.n_edges),
+                wp.int32(max(self.n_edges, self.n_vertices + 1)),
+                wp.int32(max(self.n_faces, self.n_vertices)),
+                wp.int32(self.n_vertices),
+                self._face_source_scratch,
+                self._candidates,
+                self._cost_rank,
+                self._lock_key,
+                self._survivor,
+                self._min_key,
+                self._winner_words,
+                self._winner_scan.prefix,
+                self._winner_scan.chunk_totals,
+                self._winner_scan.chunk_offsets,
+                self._locked,
+                self._count,
+                self._round_state,
+                self._collapse_remap,
+                self._positions,
+                self._remapped,
+                self._compact_flags,
+                self._compact_scan.prefix,
+                self._compact_scan.chunk_totals,
+                self._compact_scan.chunk_offsets,
+                self.vertex_index,
+                self.faces,
+                self.vertices,
+                self.state,
+            ],
+            outputs=[self.face_source],
+            device=device,
+        )
+
+    def _group_edges(self, face_offsets: wp.array[wp.int32]) -> bool:
         """
         Group the live face corners into unique edges and build the pass's adjacency, readback-free.
 
@@ -3135,13 +3307,65 @@ class _DecimationBuffers:
         ascending-key order, which the lock keys depend on -- from one radix sort instead of
         ``edges_unique``'s hash table, a compaction scan and a second sort; plus, from the same
         launches, the per-vertex feature counts, the vertex-vertex and vertex-face CSRs and the
-        vertex quadrics. Returns the shared offset table, whose first ``n_vertices + 2`` entries
-        index the vertex-vertex rows and whose remainder indexes the vertex-face rows.
+        vertex quadrics, into the shared offset table ``_adjacency_offsets``, whose first
+        ``n_vertices + 2`` entries index the vertex-vertex rows and whose remainder,
+        ``face_offsets``, indexes the vertex-face rows.
+
+        Returns whether the pass's scoring (the vertex quadrics and the collapse candidates) ran
+        too: on the CPU device, which runs this in one launch, with the deterministic setting off.
         """
         device = self._device
         n = self.n_corners
         v_cap = self.n_vertices + 1
         _launch.radix_sort_pairs(self._keys, self._order, count=n, end_bit=self._key_bits)
+        if device.is_cpu:
+            # The CPU device runs a launch's threads in turn: one thread runs the launches and
+            # scans below, in the same order (``kernel_remesh.quadric_pass_head``), bit for bit.
+            _launch.launch(
+                kernel_remesh.quadric_pass_head,
+                dim=1,
+                inputs=[
+                    self._keys,
+                    self._order,
+                    self.vertices,
+                    self.faces,
+                    self._feature,
+                    wp.int32(self.n_edges),
+                    wp.int32(v_cap),
+                    wp.int32(1 if self._exact else 0),
+                    wp.int32(max(n, 2 * v_cap + 1)),
+                    self._starts,
+                    self._start_scan.prefix,
+                    self._start_scan.chunk_totals,
+                    self._start_scan.chunk_offsets,
+                    self._unique_edges,
+                    self._edge_face_count,
+                    self._edge_faces,
+                    self._adjacency_counts,
+                    self._corner_slots,
+                    self._feature_count,
+                    self._edge_slots,
+                    self._boundary_quadrics,
+                    self._boundary_flags,
+                    self._hub_count,
+                    self._adjacency_scan.prefix,
+                    self._adjacency_scan.chunk_totals,
+                    self._adjacency_scan.chunk_offsets,
+                    self.state,
+                    wp.int32(0 if self._exact else 1),
+                    face_offsets,
+                    self._face_quadrics,
+                    self._quadrics,
+                    self._candidates,
+                    self._removed,
+                    self._target_pos,
+                    self._sort_keys,
+                    self._sort_order,
+                ],
+                outputs=[self._adjacency, self._adjacency_offsets],
+                device=device,
+            )
+            return not self._exact
         _launch.launch(
             kernel_remesh.mark_unique_edge_starts,
             dim=n,
@@ -3214,7 +3438,7 @@ class _DecimationBuffers:
             ],
             device=device,
         )
-        return self._adjacency_offsets
+        return False
 
     def _run_collapse_rounds(self, csr_offsets: wp.array[wp.int32]) -> None:
         """
@@ -3240,7 +3464,8 @@ class _DecimationBuffers:
         conditional-graph device, rather than letting ``wp.capture_while`` run it from the host,
         which reads and synchronizes on the condition every round and issues every launch again:
         the same device work, five launches recorded instead of five a round, and no host
-        synchronization.
+        synchronization. The CPU device does not come here: it runs every round inside one
+        launch (``_issue_pass_tail_serial``).
         """
         device = self._device
         m = self.n_edges
@@ -4531,14 +4756,19 @@ def _subdivide_to_size(
                 ],
                 device=device,
             )
+            offsets, n_split = _ranks_from_flags(rank_buffer)
         else:
+            # The tables are sized for the corners, which bound the unique edges, so the edge
+            # count comes back with the split count rather than in a readback of its own.
             n = current_faces.size
-            key_buffer, order, ranks, m = _sorted_corner_edges(current_faces, n_vertices)
-            unique_rows, inverse, rank_buffer = _split_buffer(
-                _launch.empty(3 * m + n + 1, dtype=wp.int32, device=device), 2 * m, n, m + 1
+            key_buffer, order, ranks, _m = _sorted_corner_edges(
+                current_faces, n_vertices, read_count=False
             )
-            unique_edges = odt.as_array2d(unique_rows.reshape((m, 2)), wp.int32)
-            long_mask = _launch.empty(m, dtype=wp.bool, device=device)
+            unique_rows, inverse, rank_buffer = _split_buffer(
+                _launch.empty(4 * n + 2, dtype=wp.int32, device=device), 2 * n, n, n + 2
+            )
+            unique_edges = odt.as_array2d(unique_rows.reshape((n, 2)), wp.int32)
+            long_mask = _launch.empty(n, dtype=wp.bool, device=device)
             _launch.launch(
                 kernel_remesh.emit_long_edges,
                 dim=n,
@@ -4555,14 +4785,19 @@ def _subdivide_to_size(
                 outputs=[unique_edges, inverse, long_mask, rank_buffer],
                 device=device,
             )
+            n_split, m = _corner_bounded_ranks(rank_buffer)
+            unique_edges = odt.as_array2d(
+                _launch.view(unique_rows, 0, 2 * m).reshape((m, 2)), wp.int32
+            )
+            long_mask = _launch.view(long_mask, 0, m)
+            offsets = _launch.view(rank_buffer, 0, m)
         grouping = None
 
         # A sizing field must grow with the vertex buffer, and it is *extended* rather than
         # re-sampled: a midpoint's target is the mean of the endpoints it splits, which is the same
         # value the edge was tested against, so a run of passes cannot drift the field. Computed
         # before the split because it reads the pre-split edge rows.
-        # The ranks are taken once here and shared by the sizing extension and the split.
-        offsets, n_split = _ranks_from_flags(rank_buffer)
+        # The ranks are taken once above and shared by the sizing extension and the split.
         # Every edge is short enough: we are done. The count is already on the host, so the pass
         # that finds nothing to split stops here rather than running a split that only copies.
         if n_split == 0:
@@ -4614,6 +4849,7 @@ def _sorted_corner_edges(
     keys: tuple[wp.array[wp.uint64], wp.array[wp.int32], int] | None = None,
     *,
     presorted: bool = False,
+    read_count: bool = True,
 ) -> tuple[wp.array[wp.uint64], wp.array[wp.int32], wp.array[wp.int32], int]:
     """
     ``(keys, order, ranks, m)``: the radix sort of every corner's edge key and its run ranks.
@@ -4625,7 +4861,9 @@ def _sorted_corner_edges(
     order, base)``, are such buffers already holding every corner's key packed against ``base``
     (at least ``n_vertices``) and the identity payload, so the key launch is skipped; any such base
     sorts the corners as ``n_vertices`` does. ``presorted`` says they are sorted already (a flip
-    loop's current sort), which skips the sort too.
+    loop's current sort), which skips the sort too. ``read_count=False`` reads nothing back and
+    returns ``-1`` for ``m``, for a caller sizing its tables by the corners and reading ``m``
+    later with another value (``_corner_bounded_ranks``).
     """
     device = faces.device
     n = faces.size
@@ -4652,8 +4890,27 @@ def _sorted_corner_edges(
         device=device,
     )
     _launch.array_scan(ranks, ranks, inclusive=True)
+    if not read_count:
+        return key_buffer, order, ranks, -1
     # The edge count sizes the caller's tables.
     return key_buffer, order, ranks, int(read_scalar(ranks, n - 1))
+
+
+def _corner_bounded_ranks(rank_buffer: wp.array[wp.int32]) -> tuple[int, int]:
+    """
+    Scan a corner-bounded rank buffer's flags in place; return the flagged and unique-edge counts.
+
+    ``rank_buffer`` is ``n + 2`` long for ``n`` sorted corners: a leading zero, a 0/1 flag per
+    unique edge padded with zeros to ``n``, and the unique-edge count ``m`` the emit published
+    (``kernels/remesh.publish_unique_edge_count``). After the scan ``rank_buffer[:m + 1]`` is
+    ``_ranks_from_flags``' ranks, and both counts come back in one copy.
+    """
+    n = rank_buffer.size - 2
+    flags = _launch.view(rank_buffer, 1, n + 1)
+    _launch.array_scan(flags, flags, inclusive=True)
+    # The flagged count sizes the split and decides the loop; the edge count cuts the tables.
+    n_flagged, m = read_values(rank_buffer, n, 2)
+    return int(n_flagged), int(m)
 
 
 def _edges_unique(
@@ -4895,17 +5152,17 @@ def subdivide_region_to_size(
             if topology is not None and topology.built
             else None
         )
-        key_buffer, order, ranks, m = _sorted_corner_edges(
-            current_faces, n_vertices, held, presorted=held is not None
+        # The tables are sized for the corners, which bound the unique edges, so the edge count
+        # comes back with the long-edge count rather than in a readback of its own.
+        n = 3 * n_faces
+        key_buffer, order, ranks, _m = _sorted_corner_edges(
+            current_faces, n_vertices, held, presorted=held is not None, read_count=False
         )
         rank_buffer, unique_rows, inverse = _split_buffer(
-            _launch.zeros(3 * m + 1 + 3 * n_faces, dtype=wp.int32, device=device),
-            m + 1,
-            2 * m,
-            3 * n_faces,
+            _launch.zeros(4 * n + 2, dtype=wp.int32, device=device), n + 2, 2 * n, n
         )
-        unique_edges = odt.as_array2d(unique_rows.reshape((m, 2)), wp.int32)
-        long_mask = _launch.zeros(m, dtype=wp.bool, device=device)
+        unique_edges = odt.as_array2d(unique_rows.reshape((n, 2)), wp.int32)
+        long_mask = _launch.zeros(n, dtype=wp.bool, device=device)
         _launch.launch(
             kernel_remesh.emit_long_region_edges,
             dim=3 * n_faces,
@@ -4925,7 +5182,11 @@ def subdivide_region_to_size(
         # The count drives the stopping test, the budget and the running total. The ranks are the
         # split's own and their scan total is the count, so the split below reuses them rather than
         # scanning the mask a second time; a budget-trimmed mask re-ranks.
-        offsets, n_long = _ranks_from_flags(rank_buffer)
+        n_long, m = _corner_bounded_ranks(rank_buffer)
+        unique_edges = odt.as_array2d(_launch.view(unique_rows, 0, 2 * m).reshape((m, 2)), wp.int32)
+        long_mask = _launch.view(long_mask, 0, m)
+        rank_buffer = _launch.view(rank_buffer, 0, m + 1)
+        offsets = _launch.view(rank_buffer, 0, m)
 
         if n_long == 0:
             break

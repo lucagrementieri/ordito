@@ -231,7 +231,15 @@ def test_either_sign_frees_the_refused_attempt_first(
         return state
 
     monkeypatch.setattr(plan_type, "numeric", recording)
-    monkeypatch.setattr(od.cholesky, "_leading_diagonal_negative", lambda _matrix: False)
+    plan_cholesky = od.cholesky._plan_cholesky  # pyright: ignore[reportPrivateUsage]
+
+    def wrong_sign(*args: Any, **kwargs: Any) -> object:
+        # The analysis reads the operator's sign; the first attempt takes the other one.
+        plan = plan_cholesky(*args, **kwargs)
+        plan.leading_negative = False
+        return plan
+
+    monkeypatch.setattr(od.cholesky, "_plan_cholesky", wrong_sign)
     factor = od.cholesky.sparse_cholesky(laplacian, mesh_wp.points, negated=None)
     assert factor.negated
     assert len(attempts) == 2

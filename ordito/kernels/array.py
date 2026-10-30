@@ -49,6 +49,15 @@ LOOP_CONDITION_VIEW = slice(int(LOOP_CONDITION), int(LOOP_CONDITION) + 1)
 LOOP_PROGRESS_VIEW = slice(int(LOOP_PROGRESS), int(LOOP_PROGRESS) + 1)
 
 
+@wp.func
+def advance_round_loop(max_rounds: wp.int32, out_state: wp.array[wp.int32]) -> None:
+    # ``loop_advance``'s body, for a CPU kernel running a whole round loop in one thread.
+    out_state[LOOP_ROUND] = out_state[LOOP_ROUND] + 1
+    keep_going = out_state[LOOP_PROGRESS] != 0 and out_state[LOOP_ROUND] < max_rounds
+    out_state[LOOP_CONDITION] = wp.where(keep_going, wp.int32(1), wp.int32(0))
+    out_state[LOOP_PROGRESS] = 0
+
+
 @wp.kernel
 def loop_advance(max_rounds: wp.int32, out_state: wp.array[wp.int32]) -> None:
     # dim=1. Close a device-side round: step the round index, publish whether another round should
@@ -73,10 +82,7 @@ def loop_advance(max_rounds: wp.int32, out_state: wp.array[wp.int32]) -> None:
     # a bespoke advance first. Carrying the stepped round index in a local rather than re-reading
     # ``out_state[LOOP_ROUND]`` for the cap test was tried and measured flat, so the plainer
     # spelling stays; nvcc forwards the store.
-    out_state[LOOP_ROUND] = out_state[LOOP_ROUND] + 1
-    keep_going = out_state[LOOP_PROGRESS] != 0 and out_state[LOOP_ROUND] < max_rounds
-    out_state[LOOP_CONDITION] = wp.where(keep_going, wp.int32(1), wp.int32(0))
-    out_state[LOOP_PROGRESS] = 0
+    advance_round_loop(max_rounds, out_state)
 
 
 @wp.func
@@ -1112,10 +1118,11 @@ def csr_run_flags(
     out_flags[i] = wp.where(csr_run_start(keys, i, sentinel), 1, 0)
 
 
-@wp.kernel
-def csr_from_runs(
+@wp.func
+def csr_place_run(
     keys: wp.array[wp.uint64],
     inclusive: wp.array[wp.int32],
+    i: wp.int32,
     sentinel: wp.uint64,
     n_rows: wp.int32,
     n_cols: wp.uint64,
@@ -1123,11 +1130,11 @@ def csr_from_runs(
     out_columns: wp.array[wp.int32],
     out_starts: wp.array[wp.int32],
 ) -> None:
-    # Launched over the sorted positions; ``inclusive`` is the inclusive scan of
+    # Sorted position ``i``'s share of the pattern; ``inclusive`` is the inclusive scan of
     # ``csr_run_flags``, so an entry's index is its run start's exclusive scan value. A run start
     # writes its column and first sorted position, the last in-range position closes
-    # ``out_starts``, and ``csr_row_offsets`` fills the row bounds.
-    i = wp.int32(wp.tid())
+    # ``out_starts``, and ``csr_row_offsets`` fills the row bounds. ``csr_from_runs`` runs it a
+    # thread a position, ``csr_from_sorted_keys_serial`` every position in one thread.
     if csr_out_of_range(keys, i, sentinel, out_offsets):
         return
     key = keys[i]
@@ -1141,6 +1148,75 @@ def csr_from_runs(
 
 
 @wp.kernel
+def csr_from_runs(
+    keys: wp.array[wp.uint64],
+    inclusive: wp.array[wp.int32],
+    sentinel: wp.uint64,
+    n_rows: wp.int32,
+    n_cols: wp.uint64,
+    out_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_starts: wp.array[wp.int32],
+) -> None:
+    # Launched over the sorted positions, after ``csr_run_flags`` and their scan.
+    i = wp.int32(wp.tid())
+    csr_place_run(
+        keys, inclusive, i, sentinel, n_rows, n_cols, out_offsets, out_columns, out_starts
+    )
+
+
+@wp.kernel
+def csr_from_sorted_keys_serial(
+    keys: wp.array[wp.uint64],
+    sentinel: wp.uint64,
+    n_rows: wp.int32,
+    n_cols: wp.uint64,
+    inclusive: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_starts: wp.array[wp.int32],
+) -> None:
+    # The CPU form of ``csr_run_flags``, their scan and ``csr_from_runs``, launched at ``dim=1``:
+    # the CPU runs a launch's threads one after another, so one thread takes the flags' running
+    # count into ``inclusive`` and then places every position as ``csr_from_runs``' threads do,
+    # with the same writes in the same order. ``inclusive`` is scratch.
+    total = wp.int32(0)
+    for i in range(inclusive.shape[0]):
+        if csr_run_start(keys, i, sentinel):
+            total += 1
+        inclusive[i] = total
+    for i in range(inclusive.shape[0]):
+        csr_place_run(
+            keys, inclusive, i, sentinel, n_rows, n_cols, out_offsets, out_columns, out_starts
+        )
+
+
+@wp.func
+def csr_run_flag(
+    keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    values: wp.array[Any],
+    i: wp.int32,
+    sentinel: wp.uint64,
+    zero: Any,
+    prune: wp.int32,
+    count: wp.int32,
+) -> wp.int32:
+    # ``1`` where sorted position ``i`` opens an entry: a run start, and with ``prune`` only one
+    # whose summed value is not exactly ``zero``. Pruning therefore acts on the *assembled* entry --
+    # one whose triplets cancel is dropped, which is where the value a caller sees is zero. The
+    # flags' inclusive scan numbers the kept entries; ``csr_place_flagged_run`` forms the same sum
+    # again rather than reading a table-sized buffer of them.
+    flag = wp.int32(0)
+    if csr_run_start(keys, i, sentinel):
+        flag = wp.int32(1)
+        if prune != 0:
+            if csr_run_sum(keys, order, values, i, count) == zero:
+                flag = wp.int32(0)
+    return flag
+
+
+@wp.kernel
 def csr_nonzero_run_flags(
     keys: wp.array[wp.uint64],
     order: wp.array[wp.int32],
@@ -1149,18 +1225,39 @@ def csr_nonzero_run_flags(
     zero: Any,
     out_flags: wp.array[wp.int32],
 ) -> None:
-    # ``csr_run_flags`` for a pruning build: a run start is an entry only if its summed value is not
-    # exactly ``zero``. Pruning therefore acts on the *assembled* entry -- one whose triplets cancel
-    # is dropped, which is where the value a caller sees is zero. The flags' inclusive scan numbers
-    # the kept entries; ``csr_from_flagged_runs`` forms the same sum again rather than reading a
-    # table-sized buffer of them.
+    # ``csr_run_flags`` for a pruning build.
     i = wp.int32(wp.tid())
-    flag = 0
-    if csr_run_start(keys, i, sentinel):
-        flag = 1
-        if csr_run_sum(keys, order, values, i, out_flags.shape[0]) == zero:
-            flag = 0
-    out_flags[i] = flag
+    out_flags[i] = csr_run_flag(
+        keys, order, values, i, sentinel, zero, wp.int32(1), out_flags.shape[0]
+    )
+
+
+@wp.func
+def csr_place_flagged_run(
+    keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    values: wp.array[Any],
+    inclusive: wp.array[wp.int32],
+    i: wp.int32,
+    sentinel: wp.uint64,
+    n_rows: wp.int32,
+    n_cols: wp.uint64,
+    out_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[Any],
+) -> None:
+    # ``csr_place_run`` for a triplet build: ``inclusive`` is the scan of ``csr_run_flag``. A kept
+    # run start sums its run (``csr_run_sum``) and writes its column and value at its rank; a row's
+    # offset is the number of kept entries before its first run start, pruned or not, so a row left
+    # empty by pruning still gets its bound.
+    if csr_out_of_range(keys, i, sentinel, out_offsets):
+        return
+    key = keys[i]
+    before, kept = scanned_count(inclusive, i)
+    if kept != 0:
+        out_columns[before] = wp.int32(key % n_cols)
+        out_values[before] = csr_run_sum(keys, order, values, i, inclusive.shape[0])
+    csr_row_offsets(keys, inclusive, i, before, sentinel, n_rows, n_cols, out_offsets)
 
 
 @wp.kernel
@@ -1176,19 +1273,59 @@ def csr_from_flagged_runs(
     out_columns: wp.array[wp.int32],
     out_values: wp.array[Any],
 ) -> None:
-    # ``csr_from_runs`` for a triplet build: ``inclusive`` is the scan of ``csr_run_flags`` or,
-    # pruning, of ``csr_nonzero_run_flags``. A kept run start sums its run (``csr_run_sum``) and
-    # writes its column and value at its rank; a row's offset is the number of kept entries before
-    # its first run start, pruned or not, so a row left empty by pruning still gets its bound.
+    # Launched over the sorted positions, after the flags and their scan.
     i = wp.int32(wp.tid())
-    if csr_out_of_range(keys, i, sentinel, out_offsets):
-        return
-    key = keys[i]
-    before, kept = scanned_count(inclusive, i)
-    if kept != 0:
-        out_columns[before] = wp.int32(key % n_cols)
-        out_values[before] = csr_run_sum(keys, order, values, i, inclusive.shape[0])
-    csr_row_offsets(keys, inclusive, i, before, sentinel, n_rows, n_cols, out_offsets)
+    csr_place_flagged_run(
+        keys,
+        order,
+        values,
+        inclusive,
+        i,
+        sentinel,
+        n_rows,
+        n_cols,
+        out_offsets,
+        out_columns,
+        out_values,
+    )
+
+
+@wp.kernel
+def csr_from_coo_keys_serial(
+    keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    values: wp.array[Any],
+    sentinel: wp.uint64,
+    zero: Any,
+    prune: wp.int32,
+    n_rows: wp.int32,
+    n_cols: wp.uint64,
+    inclusive: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[Any],
+) -> None:
+    # The CPU form of the flags, their scan and ``csr_from_flagged_runs``, launched at ``dim=1``
+    # as ``csr_from_sorted_keys_serial`` is: the same writes in the same order, so the same bits.
+    count = inclusive.shape[0]
+    total = wp.int32(0)
+    for i in range(count):
+        total += csr_run_flag(keys, order, values, i, sentinel, zero, prune, count)
+        inclusive[i] = total
+    for i in range(count):
+        csr_place_flagged_run(
+            keys,
+            order,
+            values,
+            inclusive,
+            i,
+            sentinel,
+            n_rows,
+            n_cols,
+            out_offsets,
+            out_columns,
+            out_values,
+        )
 
 
 @wp.kernel
@@ -1507,6 +1644,7 @@ SORT_ROWS_INSERTION: OverloadTable
 COO_KEYS_NONZERO: OverloadTable
 CSR_NONZERO_RUN_FLAGS: OverloadTable
 CSR_FROM_FLAGGED_RUNS: OverloadTable
+CSR_FROM_COO_KEYS_SERIAL: OverloadTable
 
 
 def _register_overloads() -> None:
@@ -1518,7 +1656,7 @@ def _register_overloads() -> None:
         ISIN_LOOKUP_SORTED, \
         MAP_SORTED_INVERSE, \
         SORT_ROWS_INSERTION
-    global COO_KEYS_NONZERO, CSR_NONZERO_RUN_FLAGS, CSR_FROM_FLAGGED_RUNS
+    global COO_KEYS_NONZERO, CSR_NONZERO_RUN_FLAGS, CSR_FROM_FLAGGED_RUNS, CSR_FROM_COO_KEYS_SERIAL
     ARANGE = OverloadTable(arange, {d: [wp.array[d]] for d in _INDEX_DTYPES})
     ARANGE_AFFINE = OverloadTable(arange_affine, {d: [d, d, wp.array[d]] for d in _INDEX_DTYPES})
     ARANGE_REPEAT = OverloadTable(arange_repeat, {d: [d, wp.array[d]] for d in _INDEX_DTYPES})
@@ -1597,6 +1735,26 @@ def _register_overloads() -> None:
                 wp.uint64,
                 wp.int32,
                 wp.uint64,
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[d],
+            ]
+            for d in _CSR_VALUE_DTYPES
+        },
+    )
+    CSR_FROM_COO_KEYS_SERIAL = OverloadTable(
+        csr_from_coo_keys_serial,
+        {
+            d: [
+                wp.array[wp.uint64],
+                wp.array[wp.int32],
+                wp.array[d],
+                wp.uint64,
+                d,
+                wp.int32,
+                wp.int32,
+                wp.uint64,
+                wp.array[wp.int32],
                 wp.array[wp.int32],
                 wp.array[wp.int32],
                 wp.array[d],

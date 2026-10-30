@@ -618,8 +618,10 @@ def _link_on_device(
     end_bit = max(1, (key_base * key_base - 1).bit_length())
     _launch.radix_sort_pairs(keys, endpoints, m, end_bit=end_bit)
 
-    link = _launch.empty(m, dtype=wp.int32, device=device)
-    state = _launch.empty(n, dtype=wp.vec4i, device=device)
+    # The link, the ranking's two state buffers and the tail heads die here: one allocation.
+    link, state, scratch, head_of_tail = _launch.carve_typed(
+        ((wp.int32, m), (wp.vec4i, n), (wp.vec4i, n), (wp.int32, n)), device
+    )
     # The per-curve weights, then their scan, with the malformed-input flag in the last slot.
     weights = _launch.zeros(m + 1, dtype=wp.int32, device=device)
     _launch.launch(
@@ -630,7 +632,6 @@ def _link_on_device(
     )
     # Rank until the windows cover the longest possible curve, all ``n`` segments, in the fewest
     # launches and, for that count, the fewest chased pointers (``graph.pointer_jump_schedule``).
-    scratch = _launch.empty(n, dtype=wp.vec4i, device=device)
     hops, rounds = kernel_graph.pointer_jump_schedule(n)
     width = 1
     for _round in range(rounds):
@@ -643,7 +644,6 @@ def _link_on_device(
         state, scratch = scratch, state
         width *= hops
 
-    head_of_tail = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_intersections.link_curve_weights,
         dim=n,
@@ -1460,8 +1460,9 @@ def _face_box_candidates(
         device=device,
     )
     counts = _launch.empty(n_query, dtype=wp.int32, device=device)
+    # Without ``grow`` nothing reads the overflow total, so neither it nor the excesses are kept.
     extras = _launch.empty(n_query, dtype=wp.int32, device=device) if grow else None
-    overflow = _launch.zeros(1, dtype=wp.int64, device=device)
+    overflow = _launch.zeros(1, dtype=wp.int64, device=device) if grow else None
     targets = _launch.empty(n_table, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_intersections.collect_face_box_candidates,
@@ -1472,6 +1473,7 @@ def _face_box_candidates(
     )
     if extras is None:
         return targets, counts, stride, None
+    assert overflow is not None
     # The one read: the candidates the table could not hold, which sizes the tail.
     n_tail = int(read_scalar(overflow))
     if n_tail == 0:
@@ -2483,8 +2485,8 @@ def _clip_with_sources(
     # its class's first member; the copies are then unreferenced and the compaction drops them.
     crossings = odt.as_dense(out_vertices[n_vertices:])
     slot_mask = kernel_grouping.hash_table_mask(n_crossings)
-    first = _launch.full(slot_mask + 1, -1, dtype=wp.int32, device=device)
-    slot = _launch.empty(n_crossings, dtype=wp.int32, device=device)
+    first, slot = _launch.carve(wp.int32, (slot_mask + 1, n_crossings), device)
+    _launch.fill_(first, -1)
     _launch.launch(
         kernel_points.point_duplicate_first,
         dim=n_crossings,

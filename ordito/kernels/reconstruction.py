@@ -12,11 +12,14 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, PI, TWO_PI
 from ordito.kernels.algorithms.conjugate_gradient import (
+    cg_coefficients_column,
     cg_publish_round_dots,
     cg_round_terms,
+    cg_update_block,
     cg_widen,
 )
 from ordito.kernels.array import (
+    LOOP_CONDITION,
     append_slot,
     is_positive_finite,
     ordered_float_bits,
@@ -2318,7 +2321,42 @@ def poisson_cg_initial(
         out_partials[0, 0, blk] = total
 
 
-@wp.kernel(enable_backward=False)
+@wp.func
+def poisson_cg_matvec_dots_block(
+    blk: wp.int32,
+    t: wp.int32,
+    n: wp.int32,
+    span: wp.int32,
+    res: wp.int32,
+    weights: wp.array[wp.float32],
+    screen: wp.float32,
+    r: wp.array[wp.float32],
+    u: wp.array[wp.float32],
+    gamma_new: wp.array[wp.float64],
+    alpha_new: wp.array[wp.float64],
+    w: wp.array[wp.float32],
+    partials: wp.array3d[wp.float64],
+    gamma_old: wp.array[wp.float64],
+    alpha_old: wp.array[wp.float64],
+    state: wp.array[wp.int32],
+) -> None:
+    # Block ``blk`` of ``poisson_cg_matvec_dots``, lane ``t``. Block-collective.
+    acc = wp.vec3(0.0, 0.0, 0.0)
+    for kk in range(t, span, wp.block_dim()):
+        local = blk * span + kk
+        wl = wp.float32(0.0)
+        if local < n:
+            g = poisson_grid_coordinates(local, res)
+            wl = screened_laplacian_row(wp.float32(1.0), u, weights, screen, res, g[0], g[1], g[2])
+        w[local] = wl
+        acc += cg_round_terms(r[local], u[local], wl)
+    total = cg_widen(block_sum(acc))
+    cg_publish_round_dots(
+        total, 0, blk, t, gamma_new, alpha_new, partials, gamma_old, alpha_old, state
+    )
+
+
+@wp.kernel
 def poisson_cg_matvec_dots(
     n: wp.int32,
     span: wp.int32,
@@ -2340,28 +2378,10 @@ def poisson_cg_matvec_dots(
     # (``cg_round_terms``), then the shared tail (``cg_publish_round_dots``). ``cg_update`` is
     # shared outright, at its ``float32`` overload.
     blk, t = wp.tid()
-    acc = wp.vec3(0.0, 0.0, 0.0)
-    for kk in range(t, span, wp.block_dim()):
-        local = blk * span + kk
-        w = wp.float32(0.0)
-        if local < n:
-            g = poisson_grid_coordinates(local, res)
-            w = screened_laplacian_row(wp.float32(1.0), u, weights, screen, res, g[0], g[1], g[2])
-        out_w[local] = w
-        acc += cg_round_terms(r[local], u[local], w)
-    total = cg_widen(block_sum(acc))
-    cg_publish_round_dots(
-        total,
-        0,
-        blk,
-        t,
-        gamma_new,
-        alpha_new,
-        out_partials,
-        out_gamma_old,
-        out_alpha_old,
-        out_state,
-    )
+    poisson_cg_matvec_dots_block(
+        blk, t, n, span, res, weights, screen, r, u, gamma_new, alpha_new, out_w, out_partials,
+        out_gamma_old, out_alpha_old, out_state,
+    )  # fmt: skip
 
 
 @wp.kernel(enable_backward=False)
@@ -2495,6 +2515,29 @@ def poisson_restrict_node(
     return acc
 
 
+@wp.func
+def poisson_mg_coarsen_node(
+    weights: wp.array[wp.float32],
+    res_f: wp.int32,
+    res_c: wp.int32,
+    lap: wp.float32,
+    screen: wp.float32,
+    omega: wp.float32,
+    out_weights: wp.array[wp.float32],
+    out_smoother: wp.array[wp.float32],
+    ci: wp.int32,
+    cj: wp.int32,
+    ck: wp.int32,
+):
+    # ``poisson_mg_coarsen`` at one coarse node.
+    idx = poisson_grid_index(ci, cj, ck, res_c)
+    weight = poisson_restrict_node(weights, res_f, ci, cj, ck)
+    out_weights[idx] = weight
+    out_smoother[idx] = screened_laplacian_scaled_inverse_diagonal(
+        lap, weight, screen, omega, res_c, ci, cj, ck
+    )
+
+
 @wp.kernel(enable_backward=False)
 def poisson_mg_coarsen(
     weights: wp.array[wp.float32],
@@ -2509,11 +2552,8 @@ def poisson_mg_coarsen(
     # One V-cycle level's operator from the level above: ``W_c = P^T W_f`` and the level's
     # damped-Jacobi scaling, which reads only the node's own coarse weight -- so one launch.
     ci, cj, ck = wp.tid()
-    idx = poisson_grid_index(ci, cj, ck, res_c)
-    weight = poisson_restrict_node(weights, res_f, ci, cj, ck)
-    out_weights[idx] = weight
-    out_smoother[idx] = screened_laplacian_scaled_inverse_diagonal(
-        lap, weight, screen, omega, res_c, ci, cj, ck
+    poisson_mg_coarsen_node(
+        weights, res_f, res_c, lap, screen, omega, out_weights, out_smoother, ci, cj, ck
     )
 
 
@@ -2681,6 +2721,49 @@ def poisson_mg_level_layout(res0: wp.int32, level: wp.int32) -> wp.vec3i:
     return wp.vec3i(res, offset, poisson_mg_stride(res))
 
 
+@wp.kernel(enable_backward=False)
+def poisson_mg_coarsen_serial(
+    res0: wp.int32,
+    screen: wp.float32,
+    coarsest: wp.int32,
+    omega: wp.float32,
+    weights: wp.array[wp.float32],
+    storage: wp.array[wp.float32],
+) -> None:
+    # ``dim=1``: every ``poisson_mg_coarsen`` launch of ``reconstruction._PoissonMultigrid``'s
+    # hierarchy below ``res0`` in one thread, level by level, into each coarser level's weights
+    # and smoother in ``storage`` (``poisson_mg_level_layout``). Each node writes only its own
+    # entries, so the node order is free.
+    lap = wp.float32(1.0)
+    level = wp.int32(0)
+    res = res0
+    while res > coarsest:
+        coarse = poisson_mg_level_layout(res0, level + 1)
+        res_c = coarse[0]
+        nc = res_c * res_c * res_c
+        oc = coarse[1]
+        ac = coarse[2]
+        lap = lap * wp.float32(2.0)
+        fine = poisson_mg_level_layout(res0, level)
+        n = res * res * res
+        o = fine[1]
+        for ci in range(res_c):
+            for cj in range(res_c):
+                for ck in range(res_c):
+                    if level == 0:
+                        poisson_mg_coarsen_node(
+                            weights, res, res_c, lap, screen, omega, storage[oc : oc + nc],
+                            storage[oc + ac : oc + ac + nc], ci, cj, ck,
+                        )  # fmt: skip
+                    else:
+                        poisson_mg_coarsen_node(
+                            storage[o : o + n], res, res_c, lap, screen, omega,
+                            storage[oc : oc + nc], storage[oc + ac : oc + ac + nc], ci, cj, ck,
+                        )  # fmt: skip
+        res = res_c
+        level += 1
+
+
 @wp.func
 def poisson_mg_smooth_pass(
     res: wp.int32,
@@ -2716,8 +2799,8 @@ def poisson_mg_residual_pass(
                 poisson_mg_residual_node(res, lap, weights, screen, b, x, out_r, i, j, k)
 
 
-@wp.kernel(enable_backward=False)
-def poisson_mg_vcycle_serial(
+@wp.func
+def poisson_mg_vcycle(
     res0: wp.int32,
     screen: wp.float32,
     coarsest: wp.int32,
@@ -2726,12 +2809,12 @@ def poisson_mg_vcycle_serial(
     smoother: wp.array[wp.float32],
     source: wp.array[wp.float32],
     storage: wp.array[wp.float32],
-    out_destination: wp.array[wp.float32],
+    destination: wp.array[wp.float32],
 ) -> None:
-    # ``dim=1``: ``reconstruction._PoissonMultigrid``'s V-cycle at one sweep a side, every launch
-    # of it in launch order: the residual and restriction down to ``coarsest`` nodes a side,
+    # ``reconstruction._PoissonMultigrid``'s V-cycle at one sweep a side, in one thread, every
+    # launch of it in launch order: the residual and restriction down to ``coarsest`` nodes a side,
     # ``coarse_sweeps - 1`` sweeps there after the zero-start one, then the prolongation and
-    # sweep back up into ``out_destination``. The finest level reads ``weights``, ``smoother``
+    # sweep back up into ``destination``. The finest level reads ``weights``, ``smoother``
     # and ``source``; every other vector is a view of ``storage`` (``poisson_mg_level_layout``).
     # The finest ``start`` arrives holding its zero-start sweep, as the launched cycle's does.
     levels = wp.int32(1)
@@ -2817,7 +2900,7 @@ def poisson_mg_vcycle_serial(
         )
         cur = target
     # Back up: each level's ``start`` plus the prolonged correction into ``tmp``, swept into its
-    # ``x`` (the finest level's: ``out_destination``).
+    # ``x`` (the finest level's: ``destination``).
     for step in range(levels - 1):
         level = levels - 2 - step
         lap = lap * wp.float32(0.5)
@@ -2842,7 +2925,7 @@ def poisson_mg_vcycle_serial(
                     poisson_mg_prolong_add_node(coarse_x, res_c, res, fine_start, fine_tmp, i, j, k)
         if level == 0:
             poisson_mg_smooth_pass(
-                res, lap, weights, screen, smoother, source, fine_tmp, out_destination
+                res, lap, weights, screen, smoother, source, fine_tmp, destination
             )
         else:
             poisson_mg_smooth_pass(
@@ -2855,6 +2938,88 @@ def poisson_mg_vcycle_serial(
                 fine_tmp,
                 storage[o + 5 * a : o + 5 * a + n],
             )
+
+
+@wp.kernel(enable_backward=False)
+def poisson_mg_vcycle_serial(
+    res0: wp.int32,
+    screen: wp.float32,
+    coarsest: wp.int32,
+    coarse_sweeps: wp.int32,
+    weights: wp.array[wp.float32],
+    smoother: wp.array[wp.float32],
+    source: wp.array[wp.float32],
+    storage: wp.array[wp.float32],
+    out_destination: wp.array[wp.float32],
+) -> None:
+    # ``dim=1``: one ``poisson_mg_vcycle`` into ``out_destination``.
+    poisson_mg_vcycle(
+        res0, screen, coarsest, coarse_sweeps, weights, smoother, source, storage, out_destination
+    )
+
+
+@wp.kernel
+def poisson_cg_rounds_serial(
+    n: wp.int32,
+    span: wp.int32,
+    stride: wp.int32,
+    update_span: wp.int32,
+    maxiter: wp.int32,
+    fold: wp.int32,
+    n_blocks: wp.int32,
+    res: wp.int32,
+    weights: wp.array[wp.float32],
+    screen: wp.float32,
+    coarsest: wp.int32,
+    coarse_sweeps: wp.int32,
+    smoother: wp.array[wp.float32],
+    storage: wp.array[wp.float32],
+    atol_sq: wp.array[wp.float64],
+    r: wp.array[wp.float32],
+    u: wp.array[wp.float32],
+    p: wp.array[wp.float32],
+    s: wp.array[wp.float32],
+    gamma_old: wp.array[wp.float64],
+    alpha_old: wp.array[wp.float64],
+    gamma_new: wp.array[wp.float64],
+    alpha_new: wp.array[wp.float64],
+    state: wp.array[wp.int32],
+    out_w: wp.array[wp.float32],
+    out_partials: wp.array3d[wp.float64],
+    out_coefficients: wp.array2d[wp.float64],
+    out_x: wp.array[wp.float32],
+    out_dots: wp.array2d[wp.float64],
+    out_iterations: wp.array[wp.int32],
+) -> None:
+    # Every round of ``reconstruction._solve_screened_poisson`` on the CPU device, in one launch of
+    # one one-lane block: the V-cycle the seed is followed by, then while the loop state's
+    # condition holds, ``poisson_cg_matvec_dots``'
+    # blocks, then (unfolded) ``cg_coefficients``' one column, then ``cg_update``'s blocks (its
+    # "Jacobi apply" at ``smoother`` writes the finest zero-start sweep, the first ``storage``
+    # vector), then the V-cycle from ``r`` into ``u``. That device runs a launch's blocks one
+    # after another and ``wp.capture_while`` there tests the same condition word before each
+    # round, so this is the launched loop to the bit (``conjugate_gradient.cg_round_serial``'s
+    # argument, for the whole loop).
+    start = storage[0:n]
+    poisson_mg_vcycle(res, screen, coarsest, coarse_sweeps, weights, smoother, r, storage, u)
+    while state[LOOP_CONDITION] != 0:
+        for blk in range(n_blocks):
+            poisson_cg_matvec_dots_block(
+                blk, 0, n, span, res, weights, screen, r, u, gamma_new, alpha_new, out_w,
+                out_partials, gamma_old, alpha_old, state,
+            )  # fmt: skip
+        if fold == 0:
+            cg_coefficients_column(
+                0, 0, 1, maxiter, n_blocks, out_partials, gamma_old, alpha_old, atol_sq, state,
+                out_coefficients, gamma_new, alpha_new, out_dots, out_iterations,
+            )  # fmt: skip
+        for blk in range(stride // update_span):
+            cg_update_block(
+                0, blk, 0, stride, update_span, n, 1, maxiter, fold, n_blocks, 1, out_partials,
+                out_coefficients, gamma_old, alpha_old, atol_sq, smoother, out_w, p, s, r, u,
+                state, out_x, start, gamma_new, alpha_new, out_dots, out_iterations,
+            )  # fmt: skip
+        poisson_mg_vcycle(res, screen, coarsest, coarse_sweeps, weights, smoother, r, storage, u)
 
 
 @wp.func

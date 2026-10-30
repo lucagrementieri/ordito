@@ -440,8 +440,9 @@ def collect_face_box_candidates(
     The walk does **not** stop at ``max_hits``: it writes the first ``max_hits`` candidates and
     counts the rest, so ``out_counts[f]`` is the face's true candidate count and may exceed the
     block. An overflowing face adds its excess to ``out_overflow[0]`` (a conditional ``int64``
-    atomic: only overflowing faces contend, and the total cannot wrap) and, when ``out_extras`` is
-    passed, every face writes its excess (0 if none) there for the tail's scan. The excess is
+    atomic: only overflowing faces contend, and the total cannot wrap) and every face writes its
+    excess (0 if none) into ``out_extras`` for the tail's scan; both are passed together or not at
+    all. The excess is
     either collected into a packed tail by ``collect_overflow_candidates``
     (``intersection.face_box_candidates``) or walked again and tested inline by
     ``mark_overflow_crossings``; stopping at the cap returned a silent subset (48 of 189 crossing
@@ -462,8 +463,8 @@ def collect_face_box_candidates(
     out_counts[f] = c
     if out_extras.shape[0] > 0:
         out_extras[f] = wp.max(c - max_hits, wp.int32(0))
-    if c > max_hits:
-        wp.atomic_add(out_overflow, 0, wp.int64(c - max_hits))
+        if c > max_hits:
+            wp.atomic_add(out_overflow, 0, wp.int64(c - max_hits))
 
 
 @wp.kernel

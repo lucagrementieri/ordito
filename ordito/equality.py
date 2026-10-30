@@ -332,12 +332,18 @@ def _flag_unequal_faces(
     """
     if faces_a.size == 0:
         return
-    canonical_a = _canonical_faces(faces_a, vertex_map, n_vertices, unequal)
-    canonical_b = _canonical_faces(faces_b, None, n_vertices, unequal)
+    # Only the two sorted orders are kept: the comparison forms each side's canonical rows where it
+    # reads them, so neither canonical buffer is written.
+    n_faces = faces_a.size // 3
+    keys_a, payload_a, keys_b, payload_b = _launch.carve_typed(
+        ((wp.uint64, 2 * n_faces), (wp.int32, 2 * n_faces)) * 2, faces_a.device
+    )
+    order_a = _canonical_order(faces_a, vertex_map, n_vertices, unequal, (keys_a, payload_a))
+    order_b = _canonical_order(faces_b, None, n_vertices, unequal, (keys_b, payload_b))
     _launch.launch(
-        kernel_equality.flag_unequal,
-        dim=canonical_a.size,
-        inputs=[canonical_a, canonical_b, unequal],
+        kernel_equality.flag_unequal_canonical_rows,
+        dim=n_faces,
+        inputs=[faces_a, vertex_map, order_a, faces_b, None, order_b, n_vertices, unequal],
         device=faces_a.device,
     )
 
@@ -413,17 +419,45 @@ def _canonical_faces(
     ``vertex_map`` is ``None`` for the identity. ``invalid`` (or ``None``) has ``invalid[0]`` raised
     by a corner outside ``[0, n_vertices)``; through a map such a corner is read as ``0``.
     ``faces`` is non-empty.
+    """
+    device = faces.device
+    n_faces = faces.size // 3
+    order = _canonical_order(faces, vertex_map, n_vertices, invalid)
+    out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_equality.emit_canonical_faces,
+        dim=n_faces,
+        inputs=[faces, vertex_map, n_vertices, order, out_faces],
+        device=device,
+    )
+    return out_faces
 
-    One radix sort while three indices below ``n_vertices`` pack into 64 bits (``n_vertices`` up to
-    ``2 ** 21``). Past that, a least-significant-digit pair of stable sorts: the last two corners
-    packed into one key, then the leading corner alone.
+
+def _canonical_order(
+    faces: wp.array[wp.int32],
+    vertex_map: odt.ArrayNdInt32 | None,
+    n_vertices: int,
+    invalid: wp.array[wp.int32] | None,
+    buffers: tuple[wp.array[wp.uint64], wp.array[wp.int32]] | None = None,
+) -> wp.array[wp.int32]:
+    """
+    Return the faces in canonical order: sorted position ``i`` holds canonical row ``i``'s face.
+
+    ``vertex_map``, ``invalid`` and ``faces`` as in ``_canonical_faces``, whose rows are
+    ``kernels/equality.canonical_corner_triple`` of these faces. One radix sort while three
+    indices below ``n_vertices`` pack into 64 bits (``n_vertices`` up to ``2 ** 21``). Past that,
+    a least-significant-digit pair of stable sorts: the last two corners packed into one key, then
+    the leading corner alone. ``buffers`` is the first sort's ``(keys, payload)`` when the caller
+    carved them, shaped as ``_launch.sort_buffers``' are.
     """
     device = faces.device
     n_faces = faces.size // 3
     base = max(n_vertices, 1)
     whole_row = base**3 <= 1 << 64
     index_bits = max(1, (base - 1).bit_length())
-    keys, order = _launch.sort_buffers(n_faces, wp.uint64, device)
+    keys, order = (
+        buffers if buffers is not None else _launch.sort_buffers(n_faces, wp.uint64, device)
+    )
     _launch.launch(
         kernel_equality.canonical_face_keys,
         dim=n_faces,
@@ -433,25 +467,17 @@ def _canonical_faces(
     if whole_row:
         end_bit = max(1, (base**3 - 1).bit_length())
         _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=end_bit)
-    else:
-        _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=32 + index_bits)
-        leading, leading_order = _launch.sort_buffers(n_faces, wp.int32, device)
-        _launch.launch(
-            kernel_equality.leading_corner_keys,
-            dim=n_faces,
-            inputs=[faces, vertex_map, n_vertices, order, leading, leading_order],
-            device=device,
-        )
-        _launch.radix_sort_pairs(leading, leading_order, count=n_faces, end_bit=index_bits)
-        order = leading_order
-    out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+        return order
+    _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=32 + index_bits)
+    leading, leading_order = _launch.sort_buffers(n_faces, wp.int32, device)
     _launch.launch(
-        kernel_equality.emit_canonical_faces,
+        kernel_equality.leading_corner_keys,
         dim=n_faces,
-        inputs=[faces, vertex_map, n_vertices, order, out_faces],
+        inputs=[faces, vertex_map, n_vertices, order, leading, leading_order],
         device=device,
     )
-    return out_faces
+    _launch.radix_sort_pairs(leading, leading_order, count=n_faces, end_bit=index_bits)
+    return leading_order
 
 
 def rows_equal(rows_a: odt.Array2dInt32, rows_b: odt.Array2dInt32) -> bool:
@@ -569,8 +595,8 @@ def partitions_equal(labels_a: wp.array[wp.int32], labels_b: wp.array[wp.int32])
 
     Notes
     -----
-    The partitions are equal exactly when the labellings, and the pairs of labels item by item,
-    all have the same number of distinct values; the three counts are three host readbacks.
+    The partitions are equal exactly when every label of one labelling meets a single label of
+    the other, both ways: two sorts of the item's label pairs and one host readback.
 
     Examples
     --------
@@ -591,19 +617,40 @@ def partitions_equal(labels_a: wp.array[wp.int32], labels_b: wp.array[wp.int32])
         return False
     if labels_a.size == 0:
         return True
-    pairs = _launch.empty(labels_a.size, dtype=wp.uint64, device=labels_a.device)
+    device = labels_a.device
+    n = labels_a.size
+    # The partitions are equal when every ``a`` label meets one ``b`` label and every ``b`` label
+    # one ``a`` label: each holds when no run of one label in the pairs sorted by it holds two
+    # distinct pairs. Two sorts of packed pairs, ``a`` major then ``b`` major, each checked by a
+    # pass over its neighbours, raise one flag, read once; nothing reads the sorts' payloads.
+    keys_ab, order_ab, keys_ba, order_ba, unequal = _launch.carve_typed(
+        (
+            (wp.uint64, 2 * n),
+            (wp.int32, 2 * n),
+            (wp.uint64, 2 * n),
+            (wp.int32, 2 * n),
+            (wp.int32, 1),
+        ),
+        device,
+    )
     _launch.launch(
         kernel_equality.label_pair_keys,
-        dim=labels_a.size,
-        inputs=[labels_a, labels_b, pairs],
-        device=labels_a.device,
+        dim=n,
+        inputs=[labels_a, labels_b],
+        outputs=[keys_ab, unequal],
+        device=device,
     )
-    # Each distinct count sizes ``unique_1d``'s output, so each is a readback inside it.
-    n_pairs = od.grouping.unique_1d(pairs).size
-    return (
-        od.grouping.unique_1d(labels_a).size == n_pairs
-        and od.grouping.unique_1d(labels_b).size == n_pairs
+    _launch.radix_sort_pairs(keys_ab, order_ab, count=n)
+    _launch.launch(
+        kernel_equality.check_pairs_and_swap_keys,
+        dim=n,
+        inputs=[keys_ab, labels_a, labels_b, keys_ba, unequal],
+        device=device,
     )
+    _launch.radix_sort_pairs(keys_ba, order_ba, count=n)
+    _launch.launch(kernel_equality.check_pairs, dim=n, inputs=[keys_ba, unequal], device=device)
+    # The answer is a host ``bool``.
+    return int(read_scalar(unequal, 0)) == 0
 
 
 def _require_triangles(**named: wp.array[wp.int32]) -> None:

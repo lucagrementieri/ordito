@@ -24,6 +24,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
+from ordito.adjacency import _sorted_face_edge_buffers  # pyright: ignore[reportPrivateUsage]
 from ordito.constants import INDEX_RADIX_PAIR, INT32_MAX
 from ordito.kernels import halfedge as kernel_halfedge
 from ordito.kernels import scatter as kernel_scatter
@@ -610,7 +611,8 @@ def halfedge_mates(
             device=device,
         )
     else:
-        sorted_keys, key_order = sorted_pairing
+        sorted_keys = _launch.view(sorted_pairing[0], 0, n_halfedges)
+        key_order = _launch.view(sorted_pairing[1], 0, n_halfedges)
         _launch.launch(
             kernel_halfedge.sorted_halfedge_mates,
             dim=n_halfedges,
@@ -631,7 +633,8 @@ def _sorted_pairing(
     Returns the sorted keys and their halfedge permutation, or ``None`` where the pairing buckets
     instead (a large CUDA mesh with ``n_vertices`` given) or there are no halfedges, so a consumer
     reading the mates once in sorted order can form each in its own thread (``sorted_run_mate``)
-    rather than through a stored table.
+    rather than through a stored table. Both are the radix sort's double-width buffers, sorted in
+    their leading ``3 * n_faces`` entries; the upper halves are free scratch a caller may borrow.
     """
     n_halfedges = faces.size // 3 * 3
     if n_halfedges == 0 or (
@@ -640,7 +643,8 @@ def _sorted_pairing(
         and _buckets_on(faces)
     ):
         return None
-    return od.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
+    keys, order, _ = _sorted_face_edge_buffers(faces, n_vertices)
+    return keys, order
 
 
 def key_ordered_halfedges(

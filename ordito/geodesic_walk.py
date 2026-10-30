@@ -674,14 +674,18 @@ def _descend(
     no_graph = _launch.empty(0, dtype=wp.float32, device=device)
     no_offsets = _launch.empty(0, dtype=wp.int32, device=device)
     no_points = _launch.empty(0, dtype=wp.vec3, device=device)
-    counts = _launch.empty(n_paths, dtype=wp.int32, device=device)
-    # One flag per path that stopped short, their number, how many the completion finished, and
+    # The counts are written straight into the offsets' tail and scanned there in place (the
+    # writing pass leaves them alone). With ``complete_to``, the same zeroed allocation also holds
+    # one flag per path that stopped short, their number, how many the completion finished, and
     # the counts' total.
-    short_paths = (
-        _launch.zeros(n_paths + 3, dtype=wp.int32, device=device)
-        if complete_to is not None
-        else _launch.empty(0, dtype=wp.int32, device=device)
-    )
+    if complete_to is None:
+        offsets = _launch.zeros(n_paths + 1, dtype=wp.int32, device=device)
+        short_paths = _launch.empty(0, dtype=wp.int32, device=device)
+    else:
+        offsets, short_paths = _launch.carve(
+            wp.int32, (n_paths + 1, n_paths + 3), device, zeroed=True
+        )
+    counts = _launch.view(offsets, 1, n_paths + 1)
     _launch.launch(
         kernel,
         dim=n_paths,
@@ -692,9 +696,10 @@ def _descend(
     graph = no_graph
     n_completed = 0
     if complete_to is None:
+        _launch.array_scan(counts, out_array=counts, inclusive=True)
         # Host readback: only the device knows the walk's total length, and it sizes the point
         # buffer.
-        offsets, total = od.array.counts_to_offsets(counts)
+        total = int(read_scalar(offsets, n_paths))
     else:
         # Host readback, one copy: whether any path needs the edge-graph completion decides
         # whether its shortest-path relaxation runs at all, and the counts' total sizes the point
@@ -713,8 +718,7 @@ def _descend(
             # finished, and the total it changed.
             n_completed, total = (int(v) for v in read_values(short_paths, n_paths + 1, 2))
         # The total is known, so the offsets are the counts' scan behind a leading zero alone.
-        offsets = _launch.zeros(n_paths + 1, dtype=wp.int32, device=device)
-        _launch.array_scan(counts, out_array=odt.as_dense(offsets[1:]), inclusive=True)
+        _launch.array_scan(counts, out_array=counts, inclusive=True)
     points = _launch.empty(total, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel,
@@ -1251,15 +1255,19 @@ def _trace(
     sizing the output exactly beats reserving ``max_steps`` points per ray, which at the default cap
     would be tens of megabytes for a few thousand rays.
     """
-    counts = _launch.empty(n_rays, dtype=wp.int32, device=device)
+    # The counts are written straight into the offsets' tail and scanned there in place; the
+    # writing pass leaves them alone.
+    offsets = _launch.zeros(n_rays + 1, dtype=wp.int32, device=device)
+    counts = _launch.view(offsets, 1, n_rays + 1)
     no_offsets = _launch.empty(0, dtype=wp.int32, device=device)
     no_points = _launch.empty(0, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel, dim=n_rays, inputs=[*inputs, no_offsets, counts, no_points], device=device
     )
+    _launch.array_scan(counts, out_array=counts, inclusive=True)
 
     # Host readback: only the device knows the walk's total length, and it sizes the point buffer.
-    offsets, total = od.array.counts_to_offsets(counts)
+    total = int(read_scalar(offsets, n_rays))
     points = _launch.empty(total, dtype=wp.vec3, device=device)
     _launch.launch(kernel, dim=n_rays, inputs=[*inputs, offsets, counts, points], device=device)
     return points, offsets

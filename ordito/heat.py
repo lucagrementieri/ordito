@@ -502,9 +502,13 @@ def _heat_geodesic(
     # residual tolerance, which the far field sits hundreds of orders of magnitude below. Neumann on
     # a boundary, as MeshLab takes it, unless the caller asks for ``igl::heat_geodesics_solve``'s
     # average with the solution pinned to zero on the rim.
-    # The indicator, the heat and the divergence's sums: scratch dropped together, one buffer.
-    u0, heat, scratch = _zeroed_fields(device, n_vertices, n_vertices, n_vertices)
-    invalid = _launch.zeros(1, dtype=wp.int32, device=device)
+    # The indicator, the heat, the divergence's sums, the shift's means and (``"igl"``) the pinned
+    # heat: scratch dropped together, one buffer.
+    sizes = [n_vertices, n_vertices, n_vertices, _source_means_size(n_vertices, sources.size)]
+    if method == "igl":
+        sizes.append(n_vertices)
+    fields, invalid = _zeroed_fields_and_flag(device, *sizes)
+    u0, heat, scratch, means = fields[:4]
     _launch.launch(
         kernel_heat.seed_source_indicator,
         dim=sources.size,
@@ -516,11 +520,11 @@ def _heat_geodesic(
 
     solver.diffuse(u0, heat)
     if method == "igl":
-        pinned = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+        pinned = fields[4]
         if solver.diffuse_pinned(u0, pinned):
             _launch.map(kernel_heat.average_heat, heat, pinned, out=heat)
     distance = _distance_from_heat(
-        mesh, solver, sources, heat, _corner_order(mesh, solver), scratch
+        mesh, solver, sources, heat, _corner_order(mesh, solver), scratch, means
     )
     _log_discarded("heat_geodesic", owned, solver)
     return distance
@@ -660,6 +664,16 @@ def fast_marching_distance(
     # never met on a mesh (rounds track the diameter in edges).
     state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
     max_rounds = wp.int32(n_vertices)
+    if wp.get_device(device).is_cpu:
+        # The CPU runs a launch's threads one after another, so the whole loop runs as one
+        # thread's rounds in that same order (``kernels/heat.fast_marching_rounds_serial``).
+        _launch.launch(
+            kernel_heat.fast_marching_rounds_serial,
+            dim=1,
+            inputs=[vertices, faces, max_rounds, labels, relaxed, state],
+            device=device,
+        )
+        return labels
 
     def front_rounds() -> None:
         # Two rounds, ``labels`` into ``relaxed`` and back: a captured body replays the pointers it
@@ -932,6 +946,37 @@ def _unfolding_front_rounds(
     )
     state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
     max_rounds = wp.int32(n_vertices)
+    if wp.get_device(device).is_cpu:
+        # The CPU runs a launch's threads one after another, so the whole loop runs as one
+        # thread's rounds in that same order (``kernels/heat.unfolding_front_rounds_serial``).
+        _launch.launch(
+            kernel_heat.unfolding_front_rounds_serial,
+            dim=1,
+            inputs=[
+                faces,
+                lengths,
+                cosines,
+                vertex_faces,
+                vertex_face_offsets,
+                lanes,
+                threads,
+                vertex_threads,
+                wp.int32(labelled),
+                max_rounds,
+                labels,
+                keys,
+                relaxed,
+                relabelled,
+                lowered_round,
+                face_round,
+                front_vertices,
+                front_faces,
+                front_counts,
+                state,
+            ],
+            device=device,
+        )
+        return
 
     def front_round() -> None:
         _launch.launch(
@@ -1222,11 +1267,10 @@ def _heat_signed_distance(
     # Stage 1: splat each segment's normal onto its endpoints, one thread per curve entry, each
     # finding its own curve in the offsets on the device.
     # The field, its diffusion and the divergence's sums: scratch dropped together, one buffer.
-    source_rows, diffused_rows, scratch = _zeroed_fields(
+    (source_rows, diffused_rows, scratch), invalid = _zeroed_fields_and_flag(
         device, 2 * n_vertices, 2 * n_vertices, n_vertices
     )
     source = _pairs(source_rows, n_vertices)
-    invalid = _launch.zeros(1, dtype=wp.int32, device=device)
     # The zero set's pinned vertices, marked by the splat's own threads.
     zero_set = level_set_constraint == "zero_set"
     fixed_mask = _launch.zeros(n_vertices if zero_set else 0, dtype=wp.bool, device=device)
@@ -1630,9 +1674,10 @@ def vector_heat_operators(
         # the mean is read off the shared sparsity, twelve triplets per face and nothing pruned,
         # and the scalar bundle built here takes these very sums (a prebuilt one already holds its
         # own). Both systems square it on the device, so nothing is read back.
+        # A bundle assembled below reduces them itself, into the allocation its mass shares.
         if built is not None and built.edge_sums is not None:
             edge_sums = built.edge_sums
-        else:
+        elif scalar_operators is not None:
             edge_sums = _edge_length_sums(vertices, pattern)
 
     vector_values = None
@@ -1650,6 +1695,7 @@ def vector_heat_operators(
             transport_angles=transport_angles,
         )
         built = _SCALAR_BUILDS[scalar_operators[0]]
+        edge_sums = built.edge_sums
     elif built is not None:
         mass = built.mass
     else:
@@ -1788,21 +1834,50 @@ def _heat_operators(
         # the *solves* robust rather than turning the whole method intrinsic.
         lengths, _ = mollify_intrinsic(vertices, faces)
         cot_entries = cotmatrix_entries_intrinsic(lengths)
-    # Face normals and areas (float32) for the gradient, the half-cotangent table when the caller
-    # has none, and the lumped mass's exact float64 area sums, in one pass over the faces.
     device = vertices.device
     n_faces = faces.size // 3
+    n_vertices = vertices.size
     write_cot = cot_entries is None
-    # The per-face tables in one ``float32`` allocation, the bundle holding all of them: the
-    # areas, the normals' coordinates and the half-cotangent table when this pass writes it.
-    face_terms = _launch.empty((7 if write_cot else 4) * n_faces, dtype=wp.float32, device=device)
+    if n_faces > 0:
+        if cot_entries is not None and int(cot_entries.shape[0]) != n_faces:
+            raise ValueError(
+                f"cot_entries must have shape (n_faces, 3) = ({n_faces}, 3), "
+                f"got {(int(cot_entries.shape[0]), int(cot_entries.shape[1]))}"
+            )
+        if pattern is None:
+            pattern = mesh_operator_pattern(faces, n_vertices)
+    else:
+        pattern = None
+    # The lumped mass's area sums and, for the default timestep, the unique-edge sums reduced
+    # into them below: both zeroed, both held by the bundle, so one allocation. The sums are left
+    # on the device for the system's assembly to square.
+    sum_blocks = 0
+    if t is None and edge_sums is None and pattern is not None and pattern.n_vertices > 0:
+        sum_blocks = kernel_reduce.blocks_1d(pattern.n_vertices)
+    lumped, sum_and_count = _launch.carve(
+        wp.float64,
+        (n_vertices, _launch.block_partials_size(sum_blocks, 2) if sum_blocks else 0),
+        device,
+        zeroed=True,
+    )
+    # Face normals and areas (float32) for the gradient, the half-cotangent table when the caller
+    # has none, and the lumped mass's exact float64 area sums, in one pass over the faces. The
+    # per-face tables, the three operators' values over the pattern and the vector system's
+    # values when formed here are one uninitialized allocation: the bundle holds all of them.
+    n_slots = 0 if pattern is None else pattern.columns.size
+    parts: list[tuple[Any, int]] = [(wp.float32, (7 if write_cot else 4) * n_faces)]
+    if n_faces > 0:
+        parts.append((wp.float64, 3 * n_slots))
+        if transport_angles is not None:
+            parts.append((wp.mat22d, n_slots))
+    tables = _launch.carve_typed(parts, device)
+    face_terms = tables[0]
     areas = _face_table(face_terms, 0, n_faces, 1)
     normals = _face_table(face_terms, n_faces, n_faces, 3).reshape((n_faces, 3)).view(wp.vec3)
     if cot_entries is None:
         cot_entries = odt.as_array2d(
             _face_table(face_terms, 4 * n_faces, n_faces, 3).reshape((n_faces, 3)), wp.float32
         )
-    lumped = _launch.zeros(vertices.size, dtype=wp.float64, device=device)
     if n_faces > 0:
         _launch.launch(
             kernel_heat.heat_face_terms,
@@ -1822,37 +1897,26 @@ def _heat_operators(
     # ``float64`` as it reads them and forms the lumped mass from the area sums in the same pass.
     # The two preconditioners are mesh-only, so they belong here rather than in every solve. See
     # Notes.
-    n_vertices = vertices.size
     vector_values = None
-    if n_faces == 0:
+    if pattern is None:
         laplacian = od.array.empty_square_bsr(n_vertices, wp.float64, device)
         heat_values = _launch.empty_like(laplacian.values)
         poisson_values = _launch.empty_like(laplacian.values)
         if t is None and edge_sums is None:
             edge_sums = _edge_length_sums(vertices, None)
     else:
-        if int(cot_entries.shape[0]) != n_faces:
-            raise ValueError(
-                f"cot_entries must have shape (n_faces, 3) = ({n_faces}, 3), "
-                f"got {(int(cot_entries.shape[0]), int(cot_entries.shape[1]))}"
-            )
-        if pattern is None:
-            pattern = mesh_operator_pattern(faces, n_vertices)
         if t is None and edge_sums is None:
             # The unique-edge average, which is what ``igl::heat_geodesics`` uses for its timestep
-            # -- read off the Laplacian's own sparsity, which already holds the unique edges, and
-            # left on the device for the system's assembly to square.
-            edge_sums = _edge_length_sums(vertices, pattern, timestep)
+            # -- read off the Laplacian's own sparsity, which already holds the unique edges.
+            edge_sums = _edge_length_sums(vertices, pattern, timestep, sum_and_count)
         _, _, offsets, columns, run_start, keys, count, order = pattern
-        # The three operators' values in one allocation: the bundle holds all three for as long as
-        # any of them.
-        n_slots = columns.size
-        values = _launch.empty(3 * n_slots, dtype=wp.float64, device=device)
+        # The three operators' values: the bundle holds all three for as long as any of them.
+        values = tables[1]
         laplacian_values = _launch.view(values, 0, n_slots)
         heat_values = _launch.view(values, n_slots, 2 * n_slots)
         poisson_values = _launch.view(values, 2 * n_slots, 3 * n_slots)
         if transport_angles is not None:
-            vector_values = _launch.empty(n_slots, dtype=wp.mat22d, device=device)
+            vector_values = tables[2]
         _launch.launch(
             kernel_heat.HEAT_SYSTEM_ROWS[cot_entries.dtype],
             dim=n_vertices,
@@ -1947,6 +2011,7 @@ def _edge_length_sums(
     vertices: wp.array[wp.vec3],
     pattern: MeshOperatorPattern | None,
     timestep: Literal["unique_edges", "face_edges"] = "unique_edges",
+    sum_and_count: wp.array[wp.float64] | None = None,
 ) -> wp.array[wp.float64]:
     """
     Sum and count of the unique-edge lengths, read off a mesh operator pattern.
@@ -1959,7 +2024,9 @@ def _edge_length_sums(
     [`mean_unique_edge_length`][ordito.edges.mean_unique_edge_length] would re-sort every edge of
     the mesh to recover the same set. The two sums stay on the device, where
     ``kernels/linalg.shift_factor`` squares their mean -- ``0`` for a mesh with no edges (``None``
-    for the pattern of a mesh with no faces), as that function returns.
+    for the pattern of a mesh with no faces), as that function returns. ``sum_and_count``, when
+    given, is the zeroed ``block_partials_size(blocks_1d(pattern.n_vertices), 2)`` buffer the
+    sums go into (allocated here otherwise).
     """
     device = vertices.device
     if pattern is None or pattern.n_vertices == 0:
@@ -1968,7 +2035,11 @@ def _edge_length_sums(
     _, _, offsets, columns, run_start, keys, count, _ = pattern
     # Block rows added in a fixed order, so the timestep repeats bit for bit on CUDA.
     blocks = kernel_reduce.blocks_1d(n_rows)
-    sum_and_count, stride = _launch.block_partials(blocks, 2, wp.float64, device)
+    out: wp.array[wp.float64] = (
+        _launch.block_partials(blocks, 2, wp.float64, device)[0]
+        if sum_and_count is None
+        else sum_and_count
+    )
     _launch.launch_tiled(
         kernel_heat.upper_edge_length_sum_and_count,
         dim=[blocks],
@@ -1980,13 +2051,13 @@ def _edge_length_sums(
             wp.int32(count),
             vertices,
             wp.int32(timestep == "face_edges"),
-            stride,
-            sum_and_count,
+            2,
+            out,
         ],
         block_dim=TILE_1D,
         device=device,
     )
-    return sum_and_count
+    return out
 
 
 @overload
@@ -2132,11 +2203,12 @@ def _extend_scalar(
     # The indicator and the weighted values diffuse through the same operator, so they are one
     # batched two-column solve rather than two independent ones, which shares the launches and
     # converges on the worse-behaved of the two columns.
-    rhs_rows, diffused_rows = _zeroed_fields(device, 2 * n_vertices, 2 * n_vertices)
+    (rhs_rows, diffused_rows), invalid = _zeroed_fields_and_flag(
+        device, 2 * n_vertices, 2 * n_vertices
+    )
     rhs = odt.as_array2d(rhs_rows.reshape((2, n_vertices)), wp.float64)
     # ``(min, -max, -overshoot)`` of the extension against the source values; see the kernels.
     value_range = _launch.full(3, math.inf, dtype=wp.float64, device=device)
-    invalid = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_heat.seed_source_scalars,
         dim=n_sources,
@@ -2362,8 +2434,7 @@ def _transport_tangent_vectors(
     # narrowed values are per row, so they are the two systems' own, and its settle test reads the
     # union, which is the later of the two stops.
     rows = 4 * n_vertices
-    rhs, diffused = _zeroed_fields(device, rows, rows)
-    invalid = _launch.zeros(1, dtype=wp.int32, device=device)
+    (rhs, diffused), invalid = _zeroed_fields_and_flag(device, rows, rows)
     _launch.launch(
         kernel_heat.seed_transport_sources,
         dim=n_sources,
@@ -2566,10 +2637,13 @@ def _log_map(
     # the angle is measured against, raw (unnormalized) like ``transport_tangent_vectors``' own
     # ``direction`` -- and ``heat_geodesic``'s heat, diffused together as one solve over
     # ``[vector system; heat system]`` for the reason ``transport_tangent_vectors`` gives.
-    sources = _launch.empty(1, dtype=wp.int32, device=device)
     rows = 3 * n_vertices
-    # The stack's right-hand side and solution, the divergence's sums and the distance: one buffer.
-    rhs, diffused, scratch, phi = _zeroed_fields(device, rows, rows, n_vertices, n_vertices)
+    # The stack's right-hand side and solution, the divergence's sums, the distance, the shift's
+    # means and the source's index (an ``int32`` word the seeding kernel writes): one buffer.
+    rhs, diffused, scratch, phi, means, source_word = _zeroed_fields(
+        device, rows, rows, n_vertices, n_vertices, _source_means_size(n_vertices, 1), 1
+    )
+    sources = _launch.alias(source_word, wp.int32, 0, 1)
     _launch.launch(
         kernel_heat.seed_log_map_source,
         dim=1,
@@ -2584,7 +2658,14 @@ def _log_map(
     # expressed in each vertex's frame.
     order = _corner_order(mesh, solver)
     distance = _distance_from_heat(
-        mesh, solver, sources, _launch.view(diffused, 2 * n_vertices, rows), order, scratch, phi
+        mesh,
+        solver,
+        sources,
+        _launch.view(diffused, 2 * n_vertices, rows),
+        order,
+        scratch,
+        means,
+        phi,
     )
     normals, areas = scalar[6], scalar[7]
     n_faces = faces.size // 3
@@ -2717,6 +2798,7 @@ def _distance_from_heat(
     heat: wp.array[wp.float64],
     order: _CornerOrder,
     scratch: wp.array[wp.float64],
+    means: wp.array[wp.float64],
     phi: wp.array[wp.float64] | None = None,
 ) -> wp.array[wp.float64]:
     """
@@ -2724,8 +2806,9 @@ def _distance_from_heat(
 
     Split out so ``log_map`` can diffuse the heat inside a stacked solve of its own. ``order`` is
     `_corner_order`'s choice of how per-face terms reach the vertices; ``scratch`` is a zeroed
-    ``(n_vertices,)`` buffer the divergence is summed into, and ``phi``, when given, a zeroed one
-    the distance is solved into (allocated here otherwise).
+    ``(n_vertices,)`` buffer the divergence is summed into, ``means`` a zeroed one of
+    `_source_means_size` the shift's two means are reduced into, and ``phi``, when given, a zeroed
+    one the distance is solved into (allocated here otherwise).
     """
     vertices, faces = mesh.vertices, mesh.faces
     device = vertices.device
@@ -2761,22 +2844,26 @@ def _distance_from_heat(
     # device, so nothing is read back.
     n_sources = sources.size
     blocks = kernel_reduce.blocks_1d(max(n_vertices, n_sources))
-    sums, stride = _launch.block_partials(blocks, 2, wp.float64, device)
     _launch.launch_tiled(
         kernel_heat.source_and_global_sums,
         dim=[blocks],
-        inputs=[phi, sources, stride],
-        outputs=[sums],
+        inputs=[phi, sources, 2],
+        outputs=[means],
         block_dim=TILE_1D,
         device=device,
     )
     _launch.launch(
         kernel_heat.shift_and_orient,
         dim=n_vertices,
-        inputs=[sums, wp.int32(n_sources), wp.int32(1), phi],
+        inputs=[means, wp.int32(n_sources), wp.int32(1), phi],
         device=device,
     )
     return phi
+
+
+def _source_means_size(n_vertices: int, n_sources: int) -> int:
+    """Length of the zeroed buffer `_distance_from_heat`'s two means are reduced into."""
+    return _launch.block_partials_size(kernel_reduce.blocks_1d(max(n_vertices, n_sources)), 2)
 
 
 def _corner_order(mesh: Trimesh, solver: HeatSolver) -> _CornerOrder:
@@ -2860,6 +2947,19 @@ def _zeroed_fields(device: wp.DeviceLike, *sizes: int) -> list[wp.array[wp.float
         fields.append(_launch.view(flat, start, start + size))
         start += size + size % 2
     return fields
+
+
+def _zeroed_fields_and_flag(
+    device: wp.DeviceLike, *sizes: int
+) -> tuple[list[wp.array[wp.float64]], wp.array[wp.int32]]:
+    """
+    `_zeroed_fields` of ``sizes``, and a zeroed ``int32`` word in the same allocation.
+
+    The word is the out-of-range flag a seeding kernel raises (`_require_indices_in_range`),
+    scratch the call drops with the fields.
+    """
+    *fields, word = _zeroed_fields(device, *sizes, 1)
+    return fields, _launch.alias(word, wp.int32, 0, 1)
 
 
 def _pairs(field: wp.array[wp.float64], n: int) -> wp.array[wp.vec2d]:

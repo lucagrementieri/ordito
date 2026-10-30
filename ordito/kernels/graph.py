@@ -196,6 +196,24 @@ def signed_edge_bounds(
         wp.atomic_min(out_bounds, 3, low_sign_flip)
 
 
+@wp.func
+def envelope_relaxed_label(
+    i: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    weights: wp.array[wp.float32],
+    labels: wp.array[wp.float32],
+) -> wp.float32:
+    # Node ``i``'s label after one Bellman-Ford relaxation against ``labels``: the per-pass
+    # kernel's entry and the serial loop's, so the two agree to the bit.
+    best = labels[i]
+    for k in range(offsets[i], offsets[i + 1]):
+        relaxed = labels[columns[k]] + weights[k]
+        if relaxed < best:
+            best = relaxed
+    return best
+
+
 @wp.kernel
 def shortest_path_envelope_pass(
     offsets: wp.array[wp.int32],
@@ -226,14 +244,48 @@ def shortest_path_envelope_pass(
     # turns into the next round's condition and clears. A plain store, not an atomic: the slot only
     # ever goes 0 -> 1 within a round, so every writer writes the same value.
     i = wp.int32(wp.tid())
-    best = labels[i]
-    for k in range(offsets[i], offsets[i + 1]):
-        relaxed = labels[columns[k]] + weights[k]
-        if relaxed < best:
-            best = relaxed
+    best = envelope_relaxed_label(i, offsets, columns, weights, labels)
     out_labels[i] = best
     if best < labels[i]:
         out_state[kernel_array.LOOP_PROGRESS] = 1
+
+
+@wp.kernel
+def shortest_path_envelope_serial(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    weights: wp.array[wp.float32],
+    max_pass_count: wp.int32,
+    labels: wp.array[wp.float32],
+    scratch: wp.array[wp.float32],
+) -> None:
+    # Every ``shortest_path_envelope_pass`` in one launch and one thread: the CPU device's form,
+    # where a launch's threads run one after another anyway, so a launch and a progress readback a
+    # pass buy no parallelism. Each pass reads the previous pass's buffer whole and writes the
+    # other (``labels`` -> ``scratch`` on even passes), each entry ``envelope_relaxed_label``, so
+    # the labels are the per-pass loop's to the bit; the loop stops after the first pass that
+    # lowered nothing, or at the cap. A result left in ``scratch`` is copied back over ``labels``.
+    n = labels.shape[0]
+    parity = wp.int32(0)
+    for _pass in range(max_pass_count):
+        moved = wp.int32(0)
+        for i in range(n):
+            if parity == 0:
+                best = envelope_relaxed_label(i, offsets, columns, weights, labels)
+                scratch[i] = best
+                if best < labels[i]:
+                    moved = wp.int32(1)
+            else:
+                best = envelope_relaxed_label(i, offsets, columns, weights, scratch)
+                labels[i] = best
+                if best < scratch[i]:
+                    moved = wp.int32(1)
+        parity = 1 - parity
+        if moved == 0:
+            break
+    if parity == 1:
+        for i in range(n):
+            labels[i] = scratch[i]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -403,6 +455,103 @@ def closed_cycle_jump(
             current = other[0]
     out_windows[v] = wp.vec3i(current, start, dist)
     count_closed_cycle_node(out_cycle_counts, v, current, start, mode)
+
+
+@wp.kernel
+def closed_cycle_windows_serial(
+    tails: wp.array[wp.int32],
+    next_node: wp.array[wp.int32],
+    mode: wp.int32,
+    out_windows: wp.array[wp.vec3i],
+    out_scratch: wp.array[wp.vec3i],
+    out_cycle_counts: wp.array[wp.vec2i],
+) -> None:
+    # Every round of ``closed_cycle_windows`` / ``closed_cycle_jump``, the last round's counts and
+    # the caller's inclusive scan of them, in one launch and one thread: the CPU device's form,
+    # where a launch's threads run one after another, so the rounds buy no parallelism and the
+    # pointer chases do ``hops`` times the work of one walk. Each node is resolved once, as the
+    # finished windows of the parallel rounds describe it (their window covers every node a walk
+    # can reach, ``pointer_jump_schedule``): a node whose walk reaches a node with no successor is
+    # on a chain (``current = -1``); otherwise ``start`` is the smallest node of its walk -- its
+    # cycle's, or a smaller node on its way in -- and ``dist`` the hops to its first occurrence.
+    # Only the sign of ``current`` is read after the rounds, so a live window stores ``0`` there.
+    # ``out_scratch`` holds, per node, its state (``0`` unseen, ``1`` on the current walk, ``2``
+    # resolved) in component 0, and the current walk's nodes in order in component 1.
+    n = next_node.shape[0]
+    for i in range(n):
+        out_scratch[i] = wp.vec3i(0, 0, 0)
+    for t in range(tails.shape[0]):
+        v = tails[t]
+        if v < 0:
+            continue
+        if out_scratch[v][0] == 2:
+            continue
+        depth = wp.int32(0)
+        u = v
+        cycle_at = wp.int32(-1)
+        walking = wp.int32(1)
+        while walking == 1:
+            state = out_scratch[u][0]
+            if state == 2:
+                walking = wp.int32(0)
+            elif state == 1:
+                cycle_at = u
+                walking = wp.int32(0)
+            elif next_node[u] < 0:
+                out_windows[u] = wp.vec3i(-1, u, 0)
+                out_scratch[u] = wp.vec3i(2, out_scratch[u][1], 0)
+                walking = wp.int32(0)
+            else:
+                out_scratch[u] = wp.vec3i(1, out_scratch[u][1], 0)
+                out_scratch[depth] = wp.vec3i(out_scratch[depth][0], u, 0)
+                depth += 1
+                u = next_node[u]
+        if cycle_at >= 0:
+            # The walk closed on ``cycle_at``: the cycle is the walk from there, every node of it
+            # starting at its smallest node.
+            first = wp.int32(0)
+            while out_scratch[first][1] != cycle_at:
+                first += 1
+            length = depth - first
+            lowest = cycle_at
+            lowest_at = first
+            for j in range(first, depth):
+                node = out_scratch[j][1]
+                if node < lowest:
+                    lowest = node
+                    lowest_at = j
+            for j in range(first, depth):
+                node = out_scratch[j][1]
+                out_windows[node] = wp.vec3i(0, lowest, (lowest_at - j + length) % length)
+                out_scratch[node] = wp.vec3i(2, out_scratch[node][1], 0)
+            depth = first
+        # The nodes on the way in, last first: each takes its successor's window one hop longer,
+        # or starts itself where it is smaller than everything after it.
+        k = depth - 1
+        while k >= 0:
+            node = out_scratch[k][1]
+            after = out_windows[next_node[node]]
+            if after[0] < 0:
+                out_windows[node] = wp.vec3i(-1, node, 0)
+            elif node < after[1]:
+                out_windows[node] = wp.vec3i(0, node, 0)
+            else:
+                out_windows[node] = wp.vec3i(0, after[1], after[2] + 1)
+            out_scratch[node] = wp.vec3i(2, out_scratch[node][1], 0)
+            k -= 1
+    for t in range(tails.shape[0]):
+        v = tails[t]
+        if v >= 0:
+            own = out_windows[v]
+            if closed_cycle_is_kept(own[0], own[1], mode):
+                start = own[1]
+                out_cycle_counts[start] = out_cycle_counts[start] + wp.vec2i(
+                    wp.where(v == start, 1, 0), wp.int32(1)
+                )
+    running = wp.vec2i(0, 0)
+    for i in range(out_cycle_counts.shape[0]):
+        running = running + out_cycle_counts[i]
+        out_cycle_counts[i] = running
 
 
 @wp.kernel

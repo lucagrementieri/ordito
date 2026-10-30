@@ -352,7 +352,17 @@ def laplacian_smoothing_loss(
         terms.vertices = vertices
         terms.method = kernel_energies.SMOOTHING_UNIFORM
         return _mean_of_terms(kernel_energies.SMOOTHING_NORM_SUM, terms, n_vertices, device)
-    norms = _launch.empty(n_vertices, dtype=wp.float32, device=device)
+    # The cotangent Laplacian's row is written by the thread that takes its residual, over its
+    # pattern; each method's per-row scales are formed in the same thread. The norms, the row
+    # values and (``"cotcurv"``) the half-cotangents are one ``float32`` allocation.
+    if pattern is None:
+        pattern = mesh_operator_pattern(faces, n_vertices)
+    _, _, offsets, columns, run_start, keys, count, order = pattern
+    n_faces = faces.size // 3
+    cotcurv = method == "cotcurv"
+    norms, values, *cot_flat = _launch.carve(
+        wp.float32, (n_vertices, columns.size, *((3 * n_faces,) if cotcurv else ())), device
+    )
     area_sums = None
     if method == "cot":
         cot_entries = cotmatrix_entries(vertices, faces)
@@ -360,8 +370,7 @@ def laplacian_smoothing_loss(
     else:
         # ``mass_matrix_entries``' exact area sums, formed in the face pass that writes the
         # half-cotangents; the row kernel divides them by three.
-        n_faces = faces.size // 3
-        cot_entries = odt.empty_2d((n_faces, 3), wp.float32, device=device)
+        cot_entries = odt.as_array2d(cot_flat[0].reshape((n_faces, 3)), wp.float32)
         area_sums = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
         _launch.launch(
             kernel_laplacian.cotmatrix_entries_and_area_sums,
@@ -371,12 +380,6 @@ def laplacian_smoothing_loss(
             device=device,
         )
         selector = kernel_energies.SMOOTHING_COTCURV
-    # The cotangent Laplacian's row is written by the thread that takes its residual, over its
-    # pattern; each method's per-row scales are formed in the same thread.
-    if pattern is None:
-        pattern = mesh_operator_pattern(faces, n_vertices)
-    _, _, offsets, columns, run_start, keys, count, order = pattern
-    values = _launch.empty(columns.size, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_energies.laplacian_smoothing_cot_norms,
         dim=n_vertices,
@@ -552,21 +555,26 @@ def _diagonal_sandwich(
     """
     n_rows = int(a.nrow)
     device = inverse_mass.device
-    counts = _launch.empty(n_rows, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_energies.SANDWICH_ROW_COUNTS[inverse_mass.dtype],
-        dim=n_rows,
-        inputs=[
-            a.offsets,
-            b.offsets,
-            inverse_mass if mass is None else mass,
-            wp.int32(mass is not None),
-        ],
-        outputs=[counts, None if mass is None else inverse_mass],
-        device=device,
-    )
-    # Host readback: only the device knows the scan total, and it sizes the triplet buffers.
-    segment_offsets, n_triplets = od.array.counts_to_offsets(counts)
+    # Each row's count lands in the offsets' buffer past its leading zero and is scanned in place.
+    segment_offsets = _launch.zeros(n_rows + 1, dtype=wp.int32, device=device)
+    n_triplets = 0
+    if n_rows > 0:
+        counts = _launch.view(segment_offsets, 1, n_rows + 1)
+        _launch.launch(
+            kernel_energies.SANDWICH_ROW_COUNTS[inverse_mass.dtype],
+            dim=n_rows,
+            inputs=[
+                a.offsets,
+                b.offsets,
+                inverse_mass if mass is None else mass,
+                wp.int32(mass is not None),
+            ],
+            outputs=[counts, None if mass is None else inverse_mass],
+            device=device,
+        )
+        _launch.array_scan(counts, out_array=counts, inclusive=True)
+        # Host readback: only the device knows the scan total, and it sizes the triplet buffers.
+        n_triplets = int(read_scalar(segment_offsets))
 
     dtype = a.values.dtype
     keys, order = od.array.csr_key_buffers(n_triplets, device)
@@ -721,15 +729,18 @@ def hessian_energy(
         vf_indices, vf_offsets = sorted_rows
     else:
         vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
-    counts = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+    # Each vertex's count lands in the offsets' buffer past its leading zero, scanned in place.
+    segment_offsets = _launch.zeros(n_vertices + 1, dtype=wp.int32, device=device)
+    counts = _launch.view(segment_offsets, 1, n_vertices + 1)
     _launch.launch(
         kernel_energies.hessian_energy_counts,
         dim=n_vertices,
         inputs=[faces, vf_offsets, vf_indices, mass, inverse_mass, counts],
         device=device,
     )
+    _launch.array_scan(counts, out_array=counts, inclusive=True)
     # Host readback: only the device knows the scan total, and it sizes the triplet buffers.
-    segment_offsets, n_triplets = od.array.counts_to_offsets(counts)
+    n_triplets = int(read_scalar(segment_offsets))
 
     keys, order = od.array.csr_key_buffers(n_triplets, device)
     vals = _launch.empty(n_triplets, dtype=dtype, device=device)
@@ -847,8 +858,14 @@ def curved_hessian_energy(
 
     # The buffers below are cut from one allocation per dtype and initial value: the zeroed sums
     # and counters, and the tables their passes write whole.
-    angle_entries, par_entries, perp_entries = _launch.carve(
-        wp.float64, (3 * n_faces, 4 * n_edges, 4 * n_edges), device, zeroed=False
+    angle_entries, par_entries, perp_entries, slot_entries = _launch.carve_typed(
+        (
+            (wp.float64, 3 * n_faces),
+            (wp.float64, 4 * n_edges),
+            (wp.float64, 4 * n_edges),
+            (wp.int32, 4 * n_edges),
+        ),
+        device,
     )
     angles = odt.as_array2d(angle_entries.reshape((n_faces, 3)), wp.float64)
     # Summed atomically by the angle pass, or afterwards in a fixed order (see
@@ -893,7 +910,7 @@ def curved_hessian_energy(
             "otherwise, like igl::curved_hessian_energy, which asserts it"
         )
 
-    vertex_slots = _launch.empty((n_edges, 4), dtype=wp.int32, device=device)
+    vertex_slots = slot_entries.reshape((n_edges, 4))
     par = par_entries.reshape((n_edges, 4))
     perp = perp_entries.reshape((n_edges, 4))
     _launch.launch(
@@ -1024,9 +1041,8 @@ def crouzeix_raviart_cotmatrix(
 
     # One pass over the faces records each edge's incident faces and flags a third one, and writes
     # the half-cotangents when the caller has none.
-    face_counts = _launch.zeros(n_edges, dtype=wp.int32, device=device)
+    face_counts, nonmanifold = _launch.carve(wp.int32, (n_edges, 1), device, zeroed=True)
     edge_faces = _launch.full(2 * n_edges, -1, dtype=wp.int32, device=device)
-    nonmanifold = _launch.zeros(1, dtype=wp.int32, device=device)
     computed_cot = odt.empty_2d(
         (n_faces if cot_entries is None else 0, 3), wp.float32, device=device
     )
@@ -1050,7 +1066,10 @@ def crouzeix_raviart_cotmatrix(
 
     # The pattern follows from the incidence: a row holds its diagonal and the other edges of its
     # (at most two) faces, so at most five entries, and the count pass and a scan give the offsets.
-    offsets = _launch.zeros(n_edges + 1, dtype=wp.int32, device=device)
+    # The matrix's three arrays in one allocation; the count pass writes the leading zero.
+    offsets, columns, values = _launch.carve_typed(
+        ((wp.int32, n_edges + 1), (wp.int32, 5 * n_edges), (dtype, 5 * n_edges)), device
+    )
     _launch.launch(
         kernel_energies.crouzeix_raviart_row_counts,
         dim=n_edges,
@@ -1059,8 +1078,6 @@ def crouzeix_raviart_cotmatrix(
         device=device,
     )
     _launch.array_scan(offsets, out_array=offsets, inclusive=True)
-    columns = _launch.empty(5 * n_edges, dtype=wp.int32, device=device)
-    values = _launch.empty(5 * n_edges, dtype=dtype, device=device)
     _launch.launch(
         kernel_energies.CROUZEIX_RAVIART_CSR[cot_entries.dtype, dtype],
         dim=n_edges,
@@ -1147,8 +1164,7 @@ def crouzeix_raviart_massmatrix(
         return od.array.empty_square_bsr(0, dtype, device)
     # The diagonal is the matrix's value array as it stands, under a diagonal pattern.
     values = _cr_mass_diagonal(vertices, faces, edge_map, n_edges, dtype)
-    offsets = _launch.empty(n_edges + 1, dtype=wp.int32, device=device)
-    columns = _launch.empty(n_edges, dtype=wp.int32, device=device)
+    offsets, columns = _launch.carve(wp.int32, (n_edges + 1, n_edges), device)
     _launch.launch(
         kernel_laplacian.diagonal_pattern,
         dim=n_edges,
@@ -1293,8 +1309,9 @@ def lscm_hessian(
     if pattern is None:
         pattern = mesh_operator_pattern(faces, n)
     _, _, lap_offsets, lap_columns, run_start, keys, n_keys, order = pattern
-    laplacian_values = _launch.empty(lap_columns.size, dtype=wp.float64, device=device)
-    area_offsets = _launch.empty(n + 1, dtype=wp.int32, device=device)
+    laplacian_values, area_offsets = _launch.carve_typed(
+        ((wp.float64, lap_columns.size), (wp.int32, n + 1)), device
+    )
     _launch.launch(
         kernel_energies.LSCM_LAPLACIAN_ROWS_AND_COUNTS[cot_entries.dtype],
         dim=n,
@@ -1316,9 +1333,9 @@ def lscm_hessian(
     # build of ``A`` read as its boundary edge count. Capacities, not counts: ``L``'s columns may
     # be longer than its stored entries.
     capacity = 2 * lap_columns.size + 2 * int(read_scalar(area_offsets))
-    offsets = _launch.empty(2 * n + 1, dtype=wp.int32, device=device)
-    columns = _launch.empty(capacity, dtype=wp.int32, device=device)
-    values = _launch.empty(capacity, dtype=wp.float64, device=device)
+    offsets, columns, values = _launch.carve_typed(
+        ((wp.int32, 2 * n + 1), (wp.int32, capacity), (wp.float64, capacity)), device
+    )
     _launch.launch(
         kernel_energies.lscm_hessian_csr,
         dim=2 * n,

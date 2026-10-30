@@ -518,16 +518,20 @@ def non_manifold_edge_runs(
     key_order: wp.array[wp.int32],
     out_positions: wp.array[wp.int32],
     out_run_lengths: wp.array[wp.int32],
+    out_live: wp.array[wp.int32],
 ) -> None:
     # Each halfedge's slot in the key order, and the number of halfedges on each non-manifold edge
     # (counted at its root, which ``wp.zeros`` started at 0): with the root's slot, the run of
-    # halfedges ``key_order[positions[root] : positions[root] + run_lengths[root]]``.
+    # halfedges ``key_order[positions[root] : positions[root] + run_lengths[root]]``. The same
+    # count goes into ``out_live`` (zeroed too), the live counts the rounds then lower, rather
+    # than a copy of the lengths.
     i = wp.int32(wp.tid())
     h = key_order[i]
     out_positions[h] = i
     root = non_manifold_edge_root(mates, h)
     if root >= 0:
         wp.atomic_add(out_run_lengths, root, 1)
+        wp.atomic_add(out_live, root, 1)
 
 
 @wp.kernel

@@ -918,9 +918,20 @@ def block_partials(n_blocks: int, width: int, dtype: Any, device: Any) -> tuple[
     arrival order; a caller that reads more than the first ``width`` slots tells the two apart by
     the buffer's size.
     """
+    return zeros(block_partials_size(n_blocks, width), dtype=dtype, device=device), width
+
+
+def block_partials_size(n_blocks: int, width: int) -> int:
+    """
+    Return the length of the buffer [`block_partials`][ordito._launch.block_partials] allocates.
+
+    For a caller cutting that buffer out of a zeroed allocation it shares with other tables
+    ([`carve`][ordito._launch.carve]): ``width`` with the deterministic setting off, else the
+    result slots, the ticket and ``n_blocks`` rows.
+    """
     if not is_deterministic():
-        return zeros(width, dtype=dtype, device=device), width
-    return zeros((n_blocks + 1) * width + 1, dtype=dtype, device=device), width
+        return width
+    return (n_blocks + 1) * width + 1
 
 
 _kernel_reduce: Any = None
@@ -1590,6 +1601,38 @@ def view(src: ArrayT, start: int, stop: int) -> ArrayT:
     return cast("ArrayT", _stamp_view(s, s.dtype, itemsize, start * itemsize, stop - start))
 
 
+def alias(src: wp.array[Any], dtype: type[DType], byte_start: int, count: int) -> wp.array[DType]:
+    """
+    ``count`` contiguous ``dtype`` elements of ``src``'s storage from ``byte_start``, ``src`` held.
+
+    A typed view of a contiguous 1-D array's bytes, for a table that can live in another buffer's
+    scratch (a sort's upper half once the sort has run) and must keep that buffer alive, which a
+    ``wp.array(ptr=...)`` would not. The caller guarantees the span lies inside ``src`` and that
+    ``byte_start`` is aligned for ``dtype``.
+    """
+    s: Any = src
+    itemsize = _type_size(dtype)
+    assert s.is_contiguous
+    assert s.ndim == 1
+    assert byte_start >= 0
+    assert byte_start + count * itemsize <= s.capacity
+    return cast("wp.array[DType]", _stamp_view(s, dtype, itemsize, byte_start, count))
+
+
+def view_as(src: wp.array[Any], dtype: type[DType]) -> wp.array[DType]:
+    """
+    Reinterpret the bytes of a contiguous 1-D ``src`` as a 1-D ``dtype`` array it owns.
+
+    For a caller borrowing a spare region of a buffer of another dtype as scratch (the upper half
+    of a radix sort's ``uint64`` keys as ``int32`` tables). Elements that do not fill a whole
+    ``dtype`` at the end are dropped.
+    """
+    s: Any = src
+    if type(s) is not _ARRAY or s.ndim != 1 or not s.is_contiguous:
+        raise ValueError("view_as takes a contiguous 1-D array")
+    return alias(s, dtype, 0, s.size * _type_size(s.dtype) // _type_size(dtype))
+
+
 def _stamp_view(s: Any, dtype: Any, itemsize: int, byte_start: int, count: int) -> Any:
     """``count`` contiguous ``dtype`` elements of ``s`` from ``byte_start``, ``s`` their owner."""
     arr = _new_array(_ARRAY)
@@ -1654,9 +1697,11 @@ def carve(
     ]
 
 
-def carve_typed(parts: Sequence[tuple[Any, int]], device: wp.DeviceLike) -> list[wp.array[Any]]:
+def carve_typed(
+    parts: Sequence[tuple[Any, int]], device: wp.DeviceLike, *, zeroed: bool = False
+) -> list[wp.array[Any]]:
     """
-    One uninitialized allocation cut into consecutive 1-D views of ``(dtype, size)`` each.
+    One allocation, zeroed under ``zeroed``, cut into consecutive 1-D views of ``(dtype, size)``.
 
     [`carve`][ordito._launch.carve] for tables of different dtypes that live and die together,
     each view starting on a 128-byte boundary. Any view holds the whole buffer alive, so a table
@@ -1664,6 +1709,7 @@ def carve_typed(parts: Sequence[tuple[Any, int]], device: wp.DeviceLike) -> list
     4-byte words, a zero size, or a buffer reaching Warp's largest array takes an allocation of
     its own instead.
     """
+    allocate = zeros if zeroed else empty
     sizes = [_type_size(dtype) for dtype, _ in parts]
     starts: list[int] = []
     total = 0
@@ -1674,8 +1720,8 @@ def carve_typed(parts: Sequence[tuple[Any, int]], device: wp.DeviceLike) -> list
         any(count <= 0 or size % 4 for (_, count), size in zip(parts, sizes, strict=True))
         or total // 4 >= _CARVE_MAX_ELEMENTS
     ):
-        return [empty(count, dtype=dtype, device=device) for dtype, count in parts]
-    buffer = empty(total // 4, dtype=wp.int32, device=device)
+        return [allocate(count, dtype=dtype, device=device) for dtype, count in parts]
+    buffer = allocate(total // 4, dtype=wp.int32, device=device)
     return [
         _stamp_view(buffer, dtype, size, start, count)
         for (dtype, count), size, start in zip(parts, sizes, starts, strict=True)

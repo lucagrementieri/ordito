@@ -59,6 +59,39 @@ REFINE_ROUND = wp.constant(2)
 # --------------------------------------------------------------------------------------
 
 
+@wp.func
+def mark_component_row(
+    i: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    labels: wp.array[wp.int32],
+    tolerance: wp.float64,
+    block_offset: wp.array[wp.int64],
+    front_size: wp.array[wp.int32],
+    owner: wp.array[wp.int32],
+    c0: wp.array[wp.int32],
+    blocks: wp.array[wp.float64],
+    out_singular: wp.array[wp.int32],
+    out_pinned: wp.array[wp.int32],
+    out_dropped: wp.array[wp.int32],
+) -> None:
+    # Row ``i`` of ``mark_components_and_seed_blocks``.
+    k = owner[i]
+    local = wp.int64(i - c0[k])
+    blocks[block_offset[k] + local * wp.int64(front_size[k]) + local] = wp.float64(1.0)
+    out_pinned[i] = 0
+    out_dropped[i] = 0
+    total = wp.float64(0.0)
+    diagonal = wp.float64(0.0)
+    for e in range(offsets[i], offsets[i + 1]):
+        total += values[e]
+        if columns[e] == i:
+            diagonal = values[e]
+    if wp.abs(total) > tolerance * wp.abs(diagonal):
+        out_singular[labels[i]] = 0
+
+
 @wp.kernel
 def mark_components_and_seed_blocks(
     offsets: wp.array[wp.int32],
@@ -82,20 +115,25 @@ def mark_components_and_seed_blocks(
     #
     # Every solve block starts as ``[I; 0]``: thread ``i`` also sets the diagonal of elimination
     # position ``i`` in the zeroed ``blocks`` arena.
-    i = wp.int32(wp.tid())
-    k = owner[i]
-    local = wp.int64(i - c0[k])
-    blocks[block_offset[k] + local * wp.int64(front_size[k]) + local] = wp.float64(1.0)
-    out_pinned[i] = 0
-    out_dropped[i] = 0
+    mark_component_row(wp.int32(wp.tid()), offsets, columns, values, labels, tolerance,
+                       block_offset, front_size, owner, c0, blocks, out_singular, out_pinned,
+                       out_dropped)  # fmt: skip
+
+
+@wp.func
+def leading_diagonal_total(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    n_rows: wp.int32,
+) -> wp.float64:
+    # The diagonal of the first ``n_rows`` rows, summed in row order.
     total = wp.float64(0.0)
-    diagonal = wp.float64(0.0)
-    for e in range(offsets[i], offsets[i + 1]):
-        total += values[e]
-        if columns[e] == i:
-            diagonal = values[e]
-    if wp.abs(total) > tolerance * wp.abs(diagonal):
-        out_singular[labels[i]] = 0
+    for i in range(n_rows):
+        for e in range(offsets[i], offsets[i + 1]):
+            if columns[e] == i:
+                total += values[e]
+    return total
 
 
 @wp.kernel
@@ -107,13 +145,32 @@ def leading_diagonal_sum(
     out_sum: wp.array[wp.float64],
 ) -> None:
     # The diagonal of the first ``n_rows`` rows summed by one thread: its sign is the definite
-    # operator's, which ``sparse_cholesky`` tries first when either sign is acceptable.
-    total = wp.float64(0.0)
-    for i in range(n_rows):
-        for e in range(offsets[i], offsets[i + 1]):
-            if columns[e] == i:
-                total += values[e]
-    out_sum[0] = total
+    # operator's, which ``sparse_cholesky`` tries first when either sign is acceptable. The
+    # analysis forms the same sum for the operator it analyses (``schedule_levels``).
+    out_sum[0] = leading_diagonal_total(offsets, columns, values, n_rows)
+
+
+@wp.func
+def pin_component(
+    c: wp.int32,
+    component_label: wp.array[wp.int32],
+    component_last: wp.array[wp.int32],
+    perm: wp.array[wp.int32],
+    singular: wp.array[wp.int32],
+    component_diagonal: wp.array[wp.int64],
+    out_pinned: wp.array[wp.int32],
+    out_dropped: wp.array[wp.int32],
+    out_fronts: wp.array[wp.float64],
+    out_status: wp.array[wp.int32],
+) -> None:
+    # Component ``c``'s thread of ``pin_singular_components``.
+    pin = singular[component_label[c]]
+    out_pinned[component_last[c]] = pin
+    out_dropped[perm[component_last[c]]] = pin
+    if pin != 0:
+        out_fronts[component_diagonal[c]] = wp.float64(1.0)
+        # Some component is singular: the solves project its null space (``status[1]``).
+        out_status[1] = 1
 
 
 @wp.kernel
@@ -134,19 +191,34 @@ def pin_singular_components(
     # is the identity's even where the operator stores none (an unreferenced vertex's empty row),
     # so it is set here in the zeroed fronts; ``scatter_entries``, which runs after, writes the
     # same one wherever the operator does store it.
-    c = wp.int32(wp.tid())
-    pin = singular[component_label[c]]
-    out_pinned[component_last[c]] = pin
-    out_dropped[perm[component_last[c]]] = pin
-    if pin != 0:
-        out_fronts[component_diagonal[c]] = wp.float64(1.0)
-        # Some component is singular: the solves project its null space (``status[1]``).
-        out_status[1] = 1
+    pin_component(wp.int32(wp.tid()), component_label, component_last, perm, singular,
+                  component_diagonal, out_pinned, out_dropped, out_fronts, out_status)  # fmt: skip
 
 
 # --------------------------------------------------------------------------------------
 # Numeric factorization
 # --------------------------------------------------------------------------------------
+
+
+@wp.func
+def scatter_entry(
+    e: wp.int32,
+    values: wp.array[wp.float64],
+    entry_source: wp.array[wp.int32],
+    entry_target: wp.array[wp.int64],
+    entry_row: wp.array[wp.int32],
+    entry_column: wp.array[wp.int32],
+    pinned: wp.array[wp.int32],
+    sign: wp.float64,
+    out_fronts: wp.array[wp.float64],
+) -> None:
+    # Entry ``e``'s thread of ``scatter_entries``.
+    r = entry_row[e]
+    c = entry_column[e]
+    value = sign * values[entry_source[e]]
+    if pinned[r] != 0 or pinned[c] != 0:
+        value = wp.where(r == c, wp.float64(1.0), wp.float64(0.0))
+    out_fronts[entry_target[e]] = value
 
 
 @wp.kernel
@@ -162,18 +234,37 @@ def scatter_entries(
 ) -> None:
     # One stored lower entry into its front, times ``sign`` (``-1`` factors a negative
     # semi-definite operator's negation). A pinned row or column becomes the identity's.
-    e = wp.int32(wp.tid())
-    r = entry_row[e]
-    c = entry_column[e]
-    value = sign * values[entry_source[e]]
-    if pinned[r] != 0 or pinned[c] != 0:
-        value = wp.where(r == c, wp.float64(1.0), wp.float64(0.0))
-    out_fronts[entry_target[e]] = value
+    scatter_entry(wp.int32(wp.tid()), values, entry_source, entry_target, entry_row,
+                  entry_column, pinned, sign, out_fronts)  # fmt: skip
 
 
 @wp.func
 def front_index(base: wp.int64, size: wp.int64, row: wp.int32, column: wp.int32) -> wp.int64:
     return base + wp.int64(row) * size + wp.int64(column)
+
+
+@wp.func
+def extend_add_entry(
+    k: wp.int32,
+    a: wp.int32,
+    b: wp.int32,
+    parent: wp.array[wp.int32],
+    front_offset: wp.array[wp.int64],
+    ncol: wp.array[wp.int32],
+    front_size: wp.array[wp.int32],
+    row_offsets: wp.array[wp.int32],
+    parent_local: wp.array[wp.int32],
+    fronts: wp.array[wp.float64],
+) -> None:
+    # Entry ``(a, b)``, ``b <= a``, of child ``k``'s lower Schur complement into its parent's
+    # front (``extend_add``, ``factor_serial``).
+    p = parent[k]
+    size = wp.int64(front_size[k])
+    psize = wp.int64(front_size[p])
+    rows = row_offsets[k]
+    source = front_index(front_offset[k], size, ncol[k] + a, ncol[k] + b)
+    target = front_index(front_offset[p], psize, parent_local[rows + a], parent_local[rows + b])
+    fronts[target] = fronts[target] + fronts[source]
 
 
 @wp.kernel
@@ -196,13 +287,8 @@ def extend_add(
     b = t % wp.max(nrow, 1)
     if a >= nrow or b > a:
         return
-    p = parent[k]
-    size = wp.int64(front_size[k])
-    psize = wp.int64(front_size[p])
-    rows = row_offsets[k]
-    source = front_index(front_offset[k], size, ncol[k] + a, ncol[k] + b)
-    target = front_index(front_offset[p], psize, parent_local[rows + a], parent_local[rows + b])
-    fronts[target] = fronts[target] + fronts[source]
+    extend_add_entry(k, a, b, parent, front_offset, ncol, front_size, row_offsets, parent_local,
+                     fronts)  # fmt: skip
 
 
 @wp.func
@@ -522,28 +608,21 @@ def update_panel(
         )
 
 
-@wp.kernel
-def factor_level_panels(
-    level: wp.array[wp.int32],
+@wp.func
+def factor_front_panels(
+    k: wp.int32,
+    n_panels: wp.int32,
+    rows_below: wp.int32,
+    lane: wp.int32,
     front_offset: wp.array[wp.int64],
     ncol: wp.array[wp.int32],
     front_size: wp.array[wp.int32],
     block_offset: wp.array[wp.int64],
-    n_panels: wp.int32,
-    rows_below: wp.int32,
     out_fronts: wp.array[wp.float64],
     out_blocks: wp.array[wp.float64],
     out_status: wp.array[wp.int32],
 ) -> None:
-    # A level's every panel on the CPU device, one block (of one lane there) a front: each panel's
-    # diagonal block (``factor_columns``), its rows (``panel_row``) and its update (the products
-    # ``update_panel`` subtracts, over the trailing lower triangle alone) in turn. A front's
-    # entries of one step neither read nor write another front's, nor read what another entry of
-    # the step writes, so walking them in turn is the CUDA path's step launches
-    # (``factor_panel_tiled``, ``panel_rows_inverse``, ``update_panel``) at one launch a level.
-    # ``out_fronts`` and ``out_blocks`` are factored in place.
-    b, lane = wp.tid()
-    k = level[b]
+    # Front ``k``'s every panel, in turn (``factor_level_panels``' block, ``factor_serial``).
     size = front_size[k]
     base = front_offset[k]
     block = block_offset[k]
@@ -569,6 +648,120 @@ def factor_level_panels(
                     out_blocks[target] = out_blocks[target] - panel_block_product(
                         base, m64, block, first, last, row, column, out_fronts, out_blocks
                     )
+
+
+@wp.kernel
+def factor_level_panels(
+    level: wp.array[wp.int32],
+    front_offset: wp.array[wp.int64],
+    ncol: wp.array[wp.int32],
+    front_size: wp.array[wp.int32],
+    block_offset: wp.array[wp.int64],
+    n_panels: wp.int32,
+    rows_below: wp.int32,
+    out_fronts: wp.array[wp.float64],
+    out_blocks: wp.array[wp.float64],
+    out_status: wp.array[wp.int32],
+) -> None:
+    # A level's every panel on the CPU device, one block (of one lane there) a front: each panel's
+    # diagonal block (``factor_columns``), its rows (``panel_row``) and its update (the products
+    # ``update_panel`` subtracts, over the trailing lower triangle alone) in turn. A front's
+    # entries of one step neither read nor write another front's, nor read what another entry of
+    # the step writes, so walking them in turn is the CUDA path's step launches
+    # (``factor_panel_tiled``, ``panel_rows_inverse``, ``update_panel``) at one launch a level.
+    # ``out_fronts`` and ``out_blocks`` are factored in place.
+    b, lane = wp.tid()
+    factor_front_panels(level[b], n_panels, rows_below, lane, front_offset, ncol, front_size,
+                        block_offset, out_fronts, out_blocks, out_status)  # fmt: skip
+
+
+@wp.kernel
+def factor_serial(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    labels: wp.array[wp.int32],
+    tolerance: wp.float64,
+    owner: wp.array[wp.int32],
+    c0: wp.array[wp.int32],
+    component_label: wp.array[wp.int32],
+    component_last: wp.array[wp.int32],
+    perm: wp.array[wp.int32],
+    component_diagonal: wp.array[wp.int64],
+    entry_source: wp.array[wp.int32],
+    entry_target: wp.array[wp.int64],
+    entry_row: wp.array[wp.int32],
+    entry_column: wp.array[wp.int32],
+    sign: wp.float64,
+    level_nodes: wp.array[wp.int32],
+    schedule: wp.array[wp.int32],
+    n_levels: wp.int32,
+    members: wp.array[wp.int32],
+    parent: wp.array[wp.int32],
+    front_offset: wp.array[wp.int64],
+    ncol: wp.array[wp.int32],
+    front_size: wp.array[wp.int32],
+    block_offset: wp.array[wp.int64],
+    row_offsets: wp.array[wp.int32],
+    parent_local: wp.array[wp.int32],
+    out_singular: wp.array[wp.int32],
+    out_pinned: wp.array[wp.int32],
+    out_dropped: wp.array[wp.int32],
+    out_fronts: wp.array[wp.float64],
+    out_blocks: wp.array[wp.float64],
+    out_status: wp.array[wp.int32],
+) -> None:
+    # The CPU device's whole numeric factorization, one one-lane block: the arenas cleared and the
+    # flags seeded (the memsets), ``mark_components_and_seed_blocks``' rows,
+    # ``pin_singular_components``' components and ``scatter_entries``' entries, then each level's
+    # ``factor_level_panels`` blocks and its extend-add groups (``extend_add``) in turn.
+    # The levels and groups are ``schedule``'s (``schedule_levels``, ``schedule_work``): a level's
+    # row holds its first front in ``level_nodes``, its front count, its panels and the most rows
+    # below a first panel, and a group's its level and the ``[start, end)`` of its children in
+    # ``members``, the groups in level order (their keys lead with it). That device runs
+    # a launch's blocks one after another, and every launch of the sequence reads only what
+    # earlier ones wrote, so this is the sequence's factor to the bit. Within a group no two
+    # children add into one entry, so its entries' order is free.
+    out_status[0] = 0
+    out_status[1] = 0
+    for i in range(out_singular.shape[0]):
+        out_singular[i] = 1
+    for k in range(out_blocks.shape[0]):
+        out_blocks[k] = wp.float64(0.0)
+    for i in range(out_singular.shape[0]):
+        mark_component_row(i, offsets, columns, values, labels, tolerance, block_offset,
+                           front_size, owner, c0, out_blocks, out_singular, out_pinned,
+                           out_dropped)  # fmt: skip
+    for k in range(out_fronts.shape[0]):
+        out_fronts[k] = wp.float64(0.0)
+    for c in range(component_label.shape[0]):
+        pin_component(c, component_label, component_last, perm, out_singular,
+                      component_diagonal, out_pinned, out_dropped, out_fronts,
+                      out_status)  # fmt: skip
+    for e in range(entry_source.shape[0]):
+        scatter_entry(e, values, entry_source, entry_target, entry_row, entry_column,
+                      out_pinned, sign, out_fronts)  # fmt: skip
+    groups = SCHEDULE_HEADER + (n_levels + 1) * LEVEL_FIELDS + schedule[SCHEDULE_PANELS]
+    n_groups = schedule[SCHEDULE_GROUPS]
+    g = wp.int32(0)
+    for h in range(n_levels):
+        row = SCHEDULE_HEADER + h * LEVEL_FIELDS
+        start = schedule[row]
+        for f in range(schedule[row + 1]):
+            factor_front_panels(level_nodes[start + f], schedule[row + 2],
+                                wp.max(schedule[row + 3], 1), 0, front_offset, ncol, front_size,
+                                block_offset, out_fronts, out_blocks, out_status)  # fmt: skip
+        while g < n_groups:
+            if schedule[groups + 4 * g] != h:
+                break
+            for c in range(schedule[groups + 4 * g + 1], schedule[groups + 4 * g + 2]):
+                k = members[c]
+                nrow = front_size[k] - ncol[k]
+                for a in range(nrow):
+                    for b in range(a + 1):
+                        extend_add_entry(k, a, b, parent, front_offset, ncol, front_size,
+                                         row_offsets, parent_local, out_fronts)  # fmt: skip
+            g += 1
 
 
 # --------------------------------------------------------------------------------------
@@ -806,6 +999,16 @@ def refine_start(
             wp.atomic_max(rhs_scale, column, magnitude)
 
 
+@wp.func
+def refine_close(cap: wp.int32, state: wp.array[wp.int32]) -> None:
+    # Close a refinement round: continue while some row is above tolerance, up to ``cap`` solves.
+    state[REFINE_CONDITION] = wp.where(
+        state[REFINE_PENDING] != 0 and state[REFINE_ROUND] < cap, 1, 0
+    )
+    state[REFINE_PENDING] = 0
+    state[REFINE_ROUND] = state[REFINE_ROUND] + 1
+
+
 @wp.kernel
 def residual_test(
     offsets: wp.array[wp.int32],
@@ -819,6 +1022,7 @@ def residual_test(
     n: wp.int32,
     tolerance: wp.float64,
     componentwise: wp.int32,
+    close_cap: wp.int32,
     state: wp.array[wp.int32],
     out_residual: wp.array[wp.float64],
 ) -> None:
@@ -838,16 +1042,15 @@ def residual_test(
     # residual or scale fails the test rather than passing it.
     if dropped[i] == 0 and not (wp.abs(total) <= tolerance * scale):
         state[REFINE_PENDING] = 1
+    # A non-negative ``close_cap`` (the CPU device only, whose launch runs its threads in turn)
+    # has the last thread close the round, ``refine_advance``'s launch.
+    if close_cap >= 0 and i == n - 1 and column == out_residual.shape[0] // n - 1:
+        refine_close(close_cap, state)
 
 
 @wp.kernel
 def refine_advance(cap: wp.int32, state: wp.array[wp.int32]) -> None:
-    # Close a refinement round: continue while some row is above tolerance, up to ``cap`` solves.
-    state[REFINE_CONDITION] = wp.where(
-        state[REFINE_PENDING] != 0 and state[REFINE_ROUND] < cap, 1, 0
-    )
-    state[REFINE_PENDING] = 0
-    state[REFINE_ROUND] = state[REFINE_ROUND] + 1
+    refine_close(cap, state)
 
 
 # Positions of a component's rows one block of ``null_space_partials`` sums.
@@ -860,8 +1063,10 @@ def chunk_component(chunk_offsets: wp.array[wp.int32], chunk: wp.int32) -> wp.in
     return binary_search_index(chunk_offsets, chunk) - 1
 
 
-@wp.kernel
-def null_space_partials(
+@wp.func
+def null_space_partial(
+    b: wp.int32,
+    lane: wp.int32,
     component_offsets: wp.array[wp.int32],
     component_rows: wp.array[wp.int32],
     component_label: wp.array[wp.int32],
@@ -873,11 +1078,7 @@ def null_space_partials(
     n: wp.int32,
     out_partials: wp.array[wp.float64],
 ) -> None:
-    # A singular component's constant offset, first half: the solve held one row at zero, so the
-    # component is shifted to the initial guess's mean, the answer conjugate gradient returns from
-    # it. One block per ``NULL_SPACE_CHUNK`` of a component's rows sums its ``solution - initial``;
-    # ``null_space_means`` adds a component's chunks in order, so the shift is reproducible.
-    b, lane = wp.tid()
+    # Block ``b`` of ``null_space_partials``, lane ``lane``. Block-collective.
     chunk = b % chunk_bound
     column = b // chunk_bound
     if chunk >= chunk_offsets[chunk_offsets.shape[0] - 1]:
@@ -900,6 +1101,62 @@ def null_space_partials(
 
 
 @wp.kernel
+def null_space_partials(
+    component_offsets: wp.array[wp.int32],
+    component_rows: wp.array[wp.int32],
+    component_label: wp.array[wp.int32],
+    chunk_offsets: wp.array[wp.int32],
+    chunk_bound: wp.int32,
+    singular: wp.array[wp.int32],
+    initial: wp.array[wp.float64],
+    solution: wp.array[wp.float64],
+    n: wp.int32,
+    out_partials: wp.array[wp.float64],
+) -> None:
+    # A singular component's constant offset, first half: the solve held one row at zero, so the
+    # component is shifted to the initial guess's mean, the answer conjugate gradient returns from
+    # it. One block per ``NULL_SPACE_CHUNK`` of a component's rows sums its ``solution - initial``;
+    # ``null_space_means`` adds a component's chunks in order, so the shift is reproducible.
+    b, lane = wp.tid()
+    null_space_partial(
+        b,
+        lane,
+        component_offsets,
+        component_rows,
+        component_label,
+        chunk_offsets,
+        chunk_bound,
+        singular,
+        initial,
+        solution,
+        n,
+        out_partials,
+    )
+
+
+@wp.func
+def null_space_mean(
+    component: wp.int32,
+    column: wp.int32,
+    component_offsets: wp.array[wp.int32],
+    component_label: wp.array[wp.int32],
+    chunk_offsets: wp.array[wp.int32],
+    chunk_bound: wp.int32,
+    singular: wp.array[wp.int32],
+    partials: wp.array[wp.float64],
+    out_means: wp.array[wp.float64],
+) -> None:
+    # Thread ``(component, column)`` of ``null_space_means``.
+    if singular[component_label[component]] == 0:
+        return
+    total = wp.float64(0.0)
+    for k in range(chunk_offsets[component], chunk_offsets[component + 1]):
+        total += partials[column * chunk_bound + k]
+    count = component_offsets[component + 1] - component_offsets[component]
+    out_means[column * component_label.shape[0] + component] = total / wp.float64(count)
+
+
+@wp.kernel
 def null_space_means(
     component_offsets: wp.array[wp.int32],
     component_label: wp.array[wp.int32],
@@ -912,13 +1169,28 @@ def null_space_means(
     # Second step: a singular component's mean offset, its chunk partials summed in chunk order by
     # one thread a component and column (a non-singular component's is never read).
     component, column = wp.tid()
+    null_space_mean(component, column, component_offsets, component_label, chunk_offsets,
+                    chunk_bound, singular, partials, out_means)  # fmt: skip
+
+
+@wp.func
+def null_space_shift_entry(
+    p: wp.int32,
+    column: wp.int32,
+    component_offsets: wp.array[wp.int32],
+    component_rows: wp.array[wp.int32],
+    component_label: wp.array[wp.int32],
+    singular: wp.array[wp.int32],
+    means: wp.array[wp.float64],
+    n: wp.int32,
+    solution: wp.array[wp.float64],
+) -> None:
+    # Thread ``(p, column)`` of ``null_space_shift``.
+    component = binary_search_index(component_offsets, p) - 1
     if singular[component_label[component]] == 0:
         return
-    total = wp.float64(0.0)
-    for k in range(chunk_offsets[component], chunk_offsets[component + 1]):
-        total += partials[column * chunk_bound + k]
-    count = component_offsets[component + 1] - component_offsets[component]
-    out_means[column * component_label.shape[0] + component] = total / wp.float64(count)
+    r = column * n + component_rows[p]
+    solution[r] = solution[r] - means[column * component_label.shape[0] + component]
 
 
 @wp.kernel
@@ -933,11 +1205,41 @@ def null_space_shift(
 ) -> None:
     # Last step: each row of a singular component subtracts its component's mean offset.
     p, column = wp.tid()
-    component = binary_search_index(component_offsets, p) - 1
-    if singular[component_label[component]] == 0:
-        return
-    r = column * n + component_rows[p]
-    solution[r] = solution[r] - means[column * component_label.shape[0] + component]
+    null_space_shift_entry(p, column, component_offsets, component_rows, component_label,
+                           singular, means, n, solution)  # fmt: skip
+
+
+@wp.kernel
+def null_space_serial(
+    component_offsets: wp.array[wp.int32],
+    component_rows: wp.array[wp.int32],
+    component_label: wp.array[wp.int32],
+    chunk_offsets: wp.array[wp.int32],
+    chunk_bound: wp.int32,
+    n_columns: wp.int32,
+    singular: wp.array[wp.int32],
+    initial: wp.array[wp.float64],
+    n: wp.int32,
+    partials: wp.array[wp.float64],
+    means: wp.array[wp.float64],
+    solution: wp.array[wp.float64],
+) -> None:
+    # The CPU device's null-space projection in one one-lane block: ``null_space_partials``'
+    # blocks, ``null_space_means``' threads and ``null_space_shift``'s, each launch's in its order,
+    # which that device runs one after another anyway; so the shift is theirs to the bit.
+    # ``partials`` and ``means`` are the launches' scratch, ``solution`` shifted in place.
+    for b in range(chunk_bound * n_columns):
+        null_space_partial(b, 0, component_offsets, component_rows, component_label,
+                           chunk_offsets, chunk_bound, singular, initial, solution, n,
+                           partials)  # fmt: skip
+    for component in range(component_label.shape[0]):
+        for column in range(n_columns):
+            null_space_mean(component, column, component_offsets, component_label,
+                            chunk_offsets, chunk_bound, singular, partials, means)  # fmt: skip
+    for p in range(n):
+        for column in range(n_columns):
+            null_space_shift_entry(p, column, component_offsets, component_rows,
+                                   component_label, singular, means, n, solution)  # fmt: skip
 
 
 # --------------------------------------------------------------------------------------
@@ -1666,17 +1968,64 @@ def supernode_links(
     c0: wp.array[wp.int32],
     ncol: wp.array[wp.int32],
     header: wp.array[wp.int32],
+    node: wp.array[wp.int32],
+    node_start: wp.array[wp.int32],
     out_parent: wp.array[wp.int32],
     out_column_end: wp.array[wp.int32],
+    out_keys: wp.array[wp.int32],
+    out_vertices: wp.array[wp.int32],
+    out_ancestor: wp.array[wp.int32],
+    out_parent_up: wp.array[wp.int32],
 ) -> None:
     # A supernode's parent (its kept node's parent's supernode, ``-1`` for a root) and the end of
-    # its columns.
+    # its columns. Thread ``v`` also keys vertex ``v`` by its node's first position: a stable sort
+    # of the vertices in index order is the elimination order, every node's rows in ascending
+    # vertex index; and seeds the elimination tree's rounds: every supernode its own ancestor,
+    # with no parent yet.
     sn = wp.int32(wp.tid())
+    out_keys[sn] = node_start[node[sn]]
+    out_vertices[sn] = sn
+    out_ancestor[sn] = sn
+    out_parent_up[sn] = -1
     if sn >= header[HEADER_SUPERNODES]:
         return
     parent = tree[kept[sn], 2]
     out_parent[sn] = wp.where(parent >= 0, node_supernode[wp.max(parent, 0)], -1)
     out_column_end[sn] = c0[sn] + ncol[sn]
+
+
+@wp.func
+def elimination_tree_row(
+    i: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    pos: wp.array[wp.int32],
+    owner: wp.array[wp.int32],
+    c0: wp.array[wp.int32],
+    dissection_height: wp.array[wp.int32],
+    level: wp.int32,
+    ancestor: wp.array[wp.int32],
+    out_parent: wp.array[wp.int32],
+) -> None:
+    # Operator row ``i``'s share of an ``elimination_tree_hook`` round.
+    r = pos[i]
+    sn = owner[r]
+    if dissection_height[sn] != level:
+        return
+    first = c0[sn]
+    for e in range(offsets[i], offsets[i + 1]):
+        j = pos[columns[e]]
+        if j < first:
+            x = owner[j]
+            a = ancestor[x]
+            while a != x:
+                grand = ancestor[a]
+                ancestor[x] = grand
+                x = a
+                a = grand
+            if x != sn:
+                out_parent[x] = sn
+                ancestor[x] = sn
 
 
 @wp.kernel
@@ -1704,25 +2053,29 @@ def elimination_tree_hook(
     # which is the sequential order's invariant, and the supernodes of one round have disjoint
     # subtrees, so their finds touch disjoint sets. Rows of one supernode may find the same root
     # and write the same parent; path halving only ever moves a pointer up its own set.
-    i = wp.int32(wp.tid())
-    r = pos[i]
-    sn = owner[r]
-    if dissection_height[sn] != level:
-        return
-    first = c0[sn]
-    for e in range(offsets[i], offsets[i + 1]):
-        j = pos[columns[e]]
-        if j < first:
-            x = owner[j]
-            a = ancestor[x]
-            while a != x:
-                grand = ancestor[a]
-                ancestor[x] = grand
-                x = a
-                a = grand
-            if x != sn:
-                out_parent[x] = sn
-                ancestor[x] = sn
+    elimination_tree_row(wp.int32(wp.tid()), offsets, columns, pos, owner, c0,
+                         dissection_height, level, ancestor, out_parent)  # fmt: skip
+
+
+@wp.kernel
+def elimination_tree_serial(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    pos: wp.array[wp.int32],
+    owner: wp.array[wp.int32],
+    c0: wp.array[wp.int32],
+    dissection_height: wp.array[wp.int32],
+    n: wp.int32,
+    levels: wp.int32,
+    ancestor: wp.array[wp.int32],
+    out_parent: wp.array[wp.int32],
+) -> None:
+    # The CPU device's every ``elimination_tree_hook`` round, ``levels`` of them, in one thread:
+    # each round's ``n`` rows in turn, as that device runs the round's launch.
+    for level in range(levels):
+        for i in range(n):
+            elimination_tree_row(i, offsets, columns, pos, owner, c0, dissection_height, level,
+                                 ancestor, out_parent)  # fmt: skip
 
 
 @wp.kernel
@@ -1759,7 +2112,9 @@ SCHEDULE_PANELS = wp.constant(2)
 # The supernode-order ``front_terms`` totals, each as two ``int32`` digits in base ``2^31`` (high,
 # then low).
 SCHEDULE_TERMS = wp.constant(3)
-SCHEDULE_HEADER = wp.constant(15)
+# Whether the analysed operator's leading diagonal sums below zero (``leading_diagonal_total``).
+SCHEDULE_LEADING_NEGATIVE = wp.constant(15)
+SCHEDULE_HEADER = wp.constant(16)
 LEVEL_FIELDS = wp.constant(10)
 
 
@@ -1880,34 +2235,9 @@ def level_terms(
     out_terms[r + 1] = terms
 
 
-@wp.kernel
-def split_terms(
-    terms: wp.array[front_terms],
-    level_nodes: wp.array[wp.int32],
-    out_front_offset: wp.array[wp.int64],
-    out_block_offset: wp.array[wp.int64],
-    out_f_base: wp.array[wp.int32],
-    out_b_base: wp.array[wp.int32],
-    out_level_offsets: wp.array2d[wp.int32],
-    out_column_base: wp.array[wp.int32],
-) -> None:
-    # The scanned terms as the tables the maps read: every supernode's front and solve-block
-    # offsets and chunk bases, the four level-major prefixes, and each supernode's first column in
-    # level order.
-    i = wp.int32(wp.tid())
-    t = terms[i]
-    out_front_offset[i] = t[0]
-    out_block_offset[i] = t[1]
-    out_f_base[i] = wp.int32(t[2])
-    out_b_base[i] = wp.int32(t[3])
-    for k in range(4):
-        out_level_offsets[k, i] = wp.int32(t[LEVEL_TERMS + k])
-    if i < level_nodes.shape[0]:
-        out_column_base[level_nodes[i]] = wp.int32(t[LEVEL_TERMS + 3])
-
-
-@wp.kernel
-def sibling_keys(
+@wp.func
+def sibling_key(
+    p: wp.int32,
     child_keys: wp.array[wp.uint64],
     child_values: wp.array[wp.int32],
     height: wp.array[wp.int32],
@@ -1918,7 +2248,6 @@ def sibling_keys(
     # A child's extend-add key: its height, then its slot among its parent's children (in child
     # order), then the child -- one launch per ``(height, slot)`` group keeps two children of a
     # launch from sharing a parent.
-    p = wp.int32(wp.tid())
     n_sn = child_keys.shape[0]
     key = child_keys[p]
     out_values[p] = child_values[p]
@@ -1930,6 +2259,41 @@ def sibling_keys(
     child = child_values[p]
     group = wp.uint64(height[child]) * wp.uint64(n_sn + 1) + wp.uint64(slot)
     out_keys[p] = group * wp.uint64(n_sn) + wp.uint64(child)
+
+
+@wp.kernel
+def split_terms(
+    terms: wp.array[front_terms],
+    level_nodes: wp.array[wp.int32],
+    child_keys: wp.array[wp.uint64],
+    child_values: wp.array[wp.int32],
+    height: wp.array[wp.int32],
+    sentinel: wp.uint64,
+    out_front_offset: wp.array[wp.int64],
+    out_block_offset: wp.array[wp.int64],
+    out_f_base: wp.array[wp.int32],
+    out_b_base: wp.array[wp.int32],
+    out_level_offsets: wp.array2d[wp.int32],
+    out_column_base: wp.array[wp.int32],
+    out_sibling_keys: wp.array[wp.uint64],
+    out_members: wp.array[wp.int32],
+) -> None:
+    # The scanned terms as the tables the maps read: every supernode's front and solve-block
+    # offsets and chunk bases, the four level-major prefixes, and each supernode's first column in
+    # level order. Thread ``i < n_sn`` also writes child ``i``'s extend-add key (``sibling_key``),
+    # which reads none of it: the two share the supernode grid.
+    i = wp.int32(wp.tid())
+    if i < child_keys.shape[0]:
+        sibling_key(i, child_keys, child_values, height, sentinel, out_sibling_keys, out_members)
+    t = terms[i]
+    out_front_offset[i] = t[0]
+    out_block_offset[i] = t[1]
+    out_f_base[i] = wp.int32(t[2])
+    out_b_base[i] = wp.int32(t[3])
+    for k in range(4):
+        out_level_offsets[k, i] = wp.int32(t[LEVEL_TERMS + k])
+    if i < level_nodes.shape[0]:
+        out_column_base[level_nodes[i]] = wp.int32(t[LEVEL_TERMS + 3])
 
 
 @wp.func
@@ -1985,13 +2349,21 @@ def schedule_levels(
     row_ends: wp.array[wp.int32],
     group_ends: wp.array[wp.int32],
     terms: wp.array[front_terms],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    probe_rows: wp.int32,
     out_schedule: wp.array[wp.int32],
 ) -> None:
     # One thread: each level's row of the schedule -- its first supernode in level order, its
     # front count, panel count, most rows below a first panel, widest column count, the four
     # level-major starts and its first panel's slot -- then a closing row with the totals, and
     # every panel's work seeded at one. The header also carries the scanned terms' totals, split
-    # into base-``2^31`` digits, so the header's one read returns them too.
+    # into base-``2^31`` digits, so the header's one read returns them too, and the sign of the
+    # operator's first ``probe_rows`` diagonal entries, which ``sparse_cholesky`` factors first.
+    out_schedule[SCHEDULE_LEADING_NEGATIVE] = wp.where(
+        leading_diagonal_total(offsets, columns, values, probe_rows) < wp.float64(0.0), 1, 0
+    )
     totals = terms[terms.shape[0] - 1]
     radix = wp.int64(1) << wp.int64(31)
     for k in range(6):
@@ -2053,25 +2425,6 @@ def schedule_work(
         last = wp.min((p + 1) * PANEL, c)
         span = size - last
         wp.atomic_max(out_schedule, work + p, span * span + span * last)
-
-
-@wp.kernel
-def node_order_keys(
-    node: wp.array[wp.int32],
-    node_start: wp.array[wp.int32],
-    out_keys: wp.array[wp.int32],
-    out_vertices: wp.array[wp.int32],
-    out_ancestor: wp.array[wp.int32],
-    out_parent: wp.array[wp.int32],
-) -> None:
-    # Each vertex keyed by its node's first position: a stable sort of the vertices in index order
-    # is the elimination order, every node's rows in ascending vertex index. The same thread seeds
-    # the elimination tree's rounds: every supernode its own ancestor, with no parent yet.
-    v = wp.int32(wp.tid())
-    out_keys[v] = node_start[node[v]]
-    out_vertices[v] = v
-    out_ancestor[v] = v
-    out_parent[v] = -1
 
 
 @wp.kernel
@@ -2294,14 +2647,35 @@ def write_lower_entries(
     row_offsets: wp.array[wp.int32],
     rows: wp.array[wp.int32],
     ends: wp.array[wp.vec2i],
+    components: wp.int32,
+    sorted_labels: wp.array[wp.int32],
+    flags: wp.array[wp.int32],
+    component_ends: wp.array[wp.int32],
+    vertices: wp.array[wp.int32],
     out_source: wp.array[wp.int32],
     out_target: wp.array[wp.int64],
     out_row: wp.array[wp.int32],
     out_column: wp.array[wp.int32],
+    out_label: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+    out_last: wp.array[wp.int32],
 ) -> None:
     # The lower triangle of the permuted operator, in stored order: each entry's front slot, at the
     # slots the lower counts' inclusive scan (``ends``' first component) gives row ``i``.
+    #
+    # With ``components`` set, thread ``i`` also writes the component tables from the rows in
+    # label order (labels ascending): each component's label, where its rows start (the last
+    # thread closing the offsets with the row count) and its last-eliminated position, a maximum
+    # into the zeroed ``out_last``.
     i = wp.int32(wp.tid())
+    if components != 0:
+        c = component_ends[i] - 1
+        if flags[i] != 0:
+            out_label[c] = sorted_labels[i]
+            out_offsets[c] = i
+        if i == flags.shape[0] - 1:
+            out_offsets[c + 1] = i + 1
+        wp.atomic_max(out_last, c, pos[vertices[i]])
     q = wp.where(i > 0, ends[wp.max(i - 1, 0)][0], 0)
     r = pos[i]
     for e in range(offsets[i], offsets[i + 1]):
@@ -2325,15 +2699,28 @@ def parent_locals(
     ncol: wp.array[wp.int32],
     front_size: wp.array[wp.int32],
     row_offsets: wp.array[wp.int32],
+    owner: wp.array[wp.int32],
+    column_base: wp.array[wp.int32],
     out_parent_local: wp.array[wp.int32],
+    out_keys: wp.array[wp.int32],
+    out_pairs: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
 ) -> None:
-    # Each row-structure entry's index in the parent's front: where ``extend_add`` adds it.
+    # Each row-structure entry's index in the parent's front: where ``extend_add`` adds it. And
+    # the entry keyed by its row's level-major column index, so one stable sort lists every
+    # column's contributions, level by level, in pair order (the forward gather's).
     e = wp.int32(wp.tid())
+    v = rows[e]
+    k = owner[v]
+    key = column_base[k] + v - c0[k]
+    out_keys[e] = key
+    out_pairs[e] = e
+    wp.atomic_add(out_counts, key, 1)
     p = parent[row_node[e]]
     if p < 0:
         out_parent_local[e] = 0
         return
-    out_parent_local[e] = front_local(p, rows[e], c0, ncol, front_size, row_offsets, rows)
+    out_parent_local[e] = front_local(p, v, c0, ncol, front_size, row_offsets, rows)
 
 
 @wp.func
@@ -2559,51 +2946,9 @@ def solve_task_maps(
     )  # fmt: skip
 
 
-@wp.kernel
-def contribution_keys(
-    rows: wp.array[wp.int32],
-    owner: wp.array[wp.int32],
-    c0: wp.array[wp.int32],
-    column_base: wp.array[wp.int32],
-    out_keys: wp.array[wp.int32],
-    out_pairs: wp.array[wp.int32],
-    out_counts: wp.array[wp.int32],
-) -> None:
-    # Each row-structure entry keyed by its row's level-major column index, so one stable sort
-    # lists every column's contributions, level by level, in pair order.
-    e = wp.int32(wp.tid())
-    v = rows[e]
-    k = owner[v]
-    key = column_base[k] + v - c0[k]
-    out_keys[e] = key
-    out_pairs[e] = e
-    wp.atomic_add(out_counts, key, 1)
-
-
 # --------------------------------------------------------------------------------------
 # Symbolic analysis: components
 # --------------------------------------------------------------------------------------
-
-
-@wp.kernel
-def component_tables(
-    sorted_labels: wp.array[wp.int32],
-    flags: wp.array[wp.int32],
-    ends: wp.array[wp.int32],
-    vertices: wp.array[wp.int32],
-    pos: wp.array[wp.int32],
-    out_label: wp.array[wp.int32],
-    out_offsets: wp.array[wp.int32],
-    out_last: wp.array[wp.int32],
-) -> None:
-    # Per component (labels ascending): its label, where its vertices start in label order, and
-    # its last-eliminated position.
-    p = wp.int32(wp.tid())
-    c = ends[p] - 1
-    if flags[p] != 0:
-        out_label[c] = sorted_labels[p]
-        out_offsets[c] = p
-    wp.atomic_max(out_last, c, pos[vertices[p]])
 
 
 @wp.kernel
@@ -2747,6 +3092,8 @@ def expanded_component_tables(
     out_label[2 * c + 1] = 2 * label[c] + lone
     out_offsets[2 * c + 1] = 2 * start + wp.where(lone != 0, 1, 2 * count)
     out_last[2 * c + 1] = 2 * last[c] + 1
+    if c == label.shape[0] - 1:
+        out_offsets[2 * c + 2] = 2 * component_offsets[c + 1]
 
 
 # --------------------------------------------------------------------------------------

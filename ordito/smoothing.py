@@ -275,7 +275,10 @@ def filter_laplacian(
         # Explicit passes with nothing between them: the first reads the ``float32`` input and the
         # last writes the ``float32`` answer.
         return _vec3_passes(
-            vertices, iterations, lambda _index, src, dst: _diffuse_pass(operator, coeff, src, dst)
+            vertices,
+            iterations,
+            lambda _index, src, dst: _diffuse_pass(operator, coeff, src, dst),
+            serial=_SerialPasses(kernel_smoothing.PASS_DIFFUSE, operator, lamb, lamb),
         )
     steps = _implicit_fixed_point_steps(operator, lamb) if implicit_time_integration else None
     # With nothing to anchor, the fixed-point passes start from the ``float32`` input itself: the
@@ -413,6 +416,17 @@ def _implicit_fixed_point_pass(
     writes ``positions`` (which they never read).
     """
     rhs: _Positions = positions if start is None else start
+    if wp.get_device(positions.device).is_cpu:
+        # The CPU device runs a launch's threads one after another: the same steps and rotation
+        # in one launch (``implicit_laplacian_steps_serial``), to the bit.
+        _launch.launch(
+            kernel_smoothing.IMPLICIT_LAPLACIAN_STEPS_SERIAL[rhs.dtype],
+            dim=1,
+            inputs=[operator.offsets, operator.columns, operator.values, coeff, steps, rhs],
+            outputs=[*scratch, positions],
+            device=positions.device,
+        )
+        return
     for step in range(steps):
         source = rhs if step == 0 else scratch[(step - 1) % 2]
         target = positions if step == steps - 1 else scratch[step % 2]
@@ -782,8 +796,11 @@ def filter_humphrey(
 
     meshlab = method == "meshlab"
     operator = _resolved_operator(vertices, faces, laplacian_operator, symmetric=meshlab)
-    lv = _launch.empty(n, dtype=wp.vec3d, device=device)
-    b = _launch.empty(n, dtype=wp.vec3d, device=device)
+    # ``L.v`` and ``b``, then (CPU, below) the passes' two ``float64`` buffers: one allocation.
+    serial = iterations >= 2 and wp.get_device(device).is_cpu
+    lv, b, *scratch = _launch.carve(
+        wp.vec3d, (n, n, *((n,) * min(2, iterations - 1) if serial else ())), device
+    )
     alpha64 = wp.float64(alpha)
     beta64 = wp.float64(beta)
     sign64 = wp.float64(-1.0 if meshlab else 1.0)
@@ -809,6 +826,19 @@ def filter_humphrey(
             device=device,
         )
 
+    if serial:
+        # The CPU device runs a launch's threads one after another: every pass in one launch
+        # (``humphrey_passes_serial``), ``_vec3_passes``' rotation and the pass kernels' rows, to
+        # the bit.
+        out = _launch.empty(n, dtype=wp.vec3, device=device)
+        _launch.launch(
+            kernel_smoothing.humphrey_passes_serial,
+            dim=1,
+            inputs=[*rows, vertices, alpha64, beta64, sign64, iterations],
+            outputs=[lv, b, scratch[0], scratch[-1], out],
+            device=device,
+        )
+        return out
     return _vec3_passes(vertices, iterations, humphrey_pass)
 
 
@@ -1203,7 +1233,26 @@ def equalize_triangle_areas(
             device=device,
         )
 
-    return _float32_passes(vertices, iterations, equalize_pass)
+    def equalize_serial(first: wp.array[wp.vec3], second: wp.array[wp.vec3]) -> None:
+        _launch.launch(
+            kernel_smoothing.equalize_area_steps_serial,
+            dim=1,
+            inputs=[
+                faces,
+                offsets,
+                vf_indices,
+                region,
+                vertices,
+                wp.float32(force),
+                no_shrinkage,
+                limit,
+                iterations,
+            ],
+            outputs=[first, second],
+            device=device,
+        )
+
+    return _float32_passes(vertices, iterations, equalize_pass, equalize_serial)
 
 
 def _without_boundary_vertices(
@@ -1361,7 +1410,16 @@ def relax_keep_volume(
             device=device,
         )
 
-    return _float32_passes(vertices, iterations, relax_pass)
+    def relax_serial(first: wp.array[wp.vec3], second: wp.array[wp.vec3]) -> None:
+        _launch.launch(
+            kernel_smoothing.relax_keeping_volume_serial,
+            dim=1,
+            inputs=[offsets, columns, region, vertices, wp.float32(force), limit, iterations],
+            outputs=[push, first, second],
+            device=device,
+        )
+
+    return _float32_passes(vertices, iterations, relax_pass, relax_serial)
 
 
 def relax_approx(
@@ -1726,7 +1784,12 @@ def filter_taubin(
         coeff = lamb if index % 2 == 0 else -nu
         _diffuse_pass(pass_operator, wp.float64(coeff), src, dst)
 
-    return _vec3_passes(vertices, iterations, taubin_pass)
+    serial = (
+        None
+        if operator is None
+        else _SerialPasses(kernel_smoothing.PASS_DIFFUSE, operator, lamb, -nu)
+    )
+    return _vec3_passes(vertices, iterations, taubin_pass, serial=serial)
 
 
 def filter_windowed_sinc(
@@ -2043,7 +2106,12 @@ def filter_neighborhood_average(
             device=device,
         )
 
-    return _vec3_passes(vertices, iterations, average_pass)
+    return _vec3_passes(
+        vertices,
+        iterations,
+        average_pass,
+        serial=_SerialPasses(kernel_smoothing.PASS_NEIGHBORHOOD_AVERAGE, operator),
+    )
 
 
 # ``filter_mut_dif_laplacian`` warns above this relative rounding uncertainty of its mean
@@ -3547,18 +3615,23 @@ def _solve_region_smooth(
     # ``_solve_region_fixed_rim``'s is and for the same reason; all written before they are read.
     # ``int32``, zeroed: the free degrees (written whole) and the three per-row tables the scans
     # and the anchoring count into.
-    row_sums, row_rhs_flat, atb_flat, factor, factor_t, ratios, sol_flat = _launch.carve(
-        wp.float64,
-        (n, 3 * n, 3 * n_free, capacity, polynomial_capacity, n_free, 3 * n_free),
-        device,
-        zeroed=False,
-    )
+    wide_sizes = (n, 3 * n, 3 * n_free, capacity, polynomial_capacity, n_free, 3 * n_free)
+    if laplacian_form:
+        wide = _launch.carve(wp.float64, wide_sizes, device, zeroed=False)
+        narrow = _launch.carve(wp.float32, (0, 0), device, zeroed=False)
+    else:
+        # The polynomial form's ``float32`` factor copies ride the same allocation.
+        *wide, narrow_0, narrow_1 = _launch.carve_typed(
+            [(wp.float64, size) for size in wide_sizes]
+            + [(wp.float32, polynomial_capacity), (wp.float32, polynomial_capacity)],
+            device,
+        )
+        narrow = [narrow_0, narrow_1]
+    row_sums, row_rhs_flat, atb_flat, factor, factor_t, ratios, sol_flat = wide
+    factor_narrow, factor_t_narrow = narrow
     row_rhs = row_rhs_flat.reshape((n, 3)).view(wp.vec3d)
     atb = atb_flat.reshape((3, n_free))
     sol = sol_flat.reshape((3, n_free))
-    factor_narrow, factor_t_narrow = _launch.carve(
-        wp.float32, (polynomial_capacity, polynomial_capacity), device, zeroed=False
-    )
     free_degrees, term_offsets, system_offsets, anchored = _launch.carve(
         wp.int32, (n, n_free + 1, n_free + 1, n_free), device, zeroed=True
     )
@@ -3605,9 +3678,11 @@ def _solve_region_smooth(
     # The one readback of the assembly: how many terms the product gathers, which sizes the term
     # buffer and bounds the product's entry count, so its CSR is allocated without a second one.
     n_terms = max(int(read_scalar(term_offsets, n_free)), 1)
-    # The gathered terms and the product's CSR, each pair one allocation.
-    row_columns, columns = _launch.carve(wp.int32, (n_terms, n_terms), device, zeroed=False)
-    row_values, values = _launch.carve(wp.float64, (n_terms, n_terms), device, zeroed=False)
+    # The gathered terms and the product's CSR, in one allocation.
+    row_columns, columns, row_values, values = _launch.carve_typed(
+        ((wp.int32, n_terms), (wp.int32, n_terms), (wp.float64, n_terms), (wp.float64, n_terms)),
+        device,
+    )
     system_counts = odt.as_dense(system_offsets[1:])
     _launch.launch(
         kernel_smoothing.normal_equations_rows,
@@ -4132,6 +4207,17 @@ def filter_scalar_laplacian(
     # The first pass reads ``values`` itself, so the input is never copied: the passes ping-pong two
     # buffers of this call, the second only when there is a second pass.
     buffers = [_launch.empty(n, dtype=wp.float32, device=device) for _ in range(min(2, iterations))]
+    if wp.get_device(device).is_cpu:
+        # The CPU device runs a launch's threads one after another: every pass in one launch
+        # (``diffuse_scalar_passes_serial``), the same rotation and rows to the bit.
+        _launch.launch(
+            kernel_smoothing.diffuse_scalar_passes_serial,
+            dim=1,
+            inputs=[operator.offsets, operator.columns, operator.values, values, coeff, iterations],
+            outputs=[buffers[0], buffers[-1]],
+            device=device,
+        )
+        return buffers[(iterations - 1) % 2]
     field = values
     for index in range(iterations):
         out = buffers[index % 2]
@@ -4312,10 +4398,18 @@ def filter_normals(
     if face_adjacency is None:
         # The pairs ``face_adjacency`` would list are the halfedges' mates, read three to a face.
         mates = od.halfedge.halfedge_mates(faces, vertices.size)
-        passes = (kernel_smoothing.smooth_face_normals_over_mates, [mates])
+        passes = (
+            kernel_smoothing.smooth_face_normals_over_mates,
+            kernel_smoothing.smooth_face_normals_over_mates_serial,
+            [mates],
+        )
     else:
         pair_offsets, face_pairs = _incidence_rows(face_adjacency.flatten(), 2, n_faces)
-        passes = (kernel_smoothing.smooth_face_normals, [face_adjacency, pair_offsets, face_pairs])
+        passes = (
+            kernel_smoothing.smooth_face_normals,
+            kernel_smoothing.smooth_face_normals_serial,
+            [face_adjacency, pair_offsets, face_pairs],
+        )
     return _smoothed_face_normals(normals, areas, *passes, threshold, iterations, owned=computed)
 
 
@@ -4495,7 +4589,11 @@ def filter_two_step(
         )
     if mates is None:
         mates = od.halfedge.halfedge_mates(faces, n, vertex_faces=(vertex_faces, vf_offsets))
-    normal_pass = (kernel_smoothing.smooth_face_normals_over_mates, [mates])
+    normal_pass = (
+        kernel_smoothing.smooth_face_normals_over_mates,
+        kernel_smoothing.smooth_face_normals_over_mates_serial,
+        [mates],
+    )
     # The fit steps ping-pong between two buffers of this call; the input is only ever read.
     positions = vertices
     spare: wp.array[wp.vec3] | None = None
@@ -4530,6 +4628,28 @@ def filter_two_step(
                 owned=True,
                 target=spare_normals,
             )
+        if wp.get_device(device).is_cpu and fit_iterations > 0:
+            # The CPU device runs a launch's threads one after another: every fit step in one
+            # launch (``fit_vertices_to_normals_serial``), the same rotation to the bit. Step
+            # ``k`` writes ``spare`` for even ``k`` and ``positions`` for odd, a second buffer of
+            # this call's while ``positions`` is still the input.
+            if spare is None:
+                spare = _launch.empty(n, dtype=wp.vec3, device=device)
+            second = positions
+            if positions is vertices and fit_iterations > 1:
+                second = _launch.empty(n, dtype=wp.vec3, device=device)
+            _launch.launch(
+                kernel_smoothing.FIT_VERTICES_TO_NORMALS_SERIAL[wp.vec3],
+                dim=1,
+                inputs=[positions, faces, normals, vertex_faces, vf_offsets, fit_iterations],
+                outputs=[spare, second],
+                device=device,
+            )
+            if fit_iterations % 2 == 1:
+                positions, spare = spare, (None if second is vertices else second)
+            else:
+                positions = second
+            continue
         for _fit in range(fit_iterations):
             if spare is None:
                 spare = _launch.empty(n, dtype=wp.vec3, device=device)
@@ -4578,6 +4698,30 @@ def _meshlab_two_step(
             outputs=[field],
             device=device,
         )
+        if wp.get_device(device).is_cpu:
+            # The CPU device runs a launch's threads one after another: every pass, then every
+            # fit step, in one launch each, the same rotations to the bit.
+            if normal_iterations > 0:
+                _launch.launch(
+                    kernel_smoothing.SMOOTH_FACE_NORMALS_MESHLAB_SERIAL[wp.vec3d],
+                    dim=1,
+                    inputs=[field, *rows, threshold_cos, normal_iterations],
+                    outputs=[spare_field, field],
+                    device=device,
+                )
+                if normal_iterations % 2 == 1:
+                    field, spare_field = spare_field, field
+            if fit_iterations > 0:
+                _launch.launch(
+                    kernel_smoothing.FIT_VERTICES_TO_NORMALS_SERIAL[wp.vec3d],
+                    dim=1,
+                    inputs=[positions, faces, field, vertex_faces, vf_offsets, fit_iterations],
+                    outputs=[spare, positions],
+                    device=device,
+                )
+                if fit_iterations % 2 == 1:
+                    positions, spare = spare, positions
+            continue
         for _pass in range(normal_iterations):
             _launch.launch(
                 kernel_smoothing.SMOOTH_FACE_NORMALS_MESHLAB[wp.vec3d],
@@ -4680,11 +4824,22 @@ class _MumfordShahNormals:
         )
         offsets, columns, starts = od.array.csr_from_keys(keys, order, count, n_faces, n_faces)
         self._offsets, self._starts, self._order = offsets, starts, order
-        self._values = _launch.empty(count, dtype=wp.float64, device=device)
-        self._matrix = od.array.bsr_from_csr(n_faces, n_faces, offsets, columns, self._values)
-        self._lengths, self._perimeters = _launch.carve(wp.float32, (3 * n_faces, n_faces), device)
-        self._rhs = odt.empty_2d((3, n_faces), wp.float64, device=device)
-        self._solution = odt.empty_2d((3, n_faces), wp.float64, device=device)
+        # The system's values, the geometry the values read and the batched right-hand side and
+        # solution: every table this object holds, in one allocation.
+        values, self._lengths, self._perimeters, rhs, solution = _launch.carve_typed(
+            (
+                (wp.float64, count),
+                (wp.float32, 3 * n_faces),
+                (wp.float32, n_faces),
+                (wp.float64, 3 * n_faces),
+                (wp.float64, 3 * n_faces),
+            ),
+            device,
+        )
+        self._values = values
+        self._matrix = od.array.bsr_from_csr(n_faces, n_faces, offsets, columns, values)
+        self._rhs = odt.as_array2d(rhs.reshape((3, n_faces)), wp.float64)
+        self._solution = odt.as_array2d(solution.reshape((3, n_faces)), wp.float64)
         self._solver: Callable[[], object] | None = None
 
     def __call__(
@@ -4766,9 +4921,12 @@ class _NormalsToPoints:
         )
         matrix = od.array.csr_from_coo_keys(n, n, keys, order, values)
         self._corner_offsets, self._corners = _incidence_rows(faces, 1, n)
-        self._corner_terms = _launch.empty(3 * n_faces, dtype=wp.vec3d, device=device)
-        self._rhs = odt.empty_2d((3, n), wp.float64, device=device)
-        self._solution = odt.empty_2d((3, n), wp.float64, device=device)
+        # The per-corner terms and the batched right-hand side and solution, in one allocation.
+        self._corner_terms, rhs, solution = _launch.carve_typed(
+            ((wp.vec3d, 3 * n_faces), (wp.float64, 3 * n), (wp.float64, 3 * n)), device
+        )
+        self._rhs = odt.as_array2d(rhs.reshape((3, n)), wp.float64)
+        self._solution = odt.as_array2d(solution.reshape((3, n)), wp.float64)
         self._solver = twl.spd_column_solver(
             matrix, self._rhs, self._solution, coordinates=vertices
         )
@@ -4824,6 +4982,7 @@ def _smoothed_face_normals(
     normals: wp.array[wp.vec3],
     areas: wp.array[wp.float32],
     kernel: odt.Kernel,
+    serial: odt.Kernel,
     adjacency_inputs: list[odt.ArrayNd],
     threshold: float,
     iterations: int,
@@ -4832,9 +4991,10 @@ def _smoothed_face_normals(
     target: wp.array[wp.vec3] | None = None,
 ) -> wp.array[wp.vec3]:
     """
-    Run ``iterations >= 1`` crease-gated normal passes from ``normals``, one launch each.
+    Run ``iterations >= 1`` crease-gated normal passes from ``normals``, a launch each (CPU: one).
 
-    ``kernel`` is ``kernels.smoothing``'s pass over the adjacency table ``adjacency_inputs`` names.
+    ``kernel`` is ``kernels.smoothing``'s pass over the adjacency table ``adjacency_inputs``
+    names, ``serial`` its every-pass form for the CPU device.
     The passes ping-pong between two buffers: ``target`` (allocated when ``None``) and ``normals``
     itself only when ``owned``, so a caller's field is read and never written. The result is one
     of the two; the other is free once this returns.
@@ -4845,6 +5005,21 @@ def _smoothed_face_normals(
     source = normals
     if target is None:
         target = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    if wp.get_device(device).is_cpu:
+        # The CPU device runs a launch's threads one after another: every pass in one launch
+        # (``serial``), the same rotation to the bit. Pass ``k`` writes ``target`` for even ``k``
+        # and the second buffer for odd, ``normals`` itself when it is this call's.
+        spare = normals
+        if iterations > 1 and not owned:
+            spare = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+        _launch.launch(
+            serial,
+            dim=1,
+            inputs=[normals, areas, *adjacency_inputs, threshold_cos, iterations],
+            outputs=[target, spare],
+            device=device,
+        )
+        return target if iterations % 2 == 1 else spare
     for index in range(iterations):
         _launch.launch(
             kernel,
@@ -5020,7 +5195,13 @@ def filter_sharpen(
                 device=device,
             )
 
-        return _vec3_passes(vertices, max(iterations, 0), graph_pass, out=out)
+        return _vec3_passes(
+            vertices,
+            max(iterations, 0),
+            graph_pass,
+            out=out,
+            serial=_SerialPasses(kernel_smoothing.PASS_GRAPH_SHARPEN, graph, weight, weight),
+        )
     # No volume constraint on the inner smoothing: its rescaling would leak into the difference and
     # show up as a uniform scaling of the sharpened mesh rather than as detail. The smoothed
     # positions are ``filter_laplacian(lamb=1, volume_constraint=False)``'s, written into ``out``
@@ -5112,12 +5293,22 @@ def _resolved_operator(
 _Positions = wp.array[wp.vec3] | wp.array[wp.vec3d]
 
 
+class _SerialPasses(NamedTuple):
+    """Passes of one ``vec3_passes_serial`` kind through ``operator``, stepping by parity."""
+
+    kind: int
+    operator: odt.BsrMatrix[wp.float32]
+    coeff_even: float = 0.0
+    coeff_odd: float = 0.0
+
+
 def _vec3_passes(
     vertices: wp.array[wp.vec3],
     passes: int,
     run: Callable[[int, _Positions, _Positions], None],
     *,
     out: wp.array[wp.vec3] | None = None,
+    serial: _SerialPasses | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Run ``passes`` smoothing passes from ``float32`` positions to ``float32`` positions.
@@ -5128,6 +5319,9 @@ def _vec3_passes(
     ``float32`` write exactly as a converting copy would, so this is the arithmetic of widening the
     input, running every pass in ``float64`` and narrowing the result, without either copy. Zero
     passes copy ``vertices``.
+
+    ``serial`` names the passes ``run`` launches when they are all one kernel's rows, for the CPU
+    device to run at least two of them in one launch (``vec3_passes_serial``).
     """
     device = vertices.device
     n = vertices.size
@@ -5137,6 +5331,27 @@ def _vec3_passes(
         _launch.copy(out, vertices)
         return out
     scratch = _launch.carve(wp.vec3d, (n,) * min(2, passes - 1), device)
+    if serial is not None and passes >= 2 and wp.get_device(device).is_cpu:
+        # The CPU device runs a launch's threads one after another: every pass in one launch, the
+        # same rotation and rows to the bit.
+        operator = serial.operator
+        _launch.launch(
+            kernel_smoothing.vec3_passes_serial,
+            dim=1,
+            inputs=[
+                operator.offsets,
+                operator.columns,
+                operator.values,
+                vertices,
+                serial.kind,
+                wp.float64(serial.coeff_even),
+                wp.float64(serial.coeff_odd),
+                passes,
+            ],
+            outputs=[scratch[0], scratch[-1], out],
+            device=device,
+        )
+        return out
     src: _Positions = vertices
     for index in range(passes):
         dst: _Positions = out if index == passes - 1 else scratch[index % 2]
@@ -5149,17 +5364,23 @@ def _float32_passes(
     vertices: wp.array[wp.vec3],
     passes: int,
     run: Callable[[wp.array[wp.vec3], wp.array[wp.vec3]], None],
+    serial: Callable[[wp.array[wp.vec3], wp.array[wp.vec3]], None] | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Run ``passes`` (at least one) passes of ``run(src, dst)`` from ``vertices``; return the last.
 
     The first pass reads ``vertices`` itself, so the input is never copied: the passes ping-pong
-    two buffers allocated here, the second only when there is a second pass.
+    two buffers allocated here, the second only when there is a second pass. On the CPU device
+    ``serial(first, second)``, when given, runs every pass in one launch instead, pass ``k``
+    writing ``first`` for even ``k`` and ``second`` for odd (the same buffer at one pass).
     """
     scratch = [
         _launch.empty(vertices.size, dtype=wp.vec3, device=vertices.device)
         for _ in range(min(2, passes))
     ]
+    if serial is not None and wp.get_device(vertices.device).is_cpu:
+        serial(scratch[0], scratch[-1])
+        return scratch[(passes - 1) % 2]
     src = vertices
     for index in range(passes):
         dst = scratch[index % 2]

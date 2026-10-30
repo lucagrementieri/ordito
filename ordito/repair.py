@@ -630,8 +630,7 @@ def _vertex_classes(
     # sort in the launch that writes the inverse, as ``unique_rows`` does.
     # The relative buckets (``epsilon`` not positive) need no bounds, so their keys are packed in
     # the launch that writes the identity rather than to a buffer of their own first.
-    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    keys, order = _launch.sort_buffers(n, wp.uint64, device)
     if epsilon > 0.0:
         _launch.launch(
             kernel_array.KEYS_AND_IDENTITY[wp.uint64],
@@ -1100,20 +1099,21 @@ def _smallest_first_survivors(
     device = faces.device
     mates, key_order = od.halfedge.halfedge_mates(faces, return_key_order=True)
     assert key_order is not None  # without a vertex bound the pairing sorts
-    # The ``int32`` tables in two allocations: those that start at zero (the positions are written
-    # whole, so zeroing them costs only the wider memset), and the unfilled ones.
-    positions, run_lengths, undecided = _launch.carve(
-        wp.int32, [3 * n_faces, 3 * n_faces, 1], device, zeroed=True
+    # The ``int32`` tables that start at zero in one allocation (the positions are written whole,
+    # so zeroing them costs only the wider memset), and the unfilled tables in another.
+    positions, run_lengths, live, undecided = _launch.carve(
+        wp.int32, [3 * n_faces, 3 * n_faces, 3 * n_faces, 1], device, zeroed=True
     )
-    states, decisions, live = _launch.carve(wp.int32, [n_faces, n_faces, 3 * n_faces], device)
+    states, decisions, areas = _launch.carve_typed(
+        [(wp.int32, n_faces), (wp.int32, n_faces), (wp.float32, n_faces)], device
+    )
     _launch.launch(
         kernel_repair.non_manifold_edge_runs,
         dim=3 * n_faces,
         inputs=[mates, key_order],
-        outputs=[positions, run_lengths],
+        outputs=[positions, run_lengths, live],
         device=device,
     )
-    areas = _launch.empty(n_faces, dtype=wp.float32, device=device)
     keep = _launch.empty(n_faces, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_repair.mark_non_manifold_candidates,
@@ -1125,7 +1125,6 @@ def _smallest_first_survivors(
     # Readback: a mesh with no face on a non-manifold edge is returned as it came.
     if read_scalar(undecided) == 0:
         return None
-    _launch.copy(live, run_lengths)
     # Each round decides at least the smallest undecided face, so ``n_faces`` rounds bound it.
     for _ in range(n_faces):
         _launch.launch(
@@ -1475,12 +1474,14 @@ def _remove_small_components(
         return vertices, faces
 
     counts_faces = min_area is None and min_diameter is None
-    counts = None
+    counts = ranks = None
     if labels is None and counts_faces:
-        # The face-count criteria histogram the labels in the flatten that writes them.
+        # The face-count criteria histogram the labels in the flatten that writes them. The
+        # labels, the zeroed histogram and the zeroed submesh marks share one allocation.
         parents = _face_component_forest(faces, vertices.size, mates)
-        labels = _launch.empty(n_faces, dtype=wp.int32, device=device)
-        counts = _launch.zeros(n_faces, dtype=wp.int32, device=device)
+        labels, counts, ranks = _launch.carve(
+            wp.int32, [n_faces, n_faces, n_faces + vertices.size], device, zeroed=True
+        )
         _launch.launch(
             kernel_repair.flatten_and_count_labels,
             dim=n_faces,
@@ -1537,7 +1538,8 @@ def _remove_small_components(
 
     # ``wp.empty``: the marking pass writes every face's entry.
     keep = _launch.empty(n_faces, dtype=wp.bool, device=device)
-    ranks = _launch.zeros(n_faces + vertices.size, dtype=wp.int32, device=device)
+    if ranks is None:
+        ranks = _launch.zeros(n_faces + vertices.size, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_repair.mark_kept_components,
         dim=n_faces,
@@ -1856,7 +1858,14 @@ def collapse_small_triangles(
         if n_current == 0:
             break
 
-        pairs = odt.empty_2d((n_current, 2), wp.int32, device=device)
+        n_vertices = current_vertices.size
+        # The pass's unfilled ``int32`` tables in one allocation: the collapse pairs and the
+        # remapped corners, both written whole. The submesh marks need their zero, which a pass
+        # that collapses nothing would pay for, so they are allocated past that test.
+        pair_rows, remapped_faces = _launch.carve(
+            wp.int32, [2 * n_current, current_faces.size], device
+        )
+        pairs = odt.as_array2d(pair_rows.reshape((n_current, 2)), wp.int32)
         _launch.launch(
             kernel_repair.small_triangle_collapse_edges,
             dim=n_current,
@@ -1868,7 +1877,6 @@ def collapse_small_triangles(
 
         # Non-flagged faces emit a self-pair (i0, i0); these are self-loops that leave the
         # connected-components closure unchanged, so all rows can be passed without filtering.
-        n_vertices = current_vertices.size
         # ``validate=False``: the pairs are vertex indices read straight out of the face buffer
         # this function is repairing, which every kernel around it already indexes unchecked.
         labels = od.graph.connected_component_labels_from_edges(
@@ -1880,8 +1888,7 @@ def collapse_small_triangles(
         # pass remaps the corners, keeps the faces ``triangles.face_nondegenerate_mask`` would
         # keep, and marks them for the submesh extraction, which then keeps exactly the vertices the
         # surviving faces name -- only representatives -- in ascending index order, which is
-        # ascending label order. ``wp.empty``: the pass writes every corner and every mask entry.
-        remapped_faces = _launch.empty(current_faces.size, dtype=wp.int32, device=device)
+        # ascending label order. ``wp.empty``: the pass writes every mask entry.
         keep_mask = _launch.empty(n_current, dtype=wp.bool, device=device)
         ranks = _launch.zeros(n_current + n_vertices, dtype=wp.int32, device=device)
         _launch.launch(

@@ -1765,29 +1765,30 @@ def _grow_star_surface(points: wp.array[wp.vec3]) -> _HullSurface:
                 tables.next_flags,
                 tables.dirty,
             )
-        _launch.array_scan(
-            _launch.view(flags, 0, n_faces),
-            _launch.view(tables.offsets, 0, n_faces),
-            inclusive=True,
-        )
-        _launch.launch(
-            kernel_hull.split_faces,
-            dim=n_faces,
-            inputs=[
-                n_faces,
-                flags,
-                tables.offsets,
-                tri,
-                adj,
-                best,
-                tables.child,
-                counters,
-                dirty,
-                next_flags,
-                tables.split_corners,
-            ],
-            device=device,
-        )
+        if not serial:
+            _launch.array_scan(
+                _launch.view(flags, 0, n_faces),
+                _launch.view(tables.offsets, 0, n_faces),
+                inclusive=True,
+            )
+            _launch.launch(
+                kernel_hull.split_faces,
+                dim=n_faces,
+                inputs=[
+                    n_faces,
+                    flags,
+                    tables.offsets,
+                    tri,
+                    adj,
+                    best,
+                    tables.child,
+                    counters,
+                    dirty,
+                    next_flags,
+                    tables.split_corners,
+                ],
+                device=device,
+            )
         # Everything up to this round's readback is launched over upper bounds -- the faces the
         # splits can make and the points the last round kept -- with the kernels skipping dead
         # slots and reading the real list lengths on the device, so the host issues the round
@@ -1810,12 +1811,15 @@ def _grow_star_surface(points: wp.array[wp.vec3]) -> _HullSurface:
         )
         flags, next_flags = next_flags, flags
         if serial:
-            # The CPU device runs a launch's threads one after another: the round's flips and
-            # passes in one thread, in the same order.
+            # The CPU device runs a launch's threads one after another: the round's scan, split,
+            # flips and passes in one thread, in the same order.
             _launch.launch(
-                kernel_hull.follow_growth_round_serial,
+                kernel_hull.growth_round_serial,
                 dim=1,
                 inputs=[
+                    n_faces,
+                    next_flags,
+                    tables.offsets,
                     points,
                     kernel_point,
                     tri,

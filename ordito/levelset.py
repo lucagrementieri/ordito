@@ -690,8 +690,11 @@ def _winding_band_field(
         device=device,
     )
 
-    slots = odt.empty_3d(shape, wp.int32, device=device)
-    undecided = _launch.empty(_EXACT_WINDING_CAPACITY, dtype=wp.vec3, device=device)
+    # Each node's undecided slot and the undecided nodes' positions, in one allocation.
+    flat_slots, undecided = _launch.carve_typed(
+        ((wp.int32, n_nodes), (wp.vec3, _EXACT_WINDING_CAPACITY)), device
+    )
+    slots = odt.as_array3d(flat_slots.reshape(shape), wp.int32)
     counts = _launch.view(zeroed, 3 * n_nodes, 3 * n_nodes + 2)
     _launch.launch(
         kernel_levelset.lattice_winding_numbers,
@@ -748,7 +751,8 @@ def _boundary_chain(faces: wp.array[wp.int32], n_vertices: int) -> odt.Array2dIn
     device = faces.device
     n_halfedges = faces.size // 3 * 3
     mates = od.halfedge.halfedge_mates(faces, n_vertices)
-    net = _launch.zeros(n_halfedges, dtype=wp.int32, device=device)
+    # The net multiplicities and the total-terminated offsets, both zeroed, in one allocation.
+    net, offsets = _launch.carve(wp.int32, [n_halfedges, n_halfedges + 1], device, zeroed=True)
     _launch.launch(
         kernel_levelset.boundary_chain_multiplicity,
         dim=n_halfedges,
@@ -757,7 +761,6 @@ def _boundary_chain(faces: wp.array[wp.int32], n_vertices: int) -> odt.Array2dIn
     )
     # The counts go straight into the tail of the total-terminated offsets, scanned in place there
     # (``array.counts_to_offsets`` without its own counts buffer).
-    offsets = _launch.zeros(n_halfedges + 1, dtype=wp.int32, device=device)
     tail = _launch.view(offsets, 1, n_halfedges + 1)
     _launch.launch(
         kernel_levelset.boundary_chain_counts, dim=n_halfedges, inputs=[net, tail], device=device
@@ -810,8 +813,7 @@ def _cone_components(
     # The keys and the identity payload go straight into the sort's double-width buffers, and the
     # sort orders only the bits a vertex index can set. The run-start flags then reuse the payload's
     # upper half, which is sort scratch and free once the sort has run.
-    keys_buffer = _launch.empty(2 * m, dtype=wp.int32, device=device)
-    order_buffer = _launch.empty(2 * m, dtype=wp.int32, device=device)
+    keys_buffer, order_buffer = _launch.sort_buffers(m, wp.int32, device)
     _launch.launch(
         kernel_levelset.cone_component_keys,
         dim=m,

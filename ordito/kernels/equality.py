@@ -101,13 +101,23 @@ def emit_canonical_faces(
 
 
 @wp.kernel
-def flag_unequal(
-    a: wp.array[wp.int32], b: wp.array[wp.int32], out_unequal: wp.array[wp.int32]
+def flag_unequal_canonical_rows(
+    faces_a: wp.array[wp.int32],
+    vertex_map_a: wp.array[wp.int32],
+    order_a: wp.array[wp.int32],
+    faces_b: wp.array[wp.int32],
+    vertex_map_b: wp.array[wp.int32],
+    order_b: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    out_unequal: wp.array[wp.int32],
 ) -> None:
-    # Raise ``out_unequal[0]`` where the two buffers differ. A plain store: every writer stores the
-    # same value, and only a mismatch writes at all.
+    # ``emit_canonical_faces`` of both sides fused with their row comparison: raise
+    # ``out_unequal[0]`` where canonical row ``i`` differs, no canonical buffer written. A plain
+    # store: every writer stores the same value.
     i = wp.int32(wp.tid())
-    if a[i] != b[i]:
+    a0, a1, a2, _bad_a = canonical_corner_triple(faces_a, vertex_map_a, order_a[i], n_vertices)
+    b0, b1, b2, _bad_b = canonical_corner_triple(faces_b, vertex_map_b, order_b[i], n_vertices)
+    if a0 != b0 or a1 != b1 or a2 != b2:
         out_unequal[0] = wp.int32(1)
 
 
@@ -170,10 +180,58 @@ def flag_unequal_ordered_rows(
         out_unequal[0] = wp.int32(1)
 
 
+@wp.func
+def label_pair_key(major: wp.int32, minor: wp.int32) -> wp.uint64:
+    # Two labels packed into one key, injective over all ``int32`` pairs, ``major`` in the high
+    # word: sorted, the keys of one ``major`` label form one run.
+    return pack_directed_key(minor, major, wp.uint64(1) << wp.uint64(32))
+
+
+@wp.func
+def splits_major_run(keys: wp.array[wp.uint64], i: wp.int32) -> wp.bool:
+    # Whether sorted position ``i`` starts a new pair inside a run of one ``major`` label: that
+    # label then meets two ``minor`` labels.
+    if i == 0:
+        return False
+    previous = keys[i - 1]
+    key = keys[i]
+    return key != previous and (key >> wp.uint64(32)) == (previous >> wp.uint64(32))
+
+
 @wp.kernel
 def label_pair_keys(
-    labels_a: wp.array[wp.int32], labels_b: wp.array[wp.int32], out_keys: wp.array[wp.uint64]
+    labels_a: wp.array[wp.int32],
+    labels_b: wp.array[wp.int32],
+    out_keys: wp.array[wp.uint64],
+    out_unequal: wp.array[wp.int32],
 ) -> None:
-    # Item ``i``'s two labels packed into one key, injective over all ``int32`` pairs.
+    # Item ``i``'s pair keyed ``a`` major, for the first of ``partitions_equal``'s two sorts; the
+    # first thread clears the flag the checks raise, so it needs no zeroed allocation of its own.
     i = wp.int32(wp.tid())
-    out_keys[i] = pack_directed_key(labels_b[i], labels_a[i], wp.uint64(1) << wp.uint64(32))
+    out_keys[i] = label_pair_key(labels_a[i], labels_b[i])
+    if i == 0:
+        out_unequal[0] = wp.int32(0)
+
+
+@wp.kernel
+def check_pairs_and_swap_keys(
+    sorted_keys: wp.array[wp.uint64],
+    labels_a: wp.array[wp.int32],
+    labels_b: wp.array[wp.int32],
+    out_keys: wp.array[wp.uint64],
+    out_unequal: wp.array[wp.int32],
+) -> None:
+    # The ``a``-major keys' check fused with writing the ``b``-major keys for the second sort, into
+    # another buffer. A plain store of the flag: every writer stores the same value.
+    i = wp.int32(wp.tid())
+    if splits_major_run(sorted_keys, i):
+        out_unequal[0] = wp.int32(1)
+    out_keys[i] = label_pair_key(labels_b[i], labels_a[i])
+
+
+@wp.kernel
+def check_pairs(sorted_keys: wp.array[wp.uint64], out_unequal: wp.array[wp.int32]) -> None:
+    # The ``b``-major keys' check.
+    i = wp.int32(wp.tid())
+    if splits_major_run(sorted_keys, i):
+        out_unequal[0] = wp.int32(1)

@@ -33,7 +33,11 @@ from typing import Any
 
 import warp as wp
 
-from ordito.kernels.algorithms.multigrid import chebyshev_update, csr_row_dot
+from ordito.kernels.algorithms.multigrid import (
+    chebyshev_polynomial_column,
+    chebyshev_update,
+    csr_row_dot,
+)
 from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, OverloadTable
 from ordito.kernels.linalg import jacobi_row
 from ordito.kernels.reduce import block_barrier, block_chunk_1d, block_max, block_sum
@@ -78,6 +82,55 @@ def cg_layout(n: int, fold_max_blocks: int) -> tuple[int, int, bool]:
     return span, (n + span - 1) // span, False
 
 
+@wp.func
+def cg_initial_block(
+    c: wp.int32,
+    blk: wp.int32,
+    t: wp.int32,
+    n: wp.int32,
+    stride: wp.int32,
+    span: wp.int32,
+    jacobi: wp.int32,
+    copy_x: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: Any,
+    rhs: Any,
+    x: Any,
+    inv_diag: Any,
+    out_x: Any,
+    out_r: Any,
+    out_u: Any,
+    out_p: Any,
+    out_s: Any,
+    out_partials: wp.array3d[wp.float64],
+) -> None:
+    # Block ``(c, blk)`` of ``cg_initial``, lane ``t``. Block-collective.
+    acc = wp.float64(0.0)
+    for k in range(t, span, wp.block_dim()):
+        local = blk * span + k
+        i = c * stride + local
+        b = wp.float64(0.0)
+        r = wp.float64(0.0)
+        u = wp.float64(0.0)
+        if local < n:
+            b = wp.float64(rhs[c * n + local])
+            if copy_x != 0:
+                out_x[c * n + local] = x[c * n + local]
+            r = b - wp.float64(csr_row_dot(local, c * n, offsets, columns, values, x))
+            if jacobi != 0:
+                u = wp.float64(inv_diag[local]) * r
+        out_r[i] = out_r.dtype(r)
+        if jacobi != 0:
+            out_u[i] = out_u.dtype(u)
+        out_p[i] = out_p.dtype(0.0)
+        out_s[i] = out_s.dtype(0.0)
+        acc += b * b
+    total = block_sum(acc)
+    if t == 0:
+        out_partials[0, c, blk] = total
+
+
 @wp.kernel
 def cg_initial(
     n: wp.int32,
@@ -115,29 +168,46 @@ def cg_initial(
     # Generic over the vectors' storage precision (see ``cg_update``); the residual is formed and
     # the norm accumulated in ``float64``.
     c, blk, t = wp.tid()
+    cg_initial_block(
+        c, blk, t, n, stride, span, jacobi, copy_x, offsets, columns, values, rhs, x, inv_diag,
+        out_x, out_r, out_u, out_p, out_s, out_partials,
+    )  # fmt: skip
+
+
+@wp.func
+def cg_threshold(tol_sq: wp.float64, atol_sq: wp.float64, b_norm_sq: wp.float64) -> wp.float64:
+    # A column's squared stopping threshold, ``max(atol, tol * ||b||)^2`` -- ``warp.optim.linear``'s
+    # convention, so the solvers here stop on the condition Warp's would.
+    return wp.max(tol_sq * b_norm_sq, atol_sq)
+
+
+@wp.func
+def cg_seed_column(
+    c: wp.int32,
+    t: wp.int32,
+    tol_sq: wp.float64,
+    atol_sq: wp.float64,
+    n_blocks: wp.int32,
+    partials: wp.array3d[wp.float64],
+    out_atol_sq: wp.array[wp.float64],
+    out_gamma_new: wp.array[wp.float64],
+    out_alpha_new: wp.array[wp.float64],
+    out_iterations: wp.array[wp.int32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # Column ``c``'s block of ``cg_seed``, lane ``t``. Block-collective.
     acc = wp.float64(0.0)
-    for k in range(t, span, wp.block_dim()):
-        local = blk * span + k
-        i = c * stride + local
-        b = wp.float64(0.0)
-        r = wp.float64(0.0)
-        u = wp.float64(0.0)
-        if local < n:
-            b = wp.float64(rhs[c * n + local])
-            if copy_x != 0:
-                out_x[c * n + local] = x[c * n + local]
-            r = b - wp.float64(csr_row_dot(local, c * n, offsets, columns, values, x))
-            if jacobi != 0:
-                u = wp.float64(inv_diag[local]) * r
-        out_r[i] = out_r.dtype(r)
-        if jacobi != 0:
-            out_u[i] = out_u.dtype(u)
-        out_p[i] = out_p.dtype(0.0)
-        out_s[i] = out_s.dtype(0.0)
-        acc += b * b
-    total = block_sum(acc)
+    for k in range(t, n_blocks, wp.block_dim()):
+        acc += partials[0, c, k]
+    b_norm_sq = block_sum(acc)
     if t == 0:
-        out_partials[0, c, blk] = total
+        out_atol_sq[c] = cg_threshold(tol_sq, atol_sq, b_norm_sq)
+        out_gamma_new[c] = wp.float64(wp.inf)
+        out_alpha_new[c] = wp.float64(1.0)
+        if c == 0:
+            out_iterations[0] = 0
+            out_state[LOOP_ROUND] = 0
+            out_state[LOOP_CONDITION] = 1
 
 
 @wp.kernel
@@ -164,18 +234,10 @@ def cg_seed(
     # The fold is ``cg_fold_column``'s for one quantity: the lanes stride the ``n_blocks`` live
     # partials by ``wp.block_dim()`` and ``block_sum`` folds them.
     c, t = wp.tid()
-    acc = wp.float64(0.0)
-    for k in range(t, n_blocks, wp.block_dim()):
-        acc += partials[0, c, k]
-    b_norm_sq = block_sum(acc)
-    if t == 0:
-        out_atol_sq[c] = cg_threshold(tol_sq, atol_sq, b_norm_sq)
-        out_gamma_new[c] = wp.float64(wp.inf)
-        out_alpha_new[c] = wp.float64(1.0)
-        if c == 0:
-            out_iterations[0] = 0
-            out_state[LOOP_ROUND] = 0
-            out_state[LOOP_CONDITION] = 1
+    cg_seed_column(
+        c, t, tol_sq, atol_sq, n_blocks, partials, out_atol_sq, out_gamma_new, out_alpha_new,
+        out_iterations, out_state,
+    )  # fmt: skip
 
 
 @wp.kernel
@@ -273,13 +335,6 @@ def cg_advance(
     pk = u + beta * p
     sk = w + beta * s
     return pk, sk, r - alpha * sk
-
-
-@wp.func
-def cg_threshold(tol_sq: wp.float64, atol_sq: wp.float64, b_norm_sq: wp.float64) -> wp.float64:
-    # A column's squared stopping threshold, ``max(atol, tol * ||b||)^2`` -- ``warp.optim.linear``'s
-    # convention, so the solvers here stop on the condition Warp's would.
-    return wp.max(tol_sq * b_norm_sq, atol_sq)
 
 
 @wp.func
@@ -734,8 +789,8 @@ def cg_update(
     )  # fmt: skip
 
 
-@wp.kernel
-def cg_round_serial(
+@wp.func
+def cg_round_serial_body(
     n: wp.int32,
     stride: wp.int32,
     span: wp.int32,
@@ -748,23 +803,23 @@ def cg_round_serial(
     jacobi: wp.int32,
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
-    values: wp.array[wp.Float],
+    values: Any,
     atol_sq: wp.array[wp.float64],
-    inv_diag: wp.array[wp.Float],
-    u: wp.array[wp.Float],
-    p: wp.array[wp.Float],
-    s: wp.array[wp.Float],
-    r: wp.array[wp.Float],
+    inv_diag: Any,
+    u: Any,
+    p: Any,
+    s: Any,
+    r: Any,
     gamma_old: wp.array[wp.float64],
     alpha_old: wp.array[wp.float64],
     gamma_new: wp.array[wp.float64],
     alpha_new: wp.array[wp.float64],
     state: wp.array[wp.int32],
-    out_w: wp.array[wp.Float],
+    out_w: Any,
     out_partials: wp.array3d[wp.float64],
     out_coefficients: wp.array2d[wp.float64],
-    out_x: wp.array[wp.Float],
-    out_scaled: wp.array[wp.Float],
+    out_x: Any,
+    out_scaled: Any,
     out_dots: wp.array2d[wp.float64],
     out_iterations: wp.array[wp.int32],
 ) -> None:
@@ -800,6 +855,99 @@ def cg_round_serial(
 
 
 @wp.kernel
+def cg_round_serial(
+    n: wp.int32,
+    stride: wp.int32,
+    span: wp.int32,
+    update_span: wp.int32,
+    n_columns: wp.int32,
+    maxiter: wp.int32,
+    fold: wp.int32,
+    n_blocks: wp.int32,
+    update_blocks: wp.int32,
+    jacobi: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.Float],
+    atol_sq: wp.array[wp.float64],
+    inv_diag: wp.array[wp.Float],
+    u: wp.array[wp.Float],
+    p: wp.array[wp.Float],
+    s: wp.array[wp.Float],
+    r: wp.array[wp.Float],
+    gamma_old: wp.array[wp.float64],
+    alpha_old: wp.array[wp.float64],
+    gamma_new: wp.array[wp.float64],
+    alpha_new: wp.array[wp.float64],
+    state: wp.array[wp.int32],
+    out_w: wp.array[wp.Float],
+    out_partials: wp.array3d[wp.float64],
+    out_coefficients: wp.array2d[wp.float64],
+    out_x: wp.array[wp.Float],
+    out_scaled: wp.array[wp.Float],
+    out_dots: wp.array2d[wp.float64],
+    out_iterations: wp.array[wp.int32],
+) -> None:
+    # One round in one launch; see ``cg_round_serial_body``.
+    cg_round_serial_body(
+        n,
+        stride,
+        span,
+        update_span,
+        n_columns,
+        maxiter,
+        fold,
+        n_blocks,
+        update_blocks,
+        jacobi,
+        offsets,
+        columns,
+        values,
+        atol_sq,
+        inv_diag,
+        u,
+        p,
+        s,
+        r,
+        gamma_old,
+        alpha_old,
+        gamma_new,
+        alpha_new,
+        state,
+        out_w,
+        out_partials,
+        out_coefficients,
+        out_x,
+        out_scaled,
+        out_dots,
+        out_iterations,
+    )
+
+
+@wp.func
+def cg_capped_residual_column(
+    c: wp.int32,
+    t: wp.int32,
+    n: wp.int32,
+    stride: wp.int32,
+    maxiter: wp.int32,
+    r: Any,
+    iterations: wp.array[wp.int32],
+    out_dots: wp.array2d[wp.float64],
+) -> None:
+    # Column ``c``'s block of ``cg_capped_residual``, lane ``t``. Block-collective.
+    if iterations[0] < maxiter:
+        return
+    acc = wp.float64(0.0)
+    for k in range(t, n, wp.block_dim()):
+        value = wp.float64(r[c * stride + k])
+        acc += value * value
+    total = block_sum(acc)
+    if t == 0:
+        out_dots[0, c] = total
+
+
+@wp.kernel
 def cg_capped_residual(
     n: wp.int32,
     stride: wp.int32,
@@ -818,15 +966,7 @@ def cg_capped_residual(
     # settle monitor's stop can follow a step too; its solves read no residual.) The lanes stride
     # by ``wp.block_dim()``.
     c, t = wp.tid()
-    if iterations[0] < maxiter:
-        return
-    acc = wp.float64(0.0)
-    for k in range(t, n, wp.block_dim()):
-        value = wp.float64(r[c * stride + k])
-        acc += value * value
-    total = block_sum(acc)
-    if t == 0:
-        out_dots[0, c] = total
+    cg_capped_residual_column(c, t, n, stride, maxiter, r, iterations, out_dots)
 
 
 # Slots of ``cg_one_block``'s scratch, each ``n_columns * n`` entries: the residual, the
@@ -1137,6 +1277,15 @@ SETTLE_CHECKS = wp.constant(4)
 SETTLE_STATE_SIZE = 5
 
 
+@wp.func
+def cg_settle_term(u: wp.float64, previous: wp.float64) -> wp.vec2d:
+    # One entry's ``(relative change, reached)`` for a settle check: ``|u - previous| / |u|`` and
+    # one where ``u`` is non-zero, zeros elsewhere (``cg_settle_change``, ``cg_solve_serial``).
+    if u != wp.float64(0.0):
+        return wp.vec2d(wp.abs(u - previous) / wp.abs(u), 1.0)
+    return wp.vec2d(0.0, 0.0)
+
+
 @wp.kernel
 def cg_settle_change(
     solution: wp.array[wp.float64], previous: wp.array[wp.float64], out_settle: wp.array[wp.float64]
@@ -1157,15 +1306,39 @@ def cg_settle_change(
     for k in range(t, remaining, wp.block_dim()):
         v = base + k
         u = solution[v]
-        if u != wp.float64(0.0):
-            change = wp.max(change, wp.abs(u - previous[v]) / wp.abs(u))
-            reached += wp.float64(1.0)
+        term = cg_settle_term(u, previous[v])
+        change = wp.max(change, term[0])
+        reached += term[1]
         previous[v] = u
     block_change = block_max(change)
     block_reached = block_sum(reached)
     if t == 0:
         wp.atomic_max(out_settle, SETTLE_CHANGE, block_change)
         wp.atomic_add(out_settle, SETTLE_REACHED, block_reached)
+
+
+@wp.func
+def cg_settle_verdict(
+    check_rounds: wp.int32,
+    change_tolerance: wp.float64,
+    settle_rounds: wp.int32,
+    settle: wp.array[wp.float64],
+    state: wp.array[wp.int32],
+) -> None:
+    # ``cg_settle_decide``'s thread, once ``settle``'s first two slots hold the check's change.
+    checks = settle[SETTLE_CHECKS] + wp.float64(1.0)
+    settle[SETTLE_CHECKS] = checks
+    change = settle[SETTLE_CHANGE]
+    count = settle[SETTLE_REACHED] + wp.float64(1.0)
+    settle[SETTLE_CHANGE] = wp.float64(0.0)
+    settle[SETTLE_REACHED] = wp.float64(0.0)
+    if count != settle[SETTLE_PREVIOUS]:
+        settle[SETTLE_PREVIOUS] = count
+        settle[SETTLE_REACH_CHECK] = checks
+        return
+    idle = (checks - settle[SETTLE_REACH_CHECK]) * wp.float64(check_rounds)
+    if change < change_tolerance or idle >= wp.float64(settle_rounds):
+        state[LOOP_CONDITION] = 0
 
 
 @wp.kernel
@@ -1182,19 +1355,134 @@ def cg_settle_decide(
     # because it cancels toward zero. A check that reaches new entries never stops the loop. It
     # only ever clears ``state``'s condition, so the solve's own cap still ends it, and it clears
     # the two slots ``cg_settle_change`` accumulates into, for the next check.
-    checks = settle[SETTLE_CHECKS] + wp.float64(1.0)
-    settle[SETTLE_CHECKS] = checks
-    change = settle[SETTLE_CHANGE]
-    count = settle[SETTLE_REACHED] + wp.float64(1.0)
-    settle[SETTLE_CHANGE] = wp.float64(0.0)
-    settle[SETTLE_REACHED] = wp.float64(0.0)
-    if count != settle[SETTLE_PREVIOUS]:
-        settle[SETTLE_PREVIOUS] = count
-        settle[SETTLE_REACH_CHECK] = checks
-        return
-    idle = (checks - settle[SETTLE_REACH_CHECK]) * wp.float64(check_rounds)
-    if change < change_tolerance or idle >= wp.float64(settle_rounds):
-        state[LOOP_CONDITION] = 0
+    cg_settle_verdict(check_rounds, change_tolerance, settle_rounds, settle, state)
+
+
+@wp.kernel
+def cg_solve_serial(
+    n: wp.int32,
+    stride: wp.int32,
+    span: wp.int32,
+    update_span: wp.int32,
+    n_columns: wp.int32,
+    maxiter: wp.int32,
+    fold: wp.int32,
+    n_blocks: wp.int32,
+    update_blocks: wp.int32,
+    jacobi: wp.int32,
+    copy_x: wp.int32,
+    check_every: wp.int32,
+    tol_sq: wp.float64,
+    settle: wp.int32,
+    change_tolerance: wp.float64,
+    settle_rounds: wp.int32,
+    polynomial: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.Float],
+    rhs: wp.array[wp.Float],
+    x: wp.array[wp.Float],
+    inv_diag: wp.array[wp.Float],
+    steps: wp.array[wp.vec4d],
+    polynomial_offsets: wp.array[wp.int32],
+    polynomial_columns: wp.array[wp.int32],
+    polynomial_values: wp.array[wp.float64],
+    polynomial_scale: wp.array[wp.float64],
+    polynomial_source: wp.array[wp.float64],
+    u: wp.array[wp.Float],
+    p: wp.array[wp.Float],
+    s: wp.array[wp.Float],
+    r: wp.array[wp.Float],
+    atol_sq: wp.array[wp.float64],
+    gamma_old: wp.array[wp.float64],
+    alpha_old: wp.array[wp.float64],
+    gamma_new: wp.array[wp.float64],
+    alpha_new: wp.array[wp.float64],
+    state: wp.array[wp.int32],
+    settle_previous: wp.array[wp.float64],
+    settle_state: wp.array[wp.float64],
+    polynomial_iterate_0: wp.array[wp.float64],
+    polynomial_iterate_1: wp.array[wp.float64],
+    polynomial_iterate_2: wp.array[wp.float64],
+    polynomial_out: wp.array[wp.float64],
+    out_w: wp.array[wp.Float],
+    out_partials: wp.array3d[wp.float64],
+    out_coefficients: wp.array2d[wp.float64],
+    out_x: wp.array[wp.Float],
+    out_scaled: wp.array[wp.Float],
+    out_dots: wp.array2d[wp.float64],
+    out_iterations: wp.array[wp.int32],
+) -> None:
+    # A whole ``linalg._BatchedCg`` solve on the CPU device in one launch of one one-lane block,
+    # every launch the host cadence issues, in its order: ``cg_initial``'s blocks, ``cg_seed``'s
+    # columns, the Jacobi-Chebyshev polynomial's first apply (``polynomial`` set), then blocks of
+    # ``check_every`` rounds (``cg_round_serial_body``, each followed by the polynomial), each
+    # block trimmed against ``maxiter`` and followed by a settle check (``settle`` set:
+    # ``cg_settle_change``'s entries in order and ``cg_settle_verdict``) and the host's test of the
+    # loop condition, and last ``cg_capped_residual``'s columns once a block has run. On that
+    # device a launch's blocks run one after another, so this is those launches' solve to the
+    # bit: the settle check's maximum and count do not depend on their order. ``polynomial_out``
+    # is ``u`` (the polynomial is ``float64`` only, so a ``float32`` state passes ``None`` for
+    # every ``polynomial_*`` array), and ``polynomial_source`` the scaled residual ``out_scaled``.
+    # The iteration's state (``u``, ``p``, ``s``, ``r``, the carried scalars, the loop's
+    # ``state`` and the settle monitor's) is read and rewritten in place.
+    for c in range(n_columns):
+        for blk in range(n_blocks):
+            cg_initial_block(
+                c, blk, 0, n, stride, span, jacobi, copy_x, offsets, columns, values, rhs, x,
+                inv_diag, out_x, r, out_scaled, p, s, out_partials,
+            )  # fmt: skip
+    for c in range(n_columns):
+        cg_seed_column(
+            c, 0, tol_sq, wp.float64(0.0), n_blocks, out_partials, atol_sq, gamma_new, alpha_new,
+            out_iterations, state,
+        )  # fmt: skip
+    if polynomial != 0:
+        for c in range(n_columns):
+            chebyshev_polynomial_column(
+                c, n, stride, steps, polynomial_offsets, polynomial_columns, polynomial_values,
+                1, polynomial_scale, polynomial_source, polynomial_iterate_0,
+                polynomial_iterate_1, polynomial_iterate_2, polynomial_out,
+            )  # fmt: skip
+    if settle != 0:
+        for k in range(settle_state.shape[0]):
+            settle_state[k] = wp.float64(0.0)
+    done = wp.int32(0)
+    while done < maxiter:
+        block = wp.min(check_every, maxiter - done)
+        for _ in range(block):
+            cg_round_serial_body(
+                n, stride, span, update_span, n_columns, maxiter, fold, n_blocks, update_blocks,
+                jacobi, offsets, columns, values, atol_sq, inv_diag, u, p, s, r, gamma_old,
+                alpha_old, gamma_new, alpha_new, state, out_w, out_partials, out_coefficients,
+                out_x, out_scaled, out_dots, out_iterations,
+            )  # fmt: skip
+            if polynomial != 0:
+                for c in range(n_columns):
+                    chebyshev_polynomial_column(
+                        c, n, stride, steps, polynomial_offsets, polynomial_columns,
+                        polynomial_values, 1, polynomial_scale, polynomial_source,
+                        polynomial_iterate_0, polynomial_iterate_1, polynomial_iterate_2,
+                        polynomial_out,
+                    )  # fmt: skip
+        done += block
+        if settle != 0:
+            change = wp.float64(0.0)
+            reached = wp.float64(0.0)
+            for v in range(n_columns * n):
+                value = wp.float64(out_x[v])
+                term = cg_settle_term(value, settle_previous[v])
+                change = wp.max(change, term[0])
+                reached += term[1]
+                settle_previous[v] = value
+            settle_state[SETTLE_CHANGE] = wp.max(settle_state[SETTLE_CHANGE], change)
+            settle_state[SETTLE_REACHED] = settle_state[SETTLE_REACHED] + reached
+            cg_settle_verdict(check_every, change_tolerance, settle_rounds, settle_state, state)
+        if state[LOOP_CONDITION] == 0:
+            break
+    if done > 0:
+        for c in range(n_columns):
+            cg_capped_residual_column(c, 0, n, stride, maxiter, r, out_iterations, out_dots)
 
 
 # The storage precisions ``_BatchedCg`` solves in: ``float64`` for every mesh operator, ``float32``
@@ -1211,7 +1499,7 @@ _CG_STORAGE = ((wp.float32, wp.float32), (wp.float64, wp.float64), (wp.float64, 
 def _register_overloads() -> None:
     """Instantiate the generic round kernels at every storage precision, keyed by the dtype."""
     global CG_INITIAL, CG_MATVEC_DOTS, CG_ROUND_DOTS, CG_UPDATE, CG_ROUND_SERIAL
-    global CG_CAPPED_RESIDUAL
+    global CG_CAPPED_RESIDUAL, CG_SOLVE_SERIAL
     f64 = wp.float64
     CG_INITIAL = OverloadTable(
         cg_initial,
@@ -1264,6 +1552,25 @@ def _register_overloads() -> None:
             + [wp.array[f64]] * 4
             + [wp.array[wp.int32], wp.array[d], wp.array3d[f64], wp.array2d[f64]]
             + [wp.array[d], wp.array[d], wp.array2d[f64], wp.array[wp.int32]]
+            for d, v in _CG_STORAGE
+        },
+    )
+    i32 = wp.int32
+    CG_SOLVE_SERIAL = OverloadTable(
+        cg_solve_serial,
+        {
+            (d, v): [i32] * 12
+            + [f64, i32, f64, i32, i32]
+            + [wp.array[i32], wp.array[i32], wp.array[v]]
+            + [wp.array[d]] * 3
+            + [wp.array[wp.vec4d], wp.array[i32], wp.array[i32]]
+            + [wp.array[f64]] * 3
+            + [wp.array[d]] * 4
+            + [wp.array[f64]] * 5
+            + [wp.array[i32]]
+            + [wp.array[f64]] * 6
+            + [wp.array[d], wp.array3d[f64], wp.array2d[f64]]
+            + [wp.array[d], wp.array[d], wp.array2d[f64], wp.array[i32]]
             for d, v in _CG_STORAGE
         },
     )

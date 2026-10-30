@@ -1700,7 +1700,7 @@ def csr_from_keys(
     ----------
     keys, order
         ``(2 * count,)`` sort buffers, holding the keys and payloads in their first halves. Both
-        are sorted in place, and ``order``'s upper half is overwritten.
+        are sorted in place, and both upper halves are overwritten.
     count
         The number of keys written.
     n_rows, n_cols
@@ -1715,7 +1715,7 @@ def csr_from_keys(
         ``offsets[-1]`` are written.
     starts
         ``(count + 1,)`` sorted positions: entry ``e``'s first sorted position is ``starts[e]`` and
-        ``starts[offsets[-1]]`` closes the last.
+        ``starts[offsets[-1]]`` closes the last. A view of ``keys``' upper half.
 
     See Also
     --------
@@ -1752,11 +1752,34 @@ def csr_from_keys(
     # Every bound is written by ``csr_from_runs``, the empty matrix's too.
     offsets = _launch.empty(n_rows + 1, dtype=wp.int32, device=device)
     columns = _launch.empty(count, dtype=wp.int32, device=device)
-    starts = _launch.empty(count + 1, dtype=wp.int32, device=device)
     sentinel = n_rows * n_cols
     _launch.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
+    # The entries' sorted positions live in the key buffer's upper half, sort scratch too: its
+    # ``count`` 8-byte slots hold ``count + 1`` 4-byte ones. ``keys`` and ``order`` are one
+    # allocation, which every caller holds while it reads ``starts`` beside ``order``, so the alias
+    # costs no memory and saves an allocation.
+    starts = _launch.alias(keys, wp.int32, 8 * count, count + 1)
     # The run flags and their scan live in the payload buffer's upper half, which is sort scratch.
     inclusive = _launch.view(order, count, 2 * count)
+    if wp.get_device(device).is_cpu:
+        # The CPU runs a launch's threads in turn: one thread flags, counts and places every
+        # position, the same writes in the same order as the three passes below.
+        _launch.launch(
+            kernel_array.csr_from_sorted_keys_serial,
+            dim=1,
+            inputs=[
+                keys,
+                wp.uint64(sentinel),
+                wp.int32(n_rows),
+                wp.uint64(n_cols),
+                inclusive,
+                offsets,
+                columns,
+                starts,
+            ],
+            device=device,
+        )
+        return offsets, columns, starts
     _launch.launch(
         kernel_array.csr_run_flags,
         dim=count,
@@ -2087,6 +2110,29 @@ def _csr_from_coo_keys(
     # one pass places them, summing each run where it lands; the flags and their scan live in the
     # payload buffer's upper half, which is sort scratch.
     flags = _launch.view(order, count, 2 * count)
+    if wp.get_device(device).is_cpu:
+        # The CPU runs a launch's threads in turn: one thread flags, counts and places every
+        # position, the same writes in the same order as the three passes below.
+        _launch.launch(
+            kernel_array.CSR_FROM_COO_KEYS_SERIAL[values.dtype],
+            dim=1,
+            inputs=[
+                keys,
+                order,
+                values,
+                wp.uint64(sentinel),
+                values.dtype(),
+                wp.int32(1 if prune_numerical_zeros else 0),
+                wp.int32(n_rows),
+                wp.uint64(n_cols),
+                flags,
+                offsets,
+                columns,
+                summed,
+            ],
+            device=device,
+        )
+        return bsr_from_csr(n_rows, n_cols, offsets, columns, summed)
     if prune_numerical_zeros:
         _launch.launch(
             kernel_array.CSR_NONZERO_RUN_FLAGS[values.dtype],

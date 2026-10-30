@@ -2565,8 +2565,9 @@ class _StampedFlag:
     _STRIDE = 4
     _LIMIT = 1 << 30
 
-    def __init__(self, device: wp.DeviceLike) -> None:
-        self.word = _launch.zeros(1, dtype=wp.int32, device=device)
+    def __init__(self, device: wp.DeviceLike, word: wp.array[wp.int32] | None = None) -> None:
+        # ``word``, when given, is a zeroed word the owner already holds.
+        self.word = _launch.zeros(1, dtype=wp.int32, device=device) if word is None else word
         self.base = 0
 
     @classmethod
@@ -3339,14 +3340,16 @@ class _BatchedCg:
         # The round-loop state (``kernels/array.py``'s ``LOOP_ROUND`` / ``LOOP_CONDITION``, seeded
         # by ``cg_seed`` at the start of every solve) and, after it, the rounds that took a step --
         # the iteration count a solve reports -- so the host cadence's condition read carries it.
-        self._ints = wp.array(
-            ptr=head.ptr, dtype=wp.int32, shape=(kernel_array.LOOP_STATE_SIZE + 1,), device=device
-        )
+        self._ints = wp.array(ptr=head.ptr, dtype=wp.int32, shape=(2 * _INT_WORDS,), device=device)
         # A view by pointer holds no reference to its storage; this one keeps ``head`` alive for as
         # long as it -- or any slice of it handed to a caller -- is.
         self._ints._ref = head  # pyright: ignore[reportPrivateUsage]
         self._state = odt.as_dense(self._ints[: kernel_array.LOOP_STATE_SIZE])
-        self.iterations = odt.as_dense(self._ints[kernel_array.LOOP_STATE_SIZE :])
+        count = kernel_array.LOOP_STATE_SIZE
+        self.iterations = odt.as_dense(self._ints[count : count + 1])
+        # ``solve_spd_settled``'s backward-error flag, kept across its solves, in the zeroed word
+        # the integer state leaves free at the head's end (no allocation of its own).
+        self.flag = _StampedFlag(device, word=odt.as_dense(self._ints[count + 1 : count + 2]))
         # The live rows of ``u`` and ``w`` per column, for ``bsr_mv`` on the heavy-row path.
         self._uw_columns = [
             (
@@ -3402,8 +3405,6 @@ class _BatchedCg:
         # every launch in the body, plus the graph instantiation, for an identical graph. Only
         # ``_initialize``, which reads the caller's operands, is issued per call.
         self._graph = None
-        # ``solve_spd_settled``'s backward-error flag, kept across its solves.
-        self.flag: _StampedFlag | None = None
 
         # The settle monitor ``solve_spd_settled`` runs (``check_rounds``, ``change_tolerance``,
         # ``settle_rounds``): every ``check_rounds`` rounds ``cg_settle_change`` compares the
@@ -3762,13 +3763,10 @@ class _BatchedCg:
         [`solve_spd_columns`][ordito.linalg.solve_spd_columns] documents. ``initial`` is
         ``_initialize``'s.
         """
+        check_every = self._host_check_every()
+        if self._serial():
+            return self._solve_serial(initial, check_every, self._solution_flat)
         self._initialize(initial)
-        # The device-side loop needs a conditional CUDA graph, so a CPU-resident system takes the
-        # host cadence even where the machine has a GPU -- ``_supported_check_every`` can only see
-        # the *machine*, not which device these arrays are on.
-        check_every = self._check_every
-        if check_every == 0 and not self._device.is_cuda:
-            check_every = CG_CHECK_EVERY_FALLBACK
         if check_every > 0:
             self._seed()
             return self._run_with_host_checks(check_every)
@@ -3801,12 +3799,123 @@ class _BatchedCg:
         """
         self._rhs_flat = rhs
         try:
+            if self._serial():
+                # No recording to outlive the call: the one launch iterates on ``solution`` itself.
+                return self._solve_serial(None, self._host_check_every(), solution)
             result = self(solution)
         finally:
             # Not held past the call: the caller's right-hand side is not this solver's to keep.
             self._rhs_flat = None
         _launch.copy(solution, self._solution_flat)
         return result
+
+    def _host_check_every(self) -> int:
+        """
+        Return the rounds between the loop's condition tests, or 0 for the device-side loop.
+
+        The device-side loop needs a conditional CUDA graph, so a CPU-resident system takes the
+        host cadence even where the machine has a GPU -- ``_supported_check_every`` can only see
+        the *machine*, not which device these arrays are on.
+        """
+        if self._check_every == 0 and not self._device.is_cuda:
+            return CG_CHECK_EVERY_FALLBACK
+        return self._check_every
+
+    def _serial(self) -> bool:
+        """Whether a solve runs as ``_solve_serial``'s one launch (on the CPU device only)."""
+        return (
+            self._device.is_cpu
+            and not self._heavy
+            and (self._cycle is None or isinstance(self._cycle, _JacobiChebyshevApply))
+        )
+
+    def _solve_serial(
+        self, initial: odt.ArrayNdFloat | None, check_every: int, x: odt.ArrayNdFloat
+    ) -> tuple[int, float, float]:
+        """
+        Run the CPU device's whole solve in one launch, then read the result once.
+
+        Every launch ``_initialize``, ``_seed`` and ``_run_with_host_checks`` would issue, in their
+        order, in one one-lane block (``cg_solve_serial``): the CPU device runs a launch's blocks
+        one after another, so they buy no parallelism there, and the condition the host cadence
+        reads after each block of rounds is tested inside the launch instead. Taken under Jacobi
+        and the Jacobi-Chebyshev polynomial, whose apply is one column walk; a V-cycle and the
+        squared-Laplacian polynomial keep the host cadence. The rounds update ``x`` (this state's
+        own solution buffer, or a caller's, which then holds the initial guess), after ``initial``
+        is copied into it when given.
+        """
+        tile = int(kernel_cg.CG_TILE)
+        settle = self._settle
+        check_rounds, change_tolerance, settle_rounds = (0, 0.0, 0) if settle is None else settle
+        if settle is not None:
+            # The monitor's check is the cadence, as ``_run_with_host_checks`` takes it.
+            check_every = check_rounds
+        cycle = self._cycle
+        polynomial: list[Any] = [None] * 6
+        operator: list[Any] = [None] * 3
+        if isinstance(cycle, _JacobiChebyshevApply):
+            matrix = cycle.owner.matrix
+            operator = [matrix.offsets, matrix.columns, matrix.values]
+            steps, iterate_0, iterate_1, iterate_2 = cycle.serial_operands()
+            polynomial = [steps, cycle.inverse_diagonal, iterate_0, iterate_1, iterate_2, self._u]
+        _launch.launch_tiled(
+            kernel_cg.CG_SOLVE_SERIAL[self._dtype, self._round_values.dtype],
+            dim=[1],
+            inputs=[
+                wp.int32(self._n),
+                wp.int32(self._stride),
+                wp.int32(self._span),
+                wp.int32(tile),
+                wp.int32(self._n_columns),
+                wp.int32(self._maxiter),
+                wp.int32(1 if self._fold else 0),
+                wp.int32(self._blocks),
+                wp.int32(self._stride // tile),
+                wp.int32(0 if self._inv_diag is None else 1),
+                wp.int32(0 if initial is None else 1),
+                wp.int32(check_every),
+                wp.float64(self._tol * self._tol),
+                wp.int32(0 if settle is None else 1),
+                wp.float64(change_tolerance),
+                wp.int32(settle_rounds),
+                wp.int32(0 if cycle is None else 1),
+                self._matrix.offsets,
+                self._matrix.columns,
+                self._round_values,
+                self._rhs_flat,
+                x if initial is None else initial,
+                self._inv_diag,
+                polynomial[0],
+                *operator,
+                polynomial[1],
+                self._scaled if cycle is not None else None,
+                self._u,
+                self._p,
+                self._s,
+                self._r,
+                self._atol_sq,
+                self._gamma_old,
+                self._alpha_old,
+                self._gamma_new,
+                self._alpha_new,
+                self._state,
+                None if settle is None else self._settle_previous,
+                None if settle is None else self._settle_state,
+                *polynomial[2:],
+            ],
+            outputs=[
+                self._w,
+                self._partials,
+                self._coefficients,
+                x,
+                self._scaled,
+                self._dots,
+                self.iterations,
+            ],
+            block_dim=1,
+            device=self._device,
+        )
+        return self.host_result()
 
     def _run_with_host_checks(self, check_every: int) -> tuple[int, float, float]:
         """
@@ -3897,8 +4006,8 @@ class _BatchedCg:
 
 
 # ``float64`` words at the head of a ``_BatchedCg``'s scalar buffer that hold its ``int32`` loop
-# state and iteration count.
-_INT_WORDS = (kernel_array.LOOP_STATE_SIZE + 2) // 2
+# state, iteration count and backward-error flag.
+_INT_WORDS = (kernel_array.LOOP_STATE_SIZE + 3) // 2
 
 
 def _head_ints(head: npt.NDArray[np.float64]) -> npt.NDArray[np.int32]:
@@ -4880,6 +4989,14 @@ class _ChebyshevApply:
             views = [_launch.zeros(0, dtype=wp.float64, device=device) for _ in range(4)]
         self._spare = views[:3]
         self._work = views[3]
+
+    def serial_operands(
+        self,
+    ) -> tuple[
+        wp.array[wp.vec4d], wp.array[wp.float64], wp.array[wp.float64], wp.array[wp.float64]
+    ]:
+        """Return the steps and the three rotating iterates, for a one-launch CPU solve to walk."""
+        return self._steps, self._spare[0], self._spare[1], self._spare[2]
 
     def _polynomial(
         self,

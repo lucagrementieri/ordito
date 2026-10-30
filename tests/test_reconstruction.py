@@ -2412,9 +2412,11 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
     reaches the same code path on 162.
 
     Buffer *identity* is the assertion rather than any count: ``id(state.front_out)`` before a wave
-    that runs is the buffer that wave writes, and ``grow()`` / ``compact()`` each re-establish the
-    invariant themselves (one rebuilds ``front_in`` from the edge table, the other swaps after
-    writing), so recording their result covers a run that takes either.
+    that runs is the buffer that wave writes (on the CPU device, which runs a batch as one launch
+    alternating the pair, the batch's waves write ``front_out`` and ``front_in`` by turns), and
+    ``grow()`` / ``compact()`` each re-establish the invariant themselves (one rebuilds ``front_in``
+    from the edge table, the other swaps after writing), so recording their result covers a run that
+    takes either.
 
     The mutation probe bites on the final assert, and only for the odd values: reverting the parity
     correction fails every odd ``max_waves`` (1, 3 and 7 were probed) with *"front_in is not the
@@ -2444,6 +2446,22 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
             live.append(id(tracked.front_out))
         unpatched_wave(tracked, waves, begin=begin)
 
+    unpatched_serial = od.reconstruction._bpa_waves_serial  # pyright: ignore[reportPrivateUsage]
+
+    def recording_serial(
+        tracked: od.reconstruction._BpaState,  # pyright: ignore[reportPrivateUsage]
+        waves: int,
+        *,
+        begin: bool,
+    ) -> None:
+        # The CPU device's batch of waves in one launch: wave ``k`` of it writes the buffer that
+        # was ``front_out`` at the call when ``k`` is even, ``front_in`` when odd.
+        before = int(tracked.counters.numpy()[kernel_bpa.CNT_WAVE])
+        written = (id(tracked.front_out), id(tracked.front_in))
+        unpatched_serial(tracked, waves, begin=begin)
+        ran = int(tracked.counters.numpy()[kernel_bpa.CNT_WAVE]) - before
+        live.extend(written[wave % 2] for wave in range(ran))
+
     def checked(name: str):
         def wrapper(tracked: od.reconstruction._BpaState) -> None:  # pyright: ignore[reportPrivateUsage]
             nonlocal resyncs
@@ -2459,6 +2477,7 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
         return wrapper
 
     monkeypatch.setattr(od.reconstruction, "_bpa_wave", recording_wave)
+    monkeypatch.setattr(od.reconstruction, "_bpa_waves_serial", recording_serial)
     for name in unpatched:
         monkeypatch.setattr(od.reconstruction._BpaState, name, checked(name))  # pyright: ignore[reportPrivateUsage]
     od.reconstruction._bpa_run(state, max_waves)  # pyright: ignore[reportPrivateUsage]

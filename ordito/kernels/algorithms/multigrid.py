@@ -678,6 +678,72 @@ def chebyshev_step(
     )  # fmt: skip
 
 
+@wp.func
+def chebyshev_polynomial_column(
+    column: wp.int32,
+    n_rows: wp.int32,
+    stride: wp.int32,
+    steps: wp.array[wp.vec4d],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    row_scaled: wp.int32,
+    row_scale: wp.array[wp.float64],
+    source: wp.array[wp.float64],
+    iterate_0: wp.array[wp.float64],
+    iterate_1: wp.array[wp.float64],
+    iterate_2: wp.array[wp.float64],
+    x: wp.array[wp.float64],
+) -> None:
+    # Column ``column``'s every ``chebyshev_step`` of one polynomial, walking each step's rows in
+    # turn: ``chebyshev_polynomial_serial``'s thread, and the polynomial the CPU device's one-launch
+    # conjugate-gradient solve (``conjugate_gradient.cg_solve_serial``) applies every round.
+    base = column * stride
+    n_steps = steps.shape[0]
+    for index in range(n_steps):
+        step = steps[index]
+        target = 2 - index % 3
+        if index == n_steps - 1:
+            target = -1
+        phase = (index + 1) % 3
+        for row in range(n_rows):
+            value = wp.float64(0.0)
+            if index == 0:
+                value = chebyshev_row(
+                    row, base, step, offsets, columns, values, row_scaled, row_scale, source,
+                    source, source,
+                )  # fmt: skip
+            elif index == 1:
+                value = chebyshev_row(
+                    row, base, step, offsets, columns, values, row_scaled, row_scale, source,
+                    iterate_2, source,
+                )  # fmt: skip
+            elif phase == 0:
+                value = chebyshev_row(
+                    row, base, step, offsets, columns, values, row_scaled, row_scale, source,
+                    iterate_1, iterate_2,
+                )  # fmt: skip
+            elif phase == 1:
+                value = chebyshev_row(
+                    row, base, step, offsets, columns, values, row_scaled, row_scale, source,
+                    iterate_0, iterate_1,
+                )  # fmt: skip
+            else:
+                value = chebyshev_row(
+                    row, base, step, offsets, columns, values, row_scaled, row_scale, source,
+                    iterate_2, iterate_0,
+                )  # fmt: skip
+            slot = base + row
+            if target == 0:
+                iterate_0[slot] = value
+            elif target == 1:
+                iterate_1[slot] = value
+            elif target == 2:
+                iterate_2[slot] = value
+            else:
+                x[slot] = value
+
+
 @wp.kernel
 def chebyshev_polynomial_serial(
     n_rows: wp.int32,
@@ -700,51 +766,10 @@ def chebyshev_polynomial_serial(
     # ``k`` writes ``out_iterate_{2 - k % 3}`` (the last one ``out_x``), reading the iterates steps
     # ``k - 1`` and ``k - 2`` wrote, ``source`` in place of those that do not exist. Each entry is
     # ``chebyshev_row``, the step kernel's own, so the result is that sequence's to the bit.
-    column = wp.int32(wp.tid())
-    base = column * stride
-    n_steps = steps.shape[0]
-    for index in range(n_steps):
-        step = steps[index]
-        target = 2 - index % 3
-        if index == n_steps - 1:
-            target = -1
-        phase = (index + 1) % 3
-        for row in range(n_rows):
-            value = wp.float64(0.0)
-            if index == 0:
-                value = chebyshev_row(
-                    row, base, step, offsets, columns, values, row_scaled, row_scale, source,
-                    source, source,
-                )  # fmt: skip
-            elif index == 1:
-                value = chebyshev_row(
-                    row, base, step, offsets, columns, values, row_scaled, row_scale, source,
-                    out_iterate_2, source,
-                )  # fmt: skip
-            elif phase == 0:
-                value = chebyshev_row(
-                    row, base, step, offsets, columns, values, row_scaled, row_scale, source,
-                    out_iterate_1, out_iterate_2,
-                )  # fmt: skip
-            elif phase == 1:
-                value = chebyshev_row(
-                    row, base, step, offsets, columns, values, row_scaled, row_scale, source,
-                    out_iterate_0, out_iterate_1,
-                )  # fmt: skip
-            else:
-                value = chebyshev_row(
-                    row, base, step, offsets, columns, values, row_scaled, row_scale, source,
-                    out_iterate_2, out_iterate_0,
-                )  # fmt: skip
-            slot = base + row
-            if target == 0:
-                out_iterate_0[slot] = value
-            elif target == 1:
-                out_iterate_1[slot] = value
-            elif target == 2:
-                out_iterate_2[slot] = value
-            else:
-                out_x[slot] = value
+    chebyshev_polynomial_column(
+        wp.int32(wp.tid()), n_rows, stride, steps, offsets, columns, values, row_scaled,
+        row_scale, source, out_iterate_0, out_iterate_1, out_iterate_2, out_x,
+    )  # fmt: skip
 
 
 @wp.kernel

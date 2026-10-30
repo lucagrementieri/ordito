@@ -992,9 +992,12 @@ def crouzeix_raviart_entry(
 def crouzeix_raviart_row_counts(
     inverse: wp.array[wp.int32], edge_faces: wp.array[wp.int32], out_offsets: wp.array[wp.int32]
 ) -> None:
-    # Row ``e``'s column count into ``out_offsets[e + 1]``; an in-place scan makes the offsets.
-    # ``crouzeix_raviart_csr`` walks the same columns with the same helper.
+    # Row ``e``'s column count into ``out_offsets[e + 1]``, and the leading zero by row 0; an
+    # in-place scan makes the offsets. ``crouzeix_raviart_csr`` walks the same columns with the
+    # same helper.
     e = wp.int32(wp.tid())
+    if e == 0:
+        out_offsets[0] = 0
     f0, f1 = crouzeix_raviart_row_faces(edge_faces, e)
     count = wp.int32(0)
     col = crouzeix_raviart_next_column(inverse, f0, f1, e, -1)
