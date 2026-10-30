@@ -1411,10 +1411,10 @@ class _Solve:
         self.key = (n_columns, tol, componentwise)
         self.plan, self.numeric, self.matrix, self.n_columns = plan, numeric, matrix, n_columns
         self.tol, self.componentwise = tol, componentwise
-        # Written before any read: ``run`` copies in ``initial`` (and ``rhs`` for a recording, which
-        # replays its own storage), ``_body`` zeroes ``rhs_scale``, ``refine_start`` writes all of
-        # ``solution`` and the state, and every ``residual_test`` all of ``residual``; the work's
-        # scratch starts zeroed. One allocation.
+        # Written before any read: a recording of this storage has ``run`` copy in ``rhs`` and
+        # ``solution``, ``_body`` zeroes ``rhs_scale``, ``refine_start`` writes all of ``solution``,
+        # the state and (where the null space reads it) ``initial``, and every ``residual_test`` all
+        # of ``residual``; the work's scratch starts zeroed. One allocation.
         (self.rhs, self.solution, self.initial, self.residual, self.rhs_scale,
          self.null_space_partials, self.null_space_means, *work) = _carve(
             wp.float64,
@@ -1430,7 +1430,11 @@ class _Solve:
         self.work = _Work(*work)
         self.graph: Any = None
         self.recorded_for: Any = None
+        # The recording against a caller's own ``(rhs, solution)``, and the buffers last run.
+        self.caller_graph: Any = None
+        self.caller_recorded_for: Any = None
         self.ran_for: Any = None
+        self.ran_with: Any = None
 
     def _test(self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64]) -> None:
         plan, device = self.plan, self.plan.device
@@ -1452,15 +1456,17 @@ class _Solve:
         )
 
     def _body(self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64]) -> None:
-        """Refine ``solution`` against ``rhs`` from ``self.initial``."""
+        """Refine ``solution`` against ``rhs``, from the initial guess it holds."""
         plan, device = self.plan, self.plan.device
+        null_space = bool(plan.n_components and self.numeric.any_singular)
 
         def refinement_round() -> None:
             plan.triangular_solve(self.residual, self.n_columns, self.work, self.numeric, solution)
             self._test(rhs, solution)
 
         # Refinement starts from the caller's solution: a warm start that already passes the test
-        # costs one residual and no triangular solve. ``refine_start`` copies it in.
+        # costs one residual and no triangular solve. ``refine_start`` keeps the guess in
+        # ``initial`` for the null space's constant, which reads it after the refinement.
         _launch.zero_(self.rhs_scale)
         _launch.launch(
             kernel_cholesky.refine_start,
@@ -1471,14 +1477,15 @@ class _Solve:
                 self.state,
                 self.rhs_scale,
                 wp.int32(1 if self.componentwise else 0),
-                self.initial,
+                solution,
+                wp.int32(1 if null_space else 0),
             ],
-            outputs=[solution],
+            outputs=[solution, self.initial],
             device=device,
         )
         self._test(rhs, solution)
         wp.capture_while(self.condition, refinement_round)
-        if plan.n_components and self.numeric.any_singular:
+        if null_space:
             # The chunk sums and the shift run over the whole device, not a block per component:
             # a mesh's one component is every row. Between them one thread a component adds its
             # chunks, in order, into its mean.
@@ -1512,7 +1519,6 @@ class _Solve:
 
     def run(self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64], at_once: bool) -> None:
         device = wp.get_device(self.plan.device)
-        _launch.copy(self.initial, solution)
         # The storage a recording replays: the operator's device pointers, which the graph holds
         # (an array's ``id`` can be reused by a new array at another address).
         identity = (
@@ -1527,9 +1533,30 @@ class _Solve:
         # read each, rather than paying a recording it never replays.
         repeat = at_once or self.ran_for == identity
         self.ran_for = identity
+        buffers = (rhs.ptr, solution.ptr)
+        same_buffers = self.ran_with == buffers
+        self.ran_with = buffers
         if device.is_cuda and wp.is_conditional_graph_supported() and repeat:
-            # A recording replays its own storage: the caller's arrays are copied in and out.
+            if self.caller_graph is not None and self.caller_recorded_for == (identity, buffers):
+                wp.capture_launch(self.caller_graph)
+                return
+            # A caller solving into the same buffers again (or one solved many times, whose
+            # buffers are fixed) is recorded against them, once per operator storage: the replay
+            # then copies nothing. Any other recording replays this solve's own storage, the
+            # caller's arrays copied in and out.
+            if (
+                (same_buffers or at_once)
+                and (self.caller_recorded_for is None or self.caller_recorded_for[0] != identity)
+                and not _overlap(rhs, solution)
+            ):
+                with wp.ScopedCapture(device) as capture:
+                    self._body(rhs, solution)
+                self.caller_graph = capture.graph
+                self.caller_recorded_for = (identity, buffers)
+                wp.capture_launch(self.caller_graph)
+                return
             _launch.copy(self.rhs, rhs)
+            _launch.copy(self.solution, solution)
             if self.graph is None or self.recorded_for != identity:
                 with wp.ScopedCapture(device) as capture:
                     self._body(self.rhs, self.solution)
@@ -1542,7 +1569,7 @@ class _Solve:
             self._body(self.rhs, solution)
         else:
             # Run directly: the refinement reads the caller's right-hand side and refines into
-            # the caller's solution, its initial guess kept in ``initial``.
+            # the caller's solution.
             self._body(rhs, solution)
 
 

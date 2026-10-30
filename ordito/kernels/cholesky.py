@@ -718,13 +718,19 @@ def refine_start(
     rhs_scale: wp.array[wp.float64],
     componentwise: wp.int32,
     initial: wp.array[wp.float64],
+    keep_initial: wp.int32,
     out_solution: wp.array[wp.float64],
+    out_initial: wp.array[wp.float64],
 ) -> None:
     # Arm the refinement loop, record each column's largest right-hand-side entry (the normwise
     # test's scale; the componentwise one never reads it), and start the solution from the
-    # caller's initial guess.
+    # caller's initial guess -- which may be ``out_solution`` itself, each entry read and written
+    # by its own thread -- keeping a copy in ``out_initial`` with ``keep_initial`` set.
     i, column = wp.tid()
-    out_solution[column * n + i] = initial[column * n + i]
+    guess = initial[column * n + i]
+    out_solution[column * n + i] = guess
+    if keep_initial != 0:
+        out_initial[column * n + i] = guess
     if i == 0 and column == 0:
         state[REFINE_CONDITION] = 0
         state[REFINE_PENDING] = 0
