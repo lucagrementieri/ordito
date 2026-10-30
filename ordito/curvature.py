@@ -222,7 +222,7 @@ def _one_ring_principal_curvatures(
     device = vertices.device
     n_vertices = vertices.size
     vertex_faces, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
-    mates = od.halfedge.halfedge_mates(faces, n_vertices)
+    mates = od.halfedge.halfedge_mates(faces, vertex_faces=(vertex_faces, vf_offsets))
     pv1 = _launch.empty(n_vertices, dtype=wp.float32, device=device)
     pv2 = _launch.empty(n_vertices, dtype=wp.float32, device=device)
     if n_vertices > 0:
@@ -306,7 +306,7 @@ def vertex_curvatures(
     if n_vertices == 0:
         return mean, gaussian
     vertex_faces, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
-    mates = od.halfedge.halfedge_mates(faces, n_vertices)
+    mates = od.halfedge.halfedge_mates(faces, vertex_faces=(vertex_faces, vf_offsets))
     _launch.launch(
         kernel_curvature.meyer_vertex_curvatures,
         dim=n_vertices,
