@@ -1380,8 +1380,8 @@ Laplacian fairing; a port would follow that schedule.
 ### Octree memory (2026-10-30): every solver and extraction table stored by brick
 
 `screened_poisson(method="octree")` (200 k points, CUDA) peaks at **71-79 MiB at depth 8** with
-the deterministic setting off and 122 with it on (was 461 / 1 026; 2 036 before `7498cad1`), and
-at **291 / 458 MiB at depth 9** (was 3 471 / 8 152). Bit-identical with the setting on, CPU
+the deterministic setting off and 79 with it on (was 461 / 1 026; 2 036 before `7498cad1`), and
+at **291 MiB at depth 9** either way (was 3 471 / 8 152). Bit-identical with the setting on, CPU
 (depths 6-8, dense and sparse clouds) and CUDA (depths 8-9); the `dense` and `adaptive` backends,
 which share the trilinear and restriction helpers, too. With it off the CPU's float atomics in the
 density splat arrive in brick order, so its CPU off-mode bits differ from the dense layout's
@@ -1412,6 +1412,13 @@ What it took, in order:
 - **A divergence window reads its at most eight brick numbers once** (`window_bricks`) and picks
   each cell's by per-axis selects (`window_axis`); per cell the CPU lost 1.6x. A sweep row looks
   its 27 neighbours up once (per read lost 1.46x).
+- **With the setting on, the normal splat's exact sum holds only the cells it reaches**
+  (`octree_splat_targets`: one bit a stored cell, ranked; `octree_expand_splat` writes the
+  finished sums into a zeroed field). Each group keeps its own fixed-point field, so the sums
+  keep their bits (a shared or per-brick field would truncate small terms differently). The
+  words (a field and a word a component, 32 bytes a cell) over every stored cell were the on
+  mode's peak: depth 9 458 -> 291 MiB (the off mode's), 1 M points 467 -> 323, depth 8 122 -> 79,
+  at par in time; the off mode, whose accumulator is the field, is unchanged.
 - Also: the splat's exact accumulator released after its finish, `prolongeds` formed again
   (`prolonged_at`), `owners` a bitset walked to the creating edge (`edge_owner`). Restriction and
   prolongation keep the dense sums' bits because their weights are powers of two
@@ -1419,10 +1426,9 @@ What it took, in order:
 
 Verified with temporary prints on every invariant (no unstored field read, splat or density
 target, carried-up window cell or parent, corner source, edge or finer half) over the octree tests
-and dense and sparse clouds (down to 500 points at depth 6). **Open:** with the setting on, the
-peak is the normal splat's exact fixed-point accumulator (one per stored cell, released after its
-finish; 666 MiB on a unit-sphere cloud at depth 9); with it off, the constraints phase (347 MiB
-there: the normal field, counts and positions, flags, the node right-hand sides). The extraction's
+and dense and sparse clouds (down to 500 points at depth 6). **Open:** in both modes the peak is
+the constraints phase (347 MiB on a unit-sphere cloud at depth 9: the normal field, counts and
+positions, flags, the node right-hand sides). The extraction's
 band of leaf cells is still found by a launch over every cell (one bit a cell). Depth 10 would
 need `int64` dense edge slots for the vertex order.
 

@@ -1422,25 +1422,9 @@ def _screened_poisson_octree(
     # The density is read only by the weights: released before the normal splat allocates.
     del density_sums, density
 
-    normal_sums = _launch.group_sums(cells.firsts[depth + 1], wp.vec3, 2 * n_samples, device)
-    _launch.launch_group_sums(
-        kernel_octree.octree_normal_splat,
-        dim=n_samples,
-        inputs=[
-            sample_keys,
-            sample_counts,
-            sample_positions,
-            sample_normals,
-            sample_depths,
-            cells.bricks,
-            depth,
-        ],
-        sums=normal_sums,
-        device=device,
+    normal_field = _octree_normal_field(
+        sample_keys, sample_counts, sample_positions, sample_normals, sample_depths, cells, depth
     )
-    normal_field = _launch.finish_group_sums(normal_sums)
-    # The exact sums' words (setting on) are dead once finished: released before the constraints.
-    del normal_sums
 
     # One bit a cell, laid out as the coarser depths' brick tables (``flag_bit``).
     n_flag_bits = kernel_octree.BRICK_CELLS * (cells.offsets[depth] - cells.offsets[0])
@@ -1538,6 +1522,73 @@ def _screened_poisson_octree(
         1.0,
     )
     return od.transform.transform_points(unit_vertices, to_world, out=unit_vertices), faces
+
+
+def _octree_normal_field(
+    sample_keys: wp.array[wp.int32],
+    sample_counts: wp.array[wp.int32],
+    sample_positions: wp.array[wp.vec3],
+    sample_normals: wp.array[wp.vec3],
+    sample_depths: wp.array[wp.float32],
+    cells: _OctreeBricks,
+    depth: int,
+) -> wp.array[wp.vec3]:
+    """
+    Every stored cell's normal coefficient: the samples' normals splatted at their depth estimates.
+
+    With the deterministic setting off the splat adds into the field itself. With it on, the exact
+    group sum's fixed-point words (a field and a word a component, several times the field's
+    memory) are held only for the cells the splat reaches, ranked from a bit a stored cell
+    (``octree_splat_targets``), and the finished sums go to those cells of a zeroed field.
+    """
+    device = sample_keys.device
+    # One depth estimate a sample (the merged groups may end in the dropped points' sentinel).
+    n_samples = sample_depths.size
+    n_cells = cells.firsts[depth + 1]
+    splat = [sample_keys, sample_counts, sample_positions, sample_normals, sample_depths]
+    if not is_deterministic():
+        no_targets = _launch.empty(0, dtype=wp.uint32, device=device)
+        no_ranks = _launch.empty(0, dtype=wp.int32, device=device)
+        sums = _launch.group_sums(n_cells, wp.vec3, 2 * n_samples, device)
+        _launch.launch_group_sums(
+            kernel_octree.octree_normal_splat,
+            dim=n_samples,
+            inputs=[*splat, cells.bricks, no_targets, no_ranks, depth],
+            sums=sums,
+            device=device,
+        )
+        return _launch.finish_group_sums(sums)
+    targets = _launch.zeros((n_cells + 31) // 32, dtype=wp.uint32, device=device)
+    _launch.launch(
+        kernel_octree.octree_splat_targets,
+        dim=n_samples,
+        inputs=[sample_keys, sample_normals, sample_depths, cells.bricks, depth],
+        outputs=[targets],
+        device=device,
+    )
+    ranks = _bit_ranks(targets)
+    # One read sizes the exact sums.
+    n_targets = int(read_scalar(ranks))
+    sums = _launch.group_sums(max(n_targets, 1), wp.vec3, 2 * n_samples, device)
+    _launch.launch_group_sums(
+        kernel_octree.octree_normal_splat,
+        dim=n_samples,
+        inputs=[*splat, cells.bricks, targets, ranks, depth],
+        sums=sums,
+        device=device,
+    )
+    finished = _launch.finish_group_sums(sums)
+    # The words are dead once finished: released before the field is allocated.
+    del sums
+    field = _launch.zeros(n_cells, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_octree.octree_expand_splat,
+        dim=n_cells,
+        inputs=[targets, ranks, finished],
+        outputs=[field],
+        device=device,
+    )
+    return field
 
 
 def _octree_group_sums(

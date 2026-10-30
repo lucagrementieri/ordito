@@ -810,6 +810,45 @@ def octree_sample_weights(
 
 
 @wp.func
+def normal_splat_depths(estimate: wp.float32, depth: wp.int32) -> tuple[wp.int32, wp.float32]:
+    # A sample's normal splat depths from its depth estimate: the depth above it (``top``, all at
+    # the finest when it lies beyond) and the share it takes; ``top - 1`` takes the rest when that
+    # rest passes ``SPLIT_EPSILON`` (``normal_splat_split``).
+    clamped = wp.clamp(estimate, 0.0, wp.float32(depth))
+    top = wp.int32(wp.ceil(clamped))
+    fraction = 1.0 - (wp.float32(top) - clamped)
+    if top <= 0:
+        top = 0
+        fraction = wp.float32(1.0)
+    return top, fraction
+
+
+@wp.func
+def normal_splat_split(fraction: wp.float32) -> wp.bool:
+    return wp.abs(1.0 - fraction) > SPLIT_EPSILON
+
+
+@wp.func
+def mark_splat_targets(
+    d: wp.int32,
+    depth: wp.int32,
+    cell: wp.vec3i,
+    cells: wp.array[wp.int32],
+    out_targets: wp.array[wp.uint32],
+):
+    # ``splat_normal_at``'s 27 targets at depth ``d``, one bit each in ``out_targets``.
+    node = wp.vec3i(cell[0] >> (depth - d), cell[1] >> (depth - d), cell[2] >> (depth - d))
+    for a in range(3):
+        for b in range(3):
+            for c in range(3):
+                o = node + wp.vec3i(a - 1, b - 1, c - 1)
+                target = splat_target(d, o)
+                if target[0] >= 0 and target[0] <= depth:
+                    entry = cell_entry(cells, target[0], o)
+                    wp.atomic_or(out_targets, entry >> 5, wp.uint32(1) << wp.uint32(entry & 31))
+
+
+@wp.func
 def splat_normal_at(
     d: wp.int32,
     depth: wp.int32,
@@ -817,6 +856,8 @@ def splat_normal_at(
     p: wp.vec3,
     amount: wp.vec3,
     cells: wp.array[wp.int32],
+    targets: wp.array[wp.uint32],
+    target_ranks: wp.array[wp.int32],
     sums: GroupSumPass,
     out_normals: wp.array[wp.vec3],
 ):
@@ -824,7 +865,8 @@ def splat_normal_at(
     # finest cell ``cell``. A slot aliased past the finest depth would need a node the solve does
     # not have; a cloud padded by ``scale >= 1`` never reaches one there. A slot holds the same
     # integer offset at whichever depth ``splat_target`` puts it, in a brick
-    # ``octree_sample_cells`` marked.
+    # ``octree_sample_cells`` marked. With ``targets`` (one bit a stored cell, the cells
+    # ``octree_splat_targets`` marked), a cell's sum is the target's rank among them.
     node = wp.vec3i(cell[0] >> (depth - d), cell[1] >> (depth - d), cell[2] >> (depth - d))
     scale = wp.float32(1 << d)
     vx = quadratic_bspline_values(p[0] * scale - wp.float32(node[0]))
@@ -836,12 +878,10 @@ def splat_normal_at(
                 o = node + wp.vec3i(a - 1, b - 1, c - 1)
                 target = splat_target(d, o)
                 if target[0] >= 0 and target[0] <= depth:
-                    scatter_add_vector(
-                        out_normals,
-                        sums,
-                        cell_entry(cells, target[0], o),
-                        amount * (vx[a] * vy[b] * vz[c]),
-                    )
+                    entry = cell_entry(cells, target[0], o)
+                    if targets.shape[0] > 0:
+                        entry = bit_rank(targets, target_ranks, entry)
+                    scatter_add_vector(out_normals, sums, entry, amount * (vx[a] * vy[b] * vz[c]))
 
 
 @wp.kernel
@@ -852,13 +892,16 @@ def octree_normal_splat(
     sample_normals: wp.array[wp.vec3],
     depths: wp.array[wp.float32],
     cells: wp.array[wp.int32],
+    targets: wp.array[wp.uint32],
+    target_ranks: wp.array[wp.int32],
     depth: wp.int32,
     sums: GroupSumPass,
     out_normals: wp.array[wp.vec3],
 ) -> None:
     # A sample's normal, ``count * 4**-depth`` times its unit mean, splatted at its depth estimate:
-    # split between the two depths around it (all at the finest when it lies beyond), scaled by
-    # ``8**d`` so the field integrates to the sample's area.
+    # split between the two depths around it (``normal_splat_depths``), scaled by ``8**d`` so the
+    # field integrates to the sample's area. ``targets`` (empty for the whole field) numbers the
+    # sums as ``splat_normal_at`` says.
     s = wp.int32(wp.tid())
     normal_sum = sample_normals[s]
     length = wp.length(normal_sum)
@@ -868,12 +911,7 @@ def octree_normal_splat(
     p = sample_positions[s] / count
     estimate = depths[s]
     weight = wp.pow(wp.float32(4.0), -estimate)
-    clamped = wp.clamp(estimate, 0.0, wp.float32(depth))
-    top = wp.int32(wp.ceil(clamped))
-    fraction = 1.0 - (wp.float32(top) - clamped)
-    if top <= 0:
-        top = 0
-        fraction = wp.float32(1.0)
+    top, fraction = normal_splat_depths(estimate, depth)
     n = 1 << depth
     k = sample_keys[s]
     cell = wp.vec3i(k // (n * n), (k // n) % n, k % n)
@@ -885,10 +923,12 @@ def octree_normal_splat(
         p,
         base * (wp.pow(wp.float32(8.0), wp.float32(top)) * fraction),
         cells,
+        targets,
+        target_ranks,
         sums,
         out_normals,
     )
-    if wp.abs(1.0 - fraction) > SPLIT_EPSILON:
+    if normal_splat_split(fraction):
         splat_normal_at(
             top - 1,
             depth,
@@ -896,9 +936,47 @@ def octree_normal_splat(
             p,
             base * (wp.pow(wp.float32(8.0), wp.float32(top - 1)) * (1.0 - fraction)),
             cells,
+            targets,
+            target_ranks,
             sums,
             out_normals,
         )
+
+
+@wp.kernel
+def octree_splat_targets(
+    sample_keys: wp.array[wp.int32],
+    sample_normals: wp.array[wp.vec3],
+    depths: wp.array[wp.float32],
+    cells: wp.array[wp.int32],
+    depth: wp.int32,
+    out_targets: wp.array[wp.uint32],
+) -> None:
+    # The stored cells ``octree_normal_splat`` adds to, one bit each: an exact group sum need only
+    # hold those (its other cells stay zero).
+    s = wp.int32(wp.tid())
+    if wp.length(sample_normals[s]) <= 0.0:
+        return
+    top, fraction = normal_splat_depths(depths[s], depth)
+    n = 1 << depth
+    k = sample_keys[s]
+    cell = wp.vec3i(k // (n * n), (k // n) % n, k % n)
+    mark_splat_targets(top, depth, cell, cells, out_targets)
+    if normal_splat_split(fraction):
+        mark_splat_targets(top - 1, depth, cell, cells, out_targets)
+
+
+@wp.kernel
+def octree_expand_splat(
+    targets: wp.array[wp.uint32],
+    target_ranks: wp.array[wp.int32],
+    sums: wp.array[wp.vec3],
+    out_normals: wp.array[wp.vec3],
+) -> None:
+    # Each marked stored cell's normal coefficient from its sum's rank (the field starts zero).
+    e = wp.int32(wp.tid())
+    if bit_is_set(targets, e):
+        out_normals[e] = sums[bit_rank(targets, target_ranks, e)]
 
 
 # ---------------------------------------------------------------------------------------------
