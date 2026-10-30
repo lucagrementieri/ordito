@@ -712,7 +712,7 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.poisson_band", "fas_inject"): frozenset({"coarse_x"}),
     # in-place: the octree backend's per-depth buffers packed in one, each depth's launch reading
     # the depth before it (aggregates finest first, the carried-up normal coefficients coarsest
-    # first, over the depth's own), and a depth's field relaxed in place by its Gauss-Seidel
+    # first), and a depth's field relaxed in place by its Gauss-Seidel
     # wavefronts.
     ("algorithms.poisson_octree", "octree_child_aggregates"): frozenset(
         {"counts", "position_sums"}

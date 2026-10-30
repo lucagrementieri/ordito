@@ -1379,10 +1379,10 @@ Laplacian fairing; a port would follow that schedule.
 
 ### Octree memory (2026-10-30): every solver and extraction table stored by brick
 
-`screened_poisson(method="octree")` (200 k points, CUDA) peaks at **56 MiB at depth 8** with
-the deterministic setting off (was 461; 1 026 on; 2 036 before `7498cad1`), and at **189 / 184
-MiB at depth 9** off / on (was 3 471 / 8 152; 229 for 1 M points), 19 MiB at depth 7 (dense
-layout 21). Bit-identical with the setting on, CPU
+`screened_poisson(method="octree")` (200 k points, CUDA) peaks at **41 MiB at depth 8** with
+the deterministic setting off (was 461; 1 026 on; 2 036 before `7498cad1`), and at **157 MiB at
+depth 9** off and on (was 3 471 / 8 152; 165 for 1 M points), 11 MiB at depth 7 (dense layout
+21). Bit-identical with the setting on, CPU
 (depths 6-8, dense and sparse clouds) and CUDA (depths 8-9); the `dense` and `adaptive` backends,
 which share the trilinear and restriction helpers, too. With it off the CPU's float atomics in the
 density splat arrive in brick order, so its CPU off-mode bits differ from the dense layout's
@@ -1407,7 +1407,7 @@ What it took, in order:
   created edges' dense slots sorted once, `octree_vertex_keys`), so the output is the same bytes.
   Owner names are compared only for equality, so they need not be dense slots.
 - **`accumulated` is formed in place** over the normal coefficients, which every right-hand side
-  has read by then (219 MiB at depth 9).
+  has read by then (219 MiB at depth 9); since superseded by its own table (below).
 - **The flags are a bitset**, each depth a dense padded lattice starting at its brick table's bit
   offset (`flag_bit`): one word a read. A layout by brick cost the CPU 1.4x in the extraction.
 - **A divergence window reads its at most eight brick numbers once** (`window_bricks`) and picks
@@ -1428,7 +1428,7 @@ What it took, in order:
   cell (`record_index`, built after the constraints): through the rank each row's eight lookups
   cost 1.14x the sweeps. Constraints phase on a unit-sphere cloud at depth 9 347 -> 228 MiB,
   cascade 301 -> 190, splat 291 -> 173; time at par.
-- **The finest depth's normal coefficients are packed by splat-target rank** (`finest_normal`):
+- **The finest depth's normal coefficients are packed by splat-target rank** (`finest_normal`, now `own_normal` for every depth):
   the splat reaches about 0.97 M of the 12.3 M stored cells at depth 9, so it sums into the
   targets alone in both modes (each target's terms arrive in the same order, so the off mode's
   CPU bits hold) and only the coarser depths become a field, which the carry-up needs. The
@@ -1443,6 +1443,29 @@ What it took, in order:
   (4 bytes a stored cell): through the packed rank, even with a native popcount
   (`native_popcount32`; `popcount32`'s SWAR sequence cost more), they took 1.05x. The counts and
   positions are released before the cascade.
+- **The carried-up normal data has its own brick table** (`data_cells`, marked after the nodes
+  by `octree_carried_cells` from the stored nodes, not before them from a bound on the flags),
+  and every depth's own coefficients stay packed by splat-target rank (`own_normal`; the clip
+  flags and the own divergence read them so, and the carry-up adds each to its parents' carried
+  values). The real nodes read 3.5 M of the 7.0 M coarse cells the bound kept at depth 9, so the
+  field is 40 MiB, not 80, and the cell table, freed of the carried marks, holds 8.4 M cells, not
+  12.3 M (every per-cell table shrinks with it).
+- **The extraction's band is found from the stored coarser cells' children** (`band_child`: every
+  active cell is a flagged stored cell's child), then sorted into the dense cell order, where a
+  launch over every lattice cell (153 M at depth 9) kept a bit and a rank a cell (40 MiB). CPU
+  0.83-0.94x on a sparse cloud.
+- **The sweeps' screening index is a depth's** (`octree_record_index`, one buffer every depth
+  reuses): 47 -> 13-20 MiB.
+- Together (with the per-point tables released once merged): depth 9 189 -> 163 MiB (184 -> 163
+  on), 1 M points 229 -> 177, depth 8 56 -> 44, depth 7 19 -> 11; CUDA time 0.97-1.03x, CPU
+  0.94-0.98x on the dense cloud; +1 launch, +3 allocations, +1 readback, +1 scan and +1 sort.
+- **The coarser depths' right-hand sides wait in the finest depth's field slots**: the
+  constraints are written as two buffers (coarser depths, finest depth; each kernel launched once
+  a part with an entry shift), and before the solve allocates, the coarser part moves into the
+  finest depth's slots of the field, which only the finest depth's prolongation writes, after
+  every coarser sweep (`b_shift` in the sweeps). The packed splat is released after the
+  carry-up, its last read. Cascade 143 -> 129 MiB (ellipsoid); depth 9 163 -> 157, 1 M points
+  177 -> 165, depth 8 44 -> 41; time at par; +3 launches, +1 allocation, +1 copy.
 - Also: the splat's exact accumulator released after its finish, `prolongeds` formed again
   (`prolonged_at`), `owners` a bitset walked to the creating edge (`edge_owner`). Restriction and
   prolongation keep the dense sums' bits because their weights are powers of two
@@ -1450,14 +1473,13 @@ What it took, in order:
 
 Verified with temporary prints on every invariant (no unstored field read, splat or density
 target, carried-up window cell or parent, corner source, edge or finer half) over the octree tests
-and dense and sparse clouds (down to 500 points at depth 6). **Open:** at depth 9 the phases
-are balanced (unit sphere / ellipsoid, MiB): constraints 182 / 160 (the coarser depths' field,
-80 at depth 9, which the carry-up needs; the node right-hand sides, 43), cascade 185 / 169
-(fields, right-hand sides, `record_index` 47: the packed rank would save it at 1.05x the
-sweeps), extraction 149 / 158 (the band of leaf cells found by a launch over every cell, one
-bit a cell; the faces themselves, 42). The extraction's
-band of leaf cells is still found by a launch over every cell (one bit a cell). Depth 10 would
-need `int64` dense edge slots for the vertex order.
+and dense and sparse clouds (down to 500 points at depth 6). **Open:** at depth 9 (ellipsoid
+cloud, live tables, MiB) the phases are within 8 of each other: the constraints at 133, during
+the carry-up (right-hand sides 46, carried data 32 and the packed splat 19 it reads, all live at
+once: the carried data is own plus carried, so the splat cannot die first, and a depth at a time
+saves under 10 % since depth 8 holds most of it), the cascade at 129 (fields 46, finest
+right-hand sides 27, screening index 13 and records 10, the cell and node brick tables 9 each)
+and the extraction at 125. Depth 10 would need `int64` dense edge slots for the vertex order.
 
 ### Closed 2026-10-28: the unoriented triangulation path
 

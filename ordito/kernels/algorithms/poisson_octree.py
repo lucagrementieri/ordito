@@ -158,15 +158,16 @@ def splat_target(d: wp.int32, o: wp.vec3i) -> wp.vec2i:
 # Storage by brick
 # ---------------------------------------------------------------------------------------------
 #
-# Every per-cell table (density, the coarser depths' normal coefficients, flags) and every
-# per-node one (right-hand sides, fields) is stored by ``4**3`` brick, per depth, for the bricks a
-# write or a read can reach; an entry not stored reads zero, which is what it held. The tables only
-# some cells have are packed by those cells' rank: point counts, position sums and screening
-# records by occupied rank (``occupied_rank``, the cells holding a sample), the finest depth's
-# normal coefficients by splat-target rank (``finest_normal``). ``cells`` and ``node_bricks`` hold
-# the depths' brick tables after a header of ``depth + 2`` offsets into themselves, then each
-# depth's first entry and their total, each table entry a brick's number among the stored ones,
-# numbered depth by depth, or -1.
+# Every per-cell table (density, the carried-up normal coefficients, flags) and every per-node one
+# (right-hand sides, fields) is stored by ``4**3`` brick, per depth, for the bricks a write or a
+# read can reach; an entry not stored reads zero, which is what it held. The tables only some cells
+# have are packed by those cells' rank: point counts, position sums and screening records by
+# occupied rank (``occupied_rank``, the cells holding a sample), every depth's own normal
+# coefficients by splat-target rank (``own_normal``). ``cells``, ``node_bricks`` and the carried
+# data's ``data_cells`` hold the depths' brick tables after a header of ``depth + 2`` offsets into
+# themselves, then each depth's first entry and their total, each table entry a brick's number
+# among the stored ones, numbered depth by depth, or -1. ``data_cells`` has the cells' layout with
+# an empty finest table: the finest depth's data is never carried up.
 # Cells are indexed by ``c + 1`` (``-1 ..= 2**d``, the flags' padding); nodes by ``0 ..= 2**d``.
 #
 # What is stored, each a superset of where its tables can be nonzero or are read (the marking
@@ -175,8 +176,9 @@ def splat_target(d: wp.int32, o: wp.vec3i) -> wp.vec2i:
 # - cells: every depth's 27-cell window around each sample's ancestor, through ``splat_target``
 #   (the occupied cells, the density and normal splats and the density reads); a bound on the
 #   flags, finest first (a flag comes from a child's normal or flag, or the dilation from within
-#   two); and the coarser data the divergence at a stored node reads, with the parents its
-#   carried-up value reads (``accumulated``, formed in place over the normal coefficients).
+#   two).
+# - carried data (``data_cells``, after the nodes): the coarser data the divergence at a stored
+#   node reads, with the parents its carried-up value reads (``accumulated``).
 # - nodes: every node within three of a node whose parent cell is flagged, the finest corners of
 #   each sample's cell (the iso-value), and every coarser node a stored node prolongs from. Within
 #   three holds every nonzero own-or-restricted right-hand side (a data cell's divergence reaches
@@ -187,10 +189,9 @@ def splat_target(d: wp.int32, o: wp.vec3i) -> wp.vec2i:
 
 BRICK_SHIFT = 2
 BRICK_CELLS = 64
-# Cell marks: a sample window, the flag bound, the carried-up data a divergence reads.
+# Cell marks: a sample window, the flag bound.
 MARK_SAMPLE = 1
 MARK_FLAG = 2
-MARK_CARRIED = 4
 
 
 @wp.func
@@ -274,14 +275,14 @@ def cell_vector(
 
 
 @wp.func
-def finest_normal(
+def own_normal(
     compact: wp.array[wp.vec3],
     targets: wp.array[wp.uint32],
     target_ranks: wp.array[wp.int32],
     entry: wp.int32,
 ) -> wp.vec3:
-    # The finest depth's normal coefficient at stored cell ``entry``: held only for the cells the
-    # splat reaches (``targets``, one bit a stored cell), at their rank, zero elsewhere.
+    # A depth's own normal coefficient at stored cell ``entry`` (-1 for none): held only for the
+    # cells the splat reaches (``targets``, one bit a stored cell), at their rank, zero elsewhere.
     if entry < 0 or not bit_is_set(targets, entry):
         return wp.vec3(0.0, 0.0, 0.0)
     return compact[bit_rank(targets, target_ranks, entry)]
@@ -416,6 +417,21 @@ def node_value(
 
 
 @wp.func
+def shifted_node_value(
+    values: wp.array[wp.float32],
+    shift: wp.int32,
+    node_bricks: wp.array[wp.int32],
+    d: wp.int32,
+    node: wp.vec3i,
+) -> wp.float32:
+    # ``node_value`` of a table holding entry ``e`` at ``e + shift``.
+    entry = node_entry(node_bricks, d, node)
+    if entry < 0:
+        return wp.float32(0.0)
+    return values[entry + shift]
+
+
+@wp.func
 def stored_node(
     node_bricks: wp.array[wp.int32],
     brick_slots: wp.array[wp.int32],
@@ -542,14 +558,13 @@ def octree_node_bricks(
     # within three of a node whose parent cell is flagged (nodes ``2 p`` and ``2 p + 1`` of a depth
     # ``d - 1`` cell ``p``, ``p`` in ``2 b - 2 ..= 2 b + 3`` for brick ``b``), or holding a coarser
     # node of a stored depth ``d + 1`` brick (those of fine brick ``f`` span ``2 f .. 2 f + 2``).
-    # With the flags, the nodes stored; with none (an empty ``flags``), a superset from the cells'
-    # flag bound, before any flag exists, for ``octree_carried_cells``. Run finest first.
+    # Run finest first.
     flat = wp.int32(wp.tid())
     nb = node_bricks_per_axis(d)
     b = wp.vec3i(flat // (nb * nb), (flat // nb) % nb, flat % nb)
     slot = marks[d] + flat
     keep = marks[slot] != 0 or d <= full_depth
-    if not keep and flags.shape[0] > 0:
+    if not keep:
         half = 1 << (d - 1)
         for x in range(6):
             px = 2 * b[0] - 2 + x
@@ -562,16 +577,6 @@ def octree_node_bricks(
                             if pz >= -1 and pz <= half and not keep:
                                 if children_active(flags, cells, d - 1, wp.vec3i(px, py, pz)):
                                     keep = True
-    elif not keep:
-        nc = cell_bricks_per_axis(d - 1)
-        lo = brick_of(wp.vec3i(2 * b[0] - 1, 2 * b[1] - 1, 2 * b[2] - 1))
-        hi = brick_of(wp.vec3i(2 * b[0] + 4, 2 * b[1] + 4, 2 * b[2] + 4))
-        for x in range(wp.max(lo[0], 0), wp.min(hi[0], nc - 1) + 1):
-            for y in range(wp.max(lo[1], 0), wp.min(hi[1], nc - 1) + 1):
-                for z in range(wp.max(lo[2], 0), wp.min(hi[2], nc - 1) + 1):
-                    coarse = cells[cell_brick_flat(cells, d - 1, wp.vec3i(x, y, z))]
-                    if (coarse & MARK_FLAG) != 0:
-                        keep = True
     if not keep and d < depth:
         nf = node_bricks_per_axis(d + 1)
         for x in range(3):
@@ -590,13 +595,13 @@ def octree_node_bricks(
 
 @wp.kernel
 def octree_carried_cells(
-    d: wp.int32, node_marks: wp.array[wp.int32], marks: wp.array[wp.int32]
+    d: wp.int32, depth: wp.int32, node_bricks: wp.array[wp.int32], marks: wp.array[wp.int32]
 ) -> None:
-    # Mark depth ``d``'s cell bricks whose carried-up normal data a read needs: the divergence at
-    # a stored depth ``d + 1`` node reads cells ``(n >> 1) - 2 ..= (n >> 1) + 1`` (node brick
-    # ``f`` reaches padded cells ``2 f - 1 ..= 2 f + 3``), and a needed depth ``d + 1`` cell's
-    # carried-up value reads its parents (cell brick ``f`` reaches padded ``2 f ..= 2 f + 2``).
-    # Run finest first, after the node bricks are marked.
+    # Mark depth ``d``'s ``data_cells`` bricks whose carried-up normal data a read needs: the
+    # divergence at a stored depth ``d + 1`` node reads cells ``(n >> 1) - 2 ..= (n >> 1) + 1``
+    # (node brick ``f`` reaches padded cells ``2 f - 1 ..= 2 f + 3``), and a needed depth ``d + 1``
+    # cell's carried-up value reads its parents (cell brick ``f`` reaches padded ``2 f ..= 2 f +
+    # 2``). Run finest first, from the numbered node bricks.
     flat = wp.int32(wp.tid())
     nb = cell_bricks_per_axis(d)
     b = wp.vec3i(flat // (nb * nb), (flat // nb) % nb, flat % nb)
@@ -612,12 +617,13 @@ def octree_carried_cells(
                     for z in range(4):
                         fz = 2 * b[2] - 1 + z
                         if fz >= 0 and fz < nn:
-                            fine = node_marks[
-                                node_brick_flat(node_marks, d + 1, wp.vec3i(fx, fy, fz))
+                            fine = node_bricks[
+                                node_brick_flat(node_bricks, d + 1, wp.vec3i(fx, fy, fz))
                             ]
-                            if fine != 0:
+                            if fine >= 0:
                                 keep = True
-    nf = cell_bricks_per_axis(d + 1)
+    # The finest depth carries nothing up: its table is empty.
+    nf = wp.where(d + 1 < depth, cell_bricks_per_axis(d + 1), 0)
     for x in range(3):
         fx = 2 * b[0] - 1 + x
         if fx >= 0 and fx < nf and not keep:
@@ -627,11 +633,10 @@ def octree_carried_cells(
                     for z in range(3):
                         fz = 2 * b[2] - 1 + z
                         if fz >= 0 and fz < nf:
-                            fine = marks[cell_brick_flat(marks, d + 1, wp.vec3i(fx, fy, fz))]
-                            if (fine & MARK_CARRIED) != 0:
+                            if marks[cell_brick_flat(marks, d + 1, wp.vec3i(fx, fy, fz))] != 0:
                                 keep = True
     if keep:
-        marks[slot] = marks[slot] | MARK_CARRIED
+        marks[slot] = 1
 
 
 @wp.func
@@ -1057,20 +1062,6 @@ def octree_splat_targets(
         mark_splat_targets(top - 1, depth, cell, cells, out_targets)
 
 
-@wp.kernel
-def octree_expand_splat(
-    targets: wp.array[wp.uint32],
-    target_ranks: wp.array[wp.int32],
-    sums: wp.array[wp.vec3],
-    out_normals: wp.array[wp.vec3],
-) -> None:
-    # Each marked coarser stored cell's normal coefficient from its sum's rank (the field, over the
-    # depths below the finest, starts zero; the finest depth's stay packed, ``finest_normal``).
-    e = wp.int32(wp.tid())
-    if bit_is_set(targets, e):
-        out_normals[e] = sums[bit_rank(targets, target_ranks, e)]
-
-
 # ---------------------------------------------------------------------------------------------
 # Active nodes
 # ---------------------------------------------------------------------------------------------
@@ -1096,7 +1087,6 @@ def octree_clip_flags(
     d: wp.int32,
     depth: wp.int32,
     full_depth: wp.int32,
-    normals: wp.array[wp.vec3],
     compact: wp.array[wp.vec3],
     targets: wp.array[wp.uint32],
     target_ranks: wp.array[wp.int32],
@@ -1118,11 +1108,7 @@ def octree_clip_flags(
     elif octree_inside(d, c):
         for child in range(8):
             cc = 2 * c + wp.vec3i(child >> 2, (child >> 1) & 1, child & 1)
-            v = wp.vec3(0.0, 0.0, 0.0)
-            if d + 1 == depth:
-                v = finest_normal(compact, targets, target_ranks, cell_entry(cells, depth, cc))
-            else:
-                v = cell_vector(normals, cells, d + 1, cc)
+            v = own_normal(compact, targets, target_ranks, cell_entry(cells, d + 1, cc))
             if v[0] != 0.0 or v[1] != 0.0 or v[2] != 0.0:
                 active = 1
             if d + 1 < depth:
@@ -1290,17 +1276,17 @@ def window_value(
     compact: wp.array[wp.vec3],
     targets: wp.array[wp.uint32],
     target_ranks: wp.array[wp.int32],
-    finest: wp.bool,
+    packed: wp.bool,
     brick: wp.int32,
     local: wp.int32,
 ) -> wp.vec3:
-    # A window cell's coefficient: zero when its brick is not stored; the finest depth's from
-    # ``finest_normal``.
+    # A window cell's coefficient: zero when its brick is not stored; the own coefficients'
+    # (``packed``) from ``own_normal``, the carried-up ones from ``data``.
     if brick < 0:
         return wp.vec3(0.0, 0.0, 0.0)
     entry = brick * BRICK_CELLS + local
-    if finest:
-        return finest_normal(compact, targets, target_ranks, entry)
+    if packed:
+        return own_normal(compact, targets, target_ranks, entry)
     return data[entry]
 
 
@@ -1308,18 +1294,19 @@ def window_value(
 def divergence_term(
     d: wp.int32,
     data_depth: wp.int32,
+    packed: wp.bool,
     data: wp.array[wp.vec3],
     compact: wp.array[wp.vec3],
     targets: wp.array[wp.uint32],
     target_ranks: wp.array[wp.int32],
-    depth: wp.int32,
     cells: wp.array[wp.int32],
     node: wp.vec3i,
     integrals: wp.array[wp.vec2d],
 ) -> wp.float32:
     # Depth ``d`` node's ``int grad(hat) . V`` for the depth ``data_depth`` (``d`` or ``d - 1``)
-    # normal coefficients ``data`` (a cell table; the finest depth's from ``finest_normal``): four
-    # B-splines per axis overlap a hat at either depth.
+    # normal coefficients: the own ones packed by splat-target rank (``packed``, ``cells`` the cell
+    # bricks), else the carried-up ``data`` (``cells`` its ``data_cells``). Four B-splines per axis
+    # overlap a hat at either depth.
     m = 1 << data_depth
     shift = d - data_depth
     first = wp.vec3i((node[0] >> shift) - 2, (node[1] >> shift) - 2, (node[2] >> shift) - 2)
@@ -1335,7 +1322,6 @@ def divergence_term(
             return wp.float32(0.0)
     # Each cell's brick is picked from the window's eight by its three axis offsets, a select per
     # row and one per cell, and its in-brick index summed from the axes' (``brick_local``).
-    finest = data_depth == depth
     sx, lx = window_axis(first[0])
     sy, ly = window_axis(first[1])
     sz, lz = window_axis(first[2])
@@ -1356,7 +1342,7 @@ def divergence_term(
                         if kc >= 0 and kc < m:
                             brick = wp.where(sz[c] == 0, near, far)
                             v = window_value(
-                                data, compact, targets, target_ranks, finest, brick, offset + lz[c]
+                                data, compact, targets, target_ranks, packed, brick, offset + lz[c]
                             )
                             if v[0] != 0.0 or v[1] != 0.0 or v[2] != 0.0:
                                 used = wp.vec3i(
@@ -1399,7 +1385,7 @@ def divergence_term(
                         if kc >= 0 and kc < m:
                             brick = wp.where(sz[c] == 0, near, far)
                             v = window_value(
-                                data, compact, targets, target_ranks, finest, brick, offset + lz[c]
+                                data, compact, targets, target_ranks, packed, brick, offset + lz[c]
                             )
                             if v[0] != 0.0 or v[1] != 0.0 or v[2] != 0.0:
                                 total += (
@@ -1413,7 +1399,8 @@ def divergence_term(
 @wp.kernel
 def octree_own_constraints(
     depth: wp.int32,
-    normals: wp.array[wp.vec3],
+    first: wp.int32,
+    shift: wp.int32,
     compact: wp.array[wp.vec3],
     targets: wp.array[wp.uint32],
     target_ranks: wp.array[wp.int32],
@@ -1423,19 +1410,21 @@ def octree_own_constraints(
     integrals: wp.array[wp.vec2d],
     out_b: wp.array[wp.float32],
 ) -> None:
-    # Every stored node's ``-int grad(hat) . V`` for its own depth's normal coefficients, all
-    # depths in one launch (``octree_coarse_screening_constraints`` adds the coarser data's). A
-    # slot past its lattice takes zero.
-    e = wp.int32(wp.tid())
+    # Every stored node's ``-int grad(hat) . V`` for its own depth's normal coefficients, from
+    # entry ``first`` on, at ``e + shift`` of ``out_b`` (the right-hand sides' split, the section
+    # note); ``octree_coarse_screening_constraints`` adds the coarser data's. A slot past its
+    # lattice takes zero.
+    e = wp.int32(wp.tid()) + first
     at = stored_node(node_bricks, brick_slots, depth, e)
     d = at[0]
     value = wp.float32(0.0)
     if d >= 0:
         node = wp.vec3i(at[1], at[2], at[3])
+        # The packed coefficients only: ``compact`` stands in for the carried data never read.
         value = wp.float32(0.0) - divergence_term(
-            d, d, normals, compact, targets, target_ranks, depth, cells, node, integrals
+            d, d, True, compact, compact, targets, target_ranks, cells, node, integrals
         )
-    out_b[e] = value
+    out_b[e + shift] = value
 
 
 @wp.kernel
@@ -1444,11 +1433,14 @@ def octree_restrict_add(
     first: wp.int32,
     node_bricks: wp.array[wp.int32],
     brick_slots: wp.array[wp.int32],
+    fine: wp.array[wp.float32],
+    fine_shift: wp.int32,
     b: wp.array[wp.float32],
 ) -> None:
     # A coarse hat is a sum of fine ones, so finer constraints restrict to it exactly: one depth's
-    # stored nodes (from entry ``first``) gather the next depth's, in ``poisson_restrict_node``'s
-    # order and weights. A fine node not stored holds a zero right-hand side (the section note).
+    # stored nodes (from entry ``first``) gather the next depth's (entry ``e`` at ``e +
+    # fine_shift`` of ``fine``), in ``poisson_restrict_node``'s order and weights. A fine node not
+    # stored holds a zero right-hand side (the section note).
     e = wp.int32(wp.tid()) + first
     at = stored_node(node_bricks, brick_slots, depth, e)
     d = at[0]
@@ -1465,8 +1457,8 @@ def octree_restrict_add(
                     for dk in range(-1, 2):
                         fk = 2 * at[3] + dk
                         if fk >= 0 and fk < res_f:
-                            acc += poisson_restrict_weight(di, dj, dk) * node_value(
-                                b, node_bricks, d + 1, wp.vec3i(fi, fj, fk)
+                            acc += poisson_restrict_weight(di, dj, dk) * shifted_node_value(
+                                fine, fine_shift, node_bricks, d + 1, wp.vec3i(fi, fj, fk)
                             )
     b[e] = b[e] + acc
 
@@ -1475,22 +1467,26 @@ def octree_restrict_add(
 def octree_upsample_coarse_data(
     d: wp.int32,
     depth: wp.int32,
+    compact: wp.array[wp.vec3],
+    targets: wp.array[wp.uint32],
+    target_ranks: wp.array[wp.int32],
     cells: wp.array[wp.int32],
-    cell_slots: wp.array[wp.int32],
+    data_cells: wp.array[wp.int32],
+    data_slots: wp.array[wp.int32],
     normals: wp.array[wp.vec3],
 ) -> None:
-    # A stored depth ``d`` cell's own normal coefficient plus every coarser depth's, carried up by
-    # the hat prolongation's weights (1 at ``2p``, 1/2 at ``2p +- 1``) applied to B-spline
-    # coefficients: the upstream solver's shortcut for coarser data, reproduced. Formed in place,
-    # coarsest first, over the coefficients the right-hand sides of every depth have already read:
-    # the parents read are depth ``d - 1``'s carried-up values. Its stored cells hold every parent a
-    # read cell's value needs (``octree_carried_cells``).
-    entry = wp.int32(wp.tid()) + cell_first(cells, depth, d)
-    at = stored_cell(cells, cell_slots, depth, entry)
+    # A stored ``data_cells`` depth ``d`` cell's own normal coefficient plus every coarser
+    # depth's, carried up by the hat prolongation's weights (1 at ``2p``, 1/2 at ``2p +- 1``)
+    # applied to B-spline coefficients: the upstream solver's shortcut for coarser data,
+    # reproduced. Coarsest first: the parents read are depth ``d - 1``'s carried-up values, and its
+    # stored cells hold every parent a read cell's value needs (``octree_carried_cells``). The
+    # table starts zero, which a padding cell keeps.
+    entry = wp.int32(wp.tid()) + cell_first(data_cells, depth, d)
+    at = stored_cell(data_cells, data_slots, depth, entry)
     c = wp.vec3i(at[1], at[2], at[3])
     if at[0] < 0 or not octree_inside(d, c):
         return
-    total = normals[entry]
+    total = own_normal(compact, targets, target_ranks, cell_entry(cells, d, c))
     half = (1 << d) >> 1
     for a in range(2):
         pa = (c[0] + a) >> 1
@@ -1507,7 +1503,7 @@ def octree_upsample_coarse_data(
                         )
                         if pe < half and we != 0.0:
                             total += (wa * wb * we) * cell_vector(
-                                normals, cells, d - 1, wp.vec3i(pa, pb, pe)
+                                normals, data_cells, d - 1, wp.vec3i(pa, pb, pe)
                             )
     normals[entry] = total
 
@@ -1594,14 +1590,14 @@ def screen_record(
     record_index: wp.array[wp.int32],
 ) -> wp.int32:
     # Depth ``d`` cell ``c``'s record in the screening table, -1 for none (``record_index``, one a
-    # stored cell, written by ``octree_screen_records``): one 4-byte read, where the occupied rank
-    # (``occupied_rank``) costs the sweeps, which look eight up a row, 1.05x.
+    # stored depth ``d`` cell, written by ``octree_record_index``): one 4-byte read, where the
+    # occupied rank (``occupied_rank``) costs the sweeps, which look eight up a row, 1.05x.
     if not octree_inside(d, c):
         return -1
     entry = cell_entry(cells, d, c)
     if entry < 0:
         return -1
-    return record_index[entry]
+    return record_index[entry - cell_first(cells, depth, d)]
 
 
 @wp.kernel
@@ -1615,22 +1611,18 @@ def octree_screen_records(
     counts: wp.array[wp.float32],
     position_sums: wp.array[wp.vec3],
     occupancy: wp.array[wp.uint64],
-    out_index: wp.array[wp.int32],
     out_records: wp.array[wp.float32],
 ) -> None:
     # Every occupied cell's screening record, at its rank among the occupied cells, one thread a
     # stored cell of every depth: weight 0 when the cell is inactive, which ``cell_screen``
-    # reports as a zero count. ``out_index`` points every stored cell at its record (-1 for
-    # none), the table ``screen_record`` reads.
+    # reports as a zero count.
     flat = wp.int32(wp.tid())
     if not occupancy_bit(occupancy, flat):
-        out_index[flat] = -1
         return
     at = stored_cell(cells, cell_slots, depth, flat)
     d = at[0]
     c = wp.vec3i(at[1], at[2], at[3])
     record = occupancy_rank(occupancy, flat)
-    out_index[flat] = record
     sample = cell_screen(d, depth, full_depth, c, flags, cells, counts, position_sums, occupancy)
     base = record * SCREEN_RECORD
     scale = alpha * wp.float32(1 << d)
@@ -1639,6 +1631,18 @@ def octree_screen_records(
     for q in range(8):
         corner = c + wp.vec3i(q >> 2, (q >> 1) & 1, q & 1)
         out_records[base + 1 + q] = hat_value(d, corner, p)
+
+
+@wp.kernel
+def octree_record_index(
+    first: wp.int32, occupancy: wp.array[wp.uint64], out_index: wp.array[wp.int32]
+) -> None:
+    # The table ``screen_record`` reads for one depth, whose stored cells start at entry
+    # ``first``: each cell's record (its occupied rank), -1 for none. Formed before the depth's
+    # sweeps, into one buffer every depth reuses.
+    t = wp.int32(wp.tid())
+    e = t + first
+    out_index[t] = wp.where(occupancy_bit(occupancy, e), occupancy_rank(occupancy, e), -1)
 
 
 @wp.func
@@ -1756,10 +1760,10 @@ def octree_coarse_screening_constraints(
     depth: wp.int32,
     full_depth: wp.int32,
     alpha: wp.float32,
+    first: wp.int32,
+    shift: wp.int32,
     accumulated: wp.array[wp.vec3],
-    compact: wp.array[wp.vec3],
-    targets: wp.array[wp.uint32],
-    target_ranks: wp.array[wp.int32],
+    data_cells: wp.array[wp.int32],
     flags: wp.array[wp.uint32],
     cells: wp.array[wp.int32],
     counts: wp.array[wp.float32],
@@ -1775,21 +1779,32 @@ def octree_coarse_screening_constraints(
     # coarser data's divergence carried up from the parent depth, then the screening. Depth 0's
     # eight entries (in lattice order), its one cell's point count and position sum also go to
     # ``out_base``, the host's base solve in one read.
-    e = wp.int32(wp.tid())
+    e = wp.int32(wp.tid()) + first
     at = stored_node(node_bricks, brick_slots, depth, e)
     d = at[0]
     if d < 0:
         return
     node = wp.vec3i(at[1], at[2], at[3])
-    b = out_b[e]
+    b = out_b[e + shift]
     if d > 0:
+        # The carried-up data only: its bit and rank tables are never read (``data_cells``
+        # stands in).
         b = b - divergence_term(
-            d, d - 1, accumulated, compact, targets, target_ranks, depth, cells, node, integrals
+            d,
+            d - 1,
+            False,
+            accumulated,
+            accumulated,
+            flags,
+            data_cells,
+            data_cells,
+            node,
+            integrals,
         )
     b = b + screening_term(
         d, depth, full_depth, alpha, node, flags, cells, counts, position_sums, occupancy
     )
-    out_b[e] = b
+    out_b[e + shift] = b
     if d == 0:
         flat = lattice_index(0, node)
         out_base[flat] = b
@@ -1868,6 +1883,7 @@ def gauss_seidel_node(
     a: wp.int32,
     c: wp.int32,
     b: wp.array[wp.float32],
+    b_shift: wp.int32,
     flags: wp.array[wp.uint32],
     cells: wp.array[wp.int32],
     record_index: wp.array[wp.int32],
@@ -1883,8 +1899,9 @@ def gauss_seidel_node(
     # sweeps: ``octree_gauss_seidel_wave`` (one launch a wave and colour, CUDA's) and
     # ``octree_gauss_seidel_depth`` (every wave of a depth in one thread, the CPU's). The updates
     # of one wave and colour touch nodes two apart in ``x``, ``y`` and (across sweeps) ``z``,
-    # beyond the stencil's reach, so their order is free and the two give the same bits. ``b``
-    # and ``field`` hold every depth's stored nodes (``node_bricks``).
+    # beyond the stencil's reach, so their order is free and the two give the same bits.
+    # ``field`` holds every depth's stored nodes (``node_bricks``), ``b`` this depth's, entry
+    # ``e`` at ``e + b_shift``.
     res = (1 << d) + 1
     z = res - 1 - (wave - 2 * sweep)
     x = 2 * a + (colour & 1)
@@ -1896,7 +1913,7 @@ def gauss_seidel_node(
         return
     row = octree_row(d, depth, node, field, node_bricks, cells, record_index, screen)
     index = node_entry(node_bricks, d, node)
-    field[index] = field[index] + (b[index] - row[0]) / row[1]
+    field[index] = field[index] + (b[index + b_shift] - row[0]) / row[1]
 
 
 @wp.kernel
@@ -1908,6 +1925,7 @@ def octree_gauss_seidel_wave(
     first_sweep: wp.int32,
     colour: wp.int32,
     b: wp.array[wp.float32],
+    b_shift: wp.int32,
     flags: wp.array[wp.uint32],
     cells: wp.array[wp.int32],
     record_index: wp.array[wp.int32],
@@ -1936,6 +1954,7 @@ def octree_gauss_seidel_wave(
         a,
         c,
         b,
+        b_shift,
         flags,
         cells,
         record_index,
@@ -1952,6 +1971,7 @@ def octree_gauss_seidel_depth(
     full_depth: wp.int32,
     iterations: wp.int32,
     b: wp.array[wp.float32],
+    b_shift: wp.int32,
     flags: wp.array[wp.uint32],
     cells: wp.array[wp.int32],
     record_index: wp.array[wp.int32],
@@ -1981,6 +2001,7 @@ def octree_gauss_seidel_depth(
                             a,
                             c,
                             b,
+                            b_shift,
                             flags,
                             cells,
                             record_index,
@@ -2698,6 +2719,28 @@ def depth_first_rank(c: wp.vec3i, d: wp.int32) -> wp.int32:
     return rank
 
 
+@wp.func
+def band_child(
+    cells: wp.array[wp.int32],
+    cell_slots: wp.array[wp.int32],
+    depth: wp.int32,
+    first_depth: wp.int32,
+    t: wp.int32,
+) -> wp.vec4i:
+    # ``(x, y, z, depth)`` of the band candidate ``t``: child ``t % 8`` of the stored cell ``t /
+    # 8`` from depth ``first_depth - 1`` on (``d = -1`` past a padded lattice). Every active cell
+    # from ``first_depth`` on is a stored cell's child: its parent is flagged, or below
+    # ``full_depth``, where every cell is stored.
+    at = stored_cell(cells, cell_slots, depth, (t >> 3) + cell_first(cells, depth, first_depth - 1))
+    child = t & 7
+    return wp.vec4i(
+        2 * at[1] + (child >> 2),
+        2 * at[2] + ((child >> 1) & 1),
+        2 * at[3] + (child & 1),
+        wp.where(at[0] < 0, -1, at[0] + 1),
+    )
+
+
 @wp.kernel
 def extraction_band(
     first_depth: wp.int32,
@@ -2709,19 +2752,18 @@ def extraction_band(
     sources: wp.array[wp.int8],
     flags: wp.array[wp.uint32],
     cells: wp.array[wp.int32],
-    cell_offsets: wp.array[wp.int32],
+    cell_slots: wp.array[wp.int32],
     out_band: wp.array[wp.uint32],
 ) -> None:
-    # Bit ``t`` set for the leaves that can have segments (``cell_segments``' test): corners
-    # straddling the iso-value, or a refined cell across a face, whose finer faces it takes over.
-    # A borrowed face is a straddling leaf's, so it is in the band too. The extraction's per-cell
-    # passes run over these alone, in the same order.
+    # Bit ``t`` (``band_child``) set for the leaves that can have segments (``cell_segments``'
+    # test): corners straddling the iso-value, or a refined cell across a face, whose finer faces
+    # it takes over. A borrowed face is a straddling leaf's, so it is in the band too. The
+    # extraction's per-cell passes run over these alone, in cell order (``band_cells``).
     t = wp.int32(wp.tid())
-    flat = t + cell_offsets[first_depth]
-    cell = unpack_cell(cell_offsets, first_depth, depth, flat)
+    cell = band_child(cells, cell_slots, depth, first_depth, t)
     d = cell[3]
     c = wp.vec3i(cell[0], cell[1], cell[2])
-    if not leaf_cell(flags, cells, depth, full_depth, d, c):
+    if d < 0 or not leaf_cell(flags, cells, depth, full_depth, d, c):
         return
     code = cell_case(fields, node_bricks, sources, iso, d, c)
     keep = code != 0 and code != 255
@@ -2734,17 +2776,29 @@ def extraction_band(
 
 @wp.kernel
 def band_cells(
-    band: wp.array[wp.uint32], ranks: wp.array[wp.int32], out_cells: wp.array[wp.int32]
+    first_depth: wp.int32,
+    depth: wp.int32,
+    cells: wp.array[wp.int32],
+    cell_slots: wp.array[wp.int32],
+    cell_offsets: wp.array[wp.int32],
+    band: wp.array[wp.uint32],
+    ranks: wp.array[wp.int32],
+    out_cells: wp.array[wp.int32],
 ) -> None:
-    # The band's cells (``extraction_band``) in ascending order: each word's set bits at their rank.
+    # The band's cells (``extraction_band``) at their bits' rank, each as its index in the packed
+    # per-depth dense cell range from ``first_depth`` (``unpack_cell``): sorted, the cell order.
     w = wp.int32(wp.tid())
     word = band[w]
     if word == wp.uint32(0):
         return
     rank = bit_rank(band, ranks, 32 * w)
+    base = cell_offsets[first_depth]
     for b in range(32):
         if (word >> wp.uint32(b)) & wp.uint32(1) != wp.uint32(0):
-            out_cells[rank] = 32 * w + b
+            cell = band_child(cells, cell_slots, depth, first_depth, 32 * w + b)
+            d = cell[3]
+            c = wp.vec3i(cell[0], cell[1], cell[2])
+            out_cells[rank] = cell_offsets[d] + cell_flat(1 << d, c) - base
             rank += 1
 
 
