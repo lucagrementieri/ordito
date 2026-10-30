@@ -2754,13 +2754,20 @@ def vertex_mass(area_sums: wp.array[wp.float64], v: wp.int32) -> wp.float32:
     return wp.float32(area_sums[v] / wp.float64(3.0))
 
 
+@wp.func
+def ring_term(area: wp.float32, position: wp.vec3) -> wp.vec4:
+    # One neighbour's contribution to a vertex's area-weighted ring: the weighted position, then
+    # the weight, as ``smooth_free_vertices`` reads them.
+    weighted = area * position
+    return wp.vec4(weighted[0], weighted[1], weighted[2], area)
+
+
 @wp.kernel
 def accumulate_one_ring(
     unique_edges: wp.array2d[wp.int32],
     vertices: wp.array[wp.vec3],
     area_sums: wp.array[wp.float64],
-    out_sum: wp.array[wp.vec3],
-    out_weight: wp.array[wp.float32],
+    out_ring: wp.array[wp.vec4],
 ) -> None:
     # The area-equalizing one ring of Botsch-Kobbelt: each neighbour is weighted by its own
     # barycentric area, so the centroid leans toward the sparsely sampled side of the ring and the
@@ -2770,15 +2777,16 @@ def accumulate_one_ring(
     # grid, which is exactly the input the stage exists for. Area weighting improves the curved
     # fixtures, perturbs an already-uniform structured grid slightly, and speeds the whole call up
     # either way, because a better-shaped mesh gives the split and collapse stages less to do.
+    #
+    # Each vertex's weighted sum and its weight are one ``vec4`` (``ring_term``), so one zeroed
+    # table carries both; every component is summed by its own atomic, as two tables summed them.
     e = wp.int32(wp.tid())
     u = unique_edges[e, 0]
     v = unique_edges[e, 1]
     area_u = vertex_mass(area_sums, u)
     area_v = vertex_mass(area_sums, v)
-    wp.atomic_add(out_sum, u, area_v * vertices[v])
-    wp.atomic_add(out_weight, u, area_v)
-    wp.atomic_add(out_sum, v, area_u * vertices[u])
-    wp.atomic_add(out_weight, v, area_u)
+    wp.atomic_add(out_ring, u, ring_term(area_v, vertices[v]))
+    wp.atomic_add(out_ring, v, ring_term(area_u, vertices[u]))
 
 
 @wp.kernel
@@ -2787,8 +2795,7 @@ def gather_one_ring(
     ring_neighbors: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     area_sums: wp.array[wp.float64],
-    out_sum: wp.array[wp.vec3],
-    out_weight: wp.array[wp.float32],
+    out_ring: wp.array[wp.vec4],
 ) -> None:
     # ``accumulate_one_ring``'s sums as a gather over each vertex's neighbour row, which the caller
     # sorts ascending: one fixed summation order, so the same bits on every run. The scatter's
@@ -2804,8 +2811,7 @@ def gather_one_ring(
         area = vertex_mass(area_sums, w)
         ring_sum += area * vertices[w]
         ring_weight += area
-    out_sum[v] = ring_sum
-    out_weight[v] = ring_weight
+    out_ring[v] = wp.vec4(ring_sum[0], ring_sum[1], ring_sum[2], ring_weight)
 
 
 @wp.func
@@ -2869,8 +2875,7 @@ def smooth_free_vertices(
     faces: wp.array[wp.int32],
     feature_count: wp.array[wp.int32],
     normal_sums: wp.array2d[wp.float64],
-    ring_sum: wp.array[wp.vec3],
-    ring_weight: wp.array[wp.float32],
+    ring: wp.array[wp.vec4],
     vertex_face_offsets: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
     lam: wp.float32,
@@ -2904,12 +2909,13 @@ def smooth_free_vertices(
     # geometry it was computed from, which is what an explicit relaxation can promise. A rejected
     # vertex simply keeps its position, so the pass can never do worse than not running.
     v = wp.int32(wp.tid())
+    ring_v = ring[v]
     proposed = tangential_smooth_step(
         vertices[v],
         finalize_vertex_codes(feature_count[v]),
         normalized_accumulated_row(normal_sums, v),
-        ring_sum[v],
-        ring_weight[v],
+        wp.vec3(ring_v[0], ring_v[1], ring_v[2]),
+        ring_v[3],
         lam,
     )
     if move_flips_normal(vertices, faces, vertex_face_offsets, vertex_faces, v, -1, proposed):
