@@ -248,16 +248,16 @@ def faces_left_of_contour(
     # Directed contour keys, sorted, and small: the kernels probe this once or twice per halfedge,
     # so a `k`-entry binary search replaces sorting a key per halfedge to look 320 of them up. The
     # keys are packed straight into the sort's double-width buffer; the payload is never read.
+    # It shares one allocation with the fill's union-find parents and labels, all dying here.
     contour_keys = _launch.empty(2 * n_contour, dtype=wp.uint64, device=device)
+    payload, parents, labels = _launch.carve(wp.int32, [2 * n_contour, n_faces, n_faces], device)
     _launch.launch(
         kernel_grouping.pack_directed_index_keys,
         dim=n_contour,
         inputs=[contour_edges, base, contour_keys],
         device=device,
     )
-    _launch.radix_sort_pairs(
-        contour_keys, _launch.empty(2 * n_contour, dtype=wp.int32, device=device), count=n_contour
-    )
+    _launch.radix_sort_pairs(contour_keys, payload, count=n_contour)
     contour_keys = odt.as_dense(contour_keys[:n_contour])
 
     # The fill is a union-find over the face-adjacency graph with the contour's dual edges removed,
@@ -265,7 +265,6 @@ def faces_left_of_contour(
     # hook, and a flatten that also flags each seeded root.
     n_halfedges = 3 * n_faces
     seeds = _launch.empty(n_faces, dtype=wp.bool, device=device)
-    parents = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_selection.seed_and_prehook_dual,
         dim=n_faces,
@@ -288,7 +287,6 @@ def faces_left_of_contour(
     # answer, and every entry the gather below reads -- a root's -- ends ``True`` exactly when its
     # component holds a seed. The labels cannot overwrite ``parents`` the same way: another
     # thread's path halving may write a stale ancestor over a label already stored.
-    labels = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_selection.label_flagged_components,
         dim=n_faces,
