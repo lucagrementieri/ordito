@@ -1099,8 +1099,12 @@ def _smallest_first_survivors(
     device = faces.device
     mates, key_order = od.halfedge.halfedge_mates(faces, return_key_order=True)
     assert key_order is not None  # without a vertex bound the pairing sorts
-    positions = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-    run_lengths = _launch.zeros(3 * n_faces, dtype=wp.int32, device=device)
+    # The ``int32`` tables in two allocations: those that start at zero (the positions are written
+    # whole, so zeroing them costs only the wider memset), and the unfilled ones.
+    positions, run_lengths, undecided = _launch.carve(
+        wp.int32, [3 * n_faces, 3 * n_faces, 1], device, zeroed=True
+    )
+    states, decisions, live = _launch.carve(wp.int32, [n_faces, n_faces, 3 * n_faces], device)
     _launch.launch(
         kernel_repair.non_manifold_edge_runs,
         dim=3 * n_faces,
@@ -1108,10 +1112,8 @@ def _smallest_first_survivors(
         outputs=[positions, run_lengths],
         device=device,
     )
-    states = _launch.empty(n_faces, dtype=wp.int32, device=device)
     areas = _launch.empty(n_faces, dtype=wp.float32, device=device)
     keep = _launch.empty(n_faces, dtype=wp.bool, device=device)
-    undecided = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_repair.mark_non_manifold_candidates,
         dim=n_faces,
@@ -1122,8 +1124,7 @@ def _smallest_first_survivors(
     # Readback: a mesh with no face on a non-manifold edge is returned as it came.
     if read_scalar(undecided) == 0:
         return None
-    live = _launch.clone(run_lengths)
-    decisions = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.copy(live, run_lengths)
     # Each round decides at least the smallest undecided face, so ``n_faces`` rounds bound it.
     for _ in range(n_faces):
         _launch.launch(
