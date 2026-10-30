@@ -101,6 +101,7 @@ def batched_engine(monkeypatch: pytest.MonkeyPatch) -> None:
     other engine.
     """
     monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
+    monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS_CPU", 0)
 
     def refuse(*_args: object, **_kwargs: object) -> None:
         raise AssertionError("a batched-engine test reached linalg._cg_one_block")
@@ -754,6 +755,7 @@ def test_solve_spd_columns_reports_the_worst_column_against_its_own_tolerance(
     """
     if engine == "batched":
         monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
+        monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS_CPU", 0)
     matrix_wp, _, dense_np, rhs_np = _grid_laplacian_system(device, n_rhs=1)
     exact_np = 1e12 * np.random.default_rng(2).standard_normal(dense_np.shape[0])
     rhs_np = np.stack([rhs_np[0], dense_np @ exact_np])
@@ -1438,6 +1440,7 @@ def test_solve_spd_block_operator_reads_values_rewritten_in_place(
     """
     if engine == "batched":
         monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
+        monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS_CPU", 0)
     matrix_wp, dense_np, rhs_np = _block_system(device)
     n_blocks = rhs_np.shape[0]
     rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.vec2d, device=device)

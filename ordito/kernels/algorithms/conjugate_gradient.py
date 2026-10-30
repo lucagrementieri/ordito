@@ -853,7 +853,8 @@ def cg_one_block(
     # squared-Laplacian polynomial. The stopping rule is ``_BatchedCg``'s, column by column: a
     # column steps while its ``r.r`` exceeds ``tol^2 ||b_c||^2`` and the round count is inside
     # ``maxiter``, and every column's block stops on its own. The whole column lives in one SM, so
-    # this is for small systems only -- ``linalg.CG_ONE_BLOCK_MAX_ROWS``.
+    # on CUDA this is for small systems only -- ``linalg.CG_ONE_BLOCK_MAX_ROWS``; the CPU device
+    # takes it at every size (``linalg.CG_ONE_BLOCK_MAX_ROWS_CPU``).
     #
     # ``out_x`` is the initial guess on entry, ``out_iterations`` (zeroed by the caller, and only
     # written with ``count_iterations`` set) the most rounds any column stepped, ``out_rr`` /

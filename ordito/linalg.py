@@ -246,6 +246,12 @@ kernel_linalg.register_bsr_mv_overloads(_HEAVY_ROW_TILE)
 # up; 1 024 keeps every measured single-column case a win. ``CG_ONE_BLOCK_WIDE_FROM`` rows and up
 # take the wider block (512 against 256 lanes: 0.84 against 0.97 ms at 1 000 rows).
 CG_ONE_BLOCK_MAX_ROWS = 1024
+# The same gate on the CPU device, where a block is one lane walking every row as every kernel
+# there does: the column's size costs the one-block solve nothing a ``_BatchedCg`` round does not
+# pay too, and it saves that round's two launches and the host cadence's readbacks. Jacobi heat
+# systems, three columns, against ``_BatchedCg`` at the host cadence: 0.56x at 2 562 rows, 0.70x
+# at 10 242, 0.75x at 40 962, the same round counts.
+CG_ONE_BLOCK_MAX_ROWS_CPU = 2**31 - 1
 CG_ONE_BLOCK_WIDE_FROM = 768
 _CG_ONE_BLOCK_NARROW = 256
 _CG_ONE_BLOCK_WIDE = 512
@@ -2779,9 +2785,10 @@ def _one_block_eligible(
         isinstance(preconditioner, SquaredLaplacianPreconditioner)
         and preconditioner._is_polynomial()  # pyright: ignore[reportPrivateUsage]
     ) or preconditioner == "diag"
+    cap = CG_ONE_BLOCK_MAX_ROWS if matrix.device.is_cuda else CG_ONE_BLOCK_MAX_ROWS_CPU
     return (
         fitting
-        and 0 < n <= CG_ONE_BLOCK_MAX_ROWS
+        and 0 < n <= cap
         and odt.has_blocks(matrix, wp.float64)
         and matrix.row_counts is None
     )
@@ -2816,14 +2823,12 @@ def _cg_one_block(
         factor, factor_t = preconditioner._factor, preconditioner._factor_t  # pyright: ignore[reportPrivateUsage]
         factor_values, factor_t_values = preconditioner.narrowed()
         steps = preconditioner._steps  # pyright: ignore[reportPrivateUsage]
-        narrow = _launch.empty(
-            kernel_cg.ONE_BLOCK_NARROW_SLOTS * total, dtype=wp.float32, device=device
-        )
+        narrow = _one_block_scratch(kernel_cg.ONE_BLOCK_NARROW_SLOTS * total, wp.float32, device)
     # One buffer for the working vectors and the three per-column results -- residual, threshold
     # and round count -- which the kernel writes before anything reads them. The integer count is
     # only needed as a device array, so a host caller allocates none and reads one buffer.
-    scratch = _launch.empty(
-        kernel_cg.ONE_BLOCK_SLOTS * total + 3 * n_columns, dtype=wp.float64, device=device
+    scratch = _one_block_scratch(
+        kernel_cg.ONE_BLOCK_SLOTS * total + 3 * n_columns, wp.float64, device
     )
     results = odt.as_dense(scratch[kernel_cg.ONE_BLOCK_SLOTS * total :])
     residual = odt.as_dense(results[:n_columns])
@@ -2867,6 +2872,33 @@ def _cg_one_block(
         results_np[:n_columns], results_np[n_columns : 2 * n_columns]
     )
     return int(results_np[2 * n_columns :].max()), residual_norm, threshold_norm
+
+
+def _one_block_scratch(size: int, dtype: Any, device: wp.Device) -> wp.array[Any]:
+    """
+    Return ``_cg_one_block``'s scratch of ``size`` entries: on the CPU device, a pooled buffer.
+
+    Every entry is written before it is read, so a buffer carries nothing between solves, and a
+    CPU launch has finished, its results read, before the next solve can take the buffer. The
+    pool stands in for the ``_BatchedCg`` states a CPU solve of any size held before it ran as
+    one launch, so a solve against a fresh operator of a seen size allocates nothing either.
+    """
+    if not device.is_cpu:
+        return _launch.empty(size, dtype=dtype, device=device)
+    key = (size, dtype)
+    buffer = _ONE_BLOCK_POOL.pop(key, None)
+    if buffer is None:
+        buffer = _launch.empty(size, dtype=dtype, device=device)
+        while len(_ONE_BLOCK_POOL) >= _ONE_BLOCK_POOL_ENTRIES:
+            _ONE_BLOCK_POOL.pop(next(iter(_ONE_BLOCK_POOL)))
+    # Re-inserted last, so the eviction above drops the least recently used.
+    _ONE_BLOCK_POOL[key] = buffer
+    return buffer
+
+
+# ``_one_block_scratch``'s CPU buffers, keyed by size and dtype, least recently used first.
+_ONE_BLOCK_POOL: dict[tuple[int, Any], wp.array[Any]] = {}
+_ONE_BLOCK_POOL_ENTRIES = 8
 
 
 def _cg_columns_auto(
