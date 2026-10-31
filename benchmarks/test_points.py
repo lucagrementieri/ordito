@@ -831,22 +831,31 @@ def test_normal_outlier_mask(bench_case: BenchCase) -> None:
     A normal sum over each point's ball and one angle, one launch.
 
     meshlib's ``findOutliers(AwayNormal)`` on the same cloud and area-weighted vertex normals
-    (equal sets in ``tests/test_points.py``). Two mean edges, meshlib's default angle of 60°.
+    (formed on the host for its row; equal sets in ``tests/test_points.py``). Two mean edges,
+    meshlib's default angle of 60°.
     """
     radius = 2.0 * bench_case.mean_edge
-    normals = _unit_normals_wp(bench_case)
     if bench_case.kind == "meshlib":
         if bench_case.mesh_name not in _cloud_normals_ml_cache:
             from meshlib import mrmeshnumpy as mn
 
+            vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np.reshape(-1, 3)
+            corners_np = vertices_np[faces_np]
+            areas_np = np.cross(
+                corners_np[:, 1] - corners_np[:, 0], corners_np[:, 2] - corners_np[:, 0]
+            )
+            normals_np = np.zeros_like(vertices_np)
+            for k in range(3):
+                np.add.at(normals_np, faces_np[:, k], areas_np)
+            normals_np /= np.maximum(np.linalg.norm(normals_np, axis=1, keepdims=True), 1e-30)
             _cloud_normals_ml_cache[bench_case.mesh_name] = mn.pointCloudFromPoints(
-                cast("Buffer", np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64)),
-                cast("Buffer", np.ascontiguousarray(normals.numpy(), dtype=np.float64)),
+                cast("Buffer", np.ascontiguousarray(vertices_np, dtype=np.float64)),
+                cast("Buffer", np.ascontiguousarray(normals_np, dtype=np.float64)),
             )
         cloud_ml = _cloud_normals_ml_cache[bench_case.mesh_name]
         _find_outliers_ml(bench_case, mm.OutlierTypeMask.AwayNormal, radius, cloud_ml)
         return
-    points = bench_case.vertices_wp
+    points, normals = bench_case.vertices_wp, _unit_normals_wp(bench_case)
     mask = bench_case.run(lambda: od.points.normal_outlier_mask(points, normals, radius))
     assert mask.shape == (bench_case.n_vertices,)
 
