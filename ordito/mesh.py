@@ -1977,7 +1977,8 @@ class Trimesh:
         Parameters
         ----------
         t
-            Diffusion time; ``None`` for the squared mean unique-edge length.
+            Diffusion time; ``None`` for the squared mean unique-edge length, lengthened on a mesh
+            too fine for it (see [`HeatSolver`][ordito.heat.HeatSolver]).
         use_robust
             Build the scalar operators from mollified edge lengths (see
             [`heat_operators`][ordito.heat.heat_operators]).

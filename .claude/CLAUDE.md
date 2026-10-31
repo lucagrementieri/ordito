@@ -1309,12 +1309,19 @@ Each is a measured limit of an option above; re-measure before acting on it.
   the census rows). `solve_spd_settled` no longer warns when its iterate fails the check and no
   factorization fits: the check also fails on accurate far fields near the bottom of the range
   (icosphere(7) at `t = h^2`: 3 751 rows, error 0.0026), so it could not say the answer was
-  wrong. **Still open: the default vertex method** underflows the same way, now silently:
-  icosphere(8) 0.97, the 1 200-column strip 24.2 (on 120). Its system is the shared vector heat
-  system (`vector_heat_operators`, also `transport_tangent_vectors`, `log_map`,
-  `extend_scalar`), so the same floor, `max(h^2, (diagonal / 400)^2)` with the window scaled,
-  would change those functions' default too, on meshes past the threshold only; measured on
-  `heat_signed_distance` alone (icosphere(8): 0.0021).
+  wrong. **The default vertex method, done too:** a `"potpourri3d"`-discretization
+  `HeatSolver` at `t = None` (the vector heat family: `heat_signed_distance`'s default,
+  `transport_tangent_vectors`, `extend_scalar`, `log_map`) builds its scalar and vector systems
+  at `max(h^2, (diagonal / 400)^2)` with the window scaled (`HeatSolver._vertex_time`), its own
+  bundle when the floor engages; the mesh's cached `heat_operators` / `vector_heat_operators` and
+  the public builders keep `h^2`, and the `meshlab` / `igl` solvers (`heat_geodesic`) are
+  untouched. icosphere(8): `heat_signed_distance` 0.97 -> 0.0015, `log_map` radius 0.81 / 2.83
+  -> 0.0030 / 0.0026 (`heat_geodesic` / `potpourri3d` methods); the 1 200-column strip 24.2 ->
+  0.036, its `log_map(method="potpourri3d")` far-end radius 0 -> 116 of 120. `extend_scalar`'s
+  range bar went 1e-6 -> 1e-4 of the range: with the far field kept in range the quotient of two
+  settled fields wobbles by the settle's own accuracy (2.3e-6 at icosphere(8)), where real
+  obtuse-triangle overshoots measure 2e-3 and up. Every vector-heat census row +2 launches, +2
+  allocations, +2 readbacks (the edge-length sums and the bounds, once per solver).
 - **Private access added across a module boundary.** `smoothing`
   reaches `neighbors._EdgePathBallWalk` (check 5 allowlist, plus a scoped `reportUnusedClass`
   ignore), the same shape as the two allowlisted `_GeodesicBallWalk` uses; a public chunked walk

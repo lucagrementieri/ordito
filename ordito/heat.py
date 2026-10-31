@@ -125,21 +125,24 @@ _HEAT_CHECK_ROUNDS = 16
 _HEAT_CHANGE_TOLERANCE = 1e-6
 _HEAT_SETTLE_ROUNDS = 192
 
-# The decay, in nepers, the edge vector heat system's field may cover across the mesh before its
-# default time grows: a diffused field falls off like ``exp(-d / sqrt(t))`` at distance ``d`` from
-# its source, so at geometry-central's ``t = (h / 2) ** 2`` a fine mesh puts its far side below the
-# ``float64`` range and the distance there is lost (potpourri3d's included). The default time is
-# therefore at least ``(diagonal / _EDGE_DIFFUSION_DECAY) ** 2``, the bounding-box diagonal standing
-# in for the farthest distance from a curve. Meshes up to about 400 mean half-edges across keep
-# geometry-central's time; past it the settle window grows with ``sqrt(t)``, the rounds the field
-# needs past full reach (see ``_edge_settle_rounds``).
-_EDGE_DIFFUSION_DECAY = 400.0
+# The decay, in nepers, a diffusion's field may cover across the mesh before the default time of
+# a ``"potpourri3d"``-discretization solver grows. A diffused field falls off like
+# ``exp(-d / sqrt(t))`` at distance ``d`` from its source, so on a fine enough mesh its far side
+# drops below the ``float64`` range and every direction there is lost (the edge system at
+# geometry-central's ``(h / 2) ** 2`` from a few hundred thousand faces, the vertex systems at
+# ``h ** 2`` from about four times as many; potpourri3d's direct solves too). The default time is
+# therefore at least ``(diagonal / _DIFFUSION_DECAY) ** 2``, the bounding-box diagonal standing in
+# for the farthest distance from a source. Meshes up to about 400 diffusion lengths across keep
+# the method's own time. A longer time needs a longer settle window (``_settle_window``).
+_DIFFUSION_DECAY = 400.0
 
 # ``extend_scalar`` warns once its field leaves the source values' range by more than this fraction
-# of the range. Where every cotangent weight is non-negative the overshoot is exactly 0 (spheres
-# and tori, regular or irregularly sampled, 2 to 40 sources); where obtuse triangles make some
-# negative it is 2e-3 to 14x the range (``sphere_irregular``, ``torus_irregular``).
-_EXTEND_RANGE_TOLERANCE = 1e-6
+# of the range. Where every cotangent weight is non-negative the overshoot is the settled solve's
+# own accuracy: 0 on small meshes (spheres and tori, regular or irregularly sampled, 2 to 40
+# sources), 2.3e-6 on a sphere whose far field the lengthened default time keeps in range (the
+# quotient of two fields each settled to ``_HEAT_CHANGE_TOLERANCE``); where obtuse triangles make
+# some negative it is 2e-3 to 14x the range (``sphere_irregular``, ``torus_irregular``).
+_EXTEND_RANGE_TOLERANCE = 1e-4
 
 
 HeatOperators = tuple[
@@ -1136,8 +1139,9 @@ def heat_signed_distance(
         is treated as a single curve.
     t
         Diffusion time; defaults to the squared mean unique-edge length, or a quarter of it (the
-        squared half-length, geometry-central's default) at ``method="potpourri3d"``, lengthened
-        there on meshes too fine for it (see Notes). Larger values smooth the field.
+        squared half-length, geometry-central's default) at ``method="potpourri3d"``, either
+        lengthened on a mesh too fine for it (see Notes and
+        [`HeatSolver`][ordito.heat.HeatSolver]). Larger values smooth the field.
     closed
         Whether each curve closes back on its first vertex (adding one more segment). Signed
         distance is most meaningful for closed curves; an open curve gives a field whose sign flips
@@ -1197,9 +1201,11 @@ def heat_signed_distance(
         there: when ``t`` is not given and the mesh's bounding-box diagonal spans more than 400
         of the method's diffusion lengths ``sqrt(t)``, the default time grows until it spans
         400, which keeps the field in range and the answer right; below that the time is
-        geometry-central's and the answer potpourri3d's. Where the box understates the distance
-        from the curve (a surface folded on itself), or for a ``t`` passed explicitly, the field
-        can still fall out of range, and the call warns. Prefer the default
+        geometry-central's and the answer potpourri3d's. The default method's time grows the
+        same way on meshes about four times finer (see
+        [`HeatSolver`][ordito.heat.HeatSolver]). Where the box understates the distance from the
+        curve (a surface folded on itself), or for a ``t`` passed explicitly, the field can still
+        fall out of range, and the call warns. Prefer the default
         ``method="vertex_connection"``, which is more accurate at every resolution measured.
 
     The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
@@ -2174,7 +2180,8 @@ def extend_scalar(
     values
         ``(n_sources,)`` value carried by each source.
     t
-        Diffusion time; defaults to the squared mean edge length.
+        Diffusion time; defaults to the squared mean edge length, lengthened on a mesh too fine
+        for it (see [`HeatSolver`][ordito.heat.HeatSolver]).
 
     Returns
     -------
@@ -2386,7 +2393,8 @@ def transport_tangent_vectors(
     vectors
         ``(n_sources,)`` tangent vectors, each in *its own source vertex's* frame.
     t
-        Diffusion time; defaults to the squared mean edge length.
+        Diffusion time; defaults to the squared mean edge length, lengthened on a mesh too fine
+        for it (see [`HeatSolver`][ordito.heat.HeatSolver]).
 
     Returns
     -------
@@ -2602,8 +2610,9 @@ def log_map(
     source
         Index of the vertex the map is centred on.
     t
-        Diffusion time; defaults to the squared mean edge length. The *angles* this function
-        returns are measured from the source's ``basis_x`` in
+        Diffusion time; defaults to the squared mean edge length, lengthened on a mesh too fine
+        for it (see [`HeatSolver`][ordito.heat.HeatSolver]). The *angles* this function returns
+        are measured from the source's ``basis_x`` in
         [`Trimesh.vertex_tangent_frames`][ordito.mesh.Trimesh.vertex_tangent_frames].
     method
         Where the radial direction and the radius come from: ``"heat_geodesic"`` or
@@ -3129,7 +3138,8 @@ def diffuse_tangent_field(
     source
         ``(n_vertices,)`` right-hand side, in each vertex's own tangent frame.
     t
-        With a `Trimesh`: the diffusion time; defaults to the squared mean edge length.
+        With a `Trimesh`: the diffusion time; defaults to the squared mean edge length,
+        lengthened on a mesh too fine for it (see [`HeatSolver`][ordito.heat.HeatSolver]).
     preconditioner
         With ``system``: ``None``, or the Jacobi preconditioner for ``system`` -- the fourth field
         of [`vector_heat_operators`][ordito.heat.vector_heat_operators]'s return. The solve is
@@ -3269,7 +3279,8 @@ class HeatSolver:
     Attributes
     ----------
     t : float | None
-        The diffusion time; ``None`` for the default, the squared mean unique-edge length.
+        The diffusion time; ``None`` for the default, the squared mean unique-edge length
+        (lengthened on a mesh too fine for it, see Notes).
     use_robust : bool
         Whether the scalar operators are built from mollified edge lengths (see
         [`heat_operators`][ordito.heat.heat_operators]).
@@ -3279,6 +3290,22 @@ class HeatSolver:
 
     Notes
     -----
+    **The default time grows on fine meshes.** A diffused field falls off like
+    ``exp(-d / sqrt(t))`` at distance ``d`` from its source, so at the squared mean edge length a
+    mesh fine enough -- about a million faces for a source on one side of a sphere -- puts its far
+    side below the smallest ``float64``, and every direction and ratio computed there is lost.
+    With ``t`` left ``None`` and the ``"potpourri3d"`` discretization (the vector heat method's,
+    without ``use_robust``), the time is therefore at least ``(diagonal / 400) ** 2``, the
+    bounding-box diagonal standing in for the farthest distance from a source: meshes up to about
+    400 mean edges across keep the squared mean edge length, and finer ones get the longest time
+    the field can span in range. [`heat_signed_distance`][ordito.heat.heat_signed_distance]'s
+    edge discretization does the same from its own default. The operators are then this
+    solver's own rather than the mesh's cached
+    [`heat_operators`][ordito.mesh.Trimesh.heat_operators] and
+    [`vector_heat_operators`][ordito.mesh.Trimesh.vector_heat_operators], which keep the squared
+    mean edge length. Deciding it reads back the mean edge length and the mesh's
+    [`bounds`][ordito.mesh.Trimesh.bounds] once per solver.
+
     A kept factorization holds device memory of the order of its system's fill-in for as long as
     this solver lives -- the mesh's lifetime -- reported by
     [`nbytes`][ordito.heat.HeatSolver.nbytes] and returned by
@@ -3349,6 +3376,10 @@ class HeatSolver:
         self._edge_system: (
             tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator, wp.array[wp.vec3], int] | None
         ) = None
+        # The mean unique-edge length, read back once (``_mean_edge_length``), and the time the
+        # vertex systems are built at with their settle window, once resolved (``_vertex_time``).
+        self._mean_length: float | None = None
+        self._resolved: tuple[float | None, int] | None = None
 
     @property
     def operators(self) -> HeatOperators:
@@ -3362,7 +3393,7 @@ class HeatSolver:
                 self._operators = heat_operators(
                     mesh.vertices,
                     mesh.faces,
-                    self.t,
+                    self._vertex_time()[0],
                     use_robust=self.use_robust,
                     cot_entries=None if self.use_robust else mesh.cotmatrix_entries,
                     pattern=mesh.mesh_operator_pattern,
@@ -3386,13 +3417,14 @@ class HeatSolver:
         self._require_vector_discretization("the vector heat operators")
         if self._vector_operators is None:
             mesh = self._bound_mesh()
-            if self.t is None:
+            t = self._vertex_time()[0]
+            if t is None:
                 self._vector_operators = mesh.vector_heat_operators
             else:
                 self._vector_operators = vector_heat_operators(
                     mesh.vertices,
                     mesh.faces,
-                    self.t,
+                    t,
                     scalar_operators=self._operators,
                     frames=mesh.vertex_tangent_frames,
                     pattern=mesh.mesh_operator_pattern,
@@ -3403,7 +3435,39 @@ class HeatSolver:
 
     def _is_default(self) -> bool:
         """Whether this solver's scalar operators are the mesh's own cached bundle."""
-        return self.t is None and not self.use_robust and self.method == "potpourri3d"
+        return (
+            not self.use_robust and self.method == "potpourri3d" and self._vertex_time()[0] is None
+        )
+
+    def _vertex_time(self) -> tuple[float | None, int]:
+        """
+        Return the time the vertex systems are built at and the settle window their solves take.
+
+        The time is ``t``, or ``None`` for the default the device forms, ``h ** 2``; a
+        ``"potpourri3d"`` solver without ``use_robust`` raises an unset ``t`` to the
+        ``_DIFFUSION_DECAY`` floor where that is longer and scales its window to its time.
+        """
+        if self._resolved is None:
+            t, rounds = self.t, _HEAT_SETTLE_ROUNDS
+            if self.method == "potpourri3d" and not self.use_robust:
+                default = self._mean_edge_length() ** 2
+                if t is None:
+                    floor = _diffusion_floor(self._bound_mesh())
+                    t = floor if floor > default else None
+                rounds = _settle_window(t, default)
+            self._resolved = (t, rounds)
+        return self._resolved
+
+    def _mean_edge_length(self) -> float:
+        """Return the mesh's mean unique-edge length ``h``, read back once."""
+        if self._mean_length is None:
+            mesh = self._bound_mesh()
+            sums = _edge_length_sums(mesh.vertices, mesh.mesh_operator_pattern)
+            # Host readback, once per solver: whether the default time must grow, and how long a
+            # settle a longer time needs, are decided on the host.
+            total, count = read_values(sums, 0, 2)
+            self._mean_length = float(total) / float(count) if count > 0 else 0.0
+        return self._mean_length
 
     @property
     def ill_conditioned(self) -> bool:
@@ -3773,7 +3837,7 @@ class HeatSolver:
         ``wp.mat22d`` blocks over the unique edges, assembled from keys
         (``kernels/heat.crouzeix_raviart_keys``) and one row kernel. The default time is
         geometry-central's ``(h / 2) ** 2``, formed on the device from the scalar bundle's own
-        edge-length sums, unless ``_EDGE_DIFFUSION_DECAY`` sets a longer one.
+        edge-length sums, unless ``_DIFFUSION_DECAY`` sets a longer one.
         """
         mesh = self._bound_mesh()
         t = self.t
@@ -3797,20 +3861,11 @@ class HeatSolver:
         edge_sums = built.edge_sums if built is not None else None
         if edge_sums is None:
             edge_sums = _edge_length_sums(vertices, mesh.mesh_operator_pattern)
-        # Host readback, once per edge system: the mean edge length decides whether the default
-        # time must grow and how long a settle the system's time needs.
-        total, edge_count = read_values(edge_sums, 0, 2)
-        mean_length = float(total) / float(edge_count) if edge_count > 0 else 0.0
-        geometry_central = 0.25 * mean_length * mean_length
+        geometry_central = 0.25 * self._mean_edge_length() ** 2
         if t is None:
-            low, high = mesh.bounds
-            diagonal = math.dist(low, high)
-            floor = (diagonal / _EDGE_DIFFUSION_DECAY) ** 2
-            if floor > geometry_central:
-                t = floor
-        settle_rounds = _HEAT_SETTLE_ROUNDS
-        if t is not None and t > geometry_central > 0.0:
-            settle_rounds = math.ceil(_HEAT_SETTLE_ROUNDS * math.sqrt(t / geometry_central))
+            floor = _diffusion_floor(mesh)
+            t = floor if floor > geometry_central else None
+        settle_rounds = _settle_window(t, geometry_central)
         values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
         midpoints = _launch.empty(n_edges, dtype=wp.vec3, device=device)
         _launch.launch(
@@ -3842,9 +3897,13 @@ class HeatSolver:
         solution: odt.ArrayNd,
         *,
         preconditioner: wpl.LinearOperator | None = None,
-        settle_rounds: int = _HEAT_SETTLE_ROUNDS,
+        settle_rounds: int | None = None,
     ) -> None:
-        """Run one settled diffusion of ``role``'s system, factored when that pays or is needed."""
+        """
+        Run one settled diffusion of ``role``'s system, factored when that pays or is needed.
+
+        ``settle_rounds`` defaults to the vertex systems' window (``_vertex_time``).
+        """
         kept = self._kept(role, matrix)
         held = kept.factorization.factorization is not None
         twl.solve_spd_settled(
@@ -3853,7 +3912,7 @@ class HeatSolver:
             solution,
             check_rounds=_HEAT_CHECK_ROUNDS,
             change_tolerance=_HEAT_CHANGE_TOLERANCE,
-            settle_rounds=settle_rounds,
+            settle_rounds=self._vertex_time()[1] if settle_rounds is None else settle_rounds,
             preconditioner=preconditioner,
             factorization=kept.factorization,
         )
@@ -3926,6 +3985,24 @@ class HeatSolver:
         if mesh is None:
             raise RuntimeError("HeatSolver: its Trimesh no longer exists")
         return mesh
+
+
+def _diffusion_floor(mesh: Trimesh) -> float:
+    """Return the shortest default time a ``"potpourri3d"`` solver takes on ``mesh``."""
+    low, high = mesh.bounds
+    return (math.dist(low, high) / _DIFFUSION_DECAY) ** 2
+
+
+def _settle_window(t: float | None, default: float) -> int:
+    """
+    Return the settle window for a diffusion at ``t`` whose method's own time is ``default``.
+
+    The rounds a field needs past full reach grow like ``sqrt(t)``, the system's conditioning;
+    ``_HEAT_SETTLE_ROUNDS`` covers the default time.
+    """
+    if t is None or not t > default > 0.0:
+        return _HEAT_SETTLE_ROUNDS
+    return math.ceil(_HEAT_SETTLE_ROUNDS * math.sqrt(t / default))
 
 
 @dataclass

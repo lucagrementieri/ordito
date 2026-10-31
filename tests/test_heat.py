@@ -1458,7 +1458,7 @@ def test_heat_signed_distance_potpourri3d_method_two_curves_match_potpourri3d(
         assert np.allclose(both_wp, both_pp, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize(("columns", "underflows"), [(400, False), (600, True)])
+@pytest.mark.parametrize(("columns", "underflows"), [(400, False), (600, True), (1200, True)])
 def test_heat_signed_distance_potpourri3d_method_outlasts_geometry_centrals_time(
     device: str, columns: int, underflows: bool
 ) -> None:
@@ -1472,8 +1472,9 @@ def test_heat_signed_distance_potpourri3d_method_outlasts_geometry_centrals_time
     about 50 where it lies about 60 from the ring. The 400-column strip is the boundary's other
     side: no warning, the right distance. The default time lengthens on the 600-column strip
     (its diagonal spans 1 200 half-edges, past the 400 the floor allows) and is right on both,
-    silently, as is the default method. potpourri3d's own direct solve is already wrong at 400
-    columns (25.3 at the far end), the claim the warning makes; asserted on both strips.
+    silently. The default method's own time (``h ** 2``) lengthens on the 1 200-column strip,
+    where it read 24 off a range of 120 before. potpourri3d's own direct solve is already wrong
+    at 400 columns (25.3 at the far end), the claim the warning makes; asserted on every strip.
     """
     vertices, faces = od.creation.grid(
         count=(columns, 5), extents=(0.1 * columns, 0.5), device=device
@@ -2225,6 +2226,28 @@ def test_log_map_potpourri3d_takes_a_trimesh(sphere_irregular: tuple[tm.Trimesh,
         assert np.ptp(held) > 1.0
         assert np.allclose(held, plain, rtol=1e-4, atol=1e-4)
     assert mesh.heat_solver().nbytes > 0
+
+
+def test_log_map_potpourri3d_reaches_the_far_end_of_a_long_strip(device: str) -> None:
+    """
+    Not a library comparison: the oracle is the distance along a ``1200 x 5`` strip.
+
+    From a vertex at one end the far end lies 120 away, about 1 200 mean edges: at the squared
+    mean edge length the diffused fields fell below the ``float64`` range before it, and the
+    radius there read 0. The solver's lengthened default time reaches it; the method's own error
+    on this strip is a few per cent (39.7 for 40 on a 400-column strip), so the bound is 5 %.
+    """
+    vertices, faces = od.creation.grid(count=(1200, 5), extents=(120.0, 0.5), device=device)
+    vertices_np = vertices.numpy().astype(np.float64)
+    source = int(np.argmin((vertices_np[:, 0] - vertices_np[:, 0].min()) ** 2
+                           + vertices_np[:, 1] ** 2))  # fmt: skip
+    radius = np.linalg.norm(
+        od.heat.log_map(vertices, faces, source, method="potpourri3d").numpy(), axis=1
+    )
+    far = np.flatnonzero(vertices_np[:, 0] == vertices_np[:, 0].max())
+    distance = np.linalg.norm(vertices_np[far, :2] - vertices_np[source, :2], axis=1)
+    assert distance.min() > 119.0
+    assert np.allclose(radius[far], distance, rtol=5e-2)
 
 
 def test_log_map_rejects_an_unknown_method(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
