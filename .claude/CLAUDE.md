@@ -962,7 +962,9 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
 - **`quadric_decimate` worst cases:** rim vertices placed by extrapolating boundary planes
-  (`dragon` max 5x MeshLib's at 0.5), and rim needles at 0.01.
+  (`dragon` max 5x MeshLib's at 0.5). The rim needles at 0.01 are what the opt-in
+  `min_face_quality=0.1` lifts (`dragon` 0.01 1st-percentile quality 0.0086 -> 0.064); the default
+  stays off by the owner's decision.
 - **`smooth_region` is not flat in `n`** with the squared V-cycle: 1 885 iterations, 43 s on `lucy`.
 - **Unoriented `triangulate_point_cloud`** costs 1.8x the old mesh-level winding (still 3.5x faster
   than MeshLib's): the flood, 2 832 rounds of six launches on dragon (~15 us each), each fan
