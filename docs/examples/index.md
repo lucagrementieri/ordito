@@ -1,3 +1,9 @@
+---
+head_title: "Examples: GPU mesh processing recipes in Python"
+description: >-
+  Runnable Python examples of GPU mesh processing with ordito, each with the image it produces: curvature, geodesics, remeshing, repair, voxels, point clouds and more.
+---
+
 # Examples
 
 Each example below is a complete, runnable snippet together with the image it produced. The

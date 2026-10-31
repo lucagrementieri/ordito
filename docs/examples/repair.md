@@ -1,3 +1,9 @@
+---
+head_title: "Mesh repair: hole filling, orientation, self-intersections"
+description: >-
+  Repair triangle meshes on the GPU: fill and stitch holes, fix degenerate faces and orientation, non-manifold elements, self-intersections, and make a watertight solid.
+---
+
 # Repairing meshes
 
 Holes, stitching, orientation, degeneracies, non-manifold elements, self-intersections and

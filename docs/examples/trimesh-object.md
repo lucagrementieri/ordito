@@ -1,3 +1,9 @@
+---
+head_title: "The Trimesh object: cached mesh properties on the GPU"
+description: >-
+  Use ordito's trimesh-style Trimesh class: lazily cached normals, adjacency, boundaries, watertightness, transforms and reusable operators, all on the GPU.
+---
+
 # The Trimesh object
 
 [`ordito.Trimesh`][ordito.mesh.Trimesh] bundles a mesh's vertex and face buffers with lazily

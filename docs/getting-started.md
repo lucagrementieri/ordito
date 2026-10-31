@@ -1,3 +1,9 @@
+---
+head_title: "Getting started: GPU mesh processing in Python"
+description: >-
+  Install ordito with pip or uv and run a first GPU mesh pipeline in Python: repair a broken scan, close its hole and remesh it, on CUDA or CPU.
+---
+
 # Getting started
 
 ## Install

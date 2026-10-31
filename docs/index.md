@@ -1,14 +1,18 @@
 ---
-title: GPU mesh processing in Python
+title: "GPU mesh processing in Python"
+description: >-
+  ordito is a GPU mesh processing library for Python on NVIDIA Warp: triangle meshes and point
+  clouds on CUDA, with a trimesh-style API for repair, remeshing, geodesics and reconstruction.
 ---
 
 <h1 class="ordito-wordmark">
-  <img src="assets/wordmark.svg#only-light" alt="ordito">
-  <img src="assets/wordmark-dark.svg#only-dark" alt="ordito">
+  <img src="assets/wordmark.svg#only-light" alt="ordito: GPU mesh processing in Python">
+  <img src="assets/wordmark-dark.svg#only-dark" alt="ordito: GPU mesh processing in Python">
 </h1>
 
-**ordito** is a GPU-first triangular mesh processing library built on
-[NVIDIA Warp](https://github.com/NVIDIA/warp). It provides mesh geometry, connectivity, queries,
+**ordito** is a GPU mesh processing library for Python, built on
+[NVIDIA Warp](https://github.com/NVIDIA/warp): triangle meshes and point clouds processed with
+CUDA kernels. It provides mesh geometry, connectivity, queries,
 editing, and solvers as plain array-in / array-out functions backed by Warp kernels, with a
 [trimesh](https://trimesh.org)-inspired API. Every function runs on CUDA when a GPU is available
 and falls back to CPU otherwise, with the same code.

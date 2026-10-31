@@ -1,14 +1,43 @@
 {% extends "base.html" %}
 
+{#- The <title> and link-preview title are what a search result shows. A guide page sets them in
+    its `head_title` front matter, leaving its heading and nav label short; an API page, titled by
+    its bare module name ("heat", set as its `title` by api-autonav), spells the module out. -#}
+{% block htmltitle %}
+  {%- if page.meta and page.meta.head_title -%}
+    <title>{{ page.meta.head_title }} - {{ config.site_name }}</title>
+  {%- elif page.url[:11] == "api/ordito/" -%}
+    <title>ordito.{{ page.title | striptags }} API reference - {{ config.site_name }}</title>
+  {%- else -%}
+    {{ super() }}
+  {%- endif -%}
+{% endblock %}
+
 {#- Link previews (Open Graph and Twitter cards): every page shares the 1200 x 630 card that
     .github/make_wordmark.py generates, with the page's own title and description. -#}
 {% block extrahead %}
-  {%- set title = (page.meta["title"] if "title" in page.meta else page.title) ~ " - " ~ config.site_name -%}
+  {%- if page.meta and page.meta.head_title -%}
+    {%- set title = page.meta.head_title ~ " - " ~ config.site_name -%}
+  {%- elif page.url[:11] == "api/ordito/" -%}
+    {%- set title = "ordito." ~ page.title ~ " API reference - " ~ config.site_name -%}
+  {%- elif page.meta and page.meta.title -%}
+    {%- set title = page.meta.title ~ " - " ~ config.site_name -%}
+  {%- else -%}
+    {%- set title = page.title ~ " - " ~ config.site_name -%}
+  {%- endif -%}
   {%- set description = page.meta["description"] if "description" in page.meta else config.site_description -%}
   {#- mike deploys each version with site_url set to that version's directory, with no trailing
       slash, so the separator is added only when it is missing. -#}
   {%- set base = config.site_url if config.site_url[-1:] == "/" else config.site_url ~ "/" -%}
   {%- set image = base ~ "assets/og-image.png" -%}
+  {#- Search engines index the released docs only: the `dev` version (deployed from `main`)
+      duplicates every page of `stable`, and the literate-nav source page is not a page. -#}
+  {%- if base[-5:] == "/dev/" or page.url == "SUMMARY/" %}
+  <meta name="robots" content="noindex, follow">
+  {%- endif %}
+  {%- if config.extra.google_site_verification %}
+  <meta name="google-site-verification" content="{{ config.extra.google_site_verification }}">
+  {%- endif %}
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="{{ config.site_name }}">
   <meta property="og:title" content="{{ title | striptags }}">

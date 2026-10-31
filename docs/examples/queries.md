@@ -1,3 +1,9 @@
+---
+head_title: "Spatial queries: ray casting, closest points, k-NN"
+description: >-
+  GPU ray casting, closest points on a surface, mesh-to-mesh distance, inside/outside tests, nearest-neighbour and ball queries, Chamfer and Hausdorff distances.
+---
+
 # Spatial queries
 
 Ray casting, closest points, distances between shapes, inside/outside tests and neighbour

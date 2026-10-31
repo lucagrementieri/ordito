@@ -1,3 +1,9 @@
+---
+head_title: "trimesh on the GPU: migrating from trimesh"
+description: >-
+  Run trimesh-style mesh processing on the GPU: ordito's Trimesh mirrors trimesh's properties, and this page maps trimesh functions to their ordito equivalents.
+---
+
 # Migrating from trimesh
 
 ordito's object API is deliberately [trimesh](https://trimesh.org)-shaped —

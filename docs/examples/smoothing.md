@@ -1,3 +1,9 @@
+---
+head_title: "Mesh smoothing and fairing on the GPU"
+description: >-
+  Denoise and fair triangle meshes on the GPU: Laplacian, Taubin, implicit and two-step smoothing, mean-curvature flow, spike removal, sharpening and region fairing.
+---
+
 # Smoothing and fairing
 
 Denoising filters, shrink-free smoothing, curvature flow, and local fairing of a selected

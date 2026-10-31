@@ -1,3 +1,9 @@
+---
+head_title: "Point cloud processing on the GPU in Python"
+description: >-
+  Down-sample, sample, estimate normals, remove outliers, interpolate and compute exact convex hulls of point clouds on the GPU in Python.
+---
+
 # Point clouds
 
 Down-sampling, surface sampling, normal estimation, outlier removal, interpolation and exact

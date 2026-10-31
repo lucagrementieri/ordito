@@ -1,3 +1,9 @@
+---
+head_title: "API reference: every function by task and module"
+description: >-
+  ordito's Python API reference: find a GPU mesh-processing function by task or by module, with array shapes, return values and a runnable example for each.
+---
+
 # API reference
 
 Every function is reached as `od.<module>.<function>` after `import ordito as od`. Each module

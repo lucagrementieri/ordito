@@ -1,3 +1,9 @@
+---
+head_title: "Benchmarks: GPU vs trimesh, libigl, Open3D, MeshLab"
+description: >-
+  How fast is ordito? GPU timings against trimesh, libigl, Open3D, MeshLab, PyVista, MeshLib, potpourri3d and PyTorch3D on real 3D scans up to 28 M triangles.
+---
+
 # Benchmarks
 
 ordito runs on the GPU, and the libraries most mesh-processing code reaches for do not. This page

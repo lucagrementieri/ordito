@@ -1,3 +1,9 @@
+---
+head_title: "PyTorch3D mesh ops without PyTorch: migrating to ordito"
+description: >-
+  Map PyTorch3D's k-NN, ball query, Chamfer distance and mesh regularization losses onto ordito's GPU functions over NVIDIA Warp arrays.
+---
+
 # Migrating from PyTorch3D
 
 PyTorch3D is the one reference library with CUDA kernels of its own, and its batched

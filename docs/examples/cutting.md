@@ -1,3 +1,9 @@
+---
+head_title: "Cutting meshes: plane sections, clipping, selections"
+description: >-
+  Slice triangle meshes with planes, clip and cap them, clip by a scalar field, crop to a box, grow and shrink selections and process polylines, on the GPU.
+---
+
 # Cutting, slicing and selection
 
 Plane sections, clipping, cropping, growing selections and polyline processing.

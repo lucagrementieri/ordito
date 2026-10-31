@@ -1,3 +1,9 @@
+---
+head_title: "libigl on the GPU: migrating from libigl"
+description: >-
+  GPU equivalents of libigl's Python functions: cotangent Laplacians, mass matrices, curvature, parametrization and heat geodesics on CUDA with ordito.
+---
+
 # Migrating from libigl
 
 libigl's input convention (`float64` `(n, 3)` vertices, `int64` `(n_faces, 3)` faces) differs

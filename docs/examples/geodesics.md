@@ -1,3 +1,9 @@
+---
+head_title: "Geodesic distance and tangent fields on the GPU"
+description: >-
+  Heat-method geodesic distance, shortest paths, straightest geodesics, signed distance to curves, parallel transport and the log map on meshes, in Python on the GPU.
+---
+
 # Geodesics and tangent fields
 
 Heat-method distances, geodesic paths and tracing, vector transport and the log map.

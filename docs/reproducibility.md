@@ -1,3 +1,9 @@
+---
+head_title: "Reproducible GPU results, bit for bit"
+description: >-
+  Make GPU mesh processing repeat bit for bit on CUDA with one switch: what ordito's deterministic setting governs, what it costs and how to turn it on.
+---
+
 # Reproducible results
 
 Call an ordito function twice on the same input on a GPU, and the two results can differ in their

@@ -43,6 +43,11 @@ keywords = [
     "geometry-processing",
     "gpu",
     "mesh",
+    "mesh-processing",
+    "nvidia-warp",
+    "point-cloud",
+    "remeshing",
+    "surface-reconstruction",
     "triangle-mesh",
     "warp",
 ]

@@ -1,3 +1,9 @@
+---
+head_title: "Concepts: Warp arrays in, Warp arrays out"
+description: >-
+  The ideas behind ordito's API: free functions over Warp arrays, flat face buffers, devices that follow the data, budgeted host syncs and measured defaults.
+---
+
 # Concepts
 
 Four ideas shape every function in ordito. Each is a constraint the whole library is built

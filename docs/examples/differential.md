@@ -1,3 +1,9 @@
+---
+head_title: "Mesh curvature and differential operators on the GPU"
+description: >-
+  Gaussian, mean and principal curvature, gradients, Laplace and polyharmonic equations, biharmonic deformation and ambient occlusion on triangle meshes, on the GPU.
+---
+
 # Curvature and differential operators
 
 Curvature, gradients, Laplace-type equations, and per-vertex shape descriptors.

@@ -1,3 +1,9 @@
+---
+head_title: "PyMeshLab on the GPU: migrating from MeshLab"
+description: >-
+  GPU equivalents of MeshLab / PyMeshLab filters in ordito: remeshing, decimation, hole filling, cleanup, smoothing, curvature and reconstruction.
+---
+
 # Migrating from MeshLab / PyMeshLab
 
 MeshLab's editing filters map onto `ordito.remesh`, `ordito.smoothing`, `ordito.holes`, and

@@ -1,3 +1,9 @@
+---
+head_title: "Remeshing and mesh simplification on the GPU"
+description: >-
+  Quadric decimation, vertex clustering, Loop subdivision, isotropic remeshing, adaptive refinement and Delaunay edge flips for triangle meshes on the GPU.
+---
+
 # Remeshing and simplification
 
 Decimation, subdivision, isotropic remeshing, local refinement and Delaunay flips.

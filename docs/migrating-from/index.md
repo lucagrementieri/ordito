@@ -1,3 +1,9 @@
+---
+head_title: "Migrating to ordito from trimesh, libigl, Open3D and more"
+description: >-
+  Move a Python mesh-processing pipeline onto the GPU: function-by-function maps from trimesh, libigl, Open3D, MeshLab, potpourri3d and PyTorch3D to ordito.
+---
+
 # Migrating from another library
 
 If you already have a mesh-processing pipeline built on one of the libraries below, these pages

@@ -1,3 +1,9 @@
+---
+head_title: "Mesh parametrization: Tutte, harmonic, LSCM, ARAP"
+description: >-
+  Flatten triangle meshes into UV coordinates on the GPU with Tutte, harmonic, LSCM and ARAP maps, cut closed surfaces along seams and bake fields into textures.
+---
+
 # Parametrization and textures
 
 Flattening surfaces into the plane, cutting seams, and baking fields into textures.

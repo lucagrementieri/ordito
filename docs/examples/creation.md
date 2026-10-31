@@ -1,3 +1,9 @@
+---
+head_title: "Creating meshes: primitives, sweeps and triangulation"
+description: >-
+  Build triangle meshes on the GPU in Python: primitives, parametric surfaces, revolve, extrude and sweep, polygon and terrain triangulation.
+---
+
 # Creating meshes
 
 Primitives, parametric surfaces, sweeps and triangulations from

@@ -1,3 +1,9 @@
+---
+head_title: "potpourri3d on the GPU: migrating from potpourri3d"
+description: >-
+  GPU equivalents of potpourri3d's heat method: geodesic distance, vector heat, parallel transport, log maps and signed heat distance, in ordito.
+---
+
 # Migrating from potpourri3d
 
 potpourri3d (the Python binding for geometry-central) is the reference for the heat-method

@@ -1,3 +1,9 @@
+---
+head_title: "Surface reconstruction and ICP registration on the GPU"
+description: >-
+  Screened Poisson reconstruction, ball pivoting and local triangulation of point clouds, and rigid, robust ICP and Procrustes registration on the GPU.
+---
+
 # Reconstruction and registration
 
 Surfaces from point clouds, and rigid alignment of two scans.

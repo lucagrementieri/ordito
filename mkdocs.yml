@@ -1,7 +1,7 @@
 site_name: ordito
 site_description: >-
-  GPU-first triangle mesh processing: geometry, topology, repair, remeshing, geodesics
-  and reconstruction on NVIDIA Warp.
+  GPU mesh processing in Python: a CUDA library for triangle meshes and point clouds on NVIDIA
+  Warp, covering geometry, topology, repair, remeshing, geodesics and reconstruction.
 site_url: https://lucagrementieri.github.io/ordito/
 repo_url: https://github.com/lucagrementieri/ordito
 docs_dir: docs

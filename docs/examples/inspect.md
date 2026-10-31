@@ -1,3 +1,9 @@
+---
+head_title: "Inspecting meshes: validation, components, normals"
+description: >-
+  Check triangle meshes on the GPU: boundary and non-manifold masks, connected components, feature edges, triangle quality, normals and self-intersections.
+---
+
 # Inspecting meshes
 
 Topology, validity, components, normals, quality and bounding volumes.

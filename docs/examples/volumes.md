@@ -1,3 +1,9 @@
+---
+head_title: "Offsets, voxels, SDF and marching cubes on the GPU"
+description: >-
+  Signed distance fields, mesh offsets and shells, marching cubes, voxelization, voxel morphology and booleans, and the generalized winding number on the GPU.
+---
+
 # Offsets, voxels and implicit surfaces
 
 Signed distance fields, offsets, marching cubes, voxelization and the winding number.

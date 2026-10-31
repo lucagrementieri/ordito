@@ -1,3 +1,9 @@
+---
+head_title: "Open3D on the GPU: migrating from Open3D"
+description: >-
+  GPU equivalents of Open3D's point-cloud, ICP registration, Poisson reconstruction and ray-casting functions in ordito, with the API differences called out.
+---
+
 # Migrating from Open3D
 
 Open3D's point-cloud and reconstruction API maps closely onto `ordito.points`,
