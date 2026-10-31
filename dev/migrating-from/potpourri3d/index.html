@@ -6017,10 +6017,28 @@ functions and it keeps their operators and factorizations (its
   potpourri3d's own frames only up to a rotation about the normal — compare transport results
   through a gauge-invariant combination (e.g. the angle between two transported vectors), never
   their raw 2D tangent components, exactly as you would with potpourri3d's own output.</li>
-<li><strong>Isolines come back as points, not mesh elements.</strong> potpourri3d's <code>marching_triangles</code>
+<li>
+<p><strong>Signed heat distance defaults to a vertex discretization.</strong> potpourri3d's
+  <code>SignedHeatSolver</code> diffuses on the mesh's edges; ordito reproduces that exactly under
+  <code>method="potpourri3d"</code>, but its default <code>method="vertex_connection"</code> diffuses on the vertices,
+  for a longer time.</p>
+<div class="admonition warning">
+<p class="admonition-title">potpourri3d's signed heat method is wrong far from the curve on fine meshes</p>
+<p>Its default diffusion time is so short that, on a mesh of a few hundred thousand faces,
+the diffused field falls below the smallest <code>float64</code> before it has crossed the surface,
+and the distance beyond that point is wrong by a large fraction of its range.
+<code>pp3d.SignedHeatSolver</code> itself returns a wrong field there (its direct solve loses the
+far field even sooner), so <code>method="potpourri3d"</code> inherits the defect; ordito warns when
+it happens. Use the default method, which is more accurate and holds on much finer
+meshes, or pass a larger <code>t</code>, such as the squared mean edge length.</p>
+</div>
+</li>
+<li>
+<p><strong>Isolines come back as points, not mesh elements.</strong> potpourri3d's <code>marching_triangles</code>
   reports each isoline point as a geometry-central element index plus barycentric coordinates;
   ordito's <a class="autorefs autorefs-internal" title="marching_triangles" href="../../api/ordito/intersection/#ordito.intersection.marching_triangles"><code>intersection.marching_triangles</code></a> returns 3D
-  positions directly.</li>
+  positions directly.</p>
+</li>
 </ul>
 
 
