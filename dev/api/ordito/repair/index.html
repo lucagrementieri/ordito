@@ -17126,7 +17126,12 @@ hole; cutting the short one leaves a sphere:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/repair.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3562</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3557</span>
+<span class="normal">3558</span>
+<span class="normal">3559</span>
+<span class="normal">3560</span>
+<span class="normal">3561</span>
+<span class="normal">3562</span>
 <span class="normal">3563</span>
 <span class="normal">3564</span>
 <span class="normal">3565</span>
@@ -17279,12 +17284,7 @@ hole; cutting the short one leaves a sphere:</p>
 <span class="normal">3712</span>
 <span class="normal">3713</span>
 <span class="normal">3714</span>
-<span class="normal">3715</span>
-<span class="normal">3716</span>
-<span class="normal">3717</span>
-<span class="normal">3718</span>
-<span class="normal">3719</span>
-<span class="normal">3720</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remove_tunnels</span><span class="p">(</span>
+<span class="normal">3715</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remove_tunnels</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">max_length</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -17654,7 +17654,12 @@ which removes the sliver by merging its short edge instead.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/repair.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4090</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4085</span>
+<span class="normal">4086</span>
+<span class="normal">4087</span>
+<span class="normal">4088</span>
+<span class="normal">4089</span>
+<span class="normal">4090</span>
 <span class="normal">4091</span>
 <span class="normal">4092</span>
 <span class="normal">4093</span>
@@ -17732,12 +17737,7 @@ which removes the sliver by merging its short edge instead.</p>
 <span class="normal">4165</span>
 <span class="normal">4166</span>
 <span class="normal">4167</span>
-<span class="normal">4168</span>
-<span class="normal">4169</span>
-<span class="normal">4170</span>
-<span class="normal">4171</span>
-<span class="normal">4172</span>
-<span class="normal">4173</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_t_vertices</span><span class="p">(</span>
+<span class="normal">4168</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">flip_t_vertices</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
