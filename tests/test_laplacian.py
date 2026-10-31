@@ -1125,7 +1125,7 @@ def test_connection_laplacian_with_zero_transport_is_the_cotangent_laplacian(
     """
     mesh_tm, mesh_wp = sphere_irregular
     n_vertices = int(mesh_tm.vertices.shape[0])
-    zero_angles_wp = wp.zeros(mesh_wp.indices.size, dtype=wp.float32, device=mesh_wp.points.device)
+    zero_angles_wp = wp.zeros(mesh_wp.indices.size, dtype=wp.float64, device=mesh_wp.points.device)
 
     connection_sp = _sparse_blocks_2x2(
         od.laplacian.connection_laplacian(

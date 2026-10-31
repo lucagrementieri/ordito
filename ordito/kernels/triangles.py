@@ -348,6 +348,22 @@ def face_areas(
 
 
 @wp.func
+def corner_angles_of_edges(e01: Any, e02: Any, e12: Any) -> tuple[Any, Any, Any]:
+    # The three interior angles of the triangle with edges ``v1 - v0``, ``v2 - v0`` and
+    # ``v2 - v1``, in their precision: two ``vector_angle``s and the third as ``pi`` less both,
+    # all three zero when any falls below ``TOLERANCE_MERGE`` (a degenerate face). The rule of
+    # ``face_corner_angles`` (``float32``) and ``face_corner_angles_d`` (``float64``, the tangent
+    # angles of the vector heat method).
+    a0 = vector_angle(e01, e02)
+    a1 = vector_angle(-e01, e12)
+    a2 = type(a0)(PI) - a0 - a1
+    tolerance = type(a0)(TOLERANCE_MERGE_CONSTANT)
+    if (a0 < tolerance) or (a1 < tolerance) or (a2 < tolerance):
+        return type(a0)(0.0), type(a0)(0.0), type(a0)(0.0)
+    return a0, a1, a2
+
+
+@wp.func
 def face_corner_angles(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face_index: wp.int32
 ) -> tuple[wp.float32, wp.float32, wp.float32]:
@@ -377,16 +393,17 @@ def face_corner_angles(
     # there each angle is derived independently (so the three sum to pi only up to round-off) and a
     # sliver reads 0 or pi through the acos clamp, where this one takes the third angle as
     # ``PI - a0 - a1`` and zeroes all three of a degenerate face.
-    a0 = vector_angle(edges[0], edges[1])
-    a1 = vector_angle(-edges[0], edges[2])
-    a2 = PI - a0 - a1
-    if (
-        (a0 < TOLERANCE_MERGE_CONSTANT)
-        or (a1 < TOLERANCE_MERGE_CONSTANT)
-        or (a2 < TOLERANCE_MERGE_CONSTANT)
-    ):
-        return wp.float32(0.0), wp.float32(0.0), wp.float32(0.0)
-    return a0, a1, a2
+    return corner_angles_of_edges(edges[0], edges[1], edges[2])
+
+
+@wp.func
+def face_corner_angles_d(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face_index: wp.int32
+) -> tuple[wp.float64, wp.float64, wp.float64]:
+    # ``face_corner_angles`` from the corners promoted to ``float64``: the same rule
+    # (``corner_angles_of_edges``) without the ``float32`` rounding of the edges and angles.
+    v0, v1, v2 = face_vertices_vec3d(vertices, faces, face_index)
+    return corner_angles_of_edges(v1 - v0, v2 - v0, v2 - v1)
 
 
 @wp.func

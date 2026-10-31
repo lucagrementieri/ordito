@@ -122,6 +122,9 @@ _CG_TOLERANCE = 1e-8
 # own conditioning, fixed by ``t = h ** 2`` -- and measured at 80-150, so 192 covers every one; the
 # graded saddle never settles (its cut-locus entries oscillate) and stops on that bound.
 _HEAT_CHECK_ROUNDS = 16
+# The kept systems whose operators carry the connection's rotations (a tangent field), besides the
+# ``stack{n}`` systems that solve one beside scalar fields.
+_ROTATION_ROLES = frozenset({"vector", "vector_pair", "crouzeix_raviart"})
 _HEAT_CHANGE_TOLERANCE = 1e-6
 _HEAT_SETTLE_ROUNDS = 192
 
@@ -1612,7 +1615,7 @@ def vector_heat_operators(
     scalar_operators: HeatOperators | None = None,
     frames: tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]] | None = None,
     pattern: MeshOperatorPattern | None = None,
-    transport_angles: wp.array[wp.float32] | None = None,
+    transport_angles: wp.array[wp.float64] | None = None,
 ) -> VectorHeatOperators:
     """
     Assemble everything the vector-valued solvers need before their solves.
@@ -1820,7 +1823,7 @@ def vector_heat_operators(
 
 def _transport_angles_and_rings(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
-) -> tuple[wp.array[wp.float32], tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]]]:
+) -> tuple[wp.array[wp.float64], tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]]]:
     """
     ``halfedge_transport_angles(vertices, faces)``, and the one-rings it walked for the frames.
 
@@ -1834,7 +1837,7 @@ def _transport_angles_and_rings(
     )
     rings = (ring_halfedges, ring_offsets, is_boundary)
     tangent_angles = halfedge_tangent_angles(vertices, faces, rings=rings)
-    transport_angles = _launch.empty(twins.size, dtype=wp.float32, device=vertices.device)
+    transport_angles = _launch.empty(twins.size, dtype=wp.float64, device=vertices.device)
     _launch.launch(
         kernel_tangent_space.halfedge_transport_angles,
         dim=twins.size,
@@ -1879,7 +1882,7 @@ def _heat_operators(
     pattern: MeshOperatorPattern | None = None,
     mass: Literal["barycentric", "voronoi"] = "barycentric",
     timestep: Literal["unique_edges", "face_edges"] = "unique_edges",
-    transport_angles: wp.array[wp.float32] | None = None,
+    transport_angles: wp.array[wp.float64] | None = None,
 ) -> tuple[HeatOperators, wp.array[wp.float64], wp.array[wp.mat22d] | None]:
     """
     ``heat_operators``' assembly, returning the ``float64`` lumped mass it built alongside.
@@ -2838,7 +2841,7 @@ def _log_map_vector_heat(mesh: Trimesh, solver: HeatSolver, source: int) -> wp.a
     return logarithm
 
 
-def _halfedge_tangent_angles(mesh: Trimesh, solver: HeatSolver) -> wp.array[wp.float32]:
+def _halfedge_tangent_angles(mesh: Trimesh, solver: HeatSolver) -> wp.array[wp.float64]:
     """
     Every halfedge's polar angle in its origin's frame, kept for ``solver``'s lifetime.
 
@@ -2855,7 +2858,7 @@ def _halfedge_tangent_angles(mesh: Trimesh, solver: HeatSolver) -> wp.array[wp.f
 
 # Each solver's halfedge polar angles (``_halfedge_tangent_angles``), keyed weakly as
 # ``_CORNER_ORDERS`` is.
-_TANGENT_ANGLES: weakref.WeakKeyDictionary[HeatSolver, wp.array[wp.float32]] = (
+_TANGENT_ANGLES: weakref.WeakKeyDictionary[HeatSolver, wp.array[wp.float64]] = (
     weakref.WeakKeyDictionary()
 )
 
@@ -3287,6 +3290,13 @@ class HeatSolver:
     method : str
         Whose discretization the operators follow, ``"potpourri3d"``, ``"meshlab"`` or
         ``"igl"`` (see [`heat_operators`][ordito.heat.heat_operators]).
+    float64_rotations : bool
+        Whether the iterative tangent-field diffusions read the vector system's rotations in
+        ``float64``; ``False`` (the default) reads them in ``float32``, which halves those bytes
+        a round. Set it to reproduce geometry-central (potpourri3d) on meshes with needles: there
+        the rounding moves [`log_map`][ordito.heat.log_map] by about ``1e-4``, and with it set a
+        first call agrees with a factored one. The tangent-field diffusions on a large mesh then
+        take up to 1.7 times as long. A factored system is solved in ``float64`` either way.
 
     Notes
     -----
@@ -3359,6 +3369,7 @@ class HeatSolver:
         self.t = None if t is None else float(t)
         self.use_robust = bool(use_robust)
         self.method: HeatMethod = method
+        self.float64_rotations = False
         self._mesh = weakref.ref(mesh)
         self._operators: HeatOperators | None = None
         self._vector_operators: VectorHeatOperators | None = None
@@ -3915,6 +3926,9 @@ class HeatSolver:
             settle_rounds=self._vertex_time()[1] if settle_rounds is None else settle_rounds,
             preconditioner=preconditioner,
             factorization=kept.factorization,
+            narrow_values=not (
+                self.float64_rotations and (role in _ROTATION_ROLES or role.startswith("stack"))
+            ),
         )
         if not held and kept.factorization.factorization is not None:
             self._ill_conditioned = True

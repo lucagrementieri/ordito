@@ -2174,6 +2174,7 @@ def test_log_map_matches_potpourri3d(request: pytest.FixtureRequest, mesh_name: 
         ("saddle_graded", "interior"),
         ("saddle_graded", "boundary"),
         ("sphere_well_shaped", "interior"),
+        ("torus_irregular", "interior"),
     ],
 )
 @pytest.mark.parity("log_map_potpourri3d", "potpourri3d")
@@ -2191,20 +2192,26 @@ def test_log_map_potpourri3d_method_matches_potpourri3d(
     outward ball has no exterior half), 1.5e-5 / 1.3e-5 on ``sphere_well_shaped`` (radii to 5);
     the ``allclose`` bound's worst ratio is 0.66 / 0.60, 0.42 / 0.42 and 0.82 / 0.70.
 
-    Not on the needle fixtures: ordito stores the connection's transport angles in ``float32``,
-    and rounding a ``float64`` rebuild's angles to ``float32`` alone moves the map by 4.4e-5 on
-    ``sphere_irregular`` (measured), where ordito's worst is 6.0e-5 / 1.8e-4 (CUDA / CPU) and
-    ``torus_irregular`` 1.5e-4 / 5.2e-5. **Mutation probes**, worst ratio to the bound: the
-    outward ball's term at ``c`` with its sign flipped 6.6e4, its term at the source dropped 3.9e3,
-    the radial field left non-zero at the source 2.6e3, the divergence averaging the neighbour's
-    radial direction without transporting it 4.4e3 (all at the saddle's interior source).
+    The needle fixture ``torus_irregular`` is solved with
+    [`HeatSolver.float64_rotations`][ordito.heat.HeatSolver] set: its transport angles are
+    ``float64`` either way, but the default first call iterates on the connection's rotations in
+    ``float32``, which moves it 1.9e-4 / 1.7e-4 (CUDA / CPU); set, 6.6e-6 / 4.4e-6 (bound ratio
+    0.31 / 0.14), as a factored solve gives. Before the angles were ``float64`` a factored solve
+    read 2.9e-4 / 5.5e-5 there. Left out: ``sphere_irregular``, one vertex of 500 at 1.23x the
+    bound on CUDA (1.4e-5; CPU 4.0e-6, 0.33x), and ``torus_irregular_holes``, 6 / 2 of 481
+    vertices over it from an interior source (8.9e-5 / 3.4e-5), the same worst vertex on both
+    devices and in a factored solve: a systematic difference, not solver noise. **Mutation
+    probes**, worst ratio to the bound: the outward ball's term at ``c`` with its sign flipped
+    6.6e4, its term at the source dropped 3.9e3, the radial field left non-zero at the source
+    2.6e3, the divergence averaging the neighbour's radial direction without transporting it
+    4.4e3 (all at the saddle's interior source).
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     border = np.asarray(igl.is_border_vertex(mesh_tm.faces.astype(np.int64)), dtype=bool)
     source = int(np.flatnonzero(~border if source_kind == "interior" else border)[0])
-    logarithm_wp = od.heat.log_map(
-        mesh_wp.points, mesh_wp.indices, source, method="potpourri3d"
-    ).numpy()
+    mesh_od = od.mesh.Trimesh(mesh_wp.points, mesh_wp.indices)
+    mesh_od.heat_solver().float64_rotations = mesh_name == "torus_irregular"
+    logarithm_wp = od.heat.log_map(mesh_od, source, method="potpourri3d").numpy()
     logarithm_pp = np.asarray(_solver_pp(mesh_tm).compute_log_map(source, "VectorHeat"))
 
     assert np.ptp(logarithm_pp) > 1.0

@@ -156,7 +156,7 @@ def vector_heat_row(
     order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     cot_entries: wp.array2d[wp.Float],
-    transport_angles: wp.array[wp.float32],
+    transport_angles: wp.array[wp.float64],
     m: wp.float64,
     factor: wp.float64,
     out_values: wp.array[wp.mat22d],
@@ -197,7 +197,7 @@ def heat_system_rows(
     area_sums: wp.array[wp.float64],
     mass_divisor: wp.float64,
     faces: wp.array[wp.int32],
-    transport_angles: wp.array[wp.float32],
+    transport_angles: wp.array[wp.float64],
     out_laplacian: wp.array[wp.float64],
     out_heat: wp.array[wp.float64],
     out_poisson: wp.array[wp.float64],
@@ -332,7 +332,7 @@ def vector_heat_system_rows(
     order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     cot_entries: wp.array2d[wp.Float],
-    transport_angles: wp.array[wp.float32],
+    transport_angles: wp.array[wp.float64],
     mass: wp.array[wp.float64],
     scale: wp.float64,
     edge_sum_and_count: wp.array[wp.float64],
@@ -2194,12 +2194,12 @@ def complex_product(a: wp.vec2d, b: wp.vec2d) -> wp.vec2d:
 
 @wp.func
 def reversed_halfedge_angle(
-    tangent_angles: wp.array[wp.float32], transport_angles: wp.array[wp.float32], h: wp.int32
+    tangent_angles: wp.array[wp.float64], transport_angles: wp.array[wp.float64], h: wp.int32
 ) -> wp.float64:
     # The polar angle of halfedge ``h``'s reverse ``j -> i`` in ``j``'s frame, read off ``h``
     # alone: transport along ``h`` turns ``h``'s own direction into the reverse's opposite. Exists
     # for a boundary edge too, whose reverse is no face's halfedge.
-    return wp.float64(tangent_angles[h]) + wp.float64(transport_angles[h]) - PI_D
+    return tangent_angles[h] + transport_angles[h] - PI_D
 
 
 @wp.kernel
@@ -2208,8 +2208,8 @@ def seed_log_map_outward_ball(
     faces: wp.array[wp.int32],
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
-    tangent_angles: wp.array[wp.float32],
-    transport_angles: wp.array[wp.float32],
+    tangent_angles: wp.array[wp.float64],
+    transport_angles: wp.array[wp.float64],
     source: wp.int32,
     out_radial: wp.array[wp.vec2d],
     out_horizontal: wp.array[wp.vec2d],
@@ -2250,9 +2250,7 @@ def seed_log_map_outward_ball(
 
         height_c = twice_area / wp.length(pb - pa)
         toward_c = wp.vec2d(-theta * sine, -swing) / (wp.float64(2.0) * height_c)
-        out_radial[c] = out_radial[c] + complex_product(
-            toward_c, polar_unit(wp.float64(tangent_angles[ca]))
-        )
+        out_radial[c] = out_radial[c] + complex_product(toward_c, polar_unit(tangent_angles[ca]))
 
         height_a = twice_area / wp.length(pc - pb)
         alpha = HALF_PI_D - gamma
@@ -2262,7 +2260,7 @@ def seed_log_map_outward_ball(
               * wp.sin(alpha)) / (wp.float64(4.0) * height_a),
         )  # fmt: skip
         out_radial[source] = out_radial[source] + complex_product(
-            at_source, polar_unit(wp.float64(tangent_angles[ab]))
+            at_source, polar_unit(tangent_angles[ab])
         )
 
 
@@ -2278,8 +2276,8 @@ def unit_radial(radial_raw: wp.array[wp.vec2d], v: wp.int32, source: wp.int32) -
 def halfedge_radial_flux(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    tangent_angles: wp.array[wp.float32],
-    transport_angles: wp.array[wp.float32],
+    tangent_angles: wp.array[wp.float64],
+    transport_angles: wp.array[wp.float64],
     radial_raw: wp.array[wp.vec2d],
     source: wp.int32,
     half_cotangent: wp.float64,
@@ -2295,9 +2293,9 @@ def halfedge_radial_flux(
     j = faces[next_h]
     radial_i = unit_radial(radial_raw, i, source)
     radial_j = unit_radial(radial_raw, j, source)
-    back = complex_product(radial_j, polar_unit(-wp.float64(transport_angles[h])))
+    back = complex_product(radial_j, polar_unit(-transport_angles[h]))
     length = wp.length(to_vec3d(vertices[j]) - to_vec3d(vertices[i]))
-    edge = length * polar_unit(wp.float64(tangent_angles[h]))
+    edge = length * polar_unit(tangent_angles[h])
     return half_cotangent * wp.dot(wp.float64(0.5) * (radial_i + back), edge)
 
 
@@ -2305,8 +2303,8 @@ def halfedge_radial_flux(
 def radial_field_divergence(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    tangent_angles: wp.array[wp.float32],
-    transport_angles: wp.array[wp.float32],
+    tangent_angles: wp.array[wp.float64],
+    transport_angles: wp.array[wp.float64],
     radial_raw: wp.array[wp.vec2d],
     source: wp.int32,
     cot_entries: wp.array2d[wp.float32],
@@ -2383,7 +2381,7 @@ def _register_overloads() -> None:
                 f64,
                 wp.float64,
                 i32,
-                wp.array[wp.float32],
+                f64,
                 f64,
                 f64,
                 f64,
@@ -2400,7 +2398,7 @@ def _register_overloads() -> None:
                 *pattern,
                 i32,
                 wp.array2d[d],
-                wp.array[wp.float32],
+                f64,
                 f64,
                 wp.float64,
                 f64,

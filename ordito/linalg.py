@@ -2350,6 +2350,7 @@ def solve_spd_settled(
     maxiter: int | None = None,
     preconditioner: wpl.LinearOperator | None = None,
     factorization: OperatorFactorization | None = None,
+    narrow_values: bool = True,
 ) -> wp.array[wp.int32]:
     """
     Run Jacobi conjugate gradient until every entry of the solution has settled relative to itself.
@@ -2364,12 +2365,12 @@ def solve_spd_settled(
     non-zero entries last changed, the bound for an entry that never settles because it cancels
     toward zero. Or at ``maxiter``.
 
-    The iteration reads a ``float64`` operator's values in ``float32``, widened as they are read
-    and accumulated in ``float64``: past a few tens of thousands of rows a round is bound by its
-    bytes and the values are its largest stream. The system solved therefore differs from
-    ``matrix`` by one rounding per stored entry, which on the heat method's operators is orders of
-    magnitude below the method's own discretization error. The residual, the iterate and every
-    reduction stay ``float64``.
+    By default (``narrow_values``) the iteration reads a ``float64`` operator's values in
+    ``float32``, widened as they are read and accumulated in ``float64``: past a few tens of
+    thousands of rows a round is bound by its bytes and the values are its largest stream. The
+    system solved therefore differs from ``matrix`` by one rounding per stored entry, which on the
+    heat method's operators is orders of magnitude below the method's own discretization error.
+    The residual, the iterate and every reduction stay ``float64``.
 
     The check is tested on the device, inside the solve's recorded loop. As with
     [`solve_spd`][ordito.linalg.solve_spd], the solver state is kept for ``matrix``'s lifetime and
@@ -2413,6 +2414,11 @@ def solve_spd_settled(
         ``matrix``: the caller-owned place for the fallback's factorization (built there, and so
         kept for the caller's next solve), and the direct solve when it already holds one. Without
         it a fallback's factorization is built for this solve and dropped.
+    narrow_values
+        Whether the iteration reads the values in ``float32``. ``False`` reads them as stored, at
+        twice the value bytes a round: for an operator whose entries the answer is sensitive to,
+        such as a vector system's rotations, which ``float32`` rounding moves a log map on a mesh
+        with needles by about ``1e-4``.
 
     Returns
     -------
@@ -2505,7 +2511,7 @@ def solve_spd_settled(
         check_every=_supported_check_every(0),
         preconditioner="diag",
         settle=(int(check_rounds), float(change_tolerance), int(settle_rounds)),
-        narrow_values=True,
+        narrow_values=narrow_values,
         pooled=True,
     )
     solver.solve(rhs_flat, solution_flat)

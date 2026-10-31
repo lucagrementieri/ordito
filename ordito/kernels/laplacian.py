@@ -880,11 +880,11 @@ def graph_laplacian_rows(
 
 
 @wp.func
-def rotation22(angle: wp.float32) -> wp.mat22d:
+def rotation22(angle: wp.float64) -> wp.mat22d:
     # Real 2x2 form of the unit complex number ``exp(i * angle)``: the rotation that re-expresses a
     # tangent vector in a neighbour's frame.
-    c = wp.float64(wp.cos(angle))
-    s = wp.float64(wp.sin(angle))
+    c = wp.cos(angle)
+    s = wp.sin(angle)
     return wp.mat22d(c, -s, s, c)
 
 
@@ -898,7 +898,7 @@ def connection_offdiagonal(
     order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     cot_entries: Any,
-    transport_angles: wp.array[wp.float32],
+    transport_angles: wp.array[wp.float64],
     weight: wp.float64,
 ) -> tuple[wp.mat22d, wp.float64]:
     # Off-diagonal entry ``k`` of row ``i`` of the connection Laplacian, and ``weight`` advanced by
@@ -929,7 +929,7 @@ def connection_laplacian_rows(
     order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     cot_entries: wp.array2d[wp.Float],
-    transport_angles: wp.array[wp.float32],
+    transport_angles: wp.array[wp.float64],
     out_values: wp.array[wp.mat22d],
 ) -> None:
     # The vector Laplacian over a mesh operator pattern, one thread per row: each off-diagonal
@@ -1200,7 +1200,7 @@ def _register_overloads() -> None:
                 wp.array[wp.int32],
                 wp.array[wp.int32],
                 wp.array2d[d],
-                wp.array[wp.float32],
+                wp.array[wp.float64],
                 wp.array[wp.mat22d],
             ]
             for d in _MATRIX_DTYPES

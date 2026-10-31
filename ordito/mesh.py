@@ -1793,7 +1793,7 @@ class Trimesh:
         return od.laplacian.laplacian(self._vertices, self._faces)
 
     @_CachedProperty
-    def halfedge_transport_angles(self) -> wp.array[wp.float32]:
+    def halfedge_transport_angles(self) -> wp.array[wp.float64]:
         """
         ``(3 * n_faces,)`` rotation carrying a tangent vector across each halfedge, in (-pi, pi].
 
@@ -1822,20 +1822,17 @@ class Trimesh:
 
         device = self._faces.device
         if self._faces.size == 0:
-            return _launch.empty(0, dtype=wp.float32, device=device)
-        # The cached corner angles when `vertex_normals` already formed them; otherwise the ring
-        # walk forms them itself, which costs less than building the table.
+            return _launch.empty(0, dtype=wp.float64, device=device)
+        # The ring walk forms the corner angles in ``float64`` itself; a cached ``float32``
+        # `face_angles` table is not read, so the answer does not depend on what ran first.
         tangent_angles = od.tangent_space.halfedge_tangent_angles(
-            self._vertices,
-            self._faces,
-            face_angles=cast("odt.Array2dFloat32 | None", self._cache.get("face_angles")),
-            rings=self.vertex_one_rings,
+            self._vertices, self._faces, rings=self.vertex_one_rings
         )
         # The transport kernel itself, since `halfedge_transport_angles` verifies a supplied twin
         # table with a launch and a readback: these are this mesh's own `halfedge_twins`, which the
         # `vertex_one_rings` build above already verified.
         twins = self.halfedge_twins
-        rho = _launch.empty(twins.size, dtype=wp.float32, device=device)
+        rho = _launch.empty(twins.size, dtype=wp.float64, device=device)
         _launch.launch(
             kernel_tangent_space.halfedge_transport_angles,
             dim=twins.size,

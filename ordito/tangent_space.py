@@ -246,7 +246,7 @@ def halfedge_tangent_angles(
     faces: wp.array[wp.int32],
     face_angles: odt.Array2dFloat32 | None = None,
     rings: tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]] | None = None,
-) -> wp.array[wp.float32]:
+) -> wp.array[wp.float64]:
     """
     Polar angle of every outgoing halfedge in its origin vertex's tangent plane.
 
@@ -267,7 +267,8 @@ def halfedge_tangent_angles(
         ``(3 * n_faces,)`` triangle index buffer.
     face_angles
         ``(n_faces, 3)`` precomputed corner angles from
-        [`face_angles`][ordito.triangles.face_angles]. When ``None``, computed here.
+        [`face_angles`][ordito.triangles.face_angles]. When ``None``, formed here in ``float64``;
+        a ``float32`` table saves that work and limits the result to its rounding.
     rings
         ``(3 * n_faces,)``, ``(n_vertices + 1,)`` and ``(n_vertices,)`` precomputed
         ``(ring_halfedges, offsets, is_boundary)`` from
@@ -275,8 +276,10 @@ def halfedge_tangent_angles(
 
     Returns
     -------
-    wp.array[wp.float32]
-        ``(3 * n_faces,)`` angles in radians on ``vertices.device``, indexed by halfedge.
+    wp.array[wp.float64]
+        ``(3 * n_faces,)`` angles in radians on ``vertices.device``, indexed by halfedge. Formed
+        in ``float64`` from the corner angles of the promoted positions: the vector heat method
+        reads them, and its log map is sensitive to their rounding on meshes with needles.
 
     Raises
     ------
@@ -308,7 +311,7 @@ def halfedge_tangent_angles(
     device = vertices.device
     n = vertices.size
     n_halfedges = faces.size // 3 * 3
-    angles = _launch.zeros(n_halfedges, dtype=wp.float32, device=device)
+    angles = _launch.zeros(n_halfedges, dtype=wp.float64, device=device)
     if n_halfedges == 0 or n == 0:
         return angles
 
@@ -338,8 +341,8 @@ def halfedge_transport_angles(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     twins: wp.array[wp.int32] | None = None,
-    tangent_angles: wp.array[wp.float32] | None = None,
-) -> wp.array[wp.float32]:
+    tangent_angles: wp.array[wp.float64] | None = None,
+) -> wp.array[wp.float64]:
     """
     Rotation that carries a tangent vector across each halfedge, in ``(-pi, pi]``.
 
@@ -374,7 +377,7 @@ def halfedge_transport_angles(
 
     Returns
     -------
-    wp.array[wp.float32]
+    wp.array[wp.float64]
         ``(3 * n_faces,)`` rotations in radians on ``vertices.device``, indexed by halfedge.
 
     Raises
@@ -415,7 +418,7 @@ def halfedge_transport_angles(
     if tangent_angles is not None or n_halfedges == 0:
         # Otherwise ``vertex_one_rings`` below checks a supplied table with its own readback.
         require_matching_twins(faces, twins)
-    rho = _launch.empty(n_halfedges, dtype=wp.float32, device=device)
+    rho = _launch.empty(n_halfedges, dtype=wp.float64, device=device)
     if n_halfedges == 0:
         return rho
 

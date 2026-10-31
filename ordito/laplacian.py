@@ -776,7 +776,7 @@ def connection_laplacian(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     cot_entries: odt.Array2dFloat | None = None,
-    transport_angles: wp.array[wp.float32] | None = None,
+    transport_angles: wp.array[wp.float64] | None = None,
     *,
     pattern: MeshOperatorPattern | None = None,
 ) -> odt.BsrMatrix[wp.mat22d]:

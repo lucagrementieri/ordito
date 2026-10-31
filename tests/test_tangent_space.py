@@ -210,11 +210,13 @@ def test_halfedge_tangent_angles_derived_corner_angles_match_supplied(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Ordito against ordito: the angles with no ``face_angles`` equal those from the table.
+    Ordito against ordito: the angles with no ``face_angles`` match those from the table.
 
-    With no table the ring walk forms each corner angle itself; it must reproduce
-    ``triangles.face_angles``' entries bit for bit, so both entry points return the same array.
-    The disk test above pins the angles themselves.
+    With no table the ring walk forms each corner angle in ``float64`` by
+    ``triangles.face_angles``' rule; a supplied table is that rule in ``float32``, so the two
+    entry points differ by the table's rounding summed around a ring: a few ``float32`` ulps of a
+    full turn (measured at most 5e-7 here), never by a ring slot or a gauge. The disk test above
+    pins the angles themselves.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     vertices, faces = mesh_wp.points, mesh_wp.indices
@@ -224,7 +226,7 @@ def test_halfedge_tangent_angles_derived_corner_angles_match_supplied(
     ).numpy()
 
     assert np.ptp(derived) > 1.0
-    assert np.array_equal(derived, supplied)
+    assert np.allclose(derived, supplied, rtol=0.0, atol=2e-6)
 
 
 # ---------------------------------------------------------------------------

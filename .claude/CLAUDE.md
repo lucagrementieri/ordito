@@ -1253,12 +1253,32 @@ it was read for the rule only, and each kernel implements the rule, not the sour
 
 Each is a measured limit of an option above; re-measure before acting on it.
 
-- **`log_map(method="potpourri3d")` is Class A only on well-shaped fixtures.** On the needle
-  fixtures it is 6e-5 (`sphere_irregular`, CUDA; 1.8e-4 CPU) and 1.5e-4 (`torus_irregular`) from
-  potpourri3d: the connection Laplacian it shares with the default stores its transport angles in
-  `float32` (rounding only those angles in a `float64` prototype moves the map 4.4e-5).
-  **Proposed:** form the transport in `float64` for both methods, which changes the default's
-  vector system and its parity numbers; price it and re-run every vector-heat comparison.
+- **Done 2026-10-31: `float64` transport, and an opt-in for the iteration's rotations.** Two
+  `float32` stages stood between the needle fixtures and potpourri3d, and only together: the
+  tangent and transport angles (corner angles from `float32` positions, `float32` ring sums and
+  tables), and the settled CG reading the vector system's values in `float32`
+  (`solve_spd_settled`'s narrowing, which rounds the rotation entries just the same). The angles
+  are now `float64` throughout (`triangles.face_corner_angles_d` over the shared
+  `corner_angles_of_edges` rule; `halfedge_tangent_angles` / `halfedge_transport_angles` and
+  `Trimesh.halfedge_transport_angles` return `float64`; `Trimesh` no longer feeds its cached
+  `float32` corner table to them, so the answer cannot depend on what ran first). Worst
+  `log_map(method="potpourri3d")` coordinate against potpourri3d, CUDA / CPU, factored solve,
+  angles `float32` -> `float64`: `sphere_irregular` 4.6e-5 -> 1.4e-5 / 1.2e-4 -> 4.0e-6,
+  `torus_irregular` 2.9e-4 -> 6.6e-6 / 5.5e-5 -> 4.4e-6, `torus_irregular_holes` 1.6e-4 -> 8.9e-5
+  / 3.4e-4 -> 3.4e-5. The default first call still iterates on `float32` rotations and reads
+  1.2e-4 / 3.8e-5, 1.9e-4 / 1.7e-4, 6.4e-5 / 6.1e-4: **`HeatSolver.float64_rotations`** (owner's
+  choice, opt-in) makes the tangent-field roles (`vector`, `vector_pair`, `stack{n}`,
+  `crouzeix_raviart`) pass `narrow_values=False`, and the first call then equals the factored
+  one. Price, CUDA, one-shot calls on `icosphere(7)`: angles alone 1.00-1.05x (device +0.4 ms of
+  27: the `float64` corner `atan2`s 0.22 ms, the transport 0.12, the row kernel +0.1); the opt-in
+  1.33x on `log_map`, 1.69x on `transport_tangent_vectors` (the CG graph is bytes-bound and the
+  values are its largest stream); 1.00-1.17x up to `icosphere(6)`. `torus_irregular` is now in
+  the Class A test (with the opt-in). **Open:** `sphere_irregular` has one vertex of 500 at 1.23x
+  the bound on CUDA (CPU 0.33x); `torus_irregular_holes` keeps 6 / 2 of 481 vertices over it from
+  an interior source, the same worst vertex on both devices and in a factored solve (radius 2.90
+  of 4.04), so a systematic difference there. A `float64` cotangent table built in
+  `heat_operators` moved nothing, but whether it reached the vector system on the `Trimesh` path
+  was not checked.
 - **`signed_distance_level_set` against `igl.offset_surface` holds at three of four levels.** At
   `iso = 0.1` the counts and faces agree but one vertex is 4.8e-5 off. Cause (traced 2026-10-28,
   both devices): a near-tangent lattice edge, both nodes within 1.8e-4 of the level, where any

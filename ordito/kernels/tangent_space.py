@@ -4,7 +4,7 @@ from ordito.constants import PI, TOLERANCE_ZERO_CONSTANT, TWO_PI
 from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import unit_tangent, world_to_tangent
 from ordito.kernels.triangles import (
-    face_corner_angles,
+    face_corner_angles_d,
     face_normals_and_area,
     halfedge_corner_angle,
 )
@@ -20,17 +20,17 @@ def corner_angle(face_angles: wp.array2d[wp.float32], h: wp.int32) -> wp.float32
 
 
 @wp.func
-def ring_tangent_scale(total: wp.float32, boundary: wp.bool) -> wp.float32:
+def ring_tangent_scale(total: wp.Float, boundary: wp.bool) -> wp.Float:
     # Rescaling by 2*pi/Theta_v (pi/Theta_v at a boundary vertex, whose fan spans a half-disk) is
     # what makes the flattening consistent on a cone point; zero for a fan with no angle at all.
     # Initialized before the branch: a variable assigned only inside an ``if`` is readable
     # afterwards in Warp but uninitialized when the branch was not taken.
-    scale = wp.float32(0.0)
-    if total > TOLERANCE_ZERO_CONSTANT:
+    scale = type(total)(0.0)
+    if total > type(total)(TOLERANCE_ZERO_CONSTANT):
         if boundary:
-            scale = PI / total
+            scale = type(total)(PI) / total
         else:
-            scale = TWO_PI / total
+            scale = type(total)(TWO_PI) / total
     return scale
 
 
@@ -62,7 +62,7 @@ def halfedge_tangent_angles(
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
     is_boundary: wp.array[wp.bool],
-    out_angles: wp.array[wp.float32],
+    out_angles: wp.array[wp.float64],
 ) -> None:
     # One thread per vertex, two passes over its counter-clockwise ring: the first sums the corner
     # angles into the total angle Theta_v, the second lays the halfedges out as polar coordinates in
@@ -75,18 +75,18 @@ def halfedge_tangent_angles(
     if end <= begin:
         return
 
-    total = wp.float32(0.0)
+    total = wp.float64(0.0)
     for j in range(begin, end):
-        total += corner_angle(face_angles, ring_halfedges[j])
+        total += wp.float64(corner_angle(face_angles, ring_halfedges[j]))
 
     boundary = is_boundary[v]
     scale = ring_tangent_scale(total, boundary)
     start = ring_reference_slot(ring_halfedges, begin, end, boundary)
-    accumulated = wp.float32(0.0)
+    accumulated = wp.float64(0.0)
     for t in range(end - begin):
         h = ring_halfedges[ring_slot(begin, end, start, t)]
         out_angles[h] = scale * accumulated
-        accumulated += corner_angle(face_angles, h)
+        accumulated += wp.float64(corner_angle(face_angles, h))
 
 
 @wp.kernel
@@ -96,11 +96,13 @@ def halfedge_tangent_angles_from_positions(
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
     is_boundary: wp.array[wp.bool],
-    out_angles: wp.array[wp.float32],
+    out_angles: wp.array[wp.float64],
 ) -> None:
     # ``halfedge_tangent_angles`` for a caller with no corner-angle table: each halfedge's corner
-    # angle is ``triangles.face_corner_angles``' (the ``angles`` kernel's own body, so the same
-    # bits), formed once in the first pass and parked in the halfedge's own output slot until the
+    # angle is ``triangles.face_corner_angles_d``' (the ``angles`` kernel's rule in ``float64``, as
+    # geometry-central forms its angles: the vector heat method's transport reads these, and
+    # ``float32`` angles alone moved its log map by 4e-5 on needle meshes), formed once in the
+    # first pass and parked in the halfedge's own output slot until the
     # second pass reads it back and overwrites it -- a halfedge lies on exactly one ring, its
     # origin's, so the slot is this thread's alone. Each halfedge forms its face's three angles to
     # keep the one it needs (the degeneracy guard reads all three), three times the table's
@@ -111,18 +113,18 @@ def halfedge_tangent_angles_from_positions(
     if end <= begin:
         return
 
-    total = wp.float32(0.0)
+    total = wp.float64(0.0)
     for j in range(begin, end):
         h = ring_halfedges[j]
-        a0, a1, a2 = face_corner_angles(vertices, faces, h // wp.int32(3))
-        angle = wp.vec3(a0, a1, a2)[h % wp.int32(3)]
+        a0, a1, a2 = face_corner_angles_d(vertices, faces, h // wp.int32(3))
+        angle = wp.vec3d(a0, a1, a2)[h % wp.int32(3)]
         out_angles[h] = angle
         total += angle
 
     boundary = is_boundary[v]
     scale = ring_tangent_scale(total, boundary)
     start = ring_reference_slot(ring_halfedges, begin, end, boundary)
-    accumulated = wp.float32(0.0)
+    accumulated = wp.float64(0.0)
     for t in range(end - begin):
         h = ring_halfedges[ring_slot(begin, end, start, t)]
         angle = out_angles[h]
@@ -360,7 +362,7 @@ def face_tangent_frames_and_normals(
 
 
 @wp.func
-def wrap_angle(angle: wp.float32) -> wp.float32:
+def wrap_angle(angle: wp.Float) -> wp.Float:
     # Fold into (-pi, pi] without a modulo: the round trip through the unit circle is branch-free
     # and immune to the sign convention of ``%`` inside kernels.
     return wp.atan2(wp.sin(angle), wp.cos(angle))
@@ -368,7 +370,7 @@ def wrap_angle(angle: wp.float32) -> wp.float32:
 
 @wp.kernel
 def halfedge_transport_angles(
-    twins: wp.array[wp.int32], tangent_angles: wp.array[wp.float32], out_rho: wp.array[wp.float32]
+    twins: wp.array[wp.int32], tangent_angles: wp.array[wp.float64], out_rho: wp.array[wp.float64]
 ) -> None:
     h = wp.int32(wp.tid())
     twin = twins[h]
@@ -377,5 +379,5 @@ def halfedge_transport_angles(
     else:
         # A boundary edge exists as a halfedge in one direction only. At the destination vertex it
         # is the fan-closing edge, whose polar angle is the rescaled total angle: pi.
-        opposite = PI
-    out_rho[h] = wrap_angle(opposite + PI - tangent_angles[h])
+        opposite = wp.float64(PI)
+    out_rho[h] = wrap_angle(opposite + wp.float64(PI) - tangent_angles[h])
