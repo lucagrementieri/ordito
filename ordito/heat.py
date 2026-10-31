@@ -3290,13 +3290,6 @@ class HeatSolver:
     method : str
         Whose discretization the operators follow, ``"potpourri3d"``, ``"meshlab"`` or
         ``"igl"`` (see [`heat_operators`][ordito.heat.heat_operators]).
-    float64_rotations : bool
-        Whether the iterative tangent-field diffusions read the vector system's rotations in
-        ``float64``; ``False`` (the default) reads them in ``float32``, which halves those bytes
-        a round. Set it to reproduce geometry-central (potpourri3d) on meshes with needles: there
-        the rounding moves [`log_map`][ordito.heat.log_map] by about ``1e-4``, and with it set a
-        first call agrees with a factored one. The tangent-field diffusions on a large mesh then
-        take up to 1.7 times as long. A factored system is solved in ``float64`` either way.
 
     Notes
     -----
@@ -3315,6 +3308,14 @@ class HeatSolver:
     [`vector_heat_operators`][ordito.mesh.Trimesh.vector_heat_operators], which keep the squared
     mean edge length. Deciding it reads back the mean edge length and the mesh's
     [`bounds`][ordito.mesh.Trimesh.bounds] once per solver.
+
+    **A tangent field is iterated in full precision.** The scalar diffusions' conjugate gradient
+    reads the operator's values in ``float32`` to halve its memory traffic, which moves the
+    answer far below the method's own error. The vector system's values are the rotations that
+    carry a tangent vector between frames, and rounding them moved
+    [`log_map`][ordito.heat.log_map] on meshes with needles by about ``1e-4``, so an iterated solve
+    disagreed with a factored one: those solves read them as stored, at up to 1.7 times the
+    time on a large mesh.
 
     A kept factorization holds device memory of the order of its system's fill-in for as long as
     this solver lives -- the mesh's lifetime -- reported by
@@ -3369,7 +3370,6 @@ class HeatSolver:
         self.t = None if t is None else float(t)
         self.use_robust = bool(use_robust)
         self.method: HeatMethod = method
-        self.float64_rotations = False
         self._mesh = weakref.ref(mesh)
         self._operators: HeatOperators | None = None
         self._vector_operators: VectorHeatOperators | None = None
@@ -3926,9 +3926,10 @@ class HeatSolver:
             settle_rounds=self._vertex_time()[1] if settle_rounds is None else settle_rounds,
             preconditioner=preconditioner,
             factorization=kept.factorization,
-            narrow_values=not (
-                self.float64_rotations and (role in _ROTATION_ROLES or role.startswith("stack"))
-            ),
+            # A system carrying the connection's rotations is iterated on its values as stored:
+            # rounding them to ``float32`` moved the log map on needle meshes by 1e-4, so an
+            # iterated solve disagreed with a factored one. The scalar systems keep the narrowing.
+            narrow_values=not (role in _ROTATION_ROLES or role.startswith("stack")),
         )
         if not held and kept.factorization.factorization is not None:
             self._ill_conditioned = True
