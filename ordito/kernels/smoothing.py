@@ -15,7 +15,13 @@ from ordito.kernels.array import (
     to_vec3,
     to_vec3d,
 )
-from ordito.kernels.laplacian import cotmatrix_offdiagonal, face_half_cotangents, operator_row
+from ordito.kernels.laplacian import (
+    cotmatrix_offdiagonal,
+    face_half_cotangents,
+    operator_row,
+    point_edge_weight,
+    umbrella_entry,
+)
 from ordito.kernels.linalg import (
     free_row,
     selected_row,
@@ -1219,6 +1225,49 @@ def diffuse_vec3_pass(
     # ``filter_taubin`` relies on.
     i = wp.int32(wp.tid())
     out_next[i] = out_next.dtype(diffused_row(offsets, columns, values, positions, coeff, i))
+
+
+@wp.kernel
+def umbrella_diffuse_pass(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    positions: wp.array[Any],
+    equal_weight: wp.int32,
+    symmetric: wp.int32,
+    coeff: wp.float64,
+    out_next: wp.array[Any],
+) -> None:
+    # ``diffuse_vec3_pass`` through the umbrella operator ``kernels/laplacian.laplacian_rows``
+    # would assemble from ``positions`` over the same pattern, its row formed where it is applied:
+    # ``filter_taubin(recompute=True)``, one launch a pass where assembling the operator first took
+    # a narrowing copy, the row launch and the pass. The row's weights read the positions narrowed
+    # to ``float32``, as the assembly read its ``float32`` copy, and each entry is formed twice --
+    # once for the row's sum, once to apply it -- in the same order, so every entry and the step
+    # are the assembled operator's to the bit.
+    i = wp.int32(wp.tid())
+    start = offsets[i]
+    end = offsets[i + 1]
+    center = wp.vec3d(positions[i])
+    lv = center
+    if end > start:
+        here = wp.vec3(positions[i])
+        total = wp.float32(0.0)
+        for k in range(start, end):
+            c = columns[k]
+            w = point_edge_weight(here, wp.vec3(positions[c]), equal_weight)
+            total += umbrella_entry(w, i, c, k, run_start, keys, count, symmetric)
+        lv = wp.vec3d(0.0, 0.0, 0.0)
+        for k in range(start, end):
+            c = columns[k]
+            w = point_edge_weight(here, wp.vec3(positions[c]), equal_weight)
+            value = umbrella_entry(w, i, c, k, run_start, keys, count, symmetric)
+            if total > wp.float32(0.0):
+                value = value / total
+            lv += wp.float64(value) * wp.vec3d(positions[c])
+    out_next[i] = out_next.dtype(wp.lerp(center, lv, coeff))
 
 
 @wp.kernel
@@ -3929,6 +3978,7 @@ def gauss_seidel_wave_counted(
 # and of the positions written (``humphrey_*``: the one generic side); see
 # [`OverloadTable`][ordito.kernels.array.OverloadTable]. Filled in by ``_register_overloads``.
 DIFFUSE_VEC3_PASS: OverloadTable
+UMBRELLA_DIFFUSE_PASS: OverloadTable
 SHARPEN_PASS: OverloadTable
 GRAPH_SHARPEN_PASS: OverloadTable
 NEIGHBORHOOD_AVERAGE_PASS: OverloadTable
@@ -3947,7 +3997,11 @@ IMPLICIT_LAPLACIAN_STEPS_SERIAL: OverloadTable
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
-    global DIFFUSE_VEC3_PASS, NEIGHBORHOOD_AVERAGE_PASS, HUMPHREY_RESIDUAL_PASS
+    global \
+        DIFFUSE_VEC3_PASS, \
+        UMBRELLA_DIFFUSE_PASS, \
+        NEIGHBORHOOD_AVERAGE_PASS, \
+        HUMPHREY_RESIDUAL_PASS
     global HUMPHREY_UPDATE_PASS, SHARPEN_PASS, GRAPH_SHARPEN_PASS, MUT_DIF_ADIL_PASS
     global MUT_DIF_STEP_SCALED
     global IMPLICIT_LAPLACIAN_STEP, IMPLICIT_LAPLACIAN_STEPS_SERIAL
@@ -4065,6 +4119,25 @@ def _register_overloads() -> None:
         diffuse_vec3_pass,
         {
             (src, dst): [*rows, wp.array[src], wp.float64, wp.array[dst]]
+            for src in vectors
+            for dst in vectors
+        },
+    )
+    UMBRELLA_DIFFUSE_PASS = OverloadTable(
+        umbrella_diffuse_pass,
+        {
+            (src, dst): [
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.uint64],
+                wp.int32,
+                wp.array[src],
+                wp.int32,
+                wp.int32,
+                wp.float64,
+                wp.array[dst],
+            ]
             for src in vectors
             for dst in vectors
         },

@@ -1773,10 +1773,10 @@ def filter_taubin(
     would rebuild the identical matrix every pass and cost without doing anything. Only the
     geometry-dependent branch has anything to recompute.
 
-    ``recompute`` reassembles a sparse operator every pass instead of once, which is more
-    expensive; the connectivity never changes, though, so every pass shares one
-    [`mesh_operator_pattern`][ordito.laplacian.mesh_operator_pattern] and only rewrites the
-    weights.
+    ``recompute`` re-derives the weights every pass instead of once, which is more expensive; the
+    connectivity never changes, though, so every pass shares one
+    [`mesh_operator_pattern`][ordito.laplacian.mesh_operator_pattern] and forms each vertex's
+    weights where the pass applies them, with no operator assembled in between.
 
     Examples
     --------
@@ -1813,17 +1813,34 @@ def filter_taubin(
 
     def taubin_pass(index: int, src: _Positions, dst: _Positions) -> None:
         # ``filter_laplacian``'s explicit pass, with the step alternating sign.
-        pass_operator = (
-            laplacian.laplacian(
-                vertices if index == 0 else _as_vec3(cast("wp.array[wp.vec3d]", src)),
-                faces,
-                equal_weight=False,
-                pattern=pattern,
+        coeff = lamb if index % 2 == 0 else -nu
+        if pattern is not None:
+            # Recomputed: the operator's rows are formed where the pass applies them, from the
+            # pass's own positions, with no operator assembled in between.
+            _, _, offsets, columns, run_start, keys, count, _ = pattern
+            _launch.launch(
+                kernel_smoothing.UMBRELLA_DIFFUSE_PASS[src.dtype, dst.dtype],
+                dim=n,
+                inputs=[
+                    offsets,
+                    columns,
+                    run_start,
+                    keys,
+                    wp.int32(count),
+                    src,
+                    wp.int32(0),
+                    wp.int32(1),
+                    wp.float64(coeff),
+                ],
+                outputs=[dst],
+                device=src.device,
             )
+            return
+        pass_operator = (
+            laplacian.laplacian(vertices, faces, equal_weight=False)
             if operator is None
             else operator
         )
-        coeff = lamb if index % 2 == 0 else -nu
         _diffuse_pass(pass_operator, wp.float64(coeff), src, dst)
 
     serial = (

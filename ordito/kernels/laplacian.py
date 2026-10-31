@@ -292,9 +292,17 @@ def max_row_ratio(
 def edge_weight(
     a: wp.int32, b: wp.int32, vertices: wp.array[wp.vec3], equal_weight: wp.int32
 ) -> wp.float32:
+    return point_edge_weight(vertices[a], vertices[b], equal_weight)
+
+
+@wp.func
+def point_edge_weight(pa: wp.vec3, pb: wp.vec3, equal_weight: wp.int32) -> wp.float32:
+    # The umbrella weight of an edge from its endpoints' positions: 1, or the inverse length.
+    # ``edge_weight`` reads them from a table; ``kernels/smoothing.umbrella_diffuse_pass`` narrows
+    # them from the positions it diffuses.
     if equal_weight != 0:
         return wp.float32(1.0)
-    return wp.float32(1.0) / (wp.length(vertices[a] - vertices[b]) + wp.float32(1.0e-12))
+    return wp.float32(1.0) / (wp.length(pa - pb) + wp.float32(1.0e-12))
 
 
 @wp.func
@@ -756,6 +764,31 @@ def cotmatrix_rows(
     cotmatrix_row(i, offsets, columns, run_start, keys, count, order, cot_entries, out_values)
 
 
+@wp.func
+def umbrella_entry(
+    w: wp.Float,
+    i: wp.int32,
+    c: wp.int32,
+    k: wp.int32,
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    symmetric: wp.int32,
+) -> wp.Float:
+    # Entry ``k`` (row ``i``, column ``c``) of the umbrella operator before its row is normalized,
+    # from its edge weight ``w``: see ``laplacian_rows``. Shared with
+    # ``kernels/smoothing.umbrella_diffuse_pass``, which forms the row where it applies it.
+    value = type(w)(0.0)
+    if symmetric != 0:
+        value = w
+        if c == i:
+            value += w
+    else:
+        for _p in range(run_start[k], sorted_run_end(keys, run_start[k], count)):
+            value += w
+    return value
+
+
 @wp.kernel
 def laplacian_rows(
     offsets: wp.array[wp.int32],
@@ -783,14 +816,7 @@ def laplacian_rows(
     for k in range(start, end):
         c = columns[k]
         w = type(out_values[k])(edge_weight(i, c, vertices, equal_weight))
-        value = type(out_values[k])(0.0)
-        if symmetric != 0:
-            value = w
-            if c == i:
-                value += w
-        else:
-            for _p in range(run_start[k], sorted_run_end(keys, run_start[k], count)):
-                value += w
+        value = umbrella_entry(w, i, c, k, run_start, keys, count, symmetric)
         out_values[k] = value
         total += value
     if total > type(total)(0.0):

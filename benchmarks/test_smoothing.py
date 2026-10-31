@@ -355,6 +355,26 @@ def test_filter_taubin(bench_case: BenchCase) -> None:
         assert bench_case.run(run).vertices.shape == vertices.shape
 
 
+@pytest.mark.benchmark(group="filter_taubin_recompute")
+@pytest.mark.benchlibs("ordito")
+def test_filter_taubin_recompute(bench_case: BenchCase) -> None:
+    """
+    ``filter_taubin(recompute=True)``: the inverse-distance operator re-derived every half-pass.
+
+    open3d's and pytorch3d's Taubin filters, which this path reproduces, rebuild their weights from
+    the moved positions each half-pass, so the cost here is one row of weights and one diffusion
+    step a vertex a half-pass over a sparsity pattern built once. Read against ``filter_taubin``'s
+    fixed-operator row on the same mesh: the gap is the per-pass weighting. Neither reference is
+    timed here; ``filter_taubin``'s docstring explains why their rows would not be comparable.
+    """
+    skip_larger_than(bench_case, "dragon")
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    result = bench_case.run(
+        lambda: od.smoothing.filter_taubin(vertices, faces, iterations=_ITERATIONS, recompute=True)
+    )
+    assert result.shape == vertices.shape
+
+
 @pytest.mark.benchmark(group="filter_windowed_sinc")
 @pytest.mark.benchlibs("ordito", "pyvista")
 def test_filter_windowed_sinc(bench_case: BenchCase) -> None:

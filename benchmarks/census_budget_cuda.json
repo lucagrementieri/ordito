@@ -7080,6 +7080,14 @@
    "alloc": 2
   }
  },
+ "benchmarks/test_smoothing.py::test_filter_taubin_recompute[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 13,
+   "alloc": 5,
+   "scan": 1,
+   "sort": 1
+  }
+ },
  "benchmarks/test_smoothing.py::test_filter_two_step[saddle-ordito-cuda]": {
   "counts": {
    "launch": 126,
