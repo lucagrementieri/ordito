@@ -1519,8 +1519,25 @@ of 3 re-openings leaves stale distances in queue order (up to 2.9 % of the range
 Rounds track the diameter in edges; on CUDA 4.4x / 7.3x faster than MeshLib at 41 k / 164 k
 vertices, 1.2x slower at 10 k (launch-bound). The front is a poor geodesic on needles (12.5 % of
 the range from `igl.exact_geodesic` on `sphere_irregular`, vcg's front 4.5 %): it is a
-reproduction, not a better distance. A frontier-restricted pass (only faces touching last round's changes) is the
-unpriced lever for large meshes.
+reproduction, not a better distance. **A frontier-restricted pass loses (2026-10-31).** Built as the
+unfolding front's lists (a face queued once a round around each vertex the last round lowered, a
+copy-back over the lowered list, three launches a round, the rounds the scan's so the field was
+bit-identical everywhere): scan / lists, one source, ms: `icosphere(4)` 0.52 / 1.05, `(6)` 1.64 /
+3.66, `(7)` 4.31 / 7.49, `(8)` 19.0 / 15.3; bunny 1.87 / 4.08, dragon 28.1 / 79.8, happy_buddha
+454 / 438, lucy 6 442 / 18 067 (three sources 7 690 / 8 377). The scan's pass is one cheap
+`float32` face a thread; the lists pay atomics a queued face, and on scan meshes the rounds lower a
+large share of the mesh. **Open: the round count on scan meshes is not the diameter.** Rounds /
+hop eccentricity from vertex 0: `icosphere(6)` 194 / 192, `(8)` 770 / 768, bunny 162 / 119, dragon
+824 / 477, **happy_buddha 15 244 / 392**. From round ~600 a few hundred vertices around one patch
+(3709, 3710, 4216, ...) are each lowered by about one `float32` ulp a round for 7 000 rounds:
+they sit on non-manifold edges (274 in the mesh) among zero-area faces (minimum angle 0°), where
+the two-corner update feeds a cycle of mutual lowerings. Dragon equals MeshLib's uncapped front
+(`maxVertUpdates=255` or `65535`) to 6.4e-7 of the range; happy_buddha differs by 8.2e-3 on 885
+vertices, but MeshLib's import splits 31 non-manifold vertices, so its topology differs there and
+the comparison is confounded. lucy (6.4 s) likely shares the cause. **Proposed (owner):** require
+an offer to undercut a label by more than a few ulps (or skip zero-area faces' plane updates), which
+ends the cycle; it changes the fixpoint only where the cycle runs, but must be re-checked against
+the fixtures' bit-for-bit CPU parity.
 
 ### Closed 2026-10-29: MeshLab's geodesic front
 
