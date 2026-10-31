@@ -967,7 +967,7 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
 - **Unoriented `triangulate_point_cloud`** costs 1.8x the old mesh-level winding (still 3.5x faster
   than MeshLib's): the flood, 2 832 rounds of six launches on dragon (~15 us each), each fan
   re-weighed ~14 times. Next: incremental weighing (`reference/component-status.md`).
-- **Not built, estimated or unpriced:** the remesh split loop's terminal round decided from a
-  per-face long-edge count and the host edge-count identity (est. 0.3-0.4 ms a crown call); a gate
-  for the multigrid coarsest level's dense outer-product assembly (wins on `icosphere(6)`, loses on
-  dragon; `reference/component-status.md`, preconditioners).
+- **Not built, estimated or unpriced:** a gate for the multigrid coarsest level's dense
+  outer-product assembly (wins on `icosphere(6)`, loses on dragon; `reference/component-status.md`,
+  preconditioners). The remesh split loop's terminal round is folded into the fixed-width pass
+  plan (`plans/remesh-pass-structure.md`): its readback also sizes the collapse stage.
