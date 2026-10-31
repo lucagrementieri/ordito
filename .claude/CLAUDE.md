@@ -1643,7 +1643,12 @@ memsets 2 779 -> 2 525, but launches only 31 574 -> 31 392. Open:
   GPU before adoption (the sweep decided on counts only, the GPU being shared), and several touch
   shapes §14 flags as possible losses:
     - `screened_poisson(method="octree")`: about 1 556 launches, the per-wave x 4-colour
-      Gauss-Seidel launches at each depth; graph capture or another schedule.
+      Gauss-Seidel launches at each depth. **Closed 2026-10-31, not a host cost:** bunny at depth
+      7 / 8 / 9 issues 1 436 / 2 520 / 4 628 wave launches at 10.7 / 8.1 / 8.7 µs of device time
+      each, the call's device time equal to its wall time (15.5 / 20.5 / 40.7 ms), so capture
+      cannot pay (already declined 2026-10-26, `kernels/algorithms/poisson_octree.
+      octree_gauss_seidel_wave`). The lever is a wave launch's own cost (its rows rebuilt by
+      `octree_row`, and threads over the whole slice where only stored nodes work), unpriced.
 
 ### `smooth_region` on large regions: the V-cycle form (2026-10-23 sweep)
 
