@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="GPU-first triangle mesh processing: geometry, topology, repair, remeshing, geodesics and reconstruction on NVIDIA Warp.">
+        <meta name="description" content="Repair triangle meshes on the GPU: fill and stitch holes, fix degenerate faces and orientation, non-manifold elements, self-intersections, and make a watertight solid.">
       
       
       
@@ -26,11 +26,7 @@
       <link rel="icon" href="../../assets/logo.svg">
       <meta name="generator" content="zensical-0.0.73">
     
-    
-      
-        <title>Repairing meshes - ordito</title>
-      
-    
+    <title>Mesh repair: hole filling, orientation, self-intersections - ordito</title>
     
       
         
@@ -66,10 +62,12 @@
       
 
     
-    <meta property="og:type" content="website">
+    
+  <meta name="robots" content="noindex, follow">
+  <meta property="og:type" content="website">
   <meta property="og:site_name" content="ordito">
-  <meta property="og:title" content="Repairing meshes - ordito">
-  <meta property="og:description" content="GPU-first triangle mesh processing: geometry, topology, repair, remeshing, geodesics and reconstruction on NVIDIA Warp.">
+  <meta property="og:title" content="Mesh repair: hole filling, orientation, self-intersections - ordito">
+  <meta property="og:description" content="Repair triangle meshes on the GPU: fill and stitch holes, fix degenerate faces and orientation, non-manifold elements, self-intersections, and make a watertight solid.">
   <meta property="og:url" content="https://lucagrementieri.github.io/ordito/dev/examples/repair/">
   <meta property="og:image" content="https://lucagrementieri.github.io/ordito/dev/assets/og-image.png">
   <meta property="og:image:type" content="image/png">
@@ -77,8 +75,8 @@
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="ordito: GPU mesh processing in Python">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="Repairing meshes - ordito">
-  <meta name="twitter:description" content="GPU-first triangle mesh processing: geometry, topology, repair, remeshing, geodesics and reconstruction on NVIDIA Warp.">
+  <meta name="twitter:title" content="Mesh repair: hole filling, orientation, self-intersections - ordito">
+  <meta name="twitter:description" content="Repair triangle meshes on the GPU: fill and stitch holes, fix degenerate faces and orientation, non-manifold elements, self-intersections, and make a watertight solid.">
   <meta name="twitter:image" content="https://lucagrementieri.github.io/ordito/dev/assets/og-image.png">
 
   </head>
@@ -6497,6 +6495,9 @@ usually remeshed next, to even out the fill triangles: see
 
 
 
+
+  
+  
 
 
 

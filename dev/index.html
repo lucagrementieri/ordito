@@ -6,7 +6,7 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="GPU-first triangle mesh processing: geometry, topology, repair, remeshing, geodesics and reconstruction on NVIDIA Warp.">
+        <meta name="description" content="ordito is a GPU mesh processing library for Python on NVIDIA Warp: triangle meshes and point clouds on CUDA, with a trimesh-style API for repair, remeshing, geodesics and reconstruction.">
       
       
       
@@ -64,10 +64,12 @@
       
 
     
-    <meta property="og:type" content="website">
+    
+  <meta name="robots" content="noindex, follow">
+  <meta property="og:type" content="website">
   <meta property="og:site_name" content="ordito">
   <meta property="og:title" content="GPU mesh processing in Python - ordito">
-  <meta property="og:description" content="GPU-first triangle mesh processing: geometry, topology, repair, remeshing, geodesics and reconstruction on NVIDIA Warp.">
+  <meta property="og:description" content="ordito is a GPU mesh processing library for Python on NVIDIA Warp: triangle meshes and point clouds on CUDA, with a trimesh-style API for repair, remeshing, geodesics and reconstruction.">
   <meta property="og:url" content="https://lucagrementieri.github.io/ordito/dev/">
   <meta property="og:image" content="https://lucagrementieri.github.io/ordito/dev/assets/og-image.png">
   <meta property="og:image:type" content="image/png">
@@ -76,7 +78,7 @@
   <meta property="og:image:alt" content="ordito: GPU mesh processing in Python">
   <meta name="twitter:card" content="summary_large_image">
   <meta name="twitter:title" content="GPU mesh processing in Python - ordito">
-  <meta name="twitter:description" content="GPU-first triangle mesh processing: geometry, topology, repair, remeshing, geodesics and reconstruction on NVIDIA Warp.">
+  <meta name="twitter:description" content="ordito is a GPU mesh processing library for Python on NVIDIA Warp: triangle meshes and point clouds on CUDA, with a trimesh-style API for repair, remeshing, geodesics and reconstruction.">
   <meta name="twitter:image" content="https://lucagrementieri.github.io/ordito/dev/assets/og-image.png">
 
   </head>
@@ -6000,12 +6002,13 @@
 
 
 <h1 class="ordito-wordmark">
-  <a class="glightbox" href="assets/wordmark.svg#only-light" data-type="image"><img src="assets/wordmark.svg#only-light" alt="ordito"></a>
-  <a class="glightbox" href="assets/wordmark-dark.svg#only-dark" data-type="image"><img src="assets/wordmark-dark.svg#only-dark" alt="ordito"></a>
+  <a class="glightbox" href="assets/wordmark.svg#only-light" data-type="image"><img src="assets/wordmark.svg#only-light" alt="ordito: GPU mesh processing in Python"></a>
+  <a class="glightbox" href="assets/wordmark-dark.svg#only-dark" data-type="image"><img src="assets/wordmark-dark.svg#only-dark" alt="ordito: GPU mesh processing in Python"></a>
 </h1>
 
-<p><strong>ordito</strong> is a GPU-first triangular mesh processing library built on
-<a href="https://github.com/NVIDIA/warp">NVIDIA Warp</a>. It provides mesh geometry, connectivity, queries,
+<p><strong>ordito</strong> is a GPU mesh processing library for Python, built on
+<a href="https://github.com/NVIDIA/warp">NVIDIA Warp</a>: triangle meshes and point clouds processed with
+CUDA kernels. It provides mesh geometry, connectivity, queries,
 editing, and solvers as plain array-in / array-out functions backed by Warp kernels, with a
 <a href="https://trimesh.org">trimesh</a>-inspired API. Every function runs on CUDA when a GPU is available
 and falls back to CPU otherwise, with the same code.</p>
