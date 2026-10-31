@@ -349,6 +349,47 @@ def test_filter_laplacian_pyvista_waves_equal_the_serial_sweep(
     assert np.array_equal(waves.numpy(), serial.numpy())
 
 
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_filter_laplacian_pyvista_recorded_schedule_is_exact(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: a sweep replaying the first one's recorded wave count is the serial one.
+
+    The volume-constrained sweeps record the schedule's length once and issue exactly that many
+    waves after, with no readback. The replay must write the serial sweep's bits, and one wave
+    fewer must not (so the length is exact, not an overrun the fixpoint absorbs). The CPU device
+    runs the serial loop and records nothing.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    stencil = od.smoothing._umbrella_stencils(  # pyright: ignore[reportPrivateUsage]
+        vertices, faces, 15.0, True, crowded_slides=True
+    )
+    sweeps = od.smoothing._gauss_seidel_sweeps  # pyright: ignore[reportPrivateUsage]
+    serial = od.array.astype(vertices, wp.vec3d)
+    wp.launch(
+        kernel_smoothing.gauss_seidel_sweeps,
+        dim=1,
+        inputs=[serial, *stencil, wp.float64(0.5), 1],
+        device=vertices.device,
+    )
+    recorded = od.array.astype(vertices, wp.vec3d)
+    waves = sweeps(recorded, stencil, wp.float64(0.5), 1, record=True)
+    assert np.array_equal(recorded.numpy(), serial.numpy())
+    if vertices.device.is_cpu:
+        assert waves is None
+        return
+    assert waves is not None
+    assert waves > 1
+    replayed = od.array.astype(vertices, wp.vec3d)
+    assert sweeps(replayed, stencil, wp.float64(0.5), 1, waves) == waves
+    assert np.array_equal(replayed.numpy(), serial.numpy())
+    short = od.array.astype(vertices, wp.vec3d)
+    sweeps(short, stencil, wp.float64(0.5), 1, waves - 1)
+    assert not np.array_equal(short.numpy(), serial.numpy())
+
+
 def test_filter_laplacian_pyvista_keeps_the_volume(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:

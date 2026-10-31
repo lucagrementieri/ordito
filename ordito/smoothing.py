@@ -61,7 +61,7 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch, laplacian
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
 from ordito.cholesky import SparseCholesky, sparse_cholesky
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
@@ -511,8 +511,11 @@ def _gauss_seidel_passes(
         return _as_vec3(positions)
     constraint = _VolumeConstraint.anchored(positions, vertices, faces)
     out = _launch.empty(vertices.size, dtype=wp.vec3, device=vertices.device)
+    # Every sweep runs the first one's schedule, so the later ones issue its waves and read nothing.
+    # Recording it costs the first sweep's waves 5-14 %, so a single sweep does not.
+    waves = None
     for index in range(iterations):
-        _gauss_seidel_sweeps(positions, stencil, factor, 1)
+        waves = _gauss_seidel_sweeps(positions, stencil, factor, 1, waves, record=iterations > 1)
         constraint.apply(positions, out=out if index == iterations - 1 else None)
     return out
 
@@ -522,7 +525,10 @@ def _gauss_seidel_sweeps(
     stencil: tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.vec2i]],
     factor: wp.float64,
     sweeps: int,
-) -> None:
+    waves: int | None = None,
+    *,
+    record: bool = False,
+) -> int | None:
     """
     Run ``sweeps`` in-place sweeps over ``positions``, serially on the CPU, as waves on CUDA.
 
@@ -532,6 +538,10 @@ def _gauss_seidel_sweeps(
     and on a scan's its longest increasing neighbour path plus about 17 a sweep (dragon: 1 301
     waves for 10 sweeps). Waves are issued in batches and the finished count read after each; a
     wave past the fixpoint changes nothing.
+
+    The schedule depends on the stencil and ``sweeps`` alone, so under ``record`` the waves record
+    its length and the call returns it (on CUDA; ``None`` otherwise), and a later call over both
+    passes it as ``waves`` and issues exactly that many with no readback.
     """
     device = wp.get_device(positions.device)
     n = positions.size
@@ -542,9 +552,10 @@ def _gauss_seidel_sweeps(
             inputs=[positions, *stencil, factor, sweeps],
             device=device,
         )
-        return
-    # The sweep counts' ping-pong (written whole by the start) and the finished count, zeroed.
-    counts, spare, done = _launch.carve(wp.int32, (n, n, 1), device, zeroed=True)
+        return None
+    # The sweep counts' ping-pong with the waves run in a trailing slot (written whole by the
+    # start), and the finished count and the number of waves that finished it, zeroed.
+    counts, spare, done = _launch.carve(wp.int32, (n + 1, n + 1, 2), device, zeroed=True)
     _launch.launch(
         kernel_smoothing.gauss_seidel_wave_start,
         dim=n,
@@ -552,20 +563,38 @@ def _gauss_seidel_sweeps(
         outputs=[counts, done],
         device=device,
     )
-    batch = max(_GAUSS_SEIDEL_WAVE_BATCH * sweeps, _GAUSS_SEIDEL_MIN_BATCH)
+    known = waves is not None
+    wave = (
+        kernel_smoothing.gauss_seidel_wave_counted
+        if record and not known
+        else kernel_smoothing.gauss_seidel_wave
+    )
+    batch = (
+        waves
+        if waves is not None
+        else max(_GAUSS_SEIDEL_WAVE_BATCH * sweeps, _GAUSS_SEIDEL_MIN_BATCH)
+    )
     while True:
         for _ in range(batch):
             _launch.launch(
-                kernel_smoothing.gauss_seidel_wave,
+                wave,
                 dim=n,
                 inputs=[positions, counts, *stencil, factor, sweeps, done],
                 outputs=[spare],
                 device=device,
             )
             counts, spare = spare, counts
+        if known:
+            return waves
         # Readback: the wave count is the numbering's critical path, known once it has run.
-        if read_scalar(done, 0) == n:
-            return
+        if not record:
+            if read_scalar(done, 0) == n:
+                return None
+            continue
+        finished, length = read_values(done, 0, 2)
+        if finished == n:
+            # No wave finishes a vertex when every one is fixed: the start counted them all.
+            return length
 
 
 def inflate(
