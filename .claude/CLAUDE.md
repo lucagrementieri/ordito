@@ -1253,32 +1253,13 @@ it was read for the rule only, and each kernel implements the rule, not the sour
 
 Each is a measured limit of an option above; re-measure before acting on it.
 
-- **Done 2026-10-31: `float64` transport, and an opt-in for the iteration's rotations.** Two
-  `float32` stages stood between the needle fixtures and potpourri3d, and only together: the
-  tangent and transport angles (corner angles from `float32` positions, `float32` ring sums and
-  tables), and the settled CG reading the vector system's values in `float32`
-  (`solve_spd_settled`'s narrowing, which rounds the rotation entries just the same). The angles
-  are now `float64` throughout (`triangles.face_corner_angles_d` over the shared
-  `corner_angles_of_edges` rule; `halfedge_tangent_angles` / `halfedge_transport_angles` and
-  `Trimesh.halfedge_transport_angles` return `float64`; `Trimesh` no longer feeds its cached
-  `float32` corner table to them, so the answer cannot depend on what ran first). Worst
-  `log_map(method="potpourri3d")` coordinate against potpourri3d, CUDA / CPU, factored solve,
-  angles `float32` -> `float64`: `sphere_irregular` 4.6e-5 -> 1.4e-5 / 1.2e-4 -> 4.0e-6,
-  `torus_irregular` 2.9e-4 -> 6.6e-6 / 5.5e-5 -> 4.4e-6, `torus_irregular_holes` 1.6e-4 -> 8.9e-5
-  / 3.4e-4 -> 3.4e-5. The default first call still iterates on `float32` rotations and reads
-  1.2e-4 / 3.8e-5, 1.9e-4 / 1.7e-4, 6.4e-5 / 6.1e-4: **`HeatSolver.float64_rotations`** (owner's
-  choice, opt-in) makes the tangent-field roles (`vector`, `vector_pair`, `stack{n}`,
-  `crouzeix_raviart`) pass `narrow_values=False`, and the first call then equals the factored
-  one. Price, CUDA, one-shot calls on `icosphere(7)`: angles alone 1.00-1.05x (device +0.4 ms of
-  27: the `float64` corner `atan2`s 0.22 ms, the transport 0.12, the row kernel +0.1); the opt-in
-  1.33x on `log_map`, 1.69x on `transport_tangent_vectors` (the CG graph is bytes-bound and the
-  values are its largest stream); 1.00-1.17x up to `icosphere(6)`. `torus_irregular` is now in
-  the Class A test (with the opt-in). **Open:** `sphere_irregular` has one vertex of 500 at 1.23x
-  the bound on CUDA (CPU 0.33x); `torus_irregular_holes` keeps 6 / 2 of 481 vertices over it from
-  an interior source, the same worst vertex on both devices and in a factored solve (radius 2.90
-  of 4.04), so a systematic difference there. A `float64` cotangent table built in
-  `heat_operators` moved nothing, but whether it reached the vector system on the `Trimesh` path
-  was not checked.
+- **`log_map(method="potpourri3d")` on the needle fixtures, after the `float64` transport.**
+  With `HeatSolver.float64_rotations` (or a factored solve) `sphere_irregular` has one vertex of
+  500 at 1.23x the Class A bound on CUDA (CPU 0.33x), and `torus_irregular_holes` keeps 6 / 2 of
+  481 vertices over it from an interior source, the same worst vertex on both devices and in a
+  factored solve (radius 2.90 of 4.04): a systematic difference there, cause not found. A
+  `float64` cotangent table built in `heat_operators` moved nothing, but whether it reached the
+  vector system on the `Trimesh` path was not checked.
 - **`signed_distance_level_set` against `igl.offset_surface` holds at three of four levels.** At
   `iso = 0.1` the counts and faces agree but one vertex is 4.8e-5 off. Cause (traced 2026-10-28,
   both devices): a near-tangent lattice edge, both nodes within 1.8e-4 of the level, where any
@@ -1296,57 +1277,6 @@ Each is a measured limit of an option above; re-measure before acting on it.
   `float64` interpolation in `marching_cubes`; a route for inputs on the `float32`-only
   `sparse_marching_cubes`), opt-in or priced first (`float64` runs at 1/64 rate, §13.2, under
   `offset_mesh`, `resample_uniform`, `screened_poisson`, `fix_self_intersections`).
-- **The vector diffusions underflow on fine meshes, and the answer is then wrong** (diagnosed
-  2026-10-31, unit icospheres, a 6-vertex ring, max error against the analytic geodesic distance
-  in radians). The diffused field decays about 0.2x an edge hop at `t = (h/2)^2` and leaves
-  `float64`'s range about 450 hops out; the CG front then stops making new non-zeros, the settle
-  rule stops `settle_rounds` later (502 rounds against a 659-hop eccentricity at `icosphere(7)`,
-  327 680 faces, 491 520 edges), and the band behind the front (350-500 hops, values 1e-160 to
-  1e-300) is unconverged: backward error 0.5-0.7 on 197 k of 983 k scalar rows, so the check fires
-  and the factorization fallback is over budget. `potpourri3d` method: 0.0087 at `icosphere(6)`,
-  **0.88 at (7)**, 2.05 at (8); the default (vertex, `t = h^2`): 0.0043 / 0.0031 / **0.97 at
-  (8)**. **potpourri3d itself is wrong sooner**: 1.29 at (7), and on a `600 x 5` strip of spacing
-  0.1 its direct solve (round-off, not underflow) loses the far field already at 400 columns
-  (far end 25.3 against 39.6) where ordito's settled CG still holds. The scalar `heat_geodesic`
-  holds at (8) (0.010). A larger `t` fixes it: at (7) `t = h^2` gives 0.0026 and `4 h^2` 0.0014
-  (both still trip the generic backward-error warning on the far band, a false alarm there).
-  **Done (2026-10-31): the warning, then an adaptive time for the edge method.**
-  `edge_field_divergence` flags an edge whose field is non-zero but below
-  `kernels/heat.EDGE_FIELD_UNDERFLOW = 1e-280` (the broken field held 391, every accurate one a
-  minimum above 1e-137; exact zeros are an unreached component) and the call warns. The field
-  falls off like `exp(-d / sqrt(t))` (icosphere(6): `d / sqrt(t)` 330, smallest value 3e-137), so
-  with `t` not given the edge system's time is `max((h/2)^2, (diagonal / 400)^2)`
-  (`heat._EDGE_DIFFUSION_DECAY`, bounding-box diagonal for the farthest distance): every test
-  fixture sits at or below 155 and `sphere_med` at 367, so they keep geometry-central's time and
-  potpourri3d's answer. A budget of 500-600 degraded again (icosphere(7) 0.037 / 0.35): fields
-  near 1e-212 do not converge before the settle stops. **The settle window must grow with `t`:**
-  the rounds a field needs past full reach scale like `sqrt(t / t_default)` (icosphere(8) at
-  `t = 3.36 h^2`: about 436 rounds past reach against the 192-round window, 0.14 error; at 512,
-  0.0009), so the edge system's window is `192 * max(1, sqrt(t / (h/2)^2))`, for an explicit `t`
-  too. Default-`t` errors now: icosphere(6) / (7) / (8) 0.0087 / 0.0030 / 0.0009, strips of 600 /
-  1 200 columns 0.045 / 0.043 on ranges of 60 / 120, no warning. One readback of the edge-length
-  sums and the cached `Trimesh.bounds` per edge system (+1 launch, +1 allocation, +2 readbacks on
-  the census rows). `solve_spd_settled` no longer warns when its iterate fails the check and no
-  factorization fits: the check also fails on accurate far fields near the bottom of the range
-  (icosphere(7) at `t = h^2`: 3 751 rows, error 0.0026), so it could not say the answer was
-  wrong. **The default vertex method, done too:** a `"potpourri3d"`-discretization
-  `HeatSolver` at `t = None` (the vector heat family: `heat_signed_distance`'s default,
-  `transport_tangent_vectors`, `extend_scalar`, `log_map`) builds its scalar and vector systems
-  at `max(h^2, (diagonal / 400)^2)` with the window scaled (`HeatSolver._vertex_time`), its own
-  bundle when the floor engages; the mesh's cached `heat_operators` / `vector_heat_operators` and
-  the public builders keep `h^2`, and the `meshlab` / `igl` solvers (`heat_geodesic`) are
-  untouched. icosphere(8): `heat_signed_distance` 0.97 -> 0.0015, `log_map` radius 0.81 / 2.83
-  -> 0.0030 / 0.0026 (`heat_geodesic` / `potpourri3d` methods); the 1 200-column strip 24.2 ->
-  0.036, its `log_map(method="potpourri3d")` far-end radius 0 -> 116 of 120. `extend_scalar`'s
-  range bar went 1e-6 -> 1e-4 of the range: with the far field kept in range the quotient of two
-  settled fields wobbles by the settle's own accuracy (2.3e-6 at icosphere(8)), where real
-  obtuse-triangle overshoots measure 2e-3 and up. Every vector-heat census row +2 launches, +2
-  allocations, +2 readbacks (the edge-length sums and the bounds, once per solver).
-- **Closed 2026-10-31: the chunked ball walks are public.** `neighbors.GeodesicBallWalk` and
-  `neighbors.EdgePathBallWalk` (`chunks()` yields `(start, m)` with the balls in `rows[:m]`, and
-  warns once after the first full walk on its own), so `curvature` and `smoothing` no longer reach
-  private names and the three check-5 allowlist entries are gone. `geodesic_ball` still hands the
-  walk its clip counter beside its totals (one copy for both), through the module's own `_setup`.
 - **Declined, recorded so it is not re-proposed without new evidence:** hole-fill and stitch ties
   against MeshLib (a `float64` DP, MeshLib's triangle-term bits, descending `k` and its start
   vertex; stitch follows its heap order); earcut's serial ear order; MeshLab's Embree ambient
@@ -1375,14 +1305,7 @@ as it stands; an upgrade means adding the reference's own algorithm as an option
   correlations: MeshLab traces Embree / GPU direction sets, not vendored); `shape_diameter`
   against MeshLib's single ray; `max_tangent_sphere` against MeshLib's shrinking sphere (median
   relative difference: the same method, a different iteration).
-- ~~`statistical_outlier_mask` against MeshLib's `findOutliers`~~ (closed 2026-10-31: its four
-  criteria are now `radius_outlier_mask` (`WeaklyConnected` at `min_neighbors = maxNeighbors + 1`),
-  `cluster_outlier_mask` (`SmallComponents`), `plane_outlier_mask(method="meshlib")` (`FarSurface`:
-  a *signed* distance to the neighbours' plane, so only the side its closed-form eigenvector points
-  to is flagged; the default flags both sides) and `normal_outlier_mask` (`AwayNormal`, radians; a
-  neighbour normal sum shorter than 0.3 reads 180 and is always flagged), each Class A, both
-  devices; the z-score itself has no MeshLib counterpart);
-  `convex_subset_mask` against qhull (soundness plus recall); `voxelize_mesh` against MeshLib's
+- `convex_subset_mask` against qhull (soundness plus recall); `voxelize_mesh` against MeshLib's
   narrow-band distance field; `principal_axes` on a degenerate spectrum (one axis defined).
 - `screened_poisson` (`dense`) against open3d / pymeshlab (Kazhdan's octree; `method="octree"` is
   the reproduction) and MeshLib's distance volume (another reconstructor).
@@ -1402,20 +1325,10 @@ own `float32` rounding, `Open defects`).
 
 **Same algorithm, different settings.** `resample_uniform` against pymeshlab
 (`generate_resampled_uniform_mesh`: vcg's resampler, its own grid and sign rule; worst sample 1.69
-voxels against ordito's 0.48) and MeshLib (`rebuildMesh` decimates after marching); `offset_mesh`
-against MeshLib's `offsetMesh` and pymeshlab's uniform resampler at a matched cell size. Each needs
-the reference's grid placement, sign rule and post-processing as an option, as
-`resample_uniform(method="igl")` is for igl. **MeshLib done 2026-10-31 (Class C, the best this
-fixture allows):** `resample_uniform(method="meshlib")` is `rebuildMesh` / `mcOffsetMesh`'s lattice
-before decimation (box grown by `|offset|` and two voxels, `int(width / v) + 1` voxels an axis,
-samples at voxel centres, `float32`); against `decimate=False, preSubdivide=False` and the
-projection-normal sign on `sphere_irregular` the counts are equal and the worst vertex is 7.3e-5
-off (2-7 of 15-30 k above 1e-5, on edges nearly tangent to the level: MeshLib's `float32` field),
-while the marched meshes hold vertex pairs 1e-6 apart, so no nearest-vertex match is Class A; a
-stretched `icosphere(3)` is Class A at voxel 0.06 and one vertex off (4.4e-5) at 0.035. The igl or
-padded lattice reads 0.047-0.053 there. Its offsets also stand for `offset_mesh` against
-`offsetMesh`, whose default sign mode is OpenVDB's narrow band (not reproduced). At voxel 0.05 one
-ambiguous cell resolves differently (58 128 against 58 132 faces), so the test runs 0.06 and 0.07.
+voxels against ordito's 0.48), and `offset_mesh` against pymeshlab's uniform resampler at a matched
+cell size and MeshLib's `offsetMesh` at its default OpenVDB narrow-band sign. Each needs the
+reference's grid placement, sign rule and post-processing as an option, as
+`resample_uniform(method="igl")` is for igl and `method="meshlib"` for MeshLib's standard path.
 
 **MeshLib's "nice" operations (Class C, surface or volume statistics).** `fill_smooth` and
 `refill_region`'s refinement against `fillHoleNicely` / `patchMesh`, `stitch_smooth` against
@@ -1683,28 +1596,115 @@ cosine outside `[-1, 1]` fails its test; `std::min(1.0, NaN)` is `1`), in `float
   vertex pays is the cost). **Next:** histogram lowered vertices per round on dragon, and price
   the `float32` filter (`unfolded_distance_exceeds`) there, where its drop rate is unmeasured.
 
-### Open items from the 2026-10-31 host-traffic sweep
+### Closed 2026-10-31: items worked through
 
-The sweep (`1526f0e8`) cut the CPU census 38 813 -> 15 746 launches and 3 125 -> 2 083 readbacks,
-mostly by running CPU round loops as one launch; on CUDA it moved allocations 8 295 -> 7 490 and
-memsets 2 779 -> 2 525, but launches only 31 574 -> 31 392. Open:
-
-- **Closed 2026-10-31 (owner): a returned table is never carved.** The sweep's carves of a
-  returned matrix's or pattern's tables (`energies.crouzeix_raviart_cotmatrix`,
+- **The 2026-10-31 host-traffic sweep's two open items.** The sweep (`1526f0e8`) cut the CPU
+  census 38 813 -> 15 746 launches and 3 125 -> 2 083 readbacks, mostly by running CPU round
+  loops as one launch; on CUDA it moved allocations 8 295 -> 7 490 and memsets 2 779 -> 2 525,
+  but launches only 31 574 -> 31 392. **A returned table is never carved** (owner): the sweep's
+  carves of a returned matrix's or pattern's tables (`energies.crouzeix_raviart_cotmatrix`,
   `crouzeix_raviart_massmatrix`, `lscm_hessian`, `laplacian.mass_matrix`,
   `_mesh_operator_pattern`) and `neighbors._sorted_vertex_adjacency`'s returned adjacency are
   separate allocations again, as [`carve`][ordito._launch.carve]'s rule says: a caller keeping
-  one table (or a Warp sparse op reallocating one) must not hold the rest.
-- **Inspect the largest remaining CUDA counts for real fusion.** Each needs a timed A/B on a quiet
-  GPU before adoption (the sweep decided on counts only, the GPU being shared), and several touch
-  shapes §14 flags as possible losses:
-    - `screened_poisson(method="octree")`: about 1 556 launches, the per-wave x 4-colour
-      Gauss-Seidel launches at each depth. **Closed 2026-10-31, not a host cost:** bunny at depth
-      7 / 8 / 9 issues 1 436 / 2 520 / 4 628 wave launches at 10.7 / 8.1 / 8.7 µs of device time
-      each, the call's device time equal to its wall time (15.5 / 20.5 / 40.7 ms), so capture
-      cannot pay (already declined 2026-10-26, `kernels/algorithms/poisson_octree.
-      octree_gauss_seidel_wave`). The lever is a wave launch's own cost (its rows rebuilt by
-      `octree_row`, and threads over the whole slice where only stored nodes work), unpriced.
+  one table (or a Warp sparse op reallocating one) must not hold the rest. **The octree's ~1 556
+  launches are not a host cost:** bunny at depth 7 / 8 / 9 issues 1 436 / 2 520 / 4 628 wave
+  launches at 10.7 / 8.1 / 8.7 µs of device time each, the call's device time equal to its wall
+  time (15.5 / 20.5 / 40.7 ms), so capture cannot pay (declined 2026-10-26,
+  `kernels/algorithms/poisson_octree.octree_gauss_seidel_wave`). The lever left is a wave
+  launch's own cost (its rows rebuilt by `octree_row`, threads over the whole slice where only
+  stored nodes work), unpriced; the waves are latency-bound per thread, so a compacted launch
+  would not shorten them.
+- **The chunked ball walks are public.** `neighbors.GeodesicBallWalk` and
+  `neighbors.EdgePathBallWalk` (`chunks()` yields `(start, m)` with the balls in `rows[:m]`, and
+  warns once after the first full walk on its own), so `curvature` and `smoothing` no longer reach
+  private names and the three check-5 allowlist entries are gone. `geodesic_ball` still hands the
+  walk its clip counter beside its totals (one copy for both), through the module's own `_setup`.
+- **`float64` transport, and an opt-in for the iteration's rotations.** Two `float32` stages
+  stood between the needle fixtures and potpourri3d, and only together: the tangent and transport
+  angles (corner angles from `float32` positions, `float32` ring sums and tables), and the settled
+  CG reading the vector system's values in `float32` (`solve_spd_settled`'s narrowing, which
+  rounds the rotation entries just the same). The angles are now `float64` throughout
+  (`triangles.face_corner_angles_d` over the shared `corner_angles_of_edges` rule;
+  `halfedge_tangent_angles` / `halfedge_transport_angles` and `Trimesh.halfedge_transport_angles`
+  return `float64`; `Trimesh` no longer feeds its cached `float32` corner table to them, so the
+  answer cannot depend on what ran first). Worst `log_map(method="potpourri3d")` coordinate
+  against potpourri3d, CUDA / CPU, factored solve, angles `float32` -> `float64`:
+  `sphere_irregular` 4.6e-5 -> 1.4e-5 / 1.2e-4 -> 4.0e-6, `torus_irregular` 2.9e-4 -> 6.6e-6 /
+  5.5e-5 -> 4.4e-6, `torus_irregular_holes` 1.6e-4 -> 8.9e-5 / 3.4e-4 -> 3.4e-5. The default first
+  call still iterates on `float32` rotations and reads 1.2e-4 / 3.8e-5, 1.9e-4 / 1.7e-4, 6.4e-5 /
+  6.1e-4: **`HeatSolver.float64_rotations`** (owner's choice, opt-in) makes the tangent-field
+  roles (`vector`, `vector_pair`, `stack{n}`, `crouzeix_raviart`) pass `narrow_values=False`, and
+  the first call then equals the factored one. Price, CUDA, one-shot calls on `icosphere(7)`:
+  angles alone 1.00-1.05x (device +0.4 ms of 27: the `float64` corner `atan2`s 0.22 ms, the
+  transport 0.12, the row kernel +0.1); the opt-in 1.33x on `log_map`, 1.69x on
+  `transport_tangent_vectors` (the CG graph is bytes-bound and the values are its largest
+  stream); 1.00-1.17x up to `icosphere(6)`. `torus_irregular` is in the Class A test with the
+  opt-in. What is left is an open item (`Open items from the 2026-10-28 Class C upgrades`).
+- **The vector diffusions underflowed on fine meshes, and the answer was then wrong** (diagnosed
+  2026-10-31, unit icospheres, a 6-vertex ring, max error against the analytic geodesic distance
+  in radians). The diffused field decays about 0.2x an edge hop at `t = (h/2)^2` and leaves
+  `float64`'s range about 450 hops out; the CG front then stops making new non-zeros, the settle
+  rule stops `settle_rounds` later (502 rounds against a 659-hop eccentricity at `icosphere(7)`,
+  327 680 faces, 491 520 edges), and the band behind the front (350-500 hops, values 1e-160 to
+  1e-300) is unconverged: backward error 0.5-0.7 on 197 k of 983 k scalar rows, so the check fires
+  and the factorization fallback is over budget. `potpourri3d` method: 0.0087 at `icosphere(6)`,
+  **0.88 at (7)**, 2.05 at (8); the default (vertex, `t = h^2`): 0.0043 / 0.0031 / **0.97 at
+  (8)**. **potpourri3d itself is wrong sooner**: 1.29 at (7), and on a `600 x 5` strip of spacing
+  0.1 its direct solve (round-off, not underflow) loses the far field already at 400 columns
+  (far end 25.3 against 39.6) where ordito's settled CG still holds. The scalar `heat_geodesic`
+  holds at (8) (0.010). A larger `t` fixes it: at (7) `t = h^2` gives 0.0026 and `4 h^2` 0.0014
+  (both still trip the generic backward-error warning on the far band, a false alarm there).
+  **Fixed: the warning, then an adaptive time for the edge method.**
+  `edge_field_divergence` flags an edge whose field is non-zero but below
+  `kernels/heat.EDGE_FIELD_UNDERFLOW = 1e-280` (the broken field held 391, every accurate one a
+  minimum above 1e-137; exact zeros are an unreached component) and the call warns. The field
+  falls off like `exp(-d / sqrt(t))` (icosphere(6): `d / sqrt(t)` 330, smallest value 3e-137), so
+  with `t` not given the edge system's time is `max((h/2)^2, (diagonal / 400)^2)`
+  (`heat._EDGE_DIFFUSION_DECAY`, bounding-box diagonal for the farthest distance): every test
+  fixture sits at or below 155 and `sphere_med` at 367, so they keep geometry-central's time and
+  potpourri3d's answer. A budget of 500-600 degraded again (icosphere(7) 0.037 / 0.35): fields
+  near 1e-212 do not converge before the settle stops. **The settle window must grow with `t`:**
+  the rounds a field needs past full reach scale like `sqrt(t / t_default)` (icosphere(8) at
+  `t = 3.36 h^2`: about 436 rounds past reach against the 192-round window, 0.14 error; at 512,
+  0.0009), so the edge system's window is `192 * max(1, sqrt(t / (h/2)^2))`, for an explicit `t`
+  too. Default-`t` errors now: icosphere(6) / (7) / (8) 0.0087 / 0.0030 / 0.0009, strips of 600 /
+  1 200 columns 0.045 / 0.043 on ranges of 60 / 120, no warning. One readback of the edge-length
+  sums and the cached `Trimesh.bounds` per edge system (+1 launch, +1 allocation, +2 readbacks on
+  the census rows). `solve_spd_settled` no longer warns when its iterate fails the check and no
+  factorization fits: the check also fails on accurate far fields near the bottom of the range
+  (icosphere(7) at `t = h^2`: 3 751 rows, error 0.0026), so it could not say the answer was
+  wrong. **The default vertex method, done too:** a `"potpourri3d"`-discretization
+  `HeatSolver` at `t = None` (the vector heat family: `heat_signed_distance`'s default,
+  `transport_tangent_vectors`, `extend_scalar`, `log_map`) builds its scalar and vector systems
+  at `max(h^2, (diagonal / 400)^2)` with the window scaled (`HeatSolver._vertex_time`), its own
+  bundle when the floor engages; the mesh's cached `heat_operators` / `vector_heat_operators` and
+  the public builders keep `h^2`, and the `meshlab` / `igl` solvers (`heat_geodesic`) are
+  untouched. icosphere(8): `heat_signed_distance` 0.97 -> 0.0015, `log_map` radius 0.81 / 2.83
+  -> 0.0030 / 0.0026 (`heat_geodesic` / `potpourri3d` methods); the 1 200-column strip 24.2 ->
+  0.036, its `log_map(method="potpourri3d")` far-end radius 0 -> 116 of 120. `extend_scalar`'s
+  range bar went 1e-6 -> 1e-4 of the range: with the far field kept in range the quotient of two
+  settled fields wobbles by the settle's own accuracy (2.3e-6 at icosphere(8)), where real
+  obtuse-triangle overshoots measure 2e-3 and up. Every vector-heat census row +2 launches, +2
+  allocations, +2 readbacks (the edge-length sums and the bounds, once per solver).
+- **MeshLib's `findOutliers`, all four criteria (was: `statistical_outlier_mask` against it, Class
+  C).** `radius_outlier_mask` is `WeaklyConnected` at `min_neighbors = maxNeighbors + 1`;
+  `cluster_outlier_mask` is `SmallComponents`; `plane_outlier_mask(method="meshlib")` is
+  `FarSurface`, a *signed* distance to the neighbours' plane, so only the side its closed-form
+  eigenvector points to is flagged (the default flags both sides); `normal_outlier_mask` is
+  `AwayNormal` (radians; a neighbour normal sum shorter than 0.3 reads 180 and is always
+  flagged). Each Class A on both devices, 12-82x MeshLib on bunny. The z-score itself has no
+  MeshLib counterpart.
+- **`resample_uniform(method="meshlib")` (Class C, the best this fixture allows).** It is
+  `rebuildMesh` / `mcOffsetMesh`'s lattice before decimation (box grown by `|offset|` and two
+  voxels, `int(width / v) + 1` voxels an axis, samples at voxel centres, `float32`); against
+  `decimate=False, preSubdivide=False` and the projection-normal sign on `sphere_irregular` the
+  counts are equal and the worst vertex is 7.3e-5 off (2-7 of 15-30 k above 1e-5, on edges nearly
+  tangent to the level: MeshLib's `float32` field), while the marched meshes hold vertex pairs 1e-6
+  apart, so no nearest-vertex match is Class A; a stretched `icosphere(3)` is Class A at voxel 0.06
+  and one vertex off (4.4e-5) at 0.035. The igl or padded lattice reads 0.047-0.053 there. Its
+  offsets also stand for `offset_mesh` against `offsetMesh`, whose default sign mode is OpenVDB's
+  narrow band (not reproduced). At voxel 0.05 one ambiguous cell resolves differently (58 128
+  against 58 132 faces), so the test runs 0.06 and 0.07.
 
 ### `smooth_region` on large regions: the V-cycle form (2026-10-23 sweep)
 
