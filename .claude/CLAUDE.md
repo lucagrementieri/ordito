@@ -1385,7 +1385,17 @@ own `float32` rounding, `Open defects`).
 voxels against ordito's 0.48) and MeshLib (`rebuildMesh` decimates after marching); `offset_mesh`
 against MeshLib's `offsetMesh` and pymeshlab's uniform resampler at a matched cell size. Each needs
 the reference's grid placement, sign rule and post-processing as an option, as
-`resample_uniform(method="igl")` is for igl.
+`resample_uniform(method="igl")` is for igl. **MeshLib done 2026-10-31 (Class C, the best this
+fixture allows):** `resample_uniform(method="meshlib")` is `rebuildMesh` / `mcOffsetMesh`'s lattice
+before decimation (box grown by `|offset|` and two voxels, `int(width / v) + 1` voxels an axis,
+samples at voxel centres, `float32`); against `decimate=False, preSubdivide=False` and the
+projection-normal sign on `sphere_irregular` the counts are equal and the worst vertex is 7.3e-5
+off (2-7 of 15-30 k above 1e-5, on edges nearly tangent to the level: MeshLib's `float32` field),
+while the marched meshes hold vertex pairs 1e-6 apart, so no nearest-vertex match is Class A; a
+stretched `icosphere(3)` is Class A at voxel 0.06 and one vertex off (4.4e-5) at 0.035. The igl or
+padded lattice reads 0.047-0.053 there. Its offsets also stand for `offset_mesh` against
+`offsetMesh`, whose default sign mode is OpenVDB's narrow band (not reproduced). At voxel 0.05 one
+ambiguous cell resolves differently (58 128 against 58 132 faces), so the test runs 0.06 and 0.07.
 
 **MeshLib's "nice" operations (Class C, surface or volume statistics).** `fill_smooth` and
 `refill_region`'s refinement against `fillHoleNicely` / `patchMesh`, `stitch_smooth` against

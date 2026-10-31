@@ -3926,7 +3926,7 @@ def resample_uniform(
     voxel_size: float | None = None,
     offset: float = 0.0,
     sign_mode: Literal["parity", "winding"] = "winding",
-    method: Literal["padded", "igl"] = "padded",
+    method: Literal["padded", "igl", "meshlib"] = "padded",
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Rebuild a mesh by sampling its signed distance field on a uniform grid and re-extracting it.
@@ -3966,7 +3966,10 @@ def resample_uniform(
         ``Notes``). ``"igl"`` is ``igl.offset_surface``'s: ``round(longest_extent / voxel_size)``
         nodes along the box's longest axis, one of them padding at each end, the box grown by
         ``offset``, the lattice centred on it; the extraction is returned as marched, as igl does.
-        Its spacing is therefore near ``voxel_size`` rather than equal to it.
+        Its spacing is therefore near ``voxel_size`` rather than equal to it. ``"meshlib"`` is a
+        voxel-centred lattice of exactly ``voxel_size``: the box grown by ``|offset|`` and then
+        by two voxels a side, ``floor(width / voxel_size) + 1`` voxels an axis, a sample at each
+        voxel's centre (all in ``float32``), the extraction returned as marched.
 
     Returns
     -------
@@ -3978,8 +3981,9 @@ def resample_uniform(
     Raises
     ------
     ValueError
-        If ``voxel_size`` is not positive, if ``method`` is not ``"padded"`` or ``"igl"``, or if
-        under ``"igl"`` it leaves fewer than four nodes along the longest axis.
+        If ``voxel_size`` is not positive, if ``method`` is not ``"padded"``, ``"igl"`` or
+        ``"meshlib"``, or if under ``"igl"`` it leaves fewer than four nodes along the longest
+        axis.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -4029,10 +4033,11 @@ def resample_uniform(
         voxel_size = 0.01 * diagonal
     if voxel_size <= 0.0:
         raise ValueError(f"resample_uniform requires voxel_size > 0, got {voxel_size}")
-    if method not in ("padded", "igl"):
-        raise ValueError(f"method must be 'padded' or 'igl', got {method!r}")
-    if method == "igl":
-        shape, bounds = _igl_offset_lattice(lower, upper, offset, voxel_size)
+    if method not in ("padded", "igl", "meshlib"):
+        raise ValueError(f"method must be 'padded', 'igl' or 'meshlib', got {method!r}")
+    if method != "padded":
+        lattice = _igl_offset_lattice if method == "igl" else _voxel_centred_lattice
+        shape, bounds = lattice(lower, upper, offset, voxel_size)
         return od.levelset.signed_distance_level_set(
             vertices, faces, offset, shape, bounds=bounds, sign_mode=sign_mode
         )
@@ -4106,6 +4111,28 @@ def _igl_offset_lattice(
     grid_lower = wp.vec3(*(centre[axis] - 0.5 * span[axis] for axis in range(3)))
     grid_upper = wp.vec3(*(centre[axis] + 0.5 * span[axis] for axis in range(3)))
     return (side[0], side[1], side[2]), (grid_lower, grid_upper)
+
+
+def _voxel_centred_lattice(
+    lower: wp.vec3, upper: wp.vec3, offset: float, voxel_size: float
+) -> tuple[tuple[int, int, int], tuple[wp.vec3, wp.vec3]]:
+    """
+    ``resample_uniform(method="meshlib")``'s lattice: its sample counts and corner samples.
+
+    The vertex box grown by ``|offset|``, the origin two voxels below it, and
+    ``int((max + 2 v - origin) / v) + 1`` voxels an axis; a sample sits at each voxel's centre,
+    ``origin + (i + 0.5) v``. Every step in ``float32``, as the reference forms it.
+    """
+    v = np.float32(voxel_size)
+    grown = np.float32(abs(offset))
+    box_min = np.asarray(odt.vec3_floats(lower), dtype=np.float32) - grown
+    box_max = np.asarray(odt.vec3_floats(upper), dtype=np.float32) + grown
+    origin = box_min - np.float32(2.0) * v
+    counts = ((box_max + np.float32(2.0) * v - origin) / v).astype(np.int32) + 1
+    first = origin + np.float32(0.5) * v
+    last = origin + (counts.astype(np.float32) - np.float32(0.5)) * v
+    shape = (int(counts[0]), int(counts[1]), int(counts[2]))
+    return shape, (wp.vec3(*first.tolist()), wp.vec3(*last.tolist()))
 
 
 def ball_pivoting(

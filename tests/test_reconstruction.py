@@ -2084,6 +2084,57 @@ def test_resample_uniform_igl_method_matches_igl_offset_surface(
     )
 
 
+@pytest.mark.parametrize("voxel_size", [0.06, 0.07])
+@pytest.mark.parametrize("offset", [0.0, -0.05, 0.05])
+@pytest.mark.parity("resample_uniform", "meshlib")
+def test_resample_uniform_meshlib_method_matches_meshlib_offset(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], offset: float, voxel_size: float
+) -> None:
+    """
+    Class C (a vertex-set distance): ``method="meshlib"`` is MeshLib's marched offset, undecimated.
+
+    ``rebuildMesh`` at ``offset=0`` and ``mcOffsetMesh`` otherwise, with decimation and the input
+    pre-subdivision off and the projection-normal sign (the one it picks on a closed mesh with no
+    self-intersection). The lattice is the same (counts equal, both ways); what is not is
+    MeshLib's ``float32`` field, which moves a few vertices on edges nearly tangent to the level
+    set by up to 7.3e-5 (2 to 7 of 15 k to 30 k vertices above 1e-5), while the marched meshes
+    hold vertex pairs 1e-6 apart, so a nearest-vertex match cannot carry Class A here. Asserted:
+    equal vertex and face counts and a symmetric worst nearest-vertex distance under 3e-4, 4x the
+    measured worst. **Bug class excluded:** a lattice anchored or sized differently. **Mutation
+    probe, measured:** the same comparison with ``method="igl"`` or the default lattice changes
+    the counts (18 284 / 20 326 against 20 128 vertices at offset 0) and moves the gap to
+    0.047-0.053, over 150x the bound.
+    """
+    sphere_tm, sphere_wp = sphere_irregular
+    mesh_ml = numpy_to_meshlib(sphere_tm.vertices, sphere_tm.faces)
+    if offset == 0.0:
+        settings_ml = mm.RebuildMeshSettings()
+        settings_ml.voxelSize = voxel_size
+        settings_ml.decimate = False
+        settings_ml.preSubdivide = False
+        settings_ml.signMode = mm.SignDetectionModeShort.ProjectionNormal
+        reference_ml = mm.rebuildMesh(mm.MeshPart(mesh_ml), settings_ml)
+    else:
+        params_ml = mm.OffsetParameters()
+        params_ml.voxelSize = voxel_size
+        params_ml.signDetectionMode = mm.SignDetectionMode.ProjectionNormal
+        reference_ml = mm.mcOffsetMesh(mm.MeshPart(mesh_ml), offset, params_ml)
+    reference_tm = meshlib_to_trimesh(reference_ml)
+
+    out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(
+        sphere_wp.points, sphere_wp.indices, voxel_size=voxel_size, offset=offset, method="meshlib"
+    )
+    out_np = out_vertices_wp.numpy().astype(np.float64)
+    reference_np = np.asarray(reference_tm.vertices, dtype=np.float64)
+
+    assert np.asarray(reference_tm.faces).shape[0] > 1000  # non-vacuity
+    assert out_vertices_wp.size == reference_np.shape[0]
+    assert out_faces_wp.size == 3 * np.asarray(reference_tm.faces).shape[0]
+    forward, _ = cKDTree(reference_np).query(out_np)
+    backward, _ = cKDTree(out_np).query(reference_np)
+    assert max(np.max(forward), np.max(backward)) < 3e-4
+
+
 @pytest.mark.parity("resample_uniform", "meshlib")
 def test_resample_uniform_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
