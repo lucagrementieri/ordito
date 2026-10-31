@@ -2563,6 +2563,7 @@ def quadric_decimate(
     target_faces: int | None = ...,
     target_ratio: float | None = ...,
     feature_angle: float = ...,
+    min_face_quality: float = ...,
     max_iter: int = ...,
     return_index: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
@@ -2574,6 +2575,7 @@ def quadric_decimate(
     target_faces: int | None = ...,
     target_ratio: float | None = ...,
     feature_angle: float = ...,
+    min_face_quality: float = ...,
     max_iter: int = ...,
     return_index: Literal[True],
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]: ...
@@ -2584,6 +2586,7 @@ def quadric_decimate(
     target_faces: int | None = None,
     target_ratio: float | None = None,
     feature_angle: float = 180.0,
+    min_face_quality: float = 0.0,
     max_iter: int = 100,
     return_index: bool = False,
 ) -> (
@@ -2630,6 +2633,14 @@ def quadric_decimate(
         what igl, Open3D and MeshLab do. A smaller angle trades reach for preservation: the
         dihedral angles of a coarsened surface grow, so on a scan an angle of 30 stops the
         decimation near a tenth of the input whatever the target.
+    min_face_quality
+        Triangle-quality floor, as a mean ratio in ``[0, 1]`` (1 for an equilateral triangle, see
+        [`face_quality`][ordito.triangles.face_quality]): a collapse may not take a face
+        from a mean ratio at or above it to one below it. A face already below the floor is
+        ignored, so an input's own slivers never stall the decimation. The default, 0, disables
+        the guard. ``0.1`` raises the worst output triangles several-fold at large reductions
+        (they are needles along the rims of holes, which keep the input's density while the
+        surface around them coarsens) for a slightly larger mean deviation from the input.
     max_iter
         Cap on collapse passes. Each pass commits a conflict-free independent set, so a large
         reduction needs many; the loop also stops early once the target is met or a pass commits
@@ -2665,7 +2676,8 @@ def quadric_decimate(
     ------
     ValueError
         If neither or both of ``target_faces`` / ``target_ratio`` is given, ``target_faces`` is
-        negative, or ``target_ratio`` is outside ``(0, 1]``.
+        negative, ``target_ratio`` is outside ``(0, 1]``, or ``min_face_quality`` is outside
+        ``[0, 1]``.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -2745,6 +2757,9 @@ def quadric_decimate(
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
     target = _resolve_decimation_target(target_faces, target_ratio, n_faces)
+    if not 0.0 <= min_face_quality <= 1.0:
+        msg = f"min_face_quality must be in [0, 1], got {min_face_quality}"
+        raise ValueError(msg)
 
     if n_faces == 0 or target >= n_faces:
         # Nothing to collapse, but the *output* contract still holds: vertices compacted from index
@@ -2760,7 +2775,12 @@ def quadric_decimate(
         return kept_vertices, kept_faces, remap, od.array.arange(n_faces, device=faces.device)
 
     buffers = _DecimationBuffers(
-        vertices, faces, target, wp.float32(math.radians(feature_angle)), track_index=return_index
+        vertices,
+        faces,
+        target,
+        wp.float32(math.radians(feature_angle)),
+        min_face_quality=min_face_quality,
+        track_index=return_index,
     )
     for _ in range(max_iter):
         if not buffers.run_pass():
@@ -2806,6 +2826,7 @@ class _DecimationBuffers:
         target: int,
         feature: wp.float32,
         *,
+        min_face_quality: float = 0.0,
         track_index: bool = False,
     ) -> None:
         """Allocate at the input's size, which bounds every later pass, and seed the live counts."""
@@ -2813,6 +2834,7 @@ class _DecimationBuffers:
         self._device = device
         self._target = target
         self._feature = feature
+        self._min_quality = wp.float32(min_face_quality)
         self._track_index = track_index
         # Read once, so every pass of one call, captured or issued, sums its quadrics one way.
         self._exact = is_deterministic()
@@ -3240,6 +3262,7 @@ class _DecimationBuffers:
                     face_offsets,
                     self._adjacency,
                     self.state,
+                    self._min_quality,
                     self._candidates,
                     self._removed,
                     self._target_pos,
@@ -3384,6 +3407,7 @@ class _DecimationBuffers:
                     self._adjacency_scan.chunk_offsets,
                     self.state,
                     wp.int32(0 if self._exact else 1),
+                    self._min_quality,
                     face_offsets,
                     self._face_quadrics,
                     self._quadrics,

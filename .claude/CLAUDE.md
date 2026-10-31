@@ -974,6 +974,3 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `halfedge_tangent_angles_from_positions`, the face-parallel corner pre-hook,
   `project_turning_angle`, the gather-form smoothing passes, `join_round`'s serial last-block
   tail, the dissection axis on lane 0 of the last block.
-- **Owner decisions pending:** `oriented_bounding_box` keeps `refine_iterations=8` (the Class A
-  default would be `0`, 23 % too large on a turned box); `quadric_decimate`'s face-quality guard
-  stays off.

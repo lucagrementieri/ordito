@@ -2052,6 +2052,43 @@ def _noisy_hairpin(gap: float, sigma: float, seed: int) -> tuple[np.ndarray, np.
     return vertices, faces.astype(np.int64)
 
 
+@pytest.mark.parametrize(("min_face_quality", "floor"), [(0.0, None), (0.1, 0.08)])
+def test_quadric_decimate_min_face_quality_lifts_the_worst_triangles(
+    device: str, min_face_quality: float, floor: float | None
+) -> None:
+    """
+    Not a library comparison: ``min_face_quality`` is ordito's own option, no reference has it.
+
+    ``icosphere(4)`` with 40 single-face holes, decimated to 5 %: each hole's rim keeps the input's
+    density while the sphere around it coarsens twentyfold, which leaves needles along the rims.
+    Unguarded the worst output mean ratio is 0.04 on CUDA and 0.02 on the CPU (asserted below
+    0.06, so the guarded case is not vacuous); with the guard at 0.1 no collapse may take a face
+    below the floor from above it, and the worst face measures 0.101 on both devices (asserted
+    above 0.08). The target is reached in both cases. Mutation probe: the guard's threshold forced
+    to 0 fails the 0.08 bound on both devices.
+
+    **Bug class excluded:** a guard that is not wired through to the collapse veto, or that
+    stalls the decimation short of its target.
+    """
+    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=4, device=device)
+    faces_np = faces_wp.numpy().reshape(-1, 3)
+    keep = np.ones(faces_np.shape[0], dtype=bool)
+    keep[np.random.default_rng(0).choice(faces_np.shape[0], size=40, replace=False)] = False
+    holed_wp = wp.array(faces_np[keep].reshape(-1), dtype=wp.int32, device=device)
+    target = int(0.05 * keep.sum())
+    out_vertices_wp, out_faces_wp = od.remesh.quadric_decimate(
+        vertices_wp, holed_wp, target_faces=target, min_face_quality=min_face_quality
+    )
+    assert out_faces_wp.size // 3 <= target
+    worst = float(
+        od.triangles.face_quality(out_vertices_wp, out_faces_wp, metric="mean_ratio").numpy().min()
+    )
+    if floor is None:
+        assert worst < 0.06
+    else:
+        assert worst > floor
+
+
 def test_quadric_decimate_reaches_its_target_and_floors_on_feature_angle(device: str) -> None:
     """
     Not a library comparison: no reference exposes ``feature_angle``'s effect on the floor.
@@ -2270,6 +2307,8 @@ def test_quadric_decimate_invalid(device: str) -> None:
         od.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=-1)
     with pytest.raises(ValueError, match=r"target_ratio must be in \(0, 1\]"):
         od.remesh.quadric_decimate(vertices_wp, faces_wp, target_ratio=0.0)
+    with pytest.raises(ValueError, match=r"min_face_quality must be in \[0, 1\]"):
+        od.remesh.quadric_decimate(vertices_wp, faces_wp, target_ratio=0.5, min_face_quality=-0.1)
 
 
 def test_quadric_decimate_captures_its_pass(

@@ -2528,6 +2528,62 @@ def collapse_fold_and_sheets(
 
 
 @wp.func
+def move_degrades_a_face(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_face_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    moved: wp.int32,
+    partner: wp.int32,
+    target: wp.vec3,
+    min_quality: wp.float32,
+) -> wp.bool:
+    # Would moving ``moved`` to ``target`` take a face it keeps (one not holding ``partner``) from a
+    # mean ratio of at least ``min_quality`` to below it? A face already below the bound is
+    # ignored, so the rule cannot stall on an input's own slivers (a veto that also refused to let
+    # a bad face get worse stalled sliver-heavy scans). The same walk as ``move_fold_and_sheet``,
+    # kept out of it: inside that walk the test cost the unguarded decimation 1.10-1.15x on
+    # ``dragon`` even with the bound a literal 0.
+    for slot in range(vertex_face_offsets[moved], vertex_face_offsets[moved + 1]):
+        f = vertex_faces[slot]
+        i0, i1, i2 = corner_triple(faces, f)
+        if i0 == partner or i1 == partner or i2 == partner:
+            continue
+        p0 = vertices[i0]
+        p1 = vertices[i1]
+        p2 = vertices[i2]
+        q0 = wp.where(i0 == moved, target, p0)
+        q1 = wp.where(i1 == moved, target, p1)
+        q2 = wp.where(i2 == moved, target, p2)
+        if triangle_mean_ratio(q0, q1, q2) < min_quality:
+            if triangle_mean_ratio(p0, p1, p2) >= min_quality:
+                return True
+    return False
+
+
+@wp.func
+def collapse_degrades_a_face(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_face_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    s: wp.int32,
+    r: wp.int32,
+    p: wp.vec3,
+    min_quality: wp.float32,
+) -> wp.bool:
+    # ``quadric_decimate(min_face_quality=)``: ``move_degrades_a_face`` for both endpoints of a
+    # collapse welding ``r`` onto ``s`` at ``p``.
+    if move_degrades_a_face(
+        vertices, faces, vertex_face_offsets, vertex_faces, r, s, p, min_quality
+    ):
+        return True
+    return move_degrades_a_face(
+        vertices, faces, vertex_face_offsets, vertex_faces, s, r, p, min_quality
+    )
+
+
+@wp.func
 def collapse_folds_a_face(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -5664,6 +5720,7 @@ def quadric_collapse_candidate_at(
     vertex_face_offsets: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
     state: wp.array[wp.int32],
+    min_quality: wp.float32,
     k: wp.int32,
     out_survivor: wp.array[wp.int32],
     out_removed: wp.array[wp.int32],
@@ -5717,6 +5774,11 @@ def quadric_collapse_candidate_at(
     )
     if folds or joins_sheets:
         return
+    if min_quality > 0.0:
+        if collapse_degrades_a_face(
+            vertices, faces, vertex_face_offsets, vertex_faces, s, r, target, min_quality
+        ):
+            return
 
     cost = wp.float32(quadric_error(quadric, optimum))
     out_survivor[k] = s
@@ -5738,6 +5800,7 @@ def quadric_collapse_candidates(
     vertex_face_offsets: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
     state: wp.array[wp.int32],
+    min_quality: wp.float32,
     out_survivor: wp.array[wp.int32],
     out_removed: wp.array[wp.int32],
     out_pos: wp.array[wp.vec3],
@@ -5758,6 +5821,7 @@ def quadric_collapse_candidates(
         vertex_face_offsets,
         vertex_faces,
         state,
+        min_quality,
         k,
         out_survivor,
         out_removed,
@@ -5797,6 +5861,7 @@ def quadric_pass_head(
     count_chunk_offsets: wp.array[wp.int32],
     state: wp.array[wp.int32],
     score: wp.int32,
+    min_quality: wp.float32,
     vertex_face_offsets: wp.array[wp.int32],
     face_quadrics: wp.array[SymmetricQuadric],
     quadrics: wp.array[SymmetricQuadric],
@@ -5897,6 +5962,7 @@ def quadric_pass_head(
                 vertex_face_offsets,
                 out_adjacency,
                 state,
+                min_quality,
                 k,
                 candidates,
                 removed,
