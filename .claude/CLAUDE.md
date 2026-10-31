@@ -950,8 +950,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   off on a near-tangent lattice edge; only igl's `float64` lattice reproduces it. Proposed: an
   opt-in `float64` path through the whole extraction (`bounds`, node positions, distances,
   `marching_cubes` interpolation), priced first (`float64` runs at 1/64 rate, §13.2).
-- **`relax_approx(method="meshlib")`** drifts on planar passes of `torus_irregular_holes` (2e-3
-  at 5 passes, each pass within 4.8e-7): MeshLib's float order, excluded from the test.
 - **The MeshLab geodesic front on scan meshes** is 4-9x the MeshLib front (dragon 248 vs 29 ms):
   scan-mesh rounds re-lower much of the mesh, not a layout cost. Next: histogram lowered vertices
   per round on dragon and price the `float32` filter (`unfolded_distance_exceeds`) there.

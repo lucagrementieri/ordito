@@ -1426,15 +1426,23 @@ def test_relax_approx_fits_streamed_balls_as_packed_ones(
 
 
 @pytest.mark.parity("relax_approx_meshlib", "meshlib")
-@pytest.mark.parametrize("iterations", [1, 5])
 @pytest.mark.parametrize(
-    ("mesh_name", "fit"),
+    ("mesh_name", "fit", "iterations"),
     [
-        ("noisy_icosphere", "planar"),
-        ("noisy_icosphere", "quadric"),
-        ("sphere_irregular", "planar"),
-        ("sphere_irregular", "quadric"),
-        ("saddle_graded", "planar"),
+        *[
+            (mesh_name, fit, iterations)
+            for mesh_name, fit in [
+                ("noisy_icosphere", "planar"),
+                ("noisy_icosphere", "quadric"),
+                ("sphere_irregular", "planar"),
+                ("sphere_irregular", "quadric"),
+                ("saddle_graded", "planar"),
+                ("torus_irregular_holes", "quadric"),
+            ]
+            for iterations in [1, 5]
+        ],
+        # Four planar passes, not five: see the docstring's last paragraph.
+        ("torus_irregular_holes", "planar", 4),
     ],
 )
 def test_relax_approx_meshlib_matches_meshlib(
@@ -1462,8 +1470,12 @@ def test_relax_approx_meshlib_matches_meshlib(
     (``kernels/smoothing.relax_approx_step``'s) was 7.0e-06 on CUDA on the noisy sphere at three
     planar passes, inside the tolerance, which is why this path forms it in float64. Five planar
     passes over ``torus_irregular_holes`` reach 2.0e-03, though every pass started from the
-    reference's positions agrees to 4.8e-07: planar passes there amplify an ulp into a different
-    ball.
+    reference's positions agrees to 2.4e-07 and four passes agree to 4.8e-07 (its quadric fit is
+    exact at five): after the fourth pass two of its vertices lie ``r + 1.3e-07`` apart along the
+    shortest edge path (``float64``), inside one ``float32`` ulp of the radius, so whether each
+    joins the other's ball is decided by the order the path's lengths are summed in. That is a tie
+    at the radius, not an amplification: one-ulp perturbations of random vertices move MeshLib's
+    own five passes by at most 7.2e-07.
     """
     if mesh_name == "noisy_icosphere":
         mesh_tm, vertices_wp, faces_wp = _noisy_icosphere_3(device)
