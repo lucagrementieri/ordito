@@ -1650,6 +1650,12 @@ cosine outside `[-1, 1]` fails its test; `std::min(1.0, NaN)` is `1`), in `float
   `test_fast_marching_distance_meshlab_is_independent_of_its_schedule` forces 16 layouts (scan
   or lists, 1-6 lanes, widths 1 to `2**17`); a lowered corner-0 vertex left unqueued fails it
   and the pymeshlab comparison.
+- **Open (measured 2026-10-31): the MeshLab front on scan meshes.** Whole call, one source at
+  vertex 0, CUDA, ms, MeshLab front / MeshLib front: bunny 6.6 / 1.8, dragon 248 / 29,
+  lucy 34 405 / 6 442 (`icosphere(8)` 21.7 / 19.0). The MeshLib front's own tail on scan meshes
+  (happy_buddha 15 244 rounds against a hop eccentricity of 392, `Closed 2026-10-28: fast marching
+  as parallel rounds`) suggests counting this front's rounds there before pricing its per-round
+  cost.
 
 ### Open items from the 2026-10-31 host-traffic sweep
 
