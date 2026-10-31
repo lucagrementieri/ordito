@@ -1149,7 +1149,8 @@ def heat_signed_distance(
           connection Laplacian, ``potpourri3d.MeshSignedHeatSolver``'s answer. Only segments that
           are mesh edges enter its source; one joining two vertices with no edge between them adds
           nothing. On a `Trimesh` the edge system and its factorization are kept with the mesh's
-          other heat operators.
+          other heat operators. Its default ``t`` fails on fine meshes, as potpourri3d's does
+          (see Notes).
 
     Returns
     -------
@@ -1166,8 +1167,29 @@ def heat_signed_distance(
         If ``vertices``, ``faces``, ``curve_vertices`` and ``curve_offsets`` are not all on one
         device.
 
+    Warns
+    -----
+    UserWarning
+        At ``method="potpourri3d"``, when the diffused field fell below the ``float64`` range on
+        part of the mesh (see Notes).
+
     Notes
     -----
+    !!! warning "``method="potpourri3d"`` is wrong far from the curve on fine meshes"
+        The method diffuses for a much shorter time by default, geometry-central's
+        ``(h / 2) ** 2``, and over twice as many steps of the mesh (edge midpoints rather than
+        vertices), so its field decays steeply with distance from the curve. On a fine enough
+        mesh -- a few hundred thousand faces for a curve on one side of a sphere -- it falls
+        below the smallest ``float64`` before it has crossed the surface, and the distance past
+        that point is wrong by a large fraction of its range. The defect is inherited:
+        ``potpourri3d.MeshSignedHeatSolver`` is wrong on the same meshes, and on smaller ones
+        (its direct solve loses the far field to round-off before it underflows), since no
+        solver can carry values the format cannot hold. The call warns when it happens. Prefer
+        the default
+        ``method="vertex_connection"``, which is more accurate at every resolution measured and
+        holds on meshes several times finer; or pass a larger ``t``, such as the squared mean
+        edge length.
+
     The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
     factorization it is about to drop, as [`heat_geodesic`][ordito.heat.heat_geodesic] does.
 
@@ -1461,7 +1483,9 @@ def _edge_signed_distance(
 
     single_curve = wp.int32(1 if curve_offsets is None else 0)
     closed_flag = wp.int32(1 if closed else 0)
-    invalid = _launch.zeros(1, dtype=wp.int32, device=device)
+    # Word 0 flags an out-of-range curve index, word 1 a diffused field that ran into underflow
+    # (``kernels/heat.EDGE_FIELD_UNDERFLOW``).
+    invalid = _launch.zeros(2, dtype=wp.int32, device=device)
     fixed_mask = _launch.zeros(n_vertices if zero_set else 0, dtype=wp.bool, device=device)
     lengths = _launch.zeros(0 if zero_set else n_entries, dtype=wp.float64, device=device)
     source = _launch.group_sums(edges.shape[0], wp.vec2d, n_entries, device)
@@ -1485,28 +1509,52 @@ def _edge_signed_distance(
         kernel_heat.edge_field_divergence,
         dim=n_faces,
         inputs=[vertices, faces, face_edges, edges, diffused, operators[5]],
-        outputs=[divergence, corner_divergence],
+        outputs=[divergence, corner_divergence, _launch.view(invalid, 1, 2)],
         device=device,
     )
     _sum_corner_outputs(order, corner_divergence, divergence)
 
     if zero_set:
-        return _solve_poisson_zero_set(
+        field = _solve_poisson_zero_set(
             operators[3], divergence, fixed_mask, vertices, solver.ill_conditioned
         )
-    field = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-    solver.solve_poisson(divergence, field)
-    blocks = kernel_reduce.blocks_1d(n_entries)
-    sums, stride = _launch.block_partials(blocks, 2, wp.float64, device)
-    _launch.launch_tiled(
-        kernel_heat.curve_midpoint_sums,
-        dim=[blocks],
-        inputs=[field, curve_vertices, curve_offsets, single_curve, closed_flag, lengths, stride],
-        outputs=[sums],
-        block_dim=TILE_1D,
-        device=device,
-    )
-    _launch.launch(kernel_heat.shift_by_mean, dim=n_vertices, inputs=[sums, field], device=device)
+    else:
+        field = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+        solver.solve_poisson(divergence, field)
+        blocks = kernel_reduce.blocks_1d(n_entries)
+        sums, stride = _launch.block_partials(blocks, 2, wp.float64, device)
+        _launch.launch_tiled(
+            kernel_heat.curve_midpoint_sums,
+            dim=[blocks],
+            inputs=[
+                field,
+                curve_vertices,
+                curve_offsets,
+                single_curve,
+                closed_flag,
+                lengths,
+                stride,
+            ],
+            outputs=[sums],
+            block_dim=TILE_1D,
+            device=device,
+        )
+        _launch.launch(
+            kernel_heat.shift_by_mean, dim=n_vertices, inputs=[sums, field], device=device
+        )
+    # Host readback: whether to warn that the field underflowed. Read once everything is queued, so
+    # it drains the queue once rather than stalling the Poisson stage behind it.
+    if read_scalar(invalid, 1) != 0:
+        warnings.warn(
+            'heat_signed_distance(method="potpourri3d"): the diffused field fell below the '
+            "float64 range before it reached the whole mesh, so the distance is wrong far from "
+            "the curve. The method inherits this from potpourri3d: its default diffusion time "
+            "(h / 2) ** 2 makes the heat decay too fast for a fine mesh, and "
+            "potpourri3d.MeshSignedHeatSolver is wrong on such meshes too. Use the default "
+            'method="vertex_connection", which is more accurate and holds on finer meshes, or '
+            "pass a larger t (the squared mean edge length restores it).",
+            stacklevel=4,
+        )
     return field
 
 

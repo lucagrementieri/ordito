@@ -49,6 +49,20 @@ import ordito as od  # after
   potpourri3d's own frames only up to a rotation about the normal — compare transport results
   through a gauge-invariant combination (e.g. the angle between two transported vectors), never
   their raw 2D tangent components, exactly as you would with potpourri3d's own output.
+- **Signed heat distance defaults to a vertex discretization.** potpourri3d's
+  `SignedHeatSolver` diffuses on the mesh's edges; ordito reproduces that exactly under
+  `method="potpourri3d"`, but its default `method="vertex_connection"` diffuses on the vertices,
+  for a longer time.
+
+    !!! warning "potpourri3d's signed heat method is wrong far from the curve on fine meshes"
+        Its default diffusion time is so short that, on a mesh of a few hundred thousand faces,
+        the diffused field falls below the smallest `float64` before it has crossed the surface,
+        and the distance beyond that point is wrong by a large fraction of its range.
+        `pp3d.SignedHeatSolver` itself returns a wrong field there (its direct solve loses the
+        far field even sooner), so `method="potpourri3d"` inherits the defect; ordito warns when
+        it happens. Use the default method, which is more accurate and holds on much finer
+        meshes, or pass a larger `t`, such as the squared mean edge length.
+
 - **Isolines come back as points, not mesh elements.** potpourri3d's `marching_triangles`
   reports each isoline point as a geometry-central element index plus barycentric coordinates;
   ordito's [`intersection.marching_triangles`][ordito.intersection.marching_triangles] returns 3D

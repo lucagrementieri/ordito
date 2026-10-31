@@ -1868,6 +1868,17 @@ def splat_curve_edges(
     scatter_add_vector(out_source, sums, e, wp.vec2d(wp.float64(0.0), along))
 
 
+# The magnitude below which a diffused edge value is taken to have run into ``float64`` underflow
+# (``edge_field_divergence``'s flag). At geometry-central's ``t = (h / 2) ** 2`` the heat falls
+# about 0.7 decades an edge hop, so on a fine mesh it leaves the representable range before it
+# has crossed the surface, and every value past that front is zero or unconverged noise (unit
+# icosphere of 327 680 faces: 0.88 rad of error, potpourri3d's own solve 1.29). The front always
+# passes through this band on its way down -- the broken field held 391 edges in it -- while every
+# field that held its accuracy kept its smallest value above 1e-137, so the bar sits far from
+# both. Exact zeros are not flagged: a component the curve never touches is zero by right.
+EDGE_FIELD_UNDERFLOW = wp.float64(1e-280)
+
+
 @wp.kernel
 def edge_field_divergence(
     vertices: wp.array[wp.vec3],
@@ -1878,12 +1889,15 @@ def edge_field_divergence(
     cot_entries: wp.array2d[wp.float32],
     out_div: wp.array[wp.float64],
     out_corner_div: wp.array2d[wp.float64],
+    out_underflow: wp.array[wp.int32],
 ) -> None:
     # The edge discretization's stage 3, the counterpart of ``vertex_field_divergence``: face
     # ``f``'s vector is the sum of its three edges' values expanded from their frames into world
     # space (the face's own quarter turn for the imaginary axis), normalized (zero only where it is
     # exactly zero), and integrated by the same thread. Accumulates the negated divergence by
-    # integrating ``-X``, as ``vertex_field_divergence`` does.
+    # integrating ``-X``, as ``vertex_field_divergence`` does. Sets ``out_underflow[0]`` to 1 when
+    # an edge it reads holds a non-zero value below ``EDGE_FIELD_UNDERFLOW`` (every writer stores
+    # the same word, so no atomic).
     f = wp.int32(wp.tid())
     v0, v1, v2 = face_vertices_vec3d(vertices, faces, f)
     normal = stable_normalize(wp.cross(v1 - v0, v2 - v0))
@@ -1894,6 +1908,9 @@ def edge_field_divergence(
             to_vec3d(vertices[edges[e, 1]]) - to_vec3d(vertices[edges[e, 0]])
         )
         value = field[e]
+        size = wp.max(wp.abs(value[0]), wp.abs(value[1]))
+        if size > wp.float64(0.0) and size < EDGE_FIELD_UNDERFLOW:
+            out_underflow[0] = 1
         total += value[0] * tangent + value[1] * wp.cross(normal, tangent)
     x = -stable_normalize(total)
     accumulate_face_divergence(vertices, faces, cot_entries, f, x, out_div, out_corner_div)

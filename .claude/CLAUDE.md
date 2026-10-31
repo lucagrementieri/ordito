@@ -1288,11 +1288,34 @@ Each is a measured limit of an option above; re-measure before acting on it.
   the iteration's 13.6. Its rounds cost 2x what they needed: one tile a block put 960 block-wide
   `float64` dot reductions in each round, now `CG_CSR_TARGET_BLOCKS` (§13.2), which took the
   diffusion 20.0 -> 13.6 ms. What remains is 3x the rows at 1.9x the rounds; a cheaper settle
-  would need a preconditioner that spreads further a round, priced in matvecs. **Open, found
-  then:** at `icosphere(7)` (983 k edges) the settled edge iterate fails its backward-error check
-  and the fallback factorization exceeds `CHOLESKY_MEMORY_BUDGET`, so the call warns and returns
-  the iterate (HEAD before the change too; the vertex method passes). Unexamined: how wrong the
-  iterate is, and why a uniform mesh trips the check.
+  would need a preconditioner that spreads further a round, priced in matvecs.
+- **The vector diffusions underflow on fine meshes, and the answer is then wrong** (diagnosed
+  2026-10-31, unit icospheres, a 6-vertex ring, max error against the analytic geodesic distance
+  in radians). The diffused field decays about 0.2x an edge hop at `t = (h/2)^2` and leaves
+  `float64`'s range about 450 hops out; the CG front then stops making new non-zeros, the settle
+  rule stops `settle_rounds` later (502 rounds against a 659-hop eccentricity at `icosphere(7)`,
+  327 680 faces, 491 520 edges), and the band behind the front (350-500 hops, values 1e-160 to
+  1e-300) is unconverged: backward error 0.5-0.7 on 197 k of 983 k scalar rows, so the check fires
+  and the factorization fallback is over budget. `potpourri3d` method: 0.0087 at `icosphere(6)`,
+  **0.88 at (7)**, 2.05 at (8); the default (vertex, `t = h^2`): 0.0043 / 0.0031 / **0.97 at
+  (8)**. **potpourri3d itself is wrong sooner**: 1.29 at (7), and on a `600 x 5` strip of spacing
+  0.1 its direct solve (round-off, not underflow) loses the far field already at 400 columns
+  (far end 25.3 against 39.6) where ordito's settled CG still holds. The scalar `heat_geodesic`
+  holds at (8) (0.010). A larger `t` fixes it: at (7) `t = h^2` gives 0.0026 and `4 h^2` 0.0014
+  (both still trip the generic backward-error warning on the far band, a false alarm there).
+  **Done (2026-10-31): the warning.** `edge_field_divergence` flags an edge whose field is
+  non-zero but below `kernels/heat.EDGE_FIELD_UNDERFLOW = 1e-280` (the broken field held 391,
+  every accurate one a minimum above 1e-137; exact zeros are left alone, an unreached component),
+  one readback at the end of the call (+1 on the two `potpourri3d` census rows), and
+  `heat_signed_distance` warns naming potpourri3d's default `t` and recommending the default
+  method or a larger `t`; a `!!! warning` in its Notes and in `docs/migrating-from/potpourri3d.md`
+  (`test_heat_signed_distance_potpourri3d_method_warns_when_the_field_underflows`, the strip at
+  400 / 600 columns). **Still open:** the default method has the same wall at `icosphere(8)` and
+  no warning (a vertex-field check would need its own readback); the generic backward-error
+  warning fires beside the new one and alone on accurate large-`t` runs; the remedies proper (an
+  underflow-aware default `t`, or an exact rescaled continuation: the far region satisfies
+  `(M + t L)_FF X_F = -t L_FB X_B` with no source, so re-solving it from the frontier band scaled
+  up keeps every direction exactly) are not chosen.
 - **`filter_two_step(method="meshlib")` issues ~410 launches against the default's 127** (CUDA
   census; 1780-1875 on the CPU), and 21 sorts and scans for the vertex factorization's analysis
   per call: the face-system CG and 20 vertex solves. Unpriced against MeshLib beyond the small

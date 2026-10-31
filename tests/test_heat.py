@@ -1458,6 +1458,60 @@ def test_heat_signed_distance_potpourri3d_method_two_curves_match_potpourri3d(
         assert np.allclose(both_wp, both_pp, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize(("columns", "underflows"), [(400, False), (600, True)])
+def test_heat_signed_distance_potpourri3d_method_warns_when_the_field_underflows(
+    device: str, columns: int, underflows: bool
+) -> None:
+    """
+    Not a library comparison: potpourri3d is wrong on these strips itself; the oracle is exact.
+
+    The oracle is the distance along the strip. A ring around a vertex near one end of a
+    ``columns x 5`` strip of spacing 0.1. At ``method="potpourri3d"``'s ``t = (h / 2) ** 2`` the
+    diffused edge field falls below the ``float64`` range before the far end of the 600-column
+    strip (about 1 200 edge-graph hops): the call warns, and the far end reads about 50 where it
+    lies about 60 from the ring. The 400-column strip is the boundary's other side: no warning,
+    the right distance. The default method holds on both, silently. potpourri3d's own direct solve
+    is already wrong at 400 columns (25.3 at the far end), the claim the warning makes; asserted
+    on both strips.
+    """
+    vertices, faces = od.creation.grid(
+        count=(columns, 5), extents=(0.1 * columns, 0.5), device=device
+    )
+    vertices_np = vertices.numpy().astype(np.float64)
+    faces_np = faces.numpy().reshape(-1, 3)
+    center = int(np.argmin((vertices_np[:, 0] - vertices_np[:, 0].min() - 0.2) ** 2
+                           + vertices_np[:, 1] ** 2))  # fmt: skip
+    following = {}
+    for face in faces_np:
+        if center in face:
+            k = int(np.flatnonzero(face == center)[0])
+            following[int(face[(k + 1) % 3])] = int(face[(k + 2) % 3])
+    ring = [next(iter(following))]
+    while len(ring) < len(following):
+        ring.append(following[ring[-1]])
+    ring_wp = wp.array(np.array(ring, dtype=np.int32), dtype=wp.int32, device=device)
+    far = np.flatnonzero(vertices_np[:, 0] == vertices_np[:, 0].max())
+    # The far column's distance to the ring, which reaches 0.1 along the strip from its centre.
+    expected = vertices_np[far, 0] - vertices_np[center, 0] - 0.1
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        edges_wp = od.heat.heat_signed_distance(vertices, faces, ring_wp, method="potpourri3d")
+        vertex_wp = od.heat.heat_signed_distance(vertices, faces, ring_wp)
+    underflow_warnings = [w for w in caught if "fell below the float64 range" in str(w.message)]
+    assert len(underflow_warnings) == (1 if underflows else 0)
+    assert np.allclose(-vertex_wp.numpy()[far], expected, rtol=1e-2)
+    assert np.allclose(-edges_wp.numpy()[far], expected, rtol=1e-2) != underflows
+
+    solver_pp = pp3d.MeshSignedHeatSolver(vertices_np, np.ascontiguousarray(faces_np))
+    distance_pp = np.asarray(
+        solver_pp.compute_distance(
+            [[(v, []) for v in [*ring, ring[0]]]], level_set_constraint="ZeroSet"
+        )
+    )
+    assert not np.allclose(-distance_pp[far], expected, rtol=0.1)
+
+
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_signed_distance_magnitude_is_the_unsigned_distance(
     request: pytest.FixtureRequest, mesh_name: str
