@@ -4460,8 +4460,7 @@ def multigrid_preconditioner(
     hierarchy = _multigrid_hierarchy(matrix, seed)
     if hierarchy is None:
         return replicated_operator(wpl.preconditioner(matrix, "diag"), n_columns)
-    levels, coarse_inverse = hierarchy
-    cycle = _MultigridCycle(levels, coarse_inverse, n_columns=n_columns, stride=n)
+    cycle = _MultigridCycle(*hierarchy, n_columns=n_columns, stride=n)
 
     def matvec(x: odt.ArrayNd, _y: odt.ArrayNd, z: odt.ArrayNd, alpha: float, beta: float) -> None:
         if alpha != 1.0 or beta != 0.0:
@@ -5102,7 +5101,7 @@ _SQUARED_MULTIGRID_LOWER = 0.1
 class _SquaredMultigrid(NamedTuple):
     """The ``C D² C`` form's operator side: ``L``'s V-cycle hierarchy and ``D²``."""
 
-    hierarchy: tuple[list[_MultigridLevel], odt.ArrayNd]
+    hierarchy: tuple[list[_MultigridLevel], _CoarseSolve]
     squares: wp.array[wp.float64]
     degree: int
 
@@ -5523,7 +5522,7 @@ class _MultigridLevel:
 
 def _multigrid_hierarchy(
     matrix: odt.BsrMatrix[wp.float64], seed: int, *, l1_smoother: bool = False
-) -> tuple[list[_MultigridLevel], odt.ArrayNd] | None:
+) -> tuple[list[_MultigridLevel], _CoarseSolve] | None:
     """
     Coarsen ``matrix`` until a level is small enough to invert densely.
 
@@ -5996,23 +5995,44 @@ def _synced(matrix: odt.BsrMatrix[wp.float64]) -> odt.BsrMatrix[wp.float64]:
     return matrix
 
 
-def _multigrid_dense_inverse(matrix: odt.BsrMatrix[wp.float64]) -> odt.ArrayNd | None:
+class _CoarseSolve(NamedTuple):
+    """The coarsest level's pseudo-inverse over its active rows (``_multigrid_dense_inverse``)."""
+
+    inverse: odt.ArrayNd
+    """``(k, k)`` pseudo-inverse of the operator restricted to its ``k`` active rows."""
+    slots: wp.array[wp.int32] | None
+    """``(n,)`` each row's position among the active rows, or ``-1`` for an inactive one;
+    ``None`` when every row is active."""
+    active: wp.array[wp.int32] | None
+    """``(k,)`` the active rows, ascending; ``None`` when every row is active."""
+
+
+def _multigrid_dense_inverse(matrix: odt.BsrMatrix[wp.float64]) -> _CoarseSolve | None:
     """
-    Pseudo-inverse of the coarsest operator as a dense ``(n, n)`` device array, or ``None``.
+    Pseudo-inverse of the coarsest operator over its active rows, on the device, or ``None``.
 
     ``None`` when the level is too large to factor, which is what makes the caller fall back to the
     Jacobi preconditioner rather than ship a cycle whose coarse solve is a guess. Rows whose
-    diagonal is zero are dropped before the factorization and left as zero in the result: a positive
+    diagonal is zero are dropped before the factorization and solve to zero: a positive
     semi-definite operator with ``A_ii == 0`` has an identically zero row and column, so those
     unknowns are already solved, and skipping them is what keeps the factorization small when
-    coarsening stalls on isolated rows.
+    coarsening stalls on isolated rows. Only the active block is uploaded and applied
+    (``kernels/algorithms/multigrid.dense_solve``): ``bunny``'s coarsest level holds 158 active
+    rows of 1 271, whose full ``(n, n)`` inverse was 13 MB to upload and read every cycle.
     """
     n = int(matrix.nrow)
-    # The offsets are read whole, so their last entry is the stored count ``nnz_sync`` would read.
+    # Three readbacks: the offsets, whose last entry is the stored count ``nnz_sync`` would read,
+    # then only that prefix of the columns and values. Their arrays are the key assembly's
+    # capacity, many times the stored count, and reading them whole cost more than the rest of the
+    # densification (0.8 ms on ``icosphere(6)``'s coarsest level).
     offsets = cast("npt.NDArray[np.int32]", matrix.offsets.numpy())[: n + 1]
     nnz = int(offsets[n])
-    columns = cast("npt.NDArray[np.int32]", matrix.columns.numpy())[:nnz]
-    values = matrix.values.numpy()[:nnz].astype(np.float64).reshape(nnz)
+    columns = cast("npt.NDArray[np.int32]", matrix.columns[:nnz].numpy()) if nnz else offsets[:0]
+    values = (
+        matrix.values[:nnz].numpy().astype(np.float64).reshape(nnz)
+        if nnz
+        else np.zeros(0, dtype=np.float64)
+    )
     dense = np.zeros((n, n), dtype=np.float64)
     # A triplet build coalesces duplicates, so the CSR has one entry per position and a plain
     # scatter is exact -- ``np.add.at`` would be the same answer several times slower.
@@ -6020,10 +6040,25 @@ def _multigrid_dense_inverse(matrix: odt.BsrMatrix[wp.float64]) -> odt.ArrayNd |
     active = np.flatnonzero(dense.diagonal() != 0.0)
     if active.size > _MULTIGRID_MAX_DENSE:
         return None
-    inverse = np.zeros((n, n), dtype=np.float64)
-    if active.size:
-        inverse[np.ix_(active, active)] = _symmetric_inverse(dense[np.ix_(active, active)])
-    return _launch.array(inverse, dtype=wp.float64, device=matrix.device)
+    k = active.size
+    if k == n:
+        # Every row active, the usual case: no gather into a block and no row map to upload.
+        return _CoarseSolve(
+            _launch.array(_symmetric_inverse(dense), dtype=wp.float64, device=matrix.device),
+            None,
+            None,
+        )
+    inverse = _symmetric_inverse(dense[np.ix_(active, active)]) if k else np.zeros((1, 1))
+    # The slots and the active rows share one upload.
+    indices = np.full(n + max(k, 1), -1, dtype=np.int32)
+    indices[active] = np.arange(k, dtype=np.int32)
+    indices[n : n + k] = active
+    indices_wp = _launch.array(indices, dtype=wp.int32, device=matrix.device)
+    return _CoarseSolve(
+        _launch.array(inverse, dtype=wp.float64, device=matrix.device),
+        _launch.view(indices_wp, 0, n),
+        _launch.view(indices_wp, n, n + max(k, 1)),
+    )
 
 
 # Largest infinity-norm condition number at which ``_symmetric_inverse`` trusts a plain inverse.
@@ -6037,16 +6072,16 @@ def _symmetric_inverse(block: npt.NDArray[np.float64]) -> npt.NDArray[np.float64
     """
     Inverse of a symmetric matrix, or its pseudo-inverse when it is numerically singular.
 
-    The coarsest levels this factors are non-singular in practice, where an LU inverse is the same
-    answer as ``pinv(hermitian=True)`` (an eigendecomposition) to rounding at a fraction of its
-    cost; a singular or ill-conditioned level -- a semi-definite operator whose constants survived
-    coarsening -- falls back to the pseudo-inverse. Both run with the calling thread's BLAS
-    limited to one thread: at these sizes a threaded factorization is slower, and its worker
-    threads keep spinning afterwards, slowing the launches that follow.
+    The coarsest levels this factors are non-singular in practice, where a direct inverse
+    (``_schur_inverse``) is the same answer as ``pinv(hermitian=True)`` (an eigendecomposition) to
+    rounding at a fraction of its cost; a singular or ill-conditioned level -- a semi-definite
+    operator whose constants survived coarsening -- falls back to the pseudo-inverse. Both run with
+    the calling thread's BLAS limited to one thread: at these sizes a threaded factorization is
+    slower, and its worker threads keep spinning afterwards, slowing the launches that follow.
     """
     with _single_threaded_blas():
         try:
-            inverse = np.linalg.inv(block)
+            inverse = _schur_inverse(block)
         except np.linalg.LinAlgError:
             inverse = None
         if inverse is not None and not (
@@ -6063,6 +6098,41 @@ def _symmetric_inverse(block: npt.NDArray[np.float64]) -> npt.NDArray[np.float64
     # Neither factorization returns an exactly symmetric matrix, and the V-cycle must stay a
     # symmetric preconditioner.
     return 0.5 * (inverse + inverse.T)
+
+
+# Order at or below which ``_schur_inverse`` inverts a block with LAPACK rather than splitting it.
+# 32 and 64 tie at 279 and 384 rows (16 and 128 lose 1.1-1.2x).
+_SCHUR_LEAF = 64
+
+
+def _schur_inverse(block: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """
+    Inverse of a symmetric matrix by recursive halving through its Schur complement.
+
+    ``[[A, B], [B^T, C]]^-1`` from ``A^-1`` and ``S^-1``, ``S = C - B^T A^-1 B``, each inverted the
+    same way down to ``_SCHUR_LEAF`` rows, so almost every operation is a matrix product. LAPACK's
+    LU inverse (``numpy.linalg.inv``) runs its triangular inversion and solve at a sixth of the
+    product's rate on one thread: this is 3.3-4x faster at 279 and 384 rows, agreeing to 1e-12
+    relative on positive-definite blocks of condition 1e5. Without pivoting it is meant for a
+    positive-definite block, whose every leading block and Schur complement is positive-definite
+    too; a singular leaf raises ``numpy.linalg.LinAlgError`` and a near-singular one leaves an
+    inverse ``_symmetric_inverse``'s condition test rejects.
+    """
+    n = block.shape[0]
+    if n <= _SCHUR_LEAF:
+        return np.linalg.inv(block).astype(np.float64, copy=False)
+    half = n // 2
+    a, b, c = block[:half, :half], block[:half, half:], block[half:, half:]
+    a_inverse = _schur_inverse(a)
+    w = a_inverse @ b
+    s_inverse = _schur_inverse(c - b.T @ w)
+    ws = w @ s_inverse
+    inverse = np.empty_like(block)
+    inverse[:half, :half] = a_inverse + ws @ w.T
+    inverse[:half, half:] = -ws
+    inverse[half:, :half] = -ws.T
+    inverse[half:, half:] = s_inverse
+    return inverse
 
 
 @contextlib.contextmanager
@@ -6122,14 +6192,14 @@ class _MultigridCycle:
     def __init__(
         self,
         levels: list[_MultigridLevel],
-        coarse_inverse: wp.array[wp.float64],
+        coarse: _CoarseSolve,
         *,
         n_columns: int,
         stride: int,
         sweeps: int = _MULTIGRID_SWEEPS,
     ) -> None:
         self._levels = levels
-        self._coarse_inverse = coarse_inverse
+        self._coarse = coarse
         self._device = levels[0].operator.device
         self._n_columns = n_columns
         self._sweeps = max(1, int(sweeps))
@@ -6237,7 +6307,9 @@ class _MultigridCycle:
                 inputs=[
                     wp.int32(level.n),
                     wp.int32(level.stride),
-                    self._coarse_inverse,
+                    self._coarse.inverse,
+                    self._coarse.slots,
+                    self._coarse.active,
                     level.b,
                     level.x,
                 ],

@@ -1044,19 +1044,32 @@ def dense_solve(
     n: wp.int32,
     stride: wp.int32,
     inverse: wp.array2d[wp.float64],
+    slots: wp.array[wp.int32],
+    active: wp.array[wp.int32],
     rhs: wp.array[wp.float64],
     out_x: wp.array[wp.float64],
 ) -> None:
     # The coarsest level, solved against a pseudo-inverse factored on the host at setup: a few dozen
     # unknowns, where a dense row dot is cheaper than any iteration and -- unlike an iteration whose
     # count depends on the data -- it is a single launch inside the captured cycle. The *pseudo*
-    # inverse because the coarse operator inherits the fine one's null space.
+    # inverse because the coarse operator inherits the fine one's null space. It covers only the
+    # active rows (``slots`` maps a row to its position among them, ``-1`` for an inactive row,
+    # which solves to zero; both maps are empty when every row is active), summed in ascending row
+    # order: the terms an ``(n, n)`` inverse would add for the inactive columns are exact zeros.
     t = wp.int32(wp.tid())
     column = t // stride
     row = t % stride
     if row >= n:
         return
+    mapped = slots.shape[0] > 0
+    slot = row
+    if mapped:
+        slot = slots[row]
     total = wp.float64(0.0)
-    for k in range(n):
-        total += inverse[row, k] * rhs[column * stride + k]
+    if slot >= 0:
+        for k in range(inverse.shape[0]):
+            source = k
+            if mapped:
+                source = active[k]
+            total += inverse[slot, k] * rhs[column * stride + source]
     out_x[t] = total
