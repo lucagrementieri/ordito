@@ -968,7 +968,3 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   per-face long-edge count and the host edge-count identity (est. 0.3-0.4 ms a crown call);
   fusing `filter_taubin(recompute=True)`'s per-pass launches (needs a benchmark row first); the
   multigrid coarse inverse's three reads; keys-direct triplet assembly there.
-- **Owed a quiet-box A/B** (kept on census counts, more device work a launch):
-  `halfedge_tangent_angles_from_positions`, the face-parallel corner pre-hook,
-  `project_turning_angle`, the gather-form smoothing passes, `join_round`'s serial last-block
-  tail, the dissection axis on lane 0 of the last block.
