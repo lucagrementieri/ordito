@@ -950,8 +950,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   each vertex is lowered 224 times on dragon (4.3 on `icosphere(7)`), by real amounts (median
   1e-3 to 1e-4 relative); the `float32` filter saves 1.7 %. The fixpoint is not unique (a
   schedule change moves 124 k dragon vertices by up to 2.7e-5), and on dragon the current one
-  already misses MeshLab at 46 vertices (worst 1.2e-4 of the range). Next: a nearest-first
-  bucketed schedule, judged against MeshLab on dragon (`reference/component-status.md`, heat).
+  already misses MeshLab at 46 vertices (worst 1.2e-4 of the range). A bucketed schedule was
+  prototyped: 2-4x faster on dragon (239 -> 59-110 ms) but 611-1 294 vertices off MeshLab.
+  **Owner decision:** take it for scan meshes or keep the rounds (`reference/component-status.md`,
+  heat).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `heat_geodesic` against potpourri3d's front; `geodesic_path` with an edge-flip shortening;
   `resample_uniform` against pymeshlab's resampler (vcg's grid and sign rule) and `offset_mesh`
