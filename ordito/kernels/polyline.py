@@ -1599,12 +1599,14 @@ def accumulate_loop_frames(
 
 
 @wp.func
-def project_to_frame(p: wp.vec3, sums: wp.array[wp.float32], base: wp.int32) -> wp.vec2:
-    # ``p`` in the plane frame ``loop_frame`` stored at ``sums[base:]``: the centre and
+def stored_frame(sums: wp.array[wp.float32], base: wp.int32) -> wp.mat33d:
+    # The plane frame ``loop_frame`` stored at ``sums[base:]`` as rows ``(centre, u, v)``, with
     # ``plane_basis``' ``(u, v)``, turned from the sums by every thread itself, so the frame never
     # crosses to the host and no single-thread launch has to build it first. Every thread
     # evaluates the same expressions on the same values, so all of them hold the one frame, bit
-    # for bit.
+    # for bit. A thread projecting several points builds it once (``project_turning_angle``: built
+    # per point, three points a corner, the kernel took 3.7x the projection and turning launches
+    # it replaced).
     normal = wp.vec3(
         sums[base + FRAME_NORMAL], sums[base + FRAME_NORMAL + 1], sums[base + FRAME_NORMAL + 2]
     )
@@ -1612,12 +1614,17 @@ def project_to_frame(p: wp.vec3, sums: wp.array[wp.float32], base: wp.int32) -> 
         sums[base + FRAME_CENTER], sums[base + FRAME_CENTER + 1], sums[base + FRAME_CENTER + 2]
     )
     u, v = plane_basis(normal)
-    # In ``float64``, rounded once: the offset from the centre is exact there, so the only error in
-    # a 2D coordinate is its final rounding at the ring's own scale, not a ``float32`` subtraction
-    # at the coordinates' absolute magnitude -- which moved near-collinear corners enough to stall
-    # the clipper on a long section ring.
-    offset = to_vec3d(p) - to_vec3d(center)
-    return wp.vec2(wp.float32(wp.dot(offset, to_vec3d(u))), wp.float32(wp.dot(offset, to_vec3d(v))))
+    return wp.matrix_from_rows(to_vec3d(center), to_vec3d(u), to_vec3d(v))
+
+
+@wp.func
+def project_to_stored_frame(p: wp.vec3, frame: wp.mat33d) -> wp.vec2:
+    # ``p`` in the plane frame ``stored_frame`` returned. In ``float64``, rounded once: the offset
+    # from the centre is exact there, so the only error in a 2D coordinate is its final rounding at
+    # the ring's own scale, not a ``float32`` subtraction at the coordinates' absolute magnitude --
+    # which moved near-collinear corners enough to stall the clipper on a long section ring.
+    offset = to_vec3d(p) - frame[0]
+    return wp.vec2(wp.float32(wp.dot(offset, frame[1])), wp.float32(wp.dot(offset, frame[2])))
 
 
 @wp.func
@@ -1654,15 +1661,15 @@ def corner_turn(
 
 
 @wp.func
-def stored_ring_point(source: Any, sums: wp.array[wp.float32], i: wp.int32) -> wp.vec2:
-    # Ring point ``i`` of a 2D ring held in ``source``.
+def stored_ring_point(source: Any, frame: wp.mat33d, i: wp.int32) -> wp.vec2:
+    # Ring point ``i`` of a 2D ring held in ``source``; ``frame`` is unread.
     return source[i]
 
 
 @wp.func
-def projected_ring_point(source: Any, sums: wp.array[wp.float32], i: wp.int32) -> wp.vec2:
-    # Ring point ``i`` of the 3D loop ``source``, in the plane frame at ``sums[0:]``.
-    return project_to_frame(source[i], sums, 0)
+def projected_ring_point(source: Any, frame: wp.mat33d, i: wp.int32) -> wp.vec2:
+    # Ring point ``i`` of the 3D loop ``source``, in ``frame`` (``stored_frame``).
+    return project_to_stored_frame(source[i], frame)
 
 
 @wp.func
@@ -1682,13 +1689,14 @@ def ring_turning_pass(
     lane: wp.int32,
     n_ring: wp.int32,
     source: Any,
+    frame: wp.mat33d,
     out_sums: wp.array[wp.float32],
     point: wp.Function,
     out_points2d: wp.array[wp.vec2],
     store: wp.int32,
 ):
     # Block ``chunk``'s share of the turning sums of a ring of ``n_ring`` points, ring point ``i``
-    # being ``point(source, out_sums, i)``, each stored to ``out_points2d[i]`` by its lane when
+    # being ``point(source, frame, i)``, each stored to ``out_points2d[i]`` by its lane when
     # ``store``: the turning angle and both reflex counts into ``RING_TURNING``, the ring's box
     # relative to its first point into ``RING_EXTENT``.
     offset, count = block_chunk_1d(n_ring, chunk)
@@ -1697,12 +1705,12 @@ def ring_turning_pass(
     local = wp.float32(0.0)
     reflex = wp.float32(0.0)
     reflex_mirrored = wp.float32(0.0)
-    origin = point(source, out_sums, 0)
+    origin = point(source, frame, 0)
     above = wp.vec2()
     below = wp.vec2()
     for k in range(lane, count, wp.block_dim()):
         i = offset + k
-        current = point(source, out_sums, i)
+        current = point(source, frame, i)
         if store != 0:
             out_points2d[i] = current
         above = wp.max(above, current - origin)
@@ -1710,8 +1718,8 @@ def ring_turning_pass(
         i_next = loop_point(i + 1, n_ring)
         turn = corner_turn_terms(
             current,
-            point(source, out_sums, i_next),
-            point(source, out_sums, loop_point(i_next + 1, n_ring)),
+            point(source, frame, i_next),
+            point(source, frame, loop_point(i_next + 1, n_ring)),
         )
         local += turn[0]
         reflex += turn[1]
@@ -1761,7 +1769,9 @@ def accumulate_turning_angle(points2d: wp.array[wp.vec2], out_sums: wp.array[wp.
     closing = ring_closing_flag(lift_vec2(points2d[0], zero), lift_vec2(points2d[n - 1], zero))
     if chunk == 0 and lane == 0:
         out_sums[RING_CLOSING] = wp.float32(closing)
-    ring_turning_pass(chunk, lane, n - closing, points2d, out_sums, stored_ring_point, points2d, 0)
+    ring_turning_pass(
+        chunk, lane, n - closing, points2d, wp.mat33d(), out_sums, stored_ring_point, points2d, 0
+    )
 
 
 @wp.kernel
@@ -1770,17 +1780,18 @@ def project_turning_angle(
 ) -> None:
     # ``polyline_triangulate``'s projection and ``accumulate_turning_angle`` in one pass: each ring
     # point is projected into the plane frame ``accumulate_loop_frame`` stored at ``sums[0:]``
-    # (``project_to_frame``) where the turning sums need it, written to ``out_points2d`` by the
-    # lane that owns it, and its corner's neighbours projected again in place of a read, which is
-    # the same value bit for bit. ``accumulate_loop_frame`` has already decided ``RING_CLOSING``;
+    # (``project_to_stored_frame``) where the turning sums need it, written to ``out_points2d`` by
+    # the lane that owns it, and its corner's neighbours projected again in place of a read, which
+    # is the same value bit for bit. ``accumulate_loop_frame`` has already decided ``RING_CLOSING``;
     # a repeated closing point is projected too, though nothing reads it.
     chunk, lane = wp.tid()
     n = polyline.shape[0]
     closing = wp.int32(sums[RING_CLOSING])
+    frame = stored_frame(sums, 0)
     if closing != 0 and chunk == 0 and lane == 0:
-        out_points2d[n - 1] = project_to_frame(polyline[n - 1], sums, 0)
+        out_points2d[n - 1] = project_to_stored_frame(polyline[n - 1], frame)
     ring_turning_pass(
-        chunk, lane, n - closing, polyline, sums, projected_ring_point, out_points2d, 1
+        chunk, lane, n - closing, polyline, frame, sums, projected_ring_point, out_points2d, 1
     )
 
 
@@ -2537,8 +2548,9 @@ def project_ring(
     # ``accumulate_loop_frames`` row at ``sums[base:]``), then a block barrier. Shared by
     # ``triangulate_rings`` and ``seed_long_rings``, so a loop's 2D points are the same whichever
     # clips it.
+    frame = stored_frame(sums, base)
     for k in range(lane, n, wp.block_dim()):
-        out_points2d[start + k] = project_to_frame(polylines[start + k], sums, base)
+        out_points2d[start + k] = project_to_stored_frame(polylines[start + k], frame)
     block_barrier()
 
 
