@@ -1545,9 +1545,13 @@ MeshLib's queue terminates at the same answer under either cap; skipping the pla
 exactly zero-area faces changes nothing (15 244 rounds); committing only offers more than 2 ulps
 below a label leaves 15 226 rounds and moves 388 k of dragon's vertices off MeshLib's answer, so
 neither is a fix. So the round fixpoint and the serial queue's answer differ on this input, and
-the rounds reach theirs by a slow descent. lucy (6.4 s) likely shares it. **Open:** trace one
-cycling vertex's offers (which face, which branch of `front_corner_label`) against MeshLib's pops
-on the split mesh.
+the rounds reach theirs by a slow descent. ordito is *above* MeshLib at all 830 vertices (by
+2.4e-7 to 4.2e-5, on a range of 0.237), never below: the queue reaches values no round offers.
+That fits a plane update that is not monotone in its inputs (an offer can fall when a corner's
+label rises), so a serial order pairing a stale corner with a fresh one lands lower, and the
+fixpoint is not unique. lucy (6.4 s) likely shares it. **Open:** trace one of the 830 vertices'
+winning MeshLib offer (which face, which branch of `front_corner_label`, which corner labels) to
+confirm the non-monotone step before deciding whether the Class A claim needs a caveat.
 
 ### Closed 2026-10-29: MeshLab's geodesic front
 
