@@ -4,7 +4,7 @@ from ordito.constants import PI, TOLERANCE_ZERO_CONSTANT, TWO_PI
 from ordito.kernels.array import binary_search_index, loop_point, to_vec3, wrap_index
 from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import project_out_normal, unit_tangent, world_to_tangent
-from ordito.kernels.tangent_space import fan_anchor
+from ordito.kernels.tangent_space import fan_anchor, ring_angle_total
 from ordito.kernels.triangles import face_normal, halfedge_corner_angle, local_corner
 
 wp.set_module_options({"enable_backward": False})
@@ -345,9 +345,7 @@ def start_direction_at_vertex(
     end = ring_offsets[vertex + 1]
     if end <= begin:
         return wp.int32(-1), wp.vec3(0.0, 0.0, 0.0)
-    total = wp.float32(0.0)
-    for j in range(begin, end):
-        total += halfedge_corner_angle(vertices, faces, ring_halfedges[j])
+    total = ring_angle_total(vertices, faces, ring_offsets, ring_halfedges, vertex)
     if total <= TOLERANCE_ZERO_CONSTANT:
         return wp.int32(-1), wp.vec3(0.0, 0.0, 0.0)
     full_turn = TWO_PI

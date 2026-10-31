@@ -1865,9 +1865,11 @@ class Trimesh:
         [`ordito.tangent_space.vertex_tangent_frames`][]
         [`vector_heat_operators`][ordito.mesh.Trimesh.vector_heat_operators]
         """
-        # Without cached normals the frame kernel normalizes the angle-weighted sums itself
-        # (``vertex_normals``' arithmetic, bit for bit), which costs two launches where building
-        # `vertex_normals` first costs four and its face normal and corner angle tables.
+        # Without cached normals the frame kernel gathers the angle-weighted sums over the ring it
+        # walks: one launch where building `vertex_normals` first costs four and its face normal
+        # and corner angle tables. The ``float64`` sum is taken in ring order where
+        # `vertex_normals` scatters in face order; ``float32`` terms leave the narrowed normal
+        # unchanged by the order (bit-identical on the CPU over the fixtures and scan meshes).
         frames = od.tangent_space.vertex_tangent_frames(
             self._vertices,
             self._faces,

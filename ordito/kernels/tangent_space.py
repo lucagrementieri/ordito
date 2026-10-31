@@ -8,7 +8,7 @@ from ordito.kernels.triangles import (
     face_normals_and_area,
     halfedge_corner_angle,
 )
-from ordito.kernels.vertices import normalized_accumulated_row
+from ordito.kernels.vertices import gathered_angle_weighted_sums, normalized_narrowed
 
 wp.set_module_options({"enable_backward": False})
 
@@ -131,6 +131,23 @@ def halfedge_tangent_angles_from_positions(
 
 
 @wp.func
+def ring_angle_total(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    ring_halfedges: wp.array[wp.int32],
+    vertex: wp.int32,
+) -> wp.float32:
+    # Total corner angle Theta_v of ``vertex``'s ring, summed in ring order from angles formed on
+    # demand (``triangles.halfedge_corner_angle``). ``vertices.gathered_angle_weighted_sums`` forms
+    # the same sum, bit for bit, on its normal walk.
+    total = wp.float32(0.0)
+    for j in range(ring_offsets[vertex], ring_offsets[vertex + 1]):
+        total += halfedge_corner_angle(vertices, faces, ring_halfedges[j])
+    return total
+
+
+@wp.func
 def any_perpendicular(normal: wp.vec3) -> wp.vec3:
     # Tangent direction for a vertex with no ring to take one from. Crosses the normal with x or
     # y -- whichever of those two the normal is *less* aligned with -- so the cross product is never
@@ -200,11 +217,13 @@ def vertex_tangent_basis(
     ring_halfedges: wp.array[wp.int32],
     boundary: wp.bool,
     v: wp.int32,
+    total: wp.float32,
 ) -> tuple[wp.vec3, wp.vec3]:
     # ``basis_x`` is where ``halfedge_tangent_angles`` puts polar angle 0, fitted to the whole fan
     # (``fan_anchor``) rather than read off the reference halfedge, which it equals only where the
     # fan is flat -- so the two functions describe one coordinate system, geometry-central's. The
-    # fit is taken in a provisional frame around the reference edge's projection.
+    # fit is taken in a provisional frame around the reference edge's projection. ``total`` is the
+    # vertex's corner angle sum in ring order, which the caller forms on a walk it already makes.
     if wp.length(normal) <= TOLERANCE_ZERO_CONSTANT:
         # An unreferenced vertex has no tangent plane at all. Emit a fixed unit frame rather than
         # zero vectors, which would surface downstream as NaN out of a normalization.
@@ -219,9 +238,6 @@ def vertex_tangent_basis(
         tangential, length = unit_tangent(direction, normal, TOLERANCE_ZERO_CONSTANT)
         if length > TOLERANCE_ZERO_CONSTANT:
             basis_x = tangential
-        total = wp.float32(0.0)
-        for j in range(begin, end):
-            total += halfedge_corner_angle(vertices, faces, ring_halfedges[j])
         scale = ring_tangent_scale(total, boundary)
         if scale > wp.float32(0.0):
             frame_y = wp.cross(normal, basis_x)
@@ -254,21 +270,21 @@ def vertex_tangent_frames(
     out_basis_x: wp.array[wp.vec3],
     out_basis_y: wp.array[wp.vec3],
 ) -> None:
-    # The frame around a caller's normals; ``vertex_tangent_frames_from_sums`` forms the normal
-    # from the angle-weighted accumulator first.
+    # The frame around a caller's normals; ``vertex_tangent_frames_gathered`` forms the normal
+    # over the ring first.
     v = wp.int32(wp.tid())
+    total = ring_angle_total(vertices, faces, ring_offsets, ring_halfedges, v)
     basis_x, basis_y = vertex_tangent_basis(
-        vertices, faces, normals[v], ring_offsets, ring_halfedges, is_boundary[v], v
+        vertices, faces, normals[v], ring_offsets, ring_halfedges, is_boundary[v], v, total
     )
     out_basis_x[v] = basis_x
     out_basis_y[v] = basis_y
 
 
 @wp.kernel
-def vertex_tangent_frames_from_sums(
+def vertex_tangent_frames_gathered(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    normal_sums: wp.array2d[wp.float64],
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
     is_boundary: wp.array[wp.bool],
@@ -276,15 +292,17 @@ def vertex_tangent_frames_from_sums(
     out_basis_y: wp.array[wp.vec3],
     out_normals: wp.array[wp.vec3],
 ) -> None:
-    # ``vertex_tangent_frames`` with the normal's own last step folded in: the ``float64``
-    # accumulator ``kernels/vertices.scatter_angle_weighted_normals`` filled, narrowed and
-    # normalized here exactly as ``vertices.normalize_accumulated_rows`` does
-    # (``normalized_accumulated_row``), so the normal written is ``vertex_normals``' bit for bit.
+    # ``vertex_tangent_frames`` with the angle-weighted normal gathered over the ring the frame
+    # walks (``vertices.gathered_angle_weighted_sums``), in place of a ``float64`` scatter, its
+    # zeroed accumulator and a launch; the same walk totals the corner angles the frame's scale
+    # reads, which the caller-normal kernel walks for alone. The normal written is
+    # ``vertex_normals``' up to the order its ``float64`` sum is taken in.
     v = wp.int32(wp.tid())
-    normal = normalized_accumulated_row(normal_sums, v)
+    sums, total = gathered_angle_weighted_sums(vertices, faces, ring_offsets, ring_halfedges, v)
+    normal = normalized_narrowed(sums[0], sums[1], sums[2])
     out_normals[v] = normal
     basis_x, basis_y = vertex_tangent_basis(
-        vertices, faces, normal, ring_offsets, ring_halfedges, is_boundary[v], v
+        vertices, faces, normal, ring_offsets, ring_halfedges, is_boundary[v], v, total
     )
     out_basis_x[v] = basis_x
     out_basis_y[v] = basis_y

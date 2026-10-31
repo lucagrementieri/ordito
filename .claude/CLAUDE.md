@@ -1593,9 +1593,6 @@ memsets 2 779 -> 2 525, but launches only 31 574 -> 31 392. Open:
   shapes §14 flags as possible losses:
     - `screened_poisson(method="octree")`: about 1 556 launches, the per-wave x 4-colour
       Gauss-Seidel launches at each depth; graph capture or another schedule.
-    - `vertex_tangent_frames`: folding the angle-weighted normal scatter into the frame kernel's
-      ring walk (-1 launch, -1 allocation on about 20 rows); a gather-form fusion, so price it on
-      a scrambled large mesh.
 
 ### `smooth_region` on large regions: the V-cycle form (2026-10-23 sweep)
 

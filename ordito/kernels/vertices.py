@@ -95,6 +95,38 @@ def gathered_area_weighted_normal(
     return normalized_narrowed(total[0], total[1], total[2])
 
 
+@wp.func
+def gathered_angle_weighted_sums(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    ring_offsets: wp.array[wp.int32],
+    ring_halfedges: wp.array[wp.int32],
+    vertex: wp.int32,
+) -> tuple[wp.vec3d, wp.float32]:
+    """
+    Vertex ``vertex``'s angle-weighted normal sum and its total corner angle, over its ring.
+
+    The gather form of ``scatter_angle_weighted_normals``: the same ``float32`` product of the unit
+    face normal and the corner angle at ``vertex`` (corner ``h % 3`` of face ``h // 3``, since a
+    halfedge leaves its own corner), widened into a ``float64`` sum in ring order, so
+    ``normalized_narrowed`` of it is ``normalized_accumulated_row``'s normal up to summation order.
+    The ``float32`` angle total is summed in ring order too, the sum a ring walk over
+    ``triangles.halfedge_corner_angle`` forms, bit for bit. ``gathered_area_weighted_normal`` is
+    the area-weighted sibling over a vertex-face table.
+    """
+    total = wp.vec3d()
+    angle_total = wp.float32(0.0)
+    for slot in range(ring_offsets[vertex], ring_offsets[vertex + 1]):
+        h = ring_halfedges[slot]
+        f = h // wp.int32(3)
+        normal, _area = face_normals_and_area(vertices, faces, f)
+        a0, a1, a2 = face_corner_angles(vertices, faces, f)
+        angle = wp.vec3(a0, a1, a2)[h % wp.int32(3)]
+        total += wp.vec3d(normal * angle)
+        angle_total += angle
+    return total, angle_total
+
+
 @wp.kernel
 def normalize_accumulated_rows(sums: wp.array2d[wp.Float], out_normals: wp.array[wp.vec3]) -> None:
     """

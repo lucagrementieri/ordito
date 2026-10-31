@@ -1691,8 +1691,8 @@
  },
  "benchmarks/test_geodesic_walk.py::test_trace_locality[ribbon_long-ordito-cpu]": {
   "counts": {
-   "launch": 8,
-   "alloc": 13,
+   "launch": 7,
+   "alloc": 12,
    "readback": 2,
    "scan": 2,
    "sort": 1
@@ -1700,8 +1700,8 @@
  },
  "benchmarks/test_geodesic_walk.py::test_trace_locality[sphere_med-ordito-cpu]": {
   "counts": {
-   "launch": 8,
-   "alloc": 13,
+   "launch": 7,
+   "alloc": 12,
    "readback": 2,
    "scan": 2,
    "sort": 1
@@ -1709,8 +1709,8 @@
  },
  "benchmarks/test_geodesic_walk.py::test_trace_ray_count[sphere_med-ordito-cpu-1]": {
   "counts": {
-   "launch": 8,
-   "alloc": 13,
+   "launch": 7,
+   "alloc": 12,
    "readback": 2,
    "scan": 2,
    "sort": 1
@@ -1718,8 +1718,8 @@
  },
  "benchmarks/test_geodesic_walk.py::test_trace_ray_count[sphere_med-ordito-cpu-4096]": {
   "counts": {
-   "launch": 8,
-   "alloc": 13,
+   "launch": 7,
+   "alloc": 12,
    "readback": 2,
    "scan": 2,
    "sort": 1
@@ -1727,8 +1727,8 @@
  },
  "benchmarks/test_geodesic_walk.py::test_trace_ray_count[sphere_med-ordito-cpu-64]": {
   "counts": {
-   "launch": 8,
-   "alloc": 13,
+   "launch": 7,
+   "alloc": 12,
    "readback": 2,
    "scan": 2,
    "sort": 1
@@ -2136,8 +2136,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance[sphere_med-ordito-cpu-band]": {
   "counts": {
-   "launch": 24,
-   "alloc": 27,
+   "launch": 23,
+   "alloc": 26,
    "readback": 7,
    "scan": 2,
    "sort": 2
@@ -2145,8 +2145,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance[sphere_med-ordito-cpu-ring]": {
   "counts": {
-   "launch": 24,
-   "alloc": 27,
+   "launch": 23,
+   "alloc": 26,
    "readback": 7,
    "scan": 2,
    "sort": 2
@@ -2154,8 +2154,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_conditioning[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 24,
-   "alloc": 27,
+   "launch": 23,
+   "alloc": 26,
    "readback": 6,
    "scan": 2,
    "sort": 2
@@ -2163,8 +2163,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_conditioning[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 351,
-   "alloc": 87,
+   "launch": 350,
+   "alloc": 86,
    "readback": 11,
    "scan": 39,
    "sort": 39
@@ -2172,8 +2172,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_constraint[sphere_med-ordito-cpu-none]": {
   "counts": {
-   "launch": 23,
-   "alloc": 23,
+   "launch": 22,
+   "alloc": 22,
    "readback": 6,
    "scan": 1,
    "sort": 2
@@ -2181,8 +2181,8 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_constraint[sphere_med-ordito-cpu-zero_set]": {
   "counts": {
-   "launch": 24,
-   "alloc": 27,
+   "launch": 23,
+   "alloc": 26,
    "readback": 7,
    "scan": 2,
    "sort": 2
@@ -2298,8 +2298,8 @@
  },
  "benchmarks/test_heat.py::test_log_map[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 26,
-   "alloc": 27,
+   "launch": 25,
+   "alloc": 26,
    "h2h": 1,
    "readback": 4,
    "scan": 1,
@@ -2308,8 +2308,8 @@
  },
  "benchmarks/test_heat.py::test_log_map[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 342,
-   "alloc": 80,
+   "launch": 341,
+   "alloc": 79,
    "h2h": 1,
    "readback": 10,
    "scan": 25,
@@ -2318,8 +2318,8 @@
  },
  "benchmarks/test_heat.py::test_log_map_potpourri3d[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 25,
-   "alloc": 27,
+   "launch": 24,
+   "alloc": 26,
    "h2h": 1,
    "readback": 5,
    "scan": 1,
@@ -2328,8 +2328,8 @@
  },
  "benchmarks/test_heat.py::test_log_map_potpourri3d[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 352,
-   "alloc": 86,
+   "launch": 351,
+   "alloc": 85,
    "h2h": 1,
    "readback": 10,
    "scan": 38,
@@ -2351,8 +2351,8 @@
  },
  "benchmarks/test_heat.py::test_transport_tangent_vectors[saddle-ordito-cpu-full]": {
   "counts": {
-   "launch": 19,
-   "alloc": 27,
+   "launch": 18,
+   "alloc": 26,
    "h2h": 1,
    "readback": 5,
    "scan": 1,
@@ -2368,8 +2368,8 @@
  },
  "benchmarks/test_heat.py::test_transport_tangent_vectors[saddle_graded-ordito-cpu-full]": {
   "counts": {
-   "launch": 272,
-   "alloc": 74,
+   "launch": 271,
+   "alloc": 73,
    "h2h": 1,
    "readback": 10,
    "scan": 25,
@@ -2378,8 +2378,8 @@
  },
  "benchmarks/test_heat.py::test_transport_tangent_vectors_scale[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 19,
-   "alloc": 27,
+   "launch": 18,
+   "alloc": 26,
    "h2h": 1,
    "readback": 4,
    "scan": 1,
@@ -2388,8 +2388,8 @@
  },
  "benchmarks/test_heat.py::test_vector_heat_operators[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 12,
-   "alloc": 17,
+   "launch": 11,
+   "alloc": 16,
    "readback": 1,
    "scan": 1,
    "sort": 2
@@ -3965,8 +3965,8 @@
  },
  "benchmarks/test_mesh.py::test_vector_heat_operators[sphere_small-ordito-cpu-cold]": {
   "counts": {
-   "launch": 12,
-   "alloc": 17,
+   "launch": 11,
+   "alloc": 16,
    "readback": 1,
    "scan": 1,
    "sort": 2
@@ -6596,8 +6596,8 @@
  },
  "benchmarks/test_tangent_space.py::test_vertex_tangent_frames[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 5,
-   "alloc": 10,
+   "launch": 4,
+   "alloc": 9,
    "readback": 1,
    "scan": 1,
    "sort": 1
