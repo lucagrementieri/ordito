@@ -74,7 +74,6 @@ from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import tangent_space as kernel_tangent_space
 from ordito.laplacian import (
     MeshOperatorPattern,
-    cotmatrix_entries,
     cotmatrix_entries_intrinsic,
     mass_matrix_entries,
     mesh_operator_pattern,
@@ -1778,16 +1777,21 @@ def vector_heat_operators(
         # ``M + t L_connection`` over the cotangent Laplacian's pattern, as the scalar system is
         # built over it (``heat_operators``): ``connection_laplacian``'s entries, shifted in the
         # thread that forms them, so the connection Laplacian itself is never stored. Its weights
-        # are ``cotmatrix_entries``': the ``float32`` table a bundle assembled from positions
-        # already holds (the ``float64`` one is that table widened on write, and the row kernel
-        # widens on read), formed here for any other bundle.
+        # are the positions' half-cotangents formed in ``float64``
+        # (``kernels/heat.heat_face_terms``): the table a bundle assembled from positions already
+        # holds, formed here for any other bundle.
         _, _, offsets, columns, run_start, keys, count, order = pattern
         if vector_values is None:
-            cot_entries = (
-                scalar_operators[5]
-                if built is not None and built.extrinsic_cot
-                else cotmatrix_entries(vertices, faces, dtype=wp.float64)
-            )
+            cot_entries = None if built is None else built.cot_float64
+            if cot_entries is None:
+                cot_entries = odt.empty_2d((n_faces, 3), wp.float64, device=device)
+                _launch.launch(
+                    kernel_heat.half_cotangents_float64,
+                    dim=n_faces,
+                    inputs=[vertices, faces],
+                    outputs=[cot_entries],
+                    device=device,
+                )
             if transport_angles is None:
                 transport_angles, rings = _transport_angles_and_rings(vertices, faces)
             vector_values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
@@ -1939,21 +1943,38 @@ def _heat_operators(
         parts.append((wp.float64, 3 * n_slots))
         if transport_angles is not None:
             parts.append((wp.mat22d, n_slots))
+        if write_cot and transport_angles is not None:
+            # The vector system's rows read the table formed in ``float64``
+            # (``kernels/heat.heat_face_terms``).
+            parts.append((wp.float64, 3 * n_faces))
     tables = _launch.carve_typed(parts, device)
     face_terms = tables[0]
     areas = _face_table(face_terms, 0, n_faces, 1)
     normals = _face_table(face_terms, n_faces, n_faces, 3).reshape((n_faces, 3)).view(wp.vec3)
+    # The vector rows' ``float64`` table is formed here, so only a bundle forming its own table can
+    # write them: ``vector_heat_operators`` passes no table when it passes ``transport_angles``.
+    assert transport_angles is None or cot_entries is None or n_faces == 0
+    cot_float64 = None
     if cot_entries is None:
         cot_entries = odt.as_array2d(
             _face_table(face_terms, 4 * n_faces, n_faces, 3).reshape((n_faces, 3)), wp.float32
         )
+        if n_faces > 0 and transport_angles is not None:
+            cot_float64 = odt.as_array2d(tables[-1].reshape((n_faces, 3)), wp.float64)
     if n_faces > 0:
         _launch.launch(
             kernel_heat.heat_face_terms,
             dim=n_faces,
-            inputs=[vertices, faces, wp.int32(write_cot), wp.int32(mass == "voronoi")],
+            inputs=[
+                vertices,
+                faces,
+                wp.int32(write_cot),
+                wp.int32(cot_float64 is not None),
+                wp.int32(mass == "voronoi"),
+            ],
             outputs=[
                 cot_entries if write_cot else odt.empty_2d((0, 3), wp.float32, device=device),
+                cot_float64,
                 normals,
                 areas,
                 lumped,
@@ -2004,6 +2025,7 @@ def _heat_operators(
                 wp.float64(1.0 if mass == "voronoi" else 3.0),
                 faces,
                 transport_angles,
+                cot_float64,
             ],
             # The lumped mass over its own area sums, in place.
             outputs=[laplacian_values, heat_values, poisson_values, lumped, vector_values],
@@ -2033,7 +2055,9 @@ def _heat_operators(
         normals,
         areas,
     )
-    _SCALAR_BUILDS[heat_system] = _ScalarBuild(lumped, edge_sums, write_cot and not use_robust)
+    _SCALAR_BUILDS[heat_system] = _ScalarBuild(
+        lumped, edge_sums, cot_float64 if write_cot and not use_robust else None
+    )
     return operators, lumped, vector_values
 
 
@@ -2052,9 +2076,9 @@ class _ScalarBuild:
 
     mass: wp.array[wp.float64]
     edge_sums: wp.array[wp.float64] | None
-    # Whether the bundle's half-cotangent table is ``cotmatrix_entries``' of the positions (formed
-    # by ``heat_face_terms``), not a caller's or a mollified one.
-    extrinsic_cot: bool
+    # The positions' half-cotangent table ``heat_face_terms`` formed in ``float64`` beside the
+    # bundle's ``float32`` one, when it formed the vector system's rows too; ``None`` otherwise.
+    cot_float64: odt.Array2dFloat64 | None
 
 
 # The face buffer's stable sort ``(sorted_vertices, corner_order)``, or ``None`` for the per-face

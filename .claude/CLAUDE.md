@@ -942,10 +942,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
 - **`screened_poisson(method="octree")` memory.** At depth 9 the constraints, cascade and
   extraction phases peak within 8 MiB of each other (125-133 MiB), so no single table dominates.
   Depth 10 would need `int64` dense edge slots for the vertex order.
-- **`log_map(method="potpourri3d")` on the needle fixtures.** `sphere_irregular` has one vertex
-  at 1.23x the Class A bound on CUDA; `torus_irregular_holes` keeps 6 / 2 of 481 vertices over it
-  on both devices: systematic, cause not found. Unchecked: whether a `float64` cotangent table
-  reaches the vector system on the `Trimesh` path.
 - **`signed_distance_level_set` against `igl.offset_surface` at `iso = 0.1`.** One vertex 4.8e-5
   off on a near-tangent lattice edge; only igl's `float64` lattice reproduces it. Proposed: an
   opt-in `float64` path through the whole extraction (`bounds`, node positions, distances,

@@ -63,6 +63,22 @@ def cot_entries_from_edge_lengths(
 
 
 @wp.func
+def half_cotangents_of(v0: Any, v1: Any, v2: Any) -> tuple[wp.Float, wp.Float, wp.Float]:
+    # The three half-cotangents of the triangle ``(v0, v1, v2)`` at its corners' precision, each
+    # ``dot / |cross|`` of the corner's two edges, the cross product taken at the largest angle
+    # (``triangle_area_vector``). The zero-area guard is the one ``cot_entries_from_l2`` explains.
+    dbl_area = triangle_double_area(v0, v1, v2)
+    denominator = type(dbl_area)(2.0) * dbl_area
+    zero = type(dbl_area)(0.0)
+    if denominator <= zero:
+        return zero, zero, zero
+    c0 = wp.dot(v1 - v0, v2 - v0) / denominator
+    c1 = wp.dot(v2 - v1, v0 - v1) / denominator
+    c2 = wp.dot(v0 - v2, v1 - v2) / denominator
+    return c0, c1, c2
+
+
+@wp.func
 def face_half_cotangents(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], f: wp.int32
 ) -> tuple[wp.float32, wp.float32, wp.float32]:
@@ -70,22 +86,26 @@ def face_half_cotangents(
     # one row of ``cotmatrix_entries``' table, for a kernel that needs a few faces' weights and not
     # the whole mesh's (``smoothing.band_dirichlet_values``).
     #
-    # From positions each cotangent is ``dot / |cross|`` of the corner's two edges, with the cross
-    # product taken at the largest angle (``triangle_area_vector``): both are accurate to a few
-    # ``eps`` whatever the triangle's shape. The law of cosines the intrinsic overload has to use
-    # (``cot_entries_from_l2``) cancels the squared lengths against each other instead, and loses
-    # ``eps`` times the aspect ratio: on ``saddle_graded``'s aspect-4 900 needles that was 1.4e-4
-    # absolute on weights whose true value is 1e-4, against ``igl.cotmatrix_entries``' ``float64``.
-    # The zero-area guard is the one ``cot_entries_from_l2`` explains.
-    v0, v1, v2 = face_vertices(vertices, faces, f)
-    dbl_area = triangle_double_area(v0, v1, v2)
-    denominator = wp.float32(2.0) * dbl_area
-    if denominator <= wp.float32(0.0):
-        return wp.float32(0.0), wp.float32(0.0), wp.float32(0.0)
-    c0 = wp.dot(v1 - v0, v2 - v0) / denominator
-    c1 = wp.dot(v2 - v1, v0 - v1) / denominator
-    c2 = wp.dot(v0 - v2, v1 - v2) / denominator
-    return c0, c1, c2
+    # From positions (``half_cotangents_of``), not by the law of cosines the intrinsic overload has
+    # to use (``cot_entries_from_l2``), which cancels the squared lengths against each other and
+    # loses ``eps`` times the aspect ratio: on ``saddle_graded``'s aspect-4 900 needles that was
+    # 1.4e-4 absolute on weights whose true value is 1e-4, against ``igl.cotmatrix_entries``'
+    # ``float64``. The cross product at the largest angle still cancels when that angle nears pi:
+    # a weight's relative error is about ``eps / sin(largest angle)``, 1e-5 on
+    # ``torus_irregular_holes``' caps. ``face_half_cotangents_float64`` is the same from the
+    # exactly widened corners, for the heat method's systems.
+    p0, p1, p2 = face_vertices(vertices, faces, f)
+    return half_cotangents_of(p0, p1, p2)
+
+
+@wp.func
+def face_half_cotangents_float64(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], f: wp.int32
+) -> tuple[wp.float64, wp.float64, wp.float64]:
+    # ``face_half_cotangents`` formed in ``float64`` from the ``float32`` corners, which widen
+    # exactly: only the final rounding is left, whatever the face's shape.
+    p0, p1, p2 = face_vertices(vertices, faces, f)
+    return half_cotangents_of(wp.vec3d(p0), wp.vec3d(p1), wp.vec3d(p2))
 
 
 @wp.func

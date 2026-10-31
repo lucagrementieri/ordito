@@ -40,6 +40,7 @@ from ordito.kernels.laplacian import (
     connection_offdiagonal,
     cotmatrix_offdiagonal,
     face_half_cotangents,
+    face_half_cotangents_float64,
     pattern_row_on_rim,
 )
 from ordito.kernels.linalg import shift_factor, shifted_block_entry, shifted_scalar_entry
@@ -67,25 +68,39 @@ def heat_face_terms(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     write_cot: wp.int32,
+    write_cot_float64: wp.int32,
     voronoi_mass: wp.int32,
     out_cot: wp.array2d[wp.float32],
+    out_cot_float64: wp.array2d[wp.float64],
     out_normals: wp.array[wp.vec3],
     out_areas: wp.array[wp.float32],
     out_area_sums: wp.array[wp.float64],
 ) -> None:
     # Every per-face quantity the heat operators read, in one pass: the ``float32`` half-cotangent
     # table (``laplacian.cotmatrix_entries``' row, skipped when ``write_cot`` is 0 because the
-    # caller has its own), the unit normal and area (``triangles.face_normals_and_areas``'), and
-    # the area's exact ``float64`` scatter into each corner (``scatter.scatter_face_areas_exact``,
-    # the lumped mass before its division by three). Each value is the standalone kernel's bit
-    # for bit. With ``voronoi_mass`` set the corners take their Voronoi shares instead
+    # caller has its own), and with ``write_cot_float64`` the same formed in ``float64``
+    # (``laplacian.face_half_cotangents_float64``) for the vector system's rows; the unit normal
+    # and area (``triangles.face_normals_and_areas``'); and the area's exact
+    # ``float64`` scatter into each corner (``scatter.scatter_face_areas_exact``, the lumped mass
+    # before its division by three). Each ``float32`` value is the standalone kernel's bit for bit.
+    # With ``voronoi_mass`` set the corners take their Voronoi shares instead
     # (``triangles.face_voronoi_areas``), the lumped mass itself with no division to follow.
+    #
+    # ``float64`` because a cap's ``float32`` weight is off by ``eps / sin(largest angle)``, and the
+    # vector heat system's rows cancel such weights against each other: on
+    # ``torus_irregular_holes`` ``log_map(method="potpourri3d")`` was 7.9x the Class A bound from
+    # potpourri3d's ``float64`` weights, and 0.07x with these.
     f = wp.int32(wp.tid())
     if write_cot != 0:
         c0, c1, c2 = face_half_cotangents(vertices, faces, f)
         out_cot[f, 0] = c0
         out_cot[f, 1] = c1
         out_cot[f, 2] = c2
+    if write_cot_float64 != 0:
+        d0, d1, d2 = face_half_cotangents_float64(vertices, faces, f)
+        out_cot_float64[f, 0] = d0
+        out_cot_float64[f, 1] = d1
+        out_cot_float64[f, 2] = d2
     normal, area = face_normals_and_area(vertices, faces, f)
     out_normals[f] = normal
     out_areas[f] = area
@@ -95,6 +110,19 @@ def heat_face_terms(
     else:
         value = wp.float64(area)
         add_corner_triple(out_area_sums, faces, f, value, value, value)
+
+
+@wp.kernel
+def half_cotangents_float64(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_cot: wp.array2d[wp.float64]
+) -> None:
+    # ``heat_face_terms``' ``float64`` table alone, for a vector system built over a scalar bundle
+    # that did not form one.
+    f = wp.int32(wp.tid())
+    c0, c1, c2 = face_half_cotangents_float64(vertices, faces, f)
+    out_cot[f, 0] = c0
+    out_cot[f, 1] = c1
+    out_cot[f, 2] = c2
 
 
 @wp.kernel
@@ -198,6 +226,7 @@ def heat_system_rows(
     mass_divisor: wp.float64,
     faces: wp.array[wp.int32],
     transport_angles: wp.array[wp.float64],
+    vector_cot: wp.array2d[wp.float64],
     out_laplacian: wp.array[wp.float64],
     out_heat: wp.array[wp.float64],
     out_poisson: wp.array[wp.float64],
@@ -215,9 +244,10 @@ def heat_system_rows(
     # may be ``area_sums`` itself: each thread reads its own vertex's sum before it writes its mass.
     #
     # A non-empty ``out_vector`` also takes the row of the vector heat system at ``t`` (``-scale``)
-    # over the same pattern and table, ``vector_heat_system_rows``' (``vector_heat_row``), for a
-    # vector assembly that builds its scalar bundle alongside: the two kernels differ only in that
-    # this one has the mass in hand rather than reading it back.
+    # over the same pattern, ``vector_heat_system_rows``' (``vector_heat_row``), from the
+    # ``float64`` table ``vector_cot`` (``heat_face_terms``), for a vector assembly that builds its
+    # scalar bundle alongside: the two kernels differ only in that this one has the mass in hand
+    # rather than reading it back.
     i = wp.int32(wp.tid())
     m = area_sums[i] / mass_divisor
     out_mass[i] = m
@@ -237,7 +267,7 @@ def heat_system_rows(
             count,
             order,
             faces,
-            cot_entries,
+            vector_cot,
             transport_angles,
             m,
             shift_factor(-scale, edge_sum_and_count, from_edges),
@@ -2382,6 +2412,7 @@ def _register_overloads() -> None:
                 wp.float64,
                 i32,
                 f64,
+                wp.array2d[wp.float64],
                 f64,
                 f64,
                 f64,

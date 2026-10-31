@@ -2175,6 +2175,8 @@ def test_log_map_matches_potpourri3d(request: pytest.FixtureRequest, mesh_name: 
         ("saddle_graded", "boundary"),
         ("sphere_well_shaped", "interior"),
         ("torus_irregular", "interior"),
+        ("sphere_irregular", "interior"),
+        ("torus_irregular_holes", "interior"),
     ],
 )
 @pytest.mark.parity("log_map_potpourri3d", "potpourri3d")
@@ -2196,10 +2198,11 @@ def test_log_map_potpourri3d_method_matches_potpourri3d(
     tangent-field iteration reads the connection's rotations as stored: 6.6e-6 / 4.4e-6 (CUDA /
     CPU; bound ratio 0.31 / 0.14), as a factored solve gives. With the rotations read in
     ``float32`` it was 1.9e-4 / 1.7e-4, and with ``float32`` angles a factored solve read 2.9e-4 /
-    5.5e-5. Left out: ``sphere_irregular``, one vertex of 500 at
-    1.23x the bound on CUDA (1.4e-5; CPU 4.0e-6, 0.33x), and ``torus_irregular_holes``, 6 / 2 of
-    481 vertices over it from an interior source (8.9e-5 / 3.4e-5), the same worst vertex on both
-    devices and in a factored solve: a systematic difference, not solver noise. **Mutation
+    5.5e-5. The vector system's weights are the half-cotangents formed in ``float64``: from the
+    ``float32`` table ``sphere_irregular`` had one vertex of 500 at 1.23x the bound on CUDA and
+    ``torus_irregular_holes`` 6 of 481 at up to 7.9x on both devices, angles 1e-5 to 3e-5 radians
+    off at vertices beside caps, whose ``float32`` weights are off by ``eps / sin(largest
+    angle)``; with the ``float64`` table the worst ratio is 0.029 and 0.073 on CUDA. **Mutation
     probes**, worst ratio to the bound: the outward ball's term at ``c`` with its sign flipped
     6.6e4, its term at the source dropped 3.9e3, the radial field left non-zero at the source
     2.6e3, the divergence averaging the neighbour's radial direction without transporting it
