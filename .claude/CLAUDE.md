@@ -1656,9 +1656,12 @@ cosine outside `[-1, 1]` fails its test; `std::min(1.0, NaN)` is `1`), in `float
   (happy_buddha 15 244 rounds against a hop eccentricity of 392, `Closed 2026-10-28: fast marching
   as parallel rounds`) is not this one's: its rounds / eccentricity read bunny 172 / 119, dragon
   1 349 / 477, happy_buddha 1 123 / 392, so dragon pays about 184 µs a round (the lists' path,
-  above `1 << 17` faces) against 10-25 µs on the icospheres. **Next:** histogram the queued faces
-  and lowered vertices per round on dragon (a front that re-lowers most of the mesh each round
-  would make the lists lose to the scan there, as they did for the MeshLib front).
+  above `1 << 17` faces) against 10-25 µs on the icospheres. The layout is not it: forcing the
+  scan, ms lists / scan, `icosphere(7)` 9.2 / 13.4, `(8)` 22.0 / 57.2, dragon 247 / 258,
+  happy_buddha 307 / 269 (bit-identical), so a scan-mesh round is wide whichever way it is
+  driven: the offers keep re-lowering much of the mesh (the `float64` unfolding chain a lowered
+  vertex pays is the cost). **Next:** histogram lowered vertices per round on dragon, and price
+  the `float32` filter (`unfolded_distance_exceeds`) there, where its drop rate is unmeasured.
 
 ### Open items from the 2026-10-31 host-traffic sweep
 
