@@ -4483,6 +4483,26 @@
    "d2h": 2
   }
  },
+ "benchmarks/test_neighbors.py::test_edge_path_ball_walk[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 7,
+   "memset": 2,
+   "d2h": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_neighbors.py::test_geodesic_ball_walk[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 9,
+   "memset": 2,
+   "d2h": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
  "benchmarks/test_neighbors.py::test_hashgrid_from_points[sphere_small-ordito-cuda-256]": {
   "counts": {}
  },

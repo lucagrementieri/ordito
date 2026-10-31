@@ -1322,10 +1322,11 @@ Each is a measured limit of an option above; re-measure before acting on it.
   settled fields wobbles by the settle's own accuracy (2.3e-6 at icosphere(8)), where real
   obtuse-triangle overshoots measure 2e-3 and up. Every vector-heat census row +2 launches, +2
   allocations, +2 readbacks (the edge-length sums and the bounds, once per solver).
-- **Private access added across a module boundary.** `smoothing`
-  reaches `neighbors._EdgePathBallWalk` (check 5 allowlist, plus a scoped `reportUnusedClass`
-  ignore), the same shape as the two allowlisted `_GeodesicBallWalk` uses; a public chunked walk
-  would retire all three entries at once.
+- **Closed 2026-10-31: the chunked ball walks are public.** `neighbors.GeodesicBallWalk` and
+  `neighbors.EdgePathBallWalk` (`chunks()` yields `(start, m)` with the balls in `rows[:m]`, and
+  warns once after the first full walk on its own), so `curvature` and `smoothing` no longer reach
+  private names and the three check-5 allowlist entries are gone. `geodesic_ball` still hands the
+  walk its clip counter beside its totals (one copy for both), through the module's own `_setup`.
 - **Declined, recorded so it is not re-proposed without new evidence:** hole-fill and stitch ties
   against MeshLib (a `float64` DP, MeshLib's triangle-term bits, descending `k` and its start
   vertex; stitch follows its heap order); earcut's serial ear order; MeshLab's Embree ambient

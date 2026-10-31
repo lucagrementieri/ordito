@@ -22,6 +22,8 @@ import pytorch3d.ops as p3d_ops
 import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import dijkstra
 from scipy.spatial import KDTree
 
 import ordito as od
@@ -2102,6 +2104,91 @@ def test_geodesic_ball_refuses_a_list_past_its_offsets(
     monkeypatch.setattr(od.neighbors, "_PACKED_ENTRIES_MAX", int(offsets_np[1400]) - 1)
     with pytest.raises(ValueError, match="after 1400 of"):
         od.neighbors.geodesic_ball(vertices_wp, faces_wp, radius)
+
+
+@pytest.mark.parametrize("radius_scale", [3.0, 100.0], ids=["ball", "clipped"])
+def test_geodesic_ball_walk_rows_are_geodesic_ball(
+    device: str, monkeypatch: pytest.MonkeyPatch, radius_scale: float
+) -> None:
+    """
+    Ordito against ordito: each chunk's rows are ``geodesic_ball``'s packed rows, entry for entry.
+
+    ``geodesic_ball`` carries the oracle (the libigl and meshlib comparisons above); the walk is its
+    streaming form. The chunk is forced below the mesh so three chunks reuse the rows, and the
+    clipped radius checks the walk warns once over two full walks.
+    """
+    mesh_tm = tm.creation.icosphere(subdivisions=4)
+    vertices_wp, faces_wp = numpy_to_warp(
+        np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
+    )
+    radius = radius_scale * float(od.edges.mean_edge_length(vertices_wp, faces_wp))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        packed_wp, offsets_wp, reference_wp = od.neighbors.geodesic_ball(
+            vertices_wp, faces_wp, radius
+        )
+    packed_np, offsets_np = packed_wp.numpy(), offsets_wp.numpy()
+    monkeypatch.setattr(od.neighbors, "_GEODESIC_BALL_CHUNK", 700)
+    walk = od.neighbors.GeodesicBallWalk(vertices_wp, faces_wp, radius)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        for _ in range(2):
+            starts: list[int] = []
+            for start, m in walk.chunks():
+                starts.append(start)
+                rows_np = walk.rows.numpy()[:m]
+                counts_np = walk.counts.numpy()[start : start + m]
+                for t in range(m):
+                    row = packed_np[offsets_np[start + t] : offsets_np[start + t + 1]]
+                    assert np.array_equal(rows_np[t, : counts_np[t]], row)
+            assert starts == [0, 700, 1400, 2100]
+    assert len(caught) == (1 if radius_scale > 10.0 else 0)
+    assert np.array_equal(walk.reference.numpy(), reference_wp.numpy())
+
+
+def test_edge_path_ball_walk_matches_scipy(device: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Class A on each ball's membership set against SciPy's Dijkstra truncated at the radius.
+
+    ``scipy.sparse.csgraph.dijkstra(limit=radius)`` over the edge-length graph reaches exactly the
+    vertices a path of length at most ``radius`` reaches (``limit`` is inclusive like the walk).
+    The positions are moved between two walks so the balls must follow them, and the chunk is
+    forced below the mesh. Not vacuous: ball sizes vary across vertices.
+    """
+    mesh_tm = tm.creation.icosphere(subdivisions=3)
+    rng = np.random.default_rng(7)
+    moved_np = mesh_tm.vertices * rng.uniform(0.8, 1.2, size=(len(mesh_tm.vertices), 1))
+    vertices_wp, faces_wp = numpy_to_warp(
+        np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
+    )
+    moved_wp = wp.array(moved_np.astype(np.float32), dtype=wp.vec3, device=device)
+    monkeypatch.setattr(od.neighbors, "_EDGE_PATH_BALL_CHUNK", 200)
+    radius = 3.0 * float(mesh_tm.edges_unique_length.mean())
+    walk = od.neighbors.EdgePathBallWalk(faces_wp, vertices_wp.size, radius)
+    for positions_np, positions_wp in ((mesh_tm.vertices, vertices_wp), (moved_np, moved_wp)):
+        edges = mesh_tm.edges_unique
+        points = positions_np.astype(np.float32).astype(np.float64)
+        lengths = np.linalg.norm(points[edges[:, 0]] - points[edges[:, 1]], axis=1)
+        n = len(points)
+        graph = coo_matrix(
+            (
+                np.r_[lengths, lengths],
+                (np.r_[edges[:, 0], edges[:, 1]], np.r_[edges[:, 1], edges[:, 0]]),
+            ),
+            shape=(n, n),
+        ).tocsr()
+        distances = dijkstra(graph, limit=radius)
+        sizes: list[int] = []
+        for start, m in walk.chunks(positions_wp):
+            rows_np = walk.rows.numpy()[:m]
+            counts_np = walk.counts.numpy()[start : start + m]
+            for t in range(m):
+                ball_wp = set(rows_np[t, : counts_np[t]].tolist())
+                ball_np = set(np.flatnonzero(np.isfinite(distances[start + t])).tolist())
+                assert ball_wp == ball_np, f"source {start + t}"
+                sizes.append(len(ball_np))
+        assert len(sizes) == n
+        assert min(sizes) < max(sizes)
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])

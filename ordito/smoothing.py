@@ -1610,16 +1610,13 @@ def relax_approx(
     if method == "meshlib":
         # Each pass walks its balls over the positions it starts from, so the ball follows the
         # surface as it moves; a fit reads each chunk's rows as the walk leaves them.
-        path_walk = od.neighbors._EdgePathBallWalk(  # pyright: ignore[reportPrivateUsage]
-            faces, n_vertices, dilate_radius
-        )
+        path_walk = od.neighbors.EdgePathBallWalk(faces, n_vertices, dilate_radius)
+        path_rows = cast("wp.array[wp.int32]", path_walk.rows.flatten())
+        path_stride = wp.int32(path_walk.rows.shape[1])
 
         def relax_pass(src: wp.array[wp.vec3], dst: wp.array[wp.vec3]) -> None:
             for start, m in path_walk.chunks(src):
-                relax_launch(
-                    src, dst, path_walk.rows_flat, path_walk.counts, path_walk.row_stride, start, m
-                )
-            path_walk.warn_clipped()
+                relax_launch(src, dst, path_rows, path_walk.counts, path_stride, start, m)
 
     elif iterations > 1 and n_vertices <= _PACKED_BALL_MAX_VERTICES:
         neighbor_indices, neighbor_offsets, _ = od.neighbors.geodesic_ball(
@@ -1630,14 +1627,14 @@ def relax_approx(
             relax_launch(src, dst, neighbor_indices, neighbor_offsets, wp.int32(0), 0, n_vertices)
 
     else:
-        walk = od.neighbors._GeodesicBallWalk(  # pyright: ignore[reportPrivateUsage]
-            vertices, faces, dilate_radius, 1
-        )
+        walk = od.neighbors.GeodesicBallWalk(vertices, faces, dilate_radius, 1)
+        # ``kernels/algorithms/bfs.ball_row_bounds`` reads the rows flat at their stride.
+        rows_flat = cast("wp.array[wp.int32]", walk.rows.flatten())
+        row_stride = wp.int32(walk.rows.shape[1])
 
         def relax_pass(src: wp.array[wp.vec3], dst: wp.array[wp.vec3]) -> None:
             for start, m in walk.chunks():
-                relax_launch(src, dst, walk.rows_flat, walk.counts, walk.row_stride, start, m)
-            walk.warn_clipped()
+                relax_launch(src, dst, rows_flat, walk.counts, row_stride, start, m)
 
     return _float32_passes(vertices, iterations, relax_pass)
 

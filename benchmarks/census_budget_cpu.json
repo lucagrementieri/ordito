@@ -4099,6 +4099,24 @@
    "readback": 2
   }
  },
+ "benchmarks/test_neighbors.py::test_edge_path_ball_walk[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 7,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_neighbors.py::test_geodesic_ball_walk[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 9,
+   "readback": 1,
+   "scan": 1,
+   "sort": 1
+  }
+ },
  "benchmarks/test_neighbors.py::test_hashgrid_from_points[sphere_small-ordito-cpu-256]": {
   "counts": {}
  },

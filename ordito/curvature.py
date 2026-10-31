@@ -179,9 +179,10 @@ def principal_curvature(
     # od.neighbors.geodesic_ball. The fit reads each chunk of the walk's queue rows as the walk
     # leaves them -- the same rows ``geodesic_ball`` packs, entry for entry -- so no neighbor list
     # over the whole mesh is held. ``min_count`` is ``geodesic_ball``'s default of 6.
-    walk = od.neighbors._GeodesicBallWalk(  # pyright: ignore[reportPrivateUsage]
-        vertices, faces, scaled_radius, 6
-    )
+    walk = od.neighbors.GeodesicBallWalk(vertices, faces, scaled_radius, 6)
+    # ``kernels/algorithms/bfs.ball_row_bounds`` reads the rows flat at their stride.
+    rows_flat = walk.rows.flatten()
+    row_stride = wp.int32(walk.rows.shape[1])
 
     # Fit quadric and extract principal curvature per vertex. ``wp.empty``: every exit of the
     # kernel -- the three declines included, through ``_write_no_curvature`` -- writes all four.
@@ -197,9 +198,9 @@ def principal_curvature(
             inputs=[
                 vertices,
                 vertex_normals,
-                walk.rows_flat,
+                rows_flat,
                 walk.counts,
-                walk.row_stride,
+                row_stride,
                 wp.int32(start),
                 walk.reference,
                 frame_independent,
@@ -210,7 +211,6 @@ def principal_curvature(
             ],
             device=device,
         )
-    walk.warn_clipped()
 
     return pd1, pd2, pv1, pv2
 

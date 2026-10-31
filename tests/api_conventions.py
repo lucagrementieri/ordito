@@ -286,20 +286,6 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "them where fill_small documents a copy, and it takes MeshLib's hole walk and metric, "
         "which fill_small does not offer"
     ),
-    ("smoothing", "neighbors._GeodesicBallWalk"): (
-        "relax_approx fits each vertex from its chunk's queue rows as the walk leaves them; "
-        "geodesic_ball packs every row first, up to 512 entries a vertex, which on a 14 M-vertex "
-        "scan is past the device's memory and the int32 offsets"
-    ),
-    ("smoothing", "neighbors._EdgePathBallWalk"): (
-        "relax_approx(method='meshlib') rebuilds its shortest-path balls from each pass's "
-        "positions and fits each chunk's rows as the walk leaves them; no public form returns a "
-        "ball it would only pack to read once"
-    ),
-    ("curvature", "neighbors._GeodesicBallWalk"): (
-        "principal_curvature fits each vertex's quadric from its chunk's queue rows as the walk "
-        "leaves them; geodesic_ball would pack every row into a list the fit reads once"
-    ),
     ("reconstruction", "remesh._flip_interior_edges"): (
         "ball pivoting flips its own output's interior edges; every public remesh entry point "
         "rebuilds connectivity as well, which reconstruction must not do to a fresh triangulation"

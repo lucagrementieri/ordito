@@ -2145,7 +2145,7 @@ def geodesic_ball(
             _launch.empty(0, dtype=wp.int32, device=device),
         )
 
-    # Per-source scratch is sized for one chunk of sources (``_GeodesicBallWalk``); this packs each
+    # Per-source scratch is sized for one chunk of sources (``GeodesicBallWalk``); this packs each
     # chunk's queue rows into its own flat buffer before the next chunk reuses them.
     chunk = min(n, _GEODESIC_BALL_CHUNK)
     # CSR row bounds in the length-``n + 1`` form. The leading zero from ``wp.zeros`` is the first
@@ -2168,7 +2168,10 @@ def geodesic_ball(
         total_at = 0
         offsets = _launch.zeros(n + 1, dtype=wp.int32, device=device)
         local_offsets = _launch.empty(chunk, dtype=wp.int32, device=device)
-    walk = _GeodesicBallWalk(
+    # The walk's clip counter sits beside the totals, so the last chunk reads both in one copy: a
+    # constructor argument no public caller should see, hence the module's own access.
+    walk = GeodesicBallWalk.__new__(GeodesicBallWalk)
+    walk._setup(  # pyright: ignore[reportPrivateUsage]
         vertices, faces, radius, min_count, odt.as_dense(totals[total_at + 1 : total_at + 2])
     )
     counts = walk.counts
@@ -2201,6 +2204,9 @@ def geodesic_ball(
                 f"after {start + m} of {n} vertices; radius {radius} is too large for int32 "
                 "offsets on this mesh"
             )
+        if start + m == n:
+            # Before the walk resumes, so its own end-of-walk check finds the warning given.
+            walk._warn_clipped(n_overflow, stacklevel=3)  # pyright: ignore[reportPrivateUsage]
         flat_chunk = _launch.empty(chunk_total, dtype=wp.int32, device=device)
         if chunk_total > 0:
             _launch.launch(
@@ -2210,8 +2216,6 @@ def geodesic_ball(
                 device=device,
             )
         chunk_flats.append(flat_chunk)
-
-    walk.warn_clipped(n_overflow)
 
     if single_chunk:
         # Single chunk (n <= chunk): the chunk buffer already is the global CSR neighbor buffer.
@@ -2224,40 +2228,85 @@ def geodesic_ball(
     return od.array.concatenate(chunk_flats), offsets, walk.reference
 
 
-class _GeodesicBallWalk:
+class GeodesicBallWalk:
     """
-    The chunked walk behind ``geodesic_ball``: each chunk's balls as rows of a reused queue pool.
+    Every vertex's geodesic ball, walked a chunk of sources at a time into reused rows.
 
-    ``chunks()`` walks ``chunk`` sources at a time and yields ``(start, m)`` once sources
-    ``start .. start + m`` hold their balls in ``rows[t, : counts[start + t]]``: the queue prefix in
-    visit order, which is ``geodesic_ball``'s packed row entry for entry. The next chunk reuses the
-    pools, so a consumer launches on a chunk before resuming the iterator. A consumer that only
-    reduces each ball (a per-vertex fit) reads the rows in place and never holds more than one
-    chunk of neighbours, where the packed list is up to ``PER_SOURCE_MAX_NEIGHBORS`` entries a
-    vertex: on a scan of 14 M vertices at a radius of a few percent of its diagonal every ball
-    fills its row and the list is past both the device's memory and the ``int32`` offsets.
-    ``rows_flat`` is ``rows`` as one buffer, read with ``kernels/algorithms/bfs.ball_row_bounds`` at
-    stride ``row_stride`` with ``counts`` in place of the offsets.
+    The streaming form of [`geodesic_ball`][ordito.neighbors.geodesic_ball], for a consumer that
+    reads each ball once (a per-vertex fit): [`chunks`][ordito.neighbors.GeodesicBallWalk.chunks]
+    walks [`chunk`][ordito.neighbors.GeodesicBallWalk.chunk] sources at a time and yields
+    ``(start, m)`` once sources ``start .. start + m`` hold their balls in
+    ``rows[t, : counts[start + t]]``: the walk's queue in visit order, which is
+    [`geodesic_ball`][ordito.neighbors.geodesic_ball]'s packed row entry for entry. The next chunk
+    reuses the rows, so a consumer launches on a chunk before resuming the iterator, and never
+    holds more than one chunk of neighbours, where the packed list is up to ``max_neighbors``
+    entries a vertex: on a scan of millions of vertices at a radius of a few percent of its
+    diagonal that list is past both the device's memory and ``int32`` offsets.
 
-    The adjacency is built here, with ascending rows. ``sort_rows=True`` is load-bearing, not
-    tidiness. The ball is a geometric predicate and is order-independent, but the traversal emits
-    its queue in *visit* order, so a permuted adjacency row permutes the returned row -- and
-    ``curvature.principal_curvature`` accumulates its quadric's normal equations along that row, so
-    a permutation moves its answer at the near-flat vertices where the fit is ill conditioned.
-    Sorted rows make this builder's output identical to ``graph.edges_to_csr``'s, for a fraction of
-    its cost; a mesh vertex's valence is far below the degree where the per-row sort stops paying.
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` vertex positions.
+    faces
+        ``(3 * n_faces,)`` flat triangle index buffer; its edges are the graph the walk follows.
+    radius
+        Geodesic-ball radius in world units.
+    min_count
+        Minimum neighbors per vertex; the nearest out-of-ball vertices backfill any shortfall.
 
-    Per-source scratch lives in shared global-memory pools sized for one chunk of sources (queue
-    rows, an open-addressing visited row pre-filled with -1 per launch, and a small nearest-fallback
-    pool) instead of kilobytes of per-thread local arrays. Each walk adds the sources it clipped to
-    ``overflow`` (a fresh one-element counter when not given), which ``warn_clipped`` reports.
+    Attributes
+    ----------
+    rows
+        ``(chunk, max_neighbors)`` the current chunk's balls, row ``t`` for source ``start + t``.
+    counts
+        ``(n_vertices,)`` each source's ball size, written as its chunk is walked.
+    reference
+        ``(n_vertices,)`` each vertex's reference neighbour (the smallest adjacent vertex), as
+        [`geodesic_ball`][ordito.neighbors.geodesic_ball] returns it.
+    chunk
+        Sources a chunk holds at most.
+
+    Raises
+    ------
+    RuntimeError
+        If ``vertices`` and ``faces`` are not all on one device.
+
+    Warns
+    -----
+    UserWarning
+        Once, after the first full walk, if any ball exceeded ``max_neighbors`` entries; its surplus
+        neighbours were dropped.
+
+    Notes
+    -----
+    The adjacency rows are sorted, so a ball's visit order, and with it any fit accumulated along
+    the row, does not depend on the face order's permutation of each vertex's neighbours. Per-source
+    scratch lives in pools sized for one chunk, not in per-thread local arrays.
+
+    See Also
+    --------
+    [`geodesic_ball`][ordito.neighbors.geodesic_ball]
+    [`EdgePathBallWalk`][ordito.neighbors.EdgePathBallWalk]
+
+    Examples
+    --------
+    The ball sizes of an icosahedron at a radius just past its edge length, one chunk at a time:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosahedron()
+    walk = od.neighbors.GeodesicBallWalk(vertices, faces, radius=1.1)
+    for start, m in walk.chunks():
+        rows = walk.rows.numpy()[:m]
+        print(start, m, sorted(rows[0, :6].tolist()))  # 0 12 [0, 1, 5, 7, 10, 11]
+    print(walk.counts.numpy()[:4].tolist())  # [6, 6, 6, 6]
+    ```
     """
 
     reference: wp.array[wp.int32]
     counts: wp.array[wp.int32]
     rows: odt.Array2dInt32
-    rows_flat: wp.array[wp.int32]
-    row_stride: wp.int32
     chunk: int
 
     def __init__(
@@ -2265,9 +2314,26 @@ class _GeodesicBallWalk:
         vertices: wp.array[wp.vec3],
         faces: wp.array[wp.int32],
         radius: float,
-        min_count: int,
-        overflow: wp.array[wp.int32] | None = None,
+        min_count: int = 6,
     ) -> None:
+        """Build the sorted adjacency and the chunk's pools; no ball is walked yet."""
+        require_same_device(vertices=vertices, faces=faces)
+        self._setup(vertices, faces, radius, min_count, None)
+
+    def _setup(
+        self,
+        vertices: wp.array[wp.vec3],
+        faces: wp.array[wp.int32],
+        radius: float,
+        min_count: int,
+        overflow: wp.array[wp.int32] | None,
+    ) -> None:
+        """
+        Allocate the walk; ``geodesic_ball`` hands in the clip counter beside its totals.
+
+        Each walk adds the sources it clipped to ``overflow`` (a fresh one-element counter when not
+        given), so ``geodesic_ball`` reads it in the same copy as its last chunk total.
+        """
         device = vertices.device
         n = vertices.size
         self._vertices = vertices
@@ -2279,9 +2345,8 @@ class _GeodesicBallWalk:
         self.chunk = max(1, min(n, _GEODESIC_BALL_CHUNK))
         stride = kernel_bfs.PER_SOURCE_MAX_NEIGHBORS
         # The queue rows and the per-source counts in one allocation.
-        self.rows_flat, self.counts = _launch.carve(wp.int32, [self.chunk * stride, n], device)
-        self.rows = odt.as_array2d(self.rows_flat.reshape((self.chunk, stride)), wp.int32)
-        self.row_stride = wp.int32(stride)
+        rows_flat, self.counts = _launch.carve(wp.int32, [self.chunk * stride, n], device)
+        self.rows = odt.as_array2d(rows_flat.reshape((self.chunk, stride)), wp.int32)
         self._visited_pool = _launch.full(
             (self.chunk, kernel_bfs.VISITED_HASH_CAPACITY), -1, dtype=wp.int32, device=device
         )
@@ -2298,7 +2363,20 @@ class _GeodesicBallWalk:
         self._visited_dirty = False
 
     def chunks(self) -> Iterator[tuple[int, int]]:
-        """Walk the sources a chunk at a time, yielding ``(start, m)`` with each chunk's rows."""
+        """
+        Walk the sources a chunk at a time, yielding ``(start, m)`` with each chunk's rows.
+
+        Yields
+        ------
+        tuple[int, int]
+            ``(start, m)``: sources ``start .. start + m`` hold their balls in ``rows[:m]``, until
+            the iterator resumes.
+
+        Warns
+        -----
+        UserWarning
+            Once, after the first full walk, if any ball exceeded ``max_neighbors`` entries.
+        """
         for start in range(0, self._n, self.chunk):
             m = min(self.chunk, self._n - start)
             # The pool is allocated holding -1; every later chunk, a second walk's first included,
@@ -2326,8 +2404,9 @@ class _GeodesicBallWalk:
                 device=self._vertices.device,
             )
             yield start, m
+        self._warn_clipped(stacklevel=4)
 
-    def warn_clipped(self, n_overflow: int | None = None) -> None:
+    def _warn_clipped(self, n_overflow: int | None = None, *, stacklevel: int) -> None:
         """
         Warn once about the balls the first full walk clipped at their row's capacity.
 
@@ -2346,7 +2425,7 @@ class _GeodesicBallWalk:
                 f"geodesic_ball: {n_overflow} of {self._n} neighborhoods exceeded the fixed "
                 f"capacity of {kernel_bfs.PER_SOURCE_MAX_NEIGHBORS}; their surplus neighbors were "
                 "dropped.",
-                stacklevel=3,
+                stacklevel=stacklevel,
             )
 
 
@@ -2413,36 +2492,78 @@ def _sorted_vertex_adjacency(
     return columns, offsets, reference
 
 
-class _EdgePathBallWalk:  # pyright: ignore[reportUnusedClass]  # driven by smoothing.relax_approx
+class EdgePathBallWalk:
     """
-    Chunks of shortest-edge-path balls, rebuilt from whatever positions each walk is handed.
+    Every vertex's shortest-edge-path ball, walked a chunk of sources at a time into reused rows.
 
     The ball of a vertex is every vertex reachable along mesh edges by a path of total length at
-    most ``radius`` (``kernels/neighbors.per_source_edge_path_collect``). ``chunks(positions)``
-    yields ``(start, m)`` once sources ``start .. start + m`` hold their balls in
-    ``rows_flat[t * row_stride :][: counts[start + t]]``, ``_GeodesicBallWalk``'s layout, so a fit
-    reads either walk's rows through ``kernels/algorithms/bfs.ball_row_bounds``. The adjacency is
-    built once; the balls follow the positions, so a caller moving the mesh walks again.
+    most ``radius``. The adjacency is built once; the balls follow whatever positions each
+    [`chunks`][ordito.neighbors.EdgePathBallWalk.chunks] call is handed, so a caller moving the mesh
+    (a smoothing pass) walks again over the moved positions. Each call yields ``(start, m)`` once
+    sources ``start .. start + m`` hold their balls in ``rows[t, : counts[start + t]]``, the layout
+    of [`GeodesicBallWalk`][ordito.neighbors.GeodesicBallWalk]; the next chunk reuses the rows.
+
+    Parameters
+    ----------
+    faces
+        ``(3 * n_faces,)`` flat triangle index buffer; its edges are the paths' steps.
+    n_vertices
+        Number of vertices the faces index.
+    radius
+        Largest path length a ball reaches, in world units (inclusive).
+
+    Attributes
+    ----------
+    rows
+        ``(chunk, max_neighbors)`` the current chunk's balls, row ``t`` for source ``start + t``.
+    counts
+        ``(n_vertices,)`` each source's ball size, written as its chunk is walked.
+    chunk
+        Sources a chunk holds at most.
+
+    Warns
+    -----
+    UserWarning
+        Once, after the first full walk, if any ball exceeded ``max_neighbors`` entries; its surplus
+        neighbours were dropped.
+
+    See Also
+    --------
+    [`GeodesicBallWalk`][ordito.neighbors.GeodesicBallWalk]
+
+    Examples
+    --------
+    On an icosahedron inscribed in the unit sphere the edges are about ``1.05`` long, so a path
+    budget of ``1.1`` reaches each vertex's five edge neighbours:
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.icosahedron()
+    walk = od.neighbors.EdgePathBallWalk(faces, vertices.size, radius=1.1)
+    for start, m in walk.chunks(vertices):
+        print(start, m, int(walk.counts.numpy()[start : start + m].sum()))  # 0 12 72
+    ```
     """
 
     counts: wp.array[wp.int32]
-    rows_flat: wp.array[wp.int32]
-    row_stride: wp.int32
+    rows: odt.Array2dInt32
     chunk: int
 
     def __init__(self, faces: wp.array[wp.int32], n_vertices: int, radius: float) -> None:
+        """Build the sorted adjacency and the chunk's pools; no ball is walked yet."""
         device = faces.device
+        self._faces = faces
         self._radius = wp.float32(radius)
         self._n = n_vertices
         self._columns, self._offsets, _reference = _sorted_vertex_adjacency(faces, n_vertices)
         self.chunk = max(1, min(n_vertices, _EDGE_PATH_BALL_CHUNK))
         stride = kernel_bfs.PER_SOURCE_MAX_NEIGHBORS
-        self.rows_flat, self.counts, pending_flat = _launch.carve(
+        rows_flat, self.counts, pending_flat = _launch.carve(
             wp.int32, [self.chunk * stride, n_vertices, self.chunk * stride], device
         )
-        self._rows = odt.as_array2d(self.rows_flat.reshape((self.chunk, stride)), wp.int32)
+        self.rows = odt.as_array2d(rows_flat.reshape((self.chunk, stride)), wp.int32)
         self._pending = odt.as_array2d(pending_flat.reshape((self.chunk, stride)), wp.int32)
-        self.row_stride = wp.int32(stride)
         # A walk leaves its keys behind; filling the table before the next chunk costs less than
         # clearing them, which would probe every ball vertex once more.
         self._table = _launch.full(
@@ -2456,7 +2577,31 @@ class _EdgePathBallWalk:  # pyright: ignore[reportUnusedClass]  # driven by smoo
         self._warned = False
 
     def chunks(self, positions: wp.array[wp.vec3]) -> Iterator[tuple[int, int]]:
-        """Walk the balls over ``positions`` a chunk at a time, yielding ``(start, m)``."""
+        """
+        Walk the balls over ``positions`` a chunk at a time, yielding ``(start, m)``.
+
+        Parameters
+        ----------
+        positions
+            ``(n_vertices,)`` the vertex positions the path lengths are measured on.
+
+        Yields
+        ------
+        tuple[int, int]
+            ``(start, m)``: sources ``start .. start + m`` hold their balls in ``rows[:m]``, until
+            the iterator resumes.
+
+        Raises
+        ------
+        RuntimeError
+            If ``positions`` is not on the device of the walk's faces.
+
+        Warns
+        -----
+        UserWarning
+            Once, after the first full walk, if any ball exceeded ``max_neighbors`` entries.
+        """
+        require_same_device(positions=positions, faces=self._faces)
         for start in range(0, self._n, self.chunk):
             m = min(self.chunk, self._n - start)
             if self._table_dirty:
@@ -2471,7 +2616,7 @@ class _EdgePathBallWalk:  # pyright: ignore[reportUnusedClass]  # driven by smoo
                     self._columns,
                     self._radius,
                     wp.int32(start),
-                    self._rows,
+                    self.rows,
                     self._pending,
                     self._table,
                     self.counts,
@@ -2480,8 +2625,9 @@ class _EdgePathBallWalk:  # pyright: ignore[reportUnusedClass]  # driven by smoo
                 device=positions.device,
             )
             yield start, m
+        self._warn_clipped()
 
-    def warn_clipped(self) -> None:
+    def _warn_clipped(self) -> None:
         """Warn once about the balls the first walk clipped at their row's capacity."""
         if self._warned:
             return
@@ -2492,5 +2638,5 @@ class _EdgePathBallWalk:  # pyright: ignore[reportUnusedClass]  # driven by smoo
             warnings.warn(
                 f"{n_overflow} of {self._n} edge-path balls exceeded the fixed capacity of "
                 f"{kernel_bfs.PER_SOURCE_MAX_NEIGHBORS}; their surplus neighbors were dropped.",
-                stacklevel=3,
+                stacklevel=4,
             )

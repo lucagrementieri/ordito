@@ -992,6 +992,56 @@ def test_query_geodesic_ball(bench_case: BenchCase) -> None:
     assert offsets.shape == (vertices.size + 1,)
 
 
+@pytest.mark.benchmark(group="geodesic_ball_walk")
+@pytest.mark.benchlibs("ordito")
+def test_geodesic_ball_walk(bench_case: BenchCase) -> None:
+    """
+    ``query_geodesic_ball``'s balls walked a chunk at a time and never packed.
+
+    The streaming form ``principal_curvature`` and ``relax_approx`` read: the same walk without the
+    per-chunk scans, total readbacks and gathers the packed list costs, so the gap to that group is
+    what packing costs. ordito-only, for ``query_geodesic_ball``'s reason.
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    radius = 5.0 * float(od.edges.mean_edge_length(vertices, faces))
+
+    def walk() -> wp.array[wp.int32]:
+        balls = od.neighbors.GeodesicBallWalk(vertices, faces, radius)
+        for _ in balls.chunks():
+            pass
+        return balls.counts
+
+    counts = bench_case.run(walk)
+    assert counts.shape == (vertices.size,)
+
+
+@pytest.mark.benchmark(group="edge_path_ball_walk")
+@pytest.mark.benchlibs("ordito")
+def test_edge_path_ball_walk(bench_case: BenchCase) -> None:
+    """
+    Every vertex's shortest-edge-path ball, walked a chunk at a time.
+
+    The ball ``relax_approx(method="meshlib")`` fits each pass, at its benchmark row's radius (3 %
+    of the bounding-box diagonal). ordito-only: MeshLib's per-vertex ball is one source per call,
+    so a row would time a Python loop over the vertex buffer, ``query_geodesic_ball``'s objection.
+    """
+    skip_larger_than(bench_case, "happy_buddha")
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    radius = 0.03 * float(
+        np.linalg.norm(bench_case.vertices_np.max(0) - bench_case.vertices_np.min(0))
+    )
+
+    def walk() -> wp.array[wp.int32]:
+        balls = od.neighbors.EdgePathBallWalk(faces, vertices.size, radius)
+        for _ in balls.chunks(vertices):
+            pass
+        return balls.counts
+
+    counts = bench_case.run(walk)
+    assert counts.shape == (vertices.size,)
+
+
 @pytest.mark.benchmark(group="closest_pair")
 @pytest.mark.benchaxis("scale")
 @pytest.mark.censuskeep(
