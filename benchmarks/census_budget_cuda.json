@@ -4936,6 +4936,15 @@
    "memset": 1
   }
  },
+ "benchmarks/test_points.py::test_cluster_outlier_mask[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 8,
+   "memset": 2,
+   "d2h": 1,
+   "scan": 1
+  }
+ },
  "benchmarks/test_points.py::test_convex_hull[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 94,
@@ -5058,6 +5067,12 @@
    "alloc": 1
   }
  },
+ "benchmarks/test_points.py::test_normal_outlier_mask[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
  "benchmarks/test_points.py::test_outlier_probability[sphere_med-ordito-cuda]": {
   "counts": {
    "launch": 5,
@@ -5076,6 +5091,12 @@
  },
  "benchmarks/test_points.py::test_plane_basis[ordito-cuda]": {
   "counts": {}
+ },
+ "benchmarks/test_points.py::test_plane_outlier_mask[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
  },
  "benchmarks/test_points.py::test_point_duplicate_mask[sphere_small-ordito-cuda]": {
   "counts": {

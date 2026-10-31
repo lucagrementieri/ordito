@@ -335,6 +335,7 @@ def test_gram_matrix(bench_case: BenchCase) -> None:
 
 
 _cloud_ml_cache: dict[str, mm.PointCloud] = {}
+_cloud_normals_ml_cache: dict[str, mm.PointCloud] = {}
 _points_ml_cache: dict[str, mm.std_vector_Vector3_float] = {}
 
 
@@ -760,6 +761,94 @@ def test_radius_outlier_mask(bench_case: BenchCase, radius_scale: float) -> None
             lambda: cloud.remove_radius_outlier(nb_points=_MIN_NEIGHBORS, radius=radius)
         )
         assert len(keep_indices) <= bench_case.n_vertices
+
+
+def _find_outliers_ml(
+    bench_case: BenchCase, mask: mm.OutlierTypeMask, radius: float, cloud_ml: mm.PointCloud
+) -> None:
+    """Time ``findOutliers`` for one criterion, its point tree dropped each round as ordito's is."""
+
+    def uncached_cloud_ml() -> mm.PointCloud:
+        """Drop the lazily built point tree, which the search would otherwise reuse."""
+        cloud_ml.invalidateCaches()
+        return cloud_ml
+
+    params_ml = mm.FindOutliersParams()
+    params_ml.radius = radius
+    params_ml.mask = mask
+    outliers_ml = bench_case.run(
+        lambda cloud: mm.findOutliers(cloud, params_ml), setup=uncached_cloud_ml
+    )
+    assert outliers_ml.size() <= bench_case.n_vertices
+
+
+@pytest.mark.benchmark(group="cluster_outlier_mask")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_cluster_outlier_mask(bench_case: BenchCase) -> None:
+    """
+    Clusters of the radius graph: a packed ball query, a connected-component labelling, a count.
+
+    meshlib's ``findOutliers(SmallComponents)`` is the same union of balls (equal sets in
+    ``tests/test_points.py``), unioned on its threads as it searches. Two mean edges, the default
+    cluster size of 20.
+    """
+    radius = 2.0 * bench_case.mean_edge
+    if bench_case.kind == "meshlib":
+        cloud_ml = _cloud_ml(bench_case)  # held in a name: MeshLib's trees point into it
+        _find_outliers_ml(bench_case, mm.OutlierTypeMask.SmallComponents, radius, cloud_ml)
+        return
+    points = bench_case.vertices_wp
+    mask = bench_case.run(lambda: od.points.cluster_outlier_mask(points, radius))
+    assert mask.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="plane_outlier_mask")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_plane_outlier_mask(bench_case: BenchCase) -> None:
+    """
+    A ``float64`` plane fit over each point's ball, one launch: the moments and the eigenvector.
+
+    meshlib's ``findOutliers(FarSurface)`` fits the same plane per point; the ordito row runs its
+    ``method="meshlib"`` side rule (equal sets in ``tests/test_points.py``). Two mean edges, a
+    height of 0.3 of the radius (meshlib's default ``minHeight``).
+    """
+    radius = 2.0 * bench_case.mean_edge
+    if bench_case.kind == "meshlib":
+        cloud_ml = _cloud_ml(bench_case)  # held in a name: MeshLib's trees point into it
+        _find_outliers_ml(bench_case, mm.OutlierTypeMask.FarSurface, radius, cloud_ml)
+        return
+    points = bench_case.vertices_wp
+    mask = bench_case.run(
+        lambda: od.points.plane_outlier_mask(points, radius, 0.3 * radius, method="meshlib")
+    )
+    assert mask.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="normal_outlier_mask")
+@pytest.mark.benchlibs("ordito", "meshlib")
+def test_normal_outlier_mask(bench_case: BenchCase) -> None:
+    """
+    A normal sum over each point's ball and one angle, one launch.
+
+    meshlib's ``findOutliers(AwayNormal)`` on the same cloud and area-weighted vertex normals
+    (equal sets in ``tests/test_points.py``). Two mean edges, meshlib's default angle of 60°.
+    """
+    radius = 2.0 * bench_case.mean_edge
+    normals = _unit_normals_wp(bench_case)
+    if bench_case.kind == "meshlib":
+        if bench_case.mesh_name not in _cloud_normals_ml_cache:
+            from meshlib import mrmeshnumpy as mn
+
+            _cloud_normals_ml_cache[bench_case.mesh_name] = mn.pointCloudFromPoints(
+                cast("Buffer", np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64)),
+                cast("Buffer", np.ascontiguousarray(normals.numpy(), dtype=np.float64)),
+            )
+        cloud_ml = _cloud_normals_ml_cache[bench_case.mesh_name]
+        _find_outliers_ml(bench_case, mm.OutlierTypeMask.AwayNormal, radius, cloud_ml)
+        return
+    points = bench_case.vertices_wp
+    mask = bench_case.run(lambda: od.points.normal_outlier_mask(points, normals, radius))
+    assert mask.shape == (bench_case.n_vertices,)
 
 
 @pytest.mark.benchmark(group="point_finite_mask")

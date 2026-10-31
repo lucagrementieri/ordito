@@ -76,7 +76,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | sample points on a surface | [`sample.sample_surface`][ordito.sample.sample_surface], [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk] |
 | estimate normals | [`points.estimate_normals`][ordito.points.estimate_normals] |
 | down-sample | [`voxels.voxel_down_sample`][ordito.voxels.voxel_down_sample], [`points.farthest_point_sample`][ordito.points.farthest_point_sample] |
-| remove outliers | [`points.statistical_outlier_mask`][ordito.points.statistical_outlier_mask], [`radius_outlier_mask`][ordito.points.radius_outlier_mask] |
+| remove outliers | [`points.statistical_outlier_mask`][ordito.points.statistical_outlier_mask], [`radius_outlier_mask`][ordito.points.radius_outlier_mask], [`cluster_outlier_mask`][ordito.points.cluster_outlier_mask], [`plane_outlier_mask`][ordito.points.plane_outlier_mask], [`normal_outlier_mask`][ordito.points.normal_outlier_mask] |
 | convex hull ([example](examples/points.md#pc8)) | [`points.convex_hull`][ordito.points.convex_hull] (exact), [`convex_superset_mask`][ordito.points.convex_superset_mask] (prefilter) |
 | reconstruct a surface | [`reconstruction.screened_poisson`][ordito.reconstruction.screened_poisson], [`ball_pivoting`][ordito.reconstruction.ball_pivoting] |
 | align two scans | [`registration.icp`][ordito.registration.icp], [`icp_point_to_plane`][ordito.registration.icp_point_to_plane], [`procrustes`][ordito.registration.procrustes] |

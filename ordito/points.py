@@ -50,6 +50,7 @@ angle between two ``wp.vec3`` arrays, geometry rather than array structure, so
 [`ordito.array`][ordito.array] is no better a home.
 """
 
+import math
 from typing import Literal, NamedTuple, cast
 
 import warp as wp
@@ -1234,6 +1235,292 @@ def radius_outlier_mask(
         kernel_points.radius_outlier_flags,
         dim=n,
         inputs=[points, grid.id, wp.float32(radius), wp.int32(min_neighbors), out_mask],
+        device=device,
+    )
+    return out_mask
+
+
+def cluster_outlier_mask(
+    points: wp.array[wp.vec3],
+    radius: float,
+    max_cluster_size: int = 20,
+    *,
+    grid: wp.HashGrid | None = None,
+) -> wp.array[wp.bool]:
+    """
+    Flag points whose cluster under ``radius`` holds at most ``max_cluster_size`` points.
+
+    Two points are linked when they lie within ``radius`` of each other, and a cluster is a
+    connected component of those links: a stray group of a few points, however dense inside,
+    stays a small cluster when nothing links it to the rest of the cloud. That is what
+    [`radius_outlier_mask`][ordito.points.radius_outlier_mask] cannot see (each point of a tight
+    group has neighbours), and this misses what it sees (a sparse fringe joined to the body).
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    radius
+        Link radius, inclusive at exactly ``radius``. Must be ``> 0``.
+    max_cluster_size
+        A point is an outlier when its cluster holds at most this many points, itself included.
+        Must be ``>= 1``.
+    grid
+        Optional pre-built hash grid over ``points``, from
+        [`hashgrid_from_points`][ordito.neighbors.hashgrid_from_points].
+
+    Returns
+    -------
+    wp.array[wp.bool]
+        ``(n,)`` mask on ``points.device``; ``True`` marks an **outlier**.
+
+    Raises
+    ------
+    ValueError
+        If ``radius <= 0`` or ``max_cluster_size < 1``.
+    RuntimeError
+        If ``points`` and ``grid`` are not all on one device.
+
+    See Also
+    --------
+    [`radius_outlier_mask`][ordito.points.radius_outlier_mask]
+    [`ordito.graph.connected_component_labels_from_edges`][ordito.graph.connected_component_labels_from_edges]
+
+    Examples
+    --------
+    A pair of points far from a sphere forms a cluster of two:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    sphere, _ = od.creation.icosphere(subdivisions=2)
+    stray = [[3.0, 0.0, 0.0], [3.1, 0.0, 0.0]]
+    cloud = wp.array(np.vstack([sphere.numpy(), stray]), dtype=wp.vec3)
+    outliers = od.points.cluster_outlier_mask(cloud, 0.5, max_cluster_size=5)
+    print(od.array.flatnonzero(outliers).numpy().tolist())  # [162, 163]
+    ```
+    """
+    require_same_device(points=points, grid=grid)
+    if radius <= 0.0:
+        raise ValueError(f"radius must be > 0, got {radius}")
+    if max_cluster_size < 1:
+        raise ValueError(f"max_cluster_size must be >= 1, got {max_cluster_size}")
+    device = points.device
+    n = points.size
+    if n == 0:
+        return _launch.zeros(0, dtype=wp.bool, device=device)
+    accelerator = od.neighbors.hashgrid_from_points(points, radius) if grid is None else grid
+    neighbors, _, offsets = od.neighbors.query_ball_with_offsets(
+        points, points, radius, accelerator=accelerator
+    )
+    edges = odt.empty_2d((neighbors.size, 2), wp.int32, device=device)
+    _launch.launch(
+        kernel_points.ball_graph_edges,
+        dim=n,
+        inputs=[neighbors, offsets],
+        outputs=[edges],
+        device=device,
+    )
+    labels = od.graph.connected_component_labels_from_edges(edges, n, validate=False)
+    sizes = _launch.zeros(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_points.component_size_counts, dim=n, inputs=[labels], outputs=[sizes], device=device
+    )
+    out_mask = _launch.empty(n, dtype=wp.bool, device=device)
+    _launch.launch(
+        kernel_points.small_component_flags,
+        dim=n,
+        inputs=[labels, sizes, wp.int32(max_cluster_size)],
+        outputs=[out_mask],
+        device=device,
+    )
+    return out_mask
+
+
+def plane_outlier_mask(
+    points: wp.array[wp.vec3],
+    radius: float,
+    height: float,
+    *,
+    method: Literal["unsigned", "meshlib"] = "unsigned",
+    grid: wp.HashGrid | None = None,
+) -> wp.array[wp.bool]:
+    """
+    Flag points farther than ``height`` from the plane fitted to their neighbours.
+
+    Each point's neighbours within ``radius`` (the point itself left out) are fitted with their
+    least-squares plane, and the point is an outlier when it lies more than ``height`` from it: a
+    spike standing off a locally flat surface, which a density criterion misses when the spike
+    is close enough to have neighbours. A point with fewer than three neighbours has no plane and
+    is never flagged here.
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    radius
+        Neighbourhood radius, inclusive at exactly ``radius``. Must be ``> 0``.
+    height
+        Largest distance from the fitted plane a point may lie, in world units. Must be
+        ``>= 0``.
+    method
+        ``"unsigned"`` flags either side of the plane. ``"meshlib"`` flags only the side the
+        plane's normal points to, that normal being the covariance eigenvector of the
+        closed-form 3x3 solution, signed by the largest cross product of two rows of the
+        shifted covariance.
+    grid
+        Optional pre-built hash grid over ``points``, from
+        [`hashgrid_from_points`][ordito.neighbors.hashgrid_from_points].
+
+    Returns
+    -------
+    wp.array[wp.bool]
+        ``(n,)`` mask on ``points.device``; ``True`` marks an **outlier**.
+
+    Raises
+    ------
+    ValueError
+        If ``radius <= 0``, ``height < 0`` or ``method`` is not ``"unsigned"`` or ``"meshlib"``.
+    RuntimeError
+        If ``points`` and ``grid`` are not all on one device.
+
+    See Also
+    --------
+    [`fit_plane`][ordito.points.fit_plane]
+    [`radius_outlier_mask`][ordito.points.radius_outlier_mask]
+
+    Examples
+    --------
+    A point lifted off a flat grid is flagged; the grid is not:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    xs, ys = np.meshgrid(np.arange(10.0), np.arange(10.0))
+    flat = np.stack([xs.ravel(), ys.ravel(), np.zeros(100)], axis=1)
+    flat[55, 2] = 0.8
+    outliers = od.points.plane_outlier_mask(wp.array(flat, dtype=wp.vec3), 1.5, 0.3)
+    print(od.array.flatnonzero(outliers).numpy().tolist())  # [55]
+    ```
+    """
+    require_same_device(points=points, grid=grid)
+    if radius <= 0.0:
+        raise ValueError(f"radius must be > 0, got {radius}")
+    if height < 0.0:
+        raise ValueError(f"height must be >= 0, got {height}")
+    if method not in ("unsigned", "meshlib"):
+        raise ValueError(f"method must be 'unsigned' or 'meshlib', got {method!r}")
+    device = points.device
+    n = points.size
+    if n == 0:
+        return _launch.zeros(0, dtype=wp.bool, device=device)
+    accelerator = od.neighbors.hashgrid_from_points(points, radius) if grid is None else grid
+    out_mask = _launch.empty(n, dtype=wp.bool, device=device)
+    _launch.launch(
+        kernel_points.plane_outlier_flags,
+        dim=n,
+        inputs=[
+            points,
+            accelerator.id,
+            wp.float32(radius),
+            wp.float32(height),
+            wp.int32(method == "meshlib"),
+        ],
+        outputs=[out_mask],
+        device=device,
+    )
+    return out_mask
+
+
+def normal_outlier_mask(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    radius: float,
+    max_angle: float = math.pi / 3.0,
+    *,
+    grid: wp.HashGrid | None = None,
+) -> wp.array[wp.bool]:
+    """
+    Flag points whose normal turns more than ``max_angle`` from their neighbours' mean normal.
+
+    The neighbours within ``radius`` (the point itself left out) sum their normals, and the point
+    is an outlier when its own normal makes an angle above ``max_angle`` with that sum's
+    direction: a flipped or noisy normal on a smooth patch. A sum shorter than ``0.3`` (too few
+    neighbours, or neighbours that disagree among themselves) defines no direction, and its point
+    is always flagged.
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    normals
+        ``(n,)`` per-point normals (unit length, or the sum weights them by length).
+    radius
+        Neighbourhood radius, inclusive at exactly ``radius``. Must be ``> 0``.
+    max_angle
+        Largest angle in radians a normal may turn from its neighbours' direction.
+    grid
+        Optional pre-built hash grid over ``points``, from
+        [`hashgrid_from_points`][ordito.neighbors.hashgrid_from_points].
+
+    Returns
+    -------
+    wp.array[wp.bool]
+        ``(n,)`` mask on ``points.device``; ``True`` marks an **outlier**.
+
+    Raises
+    ------
+    ValueError
+        If ``radius <= 0`` or ``normals`` does not hold one normal a point.
+    RuntimeError
+        If ``points``, ``normals`` and ``grid`` are not all on one device.
+
+    See Also
+    --------
+    [`estimate_normals`][ordito.points.estimate_normals]
+
+    Examples
+    --------
+    One normal of a flat grid flipped is flagged; its neighbours still agree with each other:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    xs, ys = np.meshgrid(np.arange(10.0), np.arange(10.0))
+    flat = np.stack([xs.ravel(), ys.ravel(), np.zeros(100)], axis=1)
+    normals = np.tile([0.0, 0.0, 1.0], (100, 1))
+    normals[55] = [0.0, 0.0, -1.0]
+    outliers = od.points.normal_outlier_mask(
+        wp.array(flat, dtype=wp.vec3), wp.array(normals, dtype=wp.vec3), 1.5
+    )
+    print(od.array.flatnonzero(outliers).numpy().tolist())  # [55]
+    ```
+    """
+    require_same_device(points=points, normals=normals, grid=grid)
+    if radius <= 0.0:
+        raise ValueError(f"radius must be > 0, got {radius}")
+    if normals.size != points.size:
+        raise ValueError(f"normals must hold {points.size} normals, got {normals.size}")
+    device = points.device
+    n = points.size
+    if n == 0:
+        return _launch.zeros(0, dtype=wp.bool, device=device)
+    accelerator = od.neighbors.hashgrid_from_points(points, radius) if grid is None else grid
+    out_mask = _launch.empty(n, dtype=wp.bool, device=device)
+    _launch.launch(
+        kernel_points.normal_outlier_flags,
+        dim=n,
+        inputs=[points, normals, accelerator.id, wp.float32(radius), wp.float32(max_angle)],
+        outputs=[out_mask],
         device=device,
     )
     return out_mask

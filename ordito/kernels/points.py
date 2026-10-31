@@ -15,7 +15,7 @@ from ordito.kernels.array import (
     unpack_ranked_index,
 )
 from ordito.kernels.grouping import hash_slot_words3, next_slot
-from ordito.kernels.neighbors import ACCEL_HASHGRID, ball_count_in_radius
+from ordito.kernels.neighbors import ACCEL_HASHGRID, ball_count_in_radius, in_ball
 from ordito.kernels.predicates import point_plane_dot, triangle_normal
 from ordito.kernels.reduce import (
     block_chunk,
@@ -622,6 +622,172 @@ def radius_outlier_flags(
     i = wp.int32(wp.tid())
     count = ball_count_in_radius(points, ACCEL_HASHGRID, grid_id, points[i], radius)
     out_mask[i] = count <= min_neighbors
+
+
+@wp.kernel
+def ball_graph_edges(
+    neighbors: wp.array[wp.int32], offsets: wp.array[wp.int32], out_edges: wp.array2d[wp.int32]
+) -> None:
+    # Row ``i``'s ball entries as edges ``(i, j)`` of the radius graph, one per packed entry: the
+    # self entry and both directions of a pair are edges too, which the labelling takes as they
+    # come (a self loop joins nothing, a repeated pair joins nothing more).
+    i = wp.int32(wp.tid())
+    for e in range(offsets[i], offsets[i + 1]):
+        out_edges[e, 0] = i
+        out_edges[e, 1] = neighbors[e]
+
+
+@wp.kernel
+def component_size_counts(labels: wp.array[wp.int32], out_sizes: wp.array[wp.int32]) -> None:
+    # Each point counted into its component's label (``out_sizes`` arrives zeroed): an integer
+    # histogram, exact under any arrival order.
+    i = wp.int32(wp.tid())
+    wp.atomic_add(out_sizes, labels[i], 1)
+
+
+@wp.kernel
+def small_component_flags(
+    labels: wp.array[wp.int32],
+    sizes: wp.array[wp.int32],
+    max_cluster_size: wp.int32,
+    out_mask: wp.array[wp.bool],
+) -> None:
+    # A point is a cluster outlier when its component holds at most ``max_cluster_size`` points.
+    i = wp.int32(wp.tid())
+    out_mask[i] = sizes[labels[i]] <= max_cluster_size
+
+
+@wp.func
+def symmetric_eigenvector(m: wp.mat33d, eigenvalue: wp.float64) -> wp.vec3d:
+    # A (not unit) eigenvector of the symmetric ``m`` for a non-repeating ``eigenvalue``: the
+    # largest cross product of two rows of ``m - eigenvalue I``, first of ``(0, 1)``, ``(1, 2)``,
+    # ``(2, 0)`` on a tie. The choice of row pair fixes the vector's sign, which a one-sided
+    # distance to the plane it spans reads.
+    row0 = wp.vec3d(m[0, 0] - eigenvalue, m[0, 1], m[0, 2])
+    row1 = wp.vec3d(m[0, 1], m[1, 1] - eigenvalue, m[1, 2])
+    row2 = wp.vec3d(m[0, 2], m[1, 2], m[2, 2] - eigenvalue)
+    crs01 = wp.cross(row0, row1)
+    crs12 = wp.cross(row1, row2)
+    crs20 = wp.cross(row2, row0)
+    lsq01 = wp.length_sq(crs01)
+    lsq12 = wp.length_sq(crs12)
+    lsq20 = wp.length_sq(crs20)
+    result = crs20
+    if lsq01 > lsq12:
+        if lsq01 > lsq20:
+            result = crs01
+    elif lsq12 > lsq20:
+        result = crs12
+    return result
+
+
+@wp.func
+def furthest_basis_perpendicular(v: wp.vec3d) -> wp.vec3d:
+    # A unit vector perpendicular to ``v``: ``v`` crossed with the basis vector furthest from it
+    # (along its smallest-magnitude coordinate; ``z`` on the ties the comparisons below leave),
+    # normalized.
+    ax = wp.abs(v[0])
+    ay = wp.abs(v[1])
+    az = wp.abs(v[2])
+    basis = wp.vec3d(wp.float64(0.0), wp.float64(0.0), wp.float64(1.0))
+    if ax < ay:
+        if ax < az:
+            basis = wp.vec3d(wp.float64(1.0), wp.float64(0.0), wp.float64(0.0))
+    elif ay < az:
+        basis = wp.vec3d(wp.float64(0.0), wp.float64(1.0), wp.float64(0.0))
+    return wp.normalize(wp.cross(v, basis))
+
+
+@wp.func
+def smallest_eigenvector_closed_form(m: wp.mat33d) -> wp.vec3d:
+    # The unit eigenvector of the symmetric ``m``'s smallest eigenvalue by the closed-form
+    # trigonometric solution (Smith's), with its two repeated-root branches: a matrix proportional
+    # to the identity gives ``x``; a repeated largest root gives the distinct smallest one's
+    # eigenvector; a repeated smallest root gives a vector perpendicular to the largest one's.
+    q = (m[0, 0] + m[1, 1] + m[2, 2]) / wp.float64(3.0)
+    b = m - wp.diag(wp.vec3d(q, q, q))
+    p2 = wp.ddot(b, b)
+    p = wp.sqrt(p2 / wp.float64(6.0))
+    result = wp.vec3d(wp.float64(1.0), wp.float64(0.0), wp.float64(0.0))
+    if p > wp.abs(q) * wp.float64(2.220446049250313e-16):
+        r = wp.determinant(b) / (wp.float64(2.0) * p * p * p)
+        if r <= wp.float64(-1.0):
+            result = wp.normalize(symmetric_eigenvector(m, q - wp.float64(2.0) * p))
+        elif r >= wp.float64(1.0):
+            z = wp.normalize(symmetric_eigenvector(m, q + wp.float64(2.0) * p))
+            result = furthest_basis_perpendicular(z)
+        else:
+            phi = wp.acos(r) / wp.float64(3.0)
+            smallest = q + wp.float64(2.0) * p * wp.cos(phi + wp.float64(2.0943951023931957))
+            result = wp.normalize(symmetric_eigenvector(m, smallest))
+    return result
+
+
+@wp.kernel
+def plane_outlier_flags(
+    points: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    height: wp.float32,
+    one_sided: wp.int32,
+    out_mask: wp.array[wp.bool],
+) -> None:
+    # A point is a plane outlier when its signed distance to the least-squares plane of the
+    # *other* points in its ball exceeds ``height`` (its magnitude does, unless ``one_sided``);
+    # the distance is ``0`` with fewer than three of them. The moments are summed in ``float64``
+    # and the plane is the centred covariance's smallest-eigenvalue eigenvector through the centroid
+    # (``smallest_eigenvector_closed_form``), narrowed to ``float32`` with its offset before the
+    # distance is formed, as the reference forms it.
+    i = wp.int32(wp.tid())
+    q = points[i]
+    count = wp.int32(0)
+    first = wp.vec3d()
+    second = wp.mat33d()
+    query = wp.hash_grid_query(grid_id, q, radius)
+    j = wp.int32(0)
+    while wp.hash_grid_query_next(query, j):
+        if j != i and in_ball(points[j] - q, radius):
+            p = wp.vec3d(points[j])
+            count += 1
+            first += p
+            second += wp.outer(p, p)
+    distance = wp.float32(0.0)
+    if count >= 3:
+        weight = wp.float64(1.0) / wp.float64(count)
+        centroid = weight * first
+        normal = smallest_eigenvector_closed_form(second - weight * wp.outer(first, first))
+        offset = wp.float32(wp.dot(normal, centroid))
+        distance = wp.dot(wp.vec3(normal), q) - offset
+    out_mask[i] = wp.where(one_sided != 0, distance, wp.abs(distance)) > height
+
+
+@wp.kernel
+def normal_outlier_flags(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    max_angle: wp.float32,
+    out_mask: wp.array[wp.bool],
+) -> None:
+    # A point is a normal outlier when its normal's angle in radians to the mean direction of the
+    # *other* points' normals in its ball, ``atan2(|n x s|, n . s)``, exceeds ``max_angle``; the
+    # angle is ``180`` when their sum is shorter than ``0.3``, too little agreement to define a
+    # direction.
+    i = wp.int32(wp.tid())
+    q = points[i]
+    total = wp.vec3()
+    query = wp.hash_grid_query(grid_id, q, radius)
+    j = wp.int32(0)
+    while wp.hash_grid_query_next(query, j):
+        if j != i and in_ball(points[j] - q, radius):
+            total += normals[j]
+    angle = wp.float32(180.0)
+    if wp.length_sq(total) >= wp.float32(0.09):
+        direction = wp.normalize(total)
+        n = normals[i]
+        angle = wp.atan2(wp.length(wp.cross(n, direction)), wp.dot(n, direction))
+    out_mask[i] = angle > max_angle
 
 
 @wp.func

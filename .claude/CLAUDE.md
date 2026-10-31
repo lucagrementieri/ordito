@@ -1355,7 +1355,13 @@ as it stands; an upgrade means adding the reference's own algorithm as an option
   correlations: MeshLab traces Embree / GPU direction sets, not vendored); `shape_diameter`
   against MeshLib's single ray; `max_tangent_sphere` against MeshLib's shrinking sphere (median
   relative difference: the same method, a different iteration).
-- `statistical_outlier_mask` against MeshLib's `findOutliers` (a connectivity criterion);
+- ~~`statistical_outlier_mask` against MeshLib's `findOutliers`~~ (closed 2026-10-31: its four
+  criteria are now `radius_outlier_mask` (`WeaklyConnected` at `min_neighbors = maxNeighbors + 1`),
+  `cluster_outlier_mask` (`SmallComponents`), `plane_outlier_mask(method="meshlib")` (`FarSurface`:
+  a *signed* distance to the neighbours' plane, so only the side its closed-form eigenvector points
+  to is flagged; the default flags both sides) and `normal_outlier_mask` (`AwayNormal`, radians; a
+  neighbour normal sum shorter than 0.3 reads 180 and is always flagged), each Class A, both
+  devices; the z-score itself has no MeshLib counterpart);
   `convex_subset_mask` against qhull (soundness plus recall); `voxelize_mesh` against MeshLib's
   narrow-band distance field; `principal_axes` on a degenerate spectrum (one axis defined).
 - `screened_poisson` (`dense`) against open3d / pymeshlab (Kazhdan's octree; `method="octree"` is

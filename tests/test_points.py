@@ -1,5 +1,6 @@
+import math
 from collections.abc import Callable
-from typing import cast
+from typing import Literal, cast
 
 import numpy as np
 import open3d as o3d
@@ -1169,6 +1170,181 @@ def test_radius_outlier_mask_matches_open3d(device: str) -> None:
         assert 0 < outlier_o3d.sum() < 500
         outlier_wp = od.radius_outlier_mask(points_wp, radius, min_neighbors)
         assert np.array_equal(outlier_wp.numpy().astype(bool), outlier_o3d)
+
+
+def _scan_with_outliers(seed: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build a noisy unit-sphere scan with each kind of outlier ``findOutliers`` looks for.
+
+    Spikes pushed off the surface along their normals (both sides), stray clusters of 3, 12 and 25
+    points and 20 scattered points; 40 normals flipped and 40 random. The sphere's spacing is
+    about 0.06, so a radius of 0.1 holds a few neighbours a point.
+    """
+    rng = np.random.default_rng(seed)
+    sphere_np = od_creation.icosphere(subdivisions=4)[0].numpy().astype(np.float64)
+    normals_np = sphere_np / np.linalg.norm(sphere_np, axis=1, keepdims=True)
+    points_np = sphere_np + rng.normal(scale=0.003, size=sphere_np.shape)
+    spikes = rng.choice(len(points_np), 30, replace=False)
+    points_np[spikes] += normals_np[spikes] * rng.uniform(-0.08, 0.08, size=(30, 1))
+    normals_np[rng.choice(len(points_np), 40, replace=False)] *= -1.0
+    normals_np[rng.choice(len(points_np), 40, replace=False)] = rng.normal(size=(40, 3))
+    clusters_np = np.vstack(
+        [
+            np.asarray(center) + rng.normal(scale=0.02, size=(size, 3))
+            for center, size in (
+                ([2.0, 0.0, 0.0], 3),
+                ([0.0, 2.2, 0.0], 12),
+                ([0.0, 0.0, -2.0], 25),
+            )
+        ]
+    )
+    points_np = np.vstack([points_np, clusters_np, rng.normal(scale=3.0, size=(20, 3))])
+    normals_np = np.vstack([normals_np, rng.normal(size=(len(clusters_np) + 20, 3))])
+    normals_np /= np.linalg.norm(normals_np, axis=1, keepdims=True)
+    return points_np.astype(np.float32), normals_np.astype(np.float32)
+
+
+def _find_outliers_meshlib(
+    points_np: np.ndarray,
+    normals_np: np.ndarray,
+    radius: float,
+    mask: mm.OutlierTypeMask,
+    **finder: float,
+) -> np.ndarray:
+    """``findOutliers`` for one criterion, its ``OutlierParams`` set from ``finder``."""
+    cloud_ml = points_to_meshlib(points_np, normals_np)
+    params_ml = mm.FindOutliersParams()
+    params_ml.radius = radius
+    params_ml.mask = mask
+    for name, value in finder.items():
+        setattr(params_ml.finderParams, name, value)
+    return meshlib_bitset_to_numpy(mm.findOutliers(cloud_ml, params_ml), points_np.shape[0])
+
+
+@pytest.mark.parametrize("max_neighbors", [3, 5])
+@pytest.mark.parity(
+    "radius_outlier_mask",
+    "meshlib",
+    benchmarked=False,
+    reason=(
+        "findOutliers runs every criterion's ball query in one prepare pass, so a "
+        "WeaklyConnected row would time a search shared with criteria radius_outlier_mask does "
+        "not compute; its own groups (cluster_outlier_mask, plane_outlier_mask, "
+        "normal_outlier_mask) carry the timed rows"
+    ),
+)
+def test_radius_outlier_mask_matches_meshlib(device: str, max_neighbors: int) -> None:
+    """
+    Class A: MeshLib's ``WeaklyConnected`` criterion is this mask at ``min_neighbors - 1``.
+
+    ``findOutliers`` flags a point with at most ``maxNeighbors`` *other* points in its inclusive
+    ball; this function counts the point itself, so ``min_neighbors = maxNeighbors + 1``.
+    """
+    points_np, normals_np = _scan_with_outliers()
+    outlier_ml = _find_outliers_meshlib(
+        points_np, normals_np, 0.1, mm.OutlierTypeMask.WeaklyConnected, maxNeighbors=max_neighbors
+    )
+    assert 0 < outlier_ml.sum() < 0.5 * points_np.shape[0]  # non-vacuity
+    outlier_wp = od.radius_outlier_mask(points_to_warp(points_np, device), 0.1, max_neighbors + 1)
+    assert np.array_equal(outlier_wp.numpy(), outlier_ml)
+
+
+@pytest.mark.parametrize("max_cluster_size", [5, 20])
+@pytest.mark.parity("cluster_outlier_mask", "meshlib")
+def test_cluster_outlier_mask_matches_meshlib(device: str, max_cluster_size: int) -> None:
+    """
+    Class A: MeshLib's ``SmallComponents`` criterion, the same radius-graph clusters.
+
+    The planted clusters of 3, 12 and 25 points sit on either side of the two sizes, so each size
+    flags a different set.
+    """
+    points_np, normals_np = _scan_with_outliers()
+    outlier_ml = _find_outliers_meshlib(
+        points_np,
+        normals_np,
+        0.1,
+        mm.OutlierTypeMask.SmallComponents,
+        maxClusterSize=max_cluster_size,
+    )
+    assert 0 < outlier_ml.sum() < 100  # non-vacuity: the stragglers, not the sphere
+    outlier_wp = od.cluster_outlier_mask(points_to_warp(points_np, device), 0.1, max_cluster_size)
+    assert np.array_equal(outlier_wp.numpy(), outlier_ml)
+
+
+@pytest.mark.parametrize("min_height", [0.1, 0.3])
+@pytest.mark.parity("plane_outlier_mask", "meshlib")
+def test_plane_outlier_mask_matches_meshlib(device: str, min_height: float) -> None:
+    """
+    Class A: MeshLib's ``FarSurface`` criterion under ``method="meshlib"``.
+
+    MeshLib flags a point whose *signed* distance to its neighbours' plane exceeds
+    ``minHeight * radius``, the plane's normal being its covariance eigenvector as its solver signs
+    it, so only one side of each plane is flagged; ``method="meshlib"`` reproduces that sign. The
+    default, which flags both sides, holds MeshLib's set and more (the spikes go both ways).
+    """
+    radius = 0.1
+    points_np, normals_np = _scan_with_outliers()
+    outlier_ml = _find_outliers_meshlib(
+        points_np, normals_np, radius, mm.OutlierTypeMask.FarSurface, minHeight=min_height
+    )
+    assert outlier_ml.sum() > 0  # non-vacuity
+    points_wp = points_to_warp(points_np, device)
+    one_sided_wp = od.plane_outlier_mask(
+        points_wp, radius, min_height * radius, method="meshlib"
+    ).numpy()
+    assert np.array_equal(one_sided_wp, outlier_ml)
+    both_sides_wp = od.plane_outlier_mask(points_wp, radius, min_height * radius).numpy()
+    assert not (outlier_ml & ~both_sides_wp).any()
+    assert both_sides_wp.sum() > outlier_ml.sum()
+
+
+@pytest.mark.parametrize("min_angle", [0.5, math.pi / 3.0, 2.0])
+@pytest.mark.parity("normal_outlier_mask", "meshlib")
+def test_normal_outlier_mask_matches_meshlib(device: str, min_angle: float) -> None:
+    """
+    Class A: MeshLib's ``AwayNormal`` criterion, the same angle to the neighbours' normal sum.
+
+    The flipped and random normals are flagged at every angle; the three angles move the
+    borderline ones of the scattered points, so each flags a different set.
+    """
+    points_np, normals_np = _scan_with_outliers()
+    outlier_ml = _find_outliers_meshlib(
+        points_np, normals_np, 0.1, mm.OutlierTypeMask.AwayNormal, minAngle=min_angle
+    )
+    assert 0 < outlier_ml.sum() < 0.5 * points_np.shape[0]  # non-vacuity
+    outlier_wp = od.normal_outlier_mask(
+        points_to_warp(points_np, device), points_to_warp(normals_np, device), 0.1, min_angle
+    )
+    assert np.array_equal(outlier_wp.numpy(), outlier_ml)
+
+
+@pytest.mark.parametrize(
+    ("case", "match"),
+    [
+        ("cluster_radius", "radius"),
+        ("cluster_size", "max_cluster_size"),
+        ("plane_height", "height"),
+        ("plane_method", "method"),
+        ("normal_count", "normals"),
+    ],
+)
+def test_ball_outlier_masks_reject_invalid_arguments(device: str, case: str, match: str) -> None:
+    """Not a parity assert: each documented ``ValueError`` is raised."""
+    points_np, normals_np = _scan_with_outliers()
+    points_wp = points_to_warp(points_np, device)
+    calls = {
+        "cluster_radius": lambda: od.cluster_outlier_mask(points_wp, 0.0),
+        "cluster_size": lambda: od.cluster_outlier_mask(points_wp, 0.1, 0),
+        "plane_height": lambda: od.plane_outlier_mask(points_wp, 0.1, -1.0),
+        "plane_method": lambda: od.plane_outlier_mask(
+            points_wp, 0.1, 0.03, method=cast("Literal['unsigned']", "vtk")
+        ),
+        "normal_count": lambda: od.normal_outlier_mask(
+            points_wp, points_to_warp(normals_np[:10], device), 0.1
+        ),
+    }
+    with pytest.raises(ValueError, match=match):
+        calls[case]()
 
 
 @pytest.mark.parity(

@@ -4499,6 +4499,14 @@
    "alloc": 1
   }
  },
+ "benchmarks/test_points.py::test_cluster_outlier_mask[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 9,
+   "alloc": 8,
+   "readback": 1,
+   "scan": 1
+  }
+ },
  "benchmarks/test_points.py::test_convex_hull[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 26,
@@ -4609,6 +4617,12 @@
    "alloc": 1
   }
  },
+ "benchmarks/test_points.py::test_normal_outlier_mask[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
+ },
  "benchmarks/test_points.py::test_outlier_probability[sphere_med-ordito-cpu]": {
   "counts": {
    "launch": 5,
@@ -4625,6 +4639,12 @@
  },
  "benchmarks/test_points.py::test_plane_basis[ordito-cpu]": {
   "counts": {}
+ },
+ "benchmarks/test_points.py::test_plane_outlier_mask[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1
+  }
  },
  "benchmarks/test_points.py::test_point_duplicate_mask[sphere_small-ordito-cpu]": {
   "counts": {
