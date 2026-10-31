@@ -3840,7 +3840,7 @@ def gauss_seidel_wave_vertex(
     rim_pairs: wp.array[wp.vec2i],
     factor: wp.float64,
     sweeps: wp.int32,
-    done: wp.array[wp.int32],
+    out_done: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
     v: wp.int32,
 ) -> wp.int32:
@@ -3851,7 +3851,7 @@ def gauss_seidel_wave_vertex(
     # contradicts the other's), so a ready vertex reads positions no thread writes in this launch;
     # the counts are read from ``counts`` and written to ``out_counts`` for the same reason. A fixed
     # neighbour is never written and is skipped. A vertex finishing its last sweep is counted into
-    # ``done[0]``; once every vertex has, a wave changes nothing, so the caller may overrun the
+    # ``out_done[0]``; once every vertex has, a wave changes nothing, so the caller may overrun the
     # fixpoint. Returns the count slot this vertex took, -1 when it took none.
     slot = wp.int32(-1)
     c = counts[v]
@@ -3870,7 +3870,7 @@ def gauss_seidel_wave_vertex(
             relax_in_place(x, v, factor, neighbors, offsets, classes, rim_pairs)
             c += 1
             if c == sweeps:
-                slot = append_slot(done, 0)
+                slot = append_slot(out_done, 0)
     out_counts[v] = c
     return slot
 
@@ -3885,13 +3885,13 @@ def gauss_seidel_wave(
     rim_pairs: wp.array[wp.vec2i],
     factor: wp.float64,
     sweeps: wp.int32,
-    done: wp.array[wp.int32],
+    out_done: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
 ) -> None:
     # One wave over every vertex (``gauss_seidel_wave_vertex``).
     v = wp.int32(wp.tid())
     gauss_seidel_wave_vertex(
-        x, counts, neighbors, offsets, classes, rim_pairs, factor, sweeps, done, out_counts, v
+        x, counts, neighbors, offsets, classes, rim_pairs, factor, sweeps, out_done, out_counts, v
     )
 
 
@@ -3905,24 +3905,24 @@ def gauss_seidel_wave_counted(
     rim_pairs: wp.array[wp.vec2i],
     factor: wp.float64,
     sweeps: wp.int32,
-    done: wp.array[wp.int32],
+    out_done: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
 ) -> None:
     # ``gauss_seidel_wave``, also recording the schedule's length, which depends on the stencil and
     # ``sweeps`` alone, never on the positions. The counts' trailing slot is the waves run before
     # this one, advanced by thread 0 into ``out_counts`` (read from ``counts``, so no thread reads a
     # slot written in this launch); the vertex taking the last count writes it plus one to
-    # ``done[1]``. A separate kernel because the bookkeeping cost the plain wave 5-9 % of its
+    # ``out_done[1]``. A separate kernel because the bookkeeping cost the plain wave 5-9 % of its
     # device time on dragon even where unused.
     v = wp.int32(wp.tid())
     n = out_counts.shape[0] - 1
     if v == 0:
         out_counts[n] = counts[n] + 1
     slot = gauss_seidel_wave_vertex(
-        x, counts, neighbors, offsets, classes, rim_pairs, factor, sweeps, done, out_counts, v
+        x, counts, neighbors, offsets, classes, rim_pairs, factor, sweeps, out_done, out_counts, v
     )
     if slot == n - 1:
-        done[1] = counts[n] + 1
+        out_done[1] = counts[n] + 1
 
 
 # The concrete handles of the generic pass kernels above, keyed by the dtype of the positions read

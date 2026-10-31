@@ -579,8 +579,8 @@ def _gauss_seidel_sweeps(
             _launch.launch(
                 wave,
                 dim=n,
-                inputs=[positions, counts, *stencil, factor, sweeps, done],
-                outputs=[spare],
+                inputs=[positions, counts, *stencil, factor, sweeps],
+                outputs=[done, spare],
                 device=device,
             )
             counts, spare = spare, counts
