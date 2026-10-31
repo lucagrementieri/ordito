@@ -6214,9 +6214,7 @@ the fan starts half a step off the frame's axes.</p>
 <p><a class="autorefs autorefs-internal" title="heat_signed_distance" href="../../api/ordito/heat/#ordito.heat.heat_signed_distance"><code>heat_signed_distance</code></a> measures the distance along the
 surface to a set of closed, oriented curves, positive on one side and negative on the other.
 It diffuses the curves' normals with the vector heat method and integrates the normalized
-result, so it needs no inside/outside test and handles several curves at once. Keep the
-default method: <code>method="potpourri3d"</code> reproduces potpourri3d, including its failure far from the
-curve on fine meshes (see the function's notes). The curves
+result, so it needs no inside/outside test and handles several curves at once. The curves
 here are the rims of geodesic disks: <a class="autorefs autorefs-internal" title="heat_geodesic" href="../../api/ordito/heat/#ordito.heat.heat_geodesic"><code>heat_geodesic</code></a> gives the
 distance to a centre and <a class="autorefs autorefs-internal" title="boundary_loops" href="../../api/ordito/boundary/#ordito.boundary.boundary_loops"><code>boundary_loops</code></a> of the faces
 within a radius orders the rim.</p>

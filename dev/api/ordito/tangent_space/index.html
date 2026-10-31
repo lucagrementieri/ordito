@@ -6930,7 +6930,7 @@ compare all three vectors element-wise instead of through an invariant.</p>
     <span class="n">face_angles</span><span class="p">:</span> <span class="n">Array2dFloat32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">rings</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span> <span class="n">array</span><span class="p">[</span><span class="nb">bool</span><span class="p">]]</span>
     <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -7004,7 +7004,8 @@ coordinate system is the one
             <td>
               <div class="doc-md-description">
                 <p><code>(n_faces, 3)</code> precomputed corner angles from
-<a class="autorefs autorefs-internal" title="face_angles" href="../triangles/#ordito.triangles.face_angles"><code>face_angles</code></a>. When <code>None</code>, computed here.</p>
+<a class="autorefs autorefs-internal" title="face_angles" href="../triangles/#ordito.triangles.face_angles"><code>face_angles</code></a>. When <code>None</code>, formed here in <code>float64</code>;
+a <code>float32</code> table saves that work and limits the result to its rounding.</p>
               </div>
             </td>
             <td>
@@ -7044,11 +7045,13 @@ coordinate system is the one
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="warp.array">array</span>[<span title="warp.float32">float32</span>]</code>
+                  <code><span title="warp.array">array</span>[<span title="warp.float64">float64</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>(3 * n_faces,)</code> angles in radians on <code>vertices.device</code>, indexed by halfedge.</p>
+                <p><code>(3 * n_faces,)</code> angles in radians on <code>vertices.device</code>, indexed by halfedge. Formed
+in <code>float64</code> from the corner angles of the promoted positions: the vector heat method
+reads them, and its log map is sensitive to their rounding on meshes with needles.</p>
               </div>
             </td>
           </tr>
@@ -7198,12 +7201,15 @@ vertex, and every angle stays below a full turn:</p>
 <span class="normal">331</span>
 <span class="normal">332</span>
 <span class="normal">333</span>
-<span class="normal">334</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_tangent_angles</span><span class="p">(</span>
+<span class="normal">334</span>
+<span class="normal">335</span>
+<span class="normal">336</span>
+<span class="normal">337</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_tangent_angles</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">face_angles</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">rings</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Polar angle of every outgoing halfedge in its origin vertex's tangent plane.</span>
 
@@ -7224,7 +7230,8 @@ vertex, and every angle stays below a full turn:</p>
 <span class="sd">        ``(3 * n_faces,)`` triangle index buffer.</span>
 <span class="sd">    face_angles</span>
 <span class="sd">        ``(n_faces, 3)`` precomputed corner angles from</span>
-<span class="sd">        [`face_angles`][ordito.triangles.face_angles]. When ``None``, computed here.</span>
+<span class="sd">        [`face_angles`][ordito.triangles.face_angles]. When ``None``, formed here in ``float64``;</span>
+<span class="sd">        a ``float32`` table saves that work and limits the result to its rounding.</span>
 <span class="sd">    rings</span>
 <span class="sd">        ``(3 * n_faces,)``, ``(n_vertices + 1,)`` and ``(n_vertices,)`` precomputed</span>
 <span class="sd">        ``(ring_halfedges, offsets, is_boundary)`` from</span>
@@ -7232,8 +7239,10 @@ vertex, and every angle stays below a full turn:</p>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
-<span class="sd">    wp.array[wp.float32]</span>
-<span class="sd">        ``(3 * n_faces,)`` angles in radians on ``vertices.device``, indexed by halfedge.</span>
+<span class="sd">    wp.array[wp.float64]</span>
+<span class="sd">        ``(3 * n_faces,)`` angles in radians on ``vertices.device``, indexed by halfedge. Formed</span>
+<span class="sd">        in ``float64`` from the corner angles of the promoted positions: the vector heat method</span>
+<span class="sd">        reads them, and its log map is sensitive to their rounding on meshes with needles.</span>
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
@@ -7265,7 +7274,7 @@ vertex, and every angle stays below a full turn:</p>
     <span class="n">device</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">device</span>
     <span class="n">n</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">size</span>
     <span class="n">n_halfedges</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span> <span class="o">*</span> <span class="mi">3</span>
-    <span class="n">angles</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_halfedges</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">angles</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_halfedges</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_halfedges</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">n</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">angles</span>
 
@@ -7307,8 +7316,8 @@ vertex, and every angle stays below a full turn:</p>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">twins</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-    <span class="n">tangent_angles</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span>
+    <span class="n">tangent_angles</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">float64</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
@@ -7393,7 +7402,7 @@ loop — the holonomy — are gauge-invariant and are what cross-library compari
                 <code>tangent_angles</code>
             </td>
             <td>
-                  <code><span title="warp.array">array</span>[<span title="warp.float32">float32</span>] | None</code>
+                  <code><span title="warp.array">array</span>[<span title="warp.float64">float64</span>] | None</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -7421,7 +7430,7 @@ computed here.</p>
       <tbody>
           <tr class="doc-section-item">
             <td>
-                  <code><span title="warp.array">array</span>[<span title="warp.float32">float32</span>]</code>
+                  <code><span title="warp.array">array</span>[<span title="warp.float64">float64</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -7499,10 +7508,7 @@ modulo a full turn:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/tangent_space.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">337</span>
-<span class="normal">338</span>
-<span class="normal">339</span>
-<span class="normal">340</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">340</span>
 <span class="normal">341</span>
 <span class="normal">342</span>
 <span class="normal">343</span>
@@ -7602,12 +7608,15 @@ modulo a full turn:</p>
 <span class="normal">437</span>
 <span class="normal">438</span>
 <span class="normal">439</span>
-<span class="normal">440</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_transport_angles</span><span class="p">(</span>
+<span class="normal">440</span>
+<span class="normal">441</span>
+<span class="normal">442</span>
+<span class="normal">443</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_transport_angles</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">twins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-    <span class="n">tangent_angles</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
+    <span class="n">tangent_angles</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Rotation that carries a tangent vector across each halfedge, in ``(-pi, pi]``.</span>
 
@@ -7642,7 +7651,7 @@ modulo a full turn:</p>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
-<span class="sd">    wp.array[wp.float32]</span>
+<span class="sd">    wp.array[wp.float64]</span>
 <span class="sd">        ``(3 * n_faces,)`` rotations in radians on ``vertices.device``, indexed by halfedge.</span>
 
 <span class="sd">    Raises</span>
@@ -7683,7 +7692,7 @@ modulo a full turn:</p>
     <span class="k">if</span> <span class="n">tangent_angles</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">or</span> <span class="n">n_halfedges</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="c1"># Otherwise ``vertex_one_rings`` below checks a supplied table with its own readback.</span>
         <span class="n">require_matching_twins</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="p">)</span>
-    <span class="n">rho</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_halfedges</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">rho</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_halfedges</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_halfedges</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">rho</span>
 

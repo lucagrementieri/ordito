@@ -8253,7 +8253,7 @@ taken from it.</p>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">offset</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
     <span class="n">sign_mode</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"parity"</span><span class="p">,</span> <span class="s2">"winding"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"winding"</span><span class="p">,</span>
-    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"padded"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">,</span> <span class="s2">"meshlib"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"padded"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
 </code></pre></div>
 
@@ -8375,7 +8375,7 @@ generalized winding number degrades gracefully.</p>
                 <code>method</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;padded&#39;, &#39;igl&#39;]</code>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;padded&#39;, &#39;igl&#39;, &#39;meshlib&#39;]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -8384,7 +8384,10 @@ generalized winding number degrades gracefully.</p>
 <code>Notes</code>). <code>"igl"</code> is <code>igl.offset_surface</code>'s: <code>round(longest_extent / voxel_size)</code>
 nodes along the box's longest axis, one of them padding at each end, the box grown by
 <code>offset</code>, the lattice centred on it; the extraction is returned as marched, as igl does.
-Its spacing is therefore near <code>voxel_size</code> rather than equal to it.</p>
+Its spacing is therefore near <code>voxel_size</code> rather than equal to it. <code>"meshlib"</code> is a
+voxel-centred lattice of exactly <code>voxel_size</code>: the box grown by <code>|offset|</code> and then
+by two voxels a side, <code>floor(width / voxel_size) + 1</code> voxels an axis, a sample at each
+voxel's centre (all in <code>float32</code>), the extraction returned as marched.</p>
               </div>
             </td>
             <td>
@@ -8443,8 +8446,9 @@ Its spacing is therefore near <code>voxel_size</code> rather than equal to it.</
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>voxel_size</code> is not positive, if <code>method</code> is not <code>"padded"</code> or <code>"igl"</code>, or if
-under <code>"igl"</code> it leaves fewer than four nodes along the longest axis.</p>
+                <p>If <code>voxel_size</code> is not positive, if <code>method</code> is not <code>"padded"</code>, <code>"igl"</code> or
+<code>"meshlib"</code>, or if under <code>"igl"</code> it leaves fewer than four nodes along the longest
+axis.</p>
               </div>
             </td>
           </tr>
@@ -8653,14 +8657,19 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="normal">4066</span>
 <span class="normal">4067</span>
 <span class="normal">4068</span>
-<span class="normal">4069</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
+<span class="normal">4069</span>
+<span class="normal">4070</span>
+<span class="normal">4071</span>
+<span class="normal">4072</span>
+<span class="normal">4073</span>
+<span class="normal">4074</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">offset</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
     <span class="n">sign_mode</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"parity"</span><span class="p">,</span> <span class="s2">"winding"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"winding"</span><span class="p">,</span>
-    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"padded"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">,</span> <span class="s2">"meshlib"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"padded"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Rebuild a mesh by sampling its signed distance field on a uniform grid and re-extracting it.</span>
@@ -8700,7 +8709,10 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="sd">        ``Notes``). ``"igl"`` is ``igl.offset_surface``'s: ``round(longest_extent / voxel_size)``</span>
 <span class="sd">        nodes along the box's longest axis, one of them padding at each end, the box grown by</span>
 <span class="sd">        ``offset``, the lattice centred on it; the extraction is returned as marched, as igl does.</span>
-<span class="sd">        Its spacing is therefore near ``voxel_size`` rather than equal to it.</span>
+<span class="sd">        Its spacing is therefore near ``voxel_size`` rather than equal to it. ``"meshlib"`` is a</span>
+<span class="sd">        voxel-centred lattice of exactly ``voxel_size``: the box grown by ``|offset|`` and then</span>
+<span class="sd">        by two voxels a side, ``floor(width / voxel_size) + 1`` voxels an axis, a sample at each</span>
+<span class="sd">        voxel's centre (all in ``float32``), the extraction returned as marched.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -8712,8 +8724,9 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If ``voxel_size`` is not positive, if ``method`` is not ``"padded"`` or ``"igl"``, or if</span>
-<span class="sd">        under ``"igl"`` it leaves fewer than four nodes along the longest axis.</span>
+<span class="sd">        If ``voxel_size`` is not positive, if ``method`` is not ``"padded"``, ``"igl"`` or</span>
+<span class="sd">        ``"meshlib"``, or if under ``"igl"`` it leaves fewer than four nodes along the longest</span>
+<span class="sd">        axis.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices`` and ``faces`` are not all on one device.</span>
 
@@ -8763,10 +8776,11 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
         <span class="n">voxel_size</span> <span class="o">=</span> <span class="mf">0.01</span> <span class="o">*</span> <span class="n">diagonal</span>
     <span class="k">if</span> <span class="n">voxel_size</span> <span class="o">&lt;=</span> <span class="mf">0.0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"resample_uniform requires voxel_size &gt; 0, got </span><span class="si">{</span><span class="n">voxel_size</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">):</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method must be 'padded' or 'igl', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"igl"</span><span class="p">:</span>
-        <span class="n">shape</span><span class="p">,</span> <span class="n">bounds</span> <span class="o">=</span> <span class="n">_igl_offset_lattice</span><span class="p">(</span><span class="n">lower</span><span class="p">,</span> <span class="n">upper</span><span class="p">,</span> <span class="n">offset</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">,</span> <span class="s2">"meshlib"</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method must be 'padded', 'igl' or 'meshlib', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="o">!=</span> <span class="s2">"padded"</span><span class="p">:</span>
+        <span class="n">lattice</span> <span class="o">=</span> <span class="n">_igl_offset_lattice</span> <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"igl"</span> <span class="k">else</span> <span class="n">_voxel_centred_lattice</span>
+        <span class="n">shape</span><span class="p">,</span> <span class="n">bounds</span> <span class="o">=</span> <span class="n">lattice</span><span class="p">(</span><span class="n">lower</span><span class="p">,</span> <span class="n">upper</span><span class="p">,</span> <span class="n">offset</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">levelset</span><span class="o">.</span><span class="n">signed_distance_level_set</span><span class="p">(</span>
             <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">offset</span><span class="p">,</span> <span class="n">shape</span><span class="p">,</span> <span class="n">bounds</span><span class="o">=</span><span class="n">bounds</span><span class="p">,</span> <span class="n">sign_mode</span><span class="o">=</span><span class="n">sign_mode</span>
         <span class="p">)</span>
@@ -9113,34 +9127,7 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4111</span>
-<span class="normal">4112</span>
-<span class="normal">4113</span>
-<span class="normal">4114</span>
-<span class="normal">4115</span>
-<span class="normal">4116</span>
-<span class="normal">4117</span>
-<span class="normal">4118</span>
-<span class="normal">4119</span>
-<span class="normal">4120</span>
-<span class="normal">4121</span>
-<span class="normal">4122</span>
-<span class="normal">4123</span>
-<span class="normal">4124</span>
-<span class="normal">4125</span>
-<span class="normal">4126</span>
-<span class="normal">4127</span>
-<span class="normal">4128</span>
-<span class="normal">4129</span>
-<span class="normal">4130</span>
-<span class="normal">4131</span>
-<span class="normal">4132</span>
-<span class="normal">4133</span>
-<span class="normal">4134</span>
-<span class="normal">4135</span>
-<span class="normal">4136</span>
-<span class="normal">4137</span>
-<span class="normal">4138</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4138</span>
 <span class="normal">4139</span>
 <span class="normal">4140</span>
 <span class="normal">4141</span>
@@ -9278,7 +9265,34 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 <span class="normal">4273</span>
 <span class="normal">4274</span>
 <span class="normal">4275</span>
-<span class="normal">4276</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
+<span class="normal">4276</span>
+<span class="normal">4277</span>
+<span class="normal">4278</span>
+<span class="normal">4279</span>
+<span class="normal">4280</span>
+<span class="normal">4281</span>
+<span class="normal">4282</span>
+<span class="normal">4283</span>
+<span class="normal">4284</span>
+<span class="normal">4285</span>
+<span class="normal">4286</span>
+<span class="normal">4287</span>
+<span class="normal">4288</span>
+<span class="normal">4289</span>
+<span class="normal">4290</span>
+<span class="normal">4291</span>
+<span class="normal">4292</span>
+<span class="normal">4293</span>
+<span class="normal">4294</span>
+<span class="normal">4295</span>
+<span class="normal">4296</span>
+<span class="normal">4297</span>
+<span class="normal">4298</span>
+<span class="normal">4299</span>
+<span class="normal">4300</span>
+<span class="normal">4301</span>
+<span class="normal">4302</span>
+<span class="normal">4303</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
