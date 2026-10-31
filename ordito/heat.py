@@ -125,6 +125,16 @@ _HEAT_CHECK_ROUNDS = 16
 _HEAT_CHANGE_TOLERANCE = 1e-6
 _HEAT_SETTLE_ROUNDS = 192
 
+# The decay, in nepers, the edge vector heat system's field may cover across the mesh before its
+# default time grows: a diffused field falls off like ``exp(-d / sqrt(t))`` at distance ``d`` from
+# its source, so at geometry-central's ``t = (h / 2) ** 2`` a fine mesh puts its far side below the
+# ``float64`` range and the distance there is lost (potpourri3d's included). The default time is
+# therefore at least ``(diagonal / _EDGE_DIFFUSION_DECAY) ** 2``, the bounding-box diagonal standing
+# in for the farthest distance from a curve. Meshes up to about 400 mean half-edges across keep
+# geometry-central's time; past it the settle window grows with ``sqrt(t)``, the rounds the field
+# needs past full reach (see ``_edge_settle_rounds``).
+_EDGE_DIFFUSION_DECAY = 400.0
+
 # ``extend_scalar`` warns once its field leaves the source values' range by more than this fraction
 # of the range. Where every cotangent weight is non-negative the overshoot is exactly 0 (spheres
 # and tori, regular or irregularly sampled, 2 to 40 sources); where obtuse triangles make some
@@ -1126,8 +1136,8 @@ def heat_signed_distance(
         is treated as a single curve.
     t
         Diffusion time; defaults to the squared mean unique-edge length, or a quarter of it (the
-        squared half-length, geometry-central's default) at ``method="potpourri3d"``. Larger
-        values smooth the field.
+        squared half-length, geometry-central's default) at ``method="potpourri3d"``, lengthened
+        there on meshes too fine for it (see Notes). Larger values smooth the field.
     closed
         Whether each curve closes back on its first vertex (adding one more segment). Signed
         distance is most meaningful for closed curves; an open curve gives a field whose sign flips
@@ -1175,20 +1185,22 @@ def heat_signed_distance(
 
     Notes
     -----
-    !!! warning "``method="potpourri3d"`` is wrong far from the curve on fine meshes"
-        The method diffuses for a much shorter time by default, geometry-central's
-        ``(h / 2) ** 2``, and over twice as many steps of the mesh (edge midpoints rather than
-        vertices), so its field decays steeply with distance from the curve. On a fine enough
-        mesh -- a few hundred thousand faces for a curve on one side of a sphere -- it falls
-        below the smallest ``float64`` before it has crossed the surface, and the distance past
-        that point is wrong by a large fraction of its range. The defect is inherited:
-        ``potpourri3d.MeshSignedHeatSolver`` is wrong on the same meshes, and on smaller ones
-        (its direct solve loses the far field to round-off before it underflows), since no
-        solver can carry values the format cannot hold. The call warns when it happens. Prefer
-        the default
-        ``method="vertex_connection"``, which is more accurate at every resolution measured and
-        holds on meshes several times finer; or pass a larger ``t``, such as the squared mean
-        edge length.
+    !!! warning "potpourri3d's signed heat method is wrong far from the curve on fine meshes"
+        geometry-central diffuses for a much shorter time, ``(h / 2) ** 2``, and over twice as
+        many steps of the mesh (edge midpoints rather than vertices), so its field decays
+        steeply with distance from the curve. On a fine enough mesh -- a few hundred thousand
+        faces for a curve on one side of a sphere -- it falls below the smallest ``float64``
+        before it has crossed the surface, and the distance past that point is wrong by a large
+        fraction of its range. ``potpourri3d.MeshSignedHeatSolver`` is wrong on such meshes, and
+        on smaller ones (its direct solve loses the far field to round-off first): no solver can
+        carry values the format cannot hold. ``method="potpourri3d"`` therefore departs from it
+        there: when ``t`` is not given and the mesh's bounding-box diagonal spans more than 400
+        of the method's diffusion lengths ``sqrt(t)``, the default time grows until it spans
+        400, which keeps the field in range and the answer right; below that the time is
+        geometry-central's and the answer potpourri3d's. Where the box understates the distance
+        from the curve (a surface folded on itself), or for a ``t`` passed explicitly, the field
+        can still fall out of range, and the call warns. Prefer the default
+        ``method="vertex_connection"``, which is more accurate at every resolution measured.
 
     The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
     factorization it is about to drop, as [`heat_geodesic`][ordito.heat.heat_geodesic] does.
@@ -1548,11 +1560,11 @@ def _edge_signed_distance(
         warnings.warn(
             'heat_signed_distance(method="potpourri3d"): the diffused field fell below the '
             "float64 range before it reached the whole mesh, so the distance is wrong far from "
-            "the curve. The method inherits this from potpourri3d: its default diffusion time "
-            "(h / 2) ** 2 makes the heat decay too fast for a fine mesh, and "
-            "potpourri3d.MeshSignedHeatSolver is wrong on such meshes too. Use the default "
-            'method="vertex_connection", which is more accurate and holds on finer meshes, or '
-            "pass a larger t (the squared mean edge length restores it).",
+            "the curve. The method inherits this from potpourri3d, whose short diffusion time "
+            "(h / 2) ** 2 makes the heat decay too fast for a fine mesh "
+            "(potpourri3d.MeshSignedHeatSolver is wrong there too); the default time lengthens on "
+            "such meshes, but not enough on this one, or t was passed. Pass a larger t, or use "
+            'the default method="vertex_connection", which is more accurate.',
             stacklevel=4,
         )
     return field
@@ -3335,7 +3347,7 @@ class HeatSolver:
         # The edge system, its preconditioner and the edge midpoints its factorization orders rows
         # by, once built; like the operators, it outlives ``release``.
         self._edge_system: (
-            tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator, wp.array[wp.vec3]] | None
+            tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator, wp.array[wp.vec3], int] | None
         ) = None
 
     @property
@@ -3709,8 +3721,11 @@ class HeatSolver:
         its edge: the edge-based discretization
         [`heat_signed_distance`][ordito.heat.heat_signed_distance] diffuses at
         ``method="potpourri3d"``. ``t_e`` is ``t`` when the solver has one, else
-        ``(h / 2) ** 2`` with ``h`` the mean unique-edge length, geometry-central's. The system is
-        built on first use and kept; it is settled and factored as the solver's other systems are.
+        ``(h / 2) ** 2`` with ``h`` the mean unique-edge length, geometry-central's, raised to
+        ``(diagonal / 400) ** 2`` on a mesh whose bounding-box diagonal is longer, where the
+        shorter time would let the field fall out of the ``float64`` range (see
+        [`heat_signed_distance`][ordito.heat.heat_signed_distance]). The system is built on first
+        use and kept; it is settled and factored as the solver's other systems are.
 
         Parameters
         ----------
@@ -3739,23 +3754,26 @@ class HeatSolver:
             )
         if self._edge_system is None:
             self._edge_system = self._crouzeix_raviart_system()
-        system, preconditioner, midpoints = self._edge_system
+        system, preconditioner, midpoints, settle_rounds = self._edge_system
         role = "crouzeix_raviart"
         if role not in self._systems:
             # Placed here, not by ``_slot``: its factorization orders the rows by the edge
             # midpoints, where the vertex systems' slots take the vertices.
             self._systems[role] = _KeptSystem(twl.OperatorFactorization(system, midpoints))
-        self._settle(role, system, rhs, solution, preconditioner=preconditioner)
+        self._settle(
+            role, system, rhs, solution, preconditioner=preconditioner, settle_rounds=settle_rounds
+        )
 
     def _crouzeix_raviart_system(
         self,
-    ) -> tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator, wp.array[wp.vec3]]:
+    ) -> tuple[odt.BsrMatrix[wp.mat22d], wpl.LinearOperator, wp.array[wp.vec3], int]:
         """
-        Build ``diffuse_edge_field``'s system, its preconditioner and the edge midpoints.
+        Build ``diffuse_edge_field``'s system, preconditioner, edge midpoints and settle window.
 
         ``wp.mat22d`` blocks over the unique edges, assembled from keys
-        (``kernels/heat.crouzeix_raviart_keys``) and one row kernel; the default time is formed on
-        the device from the scalar bundle's own edge-length sums.
+        (``kernels/heat.crouzeix_raviart_keys``) and one row kernel. The default time is
+        geometry-central's ``(h / 2) ** 2``, formed on the device from the scalar bundle's own
+        edge-length sums, unless ``_EDGE_DIFFUSION_DECAY`` sets a longer one.
         """
         mesh = self._bound_mesh()
         t = self.t
@@ -3775,12 +3793,24 @@ class HeatSolver:
             device=device,
         )
         offsets, columns, starts = od.array.csr_from_keys(keys, order, count, n_edges, n_edges)
-        edge_sums = None
+        built = _SCALAR_BUILDS.get(self.operators[0])
+        edge_sums = built.edge_sums if built is not None else None
+        if edge_sums is None:
+            edge_sums = _edge_length_sums(vertices, mesh.mesh_operator_pattern)
+        # Host readback, once per edge system: the mean edge length decides whether the default
+        # time must grow and how long a settle the system's time needs.
+        total, edge_count = read_values(edge_sums, 0, 2)
+        mean_length = float(total) / float(edge_count) if edge_count > 0 else 0.0
+        geometry_central = 0.25 * mean_length * mean_length
         if t is None:
-            built = _SCALAR_BUILDS.get(self.operators[0])
-            edge_sums = built.edge_sums if built is not None else None
-            if edge_sums is None:
-                edge_sums = _edge_length_sums(vertices, mesh.mesh_operator_pattern)
+            low, high = mesh.bounds
+            diagonal = math.dist(low, high)
+            floor = (diagonal / _EDGE_DIFFUSION_DECAY) ** 2
+            if floor > geometry_central:
+                t = floor
+        settle_rounds = _HEAT_SETTLE_ROUNDS
+        if t is not None and t > geometry_central > 0.0:
+            settle_rounds = math.ceil(_HEAT_SETTLE_ROUNDS * math.sqrt(t / geometry_central))
         values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
         midpoints = _launch.empty(n_edges, dtype=wp.vec3, device=device)
         _launch.launch(
@@ -3802,7 +3832,7 @@ class HeatSolver:
             device=device,
         )
         system = od.array.bsr_from_csr(n_edges, n_edges, offsets, columns, values)
-        return system, twl.jacobi_preconditioner(system), midpoints
+        return system, twl.jacobi_preconditioner(system), midpoints, settle_rounds
 
     def _settle(
         self,
@@ -3812,6 +3842,7 @@ class HeatSolver:
         solution: odt.ArrayNd,
         *,
         preconditioner: wpl.LinearOperator | None = None,
+        settle_rounds: int = _HEAT_SETTLE_ROUNDS,
     ) -> None:
         """Run one settled diffusion of ``role``'s system, factored when that pays or is needed."""
         kept = self._kept(role, matrix)
@@ -3822,7 +3853,7 @@ class HeatSolver:
             solution,
             check_rounds=_HEAT_CHECK_ROUNDS,
             change_tolerance=_HEAT_CHANGE_TOLERANCE,
-            settle_rounds=_HEAT_SETTLE_ROUNDS,
+            settle_rounds=settle_rounds,
             preconditioner=preconditioner,
             factorization=kept.factorization,
         )

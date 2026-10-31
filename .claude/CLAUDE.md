@@ -1290,19 +1290,31 @@ Each is a measured limit of an option above; re-measure before acting on it.
   (far end 25.3 against 39.6) where ordito's settled CG still holds. The scalar `heat_geodesic`
   holds at (8) (0.010). A larger `t` fixes it: at (7) `t = h^2` gives 0.0026 and `4 h^2` 0.0014
   (both still trip the generic backward-error warning on the far band, a false alarm there).
-  **Done (2026-10-31): the warning.** `edge_field_divergence` flags an edge whose field is
-  non-zero but below `kernels/heat.EDGE_FIELD_UNDERFLOW = 1e-280` (the broken field held 391,
-  every accurate one a minimum above 1e-137; exact zeros are left alone, an unreached component),
-  one readback at the end of the call (+1 on the two `potpourri3d` census rows), and
-  `heat_signed_distance` warns naming potpourri3d's default `t` and recommending the default
-  method or a larger `t`; a `!!! warning` in its Notes and in `docs/migrating-from/potpourri3d.md`
-  (`test_heat_signed_distance_potpourri3d_method_warns_when_the_field_underflows`, the strip at
-  400 / 600 columns). **Still open:** the default method has the same wall at `icosphere(8)` and
-  no warning (a vertex-field check would need its own readback); the generic backward-error
-  warning fires beside the new one and alone on accurate large-`t` runs; the remedies proper (an
-  underflow-aware default `t`, or an exact rescaled continuation: the far region satisfies
-  `(M + t L)_FF X_F = -t L_FB X_B` with no source, so re-solving it from the frontier band scaled
-  up keeps every direction exactly) are not chosen.
+  **Done (2026-10-31): the warning, then an adaptive time for the edge method.**
+  `edge_field_divergence` flags an edge whose field is non-zero but below
+  `kernels/heat.EDGE_FIELD_UNDERFLOW = 1e-280` (the broken field held 391, every accurate one a
+  minimum above 1e-137; exact zeros are an unreached component) and the call warns. The field
+  falls off like `exp(-d / sqrt(t))` (icosphere(6): `d / sqrt(t)` 330, smallest value 3e-137), so
+  with `t` not given the edge system's time is `max((h/2)^2, (diagonal / 400)^2)`
+  (`heat._EDGE_DIFFUSION_DECAY`, bounding-box diagonal for the farthest distance): every test
+  fixture sits at or below 155 and `sphere_med` at 367, so they keep geometry-central's time and
+  potpourri3d's answer. A budget of 500-600 degraded again (icosphere(7) 0.037 / 0.35): fields
+  near 1e-212 do not converge before the settle stops. **The settle window must grow with `t`:**
+  the rounds a field needs past full reach scale like `sqrt(t / t_default)` (icosphere(8) at
+  `t = 3.36 h^2`: about 436 rounds past reach against the 192-round window, 0.14 error; at 512,
+  0.0009), so the edge system's window is `192 * max(1, sqrt(t / (h/2)^2))`, for an explicit `t`
+  too. Default-`t` errors now: icosphere(6) / (7) / (8) 0.0087 / 0.0030 / 0.0009, strips of 600 /
+  1 200 columns 0.045 / 0.043 on ranges of 60 / 120, no warning. One readback of the edge-length
+  sums and the cached `Trimesh.bounds` per edge system (+1 launch, +1 allocation, +2 readbacks on
+  the census rows). `solve_spd_settled` no longer warns when its iterate fails the check and no
+  factorization fits: the check also fails on accurate far fields near the bottom of the range
+  (icosphere(7) at `t = h^2`: 3 751 rows, error 0.0026), so it could not say the answer was
+  wrong. **Still open: the default vertex method** underflows the same way, now silently:
+  icosphere(8) 0.97, the 1 200-column strip 24.2 (on 120). Its system is the shared vector heat
+  system (`vector_heat_operators`, also `transport_tangent_vectors`, `log_map`,
+  `extend_scalar`), so the same floor, `max(h^2, (diagonal / 400)^2)` with the window scaled,
+  would change those functions' default too, on meshes past the threshold only; measured on
+  `heat_signed_distance` alone (icosphere(8): 0.0021).
 - **Private access added across a module boundary.** `smoothing`
   reaches `neighbors._EdgePathBallWalk` (check 5 allowlist, plus a scoped `reportUnusedClass`
   ignore), the same shape as the two allowlisted `_GeodesicBallWalk` uses; a public chunked walk

@@ -2381,7 +2381,10 @@ def solve_spd_settled(
     system is solved again by a [`sparse_cholesky`][ordito.cholesky.sparse_cholesky]
     factorization, refined componentwise. The verification reads back one flag. The factorization
     is built in ``factorization`` when one is passed, where the caller keeps it; and a
-    ``factorization`` that already holds one is solved by directly, with no iteration.
+    ``factorization`` that already holds one is solved by directly, with no iteration. When no
+    factorization can be built (over
+    [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET], or not positive definite)
+    the settled iterate is returned as it is.
 
     Parameters
     ----------
@@ -2428,13 +2431,6 @@ def solve_spd_settled(
         ``matrix``'s.
     RuntimeError
         If ``matrix``, ``rhs``, ``solution`` and ``preconditioner`` are not all on one device.
-
-    Warns
-    -----
-    UserWarning
-        When the settled iterate fails the backward-error check and no factorization can be built
-        (over [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET], or not positive
-        definite); the iterate is returned.
 
     See Also
     --------
@@ -2534,11 +2530,9 @@ def solve_spd_settled(
         return solver.iterations
     fallback = factorization if factorization is not None else OperatorFactorization(matrix)
     if not fallback.factor():
-        warnings.warn(
-            "solve_spd_settled: the settled iterate fails the componentwise backward-error check "
-            "and no factorization of the operator can be built; returning the iterate",
-            stacklevel=2,
-        )
+        # No warning: the check also fails on a far field near the bottom of the ``float64``
+        # range, where the iterate's directions are right (the heat diffusions at a large ``t``),
+        # so it cannot tell the caller the answer is wrong. A caller that can is the one to say so.
         return solver.iterations
     # From zero, not from the rejected iterate, as ``_solve_columns_verified`` refines.
     _launch.zero_(solution_flat)

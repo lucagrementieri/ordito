@@ -1459,20 +1459,21 @@ def test_heat_signed_distance_potpourri3d_method_two_curves_match_potpourri3d(
 
 
 @pytest.mark.parametrize(("columns", "underflows"), [(400, False), (600, True)])
-def test_heat_signed_distance_potpourri3d_method_warns_when_the_field_underflows(
+def test_heat_signed_distance_potpourri3d_method_outlasts_geometry_centrals_time(
     device: str, columns: int, underflows: bool
 ) -> None:
     """
     Not a library comparison: potpourri3d is wrong on these strips itself; the oracle is exact.
 
     The oracle is the distance along the strip. A ring around a vertex near one end of a
-    ``columns x 5`` strip of spacing 0.1. At ``method="potpourri3d"``'s ``t = (h / 2) ** 2`` the
-    diffused edge field falls below the ``float64`` range before the far end of the 600-column
-    strip (about 1 200 edge-graph hops): the call warns, and the far end reads about 50 where it
-    lies about 60 from the ring. The 400-column strip is the boundary's other side: no warning,
-    the right distance. The default method holds on both, silently. potpourri3d's own direct solve
-    is already wrong at 400 columns (25.3 at the far end), the claim the warning makes; asserted
-    on both strips.
+    ``columns x 5`` strip of spacing 0.1. At geometry-central's ``t = (h / 2) ** 2``, passed
+    explicitly, the diffused edge field falls below the ``float64`` range before the far end of
+    the 600-column strip (about 1 200 edge-graph hops): the call warns, and the far end reads
+    about 50 where it lies about 60 from the ring. The 400-column strip is the boundary's other
+    side: no warning, the right distance. The default time lengthens on the 600-column strip
+    (its diagonal spans 1 200 half-edges, past the 400 the floor allows) and is right on both,
+    silently, as is the default method. potpourri3d's own direct solve is already wrong at 400
+    columns (25.3 at the far end), the claim the warning makes; asserted on both strips.
     """
     vertices, faces = od.creation.grid(
         count=(columns, 5), extents=(0.1 * columns, 0.5), device=device
@@ -1494,14 +1495,28 @@ def test_heat_signed_distance_potpourri3d_method_warns_when_the_field_underflows
     # The far column's distance to the ring, which reaches 0.1 along the strip from its centre.
     expected = vertices_np[far, 0] - vertices_np[center, 0] - 0.1
 
+    # geometry-central's time, (h / 2) ** 2 over the mean unique-edge length (diagonals included).
+    mean_length = tm.Trimesh(vertices_np, faces_np, process=False).edges_unique_length.mean()
+    geometry_central = float(0.25 * mean_length**2)
+
+    def underflow_warnings(caught: list[warnings.WarningMessage]) -> int:
+        return sum("fell below the float64 range" in str(w.message) for w in caught)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        short_wp = od.heat.heat_signed_distance(
+            vertices, faces, ring_wp, t=geometry_central, method="potpourri3d"
+        )
+    assert underflow_warnings(caught) == (1 if underflows else 0)
+    assert np.allclose(-short_wp.numpy()[far], expected, rtol=1e-2) != underflows
+
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         edges_wp = od.heat.heat_signed_distance(vertices, faces, ring_wp, method="potpourri3d")
         vertex_wp = od.heat.heat_signed_distance(vertices, faces, ring_wp)
-    underflow_warnings = [w for w in caught if "fell below the float64 range" in str(w.message)]
-    assert len(underflow_warnings) == (1 if underflows else 0)
+    assert underflow_warnings(caught) == 0
+    assert np.allclose(-edges_wp.numpy()[far], expected, rtol=1e-2)
     assert np.allclose(-vertex_wp.numpy()[far], expected, rtol=1e-2)
-    assert np.allclose(-edges_wp.numpy()[far], expected, rtol=1e-2) != underflows
 
     solver_pp = pp3d.MeshSignedHeatSolver(vertices_np, np.ascontiguousarray(faces_np))
     distance_pp = np.asarray(

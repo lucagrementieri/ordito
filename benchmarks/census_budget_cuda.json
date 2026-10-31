@@ -2342,22 +2342,22 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_potpourri3d[sphere_med-ordito-cuda-band]": {
   "counts": {
-   "launch": 25,
-   "alloc": 27,
-   "memset": 9,
+   "launch": 26,
+   "alloc": 28,
+   "memset": 10,
    "d2d": 2,
-   "d2h": 5,
+   "d2h": 7,
    "scan": 4,
    "sort": 3
   }
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_potpourri3d[sphere_med-ordito-cuda-ring]": {
   "counts": {
-   "launch": 25,
-   "alloc": 27,
-   "memset": 9,
+   "launch": 26,
+   "alloc": 28,
+   "memset": 10,
    "d2d": 2,
-   "d2h": 5,
+   "d2h": 7,
    "scan": 4,
    "sort": 3
   }

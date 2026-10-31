@@ -57,11 +57,12 @@ import ordito as od  # after
     !!! warning "potpourri3d's signed heat method is wrong far from the curve on fine meshes"
         Its default diffusion time is so short that, on a mesh of a few hundred thousand faces,
         the diffused field falls below the smallest `float64` before it has crossed the surface,
-        and the distance beyond that point is wrong by a large fraction of its range.
-        `pp3d.SignedHeatSolver` itself returns a wrong field there (its direct solve loses the
-        far field even sooner), so `method="potpourri3d"` inherits the defect; ordito warns when
-        it happens. Use the default method, which is more accurate and holds on much finer
-        meshes, or pass a larger `t`, such as the squared mean edge length.
+        and the distance beyond that point is wrong by a large fraction of its range;
+        `pp3d.SignedHeatSolver` returns a wrong field there (its direct solve loses the far
+        field even sooner). `method="potpourri3d"` keeps geometry-central's time where it holds
+        and lengthens it on meshes too fine for it, so the two agree on small meshes and ordito
+        stays right on large ones; it warns if the field still falls out of range. The default
+        method is more accurate at every resolution measured.
 
 - **Isolines come back as points, not mesh elements.** potpourri3d's `marching_triangles`
   reports each isoline point as a geometry-central element index plus barycentric coordinates;

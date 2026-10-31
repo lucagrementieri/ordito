@@ -2190,18 +2190,18 @@
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_potpourri3d[sphere_med-ordito-cpu-band]": {
   "counts": {
-   "launch": 23,
-   "alloc": 27,
-   "readback": 7,
+   "launch": 24,
+   "alloc": 28,
+   "readback": 9,
    "scan": 2,
    "sort": 3
   }
  },
  "benchmarks/test_heat.py::test_heat_signed_distance_potpourri3d[sphere_med-ordito-cpu-ring]": {
   "counts": {
-   "launch": 23,
-   "alloc": 27,
-   "readback": 7,
+   "launch": 24,
+   "alloc": 28,
+   "readback": 9,
    "scan": 2,
    "sort": 3
   }

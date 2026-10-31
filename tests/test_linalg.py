@@ -1119,8 +1119,9 @@ def test_solve_spd_settled_falls_back_on_a_rejected_iterate(
 
     A change tolerance of ten settles after the first check, far from the solution; the
     backward-error check rejects it and a factorization answers to ``1e-12``. When the operator
-    cannot be factored (``CHOLESKY_MEMORY_BUDGET`` too small) the iterate is returned with a
-    warning, and it is measurably not the solution.
+    cannot be factored (``CHOLESKY_MEMORY_BUDGET`` too small) the iterate is returned without a
+    warning (the check cannot tell a wrong iterate from a right far field near the bottom of the
+    ``float64`` range), and it is measurably not the solution.
     """
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device)
     rhs_1d = odt.as_dense(rhs_wp[0])
@@ -1135,12 +1136,11 @@ def test_solve_spd_settled_falls_back_on_a_rejected_iterate(
         )
     error = np.abs(solution_wp.numpy() - expected_np).max()
     messages = [str(warning.message) for warning in caught]
+    assert messages == []
     if factorable:
         assert error < 1e-12
-        assert messages == []
     else:
         assert error > 1e-4
-        assert any("no factorization of the operator can be built" in m for m in messages)
 
 
 def test_solve_spd_warns_when_it_runs_out_of_iterations(device: str) -> None:
