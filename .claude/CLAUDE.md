@@ -959,7 +959,8 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `resample_uniform` against pymeshlab's resampler (vcg's grid and sign rule) and `offset_mesh`
   against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign; `resample_uniform`
   already has `method="igl"` and `method="meshlib"`); MeshLib's "nice" fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
-  `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue.
+  `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
+  per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
 - **`quadric_decimate` worst cases:** rim vertices placed by extrapolating boundary planes
   (`dragon` max 5x MeshLib's at 0.5), and rim needles at 0.01.
 - **`smooth_region` is not flat in `n`** with the squared V-cycle: 1 885 iterations, 43 s on `lucy`.
