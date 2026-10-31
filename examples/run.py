@@ -117,10 +117,19 @@ def _credits(meta: Meta) -> str:
     return f"Modelled on: {links}\n{{: .ordito-credits }}\n"
 
 
+def _front_matter(head_title: str, description: str) -> str:
+    """Return a page's front matter: its ``<title>`` and its meta description."""
+    return f'---\nhead_title: "{head_title}"\ndescription: >-\n  {description}\n---\n'
+
+
 def page_text(topic: Topic) -> str:
     """Return the Markdown of ``docs/examples/<topic>.md``."""
     doc = textwrap.dedent(str(topic.module.INTRO)).strip()
-    lines = [f"# {topic.title}\n", f"{doc}\n" if doc else ""]
+    lines = [
+        _front_matter(topic.module.HEAD_TITLE, topic.module.DESCRIPTION),
+        f"# {topic.title}\n",
+        f"{doc}\n" if doc else "",
+    ]
     for module in topic.examples:
         meta: Meta = module.META
         lines.append(f"## {meta.title} {{#{meta.anchor}}}\n")
@@ -139,7 +148,11 @@ def page_text(topic: Topic) -> str:
 
 def index_text(topics: list[Topic]) -> str:
     """Return the Markdown of ``docs/examples/index.md``: a thumbnail grid per topic."""
-    lines = ["# Examples\n", textwrap.dedent(examples.GALLERY_INTRO).strip() + "\n"]
+    lines = [
+        _front_matter(examples.GALLERY_HEAD_TITLE, examples.GALLERY_DESCRIPTION),
+        "# Examples\n",
+        textwrap.dedent(examples.GALLERY_INTRO).strip() + "\n",
+    ]
     for topic in topics:
         lines.append(f"## [{topic.title}]({topic.slug}.md)\n")
         lines.append('<div class="grid cards ordito-gallery" markdown>\n')

@@ -5,6 +5,12 @@ Run ``python -m examples.run`` to execute every example, render its image and re
 gallery pages under ``docs/examples``.
 """
 
+GALLERY_HEAD_TITLE = "Examples: GPU mesh processing recipes in Python"
+GALLERY_DESCRIPTION = (
+    "Runnable Python examples of GPU mesh processing with ordito, each with the image it "
+    "produces: curvature, geodesics, remeshing, repair, voxels, point clouds and more."
+)
+
 GALLERY_INTRO = """
 Each example below is a complete, runnable snippet together with the image it produced. The
 inputs are shared across examples so that related operations can be compared on the same shape:

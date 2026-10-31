@@ -173,9 +173,7 @@ Modelled on: [potpourri3d: geodesic tracer](https://github.com/nmwsharp/potpourr
 [`heat_signed_distance`][ordito.heat.heat_signed_distance] measures the distance along the
 surface to a set of closed, oriented curves, positive on one side and negative on the other.
 It diffuses the curves' normals with the vector heat method and integrates the normalized
-result, so it needs no inside/outside test and handles several curves at once. Keep the
-default method: `method="potpourri3d"` reproduces potpourri3d, including its failure far from the
-curve on fine meshes (see the function's notes). The curves
+result, so it needs no inside/outside test and handles several curves at once. The curves
 here are the rims of geodesic disks: [`heat_geodesic`][ordito.heat.heat_geodesic] gives the
 distance to a centre and [`boundary_loops`][ordito.boundary.boundary_loops] of the faces
 within a radius orders the rim.
