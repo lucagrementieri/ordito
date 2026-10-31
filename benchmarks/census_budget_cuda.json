@@ -7143,8 +7143,8 @@
  "benchmarks/test_smoothing.py::test_relax_approx_meshlib[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 9,
-   "alloc": 9,
-   "memset": 2,
+   "alloc": 8,
+   "memset": 4,
    "d2h": 1,
    "scan": 1,
    "sort": 1

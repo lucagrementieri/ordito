@@ -1209,11 +1209,15 @@ def test_relax_approx_meshlib(bench_case: BenchCase) -> None:
     passes, radius 3 % of the bounding-box diagonal as in ``relax_approx``, and the same cap for
     the same reason (lucy's balls clip at their 512-entry row).
 
-    Measured on CUDA (noisy unit icospheres, this radius, planar), ``method="meshlib"`` against
-    the default: 5.2x at three passes and 2.1x at one on ``icosphere(6)`` (41 k vertices), 5.9x and
-    2.1x on ``icosphere(7)`` (164 k). One walk costs about two of the default's breadth-first
-    walks, and the default walks once whatever the pass count. The walk's chunk was swept on the
-    164 k sphere: 2**14 and 2**15 sources a launch tie, 2**13 and 2**16 lose 1.4-1.5x.
+    Measured on CUDA (noisy unit icospheres, this radius, planar, device time), ``method="meshlib"``
+    against the default: 4.5x at three passes and 1.7x at one on ``icosphere(6)`` (41 k vertices),
+    3.5x and 1.26x on ``icosphere(7)`` (164 k). One walk costs about 1.14x the default's
+    breadth-first walk, and the default walks once whatever the pass count, so the rebuild per pass
+    is now the gap. The walk expands each ball vertex once (counted: one pop a vertex, six probes),
+    so its cost is the probe: one read of a ``(vertex, distance)`` table entry, where a key table, a
+    rank table and a distance row took three dependent reads (0.68x walk), and a memset of the
+    table per chunk instead of probing every key again to clear it (0.88x call). Chunk re-swept
+    after both: ``2**15`` sources a launch (``neighbors._EDGE_PATH_BALL_CHUNK``).
     """
     skip_larger_than(
         bench_case,

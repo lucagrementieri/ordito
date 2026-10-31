@@ -1106,8 +1106,12 @@ the quoted `"meshlib"` value only), and their kernels describe behaviour, not th
 - **`relax_approx(method="meshlib")`:** balls of edge-path length (`float32` sums, inclusive
   radius) rebuilt each pass, fit in `float64` in its own kernel (`float32` `svd3` tilted a plane
   by 4e-4; a precision switch inside the default kernel moved it by an ulp at the clamp). Within
-  4.8e-7, quadric exact; 2.1x the default at 1 pass, 5-6x at 3. Planar passes on
-  `torus_irregular_holes` amplify ulps into different balls (2e-3 at 5 passes).
+  4.8e-7, quadric exact; 1.3-1.7x the default at 1 pass, 3.5-4.5x at 3 (CUDA device time,
+  41 k-164 k vertices), the rebuild every pass, since one walk costs 1.14x the default's (its
+  probe is one `vec2i` table read; `benchmarks/test_smoothing.py::test_relax_approx_meshlib`).
+  Planar passes on `torus_irregular_holes` amplify ulps into different balls (2e-3 at 5 passes,
+  though each pass agrees to 4.8e-7; not reproducible without MeshLib's float order, and the
+  test excludes that case).
 - **Measured declines:** hole-fill ties against MeshLib need a `float64` DP, MeshLib's triangle
   terms bit for bit, descending `k`, *and* MeshLib's smallest-EdgeId start vertex (not
   reproducible in general); stitch ties follow `std::priority_queue` order. Earcut's order is
@@ -1255,13 +1259,6 @@ Each is a measured limit of an option above; re-measure before acting on it.
   `float32` (rounding only those angles in a `float64` prototype moves the map 4.4e-5).
   **Proposed:** form the transport in `float64` for both methods, which changes the default's
   vector system and its parity numbers; price it and re-run every vector-heat comparison.
-- **`relax_approx(method="meshlib")` costs 2.1x the default at 1 pass and 5.2-5.9x at 3**
-  (41 k / 164 k vertices, CUDA): one edge-path walk is about two of the default's breadth-first
-  walks, and it rebuilds every pass where the default walks once. **Proposed:** a cheaper walk
-  (the label-correcting scan is `O(k^2)` per vertex), priced on the benchmark row. Separately,
-  5 planar passes on `torus_irregular_holes` drift 2e-3 from MeshLib though each pass agrees to
-  4.8e-7: one-ulp position differences change the next pass's balls. Not reproducible without
-  MeshLib's own float order; the test excludes that case and says so.
 - **`signed_distance_level_set` against `igl.offset_surface` holds at three of four levels.** At
   `iso = 0.1` the counts and faces agree but one vertex is 4.8e-5 off. Cause (traced 2026-10-28,
   both devices): a near-tangent lattice edge, both nodes within 1.8e-4 of the level, where any
@@ -1354,8 +1351,8 @@ as it stands; an upgrade means adding the reference's own algorithm as an option
   first moment and containment.
 
 **Same algorithm, small numeric gap.** Each has its own entry: `log_map(method="potpourri3d")`
-(`float32` transport angles) and `relax_approx(method="meshlib")` (planar drift) in
-`Open items from the 2026-10-28 Class C upgrades`; `signed_distance_level_set` against
+(`float32` transport angles) in `Open items from the 2026-10-28 Class C upgrades`;
+`relax_approx(method="meshlib")` (planar drift) in `Class C comparisons upgraded`; `signed_distance_level_set` against
 `igl.offset_surface` at iso 0.1 (the lattice's `float32` placement), same section; `screened_poisson(method="octree")` on an
 open cloud (`test_poisson_octree_matches_open3d_on_an_open_cloud`: far-field vertices at the
 cube's walls, open3d's wall evaluation untraced; on closed clouds the residual ties are open3d's

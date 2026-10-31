@@ -1510,19 +1510,30 @@ def gather_queue_rows(
     out_flat[local_offsets[t] + j] = queue_pool[t, j]
 
 
-# Capacity of the open-addressing table that maps a vertex to its slot of the edge-path ball row:
+# Capacity of the open-addressing table that holds the edge-path ball's vertices and distances:
 # twice the row's, so the table is at most half full.
 EDGE_PATH_HASH_CAPACITY = 2 * kernel_bfs.PER_SOURCE_MAX_NEIGHBORS
 
 
 @wp.func
-def edge_path_hash_find(keys: wp.array[wp.int32], vertex: wp.int32) -> wp.int32:
-    # The slot holding ``vertex``, or the empty slot (``-1``) where it would go.
-    mask = keys.shape[0] - 1
+def edge_path_queued_key(vertex: wp.int32) -> wp.int32:
+    # The key a queued vertex's slot holds: ``-vertex - 2``, below the empty slot's ``-1``, so a
+    # probe tells empty, settled and queued apart from the key alone. Its own inverse.
+    return -vertex - wp.int32(2)
+
+
+@wp.func
+def edge_path_hash_find(table: wp.array[wp.vec2i], vertex: wp.int32) -> tuple[wp.int32, wp.vec2i]:
+    # The slot holding ``vertex``, queued or not, or the empty slot (key ``-1``) where it would go,
+    # and that slot's entry.
+    mask = table.shape[0] - 1
+    queued = edge_path_queued_key(vertex)
     slot = kernel_grouping.hash_slot(vertex, mask)
-    while keys[slot] != vertex and keys[slot] != wp.int32(-1):
+    entry = table[slot]
+    while entry[0] != vertex and entry[0] != queued and entry[0] != wp.int32(-1):
         slot = kernel_grouping.next_slot(slot, mask)
-    return slot
+        entry = table[slot]
+    return slot, entry
 
 
 @wp.func
@@ -1533,10 +1544,8 @@ def per_source_edge_path_collect(
     adj_columns: wp.array[wp.int32],
     radius: wp.float32,
     row: wp.array[wp.int32],
-    row_distances: wp.array[wp.float32],
     pending: wp.array[wp.int32],
-    keys: wp.array[wp.int32],
-    ranks: wp.array[wp.int32],
+    table: wp.array[wp.vec2i],
     out_overflow: wp.array[wp.int32],
 ) -> wp.int32:
     """
@@ -1550,19 +1559,18 @@ def per_source_edge_path_collect(
     the order a settle-by-distance walk relies on). Only a distance within the radius is recorded
     and a recorded one only falls, so ``row[:count]`` is exactly the ball, in discovery order.
 
-    ``row_distances`` is each row entry's distance, ``pending`` a ring of the table slots of the
-    vertices waiting to be expanded (a vertex is queued at most once at a time, so the ring never
-    holds more than the row), and ``keys`` / ``ranks`` an open-addressing table from a vertex to
-    its row rank, ``-rank - 1`` while it is queued. ``keys`` arrives filled with ``-1`` and is left
-    so. A ball past the row's capacity keeps its first-discovered vertices and adds one to
-    ``out_overflow``.
+    ``table`` is an open-addressing table of ``(key, distance bits)`` pairs, so one read answers a
+    probe: the key is the vertex, or ``edge_path_queued_key`` of it while the vertex waits in
+    ``pending``, a ring of table slots (a vertex is queued at most once at a time, so the ring
+    never holds more than the row). Every relaxation probes, and on the meshes measured each ball
+    vertex is expanded once, so the probe's dependent reads are the walk's cost. ``table`` arrives
+    with every key ``-1`` and is left so. A ball past the row's capacity keeps its
+    first-discovered vertices and adds one to ``out_overflow``.
     """
     capacity = row.shape[0]
-    home = edge_path_hash_find(keys, i)
-    keys[home] = i
-    ranks[home] = wp.int32(-1)
+    home, _vacant = edge_path_hash_find(table, i)
+    table[home] = wp.vec2i(edge_path_queued_key(i), wp.cast(wp.float32(0.0), wp.int32))
     row[0] = i
-    row_distances[0] = wp.float32(0.0)
     pending[0] = home
     head = wp.int32(0)
     queued = wp.int32(1)
@@ -1572,44 +1580,33 @@ def per_source_edge_path_collect(
         popped = pending[head]
         head = wp.where(head + 1 == capacity, wp.int32(0), head + 1)
         queued -= wp.int32(1)
-        rank = -ranks[popped] - 1
-        ranks[popped] = rank
-        source = row[rank]
-        distance = row_distances[rank]
+        entry = table[popped]
+        source = edge_path_queued_key(entry[0])
+        table[popped] = wp.vec2i(source, entry[1])
+        distance = wp.cast(entry[1], wp.float32)
         origin = positions[source]
         for k in range(adj_offsets[source], adj_offsets[source + 1]):
             neighbor = adj_columns[k]
             reach = distance + wp.length(positions[neighbor] - origin)
             if reach > radius:
                 continue
-            slot = edge_path_hash_find(keys, neighbor)
-            target = wp.int32(-1)
-            if keys[slot] == neighbor:
-                stored = ranks[slot]
-                at = wp.where(stored < 0, -stored - 1, stored)
-                if reach < row_distances[at]:
-                    row_distances[at] = reach
-                    if stored >= 0:
-                        target = at
+            slot, found = edge_path_hash_find(table, neighbor)
+            push = wp.bool(False)
+            if found[0] != wp.int32(-1):
+                if reach < wp.cast(found[1], wp.float32):
+                    push = found[0] == neighbor
+                    table[slot] = wp.vec2i(edge_path_queued_key(neighbor), wp.cast(reach, wp.int32))
             elif count < capacity:
-                keys[slot] = neighbor
                 row[count] = neighbor
-                row_distances[count] = reach
-                target = count
                 count += wp.int32(1)
+                push = wp.bool(True)
+                table[slot] = wp.vec2i(edge_path_queued_key(neighbor), wp.cast(reach, wp.int32))
             else:
                 clipped = wp.bool(True)
-            if target >= 0:
-                ranks[slot] = -target - 1
+            if push:
                 tail = head + queued
                 pending[wp.where(tail >= capacity, tail - capacity, tail)] = slot
                 queued += wp.int32(1)
-    # Every slot is found before any is cleared: clearing one first would cut the probe chain of
-    # a key stored past it.
-    for k in range(count):
-        pending[k] = edge_path_hash_find(keys, row[k])
-    for k in range(count):
-        keys[pending[k]] = wp.int32(-1)
     if clipped:
         wp.atomic_add(out_overflow, 0, 1)
     return count
@@ -1623,10 +1620,8 @@ def query_edge_path_ball_collect(
     radius: wp.float32,
     chunk_start: wp.int32,
     rows: wp.array2d[wp.int32],
-    distance_pool: wp.array2d[wp.float32],
     pending_pool: wp.array2d[wp.int32],
-    key_pool: wp.array2d[wp.int32],
-    rank_pool: wp.array2d[wp.int32],
+    table_pool: wp.array2d[wp.vec2i],
     out_counts: wp.array[wp.int32],
     out_overflow: wp.array[wp.int32],
 ) -> None:
@@ -1642,10 +1637,8 @@ def query_edge_path_ball_collect(
         adj_columns,
         radius,
         rows[t],
-        distance_pool[t],
         pending_pool[t],
-        key_pool[t],
-        rank_pool[t],
+        table_pool[t],
         out_overflow,
     )
 

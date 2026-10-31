@@ -6522,7 +6522,7 @@
  "benchmarks/test_smoothing.py::test_relax_approx_meshlib[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 9,
-   "alloc": 9,
+   "alloc": 8,
    "readback": 1,
    "scan": 1,
    "sort": 1

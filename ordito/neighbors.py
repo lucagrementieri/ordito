@@ -93,10 +93,11 @@ _KNN_START_SAMPLE_MIN_QUERIES = 1_000_000
 # latency-bound, so the chunk is also the launch's thread count, and it is as large as it can be
 # before the pools stop fitting in the device's L2 cache.
 _GEODESIC_BALL_CHUNK = 1 << 16
-# Sources per edge-path ball launch. Each source's scratch (its row, the row's distances, a queue of
-# table slots, and a vertex-to-rank table twice the row's capacity) is about twice the
-# breadth-first walk's, and the walk ran fastest at a quarter of ``_GEODESIC_BALL_CHUNK``'s count.
-_EDGE_PATH_BALL_CHUNK = 1 << 14
+# Sources per edge-path ball launch. Each source's scratch (its row, a queue of table slots, and a
+# table of vertex and distance pairs twice the row's capacity) is about twice the breadth-first
+# walk's, and the walk ran fastest at half ``_GEODESIC_BALL_CHUNK``'s count: against ``1 << 14``,
+# 0.85x on a 164 k-vertex sphere and 0.64x on dragon; ``1 << 16`` lost 1.14x on the sphere.
+_EDGE_PATH_BALL_CHUNK = 1 << 15
 # Entries the packed ``geodesic_ball`` list can hold: its offsets are ``int32``.
 _PACKED_ENTRIES_MAX = 2**31 - 1
 
@@ -2436,19 +2437,21 @@ class _EdgePathBallWalk:  # pyright: ignore[reportUnusedClass]  # driven by smoo
         self._columns, self._offsets, _reference = _sorted_vertex_adjacency(faces, n_vertices)
         self.chunk = max(1, min(n_vertices, _EDGE_PATH_BALL_CHUNK))
         stride = kernel_bfs.PER_SOURCE_MAX_NEIGHBORS
-        table = kernel_neighbors.EDGE_PATH_HASH_CAPACITY
-        self.rows_flat, self.counts, pending_flat, ranks_flat = _launch.carve(
-            wp.int32,
-            [self.chunk * stride, n_vertices, self.chunk * stride, self.chunk * table],
-            device,
+        self.rows_flat, self.counts, pending_flat = _launch.carve(
+            wp.int32, [self.chunk * stride, n_vertices, self.chunk * stride], device
         )
         self._rows = odt.as_array2d(self.rows_flat.reshape((self.chunk, stride)), wp.int32)
         self._pending = odt.as_array2d(pending_flat.reshape((self.chunk, stride)), wp.int32)
-        self._ranks = odt.as_array2d(ranks_flat.reshape((self.chunk, table)), wp.int32)
-        self._distances = odt.empty_2d((self.chunk, stride), wp.float32, device=device)
         self.row_stride = wp.int32(stride)
-        # Every walk leaves the table as it found it, so it is filled once.
-        self._keys = _launch.full((self.chunk, table), -1, dtype=wp.int32, device=device)
+        # A walk leaves its keys behind; filling the table before the next chunk costs less than
+        # clearing them, which would probe every ball vertex once more.
+        self._table = _launch.full(
+            (self.chunk, kernel_neighbors.EDGE_PATH_HASH_CAPACITY),
+            wp.vec2i(-1, -1),
+            dtype=wp.vec2i,
+            device=device,
+        )
+        self._table_dirty = False
         self._overflow = _launch.zeros(1, dtype=wp.int32, device=device)
         self._warned = False
 
@@ -2456,6 +2459,9 @@ class _EdgePathBallWalk:  # pyright: ignore[reportUnusedClass]  # driven by smoo
         """Walk the balls over ``positions`` a chunk at a time, yielding ``(start, m)``."""
         for start in range(0, self._n, self.chunk):
             m = min(self.chunk, self._n - start)
+            if self._table_dirty:
+                _launch.fill_(self._table, wp.vec2i(-1, -1))
+            self._table_dirty = True
             _launch.launch(
                 kernel_neighbors.query_edge_path_ball_collect,
                 dim=m,
@@ -2466,10 +2472,8 @@ class _EdgePathBallWalk:  # pyright: ignore[reportUnusedClass]  # driven by smoo
                     self._radius,
                     wp.int32(start),
                     self._rows,
-                    self._distances,
                     self._pending,
-                    self._keys,
-                    self._ranks,
+                    self._table,
                     self.counts,
                     self._overflow,
                 ],
