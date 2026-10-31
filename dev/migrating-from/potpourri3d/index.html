@@ -6026,11 +6026,12 @@ functions and it keeps their operators and factorizations (its
 <p class="admonition-title">potpourri3d's signed heat method is wrong far from the curve on fine meshes</p>
 <p>Its default diffusion time is so short that, on a mesh of a few hundred thousand faces,
 the diffused field falls below the smallest <code>float64</code> before it has crossed the surface,
-and the distance beyond that point is wrong by a large fraction of its range.
-<code>pp3d.SignedHeatSolver</code> itself returns a wrong field there (its direct solve loses the
-far field even sooner), so <code>method="potpourri3d"</code> inherits the defect; ordito warns when
-it happens. Use the default method, which is more accurate and holds on much finer
-meshes, or pass a larger <code>t</code>, such as the squared mean edge length.</p>
+and the distance beyond that point is wrong by a large fraction of its range;
+<code>pp3d.SignedHeatSolver</code> returns a wrong field there (its direct solve loses the far
+field even sooner). <code>method="potpourri3d"</code> keeps geometry-central's time where it holds
+and lengthens it on meshes too fine for it, so the two agree on small meshes and ordito
+stays right on large ones; it warns if the field still falls out of range. The default
+method is more accurate at every resolution measured.</p>
 </div>
 </li>
 <li>
