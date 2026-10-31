@@ -1654,8 +1654,11 @@ cosine outside `[-1, 1]` fails its test; `std::min(1.0, NaN)` is `1`), in `float
   vertex 0, CUDA, ms, MeshLab front / MeshLib front: bunny 6.6 / 1.8, dragon 248 / 29,
   lucy 34 405 / 6 442 (`icosphere(8)` 21.7 / 19.0). The MeshLib front's own tail on scan meshes
   (happy_buddha 15 244 rounds against a hop eccentricity of 392, `Closed 2026-10-28: fast marching
-  as parallel rounds`) suggests counting this front's rounds there before pricing its per-round
-  cost.
+  as parallel rounds`) is not this one's: its rounds / eccentricity read bunny 172 / 119, dragon
+  1 349 / 477, happy_buddha 1 123 / 392, so dragon pays about 184 µs a round (the lists' path,
+  above `1 << 17` faces) against 10-25 µs on the icospheres. **Next:** histogram the queued faces
+  and lowered vertices per round on dragon (a front that re-lowers most of the mesh each round
+  would make the lists lose to the scan there, as they did for the MeshLib front).
 
 ### Open items from the 2026-10-31 host-traffic sweep
 
