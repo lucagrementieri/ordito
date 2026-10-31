@@ -1600,6 +1600,34 @@ cosine outside `[-1, 1]` fails its test; `std::min(1.0, NaN)` is `1`), in `float
   or lists, 1-6 lanes, widths 1 to `2**17`); a lowered corner-0 vertex left unqueued fails it
   and the pymeshlab comparison.
 
+### Open items from the 2026-10-31 host-traffic sweep
+
+The sweep (`1526f0e8`) cut the CPU census 38 813 -> 15 746 launches and 3 125 -> 2 083 readbacks,
+mostly by running CPU round loops as one launch; on CUDA it moved allocations 8 295 -> 7 490 and
+memsets 2 779 -> 2 525, but launches only 31 574 -> 31 392. Open:
+
+- **Decision to take (owner): carving a returned matrix's or pattern's tables together.** The sweep
+  cut a returned `BsrMatrix`'s offsets, columns and values (or a returned pattern's tables) from
+  one allocation: `energies.crouzeix_raviart_cotmatrix`, `crouzeix_raviart_massmatrix` and
+  `lscm_hessian`, `laplacian.mass_matrix` and `_mesh_operator_pattern`'s counting path. This
+  bends [`carve`][ordito._launch.carve]'s own rule (a table that outlives the call does not belong
+  in a carve, since any view keeps the whole buffer alive). The tables live exactly as long as the
+  matrix, and `neighbors.py` already carves returned neighbour lists the same way, but a caller
+  keeping one table (or a Warp sparse op reallocating one) holds the rest. Keep it and amend the
+  docstring, or revert those sites.
+- **Inspect the largest remaining CUDA counts for real fusion.** Each needs a timed A/B on a quiet
+  GPU before adoption (the sweep decided on counts only, the GPU being shared), and several touch
+  shapes §14 flags as possible losses:
+    - `screened_poisson(method="octree")`: about 1 556 launches, the per-wave x 4-colour
+      Gauss-Seidel launches at each depth; graph capture or another schedule.
+    - `delaunay_triangulation`: the flip loop's readbacks (39 d2h, 31 graph launches on CUDA), in
+      `remesh._flip_interior_edges`.
+    - `fix_self_intersections`: `repair._dilate_face_mask`'s per-hop face lookup and vertex mark
+      as one launch a hop (a stamped `int32` vertex mask).
+    - `vertex_tangent_frames`: folding the angle-weighted normal scatter into the frame kernel's
+      ring walk (-1 launch, -1 allocation on about 20 rows); a gather-form fusion, so price it on
+      a scrambled large mesh.
+
 ### Open items from the 2026-10-23 uncapped sweep: ordito on large meshes
 
 The sweep (`.benchmarks/merged-2026-10-23-final/incomplete.jsonl`, ordito-cuda rows) left ordito
