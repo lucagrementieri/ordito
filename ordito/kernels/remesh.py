@@ -100,6 +100,25 @@ COLLAPSE_COMMITS = wp.constant(wp.int32(2))
 COLLAPSE_REMOVED_FACES = wp.constant(wp.int32(3))
 COLLAPSE_STATE_SIZE = 4
 
+# The flip loop's round state: the running total of committed flips (the commit's count), whether
+# the rounds have gone idle, and the total as the last refreshed round ended. A round that commits
+# nothing leaves the faces as it found them, so every later round would commit nothing too:
+# ``refresh_flip_rows`` raises the idle slot then, and a later round's candidate and refresh
+# launches return at their first statement (``flip_round_idle``), while its claim and commit find
+# the flags the last candidate launch cleared. That is what lets the host replay several recorded
+# rounds a readback without the rounds past the fixpoint costing a round's work each.
+FLIP_TOTAL = wp.constant(wp.int32(0))
+FLIP_IDLE = wp.constant(wp.int32(1))
+FLIP_SNAPSHOT = wp.constant(wp.int32(2))
+FLIP_ROUND_STATE_SIZE = 3
+
+
+@wp.func
+def flip_round_idle(round_state: wp.array[wp.int32]) -> wp.bool:
+    # The opening test of a flip round's candidate and refresh launches; see ``FLIP_IDLE``.
+    return round_state[FLIP_IDLE] != 0
+
+
 # Delaunay / Delone edge-flip constants. The flip predicate runs in float64 deliberately:
 # circumcircle diameters of near-degenerate triangles round too coarsely in float32, which sends
 # the flip loop non-terminating.
@@ -1340,6 +1359,7 @@ def refresh_flip_row(
 
 @wp.kernel
 def refresh_flip_rows(
+    round_state: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     row_halfedges: wp.array2d[wp.int32],
     out_adjacency: wp.array2d[wp.int32],
@@ -1350,7 +1370,22 @@ def refresh_flip_rows(
 ) -> None:
     # Every row of an incremental flip round, one thread a row. ``adopt_flip_edge_set`` below is
     # the same refresh launched over the halfedges, for the round that first builds the key set.
+    #
+    # The refresh is the last launch of a round, so thread 0 also closes it: the rounds go idle if
+    # this one committed nothing (``FLIP_IDLE``), and the total is kept for the next one's test.
+    # Threads still to read the idle slot may see it raised and return, which is harmless: a round
+    # that committed nothing had no candidate (the lowest-keyed candidate always wins its claims),
+    # so it moved no halfedge and wrote no claim, and every row already reads what this refresh
+    # would write. An issued round refreshes only after committing, so the last one before the
+    # recording leaves the total there for the first recorded round.
     k = wp.int32(wp.tid())
+    if flip_round_idle(round_state):
+        return
+    if k == 0:
+        total = round_state[FLIP_TOTAL]
+        idle = total == round_state[FLIP_SNAPSHOT]
+        round_state[FLIP_IDLE] = wp.where(idle, wp.int32(1), wp.int32(0))
+        round_state[FLIP_SNAPSHOT] = total
     refresh_flip_row(
         faces,
         row_halfedges,
@@ -1543,6 +1578,7 @@ def flip_quad_positions_d(
 
 @wp.kernel
 def delone_flip_candidates(
+    round_state: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     adjacency: wp.array2d[wp.int32],
@@ -1560,6 +1596,8 @@ def delone_flip_candidates(
     out_quad: wp.array2d[wp.int32],
 ) -> None:
     k = wp.int32(wp.tid())
+    if flip_round_idle(round_state):
+        return
     out_flip[k] = wp.bool(False)
     a, b, c, d = _resolve_flip_quad_in_region(
         faces,
@@ -1592,6 +1630,7 @@ def delone_flip_candidates(
 
 @wp.kernel
 def incircle_flip_candidates(
+    round_state: wp.array[wp.int32],
     points: wp.array[wp.vec2],
     faces: wp.array[wp.int32],
     adjacency: wp.array2d[wp.int32],
@@ -1605,6 +1644,8 @@ def incircle_flip_candidates(
     out_quad: wp.array2d[wp.int32],
 ) -> None:
     k = wp.int32(wp.tid())
+    if flip_round_idle(round_state):
+        return
     out_flip[k] = wp.bool(False)
     f0 = adjacency[k, 0]
     a, b, c, d = _resolve_flip_quad_guarded(
@@ -2996,6 +3037,7 @@ def remapped_corner_triple(
 
 @wp.kernel
 def valence_flip_candidates(
+    round_state: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     adjacency: wp.array2d[wp.int32],
@@ -3012,6 +3054,8 @@ def valence_flip_candidates(
     out_quad: wp.array2d[wp.int32],
 ) -> None:
     k = wp.int32(wp.tid())
+    if flip_round_idle(round_state):
+        return
     out_flip[k] = wp.bool(False)
     f0 = adjacency[k, 0]
     f1 = adjacency[k, 1]
@@ -4498,6 +4542,7 @@ OBJECTIVE_EPS = wp.constant(wp.float32(1e-6))
 
 @wp.kernel
 def objective_flip_candidates(
+    round_state: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     adjacency: wp.array2d[wp.int32],
@@ -4524,6 +4569,8 @@ def objective_flip_candidates(
     # a round rebuilds the whole face adjacency around it, so a bundle would save a fraction of a
     # percent. The width alone is not the criterion; the launch count around it is.
     k = wp.int32(wp.tid())
+    if flip_round_idle(round_state):
+        return
     out_flip[k] = wp.bool(False)
     a, b, c, d = _resolve_flip_quad_in_region(
         faces,

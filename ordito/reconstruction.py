@@ -136,6 +136,7 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
         return faces
 
     def launch(
+        round_state: wp.array[wp.int32],
         adjacency: odt.Array2dInt32,
         adjacency_edges: odt.Array2dInt32,
         unshared: odt.Array2dInt32,
@@ -150,6 +151,7 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
             kernel_remesh.incircle_flip_candidates,
             dim=int(adjacency.shape[0]),
             inputs=[
+                round_state,
                 points,
                 faces,
                 adjacency,

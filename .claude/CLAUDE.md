@@ -889,7 +889,7 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
 
 - **Block-per-item** wins when the outer dimension alone starves the device and loses when a slice dimension already fills it (§2.3); such kernels use register blocking instead (below). Models: `obscurance`, `shape_diameter`, `farthest_point_sample` as one persistent block. Any-hit tracing suits binary occlusion; a point-major layout wins only on very large clouds. A cuBQL mesh pays only when the caller builds once and traces many rays (`Trimesh.mesh_for_rays` decides). `max_tangent_sphere` answers inside a tolerance window; an "exact" variant is not the true answer on a mesh.
 - **Cooperative BVH walks:** the tiled walk beats the hash grid only while concurrent queries are few (a few thousand for a ball of the cell width); the serial BVH does not. Only `ball_pivoting`'s pivot search qualified, so do not re-run the tree-wide sweep. A thread-per-query BVH launch is usually load-imbalanced, not under-pruned: histogram per-thread candidates first. Walk time varies up to 5x with loop spelling, so time a new or fused walk on the device.
-- **CUDA graph capture** wins when a launch sequence repeats identically (break-even about two replayed rounds) and loses on once-through loops and short fixed-count loops. A chain differing only in a loop counter becomes repeatable once the counter lives on the device (record a group of 8). A `capture_while` body may not allocate (`array_scan` does) and loses to a batched host loop when its per-iteration overhead exceeds the sync it removes. **A batch of replays per readback runs whole past the fixpoint**, and a replayed round costs the device what an issued one does: on device-bound rounds the idle tail costs as much as the work (the flip loop's headroom batch: 26.3 vs 15.6 ms on dragon), so replay one round a read and record only loops that run long (`_FLIP_CAPTURE_FROM_ROUND`). A fixed-width collapse pass replayed lost too: 36 nodes, device-bound at about the host cost of issuing it. A captured path needs a plain-loop CPU sibling, which is also the byte-identity reference.
+- **CUDA graph capture** wins when a launch sequence repeats identically (break-even about two replayed rounds) and loses on once-through loops and short fixed-count loops. A chain differing only in a loop counter becomes repeatable once the counter lives on the device (record a group of 8). A `capture_while` body may not allocate (`array_scan` does) and loses to a batched host loop when its per-iteration overhead exceeds the sync it removes. **A batch of replays per readback runs whole past the fixpoint**, and a replayed round costs the device what an issued one does: on device-bound rounds the idle tail costs as much as the work (the flip loop's headroom batch: 26.3 vs 15.6 ms on dragon), so replay one round a read and record only loops that run long (`_FLIP_CAPTURE_FROM_ROUND`), unless each launch of a round can return first on a device idle flag: the flip loop's idle round costs ~6 µs below 60 k rows (27 µs at 1.3 M), so it replays 4 a read below `2**18` rows (`_FLIP_BATCH_ROWS`). A `wp.capture_if` round instead costs ~9 µs more an active round, more than the read it saves. A fixed-width collapse pass replayed lost too: 36 nodes, device-bound at about the host cost of issuing it. A captured path needs a plain-loop CPU sibling, which is also the byte-identity reference.
 - **Tile solves** win for K >= 16-32 with few systems and a large matrix; ordito's dense solves (K = 5, 6) lose, so "rewrite them as tiles" is refuted.
 - **Readbacks:** a device reduction wins on CUDA for mesh-sized arrays and loses on CPU; decide on CUDA, measure both. Keep the readback for bool masks and small non-scaling buffers (the real axis is often the loop count). In device loops a per-pass readback is cheaper than an extra pass, so trading passes for fewer syncs loses; `cg(check_every=0)` is not a lever in the harness.
 - **Per-device algorithm choice** only when the parallel form does asymptotically more work (pointer-doubled `polyline_downsample`, CUDA only above a size gate). `prefers_tiled_reduction` is a correctness branch, not a performance one.
@@ -907,7 +907,7 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
 - **Rasterization:** one `atomic_min` owner pass per face, then one thread per pixel to resolve, beats a pre-filled image plus a per-face scatter 1.5-4.9x.
 - **Per-class compaction:** scan a one-hot `wp.vec{K}i` per item; the last entry holds all K counts (one read) and each item's in-class rank is the step from the previous entry. A compaction folds into its emit when the emit follows the size readback anyway. A `vec2i` scan of `(flag, count)` gives a compaction rank and CSR offsets with both totals in one read.
 - **`store_block_sum` / `store_block_total` count blocks from the partials buffer**, so two reductions of different widths share one launch at `dim = max(blocks)`. `0 + block_sum(x)` equals the one-block commit bit for bit, so "frame then reduce" fuses whenever `blocks_1d(n) == 1`.
-- **Readback cadence in idempotent loops:** rounds past a fixpoint are no-ops (but not free on the device: see CUDA graph capture), so read the stop count every few rounds: the MIS undecided count after round 7 and then every 2 (multigrid setup readbacks halved), flip rounds `K = (budget - flips_since_build) // (n_faces / 2) + 1` per read (`delaunay_triangulation` 39 to 19). A deterministic composite skips a stage while the mesh is still that idempotent stage's own last output (`make_solid`).
+- **Readback cadence in idempotent loops:** rounds past a fixpoint are no-ops (but not free on the device: see CUDA graph capture), so read the stop count every few rounds: the MIS undecided count after round 7 and then every 2 (multigrid setup readbacks halved), flip rounds `min(4, (budget - flips_since_build) // (n_faces / 2) + 1)` per read behind the idle gate (`delaunay_triangulation` 39 to 21). A deterministic composite skips a stage while the mesh is still that idempotent stage's own last output (`make_solid`).
 - **Bellman-Ford over a CSR with duplicate entries** gives the same distances but pays per stored entry: 0.5x at 328 k faces (`geodesic_path` completion graph from vertex-face rows).
 - **Fixed-order group sums (§2.2) have three measured forms.** A stable sort by group plus one thread per run serializes on huge groups: 37x the atomic splat on a coarse Poisson level, 40x on coarse `cluster_decimate` cells. Split long runs instead: fixed-size chunks summed in two passes (`screened_poisson`'s splat), or runs above a length cap handed to a block-strided sum (`cluster_decimate`, cap 128). Where a group sum feeds only a threshold or sign, an exact `int64` fixed-point sum (one pass for each group's largest exponent, one integer-atomic pass) needs no sort and stays fully parallel; it beat the single-address float32 atomics it replaced (`make_volume(multibody=True)` 0.50x wall at 1.3 M faces).
 - **The shared exact group sum (`scatter_add` + `_launch.group_sums`) against each per-site form, CUDA, setting on (new/old):** it wins on few hot groups (one group: 0.03-0.05x the float atomic; repair's component sums 0.11-0.26x large) and loses on many groups (1.8-2.6x the off-mode atomic at 10 M terms). It loses to the exact `float32` into `float64` atomics (1.5-4.3x; a second pass or word cannot beat one pass), to `arap`'s amortized sorted run walk on scrambled large meshes (1.6-2.0x; 0.74-0.95x ordered), to the Poisson chunked splat at res 256 (1.3-1.4x; 0.56x small) and to the cluster heavy-run sum at 2 M vertices (1.2-1.8x; 0.52x at 100 k). Those sites keep their forms; each carries the decline. What paid inside it: integer scaling of the mantissa (2x over a `float64` multiply), skipping a zero word (one atomic per `float32` term), warp-uniform pre-aggregation (30-40x on one hot slot), per-group fields (1.9x on vec4 lattices); `__match_any_sync` aggregation lost 1.5x. The off-mode branch takes the same warp-uniform pre-sum (`kernels/reduce.warp_lanes_sum`, in `float64`, plain atomic otherwise and always on CPU, so CPU bits are unchanged), off new/old: one group of 10 M terms 0.04x, `remove_small_components` / `make_volume(multibody=True)` 0.22-0.27x on 1 and 64 components at 5-21 M faces, `segment_sum` over 1 000 segments 0.02x; at par (0.96-1.02x) with every face its own component, on 1 M random groups and at 20 k items. A `float32` lane sum for `float32` values measured 0.94-1.00x, not worth a second native. On the CPU device the off path cost 1.15-1.6x a plain atomic per term, and not for the dead pre-sum test (1.02x): the inlined on-mode terms made a kernel whose work is the scatter too large for the CPU compiler to inline into its per-thread loop (a call per thread, varying with the module), and every extra per-term load costs 1.1-1.2x in that latency-bound loop. `scatter_sum` / `segment_sum` now take `kernels/scatter.sole_scatter_add*`, whose on-mode terms run out of line on the CPU only (`kernels/reduce.device_is_cpu` folds, so CUDA inlines them), and every off commit skips the negative-index wrap (`kernels/scatter.atomic_add_at`, the load the mode test adds): 1.03-1.05x a plain atomic, `scatter_sum` off 0.75-0.83x its old CPU time at 10 M terms, CUDA 0.98-1.02x off and on, CPU on and repair's sums at par, bits unchanged. Not for a kernel with work of its own, which is never inlined into that loop: there six out-of-line calls a face cost the on mode 1.26-1.40x (spilled registers). `robust_laplacian`'s rounding rows are now one body over both modes (`kernels/laplacian.intrinsic_rounding_rows`), its mode test hoisted to once a face and its on terms one out-of-line call a face on the CPU (per-term inlined terms ran the CPU off mode 1.07-1.08x the separate off kernel it replaced; per-term calls the on mode 1.26-1.40x): new/old off CPU 0.87x, CUDA host 0.82x at 5 k faces and device 0.89-1.00x; on CPU 0.95-0.98x, CUDA 1.00x. The consumer-fused finish (`read_group_sum`) cut repair's finish-plus-flip device time 0.124 to 0.053 ms at 5.2 M faces; a `@wp.struct` argument now packs in `_launch._Block` (7.8 to 6.5 µs a launch, against 6.0 with no struct).
@@ -1154,7 +1154,7 @@ it was read for the rule only, and each kernel implements the rule, not the sour
   quad split along the other diagonal. `fill_min_weight` / trimesh: trimesh fills only 3- and
   4-edge holes; a triangle hole is Class A, quads Class B through the same quad merge. Class C:
   VTK's in-place smoother against the simultaneous step (since Class A through
-  `filter_laplacian(method="pyvista")`, `A rule the reference adds`); MeshLab's pointwise curvatures
+  `filter_laplacian(method="pyvista")`); MeshLab's pointwise curvatures
   against the ball measure over `pi r^2` on a 64 x 32 exact torus at two mean edges (median gap
   1.5 % of the range, bound 5 %; the 400-point `torus_round` is too coarse, 3-5x margin); MeshLib's
   distance volume on an `icosphere(5)` cloud at depth 6, outer shell after origin plus half a voxel
@@ -1286,10 +1286,7 @@ Each is a measured limit of an option above; re-measure before acting on it.
   census; 1780-1875 on the CPU), and 21 sorts and scans for the vertex factorization's analysis
   per call: the face-system CG and 20 vertex solves. Unpriced against MeshLib beyond the small
   saddles (15 ms vs ~400 ms).
-- **Private access added across a module boundary.** The heat half is closed (2026-10-28):
-  `HeatSolver.diffuse_tangent_pair` and `HeatSolver.diffuse_edge_field` are public, the solver
-  owns the Crouzeix-Raviart system (no weak-keyed module cache), and `log_map` /
-  `heat_signed_distance` call them with no `reportPrivateUsage` ignore. Still open: `smoothing`
+- **Private access added across a module boundary.** `smoothing`
   reaches `neighbors._EdgePathBallWalk` (check 5 allowlist, plus a scoped `reportUnusedClass`
   ignore), the same shape as the two allowlisted `_GeodesicBallWalk` uses; a public chunked walk
   would retire all three entries at once.
@@ -1308,9 +1305,7 @@ as it stands; an upgrade means adding the reference's own algorithm as an option
 
 - `heat_geodesic` against `igl.exact_geodesic` (the heat method's own error), MeshLib's
   `computeSurfaceDistances` (fast marching) and pyvista's Dijkstra edge distance (a two-sided
-  bound). MeshLib's and MeshLab's fronts are ported (`Closed 2026-10-28: fast marching as
-  parallel rounds`, `Closed 2026-10-29: MeshLab's geodesic front`); potpourri3d's remains an
-  upgrade.
+  bound). Porting potpourri3d's front is the upgrade (MeshLib's and MeshLab's are ported).
 - `geodesic_path`: an inequality against `igl.exact_geodesic` and a per-cent of potpourri3d's
   `EdgeFlipGeodesicSolver` on a sphere; an upgrade is an edge-flip shortening option.
 - `trace_from_vertex` (a trimesh distance bound, no oracle); `shorten_loop` against MeshLib's
@@ -1329,8 +1324,6 @@ as it stands; an upgrade means adding the reference's own algorithm as an option
 - `screened_poisson` (`dense`) against open3d / pymeshlab (Kazhdan's octree; `method="octree"` is
   the reproduction) and MeshLib's distance volume (another reconstructor).
 - `principal_curvature(frame_independent=True)` against igl (a bound; `False` is Class A).
-  (`icp_mesh` against pyvista is closed: `icp(method="pyvista")`, `Second pass over the non-A
-  pairs`.)
 - The defaults of `filter_normals` and `filter_two_step` against MeshLib's and MeshLab's crease
   measures: different algorithms whose library-named methods are Class A.
 - Truth checks with no library answer: `resample_uniform` on a sphere's offset; `sample_volume`'s
@@ -1342,34 +1335,14 @@ as it stands; an upgrade means adding the reference's own algorithm as an option
 `igl.offset_surface` at iso 0.1 (the lattice's `float32` placement), same section; `screened_poisson(method="octree")` on an
 open cloud (`test_poisson_octree_matches_open3d_on_an_open_cloud`: far-field vertices at the
 cube's walls, open3d's wall evaluation untraced; on closed clouds the residual ties are open3d's
-own `float32` rounding, `Open defects`); `triangulate_point_cloud` without normals is closed
-(`Closed 2026-10-28: the unoriented triangulation path`). `filter_two_step(method="meshlab")` is
-closed (`float64`, `Second pass over the non-A pairs`).
+own `float32` rounding, `Open defects`).
 
 **Same algorithm, different settings.** `resample_uniform` against pymeshlab
 (`generate_resampled_uniform_mesh`: vcg's resampler, its own grid and sign rule; worst sample 1.69
 voxels against ordito's 0.48) and MeshLib (`rebuildMesh` decimates after marching); `offset_mesh`
 against MeshLib's `offsetMesh` and pymeshlab's uniform resampler at a matched cell size. Each needs
-the reference's grid placement, sign rule and post-processing as an option; igl's is done
-(`resample_uniform(method="igl")`).
-
-**A rule the reference adds.**
-
-- `rasterize_attribute` against OpenGL: closed (`subpixel_bits=8`).
-- MeshLab's pointwise curvature: closed by `curvature.vertex_curvatures` (Class B, its `float`
-  rounding; `Second pass over the non-A pairs`). The ball measures `discrete_gaussian_curvature` /
-  `discrete_mean_curvature` keep their Class C comparison with it.
-- `filter_laplacian` against `vtkSmoothPolyDataFilter`: closed (2026-10-28) by
-  `filter_laplacian(method="pyvista")`, VTK 9.7's rule read from its source: Gauss-Seidel in
-  index order; a vertex on rim or crowded (3+ face) edges averages only its neighbours along
-  them, fixed unless exactly two, the path through them turns by at most `edge_angle`, and (rim
-  only) `rim_smoothing`; unlike the windowed-sinc filter, crowded edges slide and there is no hub
-  bound (`kernels/smoothing.classify_stencil_vertices`, `crowded_slides`). Class A to 2.4e-7
-  (CUDA) / 6e-8 (CPU) on both default fixtures and `torus_irregular_holes`, both rim settings,
-  and on three strips glued along a seam. Feature-edge smoothing and VTK's convergence test
-  (which compares the norm of the neighbours' coordinate *sum*, not a displacement, so at
-  `convergence=0` it never stops early) are not ported. Group `filter_laplacian_pyvista` (the
-  pyvista row left `filter_laplacian_integration`). The CUDA schedule is a §14 wavefront.
+the reference's grid placement, sign rule and post-processing as an option, as
+`resample_uniform(method="igl")` is for igl.
 
 **MeshLib's "nice" operations (Class C, surface or volume statistics).** `fill_smooth` and
 `refill_region`'s refinement against `fillHoleNicely` / `patchMesh`, `stitch_smooth` against
@@ -1620,27 +1593,14 @@ memsets 2 779 -> 2 525, but launches only 31 574 -> 31 392. Open:
   shapes §14 flags as possible losses:
     - `screened_poisson(method="octree")`: about 1 556 launches, the per-wave x 4-colour
       Gauss-Seidel launches at each depth; graph capture or another schedule.
-    - `delaunay_triangulation`: the flip loop's readbacks (39 d2h, 31 graph launches on CUDA), in
-      `remesh._flip_interior_edges`.
-    - Closed 2026-10-31: `fix_self_intersections`' `repair._dilate_face_mask` runs one launch a
-      hop over a `uint8` frontier code a vertex (`kernels/selection.spread_face_front`: two codes
-      alternate, only the last round's vertices spread, so any hop count fits a byte). The stamped
-      `int32` form lost at 1.3 M faces (device 39.5 vs 37.6 µs): the closing face lookup reads
-      `int32` 1.24x slower than a bool or byte. The byte form, min µs a call, CUDA, HEAD/new:
-      82 k faces 28.5/24.5 (1 hop), 37.6/27.1 (2 hops); 1.3 M faces 30.7/28.8, 39.4/35.0; the
-      whole call on `tangle_torus` at par and byte-identical. Census -1 launch a pass.
     - `vertex_tangent_frames`: folding the angle-weighted normal scatter into the frame kernel's
       ring walk (-1 launch, -1 allocation on about 20 rows); a gather-form fusion, so price it on
       a scrambled large mesh.
 
-### Open items from the 2026-10-23 uncapped sweep: ordito on large meshes
+### `smooth_region` on large regions: the V-cycle form (2026-10-23 sweep)
 
-The sweep (`.benchmarks/merged-2026-10-23-final/incomplete.jsonl`, ordito-cuda rows) left ordito
-with no time on three large-mesh rows; all three are fixed. `ball_pivoting` on happy_buddha (component
-notes, the claim key), `relax_approx` on lucy (streamed geodesic balls,
-`reference/component-status.md`, "k-NN and ball queries") and `smooth_region` on lucy (a V-cycle
-form for large regions, `reference/component-status.md`, smoothing). Cotangent weights, which the
-benchmark row does not time, take that form too: dragon 10 948 -> 339 CG iterations (6.4 -> 0.58 s),
+`smooth_region` on large regions takes a V-cycle form (`reference/component-status.md`,
+smoothing). Cotangent weights, which the benchmark row does not time, take that form too: dragon 10 948 -> 339 CG iterations (6.4 -> 0.58 s),
 lucy 153 s where the polynomial did not finish. **The bare `V D² V` count grew with the region
 because squaring a V-cycle squares its error on the smooth modes, not because of the rim rows**
 (measured, SciPy/pyamg on icospheres: with exact `L⁻¹` the rim rows cost 26 -> 52 iterations over

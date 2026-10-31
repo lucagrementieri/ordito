@@ -55,6 +55,7 @@ _BOX_FITTED_MAX_CELLS = 1024
 # iteration. Supplied by each consumer of ``_flip_interior_edges`` (3D Delone / 2D incircle).
 _LaunchCandidates = Callable[
     [
+        "wp.array[wp.int32]",  # round state (kernel_remesh.FLIP_ROUND_STATE_SIZE,)
         odt.Array2dInt32,  # adjacency (m, 2)
         odt.Array2dInt32,  # adjacency_edges (m, 2)
         odt.Array2dInt32,  # unshared (m, 2)
@@ -129,6 +130,16 @@ _DECIMATION_RECAPTURE_FACES = 250_000
 # ``flip_to_delaunay`` of a scanned mesh -- is cheapest never recording, and only a long loop on a
 # small mesh (``reconstruction.delaunay_triangulation``) repays it.
 _FLIP_CAPTURE_FROM_ROUND = 5
+
+# Recorded flip rounds replayed between two readbacks of the commit count, on a loop of fewer than
+# ``_FLIP_BATCH_ROWS`` interior edges; a larger one replays one round a read. A round past the
+# fixpoint does no work (``kernel_remesh.FLIP_IDLE``), but its launches still start a thread a row:
+# about 6 us a round up to 60 k rows, 10 at 600 k and 27 on dragon's 1.3 M, against about 7-12 us
+# a readback saves, so only a loop below the gate gains by batching. The
+# batch is also capped so that the flips it could commit stay within the duplicate-edge set's
+# budget (``_FlipTopology.flips_left``), which the host checks at each readback.
+_FLIP_REPLAYS_PER_READ = 4
+_FLIP_BATCH_ROWS = 1 << 18
 
 # The claim table's value at an unclaimed vertex (``kernel_remesh.UNCLAIMED_KEY``), for the host's
 # reset between ``_collapse_pass`` rounds.
@@ -1262,6 +1273,7 @@ def _valence_flip_pass(
     assert valence is not None
 
     def launch(
+        round_state: wp.array[wp.int32],
         adjacency: odt.Array2dInt32,
         adjacency_edges: odt.Array2dInt32,
         unshared: odt.Array2dInt32,
@@ -1276,6 +1288,7 @@ def _valence_flip_pass(
             kernel_remesh.valence_flip_candidates,
             dim=int(adjacency.shape[0]),
             inputs=[
+                round_state,
                 vertices,
                 faces,
                 adjacency,
@@ -1453,10 +1466,12 @@ def _flip_interior_edges(
     rows from the halfedge maps the commit kept current instead of regrouping. Returns the total
     number of flips performed. The winding rewrite matches ``igl::flip_edge``.
 
-    ``launch_candidates(adjacency, adjacency_edges, unshared, sorted_keys, edge_set, edge_set_mask,
-    key_base, out_flip, out_quad)`` receives the current rows and the current edge keys for the
-    duplicate-edge guard, which ``kernel_remesh.edge_key_exists`` reads: the last build's sorted
-    keys while ``edge_set_mask`` is ``-1``, and the hashed set once a flip has made the sort stale.
+    ``launch_candidates(round_state, adjacency, adjacency_edges, unshared, sorted_keys, edge_set,
+    edge_set_mask, key_base, out_flip, out_quad)`` receives the loop's round state, whose idle slot
+    its kernel must test first (``kernel_remesh.flip_round_idle``), the current rows and the
+    current edge keys for the duplicate-edge guard, which ``kernel_remesh.edge_key_exists`` reads:
+    the last build's sorted keys while ``edge_set_mask`` is ``-1``, and the hashed set once a flip
+    has made the sort stale.
     ``valence``, when given, is a per-vertex buffer the loop seeds with each vertex's unique-edge
     count and keeps current across flips, for a predicate that reads it.
 
@@ -1491,6 +1506,7 @@ def _flip_interior_edges(
     def flip_round(progress: wp.array[wp.int32], *, refresh: bool = True) -> None:
         """Mark, claim and commit one independent set of flips, then refresh the rows they moved."""
         launch_candidates(
+            progress,
             topology.adjacency,
             topology.adjacency_edges,
             topology.unshared,
@@ -1545,7 +1561,7 @@ def _flip_interior_edges(
             )
             topology.claims_armed = False
             if refresh:
-                topology.refresh()
+                topology.refresh(progress)
             return
         _launch.launch(
             kernel_remesh.claim_flips,
@@ -1590,27 +1606,32 @@ def _flip_interior_edges(
         # a whole-mesh regroup (a key launch, a radix sort, a mark, a scan and an emit). An issued
         # round leaves it to the caller, which refreshes only if something flipped.
         if refresh:
-            topology.refresh()
+            topology.refresh(progress)
 
     # The commits accumulate across rounds and are never reset: a round's flips are what the
     # running total moved by.
-    count = _launch.zeros(1, dtype=wp.int32, device=device)
+    count = _launch.zeros(kernel_remesh.FLIP_ROUND_STATE_SIZE, dtype=wp.int32, device=device)
     graph = None
     capturable = wp.get_device(device).is_cuda
+    # Each flip claims both of its faces, so a round commits at most half of them.
+    most_per_round = max(n_faces // 2, 1)
     total = 0
     round_index = 0
     while round_index < max_iter:
         if graph is not None:
-            # One replay a readback. Replaying several between readbacks saves no device time, and
-            # the batch that finds the fixpoint runs whole: on a mesh whose rounds are device-bound
-            # those idle rounds cost as much as the ones that flipped.
-            wp.capture_launch(graph)
-            round_index += 1
+            replays = min(
+                _FLIP_REPLAYS_PER_READ if m < _FLIP_BATCH_ROWS else 1,
+                max_iter - round_index,
+                topology.flips_left() // most_per_round + 1,
+            )
+            for _ in range(replays):
+                wp.capture_launch(graph)
+            round_index += replays
         elif capturable and round_index >= _FLIP_CAPTURE_FROM_ROUND:
             # Every round is the same launch sequence over the same buffers -- only the face
             # buffer's contents change -- so a long call records one round and replays it, and a
             # round costs one graph launch rather than a dozen launches' worth of Python. Replayed
-            # from the host, which reads each round's count: it is what tells
+            # from the host, which reads the count every few rounds: it is what tells
             # ``topology.flipped`` when the duplicate-edge set's tombstones call for a rebuild.
             # The claim tables are armed before recording, so the recorded round -- whose refresh
             # re-arms them -- carries no fill.
@@ -1631,7 +1652,7 @@ def _flip_interior_edges(
             if n == 0:
                 break
             if topology.incremental:
-                topology.refresh()
+                topology.refresh(count)
                 topology.flipped(n)
             else:
                 # A plain build's first flipping round seeds the duplicate-edge set the later
@@ -1640,11 +1661,15 @@ def _flip_interior_edges(
                 # that flips at most once never pays for it.
                 topology.adopt_edge_set()
             continue
-        n = int(read_scalar(count, 0)) - total
+        # The total and the idle flag in one read: an idle batch ended at the fixpoint, possibly
+        # after flipping in its first rounds.
+        now, idle = read_values(count, 0, 2)
+        n = int(now) - total
         total += n
-        if n == 0:
+        if n:
+            topology.flipped(n)
+        if idle:
             break
-        topology.flipped(n)
     return total
 
 
@@ -1903,16 +1928,18 @@ class _FlipTopology:
         _launch.radix_sort_pairs(self._keys, self._order, count=n, end_bit=self._key_bits)
         self._sorted_stale = False
 
-    def refresh(self) -> None:
+    def refresh(self, round_state: wp.array[wp.int32]) -> None:
         """
         Rewrite every row from the halfedges ``commit_flips`` kept current, in one launch.
 
-        The same launch re-arms both claim tables for the next round.
+        The same launch re-arms both claim tables for the next round. ``round_state`` is the flip
+        loop's (``kernel_remesh.FLIP_ROUND_STATE_SIZE``), whose idle slot gates the launch.
         """
         _launch.launch(
             kernel_remesh.refresh_flip_rows,
             dim=self._rows,
             inputs=[
+                round_state,
                 self._faces,
                 self.row_halfedges,
                 self.adjacency,
@@ -1978,6 +2005,10 @@ class _FlipTopology:
     def active_edge_set_mask(self) -> int:
         """``edge_set_mask`` once an incremental build seeded the key set, else ``-1``."""
         return self.edge_set_mask if self.incremental else -1
+
+    def flips_left(self) -> int:
+        """Flips the duplicate-edge set can still take before ``flipped`` rebuilds it."""
+        return max(self._flip_budget - self._flips_since_build, 0)
 
     def flipped(self, count: int) -> None:
         """
@@ -3753,6 +3784,7 @@ def flip_to_delaunay(
     mac, mdsq, car = _flip_gates(max_angle_change, max_deviation, critical_aspect_ratio)
 
     def launch(
+        round_state: wp.array[wp.int32],
         adjacency: odt.Array2dInt32,
         adjacency_edges: odt.Array2dInt32,
         unshared: odt.Array2dInt32,
@@ -3767,6 +3799,7 @@ def flip_to_delaunay(
             kernel_remesh.delone_flip_candidates,
             dim=int(adjacency.shape[0]),
             inputs=[
+                round_state,
                 vertices,
                 out_faces,
                 adjacency,
@@ -3927,6 +3960,7 @@ def flip_by_objective(
     planar_cos = wp.float32(math.cos(math.radians(planar_angle)))
 
     def launch(
+        round_state: wp.array[wp.int32],
         adjacency: odt.Array2dInt32,
         adjacency_edges: odt.Array2dInt32,
         unshared: odt.Array2dInt32,
@@ -3941,6 +3975,7 @@ def flip_by_objective(
             kernel_remesh.objective_flip_candidates,
             dim=int(adjacency.shape[0]),
             inputs=[
+                round_state,
                 vertices,
                 out_faces,
                 adjacency,
@@ -5966,6 +6001,7 @@ def _flip_region_faces(
     mac, mdsq, car = _flip_gates(max_angle_change, max_deviation, critical_aspect_ratio)
 
     def launch(
+        round_state: wp.array[wp.int32],
         adjacency: odt.Array2dInt32,
         adjacency_edges: odt.Array2dInt32,
         unshared: odt.Array2dInt32,
@@ -5980,6 +6016,7 @@ def _flip_region_faces(
             kernel_remesh.delone_flip_candidates,
             dim=int(adjacency.shape[0]),
             inputs=[
+                round_state,
                 vertices,
                 faces,
                 adjacency,

@@ -627,6 +627,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # The other half of the same round's twin-table update: every halfedge not touched directly by
     # ``commit_intrinsic_flips`` reads and, where its neighbor moved, corrects its own twin pointer.
     ("remesh", "fixup_twin_remap"): frozenset({"twin"}),
+    # The flip loop's round state: every candidate and refresh launch reads its idle slot first,
+    # and the refresh, the last launch of a round, also closes the round in it.
+    ("remesh", "refresh_flip_rows"): frozenset({"round_state"}),
     ("smoothing", "mut_dif_volume_correct"): frozenset({"slope"}),
     # ``state`` is ``smoothing._VolumeConstraint``'s persistent device state: the scale and centre
     # this kernel writes for the rescale, from totals it reads off the constraint's block partials.
