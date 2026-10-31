@@ -1066,10 +1066,10 @@ def crouzeix_raviart_cotmatrix(
 
     # The pattern follows from the incidence: a row holds its diagonal and the other edges of its
     # (at most two) faces, so at most five entries, and the count pass and a scan give the offsets.
-    # The matrix's three arrays in one allocation; the count pass writes the leading zero.
-    offsets, columns, values = _launch.carve_typed(
-        ((wp.int32, n_edges + 1), (wp.int32, 5 * n_edges), (dtype, 5 * n_edges)), device
-    )
+    # The count pass writes the leading zero.
+    offsets = _launch.empty(n_edges + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(5 * n_edges, dtype=wp.int32, device=device)
+    values = _launch.empty(5 * n_edges, dtype=dtype, device=device)
     _launch.launch(
         kernel_energies.crouzeix_raviart_row_counts,
         dim=n_edges,
@@ -1164,7 +1164,8 @@ def crouzeix_raviart_massmatrix(
         return od.array.empty_square_bsr(0, dtype, device)
     # The diagonal is the matrix's value array as it stands, under a diagonal pattern.
     values = _cr_mass_diagonal(vertices, faces, edge_map, n_edges, dtype)
-    offsets, columns = _launch.carve(wp.int32, (n_edges + 1, n_edges), device)
+    offsets = _launch.empty(n_edges + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(n_edges, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_laplacian.diagonal_pattern,
         dim=n_edges,
@@ -1333,9 +1334,9 @@ def lscm_hessian(
     # build of ``A`` read as its boundary edge count. Capacities, not counts: ``L``'s columns may
     # be longer than its stored entries.
     capacity = 2 * lap_columns.size + 2 * int(read_scalar(area_offsets))
-    offsets, columns, values = _launch.carve_typed(
-        ((wp.int32, 2 * n + 1), (wp.int32, capacity), (wp.float64, capacity)), device
-    )
+    offsets = _launch.empty(2 * n + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(capacity, dtype=wp.int32, device=device)
+    values = _launch.empty(capacity, dtype=wp.float64, device=device)
     _launch.launch(
         kernel_energies.lscm_hessian_csr,
         dim=2 * n,

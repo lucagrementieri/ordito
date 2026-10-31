@@ -1275,7 +1275,7 @@
  "benchmarks/test_curvature.py::test_principal_curvature[sphere_large-ordito-cpu-3]": {
   "counts": {
    "launch": 12,
-   "alloc": 15,
+   "alloc": 16,
    "readback": 2,
    "scan": 1,
    "sort": 1
@@ -1284,7 +1284,7 @@
  "benchmarks/test_curvature.py::test_principal_curvature[sphere_large-ordito-cpu-8]": {
   "counts": {
    "launch": 12,
-   "alloc": 15,
+   "alloc": 16,
    "readback": 2,
    "scan": 1,
    "sort": 1
@@ -1293,7 +1293,7 @@
  "benchmarks/test_curvature.py::test_principal_curvature[sphere_small-ordito-cpu-3]": {
   "counts": {
    "launch": 8,
-   "alloc": 15,
+   "alloc": 16,
    "readback": 2,
    "scan": 1,
    "sort": 1
@@ -1302,7 +1302,7 @@
  "benchmarks/test_curvature.py::test_principal_curvature[sphere_small-ordito-cpu-8]": {
   "counts": {
    "launch": 8,
-   "alloc": 15,
+   "alloc": 16,
    "readback": 2,
    "scan": 1,
    "sort": 1
@@ -1441,7 +1441,7 @@
  "benchmarks/test_energies.py::test_crouzeix_raviart_cotmatrix[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 3,
-   "alloc": 4,
+   "alloc": 6,
    "readback": 1,
    "scan": 1
   }
@@ -1449,7 +1449,7 @@
  "benchmarks/test_energies.py::test_crouzeix_raviart_massmatrix[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 2,
-   "alloc": 2
+   "alloc": 3
   }
  },
  "benchmarks/test_energies.py::test_curved_hessian_energy[sphere_small-ordito-cpu]": {
@@ -1507,7 +1507,7 @@
  "benchmarks/test_energies.py::test_lscm_hessian[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 5,
-   "alloc": 6,
+   "alloc": 8,
    "readback": 1,
    "scan": 1,
    "sort": 1
@@ -3161,13 +3161,13 @@
  "benchmarks/test_laplacian.py::test_mass_matrix[fan_hub-ordito-cpu]": {
   "counts": {
    "launch": 2,
-   "alloc": 3
+   "alloc": 4
   }
  },
  "benchmarks/test_laplacian.py::test_mass_matrix[sphere_med-ordito-cpu]": {
   "counts": {
    "launch": 2,
-   "alloc": 3
+   "alloc": 4
   }
  },
  "benchmarks/test_laplacian.py::test_mass_matrix_entries[fan_hub-ordito-cpu]": {
@@ -4213,7 +4213,7 @@
  "benchmarks/test_neighbors.py::test_query_geodesic_ball[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 5,
-   "alloc": 9,
+   "alloc": 10,
    "readback": 1,
    "scan": 2,
    "sort": 1
@@ -4422,7 +4422,7 @@
  "benchmarks/test_parametrization.py::test_lscm[hemisphere-ordito-cpu]": {
   "counts": {
    "launch": 182,
-   "alloc": 43,
+   "alloc": 45,
    "readback": 5,
    "scan": 21,
    "sort": 20
@@ -4431,7 +4431,7 @@
  "benchmarks/test_parametrization.py::test_lscm[saddle_small-ordito-cpu]": {
   "counts": {
    "launch": 153,
-   "alloc": 43,
+   "alloc": 45,
    "readback": 5,
    "scan": 19,
    "sort": 18
@@ -6513,7 +6513,7 @@
  "benchmarks/test_smoothing.py::test_relax_approx[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 5,
-   "alloc": 9,
+   "alloc": 10,
    "readback": 1,
    "scan": 1,
    "sort": 1
@@ -6522,7 +6522,7 @@
  "benchmarks/test_smoothing.py::test_relax_approx_meshlib[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 9,
-   "alloc": 8,
+   "alloc": 9,
    "readback": 1,
    "scan": 1,
    "sort": 1

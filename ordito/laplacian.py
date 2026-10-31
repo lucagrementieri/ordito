@@ -1178,10 +1178,9 @@ def _mesh_operator_pattern(
         second_keys, second_order, count=count, end_bit=max(1, n_vertices.bit_length())
     )
     capacity = 2 * count + n_vertices
-    # The pattern's three tables live and die together: one allocation.
-    offsets, columns, run_start = _launch.carve(
-        wp.int32, (n_vertices + 1, capacity, capacity), device
-    )
+    offsets = _launch.empty(n_vertices + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(capacity, dtype=wp.int32, device=device)
+    run_start = _launch.empty(capacity, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_laplacian.mesh_place_columns,
         dim=max(count, n_vertices),
@@ -1922,7 +1921,8 @@ def mass_matrix(
         return od.array.empty_square_bsr(0, dtype, device)
     # The diagonal written straight into compressed rows: the values, their columns and offsets in
     # one launch after the area sums, with no diagonal array copied into a matrix.
-    offsets, columns = _launch.carve(wp.int32, (n_vertices + 1, n_vertices), device)
+    offsets = _launch.empty(n_vertices + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(n_vertices, dtype=wp.int32, device=device)
     sums = _exact_area_sums(vertices, faces, face_areas)
     if sums is None:
         # ``mass_matrix_entries`` resolves its return by overload, which a ``Block`` cannot select.

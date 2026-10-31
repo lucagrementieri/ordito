@@ -1615,15 +1615,12 @@ The sweep (`1526f0e8`) cut the CPU census 38 813 -> 15 746 launches and 3 125 ->
 mostly by running CPU round loops as one launch; on CUDA it moved allocations 8 295 -> 7 490 and
 memsets 2 779 -> 2 525, but launches only 31 574 -> 31 392. Open:
 
-- **Decision to take (owner): carving a returned matrix's or pattern's tables together.** The sweep
-  cut a returned `BsrMatrix`'s offsets, columns and values (or a returned pattern's tables) from
-  one allocation: `energies.crouzeix_raviart_cotmatrix`, `crouzeix_raviart_massmatrix` and
-  `lscm_hessian`, `laplacian.mass_matrix` and `_mesh_operator_pattern`'s counting path. This
-  bends [`carve`][ordito._launch.carve]'s own rule (a table that outlives the call does not belong
-  in a carve, since any view keeps the whole buffer alive). The tables live exactly as long as the
-  matrix, and `neighbors.py` already carves returned neighbour lists the same way, but a caller
-  keeping one table (or a Warp sparse op reallocating one) holds the rest. Keep it and amend the
-  docstring, or revert those sites.
+- **Closed 2026-10-31 (owner): a returned table is never carved.** The sweep's carves of a
+  returned matrix's or pattern's tables (`energies.crouzeix_raviart_cotmatrix`,
+  `crouzeix_raviart_massmatrix`, `lscm_hessian`, `laplacian.mass_matrix`,
+  `_mesh_operator_pattern`) and `neighbors._sorted_vertex_adjacency`'s returned adjacency are
+  separate allocations again, as [`carve`][ordito._launch.carve]'s rule says: a caller keeping
+  one table (or a Warp sparse op reallocating one) must not hold the rest.
 - **Inspect the largest remaining CUDA counts for real fusion.** Each needs a timed A/B on a quiet
   GPU before adoption (the sweep decided on counts only, the GPU being shared), and several touch
   shapes §14 flags as possible losses:
