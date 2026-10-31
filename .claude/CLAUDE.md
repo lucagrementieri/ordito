@@ -1089,8 +1089,8 @@ the quoted `"meshlib"` value only), and their kernels describe behaviour, not th
 - **`filter_normals` / `filter_two_step(method="meshlib")`:** Zhang et al.'s Mumford-Shah
   denoiser; the face system takes each pair's weight from the *higher-numbered* face's perimeter
   (the reference's LDLT reads one triangle of a non-symmetric matrix: 8.9e-8 that way, 9.6e-4 for
-  the full solve). Within 1.3e-6. Batched CG at tol 1e-10 on the face system; the vertex system
-  factored once.
+  the full solve). Within 1.2e-6. Both systems iterated, never factored
+  (`smoothing._MUMFORD_SHAH_*_TOLERANCE`).
 - **`heat_signed_distance(method="potpourri3d")`:** an edge (Crouzeix-Raviart) vector field at
   `t = (h/2)^2`, sourced on the curve's edges; `L_CR` is Hermitian PSD, so CG/Cholesky apply.
   Within 1e-7; ~2.5x the default on CUDA. The old Class C test also handed potpourri3d an open
@@ -1303,10 +1303,6 @@ Each is a measured limit of an option above; re-measure before acting on it.
   underflow-aware default `t`, or an exact rescaled continuation: the far region satisfies
   `(M + t L)_FF X_F = -t L_FB X_B` with no source, so re-solving it from the frontier band scaled
   up keeps every direction exactly) are not chosen.
-- **`filter_two_step(method="meshlib")` issues ~410 launches against the default's 127** (CUDA
-  census; 1780-1875 on the CPU), and 21 sorts and scans for the vertex factorization's analysis
-  per call: the face-system CG and 20 vertex solves. Unpriced against MeshLib beyond the small
-  saddles (15 ms vs ~400 ms).
 - **Private access added across a module boundary.** `smoothing`
   reaches `neighbors._EdgePathBallWalk` (check 5 allowlist, plus a scoped `reportUnusedClass`
   ignore), the same shape as the two allowlisted `_GeodesicBallWalk` uses; a public chunked walk

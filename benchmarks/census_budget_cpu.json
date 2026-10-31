@@ -6459,20 +6459,20 @@
  },
  "benchmarks/test_smoothing.py::test_filter_two_step_meshlib[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 1185,
-   "alloc": 53,
-   "readback": 14,
-   "scan": 19,
-   "sort": 21
+   "launch": 95,
+   "alloc": 21,
+   "readback": 30,
+   "scan": 1,
+   "sort": 3
   }
  },
  "benchmarks/test_smoothing.py::test_filter_two_step_meshlib[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 1185,
-   "alloc": 53,
-   "readback": 14,
-   "scan": 19,
-   "sort": 21
+   "launch": 95,
+   "alloc": 21,
+   "readback": 30,
+   "scan": 1,
+   "sort": 3
   }
  },
  "benchmarks/test_smoothing.py::test_filter_windowed_sinc[sphere_small-ordito-cpu]": {

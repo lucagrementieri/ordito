@@ -123,6 +123,22 @@ _PACKED_BALL_MAX_VERTICES = 1 << 21
 _GAUSS_SEIDEL_WAVE_BATCH = 16
 _GAUSS_SEIDEL_MIN_BATCH = 128
 
+# Relative residuals the Mumford-Shah solves stop at (``method="meshlib"``): the face system's and
+# the two-step vertex system's. Both are well conditioned whatever the mesh (the face system's
+# couplings are at most ``gamma / 2`` against a unit diagonal, the vertex system is ``I + M^T M``),
+# so the round count follows the tolerance, and the vertex system is iterated, not factored. Against
+# ``1e-10`` solves with the vertex system factored: CUDA 0.25x (sphere_large) to 0.62x
+# (happy_buddha), dragon and lucy 0.50x / 0.56x, bunny 1.06x, 5 k faces 0.97x; CPU 0.56x to 0.86x.
+# The output moves by its ``float32`` rounding (at most 5.2e-7 of the diagonal), except at a few
+# vertices of happy_buddha (4 of 543 k, 2.5e-6), which move by more under a tighter iterated vertex
+# solve (5.6e-6 at ``1e-10``): sensitivity to rounding, not a residual; the reference output is as
+# far from the old solve there (5.6e-6 at worst on both). Looser lost: a ``1e-6`` face
+# tolerance moved ``filter_normals`` 4x as far as this one from its parity reference, a ``1e-6``
+# vertex tolerance moved dragon 2e-5. Factoring the vertex system (at a ``1e-6`` face tolerance)
+# lost 1.2-2.4x on every mesh but bunny (0.76x) and 5 k faces.
+_MUMFORD_SHAH_NORMAL_TOLERANCE = 1e-7
+_MUMFORD_SHAH_POINT_TOLERANCE = 1e-8
+
 
 def filter_laplacian(
     vertices: wp.array[wp.vec3],
@@ -4489,8 +4505,7 @@ def filter_two_step(
           times, ``g`` the pass's input positions. ``G x_f`` is face ``f``'s two corner offsets
           ``2 x_0 - x_1 - x_2`` and ``2 x_1 - x_0 - x_2``, and ``d_f`` the same offsets of the
           current triangle projected onto the plane through its centroid with the filtered normal
-          (collapsed onto a line when the projection turns it over). The system is factored once
-          per call.
+          (collapsed onto a line when the projection turns it over).
     gamma
         The smoothing weight of ``method="meshlib"``; see
         [`filter_normals`][ordito.smoothing.filter_normals]. Default ``5``.
@@ -4757,8 +4772,7 @@ def _mumford_shah_two_step(
     ``filter_two_step(method="meshlib")`` on a non-empty mesh, ``iterations >= 1``.
 
     Both systems depend on the topology alone for their pattern, and the vertex system for its
-    values too, so each is built once for every pass: the vertex system's factorization serves
-    every least-squares solve of the call.
+    values too, so each is built once for every pass of the call.
     """
     device = vertices.device
     n_faces = faces.size // 3
@@ -4878,7 +4892,11 @@ class _MumfordShahNormals:
                 # Built after the first values exist: the state derives its Jacobi diagonal from
                 # them. Iterated, never factored: the values change every round.
                 self._solver = twl.spd_column_solver(
-                    self._matrix, self._rhs, self._solution, factorize=False
+                    self._matrix,
+                    self._rhs,
+                    self._solution,
+                    tol=_MUMFORD_SHAH_NORMAL_TOLERANCE,
+                    factorize=False,
                 )
             self._solver()
         filtered = _launch.empty(n_faces, dtype=wp.vec3, device=device)
@@ -4894,12 +4912,13 @@ class _MumfordShahNormals:
 
 class _NormalsToPoints:
     """
-    The Mumford-Shah vertex update over one face set: ``(I + M^T M) x = g + M^T d``, factored once.
+    The Mumford-Shah vertex update over one face set: ``(I + M^T M) x = g + M^T d``, assembled once.
 
     ``M`` stacks two shape rows per face (``kernels/smoothing.corner_pair_gram``), so the operator
-    depends on the topology alone; the state factors it from its second solve on
-    (``linalg.spd_column_solver``). A solve's right-hand side is the guide plus each face's
-    projected shape, gathered over the vertex -> corner rows.
+    depends on the topology alone. A solve's right-hand side is the guide plus each face's
+    projected shape, gathered over the vertex -> corner rows. Iterated, never factored: the
+    operator's spectrum lies in ``[1, 1 + |M|^2]``, and each solve warm-starts from the last
+    (``_MUMFORD_SHAH_POINT_TOLERANCE``).
     """
 
     def __init__(self, faces: wp.array[wp.int32], vertices: wp.array[wp.vec3]) -> None:
@@ -4928,7 +4947,7 @@ class _NormalsToPoints:
         self._rhs = odt.as_array2d(rhs.reshape((3, n)), wp.float64)
         self._solution = odt.as_array2d(solution.reshape((3, n)), wp.float64)
         self._solver = twl.spd_column_solver(
-            matrix, self._rhs, self._solution, coordinates=vertices
+            matrix, self._rhs, self._solution, tol=_MUMFORD_SHAH_POINT_TOLERANCE, factorize=False
         )
 
     def __call__(

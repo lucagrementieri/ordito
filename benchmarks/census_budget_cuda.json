@@ -7073,22 +7073,20 @@
  },
  "benchmarks/test_smoothing.py::test_filter_two_step_meshlib[saddle-ordito-cuda]": {
   "counts": {
-   "launch": 402,
-   "alloc": 54,
-   "memset": 21,
-   "d2h": 3,
-   "scan": 21,
-   "sort": 21
+   "launch": 105,
+   "alloc": 21,
+   "memset": 3,
+   "scan": 3,
+   "sort": 3
   }
  },
  "benchmarks/test_smoothing.py::test_filter_two_step_meshlib[saddle_graded-ordito-cuda]": {
   "counts": {
-   "launch": 421,
-   "alloc": 54,
-   "memset": 21,
-   "d2h": 3,
-   "scan": 21,
-   "sort": 21
+   "launch": 105,
+   "alloc": 21,
+   "memset": 3,
+   "scan": 3,
+   "sort": 3
   }
  },
  "benchmarks/test_smoothing.py::test_filter_windowed_sinc[sphere_small-ordito-cuda]": {
