@@ -3475,25 +3475,25 @@ def _dilate_face_mask(
     face_mask: wp.array[wp.bool],
     hops: int,
     n_vertices: int,
-    state: wp.array[wp.int32] | None = None,
-    stamp: int = 1,
+    state: wp.array[wp.int32],
+    stamp: int,
 ) -> wp.array[wp.bool]:
     """
     Grow a face selection by ``hops`` rings, through the vertices it touches.
 
     No adjacency is needed for this and none is built: a face ring is the faces incident on the
     selection's vertex ring, and on a triangle mesh two vertices are one-ring neighbours exactly
-    when they share a face. So one hop is the any-corner face mask of the vertex mask, whose
-    corners are then marked -- the same face-hop dilation
+    when they share a face. So one hop marks every corner of every face with an already reached
+    corner -- the same face-hop dilation
     [`ordito.selection.expand_vertex_mask`][ordito.selection.expand_vertex_mask] runs, kept in
-    face form because the loop here wants the face mask of each ring, not the vertex mask.
+    face form because the loop here wants the face mask of the last ring, not the vertex mask.
 
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     face_mask
-        Length-``n_faces`` selection to grow.
+        ``(n_faces,)`` selection to grow.
     hops
         Rings to add. Zero returns the selection's own faces, which is *not* the input mask: it is
         every face sharing a vertex with it, since a cut has to leave a rim rather than a slit.
@@ -3504,58 +3504,53 @@ def _dilate_face_mask(
         ``face_adjacency(n_vertices=...)`` exists to avoid.
     state
         ``(2,)`` decision words; slot 1 is raised to ``stamp`` when some face stays outside the
-        grown selection. ``None`` raises nothing.
+        grown selection.
     stamp
         Value slot 1 of ``state`` is raised to.
 
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n_faces`` grown selection on ``faces.device``.
+        ``(n_faces,)`` grown selection on ``faces.device``.
     """
     device = faces.device
     n_faces = faces.size // 3
 
-    # Mask to mask throughout, so nothing is compacted and nothing is read back: the selection's
-    # corners are marked by one pass over the faces, and each hop is an any-corner lookup into the
-    # vertex mask followed by marking the corners it selected. A hop's two launches read and write
-    # different buffers, so every hop grows from the previous hop's complete mask. ``grown`` is the
-    # hops' face scratch as well as the answer: the last lookup writes every face.
-    vertex_mask = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
-    grown = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    # Nothing is compacted and nothing is read back. Each vertex holds one byte, 0 until a round
+    # reaches it, and every hop is one launch growing it in place
+    # (``kernels/selection.spread_face_front``), where a boolean vertex mask needs a lookup into a
+    # face mask and a separate corner marking. The faces' selection is read off it once, at the end.
+    front = _launch.zeros(n_vertices, dtype=wp.uint8, device=device)
     _launch.launch(
-        kernel_selection.mark_incident_vertices,
+        kernel_selection.vertex_front_from_face_mask,
         dim=n_faces,
-        inputs=[faces, face_mask, vertex_mask],
+        inputs=[faces, face_mask, front],
         device=device,
     )
-    for _ in range(hops):
+    if hops > 0 and not wp.get_device(device).is_cuda:
+        # The CPU device runs a launch's threads one after another: every round in one launch.
         _launch.launch(
-            kernel_selection.face_mask_from_vertex_mask,
-            dim=n_faces,
-            inputs=[faces, vertex_mask, wp.bool(False), grown],
-            device=device,
-        )
-        _launch.launch(
-            kernel_selection.mark_incident_vertices,
-            dim=n_faces,
-            inputs=[faces, grown, vertex_mask],
-            device=device,
-        )
-    if state is None:
-        _launch.launch(
-            kernel_selection.face_mask_from_vertex_mask,
-            dim=n_faces,
-            inputs=[faces, vertex_mask, wp.bool(False), grown],
+            kernel_selection.spread_vertex_front_serial,
+            dim=1,
+            inputs=[faces, hops, front],
             device=device,
         )
     else:
-        _launch.launch(
-            kernel_repair.face_mask_from_vertex_mask_flag_unselected,
-            dim=n_faces,
-            inputs=[faces, vertex_mask, stamp, grown, state],
-            device=device,
-        )
+        for hop in range(1, hops + 1):
+            _launch.launch(
+                kernel_selection.spread_vertex_front,
+                dim=n_faces,
+                inputs=[faces, hop, front],
+                device=device,
+            )
+    grown = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    _launch.launch(
+        kernel_repair.face_mask_from_vertex_front_flag_unselected,
+        dim=n_faces,
+        inputs=[faces, front, stamp],
+        outputs=[grown, state],
+        device=device,
+    )
     return grown
 
 

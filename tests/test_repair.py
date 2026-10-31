@@ -3313,20 +3313,21 @@ def test_fix_self_intersections_leaves_a_clean_mesh_alone(
         od.repair.fix_self_intersections(vertices_wp, faces_wp, max_iter=0)
 
 
-@pytest.mark.parametrize("hops", [0, 1, 2])
+@pytest.mark.parametrize("hops", [0, 1, 2, 5])
 def test_fix_self_intersections_dilation_matches_expand_vertex_mask(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], hops: int
 ) -> None:
     """
     Ordito against ordito: the loop's face-ring dilation is ``expand_vertex_mask``'s.
 
-    ``fix_self_intersections`` grows its cut region by hopping through faces (any-corner lookup,
-    then mark the corners) instead of building a unique-edge table every pass. That is the same
-    dilation only because two vertices of a triangle mesh are one-ring neighbours exactly when they
-    share a face, and each hop must grow from the previous hop's complete mask. The reference path
+    ``fix_self_intersections`` grows its cut region by hopping through faces (a face with a corner
+    reached by an earlier hop reaches its other corners) instead of building a unique-edge table
+    every pass. That is the same dilation only because two vertices of a triangle mesh are one-ring
+    neighbours exactly when they share a face, and each hop must grow from the previous hop's
+    complete reach, not from corners reached during its own launch. The reference path
     is ``expand_vertex_mask`` followed by the same any-corner face rule, which is what the loop
     called before; it carries its own oracle in ``tests/test_selection.py``. Non-vacuity: the
-    seed is a few faces, and every hop grows the answer.
+    seed is a few faces, and every hop grows the answer; five hops reuse each frontier code twice.
     """
     _, mesh_wp = sphere_irregular
     faces_wp = mesh_wp.indices
@@ -3336,8 +3337,9 @@ def test_fix_self_intersections_dilation_matches_expand_vertex_mask(
     seed_np[[0, 101, 222]] = True
     seed_wp = wp.array(seed_np, dtype=wp.bool, device=faces_wp.device)
 
+    state_wp = wp.zeros(2, dtype=wp.int32, device=faces_wp.device)
     grown_wp = od.repair._dilate_face_mask(  # pyright: ignore[reportPrivateUsage]
-        faces_wp, seed_wp, hops, n_vertices
+        faces_wp, seed_wp, hops, n_vertices, state_wp, 7
     )
 
     faces_np = faces_wp.numpy().reshape(-1, 3)
@@ -3348,6 +3350,8 @@ def test_fix_self_intersections_dilation_matches_expand_vertex_mask(
     reference_np = expanded_np[faces_np].any(axis=1)
     assert np.array_equal(grown_wp.numpy(), reference_np)
     assert int(reference_np.sum()) > (int(seed_np.sum()) if hops == 0 else 3 * (hops + 1))
+    assert not reference_np.all()
+    assert state_wp.numpy().tolist() == [0, 7]
 
 
 def _ragged_grid(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]:

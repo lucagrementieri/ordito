@@ -396,6 +396,80 @@ def dilate_vertex_hops_serial(
 
 
 @wp.kernel
+def vertex_front_from_face_mask(
+    faces: wp.array[wp.int32], face_mask: wp.array[wp.bool], front: wp.array[wp.uint8]
+) -> None:
+    # Seed a face selection's frontier codes (``spread_face_front``, zeroed buffer): code 1, round
+    # 0's, at every corner of a selected face. Racing writers all store 1.
+    f = wp.int32(wp.tid())
+    if not face_mask[f]:
+        return
+    a, b, c = corner_triple(faces, f)
+    mark_corners(front, 0, a, b, c, wp.uint8(1))
+
+
+@wp.func
+def face_touches_front(
+    front: wp.array[wp.uint8], a: wp.int32, b: wp.int32, c: wp.int32, current: wp.uint8
+) -> wp.bool:
+    # Whether a corner of face ``(a, b, c)`` was reached, and not under code ``current``. With the
+    # running round's code it is whether the face spreads in that round; with ``current == 0``,
+    # whether the face is in the dilated selection.
+    return (
+        (front[a] != wp.uint8(0) and front[a] != current)
+        or (front[b] != wp.uint8(0) and front[b] != current)
+        or (front[c] != wp.uint8(0) and front[c] != current)
+    )
+
+
+@wp.func
+def spread_face_front(
+    faces: wp.array[wp.int32], f: wp.int32, hop: wp.int32, front: wp.array[wp.uint8]
+) -> None:
+    # Face ``f``'s share of dilation round ``hop`` (from 1) over one byte a vertex: 0 unreached, and
+    # a reached vertex holds its round's code, 1 for even rounds (the seed's) and 2 for odd ones.
+    # The round spreads from vertices reached under the *other* code and writes its own into
+    # unreached ones only, so it grows the buffer in place (nothing it writes is read as a source by
+    # it; racing writers store one value). Only the last round's vertices are sources: one reached
+    # two or more rounds back carries the running code again, but every face of its ring spread in
+    # the round after it was reached, so it can add nothing. That is what lets two codes stand in
+    # for ``dilate_face_hop``'s round numbers, at any hop count, in a byte a vertex: the closing
+    # face lookup over a byte reads as fast as over a bool mask, and 1.24x slower over ``int32``.
+    a, b, c = corner_triple(faces, f)
+    code = wp.uint8(1 + hop % 2)
+    if face_touches_front(front, a, b, c, code):
+        if front[a] == wp.uint8(0):
+            front[a] = code
+        if front[b] == wp.uint8(0):
+            front[b] = code
+        if front[c] == wp.uint8(0):
+            front[c] = code
+
+
+@wp.kernel
+def spread_vertex_front(
+    faces: wp.array[wp.int32], hop: wp.int32, front: wp.array[wp.uint8]
+) -> None:
+    # One face-ring round of a face selection's dilation as one launch: the any-corner face lookup
+    # and the corner marking a boolean vertex mask needs two launches for (a corner marked
+    # mid-launch would spread within the round). ``dilate_vertex_hops`` is the vertex-mask form,
+    # which keeps round numbers because it writes an answer mask beside them.
+    f = wp.int32(wp.tid())
+    spread_face_front(faces, f, hop, front)
+
+
+@wp.kernel
+def spread_vertex_front_serial(
+    faces: wp.array[wp.int32], n_hops: wp.int32, front: wp.array[wp.uint8]
+) -> None:
+    # Every ``spread_vertex_front`` round in one launch and one thread, the faces of each round in
+    # launch order: the CPU device's form, the per-round launches' result to the bit.
+    for hop in range(1, n_hops + 1):
+        for f in range(faces.shape[0] // 3):
+            spread_face_front(faces, f, hop, front)
+
+
+@wp.kernel
 def mark_incident_vertices(
     faces: wp.array[wp.int32], face_mask: wp.array[wp.bool], out_mask: wp.array[wp.bool]
 ) -> None:

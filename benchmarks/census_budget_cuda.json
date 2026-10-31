@@ -6142,7 +6142,7 @@
  },
  "benchmarks/test_repair.py::test_fix_self_intersections[tangle_torus_small-ordito-cuda-local]": {
   "counts": {
-   "launch": 251,
+   "launch": 249,
    "alloc": 166,
    "memset": 70,
    "d2d": 2,

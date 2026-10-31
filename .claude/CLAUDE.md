@@ -1622,8 +1622,13 @@ memsets 2 779 -> 2 525, but launches only 31 574 -> 31 392. Open:
       Gauss-Seidel launches at each depth; graph capture or another schedule.
     - `delaunay_triangulation`: the flip loop's readbacks (39 d2h, 31 graph launches on CUDA), in
       `remesh._flip_interior_edges`.
-    - `fix_self_intersections`: `repair._dilate_face_mask`'s per-hop face lookup and vertex mark
-      as one launch a hop (a stamped `int32` vertex mask).
+    - Closed 2026-10-31: `fix_self_intersections`' `repair._dilate_face_mask` runs one launch a
+      hop over a `uint8` frontier code a vertex (`kernels/selection.spread_face_front`: two codes
+      alternate, only the last round's vertices spread, so any hop count fits a byte). The stamped
+      `int32` form lost at 1.3 M faces (device 39.5 vs 37.6 µs): the closing face lookup reads
+      `int32` 1.24x slower than a bool or byte. The byte form, min µs a call, CUDA, HEAD/new:
+      82 k faces 28.5/24.5 (1 hop), 37.6/27.1 (2 hops); 1.3 M faces 30.7/28.8, 39.4/35.0; the
+      whole call on `tangle_torus` at par and byte-identical. Census -1 launch a pass.
     - `vertex_tangent_frames`: folding the angle-weighted normal scatter into the frame kernel's
       ring walk (-1 launch, -1 allocation on about 20 rows); a gather-form fusion, so price it on
       a scrambled large mesh.

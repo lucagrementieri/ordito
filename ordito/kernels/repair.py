@@ -31,7 +31,7 @@ from ordito.kernels.halfedge import (
 from ordito.kernels.predicates import triangle_area_vector, triangle_aspect_ratio, triangle_normal
 from ordito.kernels.reduce import GroupSumPass, read_group_sum
 from ordito.kernels.scatter import scatter_add
-from ordito.kernels.selection import face_selected_by_vertices, mark_submesh_face
+from ordito.kernels.selection import face_touches_front, mark_submesh_face
 from ordito.kernels.triangles import (
     QUALITY_AREA,
     corner_triple,
@@ -1816,21 +1816,23 @@ def pack_root_loops(
 
 
 @wp.kernel
-def face_mask_from_vertex_mask_flag_unselected(
+def face_mask_from_vertex_front_flag_unselected(
     faces: wp.array[wp.int32],
-    vertex_mask: wp.array[wp.bool],
+    front: wp.array[wp.uint8],
     stamp: wp.int32,
     out_face_mask: wp.array[wp.bool],
     out_state: wp.array[wp.int32],
 ) -> None:
-    # The dilation's last any-corner lookup (``selection.face_mask_from_vertex_mask``), raising
-    # slot 1 to ``stamp`` wherever a face stays unselected, so "the region swallowed the mesh" is
-    # that word not reading the pass's stamp (the convention of the detector's word,
+    # The dilation's closing any-corner lookup: a face is in the grown selection when a corner was
+    # reached (``selection.face_touches_front`` against no code). Slot 1 is raised to ``stamp``
+    # wherever a face stays unselected, so "the region swallowed the mesh" is that word not
+    # reading the pass's stamp (the convention of the detector's word,
     # ``kernels/intersection.mark_overflow_crossings_flag_any``). A flag raised by the faces outside
     # the region rather than a count of the faces inside it: a count would put one atomic per
     # selected face on one address.
     f = wp.int32(wp.tid())
-    selected = face_selected_by_vertices(faces, vertex_mask, wp.bool(False), f)
+    a, b, c = corner_triple(faces, f)
+    selected = face_touches_front(front, a, b, c, wp.uint8(0))
     out_face_mask[f] = selected
     if not selected:
         out_state[1] = stamp
