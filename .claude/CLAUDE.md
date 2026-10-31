@@ -1536,14 +1536,18 @@ large share of the mesh. **Open: the round count on scan meshes is not the diame
 hop eccentricity from vertex 0: `icosphere(6)` 194 / 192, `(8)` 770 / 768, bunny 162 / 119, dragon
 824 / 477, **happy_buddha 15 244 / 392**. From round ~600 a few hundred vertices around one patch
 (3709, 3710, 4216, ...) are each lowered by about one `float32` ulp a round for 7 000 rounds:
-they sit on non-manifold edges (274 in the mesh) among zero-area faces (minimum angle 0°), where
-the two-corner update feeds a cycle of mutual lowerings. Dragon equals MeshLib's uncapped front
-(`maxVertUpdates=255` or `65535`) to 6.4e-7 of the range; happy_buddha differs by 8.2e-3 on 885
-vertices, but MeshLib's import splits 31 non-manifold vertices, so its topology differs there and
-the comparison is confounded. lucy (6.4 s) likely shares the cause. **Proposed (owner):** require
-an offer to undercut a label by more than a few ulps (or skip zero-area faces' plane updates), which
-ends the cycle; it changes the fixpoint only where the cycle runs, but must be re-checked against
-the fixtures' bit-for-bit CPU parity.
+they sit on non-manifold edges (274 in the mesh) among zero-area faces (minimum angle 0°).
+Dragon equals MeshLib's uncapped front (`maxVertUpdates=255` or `65535`, both the same answer) to
+6.4e-7 of the range. **happy_buddha does not, and the cause is not topology or rounding:**
+measured on MeshLib's own import (its non-manifold vertices split, 543 555 vertices) ordito still
+runs 15 244 rounds and differs from MeshLib by 1.8e-4 of the range on 830 vertices, while
+MeshLib's queue terminates at the same answer under either cap; skipping the plane update on
+exactly zero-area faces changes nothing (15 244 rounds); committing only offers more than 2 ulps
+below a label leaves 15 226 rounds and moves 388 k of dragon's vertices off MeshLib's answer, so
+neither is a fix. So the round fixpoint and the serial queue's answer differ on this input, and
+the rounds reach theirs by a slow descent. lucy (6.4 s) likely shares it. **Open:** trace one
+cycling vertex's offers (which face, which branch of `front_corner_label`) against MeshLib's pops
+on the split mesh.
 
 ### Closed 2026-10-29: MeshLab's geodesic front
 
