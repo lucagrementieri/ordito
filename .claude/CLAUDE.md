@@ -875,6 +875,7 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
 ### 13.2 Device-side access and tuning constants
 
 - `wp.tile_sum(wp.tile(x))[0]` is a block-wide reduction and a barrier (~0.13 µs at 32 lanes, ~0.35 µs at 64-128). A cooperative one-block rewrite wins only when a level's work exceeds ~0.6 µs of barriers (§14).
+- **A CG round's cost is its block count, not its mat-vec**: each block of `cg_matvec_dots` ends in a `float64` three-dot reduction, which at one tile a block made the fused launch 2.4x the bare mat-vec (245 k rows, 960 blocks). The CSR solves span blocks over powers of two of tiles to at most `CG_CSR_TARGET_BLOCKS = 512` over all columns (best at every size from 82 k to 1.3 M rows, one and three columns; rounds 0.5-0.75x where it bites); the `float32` Poisson grids keep `CG_TARGET_BLOCKS = 2048` (512 lost 1.03-1.07x there). CPU flat. Re-probe both at an upgrade or on another SM count.
 - A single-address atomic serializes the launch. Use lane partition, `wp.tile_sum` and one guarded commit per block, launched at `kernel_reduce.blocks_1d(n)`; the block count is the tuning variable. Do not convert a conditional atomic.
 - An append-only list whose order decides nothing takes `kernels/array.append_slot` (one `atomicAdd` per warp), and a max-bid onto few addresses first skips a bid below the current value: together they took `convex_hull`'s first pass over a 14 M cloud 4.38 -> 0.62 ms.
 - **`float64` runs at 1/64 of the `float32` rate on this device**, so a launch of a few warps chaining `float64` tests is latency-bound: put a `float32` filter with a rigorous bound ahead (`predicates.orient3d_filtered_f32`, `orient3d_sign_from`; `convex_hull`'s flip round 2.5x).
@@ -1278,10 +1279,20 @@ Each is a measured limit of an option above; re-measure before acting on it.
   `float64` interpolation in `marching_cubes`; a route for inputs on the `float32`-only
   `sparse_marching_cubes`), opt-in or priced first (`float64` runs at 1/64 rate, §13.2, under
   `offset_mesh`, `resample_uniform`, `screened_poisson`, `fix_self_intersections`).
-- **`heat_signed_distance(method="potpourri3d")` is ~2.5x the default on CUDA** (ring 25.3 vs
-  9.8 ms, band 9.3 vs 5.2) with more launches (CPU census 2448 / 958 vs 1749 / 809): the edge
-  system's assembly and a longer settle on a system ~3x larger (the operator is already held per
-  `HeatSolver`). Not yet stage-profiled.
+- **`heat_signed_distance(method="potpourri3d")` is 1.9x the default on CUDA** (harness, ring
+  18.7 vs 9.9 ms, band 7.4 vs 5.1; was 2.5x / 1.8x). Stage-profiled 2026-10-31 on `sphere_med`:
+  the whole gap is the edge diffusion's settle (assembly 0.4 ms, the Poisson stage 4 ms on both).
+  Its rounds are reach-bound: 480 against the vertex system's 256, each the source's graph
+  eccentricity (347 edge-graph hops against 173 vertex hops: adjacent edge midpoints are half an
+  edge apart) plus the settle window, so no Jacobi CG can drop them; factoring costs ~27 ms against
+  the iteration's 13.6. Its rounds cost 2x what they needed: one tile a block put 960 block-wide
+  `float64` dot reductions in each round, now `CG_CSR_TARGET_BLOCKS` (§13.2), which took the
+  diffusion 20.0 -> 13.6 ms. What remains is 3x the rows at 1.9x the rounds; a cheaper settle
+  would need a preconditioner that spreads further a round, priced in matvecs. **Open, found
+  then:** at `icosphere(7)` (983 k edges) the settled edge iterate fails its backward-error check
+  and the fallback factorization exceeds `CHOLESKY_MEMORY_BUDGET`, so the call warns and returns
+  the iterate (HEAD before the change too; the vertex method passes). Unexamined: how wrong the
+  iterate is, and why a uniform mesh trips the check.
 - **`filter_two_step(method="meshlib")` issues ~410 launches against the default's 127** (CUDA
   census; 1780-1875 on the CPU), and 21 sorts and scans for the vertex factorization's analysis
   per call: the face-system CG and 20 vertex solves. Unpriced against MeshLib beyond the small

@@ -3240,7 +3240,9 @@ class _BatchedCg:
         # ``span`` entries a block, ``blocks`` blocks a column, and whether the update folds the
         # dots' second stage itself rather than ``cg_coefficients`` doing it once: two launches a
         # round under Jacobi instead of three. See ``CG_FOLD_MAX_BLOCKS`` and ``cg_layout``.
-        self._span, self._blocks, self._fold = kernel_cg.cg_layout(self._n, CG_FOLD_MAX_BLOCKS)
+        self._span, self._blocks, self._fold = kernel_cg.cg_layout(
+            self._n, CG_FOLD_MAX_BLOCKS, max(kernel_cg.CG_CSR_TARGET_BLOCKS // self._n_columns, 1)
+        )
         # Whether a round forms ``A u`` with ``bsr_mv`` (see ``CG_HEAVY_ROW_ENTRIES``), decided on
         # the true entry count -- ``nnz`` is a capacity -- and only for a column too long to fold:
         # below that a round is bound by its launches, and one ``bsr_mv`` a column plus a dots

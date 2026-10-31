@@ -55,11 +55,27 @@ CG_TILE = 256
 # partial, so a column of millions of entries at one tile a block spends more on those than on its
 # own streams -- measured on a 17-million-node Poisson grid, where 66 000 one-tile blocks ran the
 # mat-vec with its dots at several times its memory traffic. The block count is the fold width,
-# not the lane count.
+# not the lane count. The default, and the screened-Poisson grids' (``float32`` vectors, the
+# matrix-free stencil): 512 there lost 1.03-1.07x at depth 8, 1024 tied. The ``float64`` CSR
+# solves take ``CG_CSR_TARGET_BLOCKS``.
 CG_TARGET_BLOCKS = 2048
 
+# ``CG_TARGET_BLOCKS`` for the CSR solves (``linalg._BatchedCg``), counted over all of a launch's
+# columns: a column gets ``n_columns`` times fewer. Each block ends in a block-wide ``float64``
+# reduction of the round's three dots, and that, not the mat-vec, set the round's cost at one tile
+# a block: on the Crouzeix-Raviart vector heat system (245 760 rows, 960 tiles) ``cg_matvec_dots``
+# took 2.4x the bare mat-vec, and two tiles a block made the whole round 0.61x. Sweeping rounds
+# over powers of two of tiles a block (RTX 5090, 170 SMs), the fastest layout was the one nearest
+# 512 blocks in total at every size from 82 k to 1.3 M rows, at one column and at three (three
+# columns of 655 k rows: 161 blocks a column 0.70x the 321 a per-column target gives). Whole calls:
+# ``heat_signed_distance`` 0.69-0.83x past 160 k vertices, both methods. The CPU, one lane a
+# block, is flat across layouts. Re-probe at each upgrade (it tracks the SM count).
+CG_CSR_TARGET_BLOCKS = 512
 
-def cg_layout(n: int, fold_max_blocks: int) -> tuple[int, int, bool]:
+
+def cg_layout(
+    n: int, fold_max_blocks: int, target_blocks: int = CG_TARGET_BLOCKS
+) -> tuple[int, int, bool]:
     """
     Lay one column of ``n`` entries out as ``(span, blocks, fold)``.
 
@@ -67,16 +83,16 @@ def cg_layout(n: int, fold_max_blocks: int) -> tuple[int, int, bool]:
     round's update folds the dots itself.
 
     A column of up to ``fold_max_blocks`` tiles is launched one tile a block and folds; a longer
-    one is launched at whole powers of two of tiles a block, sized so its block count lands near
-    ``CG_TARGET_BLOCKS``, and takes the ``cg_coefficients`` launch instead. The column pitch every
-    vector is padded to is ``span * blocks``.
+    one is launched at whole powers of two of tiles a block, the fewest that bring its block count
+    to at most ``target_blocks``, and takes the ``cg_coefficients`` launch instead. The column
+    pitch every vector is padded to is ``span * blocks``.
     """
     tile = int(CG_TILE)
     tiles = max((n + tile - 1) // tile, 1)
     if tiles <= fold_max_blocks:
         return tile, tiles, True
     per_block = 1
-    while tiles > per_block * CG_TARGET_BLOCKS:
+    while tiles > per_block * target_blocks:
         per_block *= 2
     span = per_block * tile
     return span, (n + span - 1) // span, False
