@@ -1272,6 +1272,12 @@
    "sort": 1
   }
  },
+ "benchmarks/test_curvature.py::test_point_principal_curvature[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 4
+  }
+ },
  "benchmarks/test_curvature.py::test_principal_curvature[sphere_large-ordito-cpu-3]": {
   "counts": {
    "launch": 12,
@@ -5218,6 +5224,14 @@
    "readback": 1
   }
  },
+ "benchmarks/test_reduce.py::test_quantile[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
+   "readback": 1,
+   "sort": 1
+  }
+ },
  "benchmarks/test_reduce.py::test_scatter_sum[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 2,
@@ -6217,6 +6231,20 @@
    "alloc": 6,
    "readback": 1,
    "sort": 2
+  }
+ },
+ "benchmarks/test_selection.py::test_fill_face_mask_holes[sphere_small-ordito-cpu-False]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 7,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_selection.py::test_fill_face_mask_holes[sphere_small-ordito-cpu-True]": {
+  "counts": {
+   "launch": 14,
+   "alloc": 12,
+   "sort": 1
   }
  },
  "benchmarks/test_selection.py::test_region_boundary_edges[sphere_med-ordito-cpu]": {

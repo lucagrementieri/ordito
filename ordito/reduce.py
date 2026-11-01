@@ -884,18 +884,96 @@ def median(array: odt.ArrayNdScalar) -> float:
     print(od.reduce.median(wp.array([3, 1, 4, 1, 5], dtype=wp.int32)))  # 3.0
     print(od.reduce.median(wp.array([3, 1, 4, 1], dtype=wp.int32)))  # 2.0
     ```
+
+    See Also
+    --------
+    [`quantile`][ordito.reduce.quantile]
+    """
+    return _sorted_quantile(array, 0.5, "median")
+
+
+def quantile(array: odt.ArrayNdScalar, q: float) -> float:
+    """
+    Quantile ``q`` of a 1D scalar array (``numpy.quantile`` with ``method="linear"``).
+
+    Sorts a copy of the values on-device and interpolates linearly between the two order
+    statistics around the fractional rank ``q * (n - 1)``, as NumPy's default method does, so
+    ``q = 0`` is the minimum, ``q = 1`` the maximum and ``q = 0.5`` the
+    [`median`][ordito.reduce.median]. The result is always a Python ``float``.
+
+    Parameters
+    ----------
+    array
+        ``(n,)`` array of any 32- or 64-bit scalar dtype accepted by
+        ``warp.utils.radix_sort_pairs`` (``wp.int32``, ``wp.uint32``, ``wp.float32``,
+        ``wp.int64``, ``wp.uint64``, ``wp.float64``). Must be non-empty.
+    q
+        Quantile to compute, in ``[0, 1]``.
+
+    Returns
+    -------
+    float
+        The quantile on the host.
+
+    Raises
+    ------
+    ValueError
+        If ``array`` is empty or not rank-1, or ``q`` lies outside ``[0, 1]``.
+
+    See Also
+    --------
+    [`median`][ordito.reduce.median]
+
+    Examples
+    --------
+    Mirrors [`numpy.quantile`][]: a quantile between two order statistics interpolates them:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    values = wp.array([10.0, 0.0, 30.0, 20.0, 40.0], dtype=wp.float32)
+    print(od.reduce.quantile(values, 0.25))  # 10.0
+    print(od.reduce.quantile(values, 0.9))  # 36.0
+    ```
+    """
+    return _sorted_quantile(array, q, "quantile")
+
+
+def _sorted_quantile(array: odt.ArrayNdScalar, q: float, name: str) -> float:
+    """
+    [`quantile`][ordito.reduce.quantile]'s body, its error messages naming the public caller.
+
+    The two order statistics around the fractional rank are adjacent in the sorted copy, so they
+    come back in one readback. Interpolates as NumPy's ``_lerp`` does, from the nearer end, so the
+    answer is exact at both ends of the interval and ``q = 0.5`` of an even count is the mean of the
+    middle pair, as [`median`][ordito.reduce.median] promises.
     """
     if array.ndim != 1:
-        raise ValueError("median requires a 1D array.")
+        raise ValueError(f"{name} requires a 1D array.")
     n = array.size
     if n == 0:
-        raise ValueError("median requires a non-empty array.")
+        raise ValueError(f"{name} requires a non-empty array.")
+    if not 0.0 <= q <= 1.0:
+        raise ValueError(f"quantile q must lie in [0, 1], got {q}.")
 
     sorted_values = _sorted_copy(array)
-    if n % 2 == 1:
-        return float(read_scalar(sorted_values, n // 2))
-    middle = read_values(sorted_values, n // 2 - 1, 2)
-    return (float(middle[0]) + float(middle[1])) / 2.0
+    rank = q * (n - 1)
+    # ``min`` is this module's reduction, hence the clamp spelled out: ``q = 1`` lands on ``n - 1``.
+    lower = math.floor(rank)
+    if lower >= n - 1:
+        lower = n - 1
+    fraction = rank - lower
+    if fraction == 0.0:
+        # The rank is an order statistic: one value, and no interpolation to round.
+        return float(read_scalar(sorted_values, lower))
+    # The two order statistics around a fractional rank, read at once.
+    pair = read_values(sorted_values, lower, 2)
+    low, high = float(pair[0]), float(pair[1])
+    if fraction < 0.5:
+        return low + (high - low) * fraction
+    return high - (high - low) * (1.0 - fraction)
 
 
 # Every kernel slot below is a ``{dtype: wp.Kernel}`` table rather than one kernel, because

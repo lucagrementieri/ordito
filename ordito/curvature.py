@@ -8,6 +8,8 @@ Several quantities computed several ways, because on a mesh "curvature" is not o
   directions and magnitudes. This is the extrinsic, neighbourhood-scale answer, and the only one
   with a ``radius`` to tune (``igl::principal_curvature``). Its ``method="pyvista"`` and
   ``method="meyer"`` take the 1-ring extremes of VTK's and of Meyer et al.'s curvatures instead.
+- [`point_principal_curvature`][ordito.curvature.point_principal_curvature] is the same quadric
+  fit on a point cloud with normals, over each point's nearest neighbours.
 - [`vertex_curvatures`][ordito.curvature.vertex_curvatures] is the pointwise mean and Gaussian
   curvature over one ring (Meyer et al.), per unit mixed area.
 - [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature] is the angle
@@ -185,7 +187,7 @@ def principal_curvature(
     row_stride = wp.int32(walk.rows.shape[1])
 
     # Fit quadric and extract principal curvature per vertex. ``wp.empty``: every exit of the
-    # kernel -- the three declines included, through ``_write_no_curvature`` -- writes all four.
+    # kernel -- the three declines of ``monge_principal_curvature`` included -- writes all four.
     pd1 = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     pd2 = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     pv1 = _launch.empty(n_vertices, dtype=wp.float32, device=device)
@@ -235,6 +237,102 @@ def _one_ring_principal_curvatures(
         )
     directions = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
     return directions, _launch.zeros(n_vertices, dtype=wp.vec3, device=device), pv1, pv2
+
+
+def point_principal_curvature(
+    points: wp.array[wp.vec3], normals: wp.array[wp.vec3], neighbor_idx: odt.Array2dInt32
+) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.float32]]:
+    """
+    Principal curvature directions and magnitudes per point of a cloud, by a Monge-patch fit.
+
+    The point-cloud form of [`principal_curvature`][ordito.curvature.principal_curvature]: the
+    same quadric ``w = a u^2 + b u v + c v^2 + d u + e v`` is fitted through each point in the
+    tangent frame of its normal, over the neighbours its row of ``neighbor_idx`` lists, and the
+    principal curvatures are the eigenvalues of the shape operator read off the fit (the
+    frame-independent Weingarten map). Neighbours whose normal faces away from the point's are
+    left out of the fit when at least six remain, so the far wall of a thin part does not bend
+    it.
+
+    ``(PD1, PD2)`` is an orthonormal pair in the plane perpendicular to the point's normal
+    wherever the fit succeeded.
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    normals
+        ``(n,)`` point normals, oriented consistently between neighbours; need not be unit. They
+        fix the tangent frame and the sign of the curvature: positive where the surface bends
+        away from the normal, as on a sphere with outward normals.
+        [`estimate_normals`][ordito.points.estimate_normals] estimates them.
+    neighbor_idx
+        ``(n, k)`` neighbour indices per point, as returned by
+        [`query_nearest`][ordito.neighbors.query_nearest] (unused slots ``-1``, a self-query
+        listing the point itself, which the fit skips). Pass ``max_radius`` there to bound the
+        neighbourhood's radius as well as its count. The fit needs at least five neighbours
+        besides the point itself, and is better determined with several times that.
+
+    Returns
+    -------
+    tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.float32]]
+        ``(n,)`` arrays ``(PD1, PD2, PV1, PV2)`` with ``PV1 >= PV2`` at every point. A point
+        whose fit failed (fewer than five neighbours besides itself, neighbours all coincident
+        with it, or a degenerate system) has zero directions and zero curvature values.
+
+    Raises
+    ------
+    ValueError
+        If ``normals`` or ``neighbor_idx`` does not have one entry or row per point.
+    RuntimeError
+        If ``points``, ``normals`` and ``neighbor_idx`` are not all on one device.
+
+    See Also
+    --------
+    [`principal_curvature`][ordito.curvature.principal_curvature]
+
+    Examples
+    --------
+    Both principal curvatures of points on a sphere of radius 2 are ``1 / 2``:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    points = od.sample.sample_fibonacci_sphere(2000)
+    points = od.transform.transform_points(points, od.transform.scale_matrix(2.0))
+    normals = od.sample.sample_fibonacci_sphere(2000)
+    neighbor_idx, _ = od.neighbors.query_nearest(points, points, 16)
+    pd1, pd2, pv1, pv2 = od.curvature.point_principal_curvature(points, normals, neighbor_idx)
+    print(pv1.shape)  # (2000,)
+    print(f"{np.median(pv1.numpy()):.2f} {np.median(pv2.numpy()):.2f}")  # 0.50 0.50
+    ```
+    """
+    require_same_device(points=points, normals=normals, neighbor_idx=neighbor_idx)
+    odt.ensure_ndim(neighbor_idx, 2, dtype=wp.int32)
+    device = points.device
+    n = points.size
+    # One thread per point reads its own normal and row, so a short table is an out-of-bounds
+    # read, not a short answer.
+    if normals.size != n or int(neighbor_idx.shape[0]) != n:
+        raise ValueError(
+            f"normals and neighbor_idx must have one entry per point, got {normals.size} and "
+            f"{neighbor_idx.shape} for {n} points"
+        )
+    # ``wp.empty``: every exit of ``monge_principal_curvature`` returns all four.
+    pd1 = _launch.empty(n, dtype=wp.vec3, device=device)
+    pd2 = _launch.empty(n, dtype=wp.vec3, device=device)
+    pv1 = _launch.empty(n, dtype=wp.float32, device=device)
+    pv2 = _launch.empty(n, dtype=wp.float32, device=device)
+    if n > 0:
+        _launch.launch(
+            kernel_curvature.fit_point_principal_curvature,
+            dim=n,
+            inputs=[points, normals, neighbor_idx.flatten(), wp.int32(neighbor_idx.shape[1])],
+            outputs=[pd1, pd2, pv1, pv2],
+            device=device,
+        )
+    return pd1, pd2, pv1, pv2
 
 
 def vertex_curvatures(

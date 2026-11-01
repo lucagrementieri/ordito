@@ -153,70 +153,29 @@ def _principal_curvatures_from_monge(
 
 
 @wp.func
-def _write_no_curvature(
-    i: wp.int32,
-    out_pd1: wp.array[wp.vec3],
-    out_pd2: wp.array[wp.vec3],
-    out_pv1: wp.array[wp.float32],
-    out_pv2: wp.array[wp.float32],
-) -> None:
-    # What ``fit_principal_curvature`` writes at a vertex it declines to fit -- too few neighbours,
-    # a neighbourhood of coincident points, or a singular normal matrix. One name for it because
-    # the three exits must stay the same answer: a caller reads a zero ``PV1`` as "no fit here",
-    # and a branch that wrote only part of the four would leave the rest holding another vertex's.
-    out_pd1[i] = wp.vec3()
-    out_pd2[i] = wp.vec3()
-    out_pv1[i] = wp.float32(0.0)
-    out_pv2[i] = wp.float32(0.0)
-
-
-@wp.kernel
-def fit_principal_curvature(
+def monge_principal_curvature(
     vertices: wp.array[wp.vec3],
     vertex_normals: wp.array[wp.vec3],
     neighbor_indices: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
-    row_stride: wp.int32,
-    chunk_start: wp.int32,
-    reference_neighbors: wp.array[wp.int32],
+    start: wp.int32,
+    end: wp.int32,
+    i: wp.int32,
+    reference: wp.int32,
     frame_independent: wp.bool,
-    out_pd1: wp.array[wp.vec3],
-    out_pd2: wp.array[wp.vec3],
-    out_pv1: wp.array[wp.float32],
-    out_pv2: wp.array[wp.float32],
-) -> None:
+) -> tuple[wp.vec3, wp.vec3, wp.float32, wp.float32]:
     """
-    Fit a quadric surface in a local tangent frame per vertex.
+    ``(PD1, PD2, PV1, PV2)`` of point ``i``, a quadric fitted over ``neighbor_indices[start:end]``.
 
-    Extract principal curvature directions and magnitudes. Matches igl::principal_curvature.
+    The fit of ``igl::principal_curvature``: a Monge patch through the point in the tangent frame
+    of its normal, the first axis toward point ``reference`` (any perpendicular when that projects
+    to nothing, ``reference == i`` included). Entries equal to ``i`` are the point itself and
+    negative entries are padding; neither enters the fit. A declined fit -- too few neighbours, a
+    neighbourhood of coincident points, or a singular normal matrix -- returns all zeros, one
+    answer for every exit, because a caller reads a zero ``PV1`` as "no fit here".
     """
-    # The neighborhoods arrive in either of ``ball_row_bounds``' layouts; thread ``t`` fits vertex
-    # ``chunk_start + t``.
-    t = wp.int32(wp.tid())
-    i = chunk_start + t
-
-    start, end = ball_row_bounds(offsets, row_stride, i, t)
-    n_nbr = end - start
-
-    # The ball includes the centre vertex itself, which the fit loop below skips, so a determined
-    # 5-parameter quadric fit needs 6 entries here. Anything short of that leaves the normal
-    # equations rank-deficient and ``solve_normal_equations`` would report it -- this only saves
-    # running a solve whose answer is already known. Remaining degeneracies are caught there.
-    if n_nbr < 6:
-        _write_no_curvature(i, out_pd1, out_pd2, out_pv1, out_pv2)
-        return
-
+    zero = wp.vec3()
     vertex = vertices[i]
     normal = wp.normalize(vertex_normals[i])
-
-    # Build the tangent frame from the lowest-indexed mesh-adjacency neighbor, matching libigl's
-    # computeReferenceFrame (adjacency_list[i][0]). When frame_independent is False, libigl extracts
-    # curvature from a *symmetrized* shape operator whose eigenvalues depend on the chosen frame, so
-    # the principal values only agree with igl::principal_curvature when this exact reference
-    # direction is used. When frame_independent is True the eigenvalues are surface invariants, so
-    # the exact frame is irrelevant (any orthonormal tangent basis yields the same result).
-    ref = reference_neighbors[i]
-    t1, t2 = _build_reference_frame(vertex, normal, vertices[ref])
 
     # Count neighbors passing projection-plane filter, including self (self always passes,
     # dot=1).
@@ -231,10 +190,14 @@ def fit_principal_curvature(
     # necessarily so, since it cannot see the caller's units -- starts rejecting well-conditioned
     # fits outright. Without the division a small enough mesh returns zero curvature everywhere,
     # silently.
+    present = wp.int32(0)
     n_valid = wp.int32(0)
     ring_radius = wp.float32(0.0)
-    for k in range(n_nbr):
-        j = neighbor_indices[start + k]
+    for k in range(start, end):
+        j = neighbor_indices[k]
+        if j < 0:
+            continue
+        present = present + 1
         if j == i:
             n_valid = n_valid + 1  # self always passes
             continue
@@ -242,12 +205,23 @@ def fit_principal_curvature(
         if wp.dot(vertex_normals[j], normal) > wp.float32(0.0):
             n_valid = n_valid + 1
 
-    # Every neighbour coincides with the centre: no frame, no fit, and the normal equations would
-    # be exactly singular. Same answer this kernel gives for a solve that reports singular.
-    if ring_radius <= wp.float32(0.0):
-        _write_no_curvature(i, out_pd1, out_pd2, out_pv1, out_pv2)
-        return
+    # The neighbourhood includes the centre point itself, which the fit loop below skips, so a
+    # determined 5-parameter quadric fit needs 6 entries. Anything short of that leaves the normal
+    # equations rank-deficient and ``solve_normal_equations`` would report it -- this only saves
+    # running a solve whose answer is already known. Every neighbour coinciding with the centre
+    # leaves no frame and an exactly singular system: the same answer.
+    if present < 6 or ring_radius <= wp.float32(0.0):
+        return zero, zero, wp.float32(0.0), wp.float32(0.0)
     inv_radius = wp.float64(1.0) / wp.float64(ring_radius)
+
+    # Build the tangent frame from the reference neighbour (the lowest-indexed mesh-adjacency
+    # neighbor on a mesh, matching libigl's computeReferenceFrame, adjacency_list[i][0]). When
+    # frame_independent is False, libigl extracts curvature from a *symmetrized* shape operator
+    # whose eigenvalues depend on the chosen frame, so the principal values only agree with
+    # igl::principal_curvature when this exact reference direction is used. When frame_independent
+    # is True the eigenvalues are surface invariants, so the exact frame is irrelevant (any
+    # orthonormal tangent basis yields the same result).
+    t1, t2 = _build_reference_frame(vertex, normal, vertices[reference])
 
     # Mirror libigl: only apply the filter if it leaves at least 6 neighbours. libigl also requires
     # the filtered set to be strictly smaller than the full one, which is not repeated here because
@@ -258,10 +232,10 @@ def fit_principal_curvature(
     ata = mat55d()
     atb = vec5d()
 
-    for k in range(n_nbr):
-        j = neighbor_indices[start + k]
-        if j == i:
-            continue  # self contributes (0,0,0) — skip to avoid frame degeneration
+    for k in range(start, end):
+        j = neighbor_indices[k]
+        if j < 0 or j == i:
+            continue  # padding, or self, which contributes (0,0,0) and would degenerate the frame
         if use_filter and wp.dot(vertex_normals[j], normal) <= wp.float32(0.0):
             continue
 
@@ -279,8 +253,7 @@ def fit_principal_curvature(
 
     solution, ok = solve_normal_equations(ata, atb)
     if not ok:
-        _write_no_curvature(i, out_pd1, out_pd2, out_pv1, out_pv2)
-        return
+        return zero, zero, wp.float32(0.0), wp.float32(0.0)
 
     # Cast the float64 solution back to float32 for the rest of the kernel, undoing the ring-radius
     # scaling as it goes. With ``u' = u / R`` and ``w' = w / R``, matching ``w = a u^2 + ... + e v``
@@ -325,15 +298,78 @@ def fit_principal_curvature(
 
     # Assign so that PV1 >= PV2
     if k0 >= k1:
-        out_pd1[i] = dir0
-        out_pd2[i] = dir1
-        out_pv1[i] = k0
-        out_pv2[i] = k1
-    else:
-        out_pd1[i] = dir1
-        out_pd2[i] = dir0
-        out_pv1[i] = k1
-        out_pv2[i] = k0
+        return dir0, dir1, k0, k1
+    return dir1, dir0, k1, k0
+
+
+# The two kernels below differ only in where a point's neighbourhood lies: a geodesic ball in
+# either of ``ball_row_bounds``' layouts on a mesh, a fixed-width ``-1``-padded row on a cloud.
+
+
+@wp.kernel
+def fit_principal_curvature(
+    vertices: wp.array[wp.vec3],
+    vertex_normals: wp.array[wp.vec3],
+    neighbor_indices: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    row_stride: wp.int32,
+    chunk_start: wp.int32,
+    reference_neighbors: wp.array[wp.int32],
+    frame_independent: wp.bool,
+    out_pd1: wp.array[wp.vec3],
+    out_pd2: wp.array[wp.vec3],
+    out_pv1: wp.array[wp.float32],
+    out_pv2: wp.array[wp.float32],
+) -> None:
+    """
+    Fit a quadric surface in a local tangent frame per vertex.
+
+    Extract principal curvature directions and magnitudes. Matches igl::principal_curvature.
+    """
+    # The neighborhoods arrive in either of ``ball_row_bounds``' layouts; thread ``t`` fits vertex
+    # ``chunk_start + t``.
+    t = wp.int32(wp.tid())
+    i = chunk_start + t
+    start, end = ball_row_bounds(offsets, row_stride, i, t)
+    pd1, pd2, pv1, pv2 = monge_principal_curvature(
+        vertices,
+        vertex_normals,
+        neighbor_indices,
+        start,
+        end,
+        i,
+        reference_neighbors[i],
+        frame_independent,
+    )
+    out_pd1[i] = pd1
+    out_pd2[i] = pd2
+    out_pv1[i] = pv1
+    out_pv2[i] = pv2
+
+
+@wp.kernel
+def fit_point_principal_curvature(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    neighbor_indices: wp.array[wp.int32],
+    row_stride: wp.int32,
+    out_pd1: wp.array[wp.vec3],
+    out_pd2: wp.array[wp.vec3],
+    out_pv1: wp.array[wp.float32],
+    out_pv2: wp.array[wp.float32],
+) -> None:
+    # One point a thread over its ``row_stride``-wide row of the flattened neighbour table. A
+    # cloud has no adjacency to pick a reference neighbour from, so the frame takes the point
+    # itself, i.e. any perpendicular: the fit is always the frame-independent one.
+    i = wp.int32(wp.tid())
+    start = i * row_stride
+    pd1, pd2, pv1, pv2 = monge_principal_curvature(
+        points, normals, neighbor_indices, start, start + row_stride, i, i, True
+    )
+    out_pd1[i] = pd1
+    out_pd2[i] = pd2
+    out_pv1[i] = pv1
+    out_pv2[i] = pv2
 
 
 @wp.func

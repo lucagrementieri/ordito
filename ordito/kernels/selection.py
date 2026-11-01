@@ -14,11 +14,13 @@ from ordito.kernels.array import (
     masked_at,
     pack_directed_key,
     pack_edge_key,
+    pack_ranked_key,
     scanned_count,
 )
 from ordito.kernels.halfedge import halfedge_endpoints, key_ordered_halfedge
-from ordito.kernels.scatter import mark_corners
-from ordito.kernels.triangles import corner_triple
+from ordito.kernels.reduce import GroupSumPass, read_group_sum
+from ordito.kernels.scatter import mark_corners, scatter_add
+from ordito.kernels.triangles import corner_triple, face_normals_and_area
 
 wp.set_module_options({"enable_backward": False})
 
@@ -621,6 +623,217 @@ def keep_selected_by_component(
     # copy of the component flag a Python-scope gather would build never exists.
     v = wp.int32(wp.tid())
     out_mask[v] = mask[v] and keep[labels[v]]
+
+
+# --- fill_face_mask_holes -------------------------------------------------------------------
+#
+# Two face forests over one adjacency, built side by side: the mesh's components, and its
+# *regions*, the components of the graph cut wherever the selection changes, so every region is
+# all selected or all not. Faces are adjacent across every edge they share, a non-manifold edge
+# included (each of its halfedges joins the face of the edge's lowest halfedge), so a region
+# cannot end at an edge where three faces meet. A halfedge whose two endpoints are one vertex
+# (a face that repeats a corner) spans no edge: it joins nothing and is no rim.
+
+
+@wp.func
+def region_partner(faces: wp.array[wp.int32], mates: wp.array[wp.int32], h: wp.int32) -> wp.int32:
+    # The face joined to halfedge ``h``'s face across its edge (``halfedge.halfedge_mates``' codes:
+    # the mate's face, the lowest halfedge's face for three or more), or ``h``'s own face where no
+    # face is: a rim halfedge, or one spanning no edge.
+    f = h // 3
+    tail, tip = halfedge_endpoints(faces, h)
+    mate = mates[h]
+    if tail == tip:
+        return f
+    if mate >= 0:
+        return mate // 3
+    if mate <= -2:
+        return (wp.int32(-2) - mate) // 3
+    return f
+
+
+@wp.func
+def halfedge_on_rim(faces: wp.array[wp.int32], mates: wp.array[wp.int32], h: wp.int32) -> wp.bool:
+    # A rim halfedge spans an edge no other halfedge does; one spanning no edge is not one.
+    tail, tip = halfedge_endpoints(faces, h)
+    return mates[h] == -1 and tail != tip
+
+
+@wp.func
+def regions_joined(mask: wp.array[wp.bool], f: wp.int32, g: wp.int32) -> wp.bool:
+    # Whether the region forest joins adjacent faces ``f`` and ``g``: when neither or both are
+    # selected.
+    return mask[f] == mask[g]
+
+
+@wp.kernel
+def prehook_mesh_regions(
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    mask: wp.array[wp.bool],
+    out_mesh_parents: wp.array[wp.int32],
+    out_region_parents: wp.array[wp.int32],
+) -> None:
+    # Both forests' pre-hook, one thread a face writing its own parent: the smallest face it is
+    # joined to (itself included), which is what ``ecl_prehook_pair`` over an identity forest
+    # leaves, without that launch. A pair is joined from either side, so every edge folded here
+    # is one ``hook_mesh_regions`` hooks.
+    f = wp.int32(wp.tid())
+    mesh_parent = f
+    region_parent = f
+    for k in range(3):
+        g = region_partner(faces, mates, wp.int32(3) * f + k)
+        mesh_parent = wp.min(mesh_parent, g)
+        if regions_joined(mask, f, g):
+            region_parent = wp.min(region_parent, g)
+    out_mesh_parents[f] = mesh_parent
+    out_region_parents[f] = region_parent
+
+
+@wp.kernel
+def hook_mesh_regions(
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    mask: wp.array[wp.bool],
+    mesh_parents: wp.array[wp.int32],
+    region_parents: wp.array[wp.int32],
+) -> None:
+    # Both forests' hook, one thread a halfedge: its face and ``region_partner``'s.
+    h = wp.int32(wp.tid())
+    f = h // 3
+    g = region_partner(faces, mates, h)
+    ecl_hook_pair(mesh_parents, f, g)
+    if regions_joined(mask, f, g):
+        ecl_hook_pair(region_parents, f, g)
+
+
+@wp.kernel
+def flatten_mesh_regions(
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    mesh_parents: wp.array[wp.int32],
+    region_parents: wp.array[wp.int32],
+    out_mesh_labels: wp.array[wp.int32],
+    out_region_labels: wp.array[wp.int32],
+    out_mesh_rim: wp.array[wp.bool],
+    out_region_rim: wp.array[wp.bool],
+) -> None:
+    # Both forests' ``ecl_flatten`` (labels are each component's smallest face, never aliasing
+    # the parents), and a face holding a rim halfedge flags its mesh component and its region in
+    # the zeroed ``out_*_rim``, indexed by label. Concurrent flags all store ``True``.
+    f = wp.int32(wp.tid())
+    mesh_label = find_representative(mesh_parents, f)
+    region_label = find_representative(region_parents, f)
+    out_mesh_labels[f] = mesh_label
+    out_region_labels[f] = region_label
+    for k in range(3):
+        if halfedge_on_rim(faces, mates, wp.int32(3) * f + k):
+            out_mesh_rim[mesh_label] = True
+            out_region_rim[region_label] = True
+
+
+@wp.kernel
+def scatter_region_areas(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    region_labels: wp.array[wp.int32],
+    sums: GroupSumPass,
+    out_areas: wp.array[wp.float32],
+) -> None:
+    # Each face's area into its region's sum (``scatter.scatter_add``, per the deterministic
+    # setting), slot per label.
+    f = wp.int32(wp.tid())
+    _normal, area = face_normals_and_area(vertices, faces, f)
+    scatter_add(out_areas, sums, region_labels[f], area)
+
+
+@wp.func
+def region_rank(areas: wp.array[wp.float32], sums: GroupSumPass, region: wp.int32) -> wp.int64:
+    # A region's rank for "the largest region by area, the one holding the smallest face on a
+    # tie", as one ``int64`` (``array.pack_ranked_key``): a non-negative ``float32``'s bits order
+    # as the value, and a sum that is not positive (zero, or NaN from a degenerate face) ranks as
+    # zero area. One spelling for the reduction and the test against its result, so both see the
+    # same key.
+    area = read_group_sum(areas, sums, region)
+    if not (area > wp.float32(0.0)):
+        area = wp.float32(0.0)
+    return pack_ranked_key(wp.cast(area, wp.int32), region)
+
+
+@wp.kernel
+def rank_enclosing_regions(
+    mask: wp.array[wp.bool],
+    mesh_labels: wp.array[wp.int32],
+    region_labels: wp.array[wp.int32],
+    mesh_rim: wp.array[wp.bool],
+    areas: wp.array[wp.float32],
+    sums: GroupSumPass,
+    out_best: wp.array[wp.int64],
+) -> None:
+    # The outside of each closed mesh component: its largest unselected region, reduced into the
+    # component's slot of ``out_best`` (seeded ``-1``) by the region's representative face alone.
+    # A component with a rim takes its outside from the rim instead and ranks nothing.
+    f = wp.int32(wp.tid())
+    mesh_label = mesh_labels[f]
+    if region_labels[f] == f and not mask[f] and not mesh_rim[mesh_label]:
+        wp.atomic_max(out_best, mesh_label, region_rank(areas, sums, f))
+
+
+@wp.kernel
+def fill_enclosed_regions(
+    mask: wp.array[wp.bool],
+    mesh_labels: wp.array[wp.int32],
+    region_labels: wp.array[wp.int32],
+    mesh_rim: wp.array[wp.bool],
+    region_rim: wp.array[wp.bool],
+    areas: wp.array[wp.float32],
+    sums: GroupSumPass,
+    best: wp.array[wp.int64],
+    out_mask: wp.array[wp.bool],
+) -> None:
+    # A face stays selected, or joins the selection when its unselected region is not the
+    # outside: on a mesh component with a rim, a region reaching the rim along an edge; on a
+    # closed one, the region ``rank_enclosing_regions`` chose.
+    f = wp.int32(wp.tid())
+    selected = mask[f]
+    if not selected:
+        mesh_label = mesh_labels[f]
+        region = region_labels[f]
+        outside = region_rim[region]
+        if not mesh_rim[mesh_label]:
+            outside = region_rank(areas, sums, region) == best[mesh_label]
+        selected = not outside
+    out_mask[f] = selected
+
+
+@wp.kernel
+def rank_selected_regions(
+    mask: wp.array[wp.bool],
+    region_labels: wp.array[wp.int32],
+    areas: wp.array[wp.float32],
+    sums: GroupSumPass,
+    out_best: wp.array[wp.int64],
+) -> None:
+    # The largest selected region over the whole mesh, into the one slot of ``out_best`` (seeded
+    # ``-1``), by each region's representative face.
+    f = wp.int32(wp.tid())
+    if region_labels[f] == f and mask[f]:
+        wp.atomic_max(out_best, 0, region_rank(areas, sums, f))
+
+
+@wp.kernel
+def keep_best_region(
+    mask: wp.array[wp.bool],
+    region_labels: wp.array[wp.int32],
+    areas: wp.array[wp.float32],
+    sums: GroupSumPass,
+    best: wp.array[wp.int64],
+    out_mask: wp.array[wp.bool],
+) -> None:
+    # Keep the selected faces of the region ``rank_selected_regions`` chose.
+    f = wp.int32(wp.tid())
+    region = region_labels[f]
+    out_mask[f] = mask[f] and region_rank(areas, sums, region) == best[0]
 
 
 @wp.func

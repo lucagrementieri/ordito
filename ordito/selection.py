@@ -438,6 +438,212 @@ def exclude_fully_selected_components(
     return out
 
 
+def fill_face_mask_holes(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    mask: wp.array[wp.bool],
+    *,
+    keep_largest: bool = False,
+) -> wp.array[wp.bool]:
+    """
+    Add to a face selection every unselected region it encloses.
+
+    The unselected faces split into *regions*: sets of faces connected across shared edges (an
+    edge shared by three or more faces connects them all). A region is part of the *outside* of
+    the selection, and stays unselected, when
+
+    - on a mesh component with a rim (a boundary edge), it reaches the rim along an edge;
+    - on a closed mesh component, it is the component's largest unselected region by area, the
+      one holding the smallest face index on a tie.
+
+    Every other region is a hole and is selected. The rules are decided per mesh component, so a
+    mesh mixing closed and open parts gets each part's rule. A region touching the rim only at a
+    vertex is enclosed. A face that repeats a corner spans no edge there: it neither connects
+    regions nor counts as rim.
+
+    The result is closed under the operation: filling it again changes nothing. It fills holes;
+    it does not cut handles, so on a surface of higher genus a selected region can stay other
+    than a disk, and a hole of the mesh itself (a rim loop inside the selection) is not a region
+    and stays.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions, which give the region areas.
+    faces
+        ``(3 * n_faces,)`` flat triangle index buffer.
+    mask
+        ``(n_faces,)`` face selection.
+    keep_largest
+        Keep only the largest selected region of the filled selection by area (the one holding
+        the smallest face index on a tie), so the result is one connected patch with no holes.
+        Removing the other regions opens no new hole, since each of them borders only the
+        outside. An empty selection stays empty.
+
+    Returns
+    -------
+    wp.array[wp.bool]
+        ``(n_faces,)`` filled selection, a superset of ``mask`` unless ``keep_largest`` drops
+        regions.
+
+    Raises
+    ------
+    ValueError
+        If ``mask`` does not have one entry per face.
+    RuntimeError
+        If ``vertices``, ``faces`` and ``mask`` are not all on one device.
+
+    Notes
+    -----
+    On a closed surface every unselected region is enclosed by the selection in some sense, so
+    one of them has to be called the outside, and the largest is the convention. A selection on
+    a closed surface with a single unselected region is therefore already filled, however small
+    that region is.
+
+    Examples
+    --------
+    A band of faces around a sphere leaves two unselected caps. The sphere is closed, so the
+    larger cap is the outside and the smaller one is filled:
+
+    ```python
+    import numpy as np
+    import warp as wp
+
+    import ordito as od
+
+    vertices, faces = od.creation.uv_sphere(count=(16, 16))
+    centroids = od.triangles.face_centroids(vertices, faces).numpy()
+    band_np = np.abs(centroids[:, 2] - 0.3) < 0.1
+    filled = od.selection.fill_face_mask_holes(vertices, faces, wp.array(band_np))
+    above_np = centroids[:, 2] > 0.3
+    print(bool(np.all(filled.numpy() == (band_np | above_np))))  # True
+    ```
+    """
+    require_same_device(vertices=vertices, faces=faces, mask=mask)
+    n_faces = faces.size // 3
+    if mask.size != n_faces:
+        raise ValueError(f"mask must have one entry per face, got {mask.size} for {n_faces} faces")
+    device = mask.device
+    if n_faces == 0:
+        return _launch.clone(mask)
+    mates = od.halfedge.halfedge_mates(faces, vertices.size)
+    mesh_labels, region_labels, mesh_rim, region_rim = _mesh_regions(faces, mates, mask)
+    areas, sums = _region_areas(vertices, faces, region_labels)
+    # Each closed mesh component's outside, in the slot of its label; ``-1`` is below every rank.
+    best = _launch.full(n_faces, -1, dtype=wp.int64, device=device)
+    _launch.launch(
+        kernel_selection.rank_enclosing_regions,
+        dim=n_faces,
+        inputs=[mask, mesh_labels, region_labels, mesh_rim, areas, sums],
+        outputs=[best],
+        device=device,
+    )
+    filled = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    _launch.launch(
+        kernel_selection.fill_enclosed_regions,
+        dim=n_faces,
+        inputs=[mask, mesh_labels, region_labels, mesh_rim, region_rim, areas, sums, best],
+        outputs=[filled],
+        device=device,
+    )
+    if not keep_largest:
+        return filled
+    # The filled selection's own regions: its holes are gone, so its selected regions are the
+    # patches to choose from.
+    _, region_labels, _, _ = _mesh_regions(faces, mates, filled)
+    areas, sums = _region_areas(vertices, faces, region_labels)
+    best = _launch.full(1, -1, dtype=wp.int64, device=device)
+    _launch.launch(
+        kernel_selection.rank_selected_regions,
+        dim=n_faces,
+        inputs=[filled, region_labels, areas, sums],
+        outputs=[best],
+        device=device,
+    )
+    largest = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    _launch.launch(
+        kernel_selection.keep_best_region,
+        dim=n_faces,
+        inputs=[filled, region_labels, areas, sums, best],
+        outputs=[largest],
+        device=device,
+    )
+    return largest
+
+
+def _mesh_regions(
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], mask: wp.array[wp.bool]
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool], wp.array[wp.bool]]:
+    """
+    Mesh-component and region labels per face, and each label's rim flag.
+
+    ``(mesh_labels, region_labels, mesh_rim, region_rim)``: the ``(n_faces,)`` labels, each
+    component's smallest face, of the mesh's components and of its regions (the components left
+    when the adjacency is cut where ``mask`` changes), and ``(n_faces,)`` flags, read at a label,
+    of the components and regions holding a rim halfedge
+    (``kernels/selection.flatten_mesh_regions``). ``n_faces`` must be positive.
+    """
+    device = faces.device
+    n_faces = faces.size // 3
+    mesh_parents, region_parents, mesh_labels, region_labels = _launch.carve(
+        wp.int32, [n_faces] * 4, device
+    )
+    mesh_rim, region_rim = _launch.carve(wp.bool, [n_faces, n_faces], device, zeroed=True)
+    _launch.launch(
+        kernel_selection.prehook_mesh_regions,
+        dim=n_faces,
+        inputs=[faces, mates, mask],
+        outputs=[mesh_parents, region_parents],
+        device=device,
+    )
+    if n_faces >= kernel_connected_components.ECL_COMPRESS_FROM:
+        for parents in (mesh_parents, region_parents):
+            _launch.launch(
+                kernel_connected_components.ecl_compress,
+                dim=n_faces,
+                inputs=[parents],
+                device=device,
+            )
+    _launch.launch(
+        kernel_selection.hook_mesh_regions,
+        dim=3 * n_faces,
+        inputs=[faces, mates, mask, mesh_parents, region_parents],
+        device=device,
+    )
+    _launch.launch(
+        kernel_selection.flatten_mesh_regions,
+        dim=n_faces,
+        inputs=[faces, mates, mesh_parents, region_parents],
+        outputs=[mesh_labels, region_labels, mesh_rim, region_rim],
+        device=device,
+    )
+    return mesh_labels, region_labels, mesh_rim, region_rim
+
+
+def _region_areas(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], region_labels: wp.array[wp.int32]
+) -> tuple[wp.array[wp.float32] | None, object]:
+    """
+    Each region's summed face area, slot per label, and the pass a consumer reads it through.
+
+    ``(out, launch_pass)`` of a fused ``_launch.group_sums``, read by
+    ``kernels/reduce.read_group_sum``: one ``float32`` atomic scatter with
+    [`is_deterministic`][ordito.config.is_deterministic] off, an exact fixed-point sum with it on,
+    so the choice of the largest region repeats bit for bit.
+    """
+    n_faces = faces.size // 3
+    # A region can hold every face, so ``n_faces`` terms bound any one sum.
+    sums = _launch.group_sums(n_faces, wp.float32, n_faces, faces.device, fused=True)
+    _launch.launch_group_sums(
+        kernel_selection.scatter_region_areas,
+        dim=n_faces,
+        inputs=[vertices, faces, region_labels],
+        sums=sums,
+        device=faces.device,
+    )
+    return sums.out, sums.launch_pass
+
+
 @overload
 def submesh_from_face_indices(
     vertices: wp.array[wp.vec3],

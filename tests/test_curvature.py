@@ -2,6 +2,7 @@
 
 import igl
 import numpy as np
+import pymeshlab as ml
 import pytest
 import trimesh as tm
 import warp as wp
@@ -9,7 +10,13 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from tests.comparisons import assert_nonconstant
-from tests.conftest import MESHES, ROUND_FRAME_ROTATION, ROUND_FRAME_SHIFT, round_frame_coordinates
+from tests.conftest import (
+    MESHES,
+    ROUND_FRAME_ROTATION,
+    ROUND_FRAME_SCALE,
+    ROUND_FRAME_SHIFT,
+    round_frame_coordinates,
+)
 from tests.conversions import points_to_warp, trimesh_to_pymeshlab, trimesh_to_pyvista
 
 
@@ -892,3 +899,163 @@ def test_principal_curvature_mean_edge_length_changes_no_answer(
     )
     for given_wp, plain_wp in zip(given, plain, strict=True):
         assert np.array_equal(given_wp.numpy(), plain_wp.numpy())
+
+
+def _analytic_torus_cloud(
+    device: str, n: int
+) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], np.ndarray, np.ndarray, np.ndarray]:
+    """
+    ``n`` random points on the torus ``R = 1``, ``r = 0.4`` placed in the round frame.
+
+    Returns the points, their exact outward normals, the larger and smaller exact principal
+    curvature, and the exact parallel direction, all in the placed frame. The meridian curvature
+    is ``1 / r`` and the parallel one ``cos(theta) / (R + r cos(theta))``, negative on the inner
+    half of the tube, so the pair changes order and sign across it.
+    """
+    rng = np.random.default_rng(31)
+    major_radius, minor_radius = 1.0, 0.4
+    theta_np, phi_np = rng.uniform(0.0, 2.0 * np.pi, (2, n))
+    axis_np = np.stack([np.cos(phi_np), np.sin(phi_np), np.zeros(n)], axis=1)
+    normal_np = np.cos(theta_np)[:, None] * axis_np + np.sin(theta_np)[:, None] * [0.0, 0.0, 1.0]
+    points_np = major_radius * axis_np + minor_radius * normal_np
+    placed_np = ROUND_FRAME_SCALE * points_np @ ROUND_FRAME_ROTATION.T + ROUND_FRAME_SHIFT
+    meridian_np = np.full(n, 1.0 / minor_radius)
+    parallel_np = np.cos(theta_np) / (major_radius + minor_radius * np.cos(theta_np))
+    parallel_direction_np = np.stack([-np.sin(phi_np), np.cos(phi_np), np.zeros(n)], axis=1)
+    return (
+        points_to_warp(placed_np, device),
+        points_to_warp(normal_np @ ROUND_FRAME_ROTATION.T, device),
+        np.maximum(meridian_np, parallel_np) / ROUND_FRAME_SCALE,
+        np.minimum(meridian_np, parallel_np) / ROUND_FRAME_SCALE,
+        parallel_direction_np @ ROUND_FRAME_ROTATION.T,
+    )
+
+
+def test_point_principal_curvature_matches_the_analytic_torus(device: str) -> None:
+    """
+    Not a library comparison: no reference fits curvature on a bare cloud with given normals.
+
+    pymeshlab's point-set curvature fits an algebraic sphere (APSS), a different estimator, and
+    every other reference needs a mesh. The oracle is the closed form instead: 20 000 random
+    points on the torus ``R = 1``, ``r = 0.4`` (rotated, scaled 1.7, off the origin) with their
+    exact normals, whose principal curvatures and lines of curvature are known everywhere and
+    whose smaller curvature is negative on the inner half of the tube, so a sign or an ordering
+    error cannot pass.
+
+    Measured over 16-nearest rows, in units of the tube's curvature ``1 / r``: the error of
+    ``PV1`` median 0.0048, worst 0.097, of ``PV2`` median 0.0035, worst 0.058; the parallel
+    direction within ``|cos|`` 0.9995 of one of ``(PD1, PD2)`` everywhere (other seeds alike).
+    The bars are about 3x those. Flipping the normals negates both curvatures (``PV1`` error
+    median 0.99), and swapping ``PV1`` with ``PV2`` reads a median error of 1.0.
+
+    [`test_point_principal_curvature_matches_pymeshlab_apss`]
+    [tests.test_curvature.test_point_principal_curvature_matches_pymeshlab_apss] is the library
+    comparison.
+    """
+    points, normals, larger_np, smaller_np, parallel_np = _analytic_torus_cloud(device, 20_000)
+    # Non-vacuity: the smaller curvature spreads and takes both signs.
+    assert np.ptp(smaller_np) > 1.0
+    assert smaller_np.min() < 0.0
+    neighbor_idx, _ = od.neighbors.query_nearest(points, points, 16)
+    pd1, pd2, pv1, pv2 = od.curvature.point_principal_curvature(points, normals, neighbor_idx)
+
+    tube_scale = 0.4 * ROUND_FRAME_SCALE  # 1 / (the tube's curvature)
+    for name, error_np in (
+        ("PV1", np.abs(pv1.numpy() - larger_np) * tube_scale),
+        ("PV2", np.abs(pv2.numpy() - smaller_np) * tube_scale),
+    ):
+        assert np.median(error_np) < 0.015, f"{name}: median error {np.median(error_np):.4f}"
+        assert error_np.max() < 0.3, f"{name}: worst error {error_np.max():.4f}"
+    alignment_np = np.maximum(
+        np.abs(np.einsum("ij,ij->i", pd1.numpy(), parallel_np)),
+        np.abs(np.einsum("ij,ij->i", pd2.numpy(), parallel_np)),
+    )
+    assert alignment_np.min() > 0.9985, f"worst |cos| {alignment_np.min():.4f}"
+    assert np.allclose(np.einsum("ij,ij->i", pd1.numpy(), pd2.numpy()), 0.0, atol=1e-5)
+
+
+@pytest.mark.parity("point_principal_curvature", "pymeshlab")
+def test_point_principal_curvature_matches_pymeshlab_apss(device: str) -> None:
+    """
+    Class C: MeshLab's APSS curvature of the same cloud, a different estimator of one quantity.
+
+    No reference fits a Monge jet on a bare point cloud from Python (CGAL's ``Jet_fitting_3`` has
+    no binding that takes one). ``compute_curvature_and_color_apss_per_vertex`` estimates the same
+    principal curvatures from the same points and normals by projecting onto an algebraic-sphere
+    MLS surface, so the two agree to the accuracy of both rather than bit for bit: on the
+    analytic torus of the test above (20 000 points) APSS at ``filterscale=4`` reads the exact
+    curvatures to a median of 0.012 and a 95th percentile of 0.064, in units of the tube's
+    curvature ``1 / r``, where ordito's 16-nearest fit reads 0.005.
+
+    The statistic is the median and the 90th percentile of the difference, per curvature, in
+    those units: measured 0.0137 / 0.047 for ``PV1`` and 0.0126 / 0.047 for ``PV2``; the bars
+    are 0.04 / 0.15, about 3x. The tails are APSS's (its worst reads 0.37-0.43 off the exact
+    value), which is why no maximum is asserted. ``PV1`` is the constant tube curvature here, so
+    shuffling cannot catch it; ``PV2`` varies, and against a shuffled copy its median difference
+    is 0.31, eight times the bar. APSS's two values are not ordered, so they are sorted first.
+    """
+    points, normals, _, _, _ = _analytic_torus_cloud(device, 20_000)
+    neighbor_idx, _ = od.neighbors.query_nearest(points, points, 16)
+    _pd1, _pd2, pv1, pv2 = od.curvature.point_principal_curvature(points, normals, neighbor_idx)
+
+    points_np = points.numpy().astype(np.float64)
+    normals_np = normals.numpy().astype(np.float64)
+    normals_np /= np.linalg.norm(normals_np, axis=1, keepdims=True)
+    curvatures_pml = []
+    for curvature_type in ("K1", "K2"):
+        meshset_pml = ml.MeshSet()
+        meshset_pml.add_mesh(ml.Mesh(vertex_matrix=points_np, v_normals_matrix=normals_np))
+        meshset_pml.compute_curvature_and_color_apss_per_vertex(
+            filterscale=4.0, curvaturetype=curvature_type
+        )
+        curvatures_pml.append(meshset_pml.current_mesh().vertex_scalar_array().copy())
+    larger_pml = np.maximum(*curvatures_pml)
+    smaller_pml = np.minimum(*curvatures_pml)
+    assert np.ptp(smaller_pml) > 1.0  # non-vacuity: the compared curvature varies
+
+    tube_scale = 0.4 * ROUND_FRAME_SCALE  # 1 / (the tube's curvature)
+    for name, difference_np in (
+        ("PV1", np.abs(pv1.numpy() - larger_pml) * tube_scale),
+        ("PV2", np.abs(pv2.numpy() - smaller_pml) * tube_scale),
+    ):
+        assert np.median(difference_np) < 0.04, f"{name}: median {np.median(difference_np):.4f}"
+        p90 = np.percentile(difference_np, 90)
+        assert p90 < 0.15, f"{name}: 90th percentile {p90:.4f}"
+
+
+def test_point_principal_curvature_skips_padding_and_declines_small_rows(device: str) -> None:
+    """
+    Ordito against ordito: ``-1`` slots are absent, and a row of under six entries declines.
+
+    Two trailing ``-1`` columns leave every value unchanged bit for bit, which a kernel reading
+    the slot as a point would not. Rows of the point and four neighbours cannot determine the
+    five-parameter fit, so every output is zero there, the documented "no fit" answer.
+    """
+    points, normals, _, _, _ = _analytic_torus_cloud(device, 2_000)
+    neighbor_idx, _ = od.neighbors.query_nearest(points, points, 12)
+    plain = od.curvature.point_principal_curvature(points, normals, neighbor_idx)
+    rows_np = neighbor_idx.numpy()
+    padded_np = np.concatenate([rows_np, np.full((len(rows_np), 2), -1, np.int32)], axis=1)
+    padded_idx = odt.as_array2d(wp.array(padded_np, dtype=wp.int32, device=device), wp.int32)
+    padded = od.curvature.point_principal_curvature(points, normals, padded_idx)
+    assert np.all(plain[2].numpy() != 0.0)
+    for padded_wp, plain_wp in zip(padded, plain, strict=True):
+        assert np.array_equal(padded_wp.numpy(), plain_wp.numpy())
+
+    short_idx = odt.as_array2d(
+        wp.array(np.ascontiguousarray(rows_np[:, :5]), dtype=wp.int32, device=device), wp.int32
+    )
+    for output_wp in od.curvature.point_principal_curvature(points, normals, short_idx):
+        assert not np.any(output_wp.numpy())
+
+
+def test_point_principal_curvature_rejects_mismatched_tables(device: str) -> None:
+    """A normal table or neighbour table without one row per point raises ``ValueError``."""
+    points, normals, _, _, _ = _analytic_torus_cloud(device, 50)
+    neighbor_idx, _ = od.neighbors.query_nearest(points, points, 8)
+    with pytest.raises(ValueError, match="one entry per point"):
+        od.curvature.point_principal_curvature(points, odt.as_dense(normals[:40]), neighbor_idx)
+    with pytest.raises(ValueError, match="one entry per point"):
+        od.curvature.point_principal_curvature(
+            points, normals, odt.as_array2d(odt.as_dense(neighbor_idx[:40]), wp.int32)
+        )

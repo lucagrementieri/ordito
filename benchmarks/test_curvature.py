@@ -80,6 +80,7 @@ from __future__ import annotations
 
 import igl
 import numpy as np
+import pymeshlab as ml
 import pytest
 import trimesh as tm
 
@@ -198,6 +199,42 @@ def test_principal_curvature_meyer(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     *_, pv1, _pv2 = bench_case.run(
         lambda: od.curvature.principal_curvature(vertices, faces, method="meyer"),
+        rounds=_HEAVY_ROUNDS,
+    )
+    assert pv1.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="point_principal_curvature")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+def test_point_principal_curvature(bench_case: BenchCase) -> None:
+    """
+    The same quadric fit on the vertices as a cloud, over 16-nearest rows.
+
+    The normals and the neighbour table are built outside the timed region: they are the caller's
+    inputs. MeshLab's APSS curvature is the reference: a different estimator (an MLS projection
+    per point) of the same quantity on the same cloud and normals, timed for one of its two
+    values (each is a separate filter call).
+    """
+    vertices = bench_case.vertices_wp
+    normals = od.vertices.vertex_normals(vertices, bench_case.faces_wp)
+    if bench_case.kind == "pymeshlab":
+        points_np = bench_case.vertices_np.astype(np.float64)
+        normals_np = normals.numpy().astype(np.float64)
+
+        def apss_pml() -> np.ndarray:
+            meshset_pml = ml.MeshSet()
+            meshset_pml.add_mesh(ml.Mesh(vertex_matrix=points_np, v_normals_matrix=normals_np))
+            meshset_pml.compute_curvature_and_color_apss_per_vertex(
+                filterscale=4.0, curvaturetype="K1"
+            )
+            return meshset_pml.current_mesh().vertex_scalar_array()
+
+        assert bench_case.run(apss_pml, rounds=_HEAVY_ROUNDS).shape == (bench_case.n_vertices,)
+        return
+    neighbor_idx, _ = od.neighbors.query_nearest(vertices, vertices, 16)
+    *_, pv1, _pv2 = bench_case.run(
+        lambda: od.curvature.point_principal_curvature(vertices, normals, neighbor_idx),
         rounds=_HEAVY_ROUNDS,
     )
     assert pv1.shape == (bench_case.n_vertices,)

@@ -370,6 +370,26 @@ _REJECTED_CALLS: list[tuple[str, Callable[[str], object], str]] = [
         lambda device: od_reduce.median(warp_empty(0, wp.float32, device)),
         "median requires a non-empty array",
     ),
+    (
+        "quantile_rank2",
+        lambda device: od_reduce.quantile(_ints_2d(device), 0.5),
+        "quantile requires a 1D array",
+    ),
+    (
+        "quantile_empty",
+        lambda device: od_reduce.quantile(warp_empty(0, wp.float32, device), 0.5),
+        "quantile requires a non-empty array",
+    ),
+    *(
+        (
+            f"quantile_q_{q}",
+            lambda device, q=q: od_reduce.quantile(
+                wp.array([1.0, 2.0], dtype=wp.float32, device=device), q
+            ),
+            r"q must lie in \[0, 1\]",
+        )
+        for q in (-0.1, 1.5)
+    ),
 ]
 
 
@@ -383,8 +403,8 @@ def test_invalid_reductions_raise(device: str, call: Callable[[str], object], ma
     An ``axis`` on a rank-1 array, an axis outside ``{0, 1, None}`` on a rank-2 one (instead of
     silently reading as ``axis=0``), any ``axis`` or an empty input on a ``wp.vec3`` array, and
     ``weighted_sum`` arguments of unequal length or rank 2 (instead of reading the leading
-    dimension). Empty and rank-3 inputs, a rank-2 ``wp.vec3`` array, and a ``median`` of an empty
-    or rank-2 array are each rejected by name.
+    dimension). Empty and rank-3 inputs, a rank-2 ``wp.vec3`` array, a ``median`` or ``quantile``
+    of an empty or rank-2 array, and a ``quantile`` outside ``[0, 1]`` are each rejected by name.
     """
     with pytest.raises(ValueError, match=match):
         call(device)
@@ -1180,6 +1200,49 @@ def test_reduce_median_matches_numpy(device: str, n: int, dtype_wp: type, dtype_
         values_np = rng.integers(0, 1000, size=n).astype(dtype_np)
     values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
     assert np.allclose(od_reduce.median(values_wp), np.median(values_np), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("q", [0.0, 0.1, 0.25, 0.5, 0.7, 0.999, 1.0])
+@pytest.mark.parametrize(
+    ("dtype_wp", "dtype_np"),
+    [
+        (wp.float32, np.float32),
+        (wp.float64, np.float64),
+        (wp.int32, np.int32),
+        (wp.int64, np.int64),
+        (wp.uint32, np.uint32),
+        (wp.uint64, np.uint64),
+    ],
+)
+@pytest.mark.parity("quantile", "numpy")
+def test_reduce_quantile_matches_numpy(
+    device: str, q: float, dtype_wp: type, dtype_np: type
+) -> None:
+    """
+    Class A: ``reduce.quantile`` equals ``np.quantile`` (linear method) at every key dtype.
+
+    The quantiles include both ends (exact order statistics) and fractional ranks on either side
+    of one half, where NumPy interpolates from the nearer order statistic. The values are spread
+    (``np.ptp`` well above the tolerance) and not constant, so a rank off by one fails.
+    """
+    rng = np.random.default_rng(91)
+    n = 37
+    if np.issubdtype(dtype_np, np.floating):
+        values_np = rng.standard_normal(n).astype(dtype_np)
+    else:
+        values_np = rng.integers(0, 1000, size=n).astype(dtype_np)
+    assert np.ptp(values_np.astype(np.float64)) > 1.0
+    values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
+    expected_np = np.quantile(values_np.astype(np.float64), q)
+    assert np.isclose(od_reduce.quantile(values_wp, q), expected_np, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("n", [1, 6, 7])
+def test_reduce_median_is_the_half_quantile(device: str, n: int) -> None:
+    """Ordito against ordito: ``median`` is ``quantile(0.5)`` bit for bit, ``n = 1`` included."""
+    rng = np.random.default_rng(92 + n)
+    values_wp = wp.array(rng.standard_normal(n).astype(np.float32), dtype=wp.float32, device=device)
+    assert od_reduce.median(values_wp) == od_reduce.quantile(values_wp, 0.5)
 
 
 @pytest.mark.parametrize("n", [100, 101], ids=["even", "odd"])

@@ -551,6 +551,38 @@ def test_exclude_fully_selected_components(bench_case: BenchCase) -> None:
     assert kept.shape == mask.shape
 
 
+def _ring_face_mask(bench_case: BenchCase) -> wp.array[wp.bool]:
+    """Faces on the flanks of a wave's crests: many separate rings, most of them with a hole."""
+    centroids_np = bench_case.vertices_np[bench_case.faces_np.reshape(-1, 3)].mean(axis=1)
+    centered_np = (centroids_np - centroids_np.mean(axis=0)) / np.ptp(centroids_np, axis=0).max()
+    wave_np = (
+        np.sin(23.0 * centered_np[:, 0])
+        * np.cos(18.4 * centered_np[:, 1] + 0.3)
+        * np.cos(13.8 * centered_np[:, 2] + 0.7)
+    )
+    mask_np = (wave_np > 0.2) & (wave_np < 0.5)
+    return wp.array(mask_np, dtype=wp.bool, device=bench_case.vertices_wp.device)
+
+
+@pytest.mark.benchmark(group="fill_face_mask_holes")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("keep_largest", [False, True])
+def test_fill_face_mask_holes(bench_case: BenchCase, keep_largest: bool) -> None:
+    """
+    Two face forests in one union-find, a region-area group sum, and a fill pass.
+
+    ``keep_largest`` runs the forests and the sum again over the filled selection. No reference
+    library fills a selection's holes.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    mask = _ring_face_mask(bench_case)
+    filled = bench_case.run(
+        lambda: od.selection.fill_face_mask_holes(vertices, faces, mask, keep_largest=keep_largest)
+    )
+    assert filled.shape == mask.shape
+
+
 _FACE_REGION_FRACTION = 0.25
 
 

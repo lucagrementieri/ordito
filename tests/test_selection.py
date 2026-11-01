@@ -316,6 +316,7 @@ def test_region_boundary_edges_mates_change_no_answer(
         pytest.param(
             "submesh_from_vertex_mask", "vertex_mask length", id="submesh_from_vertex_mask"
         ),
+        pytest.param("fill_face_mask_holes", "one entry per face", id="fill_face_mask_holes"),
     ],
 )
 def test_masks_of_the_wrong_length_are_rejected(
@@ -344,6 +345,9 @@ def test_masks_of_the_wrong_length_are_rejected(
             wp.zeros(n_vertices, dtype=wp.vec3, device=device),
             faces_wp,
             wp.zeros(n_vertices - 1, dtype=wp.bool, device=device),
+        ),
+        "fill_face_mask_holes": lambda: od.selection.fill_face_mask_holes(
+            wp.zeros(n_vertices, dtype=wp.vec3, device=device), faces_wp, short_face_mask
         ),
     }
     with pytest.raises(ValueError, match=message):
@@ -594,6 +598,305 @@ def test_exclude_fully_selected_components_compressed_forest(
     assert np.array_equal(compressed[1], plain[1])
 
 
+def _fill_face_mask_holes_oracle(
+    vertices_np: np.ndarray, faces_np: np.ndarray, mask_np: np.ndarray, *, keep_largest: bool
+) -> np.ndarray:
+    """
+    ``fill_face_mask_holes``' rule, written out over SciPy's components (the test's oracle).
+
+    Faces join across every edge they share, three or more faces on one edge included; a corner
+    repeated within a face spans no edge. Regions are the components of the joins between faces
+    of equal selection. A mesh component with a boundary edge keeps the unselected regions
+    holding one; a closed component keeps its largest unselected region by area, the one with
+    the smallest face on a tie. Everything else is selected.
+    """
+    triangles_np = faces_np.reshape(-1, 3)
+    n_faces = len(triangles_np)
+    tails_np = triangles_np.reshape(-1)
+    tips_np = triangles_np[:, [1, 2, 0]].reshape(-1)
+    face_of_np = np.repeat(np.arange(n_faces), 3)
+    spans_np = tails_np != tips_np
+    keys_np = np.sort(np.stack([tails_np, tips_np], axis=1), axis=1)[spans_np]
+    halfedge_faces_np = face_of_np[spans_np]
+    _, edge_np, edge_counts_np = np.unique(keys_np, axis=0, return_inverse=True, return_counts=True)
+    edge_np = edge_np.reshape(-1)
+    # Every halfedge joins its face to the first face on its edge: one star per edge.
+    first_np = np.full(edge_counts_np.size, -1)
+    for halfedge, edge in enumerate(edge_np.tolist()):
+        if first_np[edge] < 0:
+            first_np[edge] = halfedge_faces_np[halfedge]
+    joins_np = np.stack([halfedge_faces_np, first_np[edge_np]], axis=1)
+    rim_faces_np = np.zeros(n_faces, dtype=bool)
+    rim_faces_np[halfedge_faces_np[edge_counts_np[edge_np] == 1]] = True
+
+    def components(pairs_np: np.ndarray) -> np.ndarray:
+        graph = sp.coo_matrix(
+            (np.ones(len(pairs_np)), (pairs_np[:, 0], pairs_np[:, 1])), shape=(n_faces, n_faces)
+        )
+        _, labels_np = csgraph.connected_components(graph, directed=False)
+        return labels_np
+
+    areas_np = tm.Trimesh(vertices_np, triangles_np, process=False).area_faces
+
+    def regions(selection_np: np.ndarray) -> np.ndarray:
+        same_np = selection_np[joins_np[:, 0]] == selection_np[joins_np[:, 1]]
+        return components(joins_np[same_np])
+
+    mesh_np = components(joins_np)
+    region_np = regions(mask_np)
+    filled_np = mask_np.copy()
+    for mesh_label in np.unique(mesh_np).tolist():
+        in_mesh_np = mesh_np == mesh_label
+        candidates = np.unique(region_np[in_mesh_np & ~mask_np]).tolist()
+        if rim_faces_np[in_mesh_np].any():
+            outside = {r for r in candidates if rim_faces_np[region_np == r].any()}
+        else:
+            ranked = [
+                (-areas_np[region_np == r].sum(), np.flatnonzero(region_np == r)[0], r)
+                for r in candidates
+            ]
+            outside = {min(ranked)[2]} if ranked else set()
+        for r in candidates:
+            if r not in outside:
+                filled_np[region_np == r] = True
+    if not keep_largest or not filled_np.any():
+        return filled_np
+    region_np = regions(filled_np)
+    ranked = [
+        (-areas_np[region_np == r].sum(), np.flatnonzero(region_np == r)[0], r)
+        for r in np.unique(region_np[filled_np]).tolist()
+    ]
+    return filled_np & (region_np == min(ranked)[2])
+
+
+def _wavy_face_mask(vertices_np: np.ndarray, faces_np: np.ndarray, frequency: float) -> np.ndarray:
+    """
+    Return a selection of separate rings with holes: faces on the flanks of a wave's crests.
+
+    Each crest of the wave over the face centroids (normalized to the mesh's extent) is ringed by
+    selected faces with its peak unselected, so the selection has many components, most of them
+    with a hole.
+    """
+    centroids_np = vertices_np[faces_np.reshape(-1, 3)].mean(axis=1)
+    centered_np = (centroids_np - centroids_np.mean(axis=0)) / np.ptp(centroids_np, axis=0).max()
+    wave_np = (
+        np.sin(frequency * centered_np[:, 0])
+        * np.cos(frequency * 0.8 * centered_np[:, 1] + 0.3)
+        * np.cos(frequency * 0.6 * centered_np[:, 2] + 0.7)
+    )
+    return (wave_np > 0.2) & (wave_np < 0.5)
+
+
+@pytest.mark.parametrize("mesh_name", [*MESHES, "sphere_irregular_hollow", "torus_irregular_holes"])
+@pytest.mark.parametrize("frequency", [9.0, 23.0])
+@pytest.mark.parametrize("keep_largest", [False, True])
+def test_fill_face_mask_holes_matches_the_rule(
+    request: pytest.FixtureRequest, mesh_name: str, frequency: float, keep_largest: bool
+) -> None:
+    """
+    Not a library comparison: no reference fills a face selection's holes.
+
+    The oracle is the rule written out over SciPy's connected components
+    (``_fill_face_mask_holes_oracle``), on selections of many rings (``_wavy_face_mask``): on the
+    closed and the open default fixtures, a two-component solid with a cavity and a genus-1
+    surface with three rims. Non-vacuity: the fill selects faces the mask did not, and
+    leaves an outside unselected, which a rule that selects nothing or everything fails; with
+    ``keep_largest`` the oracle drops selected regions, so keeping them all fails too.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np = np.asarray(mesh_tm.vertices)
+    faces_np = np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1)
+    mask_np = _wavy_face_mask(vertices_np, faces_np, frequency)
+    expected_np = _fill_face_mask_holes_oracle(
+        vertices_np, faces_np, mask_np, keep_largest=keep_largest
+    )
+    mask_wp = wp.array(mask_np, dtype=wp.bool, device=mesh_wp.device)
+    filled_wp = od.selection.fill_face_mask_holes(
+        mesh_wp.points, mesh_wp.indices, mask_wp, keep_largest=keep_largest
+    )
+    assert np.array_equal(filled_wp.numpy(), expected_np)
+    assert (~expected_np).any()
+    if keep_largest:
+        assert (mask_np & ~expected_np).any()
+    else:
+        assert (expected_np & ~mask_np).any()
+
+
+@pytest.mark.parametrize("keep_largest", [False, True])
+def test_fill_face_mask_holes_is_idempotent(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], keep_largest: bool
+) -> None:
+    """Ordito against ordito: a filled selection is its own fill, with ``keep_largest`` too."""
+    mesh_tm, mesh_wp = sphere_irregular
+    mask_np = _wavy_face_mask(np.asarray(mesh_tm.vertices), mesh_tm.faces.reshape(-1), 23.0)
+    mask_wp = wp.array(mask_np, dtype=wp.bool, device=mesh_wp.device)
+    once = od.selection.fill_face_mask_holes(
+        mesh_wp.points, mesh_wp.indices, mask_wp, keep_largest=keep_largest
+    )
+    twice = od.selection.fill_face_mask_holes(
+        mesh_wp.points, mesh_wp.indices, once, keep_largest=keep_largest
+    )
+    assert not np.array_equal(once.numpy(), mask_np)
+    assert np.array_equal(twice.numpy(), once.numpy())
+
+
+def test_fill_face_mask_holes_decides_per_mesh_component(device: str) -> None:
+    """
+    Not a library comparison: a closed and an open component in one mesh each get their rule.
+
+    The same band around a sphere, in the closed sphere and in the sphere with its top cap cut
+    away (a rim). Closed: the small cap above the band is enclosed and filled, the large cap is
+    the outside. Open: the region above the band now reaches the rim, so it is the outside and
+    the large cap below, which no longer does, is filled. Deciding the rule for the whole mesh
+    (one rim anywhere) would fill the closed sphere's large cap instead.
+    """
+    sphere = tm.creation.uv_sphere(count=[24, 24])
+    centroids_np = sphere.triangles_center
+    open_faces_np = sphere.faces[centroids_np[:, 2] < 0.8]
+    opened = tm.Trimesh(sphere.vertices, open_faces_np, process=False)
+    vertices_np = np.concatenate([sphere.vertices, opened.vertices + np.array([3.0, 0.0, 0.0])])
+    faces_np = np.concatenate([sphere.faces, opened.faces + len(sphere.vertices)])
+    z_np = np.concatenate([centroids_np[:, 2], opened.triangles_center[:, 2]])
+    band_np = np.abs(z_np - 0.3) < 0.1
+    above_np = z_np > 0.3
+    in_sphere_np = np.arange(len(faces_np)) < len(sphere.faces)
+
+    filled_wp = od.selection.fill_face_mask_holes(
+        points_to_warp(vertices_np, device),
+        wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device),
+        wp.array(band_np, dtype=wp.bool, device=device),
+    )
+    expected_np = band_np | np.where(in_sphere_np, above_np, ~above_np)
+    assert np.array_equal(filled_wp.numpy(), expected_np)
+
+
+def test_fill_face_mask_holes_fills_a_region_touching_the_rim_at_a_vertex(device: str) -> None:
+    """
+    Not a library comparison: a region reaches the outside of an open mesh only along an edge.
+
+    On a grid, one triangle with a corner on the left rim but no edge on it is the only
+    unselected face: it is enclosed, so the whole grid is selected. The triangle of the same
+    cell that does have a rim edge stays the outside.
+    """
+    vertices_np, faces_np = _grid_mesh(6)
+    vertices_wp = points_to_warp(vertices_np, device)
+    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
+    # Cell (row 2, column 0) is split into ``(a, a + 1, a + 7)``, touching the rim ``x = 0`` at
+    # ``a`` only, and ``(a, a + 7, a + 6)``, whose edge ``(a + 6, a)`` lies on it.
+    vertex_only, on_rim = 2 * 5 * 2, 2 * 5 * 2 + 1
+    for unselected, expected_all in ((vertex_only, True), (on_rim, False)):
+        mask_np = np.ones(len(faces_np) // 3, dtype=bool)
+        mask_np[unselected] = False
+        filled_wp = od.selection.fill_face_mask_holes(
+            vertices_wp, faces_wp, wp.array(mask_np, dtype=wp.bool, device=device)
+        )
+        assert bool(filled_wp.numpy().all()) is expected_all
+
+
+def test_fill_face_mask_holes_ignores_a_face_repeating_a_corner(device: str) -> None:
+    """
+    Not a library comparison: a face spanning no edge at a repeated corner is no rim.
+
+    A closed sphere with a band selected fills its small cap. A face ``(a, a, b)`` appended on an
+    edge ``(a, b)`` inside that cap joins the cap across that edge (now shared by three faces),
+    but its ``(a, a)`` side spans no edge: read as a rim edge it would make the sphere open, the
+    cap would then reach the rim and stay unselected, and the large cap would be filled instead.
+    """
+    sphere = tm.creation.uv_sphere(count=[24, 24])
+    z_np = sphere.triangles_center[:, 2]
+    cap_face = int(np.flatnonzero(z_np > 0.6)[0])
+    a, b = (int(v) for v in sphere.faces[cap_face, :2])
+    faces_np = np.concatenate([sphere.faces, [[a, a, b]]])
+    band_np = np.append(np.abs(z_np - 0.3) < 0.1, False)
+    filled_wp = od.selection.fill_face_mask_holes(
+        points_to_warp(sphere.vertices, device),
+        wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device),
+        wp.array(band_np, dtype=wp.bool, device=device),
+    )
+    expected_np = band_np | np.append(z_np > 0.3, True)
+    assert np.array_equal(filled_wp.numpy(), expected_np)
+
+
+def test_fill_face_mask_holes_joins_across_a_non_manifold_edge(device: str) -> None:
+    """
+    Not a library comparison: three faces on one edge are one mesh component.
+
+    A fin, a triangle on a new vertex, hangs off an edge inside a band around a closed sphere,
+    unselected. The fin shares that edge with two band faces, so it belongs to the sphere's
+    component, and its two free edges are rim: the component is open, the fin is the region
+    reaching the rim, and both caps, which do not, are filled. Read as a component of its own,
+    the fin would leave the sphere closed and only the small cap filled.
+    """
+    sphere = tm.creation.uv_sphere(count=[24, 24])
+    z_np = sphere.triangles_center[:, 2]
+    band_np = np.abs(z_np - 0.3) < 0.1
+    # An edge with a band face on both sides, so the fin borders no cap.
+    edges_np = np.sort(sphere.faces[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), axis=1)
+    edge_faces_np = np.repeat(np.arange(len(sphere.faces)), 3)
+    _, edge_ids_np = np.unique(edges_np, axis=0, return_inverse=True)
+    band_sides_np = np.bincount(edge_ids_np.reshape(-1), weights=band_np[edge_faces_np])
+    inner = int(np.flatnonzero(band_sides_np[edge_ids_np.reshape(-1)] == 2)[0])
+    a, b = (int(v) for v in edges_np[inner])
+    tip = len(sphere.vertices)
+    vertices_np = np.concatenate([sphere.vertices, [sphere.vertices[a] * 1.5]])
+    faces_np = np.concatenate([sphere.faces, [[a, b, tip]]])
+    mask_np = np.append(band_np, False)
+    filled_wp = od.selection.fill_face_mask_holes(
+        points_to_warp(vertices_np, device),
+        wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device),
+        wp.array(mask_np, dtype=wp.bool, device=device),
+    )
+    expected_np = np.append(np.ones(len(z_np), dtype=bool), False)
+    assert np.array_equal(filled_wp.numpy(), expected_np)
+    assert np.array_equal(
+        filled_wp.numpy(),
+        _fill_face_mask_holes_oracle(
+            vertices_np, faces_np.reshape(-1), mask_np, keep_largest=False
+        ),
+    )
+
+
+def test_fill_face_mask_holes_of_nothing_and_everything(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], saddle_graded: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """
+    Not a library comparison: an empty selection stays empty and a full one full.
+
+    On a closed mesh the one unselected region of an empty selection is its outside; on an open
+    one it reaches the rim. ``keep_largest`` of nothing is nothing.
+    """
+    for _mesh_tm, mesh_wp in (sphere_irregular, saddle_graded):
+        n_faces = mesh_wp.indices.size // 3
+        for value in (False, True):
+            mask_wp = wp.full(n_faces, value, dtype=wp.bool, device=mesh_wp.device)
+            for keep_largest in (False, True):
+                filled_wp = od.selection.fill_face_mask_holes(
+                    mesh_wp.points, mesh_wp.indices, mask_wp, keep_largest=keep_largest
+                )
+                assert np.array_equal(filled_wp.numpy(), np.full(n_faces, value))
+
+
+def test_fill_face_mask_holes_compressed_forest(
+    torus_irregular_holes: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: compressing both face forests changes no region.
+
+    The forests compress only from ``connected_components.ECL_COMPRESS_FROM`` faces, which no
+    test mesh reaches, so the threshold is lowered to force it; the rule's oracle is above.
+    """
+    from ordito.kernels.algorithms import connected_components as kernel_cc
+
+    mesh_tm, mesh_wp = torus_irregular_holes
+    mask_np = _wavy_face_mask(np.asarray(mesh_tm.vertices), mesh_tm.faces.reshape(-1), 23.0)
+    mask_wp = wp.array(mask_np, dtype=wp.bool, device=mesh_wp.device)
+    plain = od.selection.fill_face_mask_holes(mesh_wp.points, mesh_wp.indices, mask_wp).numpy()
+    monkeypatch.setattr(kernel_cc, "ECL_COMPRESS_FROM", 0)
+    compressed = od.selection.fill_face_mask_holes(mesh_wp.points, mesh_wp.indices, mask_wp)
+    assert not np.array_equal(plain, mask_np)
+    assert np.array_equal(compressed.numpy(), plain)
+
+
 def test_face_selections_of_nothing_are_empty(device: str) -> None:
     """
     Not a library comparison: selecting nothing, or from no faces, gives an empty answer.
@@ -637,6 +940,8 @@ def test_face_selections_of_nothing_are_empty(device: str) -> None:
     assert (no_face_vertices_wp.size, no_face_faces_wp.size) == (0, 0)
     no_vertex_mask_wp = warp_empty(0, wp.bool, device)
     assert od.selection.exclude_fully_selected_components(empty_wp, no_vertex_mask_wp, 0).size == 0
+    no_face_mask_wp = warp_empty(0, wp.bool, device)
+    assert od.selection.fill_face_mask_holes(vertices_wp, empty_wp, no_face_mask_wp).size == 0
 
 
 @pytest.mark.parity("submesh_from_face_indices", "open3d", "pyvista")

@@ -18,8 +18,9 @@ Three shapes are timed:
   the coalescing difference. The two are *not* the same kernel: ``max(axis=1)`` on an ``(n, 3)``
   table reduces a 3-wide extent and takes the one-thread-per-row serial path where ``sum(axis=0)``
   stays tiled. Timing both directions is what pins that dispatch.
-* **Sort-based** (``median``) — the outlier: it radix-sorts a *copy* and reads the middle element,
-  so it is O(n log n) and allocates where everything else here is one O(n) pass.
+* **Sort-based** (``median``, ``quantile``) — the outlier: it radix-sorts a *copy* and reads the
+  order statistics around the requested rank, so it is O(n log n) and allocates where everything
+  else here is one O(n) pass.
 
 ``vec3`` overloads are timed alongside the scalar ones because they are what real callers hit
 (centroids, normal averages) and they exercise a different tile accumulator.
@@ -554,3 +555,17 @@ def test_median(bench_case: BenchCase) -> None:
     values = _scalars_wp(bench_case)
     middle = bench_case.run(lambda: od.reduce.median(values))
     assert np.isfinite(middle)
+
+
+@pytest.mark.benchmark(group="quantile")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_quantile(bench_case: BenchCase) -> None:
+    """The ``median`` sort read off-centre: an order-statistic pair interpolated on the host."""
+    if bench_case.kind == "numpy":  # introselect partition around the two ranks, not a full sort
+        values_np = _scalars_np(bench_case)
+        tail_np = bench_case.run(lambda: float(np.quantile(values_np, 0.9)))
+        assert np.isfinite(tail_np)
+        return
+    values = _scalars_wp(bench_case)
+    tail = bench_case.run(lambda: od.reduce.quantile(values, 0.9))
+    assert np.isfinite(tail)
