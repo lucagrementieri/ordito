@@ -824,6 +824,7 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 - Backward passes dominate cold compile (§2.6). Only host readbacks block graph capture.
 - `@wp.func` is a real function that nvcc inlines; verify "free" by comparing `_forward` SASS from the module cache.
 - A kernel-scope `not` on a bool lowers as a select; share sentinel-returning predicates, not bools.
+- `@wp.func` keeps `inspect.currentframe()` in a local, a frame that refers to itself, so every decoration leaves a cycle only the collector frees, and through `f_back` it holds the whole importing stack. A submodule imported from inside a call (the first `od.<module>` a wrapper touches) kept that call's frame and every array bound in it, outputs included, until a full collection (26.9 MiB after a depth-9 octree call; the 1 000-odd decorations of an import outlive young collections). `ordito.__getattr__` therefore imports on a helper thread, whose stack starts at the thread (`_import_submodule`); a full `gc.collect()` after each import instead cost 110-150 ms.
 - `wp.constant(x)` is an identity; a tile `shape=` must be a plain integer; wrap typed constants in `int()` on the host.
 - A launch's `block_dim` is a compile-time parameter of the module launched (`Module.load(device, block_dim)`, with matching `__launch_bounds__`): a kernel launched at a second width builds its whole module again, and one of its kernels may not build at that width (`kernels/neighbors` at 128 failed). A kernel launched at its own width lives in its own module (`module="unique"`; `kernels/validation.closed_signed_volume`, `kernels/neighbors.query_nearest_via_bvh`).
 
@@ -948,18 +949,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   takes `4 (2**d + 15)` of them in open3d's order: 74 of `dragon`'s 98 ms at depth 10. Unpriced:
   replaying the waves as a graph (declined 2026-10-26 when each wave cost 14 us over the dense
   slice) and a per-brick neighbour table shortening the row's chain.
-- **`screened_poisson(method="octree")` far from the samples.** Surfaces open3d grows around
-  isolated points (a small sphere plus the eight corners of a large cube) differ by up to 0.35 of
-  a finest cell, at depths 8 and 10, CPU and CUDA; the samples' own surfaces match. Untraced.
 - **`screened_poisson(method="adaptive")` past depth 10** would fit (about 4x depth 10's
   2.3-2.9 GB and 4.5-6.1 M faces) but indexes its lattices in `int32` throughout
   (`poisson_grid_index`, `kernels/algorithms/poisson_band.py`): `2049**3` needs a 64-bit audit.
   `dense` cannot pass depth 10 (its lattice alone is ~4.3 GB a field there).
-- **A first call's lazily imported submodules keep its frame.** The first touch of `od.<module>`
-  inside a call runs the PEP 562 import, which leaves the calling frame in a reference cycle: its
-  locals, outputs included, stay allocated until the next garbage collection (26.9 MiB after a
-  depth-9 octree call). Once per process; a probe reading the mempool after a warm-up call must
-  `gc.collect()` first.
 - **`signed_distance_level_set` against `igl.offset_surface` at `iso = 0.1`.** One vertex 4.8e-5
   off on a near-tangent lattice edge; only igl's `float64` lattice reproduces it. Proposed: an
   opt-in `float64` path through the whole extraction (`bounds`, node positions, distances,

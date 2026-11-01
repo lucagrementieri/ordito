@@ -607,7 +607,7 @@ def test_comparison_label_scan_keys_on_asserts_not_on_fixture_unpacking() -> Non
 # --- the lazy package surface ---------------------------------------------------------------
 #
 # ``ordito/__init__.py`` resolves every submodule through a PEP 562 ``__getattr__`` so that
-# ``import ordito`` does not decorate 553 kernels. These four tests pin the contract that change
+# ``import ordito`` does not decorate 553 kernels. These five tests pin the contract that change
 # rests on. The first is the one that matters: the cost regresses the moment any eager import is
 # added back, and it regresses *silently*, because nothing else in the suite can see it -- by the
 # time a test runs, the modules it needed are imported and the surface looks identical.
@@ -643,6 +643,37 @@ def test_importing_ordito_pulls_in_no_kernel_modules() -> None:
     n_kernels, n_public = (int(token) for token in completed.stdout.split())
     assert n_kernels == 0, f"import ordito pulled in {n_kernels} kernel modules"
     assert n_public == 0, f"import ordito pulled in {n_public} public modules"
+
+
+def test_a_lazy_import_keeps_no_frame_of_its_caller() -> None:
+    """
+    A submodule first touched inside a call leaves none of that call's frames behind.
+
+    Not a library comparison: a property of ordito's import path. Warp's ``@wp.func`` keeps its own
+    frame in a local, a cycle only the garbage collector breaks, and a frame holds its callers:
+    imported in place, ``od.edges``'s decorations kept the calling function's frame, and with it
+    every array it had bound (26.9 MiB after an octree reconstruction), until a full collection.
+    Subprocessed, with the collector off, so the touch is the first and nothing collects the cycle.
+    Mutation probe: importing in place instead of on the helper thread leaves the frame (1, not 0).
+    """
+    probe = textwrap.dedent(
+        """
+        import gc, types
+        import ordito
+        gc.disable()
+        def caller():
+            return ordito.edges.__name__
+        caller()
+        print(sum(
+            isinstance(f, types.FrameType) and f.f_code.co_name == "caller"
+            for f in gc.get_objects()
+        ))
+        """
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert int(completed.stdout.split()[-1]) == 0
 
 
 def test_every_public_name_resolves_and_is_cached() -> None:
