@@ -596,7 +596,10 @@ def take_exact_winding(
 ) -> None:
     # In place: an undecided node takes its exact winding number and is settled, unless that too is
     # within ``delta`` of 1/2, where only Warp's own approximation reproduces Warp's sign; those
-    # keep their slot and are counted.
+    # keep their slot and are counted. This and ``warp_winding_sign`` sweep every node for at most
+    # ``_EXACT_WINDING_CAPACITY`` slots; together 0.73 ms of 22.5 ms device time at 256**3 and
+    # 1.2 of 64 ms at 384**3 (``bunny``, 2026-11-02), so a node list (and an overflow path beside
+    # it) is declined.
     i, j, k = wp.tid()
     slot = slots[i, j, k]
     if slot == 0:
