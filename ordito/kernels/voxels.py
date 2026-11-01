@@ -789,6 +789,10 @@ def dilation_candidates(
     # appended at the next slot of ``counter[0]``: the dilation's cells, with an empty cell once
     # for every voxel reaching it, and no occupied neighbour, which the voxel's own row already
     # gives. The builder sorts and merges the rows, so neither their order nor the repeats matter.
+    # Appending an empty cell only from the first stencil row that reaches it from an occupied
+    # voxel (up to 26 more probes a candidate) measured 0.80-0.85x on a thin shell at
+    # connectivity 26 but 1.04-1.08x on a solid at 6, ``dragon`` at 256 a side (2026-11-02):
+    # declined.
     v, m = wp.tid()
     di, dj, dk = row_triple(neighbors, m)
     cell = neighbor_cell(voxels, v, neighbors, m)

@@ -988,5 +988,4 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   - A shared `array.bit_ranks` / `mark_bit` / `bit_select` would serve the sparse-flag compactions
     (intersection, selection, seams, boundary, remesh) behind a size gate; it would replace
     `reconstruction._bit_ranks` and `kernels/remesh.scan_word_counts_exclusive`.
-  - Small: `cluster_outlier_mask` materializes the ball graph; `dilate` repeats an empty
-    neighbour once a voxel reaching it.
+  - Small: `cluster_outlier_mask` materializes the ball graph.
