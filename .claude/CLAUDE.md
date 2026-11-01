@@ -980,7 +980,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
     that already syncs can cut it (§3.7).
   - Broad-phase crossing flags `int32` a slot (`_compact_crossing_candidates`); `_link_curves`
     reads the whole weight scan back.
-  - `triangulate_point_cloud`: `out_tris` ~20 % used.
   - `linalg` workspaces: the Chebyshev's two spares, the squared-Laplacian / V-cycle vectors and
     the adaptive CG's two states could borrow CG `w` and share one state.
   - `levelset`: `marching_cubes` counts are a `vec2i` a node for O(res**2) active ones (large; a

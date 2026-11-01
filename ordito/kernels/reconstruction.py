@@ -838,9 +838,48 @@ def rebuild_grown_local_triangulations(
 
 
 @wp.kernel
-def candidate_triangle_keys(
-    tris: wp.array3d[wp.int32],
+def pack_fan_rows(
+    tris: wp.array3d[wp.int32], inclusive_counts: wp.array[wp.int32], out_rows: wp.array2d[wp.int32]
+) -> None:
+    # Launched over ``(n, k)``: fan slot ``(v, j)`` below point ``v``'s count copied to its packed
+    # row ``start + j``. The fans are built ``k`` slots a point and fill about six, so every later
+    # pass reads them packed: a fan slot keeps its flat number ``v * k + j`` (the sort payload and
+    # the flood's codes), and ``fan_row`` finds its packed row.
+    v, j = wp.tid()
+    start, count = scanned_count(inclusive_counts, v)
+    if j >= count:
+        return
+    for c in range(3):
+        out_rows[start + j, c] = tris[v, j, c]
+
+
+@wp.func
+def fan_row_index(
+    inclusive_counts: wp.array[wp.int32], fan_width: wp.int32, slot: wp.int32
+) -> wp.int32:
+    # The packed row of fan slot ``slot`` (``v * fan_width + j``): its fan's first row plus ``j``.
+    v = slot // fan_width
+    start, _count = scanned_count(inclusive_counts, v)
+    return start + slot - v * fan_width
+
+
+@wp.func
+def fan_row(
+    rows: wp.array2d[wp.int32],
     inclusive_counts: wp.array[wp.int32],
+    fan_width: wp.int32,
+    slot: wp.int32,
+) -> wp.vec3i:
+    # Fan slot ``slot``'s triangle, read from the packed fans (``pack_fan_rows``).
+    r = fan_row_index(inclusive_counts, fan_width, slot)
+    return wp.vec3i(rows[r, 0], rows[r, 1], rows[r, 2])
+
+
+@wp.kernel
+def candidate_triangle_keys(
+    rows: wp.array2d[wp.int32],
+    inclusive_counts: wp.array[wp.int32],
+    fan_width: wp.int32,
     radix: wp.uint64,
     out_keys: wp.array[wp.uint64],
     out_slots: wp.array[wp.int32],
@@ -854,8 +893,9 @@ def candidate_triangle_keys(
     start, count = scanned_count(inclusive_counts, v)
     if j >= count:
         return
-    out_keys[start + j] = pack_triangle_key(tris[v, j, 0], tris[v, j, 1], tris[v, j, 2], radix)
-    out_slots[start + j] = v * tris.shape[1] + j
+    r = start + j
+    out_keys[r] = pack_triangle_key(rows[r, 0], rows[r, 1], rows[r, 2], radix)
+    out_slots[r] = v * fan_width + j
 
 
 # --------------------------------------------------------------------------------------
@@ -910,34 +950,29 @@ def packed_candidate(
     i: wp.int32,
 ) -> wp.int32:
     # The packed row of sorted candidate ``i``: its fan's first row plus its slot within the fan.
-    slot = sorted_slots[i]
-    v = slot // fan_width
-    start, _count = scanned_count(inclusive_counts, v)
-    return start + slot - v * fan_width
+    return fan_row_index(inclusive_counts, fan_width, sorted_slots[i])
 
 
 @wp.kernel
 def pack_flood_candidates(
     sorted_keys: wp.array[wp.uint64],
     sorted_slots: wp.array[wp.int32],
-    tris: wp.array2d[wp.int32],
+    rows: wp.array2d[wp.int32],
     inclusive_counts: wp.array[wp.int32],
     fan_width: wp.int32,
-    out_rows: wp.array2d[wp.int32],
     out_partners: wp.array[wp.vec2i],
     out_codes: wp.array[wp.int32],
 ) -> None:
-    # The flood's candidate table, over sorted position ``i``: each fan slot's triangle at its
-    # packed position (a fan's triangles contiguous, its center in column 0), its code (twice the
-    # fan plus the row's winding against its sorted triple) and its partners, the packed rows of
-    # the other fans carrying the same triangle (at most its two other corners', ``-1`` past them),
-    # read off the run of equal unoriented keys. A vote then reads two codes, not the run.
+    # The flood's candidate table, over sorted position ``i``, beside the packed fans ``rows`` (a
+    # fan's triangles contiguous, its center in column 0): each fan slot's code at its packed
+    # position (twice the fan plus the row's winding against its sorted triple) and its partners,
+    # the packed rows of the other fans carrying the same triangle (at most its two other
+    # corners', ``-1`` past them), read off the run of equal unoriented keys. A vote then reads
+    # two codes, not the run.
     i = wp.int32(wp.tid())
     slot = sorted_slots[i]
     packed = packed_candidate(sorted_slots, inclusive_counts, fan_width, i)
-    for c in range(3):
-        out_rows[packed, c] = tris[slot, c]
-    wound = winding_flipped(tris[slot, 0], tris[slot, 1], tris[slot, 2])
+    wound = winding_flipped(rows[packed, 0], rows[packed, 1], rows[packed, 2])
     out_codes[packed] = 2 * (slot // fan_width) + wp.where(wound, 1, 0)
     first = i
     while not sorted_run_start(sorted_keys, first):
@@ -1593,23 +1628,26 @@ def flood_rounds_serial(
 
 @wp.kernel
 def flip_fan_windings(
-    flipped: wp.array[wp.int32], inclusive_counts: wp.array[wp.int32], tris: wp.array3d[wp.int32]
+    flipped: wp.array[wp.int32], inclusive_counts: wp.array[wp.int32], rows: wp.array2d[wp.int32]
 ) -> None:
-    # Reverse every triangle of a fan the flood flipped, in place.
+    # Reverse every triangle of a fan the flood flipped, in place in the packed fans.
     v, j = wp.tid()
-    _start, count = scanned_count(inclusive_counts, v)
+    start, count = scanned_count(inclusive_counts, v)
     if j >= count or flipped[v] == 0:
         return
-    b = tris[v, j, 1]
-    tris[v, j, 1] = tris[v, j, 2]
-    tris[v, j, 2] = b
+    r = start + j
+    b = rows[r, 1]
+    rows[r, 1] = rows[r, 2]
+    rows[r, 2] = b
 
 
 @wp.kernel
 def classify_oriented_repeats(
     sorted_keys: wp.array[wp.uint64],
     sorted_slots: wp.array[wp.int32],
-    tris: wp.array2d[wp.int32],
+    rows: wp.array2d[wp.int32],
+    inclusive_counts: wp.array[wp.int32],
+    fan_width: wp.int32,
     n: wp.int32,
     out_flags: wp.array[wp.int32],
     out_codes: wp.array[wp.int32],
@@ -1627,8 +1665,8 @@ def classify_oriented_repeats(
         for j in range(3):
             if i + j < n:
                 if sorted_keys[i + j] == key:
-                    slot = sorted_slots[i + j]
-                    if winding_flipped(tris[slot, 0], tris[slot, 1], tris[slot, 2]):
+                    tri = fan_row(rows, inclusive_counts, fan_width, sorted_slots[i + j])
+                    if winding_flipped(tri[0], tri[1], tri[2]):
                         opposite += 1
                     else:
                         same += 1
@@ -1649,7 +1687,9 @@ def emit_oriented_repeats(
     inclusive_flags: wp.array[wp.int32],
     codes: wp.array[wp.int32],
     sorted_slots: wp.array[wp.int32],
-    tris: wp.array2d[wp.int32],
+    rows: wp.array2d[wp.int32],
+    inclusive_counts: wp.array[wp.int32],
+    fan_width: wp.int32,
     radix: wp.uint64,
     out_rows: wp.array2d[wp.int32],
     out_low_keys: wp.array[wp.uint64],
@@ -1667,8 +1707,8 @@ def emit_oriented_repeats(
     if flag == 0:
         return
     code = codes[i]
-    slot = sorted_slots[i]
-    a, b, c = sort3(tris[slot, 0], tris[slot, 1], tris[slot, 2])
+    tri = fan_row(rows, inclusive_counts, fan_width, sorted_slots[i])
+    a, b, c = sort3(tri[0], tri[1], tri[2])
     if code % 2 == 1:
         b, c = c, b
     out_rows[row, 0] = a

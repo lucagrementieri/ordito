@@ -372,11 +372,11 @@ def triangulate_point_cloud(
     if normals is None:
         normals = od.points.estimate_normals(points, neighbor_idx, orientation="centroid")
 
-    # Per-point local fan triangulation: point ``v``'s fan fills ``out_tris[v, :count]``. The fans,
-    # their counts and the grown points' flags in one allocation.
-    widths = [3 * n * k, n, n]
-    tri_rows, fan_counts, grown_flags = _launch.carve(wp.int32, widths, device)
-    out_tris = tri_rows.reshape((n, k, 3))
+    # Per-point local fan triangulation: point ``v``'s fan fills ``out_tris[v, :count]``. The fans
+    # in an allocation of their own, released once packed; their counts and the grown points'
+    # flags in another.
+    out_tris = _launch.empty(3 * n * k, dtype=wp.int32, device=device).reshape((n, k, 3))
+    fan_counts, grown_flags = _launch.carve(wp.int32, [n, n], device)
     normals_mode = (
         kernel_reconstruction.NORMALS_ORIENTED
         if oriented
@@ -423,15 +423,36 @@ def triangulate_point_cloud(
     n_candidates = int(read_scalar(fan_counts))
     if n_candidates == 0:
         return _launch.clone(points), _launch.empty(0, dtype=wp.int32, device=device)
+    # The fans fill about six of a point's ``k`` slots: packed before the assembly, where the call
+    # peaks, and the padded table released.
+    fans = odt.empty_2d((n_candidates, 3), wp.int32, device=device)
+    _launch.launch(
+        kernel_reconstruction.pack_fan_rows,
+        dim=(n, k),
+        inputs=[out_tris, fan_counts],
+        outputs=[fans],
+        device=device,
+    )
+    del out_tris
 
     return _assemble_fans(
         points,
-        out_tris,
-        fan_counts,
+        _Fans(fans, fan_counts, k),
         n_candidates,
         crit_hole_length,
         orient_from=None if oriented else bounds,
     )
+
+
+class _Fans(NamedTuple):
+    """Every point's fan of local triangles, packed (``kernels/reconstruction.pack_fan_rows``)."""
+
+    rows: odt.Array2dInt32
+    """``(n_candidates, 3)`` the fans' triangles, a fan's contiguous, its center first."""
+    inclusive_counts: wp.array[wp.int32]
+    """``(n,)`` the inclusive scan of the fans' triangle counts."""
+    width: int
+    """The slots a fan was built in: fan slot ``v * width + j`` names point ``v``'s ``j``-th."""
 
 
 def _rebuild_grown_fans(
@@ -501,8 +522,7 @@ def _rebuild_grown_fans(
 
 def _assemble_fans(
     points: wp.array[wp.vec3],
-    tris: odt.ArrayNdInt32,
-    inclusive_counts: wp.array[wp.int32],
+    fans: _Fans,
     n_candidates: int,
     crit_hole_length: float,
     *,
@@ -524,10 +544,10 @@ def _assemble_fans(
     triangulation closes left open.
     """
     device = points.device
-    keys, slots = _sorted_candidate_keys(tris, inclusive_counts, n_candidates, points.size)
+    keys, slots = _sorted_candidate_keys(fans, n_candidates, points.size)
     if orient_from is not None:
-        _orient_fans(points, tris, inclusive_counts, keys, slots, n_candidates, orient_from)
-    rows, n_rep3 = _oriented_candidate_rows(points, tris, keys, slots, n_candidates)
+        _orient_fans(points, fans, keys, slots, n_candidates, orient_from)
+    rows, n_rep3 = _oriented_candidate_rows(points, fans, keys, slots, n_candidates)
     if rows.shape[0] == 0:
         return _launch.clone(points), _launch.empty(0, dtype=wp.int32, device=device)
     faces = _contested_rows_kept(points, rows, n_rep3)
@@ -552,8 +572,7 @@ _FLOOD_CUDA_LANES = 16384
 
 def _orient_fans(
     points: wp.array[wp.vec3],
-    tris: odt.ArrayNdInt32,
-    inclusive_counts: wp.array[wp.int32],
+    fans: _Fans,
     sorted_keys: wp.array[wp.uint64],
     sorted_slots: wp.array[wp.int32],
     n_candidates: int,
@@ -579,21 +598,15 @@ def _orient_fans(
     """
     device = points.device
     n = points.size
-    flat_rows, partners, codes = _launch.carve_typed(
-        ((wp.int32, 3 * n_candidates), (wp.vec2i, n_candidates), (wp.int32, n_candidates)), device
+    rows, inclusive_counts = fans.rows, fans.inclusive_counts
+    partners, codes = _launch.carve_typed(
+        ((wp.vec2i, n_candidates), (wp.int32, n_candidates)), device
     )
-    rows = odt.as_array2d(flat_rows.reshape((n_candidates, 3)), wp.int32)
     _launch.launch(
         kernel_reconstruction.pack_flood_candidates,
         dim=n_candidates,
-        inputs=[
-            sorted_keys,
-            sorted_slots,
-            tris.reshape((-1, 3)),
-            inclusive_counts,
-            wp.int32(tris.shape[1]),
-        ],
-        outputs=[rows, partners, codes],
+        inputs=[sorted_keys, sorted_slots, rows, inclusive_counts, wp.int32(fans.width)],
+        outputs=[partners, codes],
         device=device,
     )
     lower = np.array(bounds[0], dtype=np.float32)
@@ -627,7 +640,7 @@ def _orient_fans(
     # margin, seed, frontier count and largest inert fan.
     state = wp.array([0, 1, n, 0, -1, 0, -1, 0, -1, 0, -1], dtype=wp.int32, device=device)
 
-    fan_width = wp.int32(tris.shape[1])
+    fan_width = wp.int32(fans.width)
 
     def flood_round(slot: int, width: int) -> None:
         parity = wp.int32(slot)
@@ -729,8 +742,8 @@ def _orient_fans(
         run_device_loop(device, odt.as_dense(state[going : going + 1]), both_parities)
     _launch.launch(
         kernel_reconstruction.flip_fan_windings,
-        dim=(int(tris.shape[0]), int(tris.shape[1])),
-        inputs=[flipped, inclusive_counts, tris],
+        dim=(n, fans.width),
+        inputs=[flipped, inclusive_counts, rows],
         device=device,
     )
 
@@ -744,7 +757,7 @@ def _box_center(bounds: tuple[wp.vec3, wp.vec3]) -> wp.vec3:
 
 def _oriented_candidate_rows(
     points: wp.array[wp.vec3],
-    tris: odt.ArrayNdInt32,
+    fans: _Fans,
     keys: wp.array[wp.uint64],
     slots: wp.array[wp.int32],
     n_candidates: int,
@@ -758,16 +771,16 @@ def _oriented_candidate_rows(
     ``keys`` and ``slots`` are the fan slots grouped by vertex set
     ([`_sorted_candidate_keys`][ordito.reconstruction._sorted_candidate_keys]).
     """
-    device = tris.device
+    device = points.device
     n = points.size
-    fan_rows = tris.reshape((-1, 3))
+    fan_args = [fans.rows, fans.inclusive_counts, wp.int32(fans.width)]
     # The flags and the codes in the payload's upper half and a buffer of their own.
     flags = _launch.view(slots, n_candidates, 2 * n_candidates)
     codes = _launch.empty(n_candidates, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_reconstruction.classify_oriented_repeats,
         dim=n_candidates,
-        inputs=[keys, slots, fan_rows, wp.int32(n_candidates)],
+        inputs=[keys, slots, *fan_args, wp.int32(n_candidates)],
         outputs=[flags, codes],
         device=device,
     )
@@ -784,7 +797,7 @@ def _oriented_candidate_rows(
     _launch.launch(
         kernel_reconstruction.emit_oriented_repeats,
         dim=n_candidates,
-        inputs=[flags, codes, slots, fan_rows, wp.uint64(n)],
+        inputs=[flags, codes, slots, *fan_args, wp.uint64(n)],
         outputs=[rows, low, high, order, rep3],
         device=device,
     )
@@ -959,7 +972,7 @@ def _run_mesh_builder(
 
 
 def _sorted_candidate_keys(
-    tris: odt.ArrayNdInt32, inclusive_counts: wp.array[wp.int32], n_candidates: int, n: int
+    fans: _Fans, n_candidates: int, n: int
 ) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
     """
     Sort the fan slots by their triangle's unoriented key, the slot as payload.
@@ -968,12 +981,13 @@ def _sorted_candidate_keys(
     grouped by vertex set this way. The buffers are double-width, the radix sort's scratch in
     their upper halves, which the classes reuse.
     """
-    device = tris.device
+    device = fans.rows.device
     keys, slots = _launch.sort_buffers(n_candidates, wp.uint64, device)
     _launch.launch(
         kernel_reconstruction.candidate_triangle_keys,
-        dim=(int(tris.shape[0]), int(tris.shape[1])),
-        inputs=[tris, inclusive_counts, wp.uint64(n), keys, slots],
+        dim=(n, fans.width),
+        inputs=[fans.rows, fans.inclusive_counts, wp.int32(fans.width), wp.uint64(n)],
+        outputs=[keys, slots],
         device=device,
     )
     # Three indices below ``n`` pack below ``n ** 3``, so the sort orders only those low bits.

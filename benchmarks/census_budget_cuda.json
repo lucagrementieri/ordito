@@ -5675,8 +5675,8 @@
  },
  "benchmarks/test_reconstruction.py::test_triangulate_point_cloud[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 21,
-   "alloc": 24,
+   "launch": 22,
+   "alloc": 26,
    "memset": 7,
    "d2d": 1,
    "d2h": 8,
@@ -5686,8 +5686,8 @@
  },
  "benchmarks/test_reconstruction.py::test_triangulate_point_cloud_unoriented[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 38,
-   "alloc": 30,
+   "launch": 39,
+   "alloc": 32,
    "memset": 9,
    "d2d": 1,
    "h2d": 1,

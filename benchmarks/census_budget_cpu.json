@@ -5178,8 +5178,8 @@
  },
  "benchmarks/test_reconstruction.py::test_triangulate_point_cloud[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 21,
-   "alloc": 24,
+   "launch": 22,
+   "alloc": 26,
    "h2h": 1,
    "readback": 8,
    "scan": 7,
@@ -5188,8 +5188,8 @@
  },
  "benchmarks/test_reconstruction.py::test_triangulate_point_cloud_unoriented[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 27,
-   "alloc": 30,
+   "launch": 28,
+   "alloc": 32,
    "h2h": 2,
    "readback": 8,
    "scan": 7,
