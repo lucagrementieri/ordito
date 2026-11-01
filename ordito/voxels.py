@@ -3037,8 +3037,8 @@ def _allocate_appended(
     Build an index grid from the first ``counter[0]`` rows of ``candidates``, appended by a pass.
 
     A pass over a box keeps few of its cells, and the builder keys and sorts every row it is
-    handed, masked or not: the kept rows alone, at the cost of reading their count, build in
-    0.25-0.45x the time of the box with a ``point_mask``.
+    handed, masked or not, so it is handed the kept rows alone, at the cost of reading their count
+    (``kernels/voxels.append_dense_candidate``).
     """
     # The one readback: the builder takes the kept rows' count as its point count.
     count = int(read_scalar(counter, 0))

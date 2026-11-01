@@ -4373,6 +4373,12 @@ def compact_surviving_faces(
     out_order: wp.array[wp.int32],
 ) -> None:
     # ``compact_surviving_faces_at`` a thread a face or target.
+    #
+    # The next pass sorts, marks and scans the whole entry width, the dead tail keyed to sort
+    # last. Cutting those to the live count the stop read already returns was priced and declined
+    # (2026-11-01): a collapse call's five passes keep 73 % or more of the entry faces (``dragon``
+    # at twice the mean edge), and a full-width sort there is 1.6x a half-width one, so it would
+    # save under 1 % of an isotropic remesh.
     t = wp.int32(wp.tid())
     compact_surviving_faces_at(
         faces,

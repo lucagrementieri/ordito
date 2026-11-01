@@ -358,6 +358,7 @@ def shape_diameter(
     caller_max_t: wp.float32,
     offset_scale: wp.float64,
     trim: wp.float32,
+    first: wp.int32,
     scratch: wp.array2d[wp.float32],
     out_diameter: wp.array[wp.float32],
 ) -> None:
@@ -377,8 +378,12 @@ def shape_diameter(
     # (15 GB at 14 M points and 256 rays): holding each lane's few distances in a register vector
     # instead (one unrolled kernel per rays-per-lane bucket) measured 0.97-0.98x on bunny, dragon
     # and lucy at 64 and 256 rays. Each lane writes and rereads its own contiguous slots, which
-    # the cache absorbs; the traced rays are the cost.
-    i, t = wp.tid()
+    # the cache absorbs; the traced rays are the cost. Its footprint is bounded by launching over
+    # chunks of points from ``first``, ``scratch`` holding the chunk's rows (row ``c`` is point
+    # ``first + c``); a point's result depends on its own rays alone, so the chunking changes no
+    # value.
+    c, t = wp.tid()
+    i = first + c
     max_t, offset = bundle_limits(corners, caller_max_t, offset_scale)
     # Inward, so the bundle's axis is ``-normal`` and the origin steps *below* the surface.
     axis, basis_x, basis_y, origin = hemisphere_frame(points, normals, i, offset, wp.float32(-1.0))
@@ -395,7 +400,7 @@ def shape_diameter(
             total += distance
             total_sq += distance * distance
             hits += 1.0
-        scratch[i, r] = distance
+        scratch[c, r] = distance
     # One block reduction of the three sums, so every lane holds the same mean and deviation.
     moments = block_sum(wp.vec3(total, total_sq, hits))
     total = moments[0]
@@ -411,7 +416,7 @@ def shape_diameter(
     kept = wp.float32(0.0)
     weighted = wp.float32(0.0)
     for r in range(t, n_rays, wp.block_dim()):
-        distance = scratch[i, r]
+        distance = scratch[c, r]
         if keeps_distance(distance, mean, deviation, trim):
             weight = directions[r][2]  # cosine of the angle from the cone axis
             kept += weight

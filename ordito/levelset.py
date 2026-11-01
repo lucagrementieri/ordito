@@ -700,11 +700,11 @@ def _winding_band_field(
         device=device,
     )
 
-    # Each node's undecided slot and the undecided nodes' positions, in one allocation.
-    flat_slots, undecided = _launch.carve_typed(
-        ((wp.int32, n_nodes), (wp.vec3, _EXACT_WINDING_CAPACITY)), device
-    )
-    slots = odt.as_array3d(flat_slots.reshape(shape), wp.int32)
+    # Each node's undecided slot rides in its ambiguity mark, which the winding pass reads at that
+    # node alone, before writing the slot, and nothing reads after it; the undecided nodes'
+    # positions take their own allocation.
+    slots = odt.as_array3d(ambiguous, wp.int32)
+    undecided = _launch.empty(_EXACT_WINDING_CAPACITY, dtype=wp.vec3, device=device)
     counts = _launch.view(zeroed, 3 * n_nodes, 3 * n_nodes + 2)
     _launch.launch(
         kernel_levelset.lattice_winding_numbers,

@@ -37,8 +37,9 @@ Everything the algorithm needs lives in device buffers that survive the whole ru
 launches only -- no allocations, no host readbacks, and nothing is re-derived from scratch:
 
 * **Edge table.** An open-addressed hash keyed by the undirected edge (``edge_key``), holding the
-  incident-face count, the single incident face's directed orientation (``edge_src`` / ``edge_tgt``
-  / ``edge_opp``) while the edge is on the boundary, a retirement flag and a cached best candidate.
+  incident-face count, the single incident face's directed orientation while the edge is on the
+  boundary (``edge_opp``: the opposite vertex, and in its sign the face's direction along the
+  key's pair, ``boundary_edge``), a retirement flag and a cached best candidate.
   ``commit_triangles`` is its only mutator. This replaces re-deriving the front from the whole
   triangle soup each wave with ``edges_unique`` + a sorted interior-key array, and turns the
   manifold guard from a binary search into one hash probe.
@@ -83,7 +84,7 @@ import warp as wp
 
 from ordito.constants import TWO_PI, UINT64_MAX_CONSTANT
 from ordito.kernels.array import pack_edge_key
-from ordito.kernels.grouping import hash_find, hash_find_or_insert
+from ordito.kernels.grouping import decode_key, hash_find, hash_find_or_insert
 from ordito.kernels.predicates import dihedral_angle, float_inf, triangle_normal
 from ordito.kernels.proximity import flag_overfull_leaf, meets_overfull_leaf, straggler_slab
 from ordito.kernels.reduce import block_argmin
@@ -144,7 +145,7 @@ EDGE_RETIRED = wp.constant(1)
 @wp.struct
 class BpaEdgeTable:
     """
-    The open-addressed edge table, as one kernel argument instead of nine.
+    The open-addressed edge table, as one kernel argument instead of seven.
 
     Every wave launches ``pivot_front_edges`` (27 arguments before this, 19 after) and
     ``commit_triangles`` (20, now 13), and both carried the whole table; seven functions here
@@ -161,13 +162,26 @@ class BpaEdgeTable:
 
     key: wp.array[wp.uint64]
     count: wp.array[wp.int32]
-    src: wp.array[wp.int32]
-    tgt: wp.array[wp.int32]
     opp: wp.array[wp.int32]
     state: wp.array[wp.int32]
     cand: wp.array[wp.int32]
     mask: wp.int32
     key_base: wp.uint64
+
+
+@wp.func
+def boundary_edge(edges: BpaEdgeTable, slot: wp.int32) -> tuple[wp.int32, wp.int32, wp.int32]:
+    # ``(src, tgt, opp)`` of the boundary edge at ``slot``: its single face's directed edge and
+    # opposite vertex. The slot's key is the undirected pair ``min + max * key_base``
+    # (``pack_edge_key``), so only the face's direction along it is stored, in ``opp``'s sign
+    # (``register_face_edge``): two directed endpoints a slot cost a quarter of the table.
+    key = decode_key(edges.key[slot])
+    low = wp.int32(key % edges.key_base)
+    high = wp.int32(key // edges.key_base)
+    stored = edges.opp[slot]
+    if stored >= 0:
+        return low, high, stored
+    return high, low, -1 - stored
 
 
 @wp.func
@@ -954,9 +968,7 @@ def pivot_front_edges_block(
         if seeding:
             continue  # a seeding wave only carries the front forward
 
-        src = edges.src[slot]
-        tgt = edges.tgt[slot]
-        opp = edges.opp[slot]
+        src, tgt, opp = boundary_edge(edges, slot)
         p_src = points[src]
         p_tgt = points[tgt]
         tri_norm = triangle_normal(p_src, p_tgt, points[opp])
@@ -1232,9 +1244,7 @@ def register_face_edge(
     slot = hash_find_or_insert(pack_edge_key(u, v, edges.key_base), edges.key, edges.mask)
     previous = wp.atomic_add(edges.count, slot, 1)
     if previous == 0:
-        edges.src[slot] = u
-        edges.tgt[slot] = v
-        edges.opp[slot] = opp
+        edges.opp[slot] = wp.where(u < v, opp, -1 - opp)
         edges.cand[slot] = -1
         push_front_edge(slot, front_capacity, counters, front_out)
         wp.atomic_add(boundary_degree, u, 1)
@@ -1534,16 +1544,12 @@ def compact_front(
 def rehash_edges(
     old_key: wp.array[wp.uint64],
     old_count: wp.array[wp.int32],
-    old_src: wp.array[wp.int32],
-    old_tgt: wp.array[wp.int32],
     old_opp: wp.array[wp.int32],
     old_state: wp.array[wp.int32],
     old_cand: wp.array[wp.int32],
     new_mask: wp.int32,
     new_key: wp.array[wp.uint64],
     new_count: wp.array[wp.int32],
-    new_src: wp.array[wp.int32],
-    new_tgt: wp.array[wp.int32],
     new_opp: wp.array[wp.int32],
     new_state: wp.array[wp.int32],
     new_cand: wp.array[wp.int32],
@@ -1557,8 +1563,6 @@ def rehash_edges(
     key = stored - wp.uint64(1)  # undo ``encode_key``: 0 is the empty sentinel
     slot = hash_find_or_insert(key, new_key, new_mask)
     new_count[slot] = old_count[h]
-    new_src[slot] = old_src[h]
-    new_tgt[slot] = old_tgt[h]
     new_opp[slot] = old_opp[h]
     new_state[slot] = old_state[h]
     new_cand[slot] = old_cand[h]

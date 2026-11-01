@@ -69,6 +69,11 @@ _WEIGHT_MODES: dict[str, wp.int32] = {
 # ``triangles._QUALITY_METRICS``.
 _THICKNESS_METHODS = frozenset({"max_sphere", "ray"})
 
+# ``shape_diameter``'s distance buffer, in entries: 256 MiB of ``float32``, a chunk of points a
+# launch (262 144 points at 256 rays). Above it a launch's points already fill the device many
+# times over, so a chunk costs only its launch.
+_SHAPE_DIAMETER_SCRATCH = 1 << 26
+
 RayWeight = Literal["cosine", "uniform"]
 """Weighting of a ray; see [`ambient_occlusion`][ordito.visibility.ambient_occlusion]."""
 
@@ -475,24 +480,29 @@ def shape_diameter(
     directions, *limits = _bundle_inputs(mesh, points, max_t, n_rays, 1.0 - math.cos(cone_angle))
     # Distances are kept so the trimming pass can revisit them against a mean the first pass had not
     # finished computing; re-tracing instead would double the only expensive part of the kernel.
-    scratch = odt.empty_2d((m, n_rays), wp.float32, device=device)
+    # They are kept a chunk of points at a time, so the buffer stays near
+    # ``_SHAPE_DIAMETER_SCRATCH`` entries whatever the point count (it was gigabytes on a scan).
+    chunk = min(m, max(1, _SHAPE_DIAMETER_SCRATCH // n_rays))
+    scratch = odt.empty_2d((chunk, n_rays), wp.float32, device=device)
     out_diameter = _launch.empty(m, dtype=wp.float32, device=device)
-    _launch.launch_tiled(
-        kernel_visibility.shape_diameter,
-        dim=(m,),
-        inputs=[
-            mesh.id,
-            points,
-            normals,
-            directions,
-            *limits,
-            wp.float32(trim),
-            scratch,
-            out_diameter,
-        ],
-        block_dim=kernel_visibility.BUNDLE_BLOCK,
-        device=device,
-    )
+    for first in range(0, m, chunk):
+        _launch.launch_tiled(
+            kernel_visibility.shape_diameter,
+            dim=(min(chunk, m - first),),
+            inputs=[
+                mesh.id,
+                points,
+                normals,
+                directions,
+                *limits,
+                wp.float32(trim),
+                first,
+                scratch,
+                out_diameter,
+            ],
+            block_dim=kernel_visibility.BUNDLE_BLOCK,
+            device=device,
+        )
     return out_diameter
 
 

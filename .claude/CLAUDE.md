@@ -975,15 +975,14 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
     that already syncs can cut it (§3.7).
   - Broad-phase crossing flags `int32` a slot (`_compact_crossing_candidates`); `_link_curves`
     reads the whole weight scan back.
-  - `ball_pivoting`: hash table at 6-12 % load with `src` / `tgt` derivable from the key, front
-    arrays at `13 n`. `triangulate_point_cloud`: `out_tris` ~20 % used.
+  - `ball_pivoting`: front arrays at `13 n` and a `4 n + 16` face budget for a front far below
+    them. `triangulate_point_cloud`: `out_tris` ~20 % used.
   - `linalg` workspaces: the Chebyshev's two spares, the squared-Laplacian / V-cycle vectors and
     the adaptive CG's two states could borrow CG `w` and share one state.
-  - `levelset`: `_winding_band_field` slots can ride in `ambiguous`; `marching_cubes` counts are a
-    `vec2i` a node for O(res**2) active ones (large; a recorded design, not a decline).
-  - Collapse passes sort and scan at the entry width; `boundary_loops` successor tables and
-    `repair._smallest_first_survivors` are sized by every node or face for a few live ones;
-    `shape_diameter` scratch is `(m, n_rays)` unchunked.
+  - `levelset`: `marching_cubes` counts are a `vec2i` a node for O(res**2) active ones (large; a
+    recorded design, not a decline); `take_exact_winding` sweeps every node for a few slots.
+  - `boundary_loops` successor tables and `repair._smallest_first_survivors` are sized by every
+    node or face for a few live ones.
   - A shared `array.bit_ranks` / `mark_bit` / `bit_select` would serve the sparse-flag compactions
     (intersection, selection, seams, boundary, remesh) behind a size gate; it would replace
     `reconstruction._bit_ranks` and `kernels/remesh.scan_word_counts_exclusive`.

@@ -711,7 +711,7 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # the outgoing front.
     ("algorithms.ball_pivoting", "pivot_front_edges"): frozenset({"front_out"}),
     ("algorithms.ball_pivoting", "rehash_edges"): frozenset(
-        {"new_cand", "new_count", "new_opp", "new_src", "new_state", "new_tgt"}
+        {"new_cand", "new_count", "new_opp", "new_state"}
     ),
     # The convex hull's surface is one set of buffers rewritten in place from the first kernel to
     # the last: ``tri`` / ``adj`` (faces and their packed adjacency), ``best`` (each face's farthest

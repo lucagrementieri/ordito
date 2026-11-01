@@ -4552,11 +4552,9 @@ class _BpaState:
             self.device,
             zeroed=True,
         )
-        unfilled = [max_faces * 3] + [capacity] * 4 + [front_capacity] * 5
+        unfilled = [max_faces * 3] + [capacity] * 2 + [front_capacity] * 5
         (
             self.all_faces,
-            self.edge_src,
-            self.edge_tgt,
             self.edge_opp,
             self.edge_cand,
             self.front_in,
@@ -4576,14 +4574,12 @@ class _BpaState:
 
     def _bind_edge_table(self) -> None:
         """Rebuild the ``BpaEdgeTable`` view of the edge arrays: once here, never per launch."""
-        # Nine of the wave kernels' arguments live in here, so binding these once here rather than
+        # Seven of the wave kernels' arguments live in here, so binding these once here rather than
         # per launch avoids re-marshalling them across the whole wave loop. Call this after
         # anything that *reallocates* an edge array, which is only ``grow``.
         table = kernel_bpa.BpaEdgeTable()
         table.key = self.edge_key
         table.count = self.edge_count
-        table.src = self.edge_src
-        table.tgt = self.edge_tgt
         table.opp = self.edge_opp
         table.state = self.edge_state
         table.cand = self.edge_cand
@@ -4598,15 +4594,7 @@ class _BpaState:
         Slot indices move when the edge table is rehashed, so the front list is rebuilt from the
         new table rather than remapped.
         """
-        old = (
-            self.edge_key,
-            self.edge_count,
-            self.edge_src,
-            self.edge_tgt,
-            self.edge_opp,
-            self.edge_state,
-            self.edge_cand,
-        )
+        old = (self.edge_key, self.edge_count, self.edge_opp, self.edge_state, self.edge_cand)
         old_capacity = self.edge_key.size
         old_faces = self.all_faces
         old_count = min(int(read_scalar(self.counters, kernel_bpa.CNT_FACE)), self.max_faces)
@@ -4628,8 +4616,6 @@ class _BpaState:
                 self.edge_mask,
                 self.edge_key,
                 self.edge_count,
-                self.edge_src,
-                self.edge_tgt,
                 self.edge_opp,
                 self.edge_state,
                 self.edge_cand,
