@@ -740,12 +740,19 @@ def _marching_triangles_both_links(
     values_wp: wp.array[wp.float32] | wp.array[wp.float64],
     isovalue: float,
 ) -> list[tuple[list[np.ndarray], list[bool]]]:
-    """Run ``marching_triangles`` once through the host link and once through the device link."""
+    """
+    Run ``marching_triangles`` through the host link, then the device link twice.
+
+    The device link reads its scanned weights back whole below ``_LINK_HEADS_ON_DEVICE_FROM``
+    endpoints and finds its curves' heads on the device from it, which no fixture reaches: the
+    gate is forced each way.
+    """
     results = []
-    for on_device in (False, True):
+    for on_device, heads_from in ((False, 0), (True, 1 << 30), (True, 0)):
         monkeypatch.setattr(
             od.intersection, "_links_on_device", lambda device, n, on_device=on_device: on_device
         )
+        monkeypatch.setattr(od.intersection, "_LINK_HEADS_ON_DEVICE_FROM", heads_from)
         curves_wp, closed_wp = od.intersection.marching_triangles(
             vertices_wp, faces_wp, values_wp, isovalue
         )
@@ -784,17 +791,18 @@ def test_marching_triangles_device_link_matches_host_link(
         values_np = np.sin(9.0 * vertices_np[:, 0]) * np.cos(7.0 * vertices_np[:, 1])
     values_wp = wp.array(values_np, dtype=wp.float64, device=mesh_wp.device)
 
-    (curves_host, closed_host), (curves_device, closed_device) = _marching_triangles_both_links(
+    (curves_host, closed_host), *device_links = _marching_triangles_both_links(
         monkeypatch, mesh_wp.points, mesh_wp.indices, values_wp, 0.1
     )
 
     assert len(curves_host) > 0
     if mesh_name in OPEN_MESHES:
         assert not all(closed_host)
-    assert closed_device == closed_host
-    assert len(curves_device) == len(curves_host)
-    for points_device, points_host in zip(curves_device, curves_host, strict=True):
-        assert np.array_equal(points_device, points_host)
+    for curves_device, closed_device in device_links:
+        assert closed_device == closed_host
+        assert len(curves_device) == len(curves_host)
+        for points_device, points_host in zip(curves_device, curves_host, strict=True):
+            assert np.array_equal(points_device, points_host)
 
 
 def test_marching_triangles_rejects_inconsistent_winding(
@@ -816,10 +824,11 @@ def test_marching_triangles_rejects_inconsistent_winding(
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np.reshape(-1), device)
     values_wp = wp.array(values_np, dtype=wp.float64, device=device)
 
-    for on_device in (False, True):
+    for on_device, heads_from in ((False, 0), (True, 1 << 30), (True, 0)):
         monkeypatch.setattr(
             od.intersection, "_links_on_device", lambda device, n, on_device=on_device: on_device
         )
+        monkeypatch.setattr(od.intersection, "_LINK_HEADS_ON_DEVICE_FROM", heads_from)
         with pytest.raises(ValueError, match="not consistently oriented"):
             od.intersection.marching_triangles(vertices_wp, faces_wp, values_wp, 0.0)
 

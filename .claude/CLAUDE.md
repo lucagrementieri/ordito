@@ -978,7 +978,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   - `_csr_from_coo_keys` sizes `columns` / `values` by contributions, not entries: public returns
     (`energies` sandwich products, `laplacian`'s keyed path) keep that capacity; only a caller
     that already syncs can cut it (§3.7).
-  - `_link_curves` reads the whole weight scan back.
   - `linalg` workspaces: the Chebyshev's two spares, the squared-Laplacian / V-cycle vectors and
     the adaptive CG's two states could borrow CG `w` and share one state.
   - `levelset`: `marching_cubes` counts are a `vec2i` a node for O(res**2) active ones (large; a

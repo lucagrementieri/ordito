@@ -47,6 +47,9 @@ DType = TypeVar("DType")
 
 # Segment count from which ``marching_triangles`` links its curves on the device.
 _LINK_ON_DEVICE_FROM = 1024
+# Endpoint count from which the device link finds its curves' heads on the device too, rather
+# than reading the scanned weights back whole.
+_LINK_HEADS_ON_DEVICE_FROM = 1 << 16
 
 # Largest distance from its best-fit plane, relative to the loop's extent, at which a capped clip's
 # section loop counts as planar and is ear-clipped. Crossing points of a plane field sit on the
@@ -657,6 +660,10 @@ def _link_on_device(
         device=device,
     )
     bounds_view = weights[:m]
+    if m >= _LINK_HEADS_ON_DEVICE_FROM:
+        return _emit_linked_curves(
+            hit_segments, link, state, weights, head_of_tail, n, m, endpoints, keys
+        )
     _launch.array_scan(bounds_view, out_array=bounds_view, inclusive=True)
     # The one readback of the device link: the scanned weights size the output and bound every
     # curve, and the last slot says whether the pairing was clean.
@@ -681,6 +688,51 @@ def _link_on_device(
         device=device,
     )
     return points, [0, *scan[names].tolist()], (names >= n).tolist()
+
+
+def _emit_linked_curves(
+    hit_segments: odt.Array2dVec3,
+    link: wp.array[wp.int32],
+    state: wp.array[wp.vec4i],
+    weights: wp.array[wp.int32],
+    head_of_tail: wp.array[wp.int32],
+    n: int,
+    m: int,
+    endpoints: wp.array[wp.int32],
+    keys: wp.array[wp.int64],
+) -> tuple[wp.array[wp.vec3] | np.ndarray, list[int], list[bool]]:
+    """
+    ``_link_on_device``'s ending for many segments: the curve heads found on the device.
+
+    A curve's head is its one nonzero weight, so its slots are the weights' nonzero entries,
+    compacted before the scan, and its bounds the scan at them: the host reads the curves and the
+    pairing flag, not the ``2 n + 1`` scanned weights, whose read and host walk cost most of a
+    large level set's call.
+    """
+    device = weights.device
+    # The pairing flag first: a level set the device cannot pair is the host link's.
+    if int(read_scalar(weights, m)) != 0:
+        edges_np = np.empty(m, dtype=np.int64)
+        np.put(
+            edges_np,
+            cast("npt.NDArray[np.int32]", odt.as_dense(endpoints[:m]).numpy()),
+            odt.as_dense(keys[:m]).numpy(),
+        )
+        return _link_on_host(hit_segments.numpy().reshape(m, 3), edges_np.reshape(n, 2))
+    bounds_view = odt.as_dense(weights[:m])
+    heads = od.array.flatnonzero(bounds_view)
+    _launch.array_scan(bounds_view, out_array=bounds_view, inclusive=True)
+    # The curves' bounds and heads: two reads of a few entries each.
+    ends = od.array.gather(bounds_view, heads).numpy()
+    heads_np = heads.numpy()
+    points = _launch.empty(int(ends[-1]), dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_intersections.emit_linked_curves,
+        dim=n,
+        inputs=[hit_segments, link, state, weights, head_of_tail, n, points],
+        device=device,
+    )
+    return points, [0, *ends.tolist()], (heads_np >= n).tolist()
 
 
 def _link_on_host(
