@@ -689,9 +689,9 @@ def chebyshev_step(
     # a different polynomial -- still a polynomial, but one that can change sign inside the
     # interval once ``theta`` is not close to 1. Written in ``x`` rather than in the correction so
     # that the one mat-vec and both updates are a single launch, which is what a step costs at these
-    # sizes. ``out_x`` must alias neither ``x`` (the row dot reads it at other rows) nor
-    # ``x_previous``. Shares ``csr_row_dot`` with ``csr_matvec``, and its row with
-    # ``chebyshev_polynomial_serial``.
+    # sizes. ``out_x`` must not alias ``x`` (the row dot reads it at other rows); it may alias
+    # ``x_previous``, which each row reads at its own slot before writing it. Shares
+    # ``csr_row_dot`` with ``csr_matvec``, and its row with ``chebyshev_polynomial_serial``.
     t = wp.int32(wp.tid())
     column = t // n_rows
     row = t % n_rows

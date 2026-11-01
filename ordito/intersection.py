@@ -231,16 +231,28 @@ def mesh_with_plane(
             return empty_segments, _launch.empty(0, dtype=wp.int32, device=device)
         return empty_segments
 
+    # A flag a face, then the cut faces' segments formed again in the compaction: a segment pair
+    # stored for every face would be written for the few the plane cuts.
     cut = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    segments = odt.empty_2d((n_faces, 2), wp.vec3, device=device)
+    plane = [vertices, faces, plane_normal, plane_origin]
     _launch.launch(
-        kernel_intersections.mesh_with_plane_segments,
+        kernel_intersections.mesh_with_plane_flags,
         dim=n_faces,
-        inputs=[vertices, faces, plane_normal, plane_origin, cut, segments],
+        inputs=plane,
+        outputs=[cut],
         device=device,
     )
-
-    lines, hit_faces = _compact_cut_segments(cut, segments, return_rows=return_faces)
+    n_kept = _scan_cut_flags(cut)
+    lines = odt.empty_2d((n_kept, 2), wp.vec3, device=device)
+    hit_faces = _launch.empty(n_kept, dtype=wp.int32, device=device) if return_faces else None
+    if n_kept > 0:
+        _launch.launch(
+            kernel_intersections.compact_plane_segments,
+            dim=n_faces,
+            inputs=[*plane, cut],
+            outputs=[lines, hit_faces],
+            device=device,
+        )
     if not return_faces:
         return lines
     assert hit_faces is not None
@@ -510,35 +522,28 @@ def _marching_curves(
     # The key base only has to exceed every vertex index the faces reference; ``vertices`` is the
     # buffer they index, so its length is the bound whenever the caller did not give one.
     key_base = int(n_vertices) if n_vertices is not None else vertices.size
+    # A flag a face, then the cut faces' segments and keys formed again in the compaction: a
+    # segment pair and a key pair stored for every face would be written for the few cut.
+    field = [vertices, faces, values, values.dtype(isovalue)]
     cut = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    segments = odt.empty_2d((n_faces, 2), wp.vec3, device=device)
-    segment_edges = odt.empty_2d((n_faces, 2), wp.int64, device=device)
     _launch.launch(
-        kernel_intersections.MARCHING_TRIANGLES_SEGMENTS[values.dtype],
+        kernel_intersections.MARCHING_TRIANGLES_FLAGS[values.dtype],
         dim=n_faces,
-        inputs=[
-            vertices,
-            faces,
-            values,
-            values.dtype(isovalue),
-            wp.int64(key_base),
-            cut,
-            segments,
-            segment_edges,
-        ],
+        inputs=field,
+        outputs=[cut],
         device=device,
     )
-
     n_segments = _scan_cut_flags(cut)
     if n_segments == 0:
         return None
-    return _link_curves(cut, segments, segment_edges, n_segments, key_base)
+    compact = kernel_intersections.COMPACT_CUT_SEGMENT_KEYS[values.dtype]
+    return _link_curves(cut, compact, [*field, wp.int64(key_base)], n_segments, key_base)
 
 
 def _link_curves(
     inclusive: wp.array[wp.int32],
-    segments: odt.Array2dVec3,
-    segment_edges: wp.array[wp.int64, Literal[2]],
+    compact: odt.Kernel,
+    field: list[object],
     n_segments: int,
     key_base: int,
 ) -> tuple[wp.array[wp.vec3] | np.ndarray, list[int], list[bool]]:
@@ -553,7 +558,7 @@ def _link_curves(
     """
     device = cast("wp.Device", inclusive.device)
     if _links_on_device(device, n_segments):
-        return _link_on_device(inclusive, segments, segment_edges, n_segments, key_base)
+        return _link_on_device(inclusive, compact, field, n_segments, key_base)
     n = n_segments
     # The host link needs the kept segments' keys *and* their endpoints, so both are compacted into
     # one buffer and read back together: ``2 n`` keys, then the ``2 n`` endpoint positions in the
@@ -566,9 +571,9 @@ def _link_curves(
         ptr=int(record.ptr) + 16 * n, dtype=wp.vec3, shape=(n, 2), device=device
     )
     _launch.launch(
-        kernel_intersections.compact_cut_segment_keys,
+        compact,
         dim=inclusive.size,
-        inputs=[inclusive, segments, segment_edges, record_points, record, None],
+        inputs=[*field, inclusive, record_points, record, None],
         device=device,
     )
     # The one readback of the host link.
@@ -588,8 +593,8 @@ def _links_on_device(device: wp.Device, n_segments: int) -> bool:
 
 def _link_on_device(
     inclusive: wp.array[wp.int32],
-    segments: odt.Array2dVec3,
-    segment_edges: wp.array[wp.int64, Literal[2]],
+    compact: odt.Kernel,
+    field: list[object],
     n_segments: int,
     key_base: int,
 ) -> tuple[wp.array[wp.vec3] | np.ndarray, list[int], list[bool]]:
@@ -609,9 +614,9 @@ def _link_on_device(
     hit_segments = odt.empty_2d((n, 2), wp.vec3, device=device)
     keys, endpoints = _launch.sort_buffers(m, wp.int64, device)
     _launch.launch(
-        kernel_intersections.compact_cut_segment_keys,
+        compact,
         dim=inclusive.size,
-        inputs=[inclusive, segments, segment_edges, hit_segments, keys, endpoints],
+        inputs=[*field, inclusive, hit_segments, keys, endpoints],
         device=device,
     )
     # Every key packs two vertex indices below ``key_base``, so only its low bits need sorting.
@@ -2504,32 +2509,6 @@ def _clip_with_sources(
         out_vertices, out_faces, return_inverse=True
     )
     return new_vertices, new_faces, source
-
-
-def _compact_cut_segments(
-    cut: wp.array[wp.int32], segments: odt.Array2dVec3, *, return_rows: bool = False
-) -> tuple[odt.Array2dVec3, wp.array[wp.int32] | None]:
-    """
-    Keep the rows of ``segments`` whose ``0`` / ``1`` ``cut`` flag is set, in order.
-
-    ``cut`` is scanned in place (``_scan_cut_flags``), and its tail -- the kept count, the one
-    readback -- sizes the outputs, which one ``compact_cut_segments`` launch fills; with
-    ``return_rows`` it also writes the source row of each kept segment. Returns
-    ``(segments, rows)``, the second ``None`` when not asked for.
-    """
-    device = cut.device
-    n = cut.size
-    n_kept = _scan_cut_flags(cut)
-    out_segments = odt.empty_2d((n_kept, 2), wp.vec3, device=device)
-    out_rows = _launch.empty(n_kept, dtype=wp.int32, device=device) if return_rows else None
-    if n_kept > 0:
-        _launch.launch(
-            kernel_intersections.compact_cut_segments,
-            dim=n,
-            inputs=[cut, segments, out_segments, out_rows],
-            device=device,
-        )
-    return out_segments, out_rows
 
 
 def _scan_cut_flags(cut: wp.array[wp.int32]) -> int:

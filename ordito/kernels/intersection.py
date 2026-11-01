@@ -79,7 +79,7 @@ def plane_with_line(
 def find_unique_sign_vertex(s0: wp.int32, s1: wp.int32, s2: wp.int32) -> wp.int32:
     # The corner whose sign differs from the other two -- shared by ``CASE_BASIC`` (this file's
     # own sign convention), the split path's edge-to-edge cut (``level_set_signs``'
-    # convention) and ``marching_triangles_segments`` (a ``0`` / ``1`` side flag), which is what
+    # convention) and ``marching_triangle_segment`` (a ``0`` / ``1`` side flag), which is what
     # makes the predicate itself convention-independent: it only compares the three inputs to each
     # other, never to a named sign value. Every caller has already established that exactly one of
     # the three differs, which is what makes corner 2 a safe fallthrough rather than a third test;
@@ -170,20 +170,18 @@ def mesh_with_plane_segment_for_face(
     return False, wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)
 
 
-@wp.kernel
-def mesh_with_plane_segments(
+@wp.func
+def plane_face_segment(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     plane_normal: wp.vec3,
     plane_origin: wp.vec3,
-    out_cut: wp.array[wp.int32],
-    out_segments: wp.array2d[wp.vec3],
-) -> None:
-    # ``out_cut`` is a ``0`` / ``1`` flag, the ``int32`` that ``compact_cut_segments``' caller scans
-    # in place, so no mask has to be converted before the scan. Each corner's plane dot is taken
+    f: wp.int32,
+) -> tuple[wp.bool, wp.vec3, wp.vec3]:
+    # Face ``f``'s plane segment, and whether the plane cuts it. Each corner's plane dot is taken
     # here rather than read from a per-vertex buffer, which would be a map and an allocation for
-    # the same value.
-    f = wp.int32(wp.tid())
+    # the same value. ``mesh_with_plane_flags`` and ``compact_plane_segments`` both run it: the
+    # second recomputes the few cut faces' segments rather than reading a segment pair a face.
     i0 = faces[f * 3]
     i1 = faces[f * 3 + 1]
     i2 = faces[f * 3 + 2]
@@ -199,12 +197,46 @@ def mesh_with_plane_segments(
     s2 = kernel_array.sign_with_tolerance(
         point_plane_dot(v2, plane_normal, plane_origin), TOLERANCE_MERGE_CONSTANT
     )
-    valid, p0, p1 = mesh_with_plane_segment_for_face(
-        plane_normal, plane_origin, v0, v1, v2, s0, s1, s2
-    )
+    return mesh_with_plane_segment_for_face(plane_normal, plane_origin, v0, v1, v2, s0, s1, s2)
+
+
+@wp.kernel
+def mesh_with_plane_flags(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    out_cut: wp.array[wp.int32],
+) -> None:
+    # A ``0`` / ``1`` flag a face, whether the plane cuts it, which the caller scans in place.
+    f = wp.int32(wp.tid())
+    valid, _p0, _p1 = plane_face_segment(vertices, faces, plane_normal, plane_origin, f)
     out_cut[f] = wp.where(valid, 1, 0)
-    out_segments[f, 0] = p0
-    out_segments[f, 1] = p1
+
+
+@wp.kernel
+def compact_plane_segments(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    inclusive: wp.array[wp.int32],
+    out_segments: wp.array2d[wp.vec3],
+    out_rows: wp.array[wp.int32],
+) -> None:
+    # The cut faces' segments, in face order, from the in-place inclusive scan of
+    # ``mesh_with_plane_flags``: each formed again by the same function on the same operands, so
+    # equal to the flags pass's bit for bit. ``out_rows`` (each kept segment's face) is optional
+    # -- a caller with no use for it passes ``None``, whose shape reads 0.
+    f = wp.int32(wp.tid())
+    slot, cut = kernel_array.scanned_count(inclusive, f)
+    if cut == 0:
+        return
+    _valid, p0, p1 = plane_face_segment(vertices, faces, plane_normal, plane_origin, f)
+    out_segments[slot, 0] = p0
+    out_segments[slot, 1] = p1
+    if out_rows.shape[0] > 0:
+        out_rows[slot] = f
 
 
 @wp.func
@@ -1062,6 +1094,9 @@ def emit_clip_faces(
         out_faces[row, 1] = clip_vertex_index(ranks, compact, i1)
         out_faces[row, 2] = clip_vertex_index(ranks, compact, i2)
         return
+    # A dropped face reads its corner signs before it finds it writes nothing; returning first
+    # was bit-identical and 0.99-1.01x on a 13 M-face clip through the middle (2026-11-01):
+    # declined, the launch is bound by the faces it writes.
     base = t * wp.int32(3)
     s0, s1, s2 = level_set_signs_at(vertices, faces, vertex_dots, plane_normal, plane_origin, t)
     if own[SLICE_CLASS_CUT_QUAD - 1] != 0:
@@ -1775,32 +1810,34 @@ def crossing_point(
 def edge_key(a: wp.int64, b: wp.int64, base: wp.int64) -> wp.int64:
     # Order-independent key of the undirected edge ``(a, b)``: injective for vertex indices below
     # ``base``, which is what lets two faces sharing a crossing agree on it without a unique-edge
-    # table. See ``marching_triangles_segments`` for what it replaced.
+    # table. See ``marching_triangle_segment`` for what it replaced.
     return wp.min(a, b) * base + wp.max(a, b)
 
 
-@wp.kernel
-def marching_triangles_segments(
+@wp.func
+def marching_triangle_segment(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     values: wp.array[wp.Float],
     isovalue: wp.Float,
     key_base: wp.int64,
-    out_cut: wp.array[wp.int32],
-    out_segments: wp.array2d[wp.vec3],
-    out_edges: wp.array2d[wp.int64],
-) -> None:
+    f: wp.int32,
+) -> tuple[wp.int32, wp.vec3, wp.vec3, wp.int64, wp.int64]:
     # DECLINED: appending each cut face to a 1 024-record buffer through a cursor, so a small level
     # set is read back once and linked with no scan or compaction (face ids restore scan order).
     # Byte-identical, but 0.84-0.95x on ``sphere_med`` (742 to 26 k segments) and flat on
     # ``sphere_small``: zeroing and reading the record buffer on every call costs more than the scan
     # and 4-byte read it removes, and above the capacity it is pure overhead.
     #
-    # One thread per face. Each value is re-zeroed at ``isovalue`` in the field's own precision as
-    # it is read, and a value of exactly zero counts as positive, so every cut face has exactly one
-    # vertex alone in sign and yields exactly one segment: the two edges incident to that vertex
-    # are the crossed ones.
-    f = wp.int32(wp.tid())
+    # Face ``f``'s oriented segment and its two crossing keys, with ``1`` when the level set cuts
+    # it (``0`` and zeros otherwise). ``marching_triangles_flags`` and ``compact_cut_segment_keys``
+    # both run it: the second forms the few cut faces' segments again rather than reading a
+    # segment pair and a key pair stored for every face. Each value is re-zeroed at ``isovalue``
+    # in the field's own precision as it is read, and a value of exactly zero counts as positive,
+    # so every cut face has exactly one vertex alone in sign and yields exactly one segment: the
+    # two edges incident to that vertex are the crossed ones.
+    nothing = wp.vec3(0.0, 0.0, 0.0)
+    no_key = wp.int64(0)
     i0, i1, i2 = kernel_triangles.corner_triple(faces, f)
     d0 = values[i0] - isovalue
     d1 = values[i1] - isovalue
@@ -1813,8 +1850,7 @@ def marching_triangles_segments(
     # returned curve with no filter anywhere downstream (unlike ``mesh_with_mesh``, whose
     # ``crossing_slot_flags`` rejects a degenerate segment before it is kept).
     if wp.isnan(d0) or wp.isnan(d1) or wp.isnan(d2):
-        out_cut[f] = 0
-        return
+        return wp.int32(0), nothing, nothing, no_key, no_key
 
     zero = values.dtype(0.0)
     p0 = wp.where(d0 >= zero, wp.int32(1), wp.int32(0))
@@ -1822,8 +1858,7 @@ def marching_triangles_segments(
     p2 = wp.where(d2 >= zero, wp.int32(1), wp.int32(0))
 
     if p0 == p1 and p1 == p2:
-        out_cut[f] = 0
-        return
+        return wp.int32(0), nothing, nothing, no_key, no_key
 
     # Local index of the vertex whose sign differs from the other two.
     lone = find_unique_sign_vertex(p0, p1, p2)
@@ -1862,76 +1897,56 @@ def marching_triangles_segments(
     # Orient the segment so the region where the field exceeds the isovalue lies to its left, with
     # the face normal as up. That makes the crossing shared by two faces an outgoing endpoint of one
     # and an incoming endpoint of the other, which is what lets the curves be linked at all.
-    out_cut[f] = 1
     if value_lone >= zero:
-        out_segments[f, 0] = point_next
-        out_segments[f, 1] = point_prev
-        out_edges[f, 0] = edge_next
-        out_edges[f, 1] = edge_prev
-    else:
-        out_segments[f, 0] = point_prev
-        out_segments[f, 1] = point_next
-        out_edges[f, 0] = edge_prev
-        out_edges[f, 1] = edge_next
-
-
-@wp.func
-def copy_cut_segment(
-    inclusive: wp.array[wp.int32],
-    segments: wp.array2d[wp.vec3],
-    i: wp.int32,
-    out_segments: wp.array2d[wp.vec3],
-) -> wp.int32:
-    # Copy row ``i`` of a per-face segment buffer to its compacted slot and return that slot, or
-    # ``-1`` when the row is not cut. Shared by the two compactions below, which differ only in how
-    # they hand on ``marching_triangles_segments``' crossing keys.
-    slot, cut = kernel_array.scanned_count(inclusive, i)
-    if cut == 0:
-        return wp.int32(-1)
-    out_segments[slot, 0] = segments[i, 0]
-    out_segments[slot, 1] = segments[i, 1]
-    return slot
+        return wp.int32(1), point_next, point_prev, edge_next, edge_prev
+    return wp.int32(1), point_prev, point_next, edge_prev, edge_next
 
 
 @wp.kernel
-def compact_cut_segments(
-    inclusive: wp.array[wp.int32],
-    segments: wp.array2d[wp.vec3],
-    out_segments: wp.array2d[wp.vec3],
-    out_rows: wp.array[wp.int32],
+def marching_triangles_flags(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    values: wp.array[wp.Float],
+    isovalue: wp.Float,
+    out_cut: wp.array[wp.int32],
 ) -> None:
-    # The cut rows of the two per-face segment producers above, in row order, from the in-place
-    # inclusive scan of their ``0`` / ``1`` flags: ``flatnonzero`` and one gather per buffer in one
-    # pass. ``out_rows`` (the source row of each kept segment) is optional -- a caller that has no
-    # use for it passes ``None``, whose shape reads 0.
-    i = wp.int32(wp.tid())
-    slot = copy_cut_segment(inclusive, segments, i, out_segments)
-    if slot < 0:
-        return
-    if out_rows.shape[0] > 0:
-        out_rows[slot] = i
+    # A ``0`` / ``1`` flag a face, whether the level set cuts it (``marching_triangle_segment``),
+    # which the caller scans in place. The keys are not formed here, so their base is not taken.
+    f = wp.int32(wp.tid())
+    cut, _p0, _p1, _e0, _e1 = marching_triangle_segment(
+        vertices, faces, values, isovalue, wp.int64(1), f
+    )
+    out_cut[f] = cut
 
 
 @wp.kernel
 def compact_cut_segment_keys(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    values: wp.array[wp.Float],
+    isovalue: wp.Float,
+    key_base: wp.int64,
     inclusive: wp.array[wp.int32],
-    segments: wp.array2d[wp.vec3],
-    edges: wp.array2d[wp.int64],
     out_segments: wp.array2d[wp.vec3],
     out_keys: wp.array[wp.int64],
     out_endpoints: wp.array[wp.int32],
 ) -> None:
-    # ``compact_cut_segments`` with the crossing keys: the key of endpoint ``e`` of kept segment
-    # ``s`` goes to slot ``2 s + e`` of ``out_keys``. The device link hands it a radix sort's
+    # The cut faces' segments and crossing keys, in face order, from the in-place inclusive scan of
+    # ``marching_triangles_flags``, each formed again by ``marching_triangle_segment`` on the same
+    # operands (equal to a stored pair bit for bit). The key of endpoint ``e`` of kept segment ``s``
+    # goes to slot ``2 s + e`` of ``out_keys``. The device link hands it a radix sort's
     # double-width key buffer and the endpoint ids ``2 s + e`` as the sort's payload, so the sort
     # needs no staging pass; the host link passes ``None`` for the payload and reads keys and
     # segments back together, ``out_segments`` aliasing the tail of ``out_keys``' buffer.
-    i = wp.int32(wp.tid())
-    slot = copy_cut_segment(inclusive, segments, i, out_segments)
-    if slot < 0:
+    f = wp.int32(wp.tid())
+    slot, cut = kernel_array.scanned_count(inclusive, f)
+    if cut == 0:
         return
-    out_keys[2 * slot] = edges[i, 0]
-    out_keys[2 * slot + 1] = edges[i, 1]
+    _cut, p0, p1, e0, e1 = marching_triangle_segment(vertices, faces, values, isovalue, key_base, f)
+    out_segments[slot, 0] = p0
+    out_segments[slot, 1] = p1
+    out_keys[2 * slot] = e0
+    out_keys[2 * slot + 1] = e1
     if out_endpoints.shape[0] > 0:
         out_endpoints[2 * slot] = 2 * slot
         out_endpoints[2 * slot + 1] = 2 * slot + 1
@@ -2095,24 +2110,30 @@ def emit_linked_curves(
 # writes stays ``wp.vec3``.
 # The concrete handle keyed by the field dtype -- see
 # [`OverloadTable`][ordito.kernels.array.OverloadTable].
-MARCHING_TRIANGLES_SEGMENTS: OverloadTable
+MARCHING_TRIANGLES_FLAGS: OverloadTable
+COMPACT_CUT_SEGMENT_KEYS: OverloadTable
 
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
-    global MARCHING_TRIANGLES_SEGMENTS
-    MARCHING_TRIANGLES_SEGMENTS = OverloadTable(
-        marching_triangles_segments,
+    global MARCHING_TRIANGLES_FLAGS, COMPACT_CUT_SEGMENT_KEYS
+    field = (wp.array[wp.vec3], wp.array[wp.int32])
+    MARCHING_TRIANGLES_FLAGS = OverloadTable(
+        marching_triangles_flags,
+        {d: [*field, wp.array[d], d, wp.array[wp.int32]] for d in (wp.float32, wp.float64)},
+    )
+    COMPACT_CUT_SEGMENT_KEYS = OverloadTable(
+        compact_cut_segment_keys,
         {
             d: [
-                wp.array[wp.vec3],
-                wp.array[wp.int32],
+                *field,
                 wp.array[d],
                 d,
                 wp.int64,
                 wp.array[wp.int32],
                 wp.array2d[wp.vec3],
-                wp.array2d[wp.int64],
+                wp.array[wp.int64],
+                wp.array[wp.int32],
             ]
             for d in (wp.float32, wp.float64)
         },

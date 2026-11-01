@@ -2240,14 +2240,17 @@ def dilate(
             return _empty_grid(voxel_size, origin, device)
         stencil = _stencil(connectivity, device, include_self=True)
         n_offsets = int(stencil.shape[0])
+        # The voxels and their empty neighbours, appended: the occupied neighbours every voxel's
+        # stencil also reaches would only be keyed and merged away by the builder.
         candidates = odt.empty_2d((n_voxels * n_offsets, 3), wp.int32, device=device)
+        counter = _launch.zeros(1, dtype=wp.int32, device=device)
         _launch.launch(
-            kernel_voxels.neighborhood_candidates,
+            kernel_voxels.dilation_candidates,
             dim=(n_voxels, n_offsets),
-            inputs=[voxels, stencil, candidates],
+            inputs=[grid.id, voxels, stencil, counter, candidates],
             device=device,
         )
-        grid = from_cells(candidates, voxel_size, origin)
+        grid = _allocate_appended(candidates, counter, voxel_size, origin)
     return grid
 
 
@@ -2309,14 +2312,9 @@ def erode(
     print(od.voxels.cells(od.voxels.erode(block)).numpy().tolist())  # [[1, 1, 1]]
     ```
     """
-    voxel_size, origin = grid_transform(grid)
     _check_iterations(connectivity, iterations)
     for _ in range(iterations):
-        voxels = cells(grid)
-        interior = _interior_flags(grid, voxels, connectivity)
-        if interior is None:
-            return _empty_grid(voxel_size, origin, grid.device)
-        grid = _allocate_masked(voxels, interior, voxel_size, origin)
+        grid = _complete_voxels(grid, connectivity, interior=True)
     return grid
 
 
@@ -2510,14 +2508,9 @@ def surface_voxels(grid: wp.Volume, *, connectivity: Literal[6, 18, 26] = 6) -> 
     print(od.voxels.cells(od.voxels.surface_voxels(block)).shape[0])  # 26
     ```
     """
-    voxel_size, origin = grid_transform(grid)
     # ``interior=False`` asks the neighbourhood kernel for the complement it already computes,
     # rather than launching a second pass to negate the flags it just wrote.
-    voxels = cells(grid)
-    boundary = _interior_flags(grid, voxels, connectivity, interior=False)
-    if boundary is None:
-        return _empty_grid(voxel_size, origin, grid.device)
-    return _allocate_masked(voxels, boundary, voxel_size, origin)
+    return _complete_voxels(grid, connectivity, interior=False)
 
 
 def to_dense(
@@ -3013,18 +3006,17 @@ def _select_cells(
         return _empty_grid(voxel_size, origin, rows.device)
     # ``present`` rides into the kernel rather than inverting its answer afterwards: membership
     # and its complement are the same probe, so the difference costs a selector instead of a
-    # second launch over a mask the first one just wrote.
-    #
-    # The flags go to the builder as its ``point_mask`` over the unfiltered rows, which is what the
-    # kept rows would have been compacted for: no scan, count readback or gathered copy.
-    flags = _launch.empty(n_cells, dtype=wp.int32, device=rows.device)
+    # second launch over a mask the first one just wrote. The kept rows are appended for the
+    # builder (``_allocate_appended``).
+    kept = odt.empty_2d((n_cells, 3), wp.int32, device=rows.device)
+    counter = _launch.zeros(1, dtype=wp.int32, device=rows.device)
     _launch.launch(
-        kernel_voxels.cell_occupancy_flags,
+        kernel_voxels.append_cells_by_occupancy,
         dim=n_cells,
-        inputs=[b.id, rows, present, flags],
+        inputs=[b.id, rows, present, counter, kept],
         device=rows.device,
     )
-    return _allocate_masked(rows, flags, voxel_size, origin)
+    return _allocate_appended(kept, counter, voxel_size, origin)
 
 
 def _voxel_count(grid: wp.Volume) -> int:
@@ -3036,25 +3028,6 @@ def _translation(origin: wp.vec3, voxel_size: float) -> tuple[float, float, floa
     """NanoVDB centres voxels on integers, so the volume's translation is half a cell above."""
     half = 0.5 * voxel_size
     return (float(origin[0]) + half, float(origin[1]) + half, float(origin[2]) + half)
-
-
-def _allocate_masked(
-    candidates: odt.Array2dInt32, mask: wp.array[wp.int32], voxel_size: float, origin: wp.vec3
-) -> wp.Volume:
-    """
-    Build an index grid from the candidate cells whose ``mask`` flag is non-zero.
-
-    ``point_mask`` lets the builder skip the rejected rows in place, so a producer that already
-    knows which of its rows to keep never compacts them. ``candidates`` must be contiguous and
-    non-empty; an all-zero ``mask`` builds a legal empty grid.
-    """
-    return wp.Volume.allocate_by_voxels(
-        cast("wp.array[wp.int32]", candidates),
-        voxel_size=voxel_size,
-        translation=_translation(origin, voxel_size),
-        point_mask=mask,
-        device=candidates.device,
-    )
 
 
 def _allocate_appended(
@@ -3174,35 +3147,36 @@ def _check_iterations(connectivity: int, iterations: int) -> None:
         raise ValueError(f"iterations must be non-negative, got {iterations}")
 
 
-def _interior_flags(
-    grid: wp.Volume, voxels: odt.Array2dInt32, connectivity: int, *, interior: bool = True
-) -> wp.array[wp.int32] | None:
+def _complete_voxels(grid: wp.Volume, connectivity: int, *, interior: bool) -> wp.Volume:
     """
-    Per-voxel 1 / 0 flag over ``grid``'s cells ``voxels``: is each whole neighbourhood occupied.
+    Rebuild ``grid`` from its voxels whose whole ``connectivity`` neighbourhood is occupied.
 
-    ``None`` for an empty grid. ``interior=False`` returns the complement -- the surface set --
-    which the kernel writes directly, so the two callers differ by a selector rather than by a
-    pass.
+    ``interior=False`` keeps the complement -- the surface set -- which the kernel selects
+    directly, so the two callers differ by a selector rather than by a pass.
     """
     if connectivity not in _CONNECTIVITY_RANK:
         raise ValueError(f"connectivity must be 6, 18 or 26, got {connectivity!r}")
+    voxel_size, origin = grid_transform(grid)
+    voxels = cells(grid)
     n_voxels = int(voxels.shape[0])
     if n_voxels == 0:
-        return None
-    flags = _launch.empty(n_voxels, dtype=wp.int32, device=grid.device)
+        return _empty_grid(voxel_size, origin, grid.device)
+    kept = odt.empty_2d((n_voxels, 3), wp.int32, device=grid.device)
+    counter = _launch.zeros(1, dtype=wp.int32, device=grid.device)
     _launch.launch(
-        kernel_voxels.neighborhood_complete,
+        kernel_voxels.neighborhood_complete_cells,
         dim=n_voxels,
         inputs=[
             grid.id,
             voxels,
             _stencil(connectivity, grid.device, include_self=False),
             interior,
-            flags,
+            counter,
+            kept,
         ],
         device=grid.device,
     )
-    return flags
+    return _allocate_appended(kept, counter, voxel_size, origin)
 
 
 def _stencil(connectivity: int, device: wp.DeviceLike, *, include_self: bool) -> odt.Array2dInt32:

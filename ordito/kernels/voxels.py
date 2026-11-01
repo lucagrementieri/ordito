@@ -277,15 +277,20 @@ def cell_occupancy(
 
 
 @wp.kernel
-def cell_occupancy_flags(
-    volume: wp.uint64, cells: wp.array2d[wp.int32], present: wp.bool, out_flags: wp.array[wp.int32]
+def append_cells_by_occupancy(
+    volume: wp.uint64,
+    cells: wp.array2d[wp.int32],
+    present: wp.bool,
+    counter: wp.array[wp.int32],
+    out_cells: wp.array2d[wp.int32],
 ) -> None:
-    # ``cell_occupancy``'s test written as the ``int32`` 0/1 flags ``Volume.allocate_by_voxels``
-    # takes as its ``point_mask``, which is the whole difference between the two: a set operation
-    # that rebuilds a grid from the kept cells hands the flags to the builder with the unfiltered
-    # cell array, so no compaction pass, readback or gathered copy stands between them.
+    # ``cell_occupancy``'s test, each kept cell appended at the next slot of ``counter[0]`` for a
+    # set operation to rebuild its grid from: the builder handed the whole cell array with a
+    # ``point_mask`` keys and sorts the rejected cells too (``append_dense_candidate``).
     v = wp.int32(wp.tid())
-    out_flags[v] = wp.where((cell_slot(volume, cells, v) >= 0) == present, 1, 0)
+    if (cell_slot(volume, cells, v) >= 0) == present:
+        i, j, k = row_triple(cells, v)
+        write_row_triple(out_cells, append_slot(counter, 0), i, j, k)
 
 
 @wp.func
@@ -773,24 +778,39 @@ def neighbor_slot(
 
 
 @wp.kernel
-def neighborhood_candidates(
-    voxels: wp.array2d[wp.int32], neighbors: wp.array2d[wp.int32], out_cells: wp.array2d[wp.int32]
+def dilation_candidates(
+    volume: wp.uint64,
+    voxels: wp.array2d[wp.int32],
+    neighbors: wp.array2d[wp.int32],
+    counter: wp.array[wp.int32],
+    out_cells: wp.array2d[wp.int32],
 ) -> None:
+    # A voxel (its stencil's zero row) and each of its stencil neighbours the grid does not hold,
+    # appended at the next slot of ``counter[0]``: the dilation's cells, with an empty cell once
+    # for every voxel reaching it, and no occupied neighbour, which the voxel's own row already
+    # gives. The builder sorts and merges the rows, so neither their order nor the repeats matter.
     v, m = wp.tid()
+    di, dj, dk = row_triple(neighbors, m)
     cell = neighbor_cell(voxels, v, neighbors, m)
-    write_row_triple(out_cells, v * neighbors.shape[0] + m, cell[0], cell[1], cell[2])
+    if (di == 0 and dj == 0 and dk == 0) or wp.volume_lookup_index(
+        volume, cell[0], cell[1], cell[2]
+    ) < 0:
+        write_row_triple(out_cells, append_slot(counter, 0), cell[0], cell[1], cell[2])
 
 
 @wp.kernel
-def neighborhood_complete(
+def neighborhood_complete_cells(
     volume: wp.uint64,
     voxels: wp.array2d[wp.int32],
     neighbors: wp.array2d[wp.int32],
     interior: wp.bool,
-    out_flags: wp.array[wp.int32],
+    counter: wp.array[wp.int32],
+    out_cells: wp.array2d[wp.int32],
 ) -> None:
-    # 1 when every neighbour of the voxel is occupied (an interior voxel), 0 otherwise. Neighbours
-    # of a voxel live in the same 8-cubed leaf most of the time, so the probes are cache-local.
+    # A voxel appended at the next slot of ``counter[0]`` when every neighbour is occupied (an
+    # interior voxel), or with ``interior`` false when one is not (``append_dense_candidate`` has
+    # why the builder takes the kept rows rather than a mask). Neighbours of a voxel live in the
+    # same 8-cubed leaf most of the time, so the probes are cache-local.
     #
     # ``interior`` is warp-uniform and selects which of the two complementary answers to write:
     # ``erode`` wants the interior set and ``surface_voxels`` its complement. One selector rather
@@ -804,7 +824,9 @@ def neighborhood_complete(
     for m in range(neighbors.shape[0]):
         if neighbor_slot(volume, voxels, v, neighbors, m) < 0:
             complete = wp.int32(0)
-    out_flags[v] = wp.where(interior, complete, 1 - complete)
+    if (complete == 1) == interior:
+        i, j, k = row_triple(voxels, v)
+        write_row_triple(out_cells, append_slot(counter, 0), i, j, k)
 
 
 @wp.func

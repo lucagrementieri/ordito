@@ -967,23 +967,18 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   brick-sparse storage, rank-packed bitset indices (`brick_number_at`, `occupancy`), rank
   compaction (`_bit_ranks`), lifetime aliasing into dead solver vectors (`_poisson_solve_level`),
   early release, emit early-out (`mc_node_emits`), test before atomic (`mark_brick`), per-row
-  lookup dedup (`node_window_bricks`). Done 2026-11-01 (`reference/component-status.md`): the
-  box-sized voxel builds append their kept cells, multigrid hierarchy matrices are cut to their
-  entries, `smooth_region` and `triangulate_point_cloud` release their assembly buffers, and the
-  dense signed-distance level set forms its nodes in the thread. Per-function context (structure,
-  sizes, proposal, constraints, what to verify) is `reference/component-status.md` §16.3c; read it
-  before working on any of these. Candidates left, largest first:
-  - `voxels.dilate`: `n_voxels * 27` rows into `from_cells`; emit only empty neighbours.
-    `erode`, `surface_voxels` and `_select_cells` still hand the builder masked voxel rows.
+  lookup dedup (`node_window_bricks`). Per-function context (structure, sizes, proposal,
+  constraints, what to verify) is `reference/component-status.md` §16.3c; read it before working
+  on any of these. Candidates, largest first:
   - `_csr_from_coo_keys` sizes `columns` / `values` by contributions, not entries: public returns
     (`energies` sandwich products, `laplacian`'s keyed path) keep that capacity; only a caller
     that already syncs can cut it (§3.7).
-  - `mesh_with_plane` / `marching_triangles`: a segment pair (and contour keys) a face for the
-    few cut faces; broad-phase crossing flags `int32` a slot. Cut bits, ranks, emit recomputing.
+  - Broad-phase crossing flags `int32` a slot (`_compact_crossing_candidates`); `_link_curves`
+    reads the whole weight scan back.
   - `ball_pivoting`: hash table at 6-12 % load with `src` / `tgt` derivable from the key, front
     arrays at `13 n`. `triangulate_point_cloud`: `out_tris` ~20 % used.
-  - `linalg` workspaces: Chebyshev / squared-Laplacian / V-cycle spares and the adaptive CG's two
-    states could borrow CG `w` and share one state.
+  - `linalg` workspaces: the Chebyshev's two spares, the squared-Laplacian / V-cycle vectors and
+    the adaptive CG's two states could borrow CG `w` and share one state.
   - `levelset`: `_winding_band_field` slots can ride in `ambiguous`; `marching_cubes` counts are a
     `vec2i` a node for O(res**2) active ones (large; a recorded design, not a decline).
   - Collapse passes sort and scan at the entry width; `boundary_loops` successor tables and
@@ -992,5 +987,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   - A shared `array.bit_ranks` / `mark_bit` / `bit_select` would serve the sparse-flag compactions
     (intersection, selection, seams, boundary, remesh) behind a size gate; it would replace
     `reconstruction._bit_ranks` and `kernels/remesh.scan_word_counts_exclusive`.
-  - Small: `emit_clip_faces` signs before its drop test; `clip_ear` plain `atomic_add` slot;
-    blue-noise sort keys reusable; `cluster_outlier_mask` materializes the ball graph.
+  - Small: `clip_ear` plain `atomic_add` slot; blue-noise sort keys reusable;
+    `cluster_outlier_mask` materializes the ball graph; `dilate` repeats an empty neighbour once a
+    voxel reaching it.

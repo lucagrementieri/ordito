@@ -3246,7 +3246,7 @@
  "benchmarks/test_intersection.py::test_marching_triangles[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 2,
-   "alloc": 6,
+   "alloc": 4,
    "h2d": 1,
    "d2h": 2,
    "scan": 1
@@ -3255,7 +3255,7 @@
  "benchmarks/test_intersection.py::test_marching_triangles_curves[sphere_med-ordito-cuda-plane]": {
   "counts": {
    "launch": 2,
-   "alloc": 6,
+   "alloc": 4,
    "h2d": 1,
    "d2h": 2,
    "scan": 1
@@ -3264,7 +3264,7 @@
  "benchmarks/test_intersection.py::test_marching_triangles_curves[sphere_med-ordito-cuda-wave12]": {
   "counts": {
    "launch": 9,
-   "alloc": 9,
+   "alloc": 7,
    "memset": 1,
    "d2h": 2,
    "scan": 2,
@@ -3274,7 +3274,7 @@
  "benchmarks/test_intersection.py::test_marching_triangles_curves[sphere_med-ordito-cuda-wave40]": {
   "counts": {
    "launch": 9,
-   "alloc": 9,
+   "alloc": 7,
    "memset": 1,
    "d2h": 2,
    "scan": 2,
@@ -3284,7 +3284,7 @@
  "benchmarks/test_intersection.py::test_marching_triangles_with_offsets[sphere_med-ordito-cuda-plane]": {
   "counts": {
    "launch": 2,
-   "alloc": 6,
+   "alloc": 4,
    "h2d": 1,
    "d2h": 2,
    "scan": 1
@@ -3293,7 +3293,7 @@
  "benchmarks/test_intersection.py::test_marching_triangles_with_offsets[sphere_med-ordito-cuda-wave12]": {
   "counts": {
    "launch": 9,
-   "alloc": 10,
+   "alloc": 8,
    "memset": 1,
    "h2d": 1,
    "d2h": 2,
@@ -3304,7 +3304,7 @@
  "benchmarks/test_intersection.py::test_marching_triangles_with_offsets[sphere_med-ordito-cuda-wave40]": {
   "counts": {
    "launch": 9,
-   "alloc": 10,
+   "alloc": 8,
    "memset": 1,
    "h2d": 1,
    "d2h": 2,
@@ -3369,7 +3369,7 @@
  "benchmarks/test_intersection.py::test_mesh_with_plane[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 2,
-   "alloc": 3,
+   "alloc": 2,
    "d2h": 1,
    "scan": 1
   }
@@ -7978,25 +7978,33 @@
  "benchmarks/test_voxels.py::test_closing[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 2,
-   "alloc": 4
+   "alloc": 6,
+   "memset": 2,
+   "d2h": 2
   }
  },
  "benchmarks/test_voxels.py::test_difference[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,
-   "alloc": 2
+   "alloc": 3,
+   "memset": 1,
+   "d2h": 1
   }
  },
  "benchmarks/test_voxels.py::test_dilate[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,
-   "alloc": 2
+   "alloc": 3,
+   "memset": 1,
+   "d2h": 1
   }
  },
  "benchmarks/test_voxels.py::test_erode[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,
-   "alloc": 2
+   "alloc": 3,
+   "memset": 1,
+   "d2h": 1
   }
  },
  "benchmarks/test_voxels.py::test_fill_cavities[sphere_small-ordito-cuda]": {
@@ -8044,7 +8052,9 @@
  "benchmarks/test_voxels.py::test_intersection[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,
-   "alloc": 2
+   "alloc": 3,
+   "memset": 1,
+   "d2h": 1
   }
  },
  "benchmarks/test_voxels.py::test_occupancy_at_cells[sphere_small-ordito-cuda]": {
@@ -8068,7 +8078,9 @@
  "benchmarks/test_voxels.py::test_opening[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 2,
-   "alloc": 4
+   "alloc": 6,
+   "memset": 2,
+   "d2h": 2
   }
  },
  "benchmarks/test_voxels.py::test_pool_by_voxel[sphere_small-ordito-cuda]": {
@@ -8110,7 +8122,9 @@
  "benchmarks/test_voxels.py::test_surface_voxels[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,
-   "alloc": 2
+   "alloc": 3,
+   "memset": 1,
+   "d2h": 1
   }
  },
  "benchmarks/test_voxels.py::test_to_boxes[sphere_small-ordito-cuda]": {

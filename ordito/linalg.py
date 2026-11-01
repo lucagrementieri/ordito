@@ -4982,15 +4982,18 @@ class _ChebyshevApply:
         # Zeroed: every step writes the ``n`` live rows of a column and nothing in the pad, which
         # the conjugate-gradient state reduces over.
         self._dofs = n_columns * stride
-        # The three rotating iterates and the subclass's own vector (``_work``), in one allocation.
+        # The rotating iterates and the subclass's own vector (``_work``), in one allocation: two
+        # iterates for the launched steps, which write over the iterate two back (``_polynomial``),
+        # and three for the CPU's one-launch walk (``chebyshev_polynomial_column``).
         dofs = self._dofs
+        n_spare = 3 if self._serial else 2
         if dofs > 0:
-            vectors = _launch.zeros(4 * dofs, dtype=wp.float64, device=device)
-            views = [_launch.view(vectors, k * dofs, (k + 1) * dofs) for k in range(4)]
+            vectors = _launch.zeros((n_spare + 1) * dofs, dtype=wp.float64, device=device)
+            views = [_launch.view(vectors, k * dofs, (k + 1) * dofs) for k in range(n_spare + 1)]
         else:
-            views = [_launch.zeros(0, dtype=wp.float64, device=device) for _ in range(4)]
-        self._spare = views[:3]
-        self._work = views[3]
+            views = [_launch.zeros(0, dtype=wp.float64, device=device) for _ in range(n_spare + 1)]
+        self._spare = views[:n_spare]
+        self._work = views[n_spare]
 
     def serial_operands(
         self,
@@ -5034,15 +5037,21 @@ class _ChebyshevApply:
                 device=self._device,
             )
             return
-        # Three rotating iterates: a step reads the current and the previous one and writes a
-        # third, so none of the three may be ``source`` or ``destination`` until the last write.
-        # The first two steps read ``source`` in the place of the iterates no launch writes; see
-        # ``chebyshev_step``.
+        # Two rotating iterates: a step reads the current one at every row of its rows' stencils and
+        # the previous one at its own row only, so it may write over the previous one but never
+        # over the current one or ``source``. The first two steps read ``source`` in the place of
+        # the iterates no launch writes (``chebyshev_step``), so they write the two spares; every
+        # later step writes over the iterate two back, and the last into ``destination``. Three
+        # rotating iterates cost a vector a state more for the same steps.
         previous, current = source, source
-        free = list(self._spare)
         n_steps = steps.size
         for index in range(n_steps):
-            target = destination if index == n_steps - 1 else free.pop()
+            if index == n_steps - 1:
+                target = destination
+            elif index < 2:
+                target = self._spare[index]
+            else:
+                target = previous
             _launch.launch(
                 kernel_mg.chebyshev_step,
                 dim=self._dim,
@@ -5063,9 +5072,6 @@ class _ChebyshevApply:
                 outputs=[target],
                 device=self._device,
             )
-            # The buffer two steps back is free again; ``source`` never is.
-            if previous is not source:
-                free.append(previous)
             previous, current = current, target
 
 
