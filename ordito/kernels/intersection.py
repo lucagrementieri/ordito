@@ -507,26 +507,26 @@ def collect_overflow_candidates(
     counts: wp.array[wp.int32],
     max_hits: wp.int32,
     tail_offsets: wp.array[wp.int32],
-    out_targets: wp.array[wp.int32],
+    out_tail_targets: wp.array[wp.int32],
     out_tail_queries: wp.array[wp.int32],
 ) -> None:
-    # The candidates a query face's block could not hold, packed after the fixed-stride table: an
-    # overflowing face walks its stored box again (the same walk as ``collect_face_box_candidates``,
-    # so the same traversal order), skips the ``max_hits`` its block holds and writes the rest at
-    # its exclusive-scan offset past the table, recording itself as each tail slot's owner. Every
+    # The candidates a query face's block could not hold, the slots past the fixed-stride table,
+    # in a tail of their own: an overflowing face walks its stored box again (the same walk as
+    # ``collect_face_box_candidates``, so the same traversal order), skips the ``max_hits`` its
+    # block holds and writes the rest at its exclusive-scan offset in the tail, recording itself as
+    # each tail slot's owner. Every
     # other face returns at once. ``mark_overflow_crossings`` is the same skip with the narrow phase
     # inline instead of a write, for the callers that need no pair list.
     q = wp.int32(wp.tid())
     if counts[q] <= max_hits:
         return
     base = tail_offsets[q] - max_hits
-    n_table = counts.shape[0] * max_hits
     query = wp.mesh_query_aabb(mesh_id, face_lower[q], face_upper[q])
     t = wp.int32(0)
     c = wp.int32(0)
     while wp.mesh_query_next(query, t):
         if c >= max_hits:
-            out_targets[n_table + base + c] = t
+            out_tail_targets[base + c] = t
             out_tail_queries[base + c] = q
         c = c + 1
 
@@ -552,6 +552,18 @@ def candidate_slot_owner(
     if s >= n_table:
         return tail_queries[s - n_table]
     return candidate_slot_query(counts, max_hits, s)
+
+
+@wp.func
+def candidate_slot_target(
+    targets: wp.array[wp.int32], tail_targets: wp.array[wp.int32], s: wp.int32
+) -> wp.int32:
+    # The target face of live slot ``s``: in the table, or past it in the overflow tail. The tail
+    # is an array of its own, so an overflow does not copy the table into a longer one.
+    n_table = targets.shape[0]
+    if s >= n_table:
+        return tail_targets[s - n_table]
+    return targets[s]
 
 
 @wp.kernel
@@ -677,13 +689,14 @@ def crossing_slot_flags(
     counts: wp.array[wp.int32],
     max_hits: wp.int32,
     tail_queries: wp.array[wp.int32],
+    tail_targets: wp.array[wp.int32],
     with_segment: wp.bool,
-    out_flags: wp.array[wp.int32],
+    out_bits: wp.array[wp.uint32],
 ) -> None:
     # The narrow-phase verdict of every broad-phase slot, the table's and the overflow tail's, as
-    # the ``0`` / ``1``
-    # ``int32`` flag ``compact_crossing_slots`` scans in place, so the verdict buffer is also the
-    # scan buffer. ``with_segment`` (warp-uniform) additionally rejects a pair whose intersection
+    # a bit a slot (``out_bits``, zeroed by the caller; ``kernel_array.store_ballot_bit``): the
+    # table is ``max_hits`` slots a query face, mostly empty, and a 0 / 1 ``int32`` flag a slot was
+    # the call's largest buffer. ``with_segment`` (warp-uniform) additionally rejects a pair whose intersection
     # segment is degenerate, which is ``mesh_with_mesh``'s question; ``mesh_collision_pairs`` asks
     # only whether the faces cross.
     #
@@ -691,18 +704,20 @@ def crossing_slot_flags(
     # plane-distance projections that ``triangles_intersect`` already derived; sharing them would
     # need the segment extraction's ordering and division threaded through the predicate, which
     # the verdict-only callers never want.
+    # Every thread reaches the store, a slot with no candidate with ``hit`` false: the store is a
+    # ballot of the warp's lanes.
     s = wp.int32(wp.tid())
     q = candidate_slot_owner(counts, max_hits, tail_queries, s)
-    if q < 0:
-        out_flags[s] = 0
-        return
-    qa, qb, qc = kernel_triangles.face_vertices(query_vertices, query_faces, q)
-    ta, tb, tc = kernel_triangles.face_vertices(target_vertices, target_faces, targets[s])
-    hit = corners_intersect(qa, qb, qc, ta, tb, tc)
-    if hit and with_segment:
-        valid, p0, p1 = triangle_intersection_segment(qa, qb, qc, ta, tb, tc)
-        hit = valid and wp.length(p1 - p0) > TOLERANCE_MERGE_CONSTANT
-    out_flags[s] = wp.where(hit, 1, 0)
+    hit = wp.bool(False)
+    if q >= 0:
+        qa, qb, qc = kernel_triangles.face_vertices(query_vertices, query_faces, q)
+        t = candidate_slot_target(targets, tail_targets, s)
+        ta, tb, tc = kernel_triangles.face_vertices(target_vertices, target_faces, t)
+        hit = corners_intersect(qa, qb, qc, ta, tb, tc)
+        if hit and with_segment:
+            valid, p0, p1 = triangle_intersection_segment(qa, qb, qc, ta, tb, tc)
+            hit = valid and wp.length(p1 - p0) > TOLERANCE_MERGE_CONSTANT
+    kernel_array.store_ballot_bit(out_bits, s, hit)
 
 
 @wp.kernel
@@ -715,14 +730,16 @@ def compact_crossing_slots(
     counts: wp.array[wp.int32],
     max_hits: wp.int32,
     tail_queries: wp.array[wp.int32],
-    inclusive: wp.array[wp.int32],
+    tail_targets: wp.array[wp.int32],
+    bits: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
     swapped: wp.bool,
     out_pairs: wp.array2d[wp.int32],
     out_segments: wp.array2d[wp.vec3],
 ) -> None:
     # One thread per kept slot, ``k``-th in slot order -- query face by query face over the table,
-    # then the overflow tail's in the same order -- found in the in-place inclusive scan of
-    # ``crossing_slot_flags``' flags as the first slot whose running total reaches ``k + 1``.
+    # then the overflow tail's in the same order -- found as the ``k``-th set bit of
+    # ``crossing_slot_flags``' bits through their words' inclusive ranks.
     # Launched over the kept count rather than over every slot, since the kept slots are a small,
     # scattered fraction of the table. Exactly one of the two outputs is live; the other is
     # ``None``, whose shape reads 0.
@@ -733,9 +750,9 @@ def compact_crossing_slots(
     # ``crossing_slot_flags`` tested, rather than reading it from a per-slot buffer: that buffer is
     # ``max_hits`` segments per query face, and allocating it measured dearer than the recompute.
     k = wp.int32(wp.tid())
-    i = wp.lower_bound(inclusive, k + 1)
+    i = kernel_array.nth_bit_position(bits, word_ranks, k)
     q = candidate_slot_owner(counts, max_hits, tail_queries, i)
-    t = targets[i]
+    t = candidate_slot_target(targets, tail_targets, i)
     if out_pairs.shape[0] > 0:
         out_pairs[k, 0] = wp.where(swapped, t, q)
         out_pairs[k, 1] = wp.where(swapped, q, t)

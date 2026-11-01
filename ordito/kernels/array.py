@@ -2048,6 +2048,58 @@ return wp::atomic_add(wp::data_at_byte_offset(counter, wp::byte_offset(counter, 
 def append_slot(counter: wp.array[wp.int32], index: wp.int32) -> wp.int32: ...
 
 
+# Bit ``index`` of a ``uint32`` bitmask (zeroed by the caller) set from ``bit``, for a launch whose
+# thread ``index`` is slot ``index`` of a dense 1-D domain: on CUDA the converged lanes of a warp
+# hold consecutive slots of one word (lane ``index & 31``, a launch's threads coming in warps of
+# 32), so their bits are one ballot and the lowest lane ors the word in with one atomic; the CPU
+# device ors each set bit. A 0/1 ``int32`` verdict a slot is 32 times the bytes for the same scan.
+_STORE_BALLOT_BIT = """
+#if defined(__CUDA_ARCH__)
+const unsigned active = __activemask();
+const unsigned word = __ballot_sync(active, bit);
+if ((int)(threadIdx.x & 31u) == __ffs(active) - 1 && word != 0u) {
+    atomicOr(
+        (unsigned int*)wp::data_at_byte_offset(words, wp::byte_offset(words, index >> 5)), word);
+}
+#else
+if (bit) {
+    wp::atomic_or(
+        wp::data_at_byte_offset(words, wp::byte_offset(words, index >> 5)),
+        (wp::uint32)(1u << (index & 31)));
+}
+#endif
+"""
+
+
+@wp.func_native(_STORE_BALLOT_BIT)
+def store_ballot_bit(words: wp.array[wp.uint32], index: wp.int32, bit: wp.bool): ...
+
+
+@wp.func
+def nth_set_bit(word: wp.uint32, n: wp.int32) -> wp.int32:
+    # The position of ``word``'s ``n``-th set bit (from 0, lowest first); ``word`` holds more than
+    # ``n``.
+    remaining = n
+    position = wp.int32(0)
+    for b in range(32):
+        if (word >> wp.uint32(b)) & wp.uint32(1) != wp.uint32(0):
+            if remaining == 0:
+                position = b
+            remaining -= 1
+    return position
+
+
+@wp.func
+def nth_bit_position(
+    words: wp.array[wp.uint32], word_ranks: wp.array[wp.int32], n: wp.int32
+) -> wp.int32:
+    # The position of the ``n``-th set bit of a bitmask (from 0, in position order): the first word
+    # whose inclusive rank (``word_ranks``, ``bit_rank``'s) passes ``n``, then the bit within it.
+    w = wp.lower_bound(word_ranks, n + 1)
+    before = word_ranks[w] - popcount32(words[w])
+    return (w << 5) + nth_set_bit(words[w], n - before)
+
+
 @wp.func
 def float_order_bits(value: wp.float32) -> wp.uint64:
     # A **non-negative** float reinterpreted as the high half of a sortable integer key. The

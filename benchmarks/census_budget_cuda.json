@@ -3314,54 +3314,54 @@
  },
  "benchmarks/test_intersection.py::test_mesh_collision_pairs[sphere_small-ordito-cuda-amortized-deep]": {
   "counts": {
-   "launch": 4,
-   "alloc": 7,
-   "memset": 1,
+   "launch": 5,
+   "alloc": 8,
+   "memset": 2,
    "d2h": 2,
    "scan": 1
   }
  },
  "benchmarks/test_intersection.py::test_mesh_collision_pairs[sphere_small-ordito-cuda-amortized-grazing]": {
   "counts": {
-   "launch": 3,
-   "alloc": 6,
-   "memset": 1,
+   "launch": 4,
+   "alloc": 7,
+   "memset": 2,
    "d2h": 2,
    "scan": 1
   }
  },
  "benchmarks/test_intersection.py::test_mesh_collision_pairs[sphere_small-ordito-cuda-full-deep]": {
   "counts": {
-   "launch": 4,
-   "alloc": 7,
-   "memset": 1,
+   "launch": 5,
+   "alloc": 8,
+   "memset": 2,
    "d2h": 2,
    "scan": 1
   }
  },
  "benchmarks/test_intersection.py::test_mesh_collision_pairs[sphere_small-ordito-cuda-full-grazing]": {
   "counts": {
-   "launch": 3,
-   "alloc": 6,
-   "memset": 1,
+   "launch": 4,
+   "alloc": 7,
+   "memset": 2,
    "d2h": 2,
    "scan": 1
   }
  },
  "benchmarks/test_intersection.py::test_mesh_with_mesh[sphere_small-ordito-cuda-deep]": {
   "counts": {
-   "launch": 4,
-   "alloc": 7,
-   "memset": 1,
+   "launch": 5,
+   "alloc": 8,
+   "memset": 2,
    "d2h": 2,
    "scan": 1
   }
  },
  "benchmarks/test_intersection.py::test_mesh_with_mesh[sphere_small-ordito-cuda-grazing]": {
   "counts": {
-   "launch": 3,
-   "alloc": 6,
-   "memset": 1,
+   "launch": 4,
+   "alloc": 7,
+   "memset": 2,
    "d2h": 2,
    "scan": 1
   }

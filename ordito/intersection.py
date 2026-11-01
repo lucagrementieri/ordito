@@ -33,6 +33,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_nonempty_mesh, require_same_device
 from ordito.constants import TILE_1D, TOLERANCE_MERGE
+from ordito.kernels import array as kernel_array
 from ordito.kernels import graph as kernel_graph
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import intersection as kernel_intersections
@@ -1071,20 +1072,27 @@ def _compact_crossing_candidates(candidates: _Candidates, *, segments: bool) -> 
     With ``segments`` the kept rows are the ``(n_hit, 2)`` ``wp.vec3`` intersection segments, a
     pair whose segment is degenerate rejected; otherwise the ``(n_hit, 2)`` ``wp.int32`` face pairs
     in the caller's ``(a, b)`` column order. Either way in candidate order, or ``None`` when no
-    pair is kept. The verdicts are written as ``0`` / ``1`` flags and scanned in place, so one
-    buffer carries the verdict, its scan and -- at its tail, the one readback -- the kept count.
+    pair is kept. The verdicts are a bit a slot, and their words' inclusive ranks give each kept
+    pair its row and -- at their tail, the one readback -- the kept count.
     """
     device = candidates.targets.device
-    n_slots = candidates.targets.size
-    flags = _launch.empty(n_slots, dtype=wp.int32, device=device)
+    tail = [candidates.tail_queries, candidates.tail_targets]
+    n_tail = 0 if candidates.tail_targets is None else candidates.tail_targets.size
+    n_slots = candidates.targets.size + n_tail
+    # A verdict bit a slot, and each word's inclusive rank: a 32nd of a flag a slot.
+    n_words = (n_slots + 31) // 32
+    bits = _launch.zeros(n_words, dtype=wp.uint32, device=device)
     _launch.launch(
         kernel_intersections.crossing_slot_flags,
         dim=n_slots,
-        inputs=[*candidates.narrow_phase_inputs(), candidates.tail_queries, segments, flags],
+        inputs=[*candidates.narrow_phase_inputs(), *tail, segments],
+        outputs=[bits],
         device=device,
     )
-    _launch.array_scan(flags, out_array=flags, inclusive=True)
-    n_hit = int(read_scalar(flags))
+    word_ranks = _launch.empty(n_words, dtype=wp.int32, device=device)
+    _launch.map(kernel_array.popcount32, bits, out=word_ranks)
+    _launch.array_scan(word_ranks, out_array=word_ranks, inclusive=True)
+    n_hit = int(read_scalar(word_ranks))
     if n_hit == 0:
         return None
     out_pairs = None if segments else odt.empty_2d((n_hit, 2), wp.int32, device=device)
@@ -1100,8 +1108,9 @@ def _compact_crossing_candidates(candidates: _Candidates, *, segments: bool) -> 
             candidates.targets,
             candidates.counts,
             candidates.max_hits,
-            candidates.tail_queries,
-            flags,
+            *tail,
+            bits,
+            word_ranks,
             candidates.swapped,
             out_pairs,
             out_segments,
@@ -1249,6 +1258,7 @@ class _Candidates(NamedTuple):
     counts: wp.array[wp.int32]
     max_hits: int
     tail_queries: wp.array[wp.int32] | None
+    tail_targets: wp.array[wp.int32] | None
     query_vertices: wp.array[wp.vec3]
     query_faces: wp.array[wp.int32]
     target_vertices: wp.array[wp.vec3]
@@ -1320,7 +1330,7 @@ def _candidate_face_pairs(
         require_nonempty_mesh(target_faces, caller)
         target_mesh = wp.Mesh(points=target_vertices, indices=target_faces)
 
-    targets, counts, stride, tail_queries = _face_box_candidates(
+    targets, counts, stride, tail = _face_box_candidates(
         query_vertices, query_faces, target_mesh, max_triangle_collisions, grow
     )
     return _Candidates(
@@ -1328,7 +1338,8 @@ def _candidate_face_pairs(
         targets,
         counts,
         stride,
-        tail_queries,
+        None if tail is None else tail[1],
+        None if tail is None else tail[0],
         query_vertices,
         query_faces,
         target_vertices,
@@ -1426,10 +1437,20 @@ def face_box_candidates(
     )
     if capacity < 1:
         raise ValueError(f"capacity must be >= 1, got {capacity}")
-    targets, counts, stride, _ = _face_box_candidates(
+    targets, counts, stride, tail = _face_box_candidates(
         query_vertices, query_faces, target_mesh, capacity, grow
     )
-    return targets, counts, stride
+    if tail is None:
+        return targets, counts, stride
+    # The overflow tail after the table, as this function returns it; the package's own callers
+    # read the two apart, so the table is not copied for them.
+    tail_targets = tail[0]
+    with_tail = _launch.empty(
+        targets.size + tail_targets.size, dtype=wp.int32, device=targets.device
+    )
+    _launch.copy(with_tail, targets, count=targets.size)
+    _launch.copy(with_tail, tail_targets, dest_offset=targets.size, count=tail_targets.size)
+    return with_tail, counts, stride
 
 
 def _face_box_candidates(
@@ -1438,14 +1459,19 @@ def _face_box_candidates(
     target_mesh: wp.Mesh,
     capacity: int,
     grow: bool,
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32], int, wp.array[wp.int32] | None]:
+) -> tuple[
+    wp.array[wp.int32],
+    wp.array[wp.int32],
+    int,
+    tuple[wp.array[wp.int32], wp.array[wp.int32]] | None,
+]:
     """
-    ``face_box_candidates``, plus the owning query face of each overflow-tail slot.
+    ``face_box_candidates``, plus the target and the owning query face of each overflow-tail slot.
 
-    The fourth return is ``(n_overflow,)``, or ``None`` when there is no tail (nothing overflowed,
-    or ``grow`` is off). The overflow is collected by walking only the overflowing faces again and
-    skipping the candidates their block holds, so the table stays ``n_query * capacity`` and the
-    tail holds exactly the excess.
+    The fourth return is two ``(n_overflow,)`` arrays, or ``None`` when there is no tail (nothing
+    overflowed, or ``grow`` is off): slot ``n_table + j`` is the tail's ``j``-th. The overflow is
+    collected by walking only the overflowing faces again and skipping the candidates their block
+    holds, so the table stays ``n_query * capacity`` and the tail holds exactly the excess.
 
     Raises
     ------
@@ -1489,17 +1515,16 @@ def _face_box_candidates(
             f"{_MAX_CANDIDATE_SLOTS}"
         )
     _launch.array_scan(extras, out_array=extras, inclusive=False)
-    with_tail = _launch.empty(n_table + n_tail, dtype=wp.int32, device=device)
-    _launch.copy(with_tail, targets, count=n_table)
-    tail_queries = _launch.empty(n_tail, dtype=wp.int32, device=device)
+    # The tail's targets and owners, beside the table rather than appended to a copy of it.
+    tail_targets, tail_queries = _launch.carve(wp.int32, [n_tail, n_tail], device)
     _launch.launch(
         kernel_intersections.collect_overflow_candidates,
         dim=n_query,
         inputs=[target_mesh.id, lower, upper, counts, stride, extras],
-        outputs=[with_tail, tail_queries],
+        outputs=[tail_targets, tail_queries],
         device=device,
     )
-    return with_tail, counts, stride, tail_queries
+    return targets, counts, stride, (tail_targets, tail_queries)
 
 
 def slice_mesh_with_plane(
