@@ -1,5 +1,10 @@
 """Regression tests for ``ordito.curvature`` against ``trimesh.curvature`` (CPU reference)."""
 
+import subprocess
+import sys
+from pathlib import Path
+from typing import Literal
+
 import igl
 import numpy as np
 import pymeshlab as ml
@@ -17,7 +22,12 @@ from tests.conftest import (
     ROUND_FRAME_SHIFT,
     round_frame_coordinates,
 )
-from tests.conversions import points_to_warp, trimesh_to_pymeshlab, trimesh_to_pyvista
+from tests.conversions import (
+    numpy_to_warp,
+    points_to_warp,
+    trimesh_to_pymeshlab,
+    trimesh_to_pyvista,
+)
 
 
 @pytest.mark.parity("principal_curvature", "igl")
@@ -259,6 +269,234 @@ def test_principal_curvature_meyer_method_matches_pymeshlab(
     assert np.allclose(pv2_wp.numpy(), pv2_np, rtol=1e-5, atol=1e-5 * scale)
     assert not pd1_wp.numpy().any()
     assert not pd2_wp.numpy().any()
+
+
+@pytest.mark.parity("principal_curvature_taubin", "pymeshlab")
+def test_principal_curvature_taubin_method_matches_pymeshlab(device: str) -> None:
+    """
+    Class B (rim vertices dropped, unordered pair): ``method="taubin"`` is MeshLab's Taubin.
+
+    vcg's ``UpdateCurvature::PrincipalDirections`` forms Taubin's tensor with the same normal
+    curvatures, tangent projections and angle-weighted normal, and its Givens rotation diagonalizes
+    it exactly, but it hands back ``K1`` / ``K2`` in no order and weights each edge by the wrong
+    pair of faces: its ring walk adds the face *before* an edge's, not the one after, and at the
+    first entry of the walk the index ``(i - 1) % size`` wraps through ``size_t`` to an arbitrary
+    face. Ported verbatim that weighting reproduces it to 2e-7 of the field on ``sphere_irregular``,
+    ``torus_irregular`` and ``saddle_graded``; the paper's weights (ordito's) leave 1-2 % in the
+    median there. So the comparison runs on a mesh where both weightings are one: a sheared lattice
+    on a cylinder, every face congruent, so every face in a star has the same area. The shear
+    puts the lattice's edges obliquely to the lines of curvature, so the tensor is not diagonal in
+    any edge's frame, and the fixture is not degenerate (``PV1 - PV2`` is 2.57). Rim vertices are
+    dropped (vcg weighs a rim edge by its face over the ring's area, not half of it).
+
+    The transforms: the pair sorted, and MeshLab's first direction taken from whichever of its two
+    is the larger value's. Measured 3.3e-6 against values of 2.06 and -0.50, and ``|cos|`` above
+    0.9999999; tolerance as elsewhere, ``1e-5`` of the field's scale and ``|cos| > 0.9999``.
+    """
+    vertices_np, faces_np = _sheared_cylinder_arrays()
+    mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+    assert np.ptp(mesh_tm.area_faces) < 1e-5 * mesh_tm.area_faces.max()
+    first_pml, second_pml, directions_pml = _pymeshlab_principal_curvature(
+        mesh_tm, "Taubin approximation"
+    )
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    pd1_wp, _, pv1_wp, pv2_wp = od.curvature.principal_curvature(
+        vertices_wp, faces_wp, method="taubin"
+    )
+
+    interior = ~_rim_vertex_mask(mesh_tm)
+    larger_pml = np.maximum(first_pml, second_pml)
+    smaller_pml = np.minimum(first_pml, second_pml)
+    scale = float(np.abs(larger_pml).max())
+    assert (larger_pml - smaller_pml)[interior].min() > 1.0
+    assert np.allclose(pv1_wp.numpy()[interior], larger_pml[interior], atol=1e-5 * scale)
+    assert np.allclose(pv2_wp.numpy()[interior], smaller_pml[interior], atol=1e-5 * scale)
+    direction_pml = np.where((first_pml >= second_pml)[:, None], *directions_pml)
+    alignment_np = np.abs(np.einsum("ij,ij->i", direction_pml, pd1_wp.numpy()))
+    assert alignment_np[interior].min() > 0.9999
+
+
+def _sheared_cylinder_arrays(
+    sections: int = 24, rows: int = 10, shear: float = 0.4
+) -> tuple[np.ndarray, np.ndarray]:
+    """Tile a unit cylinder with one triangle shape: a lattice whose rows turn ``shear`` a step."""
+    row_np, column_np = np.meshgrid(np.arange(rows), np.arange(sections), indexing="ij")
+    angle_np = (column_np + shear * row_np) * (2.0 * np.pi / sections)
+    vertices_np = np.stack(
+        [np.cos(angle_np), np.sin(angle_np), 0.12 * row_np.astype(np.float64)], axis=-1
+    ).reshape(-1, 3)
+    low_np = row_np[:-1].ravel() * sections + column_np[:-1].ravel()
+    right_np = row_np[:-1].ravel() * sections + (column_np[:-1].ravel() + 1) % sections
+    faces_np = np.concatenate(
+        [
+            np.stack([low_np, right_np, right_np + sections], axis=1),
+            np.stack([low_np, right_np + sections, low_np + sections], axis=1),
+        ]
+    )
+    return vertices_np.astype(np.float32), faces_np.astype(np.int32)
+
+
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "torus_irregular_holes", "saddle_graded"]
+)
+@pytest.mark.parity("principal_curvature_normal_cycles", "pymeshlab")
+def test_principal_curvature_normal_cycles_method_matches_pymeshlab(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class B (rim and fold vertices dropped): ``method="normal_cycles"`` is MeshLab's normal cycle.
+
+    vcg's ``PrincipalDirectionsNormalCycle`` sums the same ``beta_e |e| e e^T`` over the edges at a
+    vertex, with three differences that the transforms undo:
+
+    - it divides by nothing, so its values are ordito's times twice the barycentric cell's area
+      (a third of the ring's);
+    - it returns the tensor's two *largest* eigenvalues, where ordito returns the two whose
+      eigenvectors are not the normal's. They differ where the normal's eigenvalue is not the
+      smallest (7 vertices of ``sphere_irregular``, one of ``sphere_well_shaped``), so each pair is
+      completed to the whole spectrum with the trace, ``sum_e beta_e |e|`` from trimesh's dihedrals
+      signed by its adjacency projections (its ``face_adjacency_convex`` flag is a tolerance test,
+      and flips the sign of the saddle's near-flat edges), and the sorted spectra are compared;
+    - its first direction is the eigenvector whose eigenvalue is larger in magnitude, the tensor's
+      own, where ordito's ``PD1`` is the smaller eigenvalue's (the curvature belongs to the
+      direction across its eigenvector), so MeshLab's first direction is matched against ordito's
+      ``PD2`` where ``|PV1| >= |PV2|`` and its ``PD1`` elsewhere; and the normal each picks,
+      ``PD1 x PD2``, must agree.
+
+    Dropped: rim vertices (vcg's ring walk bounces off a rim and writes zero at a rank-one tensor),
+    and vertices on an edge folded past a right angle, where vcg's ``beta_e`` is an arcsine that
+    folds the angle back (a 164-degree needle fold reads 16 degrees); ordito takes the ``atan2``.
+    That leaves 83-89 % of the vertices. Measured: spectra to 2.9e-08 of the field on the closed
+    fixtures and 3.1e-07 on the saddle; directions and normals ``|cos|`` above 0.9999998 (the
+    directions where both eigenvalue gaps exceed 5 % of the field: 36-1024 vertices). Probes:
+    halving the edge share reads 0.36-0.50 of the field, and taking ``PD1`` as the larger
+    eigenvalue's own eigenvector reads ``|cos|`` at most 5e-08.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    first_pml, second_pml, directions_pml = _pymeshlab_principal_curvature(mesh_tm, "Normal Cycles")
+    pd1_wp, pd2_wp, pv1_wp, pv2_wp = od.curvature.principal_curvature(
+        mesh_wp.points, mesh_wp.indices, method="normal_cycles"
+    )
+    pv1_np = pv1_wp.numpy().astype(np.float64)
+    pv2_np = pv2_wp.numpy().astype(np.float64)
+
+    edges_np = mesh_tm.face_adjacency_edges
+    signed_np = -np.sign(mesh_tm.face_adjacency_projections) * mesh_tm.face_adjacency_angles
+    lengths_np = np.linalg.norm(
+        mesh_tm.vertices[edges_np[:, 0]] - mesh_tm.vertices[edges_np[:, 1]], axis=1
+    )
+    trace_np = np.zeros(mesh_tm.vertices.shape[0])
+    np.add.at(trace_np, edges_np.ravel(), np.repeat(signed_np * lengths_np, 2))
+    cell_np = np.zeros(mesh_tm.vertices.shape[0])
+    np.add.at(cell_np, mesh_tm.faces.ravel(), np.repeat(mesh_tm.area_faces, 3))
+    first_np, second_np = pv1_np * cell_np * (2.0 / 3.0), pv2_np * cell_np * (2.0 / 3.0)
+    spectrum_np = np.sort(np.stack([first_np, second_np, trace_np - first_np - second_np]), axis=0)
+    spectrum_pml = np.sort(
+        np.stack([first_pml, second_pml, trace_np - first_pml - second_pml]), axis=0
+    )
+
+    folded = np.zeros(mesh_tm.vertices.shape[0], dtype=bool)
+    folded[edges_np[mesh_tm.face_adjacency_angles > np.pi / 2].ravel()] = True
+    kept = ~folded & ~_rim_vertex_mask(mesh_tm)
+    assert kept.mean() > 0.8
+    scale = float(np.abs(spectrum_pml).max())
+    assert_nonconstant(first_pml[kept], tol=1e-3 * scale)
+    assert np.allclose(spectrum_np[:, kept], spectrum_pml[:, kept], rtol=0.0, atol=1e-5 * scale)
+
+    normal_np = np.cross(pd1_wp.numpy(), pd2_wp.numpy())
+    normal_pml = np.cross(*directions_pml)
+    assert np.abs(np.einsum("ij,ij->i", normal_np, normal_pml))[kept].min() > 0.9999
+    magnitude = float(np.abs(pv1_np).max())
+    distinct = (
+        kept
+        & (pv1_np - pv2_np > 0.05 * magnitude)
+        & (np.abs(np.abs(pv1_np) - np.abs(pv2_np)) > 0.05 * magnitude)
+    )
+    assert distinct.sum() > 30
+    direction_np = np.where(
+        (np.abs(pv1_np) >= np.abs(pv2_np))[:, None], pd2_wp.numpy(), pd1_wp.numpy()
+    )
+    alignment_np = np.abs(np.einsum("ij,ij->i", direction_np, directions_pml[0]))
+    assert alignment_np[distinct].min() > 0.9999
+
+
+def _pymeshlab_principal_curvature(
+    mesh_tm: tm.Trimesh, method: str
+) -> tuple[np.ndarray, np.ndarray, tuple[np.ndarray, np.ndarray]]:
+    """
+    MeshLab's per-vertex ``K1``, ``K2`` and unit ``(PD1, PD2)`` from one ``method``.
+
+    The filter exposes ``K1`` and ``K2`` only as its scalar output (``"Min Curvature"`` is ``K1``
+    and ``"Max Curvature"`` ``K2``, whatever their order), so it runs once for each.
+    ``autoclean=False`` keeps the vertex numbering.
+    """
+    values_pml: list[np.ndarray] = []
+    directions_pml: list[np.ndarray] = []
+    for kind in ("Min Curvature", "Max Curvature"):
+        meshset_pml = trimesh_to_pymeshlab(mesh_tm)
+        meshset_pml.compute_curvature_principal_directions_per_vertex(
+            method=method, curvcolormethod=kind, autoclean=False
+        )
+        mesh_pml = meshset_pml.current_mesh()
+        assert mesh_pml.vertex_number() == mesh_tm.vertices.shape[0]
+        values_pml.append(np.asarray(mesh_pml.vertex_scalar_array()))
+        directions_pml = [
+            np.asarray(matrix, dtype=np.float64)
+            / np.maximum(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-30)
+            for matrix in (
+                mesh_pml.vertex_curvature_principal_dir1_matrix(),
+                mesh_pml.vertex_curvature_principal_dir2_matrix(),
+            )
+        ]
+    return values_pml[0], values_pml[1], (directions_pml[0], directions_pml[1])
+
+
+@pytest.mark.parametrize("method", ["taubin", "normal_cycles"])
+def test_one_ring_principal_directions_match_the_analytic_torus(
+    torus_round: tuple[tm.Trimesh, wp.Mesh], method: Literal["taubin", "normal_cycles"]
+) -> None:
+    """
+    Not a library comparison: the 1-ring tensors against the torus's closed form.
+
+    The pymeshlab comparisons above pin each tensor to MeshLab's, which on its own cannot tell an
+    estimator from a consistent mistake in both, and MeshLab orders neither its values nor (for
+    Taubin) its directions. A torus of revolution can: its meridians carry the larger curvature,
+    ``1 / r``, at every vertex of ``torus_round`` (see
+    [`test_principal_directions_match_the_analytic_torus`][tests.test_curvature.test_principal_directions_match_the_analytic_torus]).
+    A 1-ring estimate on a dart-thrown sampling is noisy vertex by vertex (MeshLab's own reach
+    ``|cos|`` 0.707-0.726 at the worst there), so the claim is statistical: measured median
+    ``|cos|`` between ``PD1`` and the meridian 0.990 (Taubin) and 0.977 (normal cycles), 86 % and
+    75 % of the vertices above 0.9, and median ``PV1`` 0.1 % and 1.9 % off ``1 / r``. A swapped
+    pair reads median 0.14 and 0.06 with 2 % above 0.9, and the unnormalized tensor (MeshLab's
+    values) a sixth of ``1 / r``. Bars: median above 0.95, 65 % above 0.9, ``PV1`` within 5 %.
+    """
+    mesh_tm, mesh_wp = torus_round
+    major_radius, minor_radius = 1.0, 0.4
+    vertices_np = round_frame_coordinates(mesh_tm.vertices)
+    angle_np = np.arctan2(vertices_np[:, 1], vertices_np[:, 0])
+    axis_np = np.stack([np.cos(angle_np), np.sin(angle_np), np.zeros_like(angle_np)], axis=1)
+    normal_np = vertices_np - major_radius * axis_np
+    normal_np /= np.linalg.norm(normal_np, axis=1, keepdims=True)
+    parallel_np = np.stack([-np.sin(angle_np), np.cos(angle_np), np.zeros_like(angle_np)], axis=1)
+    meridian_np = np.cross(normal_np, parallel_np)
+
+    pd1_wp, _, pv1_wp, _ = od.curvature.principal_curvature(
+        mesh_wp.points, mesh_wp.indices, method=method
+    )
+    alignment_np = np.abs(np.einsum("ij,ij->i", pd1_wp.numpy() @ ROUND_FRAME_ROTATION, meridian_np))
+    assert np.median(alignment_np) > 0.95, f"median |cos| {np.median(alignment_np):.4f}"
+    assert (alignment_np > 0.9).mean() > 0.65
+    meridian_curvature = 1.0 / (minor_radius * ROUND_FRAME_SCALE)
+    assert abs(np.median(pv1_wp.numpy()) / meridian_curvature - 1.0) < 0.05
+
+
+def test_principal_curvature_rejects_an_unknown_method(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """``method`` is validated at the boundary, and the message names the value and the menu."""
+    _, mesh_wp = sphere_irregular
+    with pytest.raises(ValueError, match=r"method must be .*'normal_cycles'.* got 'pca'"):
+        od.curvature.principal_curvature(mesh_wp.points, mesh_wp.indices, method="pca")  # pyright: ignore[reportArgumentType]
 
 
 def _rim_vertex_mask(mesh_tm: tm.Trimesh) -> np.ndarray:
@@ -1059,3 +1297,203 @@ def test_point_principal_curvature_rejects_mismatched_tables(device: str) -> Non
         od.curvature.point_principal_curvature(
             points, normals, odt.as_array2d(odt.as_dense(neighbor_idx[:40]), wp.int32)
         )
+
+
+@pytest.mark.parametrize(
+    "mesh_name", ["sphere_irregular", "torus_irregular_holes", "saddle_graded"]
+)
+@pytest.mark.parity("mls_principal_curvature_apss", "pymeshlab")
+def test_mls_principal_curvature_apss_matches_pymeshlab(
+    request: pytest.FixtureRequest, tmp_path: Path, mesh_name: str
+) -> None:
+    """
+    Class B (values through their sum and product): ``method="apss"`` is MeshLab's APSS curvature.
+
+    The cloud is the fixture's vertices with trimesh's vertex normals, both as ``float32``.
+    ``compute_curvature_and_color_apss_per_vertex`` projects each point onto the same APSS surface
+    and reads the curvature off the same gradient and Hessian; it exposes the values only through
+    one scalar per call, and its ``"K1"`` / ``"K2"`` outputs kill the process wherever the pair is
+    complex in rounding (``sqrt(H^2 - 4K)`` of a near-umbilic point is NaN, and its histogram pass
+    then corrupts the heap), so the transform reads its ``"Mean"`` (the *sum* ``PV1 + PV2``: vcg
+    returns the Weingarten map's trace) and ``"Gauss"`` (the product), which give the pair.
+    Measured 1.9e-08 to 7.6e-08 of each field's largest magnitude; tolerance ``1e-5`` of it.
+
+    **MeshLab runs in a fresh process.** Its projection stops on ``ProjectionAccuracy`` times a
+    point spacing that nothing initializes, so the answer depends on what the heap held there: in
+    a fresh process zero (every point takes all 15 steps; ordito stops at 1e-10 of the point's
+    reach, which changes nothing measurable), after other MeshLab work in the same process
+    anything -- the same input then moved ``sphere_irregular``'s fields by 4.6e-04, and stopping
+    at 1e-4 of the spacing (the documented intent) by 8e-06.
+
+    The directions are compared on ``saddle_graded`` only. vcg's ``WeingartenMap`` solves the
+    non-symmetric ``(I - n n^T) H / |g|`` with Eigen's self-adjoint solver, which reads its lower
+    triangle alone: a NumPy replication of that solve reproduces MeshLab's first direction to
+    1e-15 on ``sphere_irregular``, where it is as far as ``|cos|`` 0.16 from the symmetric shape
+    operator's. On the saddle the operator is nearly symmetric (``|cos|`` above 0.9995). There
+    MeshLab's first direction is the one of the smaller ``|PV|``; pairing it with the other reads
+    at most 0.0094.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    points_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
+    normals_np = np.asarray(mesh_tm.vertex_normals, dtype=np.float32)
+    fields_pml = _pymeshlab_apss_fields_in_a_fresh_process(points_np, normals_np, tmp_path)
+    pd1_wp, pd2_wp, pv1_wp, pv2_wp = od.curvature.mls_principal_curvature(
+        wp.array(points_np, dtype=wp.vec3, device=mesh_wp.device),
+        wp.array(normals_np, dtype=wp.vec3, device=mesh_wp.device),
+    )
+    pv1_np = pv1_wp.numpy().astype(np.float64)
+    pv2_np = pv2_wp.numpy().astype(np.float64)
+
+    sum_scale = float(np.abs(fields_pml["Mean"]).max())
+    product_scale = float(np.abs(fields_pml["Gauss"]).max())
+    assert_nonconstant(fields_pml["Mean"], tol=1e-2 * sum_scale)
+    assert_nonconstant(fields_pml["Gauss"], tol=1e-2 * product_scale)
+    assert np.allclose(pv1_np + pv2_np, fields_pml["Mean"], rtol=0.0, atol=1e-5 * sum_scale)
+    assert np.allclose(pv1_np * pv2_np, fields_pml["Gauss"], rtol=0.0, atol=1e-5 * product_scale)
+    if mesh_name == "saddle_graded":
+        smaller_np = np.where(
+            (np.abs(pv1_np) <= np.abs(pv2_np))[:, None], pd1_wp.numpy(), pd2_wp.numpy()
+        )
+        distinct = np.abs(np.abs(pv1_np) - np.abs(pv2_np)) > 0.05 * np.abs(pv1_np).max()
+        assert distinct.sum() > 100
+        alignment_np = np.abs(np.einsum("ij,ij->i", smaller_np, fields_pml["first"]))
+        assert alignment_np[distinct].min() > 0.999
+
+
+_APSS_IN_A_FRESH_PROCESS = """
+import os
+import sys
+
+import numpy as np
+import pymeshlab as ml
+
+data = np.load(sys.argv[1])
+fields = {}
+for kind in ("Mean", "Gauss"):
+    meshset = ml.MeshSet()
+    meshset.add_mesh(ml.Mesh(data["points"], v_normals_matrix=data["normals"]))
+    meshset.compute_curvature_and_color_apss_per_vertex(curvaturetype=kind)
+    fields[kind] = meshset.current_mesh().vertex_scalar_array()
+    fields["first"] = meshset.current_mesh().vertex_curvature_principal_dir1_matrix()
+np.savez(sys.argv[2], **fields)
+sys.stdout.flush()
+os._exit(0)
+"""
+
+
+def _pymeshlab_apss_fields_in_a_fresh_process(
+    points_np: np.ndarray, normals_np: np.ndarray, tmp_path: Path
+) -> dict[str, np.ndarray]:
+    """
+    Compute MeshLab's APSS ``"Mean"`` and ``"Gauss"`` fields and first directions in a new process.
+
+    The test above says why. The child exits without tearing pymeshlab down (its teardown can
+    abort after a filter has run), so its result is read off the file it wrote.
+    """
+    source, result = tmp_path / "cloud.npz", tmp_path / "fields.npz"
+    np.savez(source, points=points_np.astype(np.float64), normals=normals_np.astype(np.float64))
+    subprocess.run(
+        [sys.executable, "-c", _APSS_IN_A_FRESH_PROCESS, str(source), str(result)], check=True
+    )
+    with np.load(result) as fields:
+        return {name: fields[name] for name in fields.files}
+
+
+@pytest.mark.parametrize("method", ["apss", "rimls"])
+def test_mls_principal_curvature_matches_the_analytic_torus(
+    device: str, method: Literal["apss", "rimls"]
+) -> None:
+    """
+    Not a library comparison for RIMLS; the closed form for both, on a dense analytic torus.
+
+    No reference computes RIMLS curvature: MeshLab's RIMLS colorize filter writes zero curvature and
+    uninitialized directions (``RIMLS::gradient`` never sets the error flag the filter tests, so
+    every point reads as failed) and its MLS projection filters segfault. The torus of
+    revolution sampled on its parameter grid (4 608 points, ``R = 1``, ``r = 0.4``) with its
+    exact normals, whose larger principal curvature is ``1 / r`` along the meridian everywhere.
+    Measured median ``PV1 r`` 0.9992 (APSS) and 1.0187 (RIMLS, which does not reproduce a sphere
+    exactly: 1.09 on a coarser grid), and ``|cos|`` of ``PD1`` with the meridian 1.0000 at every
+    point for both (the grid is symmetric about each meridian). A swapped pair reads ``|cos|``
+    0.0000 and the parallel's curvature, at most 0.72 against 2.5. Bars: median ``PV1 r`` within
+    1 % (APSS) and 5 % (RIMLS), median ``|cos|`` above 0.99, and an answer at every point.
+    """
+    mesh_tm = tm.creation.torus(
+        major_radius=1.0, minor_radius=0.4, major_sections=96, minor_sections=48
+    )
+    points_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
+    angle_np = np.arctan2(points_np[:, 1], points_np[:, 0])
+    axis_np = np.stack([np.cos(angle_np), np.sin(angle_np), np.zeros_like(angle_np)], axis=1)
+    normals_np = points_np - axis_np
+    normals_np /= np.linalg.norm(normals_np, axis=1, keepdims=True)
+    parallel_np = np.stack([-np.sin(angle_np), np.cos(angle_np), np.zeros_like(angle_np)], axis=1)
+    meridian_np = np.cross(normals_np, parallel_np)
+
+    pd1_wp, _, pv1_wp, _ = od.curvature.mls_principal_curvature(
+        wp.array(points_np, dtype=wp.vec3, device=device),
+        wp.array(normals_np.astype(np.float32), dtype=wp.vec3, device=device),
+        method=method,
+    )
+    ratio_np = pv1_wp.numpy() * 0.4
+    assert ratio_np.min() > 0.0
+    assert abs(np.median(ratio_np) - 1.0) < (0.01 if method == "apss" else 0.05)
+    alignment_np = np.abs(np.einsum("ij,ij->i", pd1_wp.numpy(), meridian_np))
+    assert np.median(alignment_np) > 0.99, f"median |cos| {np.median(alignment_np):.4f}"
+
+
+def test_mls_principal_curvature_rimls_keeps_a_cube_edge_sharp(device: str) -> None:
+    """
+    Not a library comparison: the property RIMLS exists for, against APSS on a cube.
+
+    No reference computes RIMLS curvature (see the torus test above). 6 000 points sampled evenly on
+    a unit cube's faces with the faces' normals; within 0.02-0.05 of an edge, inside every
+    sample's reach, APSS's sphere fits round the edge off (median ``|PV1|`` 3.77) and RIMLS's
+    refitting drops the other face's samples (0.12); both read zero farther in. Bars: RIMLS
+    under a tenth of APSS there, and both flat (median below 0.01) beyond 0.1.
+    """
+    box_tm = tm.creation.box()
+    points_np, face_index_np = tm.sample.sample_surface_even(box_tm, 6000, seed=0)
+    normals_np = box_tm.face_normals[face_index_np]
+    edge_distance_np = np.sort(0.5 - np.abs(points_np), axis=1)[:, 1]
+    near = (edge_distance_np > 0.02) & (edge_distance_np < 0.05)
+    far = edge_distance_np > 0.1
+    assert near.sum() > 300
+    assert far.sum() > 1000
+    points_wp = wp.array(points_np.astype(np.float32), dtype=wp.vec3, device=device)
+    normals_wp = wp.array(normals_np.astype(np.float32), dtype=wp.vec3, device=device)
+    _, _, apss_wp, _ = od.curvature.mls_principal_curvature(points_wp, normals_wp, method="apss")
+    _, _, rimls_wp, _ = od.curvature.mls_principal_curvature(points_wp, normals_wp, method="rimls")
+    apss_np, rimls_np = np.abs(apss_wp.numpy()), np.abs(rimls_wp.numpy())
+    assert np.median(rimls_np[near]) < 0.1 * np.median(apss_np[near])
+    assert np.median(apss_np[far]) < 0.01
+    assert np.median(rimls_np[far]) < 0.01
+
+
+@pytest.mark.parametrize("count", [0, 1])
+def test_mls_principal_curvature_of_too_few_points_is_zero(device: str, count: int) -> None:
+    """Ordito against itself: a surface needs two samples, so fewer give the zero answer."""
+    points_wp = wp.array(np.zeros((count, 3), dtype=np.float32), dtype=wp.vec3, device=device)
+    normals_wp = wp.array(np.ones((count, 3), dtype=np.float32), dtype=wp.vec3, device=device)
+    for array_wp in od.curvature.mls_principal_curvature(points_wp, normals_wp):
+        assert array_wp.shape == (count,)
+        assert not array_wp.numpy().any()
+
+
+@pytest.mark.parametrize(
+    ("keywords", "message"),
+    [
+        ({"method": "imls"}, r"method must be 'apss' or 'rimls', got 'imls'"),
+        ({"filter_scale": 0.0}, r"filter_scale must be positive, got 0.0"),
+        ({"short_normals": True}, r"normals must have one entry per point, got 3 for 4"),
+    ],
+)
+def test_mls_principal_curvature_validates_its_arguments(
+    device: str, keywords: dict[str, object], message: str
+) -> None:
+    """Each documented ``ValueError``, raised before any launch."""
+    points_wp = wp.array(np.eye(4, 3, dtype=np.float32), dtype=wp.vec3, device=device)
+    short = bool(keywords.pop("short_normals", False))
+    normals_wp = wp.array(
+        np.ones((3 if short else 4, 3), dtype=np.float32), dtype=wp.vec3, device=device
+    )
+    with pytest.raises(ValueError, match=message):
+        od.curvature.mls_principal_curvature(points_wp, normals_wp, **keywords)  # pyright: ignore[reportArgumentType]

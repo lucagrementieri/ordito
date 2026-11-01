@@ -1272,6 +1272,20 @@
    "sort": 1
   }
  },
+ "benchmarks/test_curvature.py::test_mls_principal_curvature_apss[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 10,
+   "readback": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_mls_principal_curvature_rimls[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 4,
+   "alloc": 10,
+   "readback": 1
+  }
+ },
  "benchmarks/test_curvature.py::test_point_principal_curvature[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 1,
@@ -1322,12 +1336,27 @@
    "sort": 1
   }
  },
+ "benchmarks/test_curvature.py::test_principal_curvature_normal_cycles[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 9,
+   "scan": 1,
+   "sort": 1
+  }
+ },
  "benchmarks/test_curvature.py::test_principal_curvature_pyvista[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 5,
    "alloc": 7,
    "scan": 1,
    "sort": 1
+  }
+ },
+ "benchmarks/test_curvature.py::test_principal_curvature_taubin[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 7,
+   "scan": 1
   }
  },
  "benchmarks/test_curvature.py::test_vertex_curvatures[sphere_small-ordito-cpu]": {

@@ -7,7 +7,8 @@ Several quantities computed several ways, because on a mesh "curvature" is not o
   neighbourhood of each vertex and reads the shape operator off it, giving both principal
   directions and magnitudes. This is the extrinsic, neighbourhood-scale answer, and the only one
   with a ``radius`` to tune (``igl::principal_curvature``). Its ``method="pyvista"`` and
-  ``method="meyer"`` take the 1-ring extremes of VTK's and of Meyer et al.'s curvatures instead.
+  ``method="meyer"`` take the 1-ring extremes of VTK's and of Meyer et al.'s curvatures instead,
+  and ``method="taubin"`` and ``method="normal_cycles"`` 1-ring tensors that carry directions.
 - [`point_principal_curvature`][ordito.curvature.point_principal_curvature] is the same quadric
   fit on a point cloud with normals, over each point's nearest neighbours.
 - [`vertex_curvatures`][ordito.curvature.vertex_curvatures] is the pointwise mean and Gaussian
@@ -16,6 +17,9 @@ Several quantities computed several ways, because on a mesh "curvature" is not o
   defect: purely *intrinsic*, exact rather than fitted, and computable from the angles alone.
 - [`discrete_mean_curvature`][ordito.curvature.discrete_mean_curvature] sums dihedral angle times
   edge length over the one ring, which is the integrated mean curvature rather than a pointwise one.
+- [`mls_principal_curvature`][ordito.curvature.mls_principal_curvature] is the principal pair of
+  the smooth moving-least-squares surface a point cloud with normals defines (APSS or RIMLS), at
+  each point's projection onto it.
 
 The neighbourhood the first one fits over is a *geodesic* ball
 ([`geodesic_ball`][ordito.neighbors.geodesic_ball]), not a Euclidean one: a spatial query would
@@ -43,7 +47,7 @@ def principal_curvature(
     face_normals: wp.array[wp.vec3] | None = None,
     face_areas: wp.array[wp.float32] | None = None,
     mean_edge_length: float | None = None,
-    method: Literal["quadric", "pyvista", "meyer"] = "quadric",
+    method: Literal["quadric", "pyvista", "meyer", "taubin", "normal_cycles"] = "quadric",
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.float32]]:
     """
     Principal curvature directions and magnitudes per vertex via quadric fitting.
@@ -94,8 +98,17 @@ def principal_curvature(
         vertex's interior edges, of ``3 |e| theta / (A_f + A_g)``, ``theta`` the signed dihedral),
         ``H`` alone where ``H^2 < K``. ``"meyer"`` is the same extremes over Meyer et al.'s
         pointwise curvatures, [`vertex_curvatures`][ordito.curvature.vertex_curvatures]. Neither
-        1-ring method forms directions, so ``PD1`` and ``PD2`` are zero, and ``radius``,
-        ``frame_independent`` and the face tables are unread.
+        of those two forms directions, so ``PD1`` and ``PD2`` are zero. ``"taubin"`` is Taubin's
+        1-ring tensor: each edge's normal curvature ``2 n . (v - v_j) / |v - v_j|^2`` along its
+        tangent projection, weighted by the area of the faces sharing it, with ``n`` the
+        angle-weighted vertex normal; the tensor's eigenvectors are the principal directions and
+        its eigenvalues ``m1 >= m2`` give ``3 m1 - m2`` and ``3 m2 - m1``. ``"normal_cycles"`` is
+        Cohen-Steiner and Morvan's normal-cycle tensor over the vertex's barycentric cell: each
+        interior edge at the vertex adds its signed dihedral angle times half its length times
+        its direction's outer product, over a third of the ring's area. Its eigenvector nearest
+        the vertex normal is dropped and the other two give the principal curvatures, each
+        belonging to the direction across its eigenvector. All four 1-ring methods leave
+        ``radius``, ``frame_independent`` and the face tables unread.
 
     Returns
     -------
@@ -103,12 +116,14 @@ def principal_curvature(
         ``(n_vertices,)`` arrays ``(PD1, PD2, PV1, PV2)`` where ``PV1 >= PV2`` at every vertex.
         Vertices for which the quadric fit failed (a neighbourhood holding fewer than 5 vertices
         besides the centre, or a degenerate system) have zero directions and zero curvature
-        values.
+        values, as do a ``"taubin"`` vertex whose ring has no area and a ``"normal_cycles"``
+        vertex with no interior edge.
 
     Raises
     ------
     ValueError
-        If ``method`` is not ``"quadric"``, ``"pyvista"`` or ``"meyer"``.
+        If ``method`` is not ``"quadric"``, ``"pyvista"``, ``"meyer"``, ``"taubin"`` or
+        ``"normal_cycles"``.
     RuntimeError
         If ``vertices``, ``faces``, ``face_normals`` and ``face_areas`` are not all on one device.
 
@@ -144,18 +159,15 @@ def principal_curvature(
     require_same_device(
         vertices=vertices, faces=faces, face_normals=face_normals, face_areas=face_areas
     )
-    if method not in ("quadric", "pyvista", "meyer"):
-        raise ValueError(f"method must be 'quadric', 'pyvista' or 'meyer', got {method!r}")
+    if method not in ("quadric", "pyvista", "meyer", "taubin", "normal_cycles"):
+        raise ValueError(
+            "method must be 'quadric', 'pyvista', 'meyer', 'taubin' or 'normal_cycles', "
+            f"got {method!r}"
+        )
     device = vertices.device
     n_vertices = vertices.size
     if method != "quadric":
-        return _one_ring_principal_curvatures(
-            vertices,
-            faces,
-            kernel_curvature.vtk_principal_curvatures
-            if method == "pyvista"
-            else kernel_curvature.meyer_principal_curvatures,
-        )
+        return _one_ring_principal_curvatures(vertices, faces, method)
 
     # Area-weighted vertex normals. The pair is used only when both halves were supplied, which is
     # the documented contract; otherwise ``vertex_normals`` derives both inside its own scatter and
@@ -218,25 +230,47 @@ def principal_curvature(
 
 
 def _one_ring_principal_curvatures(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], kernel: odt.Kernel
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    method: Literal["pyvista", "meyer", "taubin", "normal_cycles"],
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.float32]]:
-    """Zero directions and ``kernel``'s 1-ring extremes: ``method="pyvista"`` or ``"meyer"``."""
+    """``principal_curvature``'s 1-ring methods: one thread per vertex over its face row."""
     device = vertices.device
     n_vertices = vertices.size
     vertex_faces, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
-    mates = od.halfedge.halfedge_mates(faces, vertex_faces=(vertex_faces, vf_offsets))
     pv1 = _launch.empty(n_vertices, dtype=wp.float32, device=device)
     pv2 = _launch.empty(n_vertices, dtype=wp.float32, device=device)
+    if method in ("pyvista", "meyer"):
+        # VTK and Meyer et al. form no directions: zero ones, and the kernel writes the values.
+        mates = od.halfedge.halfedge_mates(faces, vertex_faces=(vertex_faces, vf_offsets))
+        if n_vertices > 0:
+            _launch.launch(
+                kernel_curvature.vtk_principal_curvatures
+                if method == "pyvista"
+                else kernel_curvature.meyer_principal_curvatures,
+                dim=n_vertices,
+                inputs=[vertices, faces, vertex_faces, vf_offsets, mates],
+                outputs=[pv1, pv2],
+                device=device,
+            )
+        directions = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
+        return directions, _launch.zeros(n_vertices, dtype=wp.vec3, device=device), pv1, pv2
+    normals = _vertex_normals(vertices, faces, weighting="angle")
+    # ``wp.empty``: both tensor kernels write all four at every vertex, the zero answer included.
+    pd1 = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    pd2 = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    if method == "taubin":
+        kernel = kernel_curvature.taubin_principal_curvatures
+        inputs = [vertices, faces, vertex_faces, vf_offsets, normals]
+    else:
+        kernel = kernel_curvature.normal_cycle_principal_curvatures
+        mates = od.halfedge.halfedge_mates(faces, vertex_faces=(vertex_faces, vf_offsets))
+        inputs = [vertices, faces, vertex_faces, vf_offsets, mates, normals]
     if n_vertices > 0:
         _launch.launch(
-            kernel,
-            dim=n_vertices,
-            inputs=[vertices, faces, vertex_faces, vf_offsets, mates],
-            outputs=[pv1, pv2],
-            device=device,
+            kernel, dim=n_vertices, inputs=inputs, outputs=[pd1, pd2, pv1, pv2], device=device
         )
-    directions = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
-    return directions, _launch.zeros(n_vertices, dtype=wp.vec3, device=device), pv1, pv2
+    return pd1, pd2, pv1, pv2
 
 
 def point_principal_curvature(
@@ -651,3 +685,132 @@ def discrete_mean_curvature(
         device=device,
     )
     return mean_curvature
+
+
+def mls_principal_curvature(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    method: Literal["apss", "rimls"] = "apss",
+    filter_scale: float = 2.0,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.float32]]:
+    """
+    Principal curvature directions and magnitudes of a moving-least-squares surface per point.
+
+    The point cloud with normals defines a smooth implicit surface, and each point is projected
+    onto it and given that surface's curvature there: the shape operator of the implicit's level
+    set, from its gradient and Hessian, whose eigenpairs are the principal curvatures and their
+    directions. Each sample influences the points within ``filter_scale`` times its spacing (twice
+    the root-mean-square distance to its 16 nearest samples), with weight ``(1 - d^2 / r^2)^4``.
+
+    ``method`` picks the surface, both as MeshLab's ``filter_mls`` builds them:
+
+    - ``"apss"``: algebraic point set surfaces (Guennebaud and Gross), a sphere fitted to the
+      weighted samples and normals around each location. The gradient and Hessian are the fit's
+      exact derivatives, its own dependence on the location included.
+    - ``"rimls"``: robust implicit MLS (Oztireli, Guennebaud and Gross), a weighted average of the
+      samples' tangent planes refitted up to three times with samples whose normal disagrees with
+      the current gradient down-weighted, which keeps sharp features sharp. Its Hessian holds
+      the last round's refitting weights fixed.
+
+    ``(PD1, PD2)`` is an orthonormal pair in the surface's tangent plane at every point where it is
+    defined.
+
+    Parameters
+    ----------
+    points
+        ``(n,)`` point positions.
+    normals
+        ``(n,)`` unit point normals, oriented consistently; they define the surface, and the
+        curvature is positive where it bends away from them, as on a sphere with outward normals.
+        [`estimate_normals`][ordito.points.estimate_normals] estimates them.
+    method
+        ``"apss"`` (default) or ``"rimls"``, above.
+    filter_scale
+        Each sample's reach as a multiple of its spacing: larger is smoother.
+
+    Returns
+    -------
+    tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.float32]]
+        ``(n,)`` arrays ``(PD1, PD2, PV1, PV2)`` with ``PV1 >= PV2`` at every point. A point where
+        the surface is undefined (fewer than two samples reach its projection, or the gradient
+        vanishes there) has zero directions and zero curvature values.
+
+    Raises
+    ------
+    ValueError
+        If ``method`` is not ``"apss"`` or ``"rimls"``, ``filter_scale`` is not positive, or
+        ``normals`` does not have one entry per point.
+    RuntimeError
+        If ``points`` and ``normals`` are not on one device.
+
+    See Also
+    --------
+    [`principal_curvature`][ordito.curvature.principal_curvature]
+
+    Notes
+    -----
+    MeshLab's APSS colorize filter (``compute_curvature_and_color_apss_per_vertex``) computes the
+    same surface, projection and derivatives; its ``"Mean"`` output is the sum ``PV1 + PV2``, and
+    it orders its ``K1`` and ``K2`` by magnitude.
+
+    Examples
+    --------
+    Both principal curvatures of points on a sphere of radius 2 are ``1 / 2``:
+
+    ```python
+    import numpy as np
+
+    import ordito as od
+
+    normals = od.sample.sample_fibonacci_sphere(2000)
+    points = od.transform.transform_points(normals, od.transform.scale_matrix(2.0))
+    pd1, pd2, pv1, pv2 = od.curvature.mls_principal_curvature(points, normals)
+    print(pv1.shape)  # (2000,)
+    print(f"{np.median(pv1.numpy()):.2f} {np.median(pv2.numpy()):.2f}")  # 0.50 0.50
+    ```
+    """
+    require_same_device(points=points, normals=normals)
+    if method not in ("apss", "rimls"):
+        raise ValueError(f"method must be 'apss' or 'rimls', got {method!r}")
+    if not filter_scale > 0.0:
+        raise ValueError(f"filter_scale must be positive, got {filter_scale}")
+    device = points.device
+    n = points.size
+    # One thread per point reads its own normal, so a short table is an out-of-bounds read.
+    if normals.size != n:
+        raise ValueError(f"normals must have one entry per point, got {normals.size} for {n}")
+    if n < 2:
+        # No surface: it needs two samples reaching a point.
+        return (
+            _launch.zeros(n, dtype=wp.vec3, device=device),
+            _launch.zeros(n, dtype=wp.vec3, device=device),
+            _launch.zeros(n, dtype=wp.float32, device=device),
+            _launch.zeros(n, dtype=wp.float32, device=device),
+        )
+    # ``wp.empty``: both kernels write all four at every point.
+    pd1 = _launch.empty(n, dtype=wp.vec3, device=device)
+    pd2 = _launch.empty(n, dtype=wp.vec3, device=device)
+    pv1 = _launch.empty(n, dtype=wp.float32, device=device)
+    pv2 = _launch.empty(n, dtype=wp.float32, device=device)
+    neighbor_idx, _ = od.neighbors.query_nearest(points, points, min(16, n))
+    radii = _launch.empty(n, dtype=wp.float64, device=device)
+    lower = _launch.empty(n, dtype=wp.vec3, device=device)
+    upper = _launch.empty(n, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_curvature.mls_sample_balls,
+        dim=n,
+        inputs=[points, odt.as_array2d(neighbor_idx, wp.int32), wp.float64(filter_scale)],
+        outputs=[radii, lower, upper],
+        device=device,
+    )
+    bvh = od.neighbors.bvh_from_bounds(lower, upper)
+    _launch.launch(
+        kernel_curvature.apss_principal_curvature
+        if method == "apss"
+        else kernel_curvature.rimls_principal_curvature,
+        dim=n,
+        inputs=[points, normals, radii, bvh.id],
+        outputs=[pd1, pd2, pv1, pv2],
+        device=device,
+    )
+    return pd1, pd2, pv1, pv2

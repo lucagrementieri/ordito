@@ -43,7 +43,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | unique edges and their lengths | [`edges.edges_unique`][ordito.edges.edges_unique], [`edges_unique_length`][ordito.edges.edges_unique_length] |
 | boundary edges and hole rims | [`boundary.boundary_edges`][ordito.boundary.boundary_edges], [`boundary_loops`][ordito.boundary.boundary_loops] |
 | neighbouring faces and connected components | [`adjacency.face_adjacency`][ordito.adjacency.face_adjacency], [`face_connected_component_labels`][ordito.adjacency.face_connected_component_labels], [`combine.split`][ordito.combine.split] |
-| curvature | [`curvature`][ordito.curvature]: [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature], [`discrete_mean_curvature`][ordito.curvature.discrete_mean_curvature], [`principal_curvature`][ordito.curvature.principal_curvature] |
+| curvature | [`curvature`][ordito.curvature]: [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature], [`discrete_mean_curvature`][ordito.curvature.discrete_mean_curvature], [`principal_curvature`][ordito.curvature.principal_curvature], [`mls_principal_curvature`][ordito.curvature.mls_principal_curvature] |
 | bounding boxes | [`bounds.aabb`][ordito.bounds.aabb], [`bounds.oriented_bounding_box`][ordito.bounds.oriented_bounding_box] |
 | triangle quality | [`triangles.face_quality`][ordito.triangles.face_quality] |
 | **Repair** | |

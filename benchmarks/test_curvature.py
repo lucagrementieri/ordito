@@ -78,6 +78,8 @@ signature asks the caller for.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import igl
 import numpy as np
 import pymeshlab as ml
@@ -240,6 +242,53 @@ def test_point_principal_curvature(bench_case: BenchCase) -> None:
     assert pv1.shape == (bench_case.n_vertices,)
 
 
+@pytest.mark.benchmark(group="principal_curvature_taubin")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+def test_principal_curvature_taubin(bench_case: BenchCase) -> None:
+    """
+    Taubin's 1-ring tensor: ``principal_curvature(method="taubin")``.
+
+    One thread per vertex over its face row, after the angle-weighted vertex normals; MeshLab's
+    ``"Taubin approximation"`` walks the same ring serially. Its MeshSet is built inside the timed
+    callable, since the filter's ``autoclean`` deletes unreferenced vertices.
+    """
+    _bench_one_ring_principal_curvature(bench_case, "taubin", "Taubin approximation")
+
+
+@pytest.mark.benchmark(group="principal_curvature_normal_cycles")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+def test_principal_curvature_normal_cycles(bench_case: BenchCase) -> None:
+    """
+    The normal-cycle tensor over each vertex's barycentric cell: ``method="normal_cycles"``.
+
+    One thread per vertex over its face row and the halfedge mates, a ``float64`` ``eig3`` each;
+    MeshLab's ``"Normal Cycles"`` forms the same tensor (unnormalized) and its Eigen solve serially.
+    """
+    _bench_one_ring_principal_curvature(bench_case, "normal_cycles", "Normal Cycles")
+
+
+def _bench_one_ring_principal_curvature(
+    bench_case: BenchCase, method: Literal["taubin", "normal_cycles"], method_pml: str
+) -> None:
+    """Time ``principal_curvature(method=method)`` against MeshLab's ``method_pml``."""
+    if bench_case.kind == "pymeshlab":
+        bench_case.run(
+            lambda: bench_case.new_meshset_pml().compute_curvature_principal_directions_per_vertex(
+                method=method_pml
+            ),
+            rounds=_HEAVY_ROUNDS,
+        )
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    *_, pv1, _pv2 = bench_case.run(
+        lambda: od.curvature.principal_curvature(vertices, faces, method=method),
+        rounds=_HEAVY_ROUNDS,
+    )
+    assert pv1.shape == (bench_case.n_vertices,)
+
+
 @pytest.mark.benchmark(group="vertex_curvatures")
 @pytest.mark.benchaxis("scale")
 @pytest.mark.benchlibs("ordito", "pymeshlab")
@@ -351,3 +400,56 @@ def test_discrete_mean_curvature(bench_case: BenchCase, radius_scale: float) -> 
             rounds=_HEAVY_ROUNDS,
         )
         assert np.asarray(curvature_tm).shape == (n_vertices,)
+
+
+@pytest.mark.benchmark(group="mls_principal_curvature_apss")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+def test_mls_principal_curvature_apss(bench_case: BenchCase) -> None:
+    """
+    APSS curvature of the vertex cloud with its normals: ``mls_principal_curvature("apss")``.
+
+    One thread per point: up to 15 projection steps, then a fit, a gradient and three Hessian walks
+    over the samples whose ball covers the projection, each a BVH query, all in ``float64``.
+    MeshLab's ``compute_curvature_and_color_apss_per_vertex`` (its ``"Mean"`` output, which every
+    input survives) does the same serially, building its cloud inside the timed callable; its
+    projection stops on an uninitialized spacing, so how many steps it takes is the heap's.
+    """
+    _bench_mls_principal_curvature(bench_case, "apss")
+
+
+@pytest.mark.benchmark(group="mls_principal_curvature_rimls")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito")
+def test_mls_principal_curvature_rimls(bench_case: BenchCase) -> None:
+    """
+    RIMLS curvature of the vertex cloud: ``mls_principal_curvature("rimls")``.
+
+    Up to three refitting walks per value and gradient, up to 15 projection steps, and one Hessian
+    walk. ordito only: MeshLab's RIMLS colorize filter reports every point failed (zero curvature),
+    so its time is not this work.
+    """
+    _bench_mls_principal_curvature(bench_case, "rimls")
+
+
+def _bench_mls_principal_curvature(bench_case: BenchCase, method: Literal["apss", "rimls"]) -> None:
+    """Time ``mls_principal_curvature`` on the vertices and their area-weighted normals."""
+    if bench_case.kind == "pymeshlab":
+        points_np = bench_case.vertices_np.astype(np.float64)
+        normals_np = tm.Trimesh(points_np, bench_case.faces_np, process=False).vertex_normals
+
+        def colorize() -> None:
+            """Build the cloud and run MeshLab's APSS colorize filter on it."""
+            meshset = ml.MeshSet()
+            meshset.add_mesh(ml.Mesh(points_np, v_normals_matrix=normals_np))
+            meshset.compute_curvature_and_color_apss_per_vertex(curvaturetype="Mean")
+
+        bench_case.run(colorize, rounds=_HEAVY_ROUNDS)
+        return
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    normals = od.vertices.vertex_normals(vertices, faces)
+    *_, pv1, _pv2 = bench_case.run(
+        lambda: od.curvature.mls_principal_curvature(vertices, normals, method),
+        rounds=_HEAVY_ROUNDS,
+    )
+    assert pv1.shape == (bench_case.n_vertices,)

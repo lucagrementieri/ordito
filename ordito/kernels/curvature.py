@@ -417,6 +417,30 @@ def extreme_curvatures(mean: wp.float64, gaussian: wp.float64) -> tuple[wp.float
     return first, second
 
 
+@wp.func
+def signed_dihedral_d(cross_f: wp.vec3d, cross_g: wp.vec3d, direction: wp.vec3d) -> wp.float64:
+    # The bending angle at an edge shared by faces ``f`` and ``g``, from their unnormalized
+    # normals: ``atan2((n_f x n_g) . e, n_f . n_g)``, ``e`` the edge's unit direction as ``f``
+    # walks it, positive where the surface bends away from the normals (a convex edge of an
+    # outward-wound solid). A face with no normal or an edge with no length reads zero. The rule
+    # of VTK's mean curvature and of the normal-cycle tensor alike.
+    normal_f = wp.vec3d()
+    normal_g = wp.vec3d()
+    if wp.length(cross_f) > wp.float64(0.0):
+        normal_f = wp.normalize(cross_f)
+    if wp.length(cross_g) > wp.float64(0.0):
+        normal_g = wp.normalize(cross_g)
+    length = wp.length(direction)
+    cs = wp.dot(normal_f, normal_g)
+    sn = wp.float64(0.0)
+    if length > wp.float64(0.0):
+        sn = wp.dot(wp.cross(normal_f, normal_g), direction / length)
+    theta = wp.float64(0.0)
+    if sn != wp.float64(0.0) or cs != wp.float64(0.0):
+        theta = wp.atan2(sn, cs)
+    return theta
+
+
 @wp.kernel
 def vtk_principal_curvatures(
     vertices: wp.array[wp.vec3],
@@ -461,21 +485,7 @@ def vtk_principal_curvatures(
                 tail = corner_at(p0, p1, p2, local)
                 head = corner_at(p0, p1, p2, local + 1)
                 direction = head - tail
-                length = wp.length(direction)
-                theta = wp.float64(0.0)
-                normal_f = wp.vec3d()
-                normal_g = wp.vec3d()
-                if wp.length(cross_f) > wp.float64(0.0):
-                    normal_f = wp.normalize(cross_f)
-                if wp.length(cross_g) > wp.float64(0.0):
-                    normal_g = wp.normalize(cross_g)
-                cs = wp.dot(normal_f, normal_g)
-                sn = wp.float64(0.0)
-                if length > wp.float64(0.0):
-                    sn = wp.dot(wp.cross(normal_f, normal_g), direction / length)
-                if sn != wp.float64(0.0) or cs != wp.float64(0.0):
-                    theta = wp.atan2(sn, cs)
-                term = length * theta
+                term = wp.length(direction) * signed_dihedral_d(cross_f, cross_g, direction)
                 areas = area_f + wp.float64(0.5) * wp.length(cross_g)
                 if areas != wp.float64(0.0):
                     term = term / areas * wp.float64(3.0)
@@ -623,6 +633,157 @@ def meyer_principal_curvatures(
     out_pv2[v] = wp.float32(second)
 
 
+@wp.func
+def write_no_principal_curvature(
+    i: wp.int32,
+    out_pd1: wp.array[wp.vec3],
+    out_pd2: wp.array[wp.vec3],
+    out_pv1: wp.array[wp.float32],
+    out_pv2: wp.array[wp.float32],
+) -> None:
+    # The answer a 1-ring tensor or an MLS kernel writes where it has none -- a ring of no area, no
+    # interior edge, an MLS surface undefined at the point: zero directions and zero values, all
+    # four written, so a caller reads a zero ``PD1`` as "nothing here".
+    out_pd1[i] = wp.vec3()
+    out_pd2[i] = wp.vec3()
+    out_pv1[i] = wp.float32(0.0)
+    out_pv2[i] = wp.float32(0.0)
+
+
+@wp.kernel
+def taubin_principal_curvatures(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    vertex_normals: wp.array[wp.vec3],
+    out_pd1: wp.array[wp.vec3],
+    out_pd2: wp.array[wp.vec3],
+    out_pv1: wp.array[wp.float32],
+    out_pv2: wp.array[wp.float32],
+) -> None:
+    # ``principal_curvature(method="taubin")``: Taubin's 1-ring tensor
+    # ``M = sum_j w_j k_j T_j T_j^T`` over the edges at ``v``, gathered per vertex over its face
+    # row. ``k_j = 2 n . (v - v_j) / |v - v_j|^2`` is the edge's normal curvature, ``T_j`` its
+    # unit projection on the tangent plane, and ``w_j`` the area of the faces sharing the edge
+    # over twice the ring's: each face adds its area to both its edges at ``v``, so a face pass
+    # forms the edge weights without the edge list. ``M``'s eigenvectors in the tangent plane are
+    # the principal directions and its eigenvalues ``m1 >= m2`` give ``k1 = 3 m1 - m2`` and
+    # ``k2 = 3 m2 - m1``. An edge along the normal has no tangent and is skipped; a ring of no
+    # area writes the zero answer.
+    v = wp.int32(wp.tid())
+    normal = wp.normalize(vertex_normals[v])
+    here = vertices[v]
+    tensor = wp.mat33()
+    ring_area = wp.float32(0.0)
+    for slot in range(vf_offsets[v], vf_offsets[v + 1]):
+        f = vertex_faces[slot]
+        _, area = face_normals_and_area(vertices, faces, f)
+        ring_area += area
+        k = local_corner(faces, f, v)
+        for side in range(1, 3):
+            edge = here - vertices[faces[3 * f + (k + side) % 3]]
+            length_sq = wp.dot(edge, edge)
+            tangential = edge - wp.dot(edge, normal) * normal
+            tangent_length = wp.length(tangential)
+            if length_sq > wp.float32(0.0) and tangent_length > wp.float32(0.0):
+                unit = tangential / tangent_length
+                curvature = wp.float32(2.0) * wp.dot(normal, edge) / length_sq
+                tensor += (area * curvature) * wp.outer(unit, unit)
+    if ring_area <= wp.float32(0.0):
+        write_no_principal_curvature(v, out_pd1, out_pd2, out_pv1, out_pv2)
+        return
+    tensor = tensor * (wp.float32(0.5) / ring_area)
+    t1 = any_perpendicular(normal)
+    t2 = wp.cross(normal, t1)
+    m00 = wp.dot(t1, tensor * t1)
+    m01 = wp.dot(t1, tensor * t2)
+    m11 = wp.dot(t2, tensor * t2)
+    half_trace = (m00 + m11) * wp.float32(0.5)
+    half_diff = (m00 - m11) * wp.float32(0.5)
+    spread = wp.sqrt(half_diff * half_diff + m01 * m01)
+    larger = half_trace + spread
+    smaller = half_trace - spread
+    first = _eigvec_2x2(m00, m01, m01, m11, larger)
+    pd1 = wp.normalize(t1 * first[0] + t2 * first[1])
+    out_pd1[v] = pd1
+    out_pd2[v] = wp.cross(normal, pd1)
+    out_pv1[v] = wp.float32(3.0) * larger - smaller
+    out_pv2[v] = wp.float32(3.0) * smaller - larger
+
+
+@wp.kernel
+def normal_cycle_principal_curvatures(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    vertex_normals: wp.array[wp.vec3],
+    out_pd1: wp.array[wp.vec3],
+    out_pd2: wp.array[wp.vec3],
+    out_pv1: wp.array[wp.float32],
+    out_pv2: wp.array[wp.float32],
+) -> None:
+    # ``principal_curvature(method="normal_cycles")``: Cohen-Steiner and Morvan's tensor over the
+    # vertex's barycentric cell, ``T = sum_e beta_e |e| e e^T / (2 A)``, gathered per vertex over
+    # its face row in ``float64``. Each interior edge at ``v`` is the halfedge leaving ``v`` in
+    # exactly one face, so it is met once; ``beta_e`` is its signed dihedral
+    # (``signed_dihedral_d``), half of it lies in the cell, and ``A`` is a third of the ring's area.
+    # A rim edge bends nothing and adds nothing. vcg's ``PrincipalDirectionsNormalCycle`` sums the
+    # same ``beta_e |e| e e^T`` (its ``beta_e`` an arcsine, equal below a right-angle fold) and
+    # divides by nothing. Of ``T``'s three eigenvectors the one nearest the vertex normal is the
+    # normal; the other two carry the principal curvatures crosswise: the larger eigenvalue is the
+    # curvature *across* its eigenvector (a cylinder's ridge edges run along the axis), so ``PD1``
+    # is the smaller eigenvalue's eigenvector.
+    v = wp.int32(wp.tid())
+    tensor = wp.mat33d()
+    ring_area = wp.float64(0.0)
+    edges = wp.int32(0)
+    for slot in range(vf_offsets[v], vf_offsets[v + 1]):
+        f = vertex_faces[slot]
+        k = local_corner(faces, f, v)
+        p0, p1, p2 = corner_positions_d(vertices, faces, f)
+        cross_f = wp.cross(p1 - p0, p2 - p0)
+        ring_area += wp.float64(0.5) * wp.length(cross_f)
+        mate = mates[3 * f + k]
+        if mate >= 0:
+            q0, q1, q2 = corner_positions_d(vertices, faces, mate // 3)
+            direction = corner_at(p0, p1, p2, k + 1) - corner_at(p0, p1, p2, k)
+            length = wp.length(direction)
+            if length > wp.float64(0.0):
+                beta = signed_dihedral_d(cross_f, wp.cross(q1 - q0, q2 - q0), direction)
+                unit = direction / length
+                tensor += (beta * length) * wp.outer(unit, unit)
+                edges += 1
+    if edges == 0 or ring_area <= wp.float64(0.0):
+        write_no_principal_curvature(v, out_pd1, out_pd2, out_pv1, out_pv2)
+        return
+    tensor = tensor * (wp.float64(1.5) / ring_area)
+    vectors, values = wp.eig3(tensor)
+    normal = wp.vec3d(vertex_normals[v])
+    across = wp.int32(0)
+    best = wp.float64(-1.0)
+    for i in range(3):
+        alignment = wp.abs(wp.dot(wp.vec3d(vectors[0, i], vectors[1, i], vectors[2, i]), normal))
+        if alignment > best:
+            best = alignment
+            across = i
+    a = (across + 1) % 3
+    b = (across + 2) % 3
+    larger = wp.max(values[a], values[b])
+    smaller = wp.min(values[a], values[b])
+    small = wp.where(values[a] < values[b], a, b)
+    pd1 = wp.vec3(wp.vec3d(vectors[0, small], vectors[1, small], vectors[2, small]))
+    axis = wp.vec3(wp.vec3d(vectors[0, across], vectors[1, across], vectors[2, across]))
+    if wp.dot(axis, vertex_normals[v]) < wp.float32(0.0):
+        axis = -axis
+    out_pd1[v] = pd1
+    out_pd2[v] = wp.cross(axis, pd1)
+    out_pv1[v] = wp.float32(larger)
+    out_pv2[v] = wp.float32(smaller)
+
+
 @wp.kernel
 def vertex_angle_sums(
     face_angles: wp.array2d[wp.float32], faces: wp.array[wp.int32], out_sum: wp.array[wp.float64]
@@ -764,3 +925,598 @@ def ball_mean_curvature(
         # Positive across a convex edge, negative across a concave one; see ``face_pair_dihedrals``.
         total = total + length * signed_angles[k] * wp.float32(0.5)
     out_mean_curvature[q] = total
+
+
+# ---------------------------------------------------------------------------
+# mls_principal_curvature: the MLS surfaces of Guennebaud and Gross (APSS) and of Oztireli,
+# Guennebaud and Gross (RIMLS), as MeshLab's ``filter_mls`` (Gael Guennebaud's ``GaelMls``) forms
+# them, all in ``float64``. A point's neighbourhood is every sample whose own ball covers it (a
+# sample's ball radius is ``filter_scale`` times its spacing), weighted by
+# ``(1 - d^2 / r^2)^4``; the BVH holds those balls' boxes, so one point query walks exactly the
+# candidates.
+# ---------------------------------------------------------------------------
+
+# How many steps a projection onto the MLS surface takes at most (MeshLab's default), and the step
+# below which it stops, as a fraction of the point's reach. MeshLab's stopping distance is its
+# ``ProjectionAccuracy`` times a point spacing it never sets (zero in a fresh process, so it runs
+# every step), and the curvature is sensitive to where the projection lands: stopping at 1e-4 of
+# the spacing (its documented intent) moved ``sphere_irregular``'s fields by 8e-06. At 1e-10 the
+# answer is MeshLab's to ``float32`` rounding and most points stop after a few steps (15 steps
+# cost 2.5x three on a 2 562-point sphere).
+MLS_PROJECTION_ITERATIONS = 15
+MLS_PROJECTION_TOLERANCE = wp.float64(1e-10)
+# APSS's spherical parameter: 1 fits pure spheres (MeshLab's default).
+APSS_SPHERICAL_PARAMETER = wp.float64(1.0)
+# RIMLS's normal sharpness ``sigma_n`` (MeshLab's default) and its refitting rounds.
+RIMLS_SIGMA_N = wp.float64(0.75)
+RIMLS_MAX_REFITS = 3
+RIMLS_REFIT_THRESHOLD = wp.float64(1e-3)
+# vcg's APSS status: a sphere, a plane, or a sphere too flat to place.
+APSS_SPHERE = 0
+APSS_PLANE = 1
+APSS_UNDETERMINED = 2
+
+
+@wp.kernel
+def mls_sample_balls(
+    points: wp.array[wp.vec3],
+    neighbor_indices: wp.array2d[wp.int32],
+    filter_scale: wp.float64,
+    out_radii: wp.array[wp.float64],
+    out_lower: wp.array[wp.vec3],
+    out_upper: wp.array[wp.vec3],
+) -> None:
+    # Each sample's ball: ``filter_scale`` times its spacing ``2 sqrt(d_k^2 / k)``, ``d_k`` the
+    # distance to the farthest of its ``k`` nearest samples (itself included), as vcg's
+    # ``computeVertexRadius`` sets it; the distance re-formed in ``float64``. The box is widened by
+    # a few ulp so the ``float32`` box test never drops a sample the ``float64`` ball test keeps.
+    i = wp.int32(wp.tid())
+    here = wp.vec3d(points[i])
+    count = wp.int32(0)
+    farthest = wp.float64(0.0)
+    for slot in range(neighbor_indices.shape[1]):
+        j = neighbor_indices[i, slot]
+        if j >= 0:
+            count += 1
+            farthest = wp.max(farthest, wp.length_sq(wp.vec3d(points[j]) - here))
+    radius = wp.float64(0.0)
+    if count > 0:
+        radius = filter_scale * (wp.float64(2.0) * wp.sqrt(farthest / wp.float64(count)))
+    out_radii[i] = radius
+    reach = wp.float32(radius) * wp.float32(1.0001) + wp.float32(1e-30)
+    margin = wp.vec3(reach, reach, reach)
+    out_lower[i] = points[i] - margin
+    out_upper[i] = points[i] + margin
+
+
+@wp.func
+def mls_weight(
+    x: wp.vec3d, sample: wp.vec3d, radius: wp.float64
+) -> tuple[wp.bool, wp.float64, wp.float64, wp.float64]:
+    # Whether ``sample``'s ball covers ``x``, and its weight ``(1 - d^2 s)^4`` with ``s = 1 / r^2``
+    # and the weight's first and second derivatives in ``d^2`` scaled as vcg caches them: the
+    # weight's gradient is ``(x - sample) * first`` and the ``(j, k)`` Hessian entry
+    # ``(x - sample)_j (x - sample)_k second + [j == k] first``.
+    d2 = wp.length_sq(x - sample)
+    inv = wp.float64(1.0) / radius
+    s = inv * inv
+    aux = wp.max(wp.float64(1.0) - d2 * s, wp.float64(0.0))
+    square = aux * aux
+    weight = square * square
+    first = wp.float64(-2.0) * s * (wp.float64(4.0) * aux * square)
+    second = wp.float64(4.0) * s * s * (wp.float64(12.0) * square)
+    return d2 < radius * radius, weight, first, second
+
+
+@wp.func
+def apss_moments(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    radii: wp.array[wp.float64],
+    bvh_id: wp.uint64,
+    x: wp.vec3d,
+) -> tuple[wp.int32, wp.int32, wp.vec3d, wp.vec3d, wp.float64, wp.float64, wp.float64]:
+    # The weighted moments APSS fits at ``x``: how many samples' balls cover it (and one of them),
+    # ``sum w p``, ``sum w n``, ``sum w n . p``, ``sum w p . p`` and ``sum w``.
+    count = wp.int32(0)
+    first = wp.int32(-1)
+    sum_p = wp.vec3d()
+    sum_n = wp.vec3d()
+    sum_pn = wp.float64(0.0)
+    sum_pp = wp.float64(0.0)
+    sum_w = wp.float64(0.0)
+    probe = wp.vec3(x)
+    query = wp.bvh_query_aabb(bvh_id, probe, probe)
+    i = wp.int32(0)
+    while wp.bvh_query_next(query, i):
+        p = wp.vec3d(points[i])
+        inside, w, _first, _second = mls_weight(x, p, radii[i])
+        if inside:
+            n = wp.vec3d(normals[i])
+            count += 1
+            first = i
+            sum_p += p * w
+            sum_n += n * w
+            sum_pn += w * wp.dot(n, p)
+            sum_pp += w * wp.dot(p, p)
+            sum_w += w
+    return count, first, sum_p, sum_n, sum_pn, sum_pp, sum_w
+
+
+@wp.func
+def apss_sphere(
+    sum_p: wp.vec3d, sum_n: wp.vec3d, sum_pn: wp.float64, sum_pp: wp.float64, sum_w: wp.float64
+) -> tuple[wp.vec3d, wp.float64, wp.float64, wp.int32, wp.vec3d, wp.float64]:
+    # vcg's ``APSS::fit`` from two or more samples' moments: the algebraic sphere
+    # ``u0 + u13 . x + u4 |x|^2`` and its status, normalized as vcg normalizes a plane or a sphere
+    # too flat to place, and the centre and radius of a placed one.
+    inv = wp.float64(1.0) / sum_w
+    quad = (
+        APSS_SPHERICAL_PARAMETER
+        * wp.float64(0.5)
+        * (sum_pn - inv * wp.dot(sum_p, sum_n))
+        / (sum_pp - inv * wp.dot(sum_p, sum_p))
+    )
+    linear = (sum_n - sum_p * (wp.float64(2.0) * quad)) * inv
+    constant = -inv * (wp.dot(linear, sum_p) + sum_pp * quad)
+    status = APSS_UNDETERMINED
+    center = wp.vec3d()
+    radius = wp.float64(0.0)
+    if wp.abs(quad) > wp.float64(1e-7):
+        status = APSS_SPHERE
+        b = wp.float64(1.0) / quad
+        center = linear * (wp.float64(-0.5) * b)
+        radius = wp.sqrt(wp.dot(center, center) - b * constant)
+    elif quad == wp.float64(0.0):
+        status = APSS_PLANE
+        s = wp.float64(1.0) / wp.length(linear)
+        linear = linear * s
+        constant = constant * s
+    else:
+        f = wp.float64(1.0) / wp.sqrt(wp.dot(linear, linear) - wp.float64(4.0) * constant * quad)
+        constant = constant * f
+        linear = linear * f
+        quad = quad * f
+    return linear, constant, quad, status, center, radius
+
+
+@wp.func
+def apss_project(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    radii: wp.array[wp.float64],
+    bvh_id: wp.uint64,
+    x: wp.vec3d,
+    tolerance: wp.float64,
+) -> wp.vec3d:
+    # vcg's ``APSS::project``: refit at the moving point and move ``x`` (the start, every round)
+    # onto that sphere or plane, or by three Newton steps onto an undetermined one, until a round
+    # moves the point by at most ``tolerance``. A point no sample covers stays where it is.
+    position = x
+    for _ in range(MLS_PROJECTION_ITERATIONS):
+        count, first, sum_p, sum_n, sum_pn, sum_pp, sum_w = apss_moments(
+            points, normals, radii, bvh_id, position
+        )
+        if count == 0:
+            return x
+        previous = position
+        if count == 1:
+            n = wp.vec3d(normals[first])
+            position = x - n * (wp.dot(x, n) - wp.dot(wp.vec3d(points[first]), n))
+        else:
+            linear, constant, quad, status, center, radius = apss_sphere(
+                sum_p, sum_n, sum_pn, sum_pp, sum_w
+            )
+            if status == APSS_SPHERE:
+                position = center + wp.normalize(x - center) * radius
+            elif status == APSS_PLANE:
+                position = x - linear * (wp.dot(x, linear) + constant)
+            else:
+                direction = linear + x * (wp.float64(2.0) * quad)
+                inverse_length = wp.float64(1.0) / wp.length(direction)
+                direction = direction * inverse_length
+                value = constant + wp.dot(linear, x) + quad * wp.dot(x, x)
+                step = x + direction * (-value * wp.min(inverse_length, wp.float64(1.0)))
+                for _newton in range(2):
+                    inverse_length = wp.float64(1.0) / wp.length(
+                        linear + step * (wp.float64(2.0) * quad)
+                    )
+                    value = constant + wp.dot(linear, step) + quad * wp.dot(step, step)
+                    step = step + direction * (-value * wp.min(inverse_length, wp.float64(1.0)))
+                position = step
+        if wp.length_sq(previous - position) <= tolerance * tolerance:
+            break
+    return position
+
+
+@wp.func
+def any_perpendicular_d(normal: wp.vec3d) -> wp.vec3d:
+    # ``tangent_space.any_perpendicular`` in ``float64``: the normal crossed with whichever of x and
+    # y it is less aligned with.
+    axis = wp.vec3d(wp.float64(1.0), wp.float64(0.0), wp.float64(0.0))
+    if wp.abs(normal[0]) > wp.abs(normal[1]):
+        axis = wp.vec3d(wp.float64(0.0), wp.float64(1.0), wp.float64(0.0))
+    return wp.normalize(wp.cross(normal, axis))
+
+
+@wp.func
+def implicit_principal_curvatures(
+    gradient: wp.vec3d, hessian: wp.mat33d
+) -> tuple[wp.vec3, wp.vec3, wp.float32, wp.float32]:
+    # The principal pair of the level set through a point of an implicit function, from its
+    # gradient and Hessian there: the shape operator is the Hessian projected on the tangent plane
+    # over the gradient's length, a symmetric 2x2 in any tangent frame, and its eigenpairs are the
+    # curvatures (positive where the level set bends away from the gradient) and their directions.
+    # vcg's ``implicits::WeingartenMap`` forms the same operator as ``(I - n n^T) H / |g|``; its
+    # trace and determinant give the same pair, which it orders by magnitude.
+    length = wp.length(gradient)
+    normal = gradient / length
+    t1 = any_perpendicular_d(normal)
+    t2 = wp.cross(normal, t1)
+    symmetric = (hessian + wp.transpose(hessian)) * wp.float64(0.5)
+    m00 = wp.dot(t1, symmetric * t1) / length
+    m01 = wp.dot(t1, symmetric * t2) / length
+    m11 = wp.dot(t2, symmetric * t2) / length
+    half_trace = (m00 + m11) * wp.float64(0.5)
+    half_diff = (m00 - m11) * wp.float64(0.5)
+    spread = wp.sqrt(half_diff * half_diff + m01 * m01)
+    larger = half_trace + spread
+    first = _eigvec_2x2(
+        wp.float32(m00), wp.float32(m01), wp.float32(m01), wp.float32(m11), wp.float32(larger)
+    )
+    pd1 = wp.normalize(t1 * wp.float64(first[0]) + t2 * wp.float64(first[1]))
+    pd2 = wp.cross(normal, pd1)
+    return wp.vec3(pd1), wp.vec3(pd2), wp.float32(larger), wp.float32(half_trace - spread)
+
+
+@wp.kernel
+def apss_principal_curvature(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    radii: wp.array[wp.float64],
+    bvh_id: wp.uint64,
+    out_pd1: wp.array[wp.vec3],
+    out_pd2: wp.array[wp.vec3],
+    out_pv1: wp.array[wp.float32],
+    out_pv2: wp.array[wp.float32],
+) -> None:
+    # ``mls_principal_curvature(method="apss")``: project the point onto the APSS surface, refit
+    # there, and take vcg's ``mlsGradient`` and ``mlsHessian`` -- the derivatives of the fitted
+    # sphere's value at the point with the fit's own dependence on the point carried through every
+    # moment -- to ``implicit_principal_curvatures``. The gradient walk gathers each moment's three
+    # partial derivatives, and each of three Hessian walks the second derivatives of one row.
+    i = wp.int32(wp.tid())
+    start = wp.vec3d(points[i])
+    x = apss_project(points, normals, radii, bvh_id, start, MLS_PROJECTION_TOLERANCE * radii[i])
+    count, _first, sum_p, sum_n, sum_pn, sum_pp, sum_w = apss_moments(
+        points, normals, radii, bvh_id, x
+    )
+    if count < 2:
+        write_no_principal_curvature(i, out_pd1, out_pd2, out_pv1, out_pv2)
+        return
+    linear, constant, quad, _status, _center, _radius = apss_sphere(
+        sum_p, sum_n, sum_pn, sum_pp, sum_w
+    )
+    inv = wp.float64(1.0) / sum_w
+    nume = sum_pn - inv * wp.dot(sum_p, sum_n)
+    deno = sum_pp - inv * wp.dot(sum_p, sum_p)
+
+    # First derivatives of the moments, one row (or entry) per axis ``k``.
+    d_p = wp.mat33d()
+    d_n = wp.mat33d()
+    d_w = wp.vec3d()
+    d_pn = wp.vec3d()
+    d_pp = wp.vec3d()
+    probe = wp.vec3(x)
+    query = wp.bvh_query_aabb(bvh_id, probe, probe)
+    j = wp.int32(0)
+    while wp.bvh_query_next(query, j):
+        p = wp.vec3d(points[j])
+        inside, _weight, first, _second = mls_weight(x, p, radii[j])
+        if inside:
+            n = wp.vec3d(normals[j])
+            dw = (x - p) * first
+            d_w += dw
+            d_p += wp.outer(dw, p)
+            d_n += wp.outer(dw, n)
+            d_pn += dw * wp.dot(n, p)
+            d_pp += dw * wp.dot(p, p)
+
+    # The fit's first derivatives and the gradient, as ``APSS::mlsGradient`` forms them.
+    d_nume = wp.vec3d()
+    d_deno = wp.vec3d()
+    d_quad = wp.vec3d()
+    d_linear = wp.mat33d()
+    d_constant = wp.vec3d()
+    gradient = wp.vec3d()
+    for k in range(3):
+        dp = wp.vec3d(d_p[k, 0], d_p[k, 1], d_p[k, 2])
+        dn = wp.vec3d(d_n[k, 0], d_n[k, 1], d_n[k, 2])
+        nk = d_pn[k] - inv * inv * (
+            sum_w * (wp.dot(dp, sum_n) + wp.dot(sum_p, dn)) - d_w[k] * wp.dot(sum_p, sum_n)
+        )
+        dk = d_pp[k] - inv * inv * (
+            wp.float64(2.0) * sum_w * wp.dot(dp, sum_p) - d_w[k] * wp.dot(sum_p, sum_p)
+        )
+        qk = APSS_SPHERICAL_PARAMETER * wp.float64(0.5) * (deno * nk - dk * nume) / (deno * deno)
+        lk = ((dn - (dp * quad + sum_p * qk) * wp.float64(2.0)) - linear * d_w[k]) * inv
+        ck = -inv * (
+            wp.dot(lk, sum_p)
+            + qk * sum_pp
+            + wp.dot(linear, dp)
+            + quad * d_pp[k]
+            + d_w[k] * constant
+        )
+        d_nume[k] = nk
+        d_deno[k] = dk
+        d_quad[k] = qk
+        d_constant[k] = ck
+        for c in range(3):
+            d_linear[k, c] = lk[c]
+        gradient[k] = (
+            ck + wp.dot(lk, x) + qk * wp.dot(x, x) + linear[k] + wp.float64(2.0) * x[k] * quad
+        )
+    if wp.length(gradient) <= wp.float64(1e-8):
+        write_no_principal_curvature(i, out_pd1, out_pd2, out_pv1, out_pv2)
+        return
+
+    # Second derivatives, one row ``r`` of the Hessian a walk, as ``APSS::mlsHessian`` forms them
+    # (its ``j``; ``k`` the column).
+    hessian = wp.mat33d()
+    deno2 = deno * deno
+    inv4 = inv * inv * inv * inv
+    for r in range(3):
+        d2_p = wp.mat33d()
+        d2_n = wp.mat33d()
+        d2_w = wp.vec3d()
+        d2_pn = wp.vec3d()
+        d2_pp = wp.vec3d()
+        query = wp.bvh_query_aabb(bvh_id, probe, probe)
+        while wp.bvh_query_next(query, j):
+            p = wp.vec3d(points[j])
+            inside, _weight, first, second = mls_weight(x, p, radii[j])
+            if inside:
+                n = wp.vec3d(normals[j])
+                d2w = (x - p) * ((x[r] - p[r]) * second)
+                d2w[r] = d2w[r] + first
+                d2_w += d2w
+                d2_p += wp.outer(d2w, p)
+                d2_n += wp.outer(d2w, n)
+                d2_pn += d2w * wp.dot(n, p)
+                d2_pp += d2w * wp.dot(p, p)
+        dp_r = wp.vec3d(d_p[r, 0], d_p[r, 1], d_p[r, 2])
+        dn_r = wp.vec3d(d_n[r, 0], d_n[r, 1], d_n[r, 2])
+        dl_r = wp.vec3d(d_linear[r, 0], d_linear[r, 1], d_linear[r, 2])
+        for k in range(3):
+            dp = wp.vec3d(d_p[k, 0], d_p[k, 1], d_p[k, 2])
+            dn = wp.vec3d(d_n[k, 0], d_n[k, 1], d_n[k, 2])
+            dl = wp.vec3d(d_linear[k, 0], d_linear[k, 1], d_linear[k, 2])
+            d2p = wp.vec3d(d2_p[k, 0], d2_p[k, 1], d2_p[k, 2])
+            d2n = wp.vec3d(d2_n[k, 0], d2_n[k, 1], d2_n[k, 2])
+            d2_nume = d2_pn[k] - inv4 * (
+                wp.float64(-2.0)
+                * sum_w
+                * d_w[r]
+                * (sum_w * (wp.dot(dp, sum_n) + wp.dot(sum_p, dn)) - d_w[k] * wp.dot(sum_p, sum_n))
+                + sum_w
+                * sum_w
+                * (
+                    d_w[r] * (wp.dot(dp, sum_n) + wp.dot(sum_p, dn))
+                    + sum_w
+                    * (
+                        wp.dot(d2p, sum_n)
+                        + wp.dot(sum_p, d2n)
+                        + wp.dot(dp_r, dn)
+                        + wp.dot(dp, dn_r)
+                    )
+                    - d2_w[k] * wp.dot(sum_p, sum_n)
+                    - d_w[k] * (wp.dot(dp_r, sum_n) + wp.dot(sum_p, dn_r))
+                )
+            )
+            d2_deno = d2_pp[k] - inv4 * (
+                wp.float64(-2.0)
+                * sum_w
+                * d_w[r]
+                * (wp.float64(2.0) * sum_w * wp.dot(dp, sum_p) - d_w[k] * wp.dot(sum_p, sum_p))
+                + sum_w
+                * sum_w
+                * (
+                    wp.float64(2.0) * d_w[r] * wp.dot(dp, sum_p)
+                    + wp.float64(2.0) * sum_w * (wp.dot(dp_r, dp) + wp.dot(d2p, sum_p))
+                    - d2_w[k] * wp.dot(sum_p, sum_p)
+                    - d_w[k] * (wp.float64(2.0) * wp.dot(dp_r, sum_p))
+                )
+            )
+            d2_quad = (
+                APSS_SPHERICAL_PARAMETER
+                * wp.float64(0.5)
+                * (
+                    deno2
+                    * (
+                        d2_nume * deno
+                        + d_deno[r] * d_nume[k]
+                        - d2_deno * nume
+                        - d_deno[k] * d_nume[r]
+                    )
+                    - wp.float64(2.0) * deno * d_deno[r] * (deno * d_nume[k] - d_deno[k] * nume)
+                )
+                / (deno2 * deno2)
+            )
+            d2_linear = (
+                -dl * d_w[r]
+                + (
+                    d2n
+                    - (dp * d_quad[r] + d2p * quad + sum_p * d2_quad + dp_r * d_quad[k])
+                    * wp.float64(2.0)
+                )
+                - linear * d2_w[k]
+                - dl_r * d_w[k]
+            ) * inv
+            d2_constant = (
+                -d_constant[k] * d_w[r]
+                - (
+                    wp.dot(dl, dp_r)
+                    + wp.dot(d2_linear, sum_p)
+                    + d2_quad * sum_pp
+                    + d_quad[k] * d_pp[r]
+                    + wp.dot(linear, d2p)
+                    + wp.dot(dl_r, dp)
+                    + d_pp[k] * d_quad[r]
+                    + d2_pp[k] * quad
+                    + d2_w[k] * constant
+                    + d_w[k] * d_constant[r]
+                )
+            ) * inv
+            diagonal = wp.where(r == k, wp.float64(2.0) * quad, wp.float64(0.0))
+            hessian[r, k] = (
+                dl[r]
+                + wp.float64(2.0) * d_quad[k] * x[r]
+                + d2_constant
+                + wp.dot(d2_linear, x)
+                + d2_quad * wp.dot(x, x)
+                + dl_r[k]
+                + diagonal
+                + wp.float64(2.0) * x[k] * d_quad[r]
+            )
+    pd1, pd2, pv1, pv2 = implicit_principal_curvatures(gradient, hessian)
+    out_pd1[i] = pd1
+    out_pd2[i] = pd2
+    out_pv1[i] = pv1
+    out_pv2[i] = pv2
+
+
+@wp.func
+def rimls_potential(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    radii: wp.array[wp.float64],
+    bvh_id: wp.uint64,
+    x: wp.vec3d,
+) -> tuple[wp.bool, wp.float64, wp.vec3d, wp.vec3d, wp.float64, wp.vec3d, wp.bool]:
+    # vcg's ``RIMLS::computePotentialAndGradient``: the robust implicit MLS value and gradient at
+    # ``x``, refitted while the gradient moves (at least once, at most ``RIMLS_MAX_REFITS`` times),
+    # each refit down-weighting samples whose normal differs from the previous gradient by
+    # ``exp(-|n - g|^2 / sigma_n^2)``. Returns whether any sample weighs, the value, the gradient,
+    # ``sum grad w`` and ``sum w`` of the last round, and the gradient that round weighed by
+    # (``refitted`` false when the last round was the unweighted first).
+    inverse_sigma2 = wp.float64(1.0) / (RIMLS_SIGMA_N * RIMLS_SIGMA_N)
+    gradient = wp.vec3d()
+    previous = wp.vec3d()
+    potential = wp.float64(0.0)
+    sum_gw = wp.vec3d()
+    sum_w = wp.float64(0.0)
+    refitted = wp.bool(False)
+    probe = wp.vec3(x)
+    for refit_round in range(RIMLS_MAX_REFITS):
+        previous = gradient
+        refitted = refit_round > 0
+        sum_gw = wp.vec3d()
+        sum_gwf = wp.vec3d()
+        sum_n = wp.vec3d()
+        potential = wp.float64(0.0)
+        sum_w = wp.float64(0.0)
+        query = wp.bvh_query_aabb(bvh_id, probe, probe)
+        i = wp.int32(0)
+        while wp.bvh_query_next(query, i):
+            p = wp.vec3d(points[i])
+            inside, w, first, _second = mls_weight(x, p, radii[i])
+            if inside:
+                n = wp.vec3d(normals[i])
+                f = wp.dot(x - p, n)
+                refit = wp.float64(1.0)
+                if refitted:
+                    refit = wp.exp(-wp.length_sq(n - previous) * inverse_sigma2)
+                gw = (x - p) * (first * refit)
+                sum_gw += gw
+                sum_gwf += gw * f
+                sum_n += n * (w * refit)
+                potential += w * refit * f
+                sum_w += w * refit
+        if sum_w == wp.float64(0.0):
+            return False, potential, gradient, sum_gw, sum_w, previous, refitted
+        potential = potential / sum_w
+        gradient = (-sum_gw * potential + sum_gwf + sum_n) * (wp.float64(1.0) / sum_w)
+        if wp.length_sq(gradient - previous) <= RIMLS_REFIT_THRESHOLD:
+            break
+    return True, potential, gradient, sum_gw, sum_w, previous, refitted
+
+
+@wp.kernel
+def rimls_principal_curvature(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    radii: wp.array[wp.float64],
+    bvh_id: wp.uint64,
+    out_pd1: wp.array[wp.vec3],
+    out_pd2: wp.array[wp.vec3],
+    out_pv1: wp.array[wp.float32],
+    out_pv2: wp.array[wp.float32],
+) -> None:
+    # ``mls_principal_curvature(method="rimls")``: vcg's ``RIMLS::project`` (step along the
+    # normalized gradient by the value until the value is within tolerance), the value and gradient
+    # refitted at the projection, and ``RIMLS::mlsHessian`` -- the gradient's derivative with the
+    # last round's refitting weights held fixed -- to ``implicit_principal_curvatures``. vcg leaves
+    # the refitting weight off the weight's own second-derivative term on the diagonal; it is
+    # applied to every term here, so the Hessian is the derivative of the gradient it pairs with.
+    i = wp.int32(wp.tid())
+    start = wp.vec3d(points[i])
+    tolerance = MLS_PROJECTION_TOLERANCE * radii[i]
+    x = start
+    for _ in range(MLS_PROJECTION_ITERATIONS):
+        ok, potential, gradient, _sum_gw, _sum_w, _previous, _refitted = rimls_potential(
+            points, normals, radii, bvh_id, x
+        )
+        if not ok:
+            x = start
+            break
+        x = x - wp.normalize(gradient) * potential
+        if wp.abs(potential) <= tolerance:
+            break
+    ok, potential, gradient, sum_gw, sum_w, previous, refitted = rimls_potential(
+        points, normals, radii, bvh_id, x
+    )
+    if not ok or wp.length(gradient) <= wp.float64(1e-8):
+        write_no_principal_curvature(i, out_pd1, out_pd2, out_pv1, out_pv2)
+        return
+    inverse_sigma2 = wp.float64(1.0) / (RIMLS_SIGMA_N * RIMLS_SIGMA_N)
+    # Column ``k`` of each: ``sum d(grad w)/dx_k``, ``sum n (grad w)_k``, ``sum grad w n_k`` and
+    # ``sum d(grad w)/dx_k f``.
+    d_gw = wp.mat33d()
+    n_gw = wp.mat33d()
+    gw_n = wp.mat33d()
+    d_gwf = wp.mat33d()
+    probe = wp.vec3(x)
+    query = wp.bvh_query_aabb(bvh_id, probe, probe)
+    j = wp.int32(0)
+    while wp.bvh_query_next(query, j):
+        p = wp.vec3d(points[j])
+        inside, _weight, first, second = mls_weight(x, p, radii[j])
+        if inside:
+            n = wp.vec3d(normals[j])
+            refit = wp.float64(1.0)
+            if refitted:
+                refit = wp.exp(-wp.length_sq(n - previous) * inverse_sigma2)
+            diff = x - p
+            f = wp.dot(diff, n)
+            gw = diff * (first * refit)
+            # ``d(grad w)/dx_k = (diff diff_k second + e_k first) refit``, all k at once.
+            d_grad = wp.outer(diff, diff) * (second * refit) + wp.identity(
+                n=3, dtype=wp.float64
+            ) * (first * refit)
+            d_gw += d_grad
+            n_gw += wp.outer(n, gw)
+            gw_n += wp.outer(gw, n)
+            d_gwf += d_grad * f
+    hessian = (
+        d_gw * (-potential)
+        + n_gw
+        + gw_n
+        + d_gwf
+        - wp.outer(sum_gw, gradient)
+        - wp.outer(gradient, sum_gw)
+    ) * (wp.float64(1.0) / sum_w)
+    pd1, pd2, pv1, pv2 = implicit_principal_curvatures(gradient, hessian)
+    out_pd1[i] = pd1
+    out_pd2[i] = pd2
+    out_pv1[i] = pv1
+    out_pv2[i] = pv2
