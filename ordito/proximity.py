@@ -1127,12 +1127,7 @@ def signed_distance_grid(
     lower, step = kernel_array.lattice_lower_and_step(shape, box)
     field = odt.empty_3d(shape, wp.float32, device=device)
     # ``signed_distance_on_mesh``'s defaults: no cutoff, and its sampling parameters.
-    if sign_mode == "winding":
-        kernel = kernel_proximity.signed_distance_on_lattice_winding
-        parameters = [wp.float32(2.0), wp.float32(0.5)]
-    else:
-        kernel = kernel_proximity.signed_distance_on_lattice
-        parameters = [wp.int32(5), wp.float32(0.1)]
+    kernel, parameters = kernel_proximity.signed_distance_lattice_kernel(sign_mode)
     _launch.launch(
         kernel,
         dim=shape,

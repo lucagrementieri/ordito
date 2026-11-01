@@ -1319,6 +1319,20 @@ def signed_distance_on_lattice_winding(
     )
 
 
+def signed_distance_lattice_kernel(sign_mode: str) -> tuple[wp.Kernel, list[object]]:
+    """
+    Return the lattice kernel of ``sign_mode`` and the sampling parameters it takes.
+
+    ``signed_distance_on_mesh``'s defaults (``n_sample = 5``, ``perturbation_scale = 0.1`` for
+    parity; ``accuracy = 2``, ``winding_threshold = 0.5`` for winding), so a lattice field equals
+    that function at the stored nodes. Shared by ``proximity.signed_distance_grid`` and
+    ``levelset.signed_distance_level_set``'s dense field.
+    """
+    if sign_mode == "winding":
+        return signed_distance_on_lattice_winding, [wp.float32(2.0), wp.float32(0.5)]
+    return signed_distance_on_lattice, [wp.int32(5), wp.float32(0.1)]
+
+
 @wp.func
 def solid_angle_terms(
     v0: wp.vec3, vl0: wp.float32, b: wp.vec3, c: wp.vec3, p: wp.vec3

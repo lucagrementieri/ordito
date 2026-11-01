@@ -6036,14 +6036,22 @@ def _row_key_assembly(
 
 def _synced(matrix: odt.BsrMatrix[wp.float64]) -> odt.BsrMatrix[wp.float64]:
     """
-    ``matrix`` with its ``nnz`` field repaired to the stored count.
+    ``matrix`` with its ``nnz`` field repaired to the stored count, and its arrays cut to it.
 
     A key assembly leaves ``nnz`` at the contribution count, and ``csr_transpose``, ``bsr_mm`` and
     the next level's assembly read the field rather than the offsets, so every hierarchy matrix
-    but the coarsest operator (read only by the dense inverse) pays the one readback here.
+    but the coarsest operator (read only by the dense inverse) pays the one readback here. Its
+    columns and values were allocated at the contribution count too, several times the entries
+    for a Galerkin product, and a hierarchy lives as long as its preconditioner: the count this
+    read returns sizes exact copies, and the assembly's buffers are released.
     """
-    matrix.nnz_sync()
-    return matrix
+    nnz = matrix.nnz_sync()
+    if nnz == 0 or matrix.columns.size == nnz:
+        return matrix
+    columns, values = _launch.carve_typed(((wp.int32, nnz), (wp.float64, nnz)), matrix.device)
+    _launch.copy(columns, matrix.columns, count=nnz)
+    _launch.copy(values, matrix.values, count=nnz)
+    return od.array.bsr_from_csr(matrix.nrow, matrix.ncol, matrix.offsets, columns, values, nnz=nnz)
 
 
 class _CoarseSolve(NamedTuple):

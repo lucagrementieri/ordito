@@ -47,7 +47,9 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
+from ordito.kernels import array as kernel_array
 from ordito.kernels import levelset as kernel_levelset
+from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import vertices as kernel_vertices
 
@@ -603,9 +605,17 @@ def signed_distance_level_set(
             ),
         )
 
-    samples = od.voxels.grid_points(shape, bounds=bounds, device=vertices.device)
-    distances = od.proximity.signed_distance_on_mesh(vertices, faces, samples, sign_mode=sign_mode)
-    field = odt.as_array3d(distances.reshape(shape), wp.float32)
+    # ``signed_distance_on_mesh`` at every node, each formed in its thread rather than stored.
+    mesh = wp.Mesh(points=vertices, indices=faces, support_winding_number=sign_mode == "winding")
+    lower_node, step = kernel_array.lattice_lower_and_step(shape, bounds)
+    field = odt.empty_3d(shape, wp.float32, device=vertices.device)
+    kernel, parameters = kernel_proximity.signed_distance_lattice_kernel(sign_mode)
+    _launch.launch(
+        kernel,
+        dim=shape,
+        inputs=[mesh.id, lower_node, step, wp.float32(math.inf), *parameters, field],
+        device=vertices.device,
+    )
     return od.levelset.marching_cubes(field, iso, bounds=bounds, edge_margin=edge_margin)
 
 

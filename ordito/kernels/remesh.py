@@ -4837,8 +4837,8 @@ def boundary_quadric(
     #
     # The planes still extrapolate: next to a much longer rim edge they outweigh a collapse's small
     # faces, and its optimum leaves the surface by a fraction of the edge (the few worst output
-    # vertices on ``dragon`` at 0.5). Pulling such an optimum back -- to the edge, onto its faces, or
-    # off the normal only -- or weighting the planes by face area eroded the rim instead: the
+    # vertices on ``dragon`` at 0.5). Pulling such an optimum back -- to the edge, onto its faces,
+    # or off the normal only -- or weighting the planes by face area eroded the rim instead: the
     # input-to-output maximum at 0.1 rose 1.5-2.7x (``reference/component-status.md``).
     v0, v1, v2 = face_vertices_vec3d(vertices, faces, face)
     p = to_vec3d(vertices[u])

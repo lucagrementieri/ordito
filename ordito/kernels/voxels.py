@@ -25,6 +25,7 @@ import warp as wp
 
 from ordito.kernels.algorithms.connected_components import ecl_hook_edge, find_representative
 from ordito.kernels.array import (
+    append_slot,
     binary_search_index,
     binary_search_index_left,
     lattice_position,
@@ -915,22 +916,23 @@ def flatten_and_mark_outside(
 
 
 @wp.func
-def write_dense_candidate(
-    row: wp.int32,
+def append_dense_candidate(
+    counter: wp.array[wp.int32],
     base: wp.vec3i,
     i: wp.int32,
     j: wp.int32,
     k: wp.int32,
     occupied: wp.bool,
     out_cells: wp.array2d[wp.int32],
-    out_mask: wp.array[wp.int32],
-) -> None:
-    # One node of a dense lattice as a candidate for ``Volume.allocate_by_voxels``: its world cell
-    # ``base + (i, j, k)`` and the 0/1 ``point_mask`` flag saying whether to keep it. The three
-    # kernels that end a dense pass in a grid build write it this way, so a lattice's occupancy
-    # never has to be stored as a lattice of its own just to be read back by ``occupied_cells``.
-    write_row_triple(out_cells, row, base[0] + i, base[1] + j, base[2] + k)
-    out_mask[row] = wp.where(occupied, 1, 0)
+):
+    # One node of a dense lattice as a candidate for ``Volume.allocate_by_voxels``, appended when it
+    # is kept: its world cell ``base + (i, j, k)`` at the next slot of ``counter[0]``. The kernels
+    # that end a dense pass in a grid build write it this way, so a lattice's occupancy is never
+    # stored as a lattice of its own, and the builder is handed the kept cells alone: given every
+    # cell with a ``point_mask`` it keys and sorts the rejected ones too (2.2-4.0x its time at 27 %
+    # kept). The builder sorts its keys, so the slots' arrival order decides nothing.
+    if occupied:
+        write_row_triple(out_cells, append_slot(counter, 0), base[0] + i, base[1] + j, base[2] + k)
 
 
 @wp.kernel
@@ -939,8 +941,8 @@ def enclosed_cell_candidates(
     labels: wp.array[wp.int32],
     outside: wp.array[wp.bool],
     base: wp.vec3i,
+    counter: wp.array[wp.int32],
     out_cells: wp.array2d[wp.int32],
-    out_mask: wp.array[wp.int32],
 ) -> None:
     # The flood fill's answer -- an occupied cell, or an empty one whose component does not reach
     # the padded shell -- written as grid-build candidates directly: ``occupied_cells``' output
@@ -950,7 +952,7 @@ def enclosed_cell_candidates(
     filled = occupancy[i, j, k]
     if not filled:
         filled = not outside[labels[row]]
-    write_dense_candidate(row, base, i, j, k, filled, out_cells, out_mask)
+    append_dense_candidate(counter, base, i, j, k, filled, out_cells)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1015,12 +1017,11 @@ def dense_field(volume: wp.uint64, base: wp.vec3i, out_field: wp.array3d[wp.floa
 def occupied_cells(
     occupancy: wp.array3d[wp.bool],
     base: wp.vec3i,
+    counter: wp.array[wp.int32],
     out_cells: wp.array2d[wp.int32],
-    out_mask: wp.array[wp.int32],
 ) -> None:
     i, j, k = wp.tid()
-    row = flat_cell_index(i, j, k, occupancy.shape[1], occupancy.shape[2])
-    write_dense_candidate(row, base, i, j, k, occupancy[i, j, k], out_cells, out_mask)
+    append_dense_candidate(counter, base, i, j, k, occupancy[i, j, k], out_cells)
 
 
 @wp.kernel
@@ -1028,8 +1029,8 @@ def occupied_cells_in_spans(
     spans: wp.array[wp.vec2i],
     shape: wp.vec3i,
     base: wp.vec3i,
+    counter: wp.array[wp.int32],
     out_cells: wp.array2d[wp.int32],
-    out_mask: wp.array[wp.int32],
 ) -> None:
     # ``occupied_cells`` of the orthographic fill: a cell is kept when it lies inside the occupied
     # interval of its line along every axis (``axis_span_bounds``), the intersection trimesh's
@@ -1041,8 +1042,7 @@ def occupied_cells_in_spans(
         and in_span(spans[offsets[1] + i * shape[2] + k], j)
         and in_span(spans[offsets[2] + i * shape[1] + j], k)
     )
-    row = flat_cell_index(i, j, k, shape[1], shape[2])
-    write_dense_candidate(row, base, i, j, k, inside, out_cells, out_mask)
+    append_dense_candidate(counter, base, i, j, k, inside, out_cells)
 
 
 @wp.kernel
@@ -1052,8 +1052,8 @@ def resampled_cell_candidates(
     step: wp.vec3,
     shape: wp.vec3i,
     base: wp.vec3i,
+    counter: wp.array[wp.int32],
     out_cells: wp.array2d[wp.int32],
-    out_mask: wp.array[wp.int32],
 ) -> None:
     # One cell of a new lattice, kept when the old grid holds its centre: ``lattice_points``,
     # ``point_occupancy`` and ``occupied_cells`` over the same ``(i, j, k)`` in one pass, so neither
@@ -1061,9 +1061,8 @@ def resampled_cell_candidates(
     # node lattice whose node 0 is the first new cell's centre -- the same call ``lattice_points``
     # makes -- and the probe is ``point_slot``, the one ``point_occupancy`` makes.
     i, j, k = wp.tid()
-    row = flat_cell_index(i, j, k, shape[1], shape[2])
     occupied = point_slot(volume, lattice_position(lower, step, i, j, k)) >= 0
-    write_dense_candidate(row, base, i, j, k, occupied, out_cells, out_mask)
+    append_dense_candidate(counter, base, i, j, k, occupied, out_cells)
 
 
 @wp.kernel

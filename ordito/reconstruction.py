@@ -399,6 +399,9 @@ def triangulate_point_cloud(
         outputs=[out_tris, fan_counts, grown_radii, grown_flags],
         device=device,
     )
+    # The neighbour table's last reader: released before the fans are assembled, where the call
+    # peaks.
+    del neighbor_idx, neighbor_dist
     _rebuild_grown_fans(
         points,
         normals,
@@ -412,6 +415,7 @@ def triangulate_point_cloud(
         out_tris,
         fan_counts,
     )
+    del grown_radii, normals
     # Scanned in place: each fan's packed offset is its predecessor's inclusive total, and the last
     # entry sizes the candidate buffers.
     _launch.array_scan(fan_counts, out_array=fan_counts, inclusive=True)

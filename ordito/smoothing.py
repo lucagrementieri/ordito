@@ -3668,13 +3668,15 @@ def _solve_region_smooth(
     laplacian_form = n_free >= _SMOOTH_REGION_MULTIGRID_FROM
     polynomial_capacity = 0 if laplacian_form else capacity
     # The assembly's buffers, dropped together, in one allocation per dtype and initial value.
-    # ``float64``: the rows' weight sums and right-hand sides, the ``(3, n_free)`` ``M^T b`` (one
-    # contiguous block, so the three columns batch; every free row writes all three components),
-    # the factor and its transpose, ``D`` and the ``(3, n_free)`` initial guess, seeded as
-    # ``_solve_region_fixed_rim``'s is and for the same reason; all written before they are read.
-    # ``int32``, zeroed: the free degrees (written whole) and the three per-row tables the scans
-    # and the anchoring count into.
-    wide_sizes = (n, 3 * n, 3 * n_free, capacity, polynomial_capacity, n_free, 3 * n_free)
+    # ``float64``: the ``(3, n_free)`` ``M^T b`` (one contiguous block, so the three columns
+    # batch; every free row writes all three components), the factor and its transpose, ``D`` and
+    # the ``(3, n_free)`` initial guess, seeded as ``_solve_region_fixed_rim``'s is and for the
+    # same reason; all written before they are read. The rows' weight sums and right-hand sides
+    # (every mesh vertex's) are apart: the product's terms are their last reader, and they are
+    # released before the solve. ``int32``, zeroed: the free degrees (written whole) and the
+    # three per-row tables the scans and the anchoring count into.
+    row_sums, row_rhs_flat = _launch.carve(wp.float64, (n, 3 * n), device)
+    wide_sizes = (3 * n_free, capacity, polynomial_capacity, n_free, 3 * n_free)
     if laplacian_form:
         wide = _launch.carve(wp.float64, wide_sizes, device, zeroed=False)
         narrow = _launch.carve(wp.float32, (0, 0), device, zeroed=False)
@@ -3686,7 +3688,7 @@ def _solve_region_smooth(
             device,
         )
         narrow = [narrow_0, narrow_1]
-    row_sums, row_rhs_flat, atb_flat, factor, factor_t, ratios, sol_flat = wide
+    atb_flat, factor, factor_t, ratios, sol_flat = wide
     factor_narrow, factor_t_narrow = narrow
     row_rhs = row_rhs_flat.reshape((n, 3)).view(wp.vec3d)
     atb = atb_flat.reshape((3, n_free))
@@ -3737,11 +3739,12 @@ def _solve_region_smooth(
     # The one readback of the assembly: how many terms the product gathers, which sizes the term
     # buffer and bounds the product's entry count, so its CSR is allocated without a second one.
     n_terms = max(int(read_scalar(term_offsets, n_free)), 1)
-    # The gathered terms and the product's CSR, in one allocation.
-    row_columns, columns, row_values, values = _launch.carve_typed(
-        ((wp.int32, n_terms), (wp.int32, n_terms), (wp.float64, n_terms), (wp.float64, n_terms)),
-        device,
+    # The gathered terms and the product's CSR, each in one allocation: the terms are dead once
+    # the product is written, and are released before the solve, where the call peaks.
+    row_columns, row_values = _launch.carve_typed(
+        ((wp.int32, n_terms), (wp.float64, n_terms)), device
     )
+    columns, values = _launch.carve_typed(((wp.int32, n_terms), (wp.float64, n_terms)), device)
     system_counts = odt.as_dense(system_offsets[1:])
     _launch.launch(
         kernel_smoothing.normal_equations_rows,
@@ -3750,6 +3753,7 @@ def _solve_region_smooth(
         outputs=[row_columns, row_values, system_counts],
         device=device,
     )
+    del row_sums, row_rhs, row_rhs_flat
     _launch.array_scan(system_counts, system_counts, inclusive=True)
     # A free component no fixed vertex touches is placed by no equation, only shaped: its rows are
     # all umbrella rows of its own vertices, so any translation of it solves them as well. Its rows
@@ -3788,6 +3792,7 @@ def _solve_region_smooth(
         outputs=[columns, values],
         device=device,
     )
+    del row_columns, row_values
     system = _csr_matrix(n_free, system_offsets, columns, values)
     # The normal equations here are the worst-conditioned system this package solves: squared,
     # fourth order, so neither Jacobi nor a hierarchy built on ``M^T M`` itself gets near the
