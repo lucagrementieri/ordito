@@ -5860,8 +5860,9 @@
  },
  "benchmarks/test_repair.py::test_remove_non_manifold_faces_meshlab[sphere_med-ordito-cpu-clean]": {
   "counts": {
-   "launch": 4,
-   "alloc": 5,
+   "launch": 3,
+   "alloc": 6,
+   "h2h": 1,
    "readback": 1,
    "sort": 1
   }
@@ -5869,7 +5870,8 @@
  "benchmarks/test_repair.py::test_remove_non_manifold_faces_meshlab[sphere_med-ordito-cpu-nm1024]": {
   "counts": {
    "launch": 21,
-   "alloc": 9,
+   "alloc": 11,
+   "h2h": 1,
    "readback": 9,
    "scan": 1,
    "sort": 1

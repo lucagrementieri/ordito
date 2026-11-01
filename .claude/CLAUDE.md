@@ -983,7 +983,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
     the adaptive CG's two states could borrow CG `w` and share one state.
   - `levelset`: `marching_cubes` counts are a `vec2i` a node for O(res**2) active ones (large; a
     recorded design, not a decline).
-  - `repair._smallest_first_survivors` is sized by every face for a few non-manifold roots.
   - A shared `array.bit_ranks` / `mark_bit` / `bit_select` would serve the sparse-flag compactions
     (intersection, selection, seams, boundary, remesh) behind a size gate; it would replace
     `reconstruction._bit_ranks` and `kernels/remesh.scan_word_counts_exclusive`.

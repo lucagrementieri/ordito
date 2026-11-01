@@ -6425,9 +6425,10 @@
  },
  "benchmarks/test_repair.py::test_remove_non_manifold_faces_meshlab[sphere_med-ordito-cuda-clean]": {
   "counts": {
-   "launch": 4,
-   "alloc": 5,
+   "launch": 3,
+   "alloc": 6,
    "memset": 1,
+   "d2d": 1,
    "d2h": 1,
    "sort": 1
   }
@@ -6435,8 +6436,9 @@
  "benchmarks/test_repair.py::test_remove_non_manifold_faces_meshlab[sphere_med-ordito-cuda-nm1024]": {
   "counts": {
    "launch": 21,
-   "alloc": 9,
-   "memset": 2,
+   "alloc": 11,
+   "memset": 3,
+   "d2d": 1,
    "d2h": 9,
    "scan": 1,
    "sort": 1

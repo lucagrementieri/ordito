@@ -525,6 +525,11 @@ def non_manifold_edge_runs(
     # halfedges ``key_order[positions[root] : positions[root] + run_lengths[root]]``. The same
     # count goes into ``out_live`` (zeroed too), the live counts the rounds then lower, rather
     # than a copy of the lengths.
+    #
+    # These three tables are ``3 * n_faces`` wide for the few non-manifold roots. Numbering the
+    # roots and launching the rounds over the candidate faces alone would save the tables' memset
+    # and the rounds' full-width launches: 0.68 and 0.83 ms of device time (five rounds) on
+    # ``lucy``, a 26.6 ms call whose peak is the pairing's sort, not these (2026-11-02): declined.
     i = wp.int32(wp.tid())
     h = key_order[i]
     out_positions[h] = i

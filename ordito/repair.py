@@ -1097,23 +1097,17 @@ def _smallest_first_survivors(
     if n_faces == 0:
         return None
     device = faces.device
-    mates, key_order = od.halfedge.halfedge_mates(faces, return_key_order=True)
-    assert key_order is not None  # without a vertex bound the pairing sorts
-    # The ``int32`` tables that start at zero in one allocation (the positions are written whole,
-    # so zeroing them costs only the wider memset), and the unfilled tables in another.
-    positions, run_lengths, live, undecided = _launch.carve(
-        wp.int32, [3 * n_faces, 3 * n_faces, 3 * n_faces, 1], device, zeroed=True
-    )
+    mates, sorted_order = od.halfedge.halfedge_mates(faces, return_key_order=True)
+    assert sorted_order is not None  # without a vertex bound the pairing sorts
+    # The order is a view of the pairing sort's buffers, six times its size with the keys and both
+    # scratch halves; held through every round, it would hold them all. Copied out, they go.
+    key_order = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    _launch.copy(key_order, sorted_order, count=3 * n_faces)
+    del sorted_order
     states, decisions, areas = _launch.carve_typed(
         [(wp.int32, n_faces), (wp.int32, n_faces), (wp.float32, n_faces)], device
     )
-    _launch.launch(
-        kernel_repair.non_manifold_edge_runs,
-        dim=3 * n_faces,
-        inputs=[mates, key_order],
-        outputs=[positions, run_lengths, live],
-        device=device,
-    )
+    undecided = _launch.zeros(1, dtype=wp.int32, device=device)
     keep = _launch.empty(n_faces, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_repair.mark_non_manifold_candidates,
@@ -1122,9 +1116,22 @@ def _smallest_first_survivors(
         outputs=[states, areas, keep, undecided],
         device=device,
     )
-    # Readback: a mesh with no face on a non-manifold edge is returned as it came.
+    # Readback: a mesh with no face on a non-manifold edge is returned as it came, before the run
+    # tables below are allocated.
     if read_scalar(undecided) == 0:
         return None
+    # The run tables start at zero (the positions are written whole, so zeroing them costs only the
+    # wider memset).
+    positions, run_lengths, live = _launch.carve(
+        wp.int32, [3 * n_faces, 3 * n_faces, 3 * n_faces], device, zeroed=True
+    )
+    _launch.launch(
+        kernel_repair.non_manifold_edge_runs,
+        dim=3 * n_faces,
+        inputs=[mates, key_order],
+        outputs=[positions, run_lengths, live],
+        device=device,
+    )
     # Each round decides at least the smallest undecided face, so ``n_faces`` rounds bound it.
     for _ in range(n_faces):
         _launch.launch(
