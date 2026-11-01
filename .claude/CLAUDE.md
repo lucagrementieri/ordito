@@ -956,8 +956,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   already has `method="igl"` and `method="meshlib"`); MeshLib's "nice" fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **`quadric_decimate` worst cases:** rim vertices placed by extrapolating boundary planes
-  (`dragon` max 5x MeshLib's at 0.5).
 - **`smooth_region` is not flat in `n`** with the squared V-cycle: 1 885 iterations, 43 s on `lucy`.
 - **Unoriented `triangulate_point_cloud`** costs 1.8x the old mesh-level winding (still 3.5x faster
   than MeshLib's): the flood, 2 832 rounds of six launches on dragon, latency-bound at about
