@@ -2221,6 +2221,9 @@ def clip_ear(
     # ``clip_selected`` and ``ear_clip_block``.
     a = left[i]
     b = right[i]
+    # The selected ears are a third of the corners at most, so few lanes of a warp claim here:
+    # ``kernels/array.append_slot`` (one atomic a warp) measured 1.00x on 2 k to 200 k-corner
+    # rings (2026-11-02), declined.
     slot = wp.atomic_add(count, count_slot, 1)
     faces[slot, 0] = a
     faces[slot, 1] = i

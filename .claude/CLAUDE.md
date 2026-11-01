@@ -962,11 +962,12 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   3.4 us a launch. Weighing is already incremental; list-driven passes (0.99-1.04x) and four fused
   launches a round (1.10-1.33x) were tried and reverted. Only fewer rounds would pay
   (`reference/component-status.md`).
-- **`ball_pivoting` is not reproducible on `happy_buddha` under the deterministic setting**
-  (2026-11-02): two CUDA runs return the same triangles in a different face order every time,
-  and one run in four swaps one triangle. `bunny` and `dragon` repeat bit for bit. Untraced;
-  `happy_buddha` is the scan with overfull BVH leaves (§12.2), whose pivot search takes the
-  per-lane serial walk, a first suspect.
+- **Two calls are not reproducible at scan size under the deterministic setting** (2026-11-02,
+  CUDA, untraced). `ball_pivoting` on `happy_buddha`: the same triangles in a different face
+  order every run, and one run in four swaps one triangle (`bunny`, `dragon` repeat bit for bit;
+  `happy_buddha` is the scan with overfull BVH leaves, §12.2, whose pivot search takes the
+  per-lane serial walk, a first suspect). `sample_surface_poisson_disk(lucy, 2_000_000, seed=3)`
+  differs between runs (`dragon` at 200 k repeats).
 - **The reconstruction's memory techniques, applied elsewhere** (2026-11-01 sweep, unmeasured
   estimates; measure, A/B byte for byte and re-record the census before each). The techniques:
   brick-sparse storage, rank-packed bitset indices (`brick_number_at`, `occupancy`), rank
@@ -987,6 +988,5 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   - A shared `array.bit_ranks` / `mark_bit` / `bit_select` would serve the sparse-flag compactions
     (intersection, selection, seams, boundary, remesh) behind a size gate; it would replace
     `reconstruction._bit_ranks` and `kernels/remesh.scan_word_counts_exclusive`.
-  - Small: `clip_ear` plain `atomic_add` slot; blue-noise sort keys reusable;
-    `cluster_outlier_mask` materializes the ball graph; `dilate` repeats an empty neighbour once a
-    voxel reaching it.
+  - Small: `cluster_outlier_mask` materializes the ball graph; `dilate` repeats an empty
+    neighbour once a voxel reaching it.

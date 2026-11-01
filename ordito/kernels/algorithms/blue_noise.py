@@ -140,6 +140,11 @@ def pool_cell_keys_and_order(
     # its run starts (``grouping.mark_sorted_run_starts`` and ``emit_sorted_unique``) -- no hash
     # table and no second sort, which is what ``unique_1d(return_counts=True)`` followed by a counts
     # scan cost for the same answer.
+    #
+    # The sort's keys are dead once the cells are emitted, and the dart loop's sorted points and
+    # priorities fit them exactly (``16 n`` bytes); aliasing them there (and the survivor flags in
+    # the dead cell ranks) left the call's peak unchanged on ``dragon`` and ``lucy``: it is the
+    # pool's generation, before this sort (2026-11-02, declined).
     p = wp.int32(wp.tid())
     out_keys[p] = point_cell_key(points[p], bbox_min, inv_cell_size, grid_w)
     out_order[p] = p
