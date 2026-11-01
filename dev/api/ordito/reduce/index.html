@@ -5859,6 +5859,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#ordito.reduce.quantile" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        quantile
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6203,6 +6214,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#ordito.reduce.quantile" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        quantile
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -6352,6 +6374,14 @@
               <td>
                 <div class="doc-md-description">
                   <p>Median of a 1D scalar array (<code>numpy.median</code>).</p>
+                </div>
+              </td>
+            </tr>
+            <tr class="doc-section-item">
+              <td><code><a class="autorefs autorefs-internal" title="quantile (ordito.reduce.quantile)" href="./#ordito.reduce.quantile">quantile</a></code></td>
+              <td>
+                <div class="doc-md-description">
+                  <p>Quantile <code>q</code> of a 1D scalar array (<code>numpy.quantile</code> with <code>method="linear"</code>).</p>
                 </div>
               </td>
             </tr>
@@ -9796,11 +9826,16 @@ is always a Python <code>float</code>, regardless of input dtype.</p>
 <span class="nb">print</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">3</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">4</span><span class="p">,</span> <span class="mi">1</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">)))</span>  <span class="c1"># 2.0</span>
 </code></pre></div>
 
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="quantile" href="./#ordito.reduce.quantile"><code>quantile</code></a></p>
+</details>
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 1 place</summary>
+      <summary>Referenced by 2 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../polyline/#ordito.polyline">polyline</a> › <a href="../polyline/#ordito.polyline.polyline_radius">polyline_radius</a></span></p>
+<span class="ordito-backlink"><a href="./#ordito.reduce">reduce</a> › <a href="./#ordito.reduce.quantile">quantile</a></span> · <span class="ordito-backlink"><a href="../polyline/#ordito.polyline">polyline</a> › <a href="../polyline/#ordito.polyline.polyline_radius">polyline_radius</a></span></p>
     </details>
 
 
@@ -9848,13 +9883,7 @@ is always a Python <code>float</code>, regardless of input dtype.</p>
 <span class="normal">889</span>
 <span class="normal">890</span>
 <span class="normal">891</span>
-<span class="normal">892</span>
-<span class="normal">893</span>
-<span class="normal">894</span>
-<span class="normal">895</span>
-<span class="normal">896</span>
-<span class="normal">897</span>
-<span class="normal">898</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">median</span><span class="p">(</span><span class="n">array</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdScalar</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="normal">892</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">median</span><span class="p">(</span><span class="n">array</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdScalar</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Median of a 1D scalar array (``numpy.median``).</span>
 
@@ -9891,18 +9920,257 @@ is always a Python <code>float</code>, regardless of input dtype.</p>
 <span class="sd">    print(od.reduce.median(wp.array([3, 1, 4, 1, 5], dtype=wp.int32)))  # 3.0</span>
 <span class="sd">    print(od.reduce.median(wp.array([3, 1, 4, 1], dtype=wp.int32)))  # 2.0</span>
 <span class="sd">    ```</span>
-<span class="sd">    """</span>
-    <span class="k">if</span> <span class="n">array</span><span class="o">.</span><span class="n">ndim</span> <span class="o">!=</span> <span class="mi">1</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"median requires a 1D array."</span><span class="p">)</span>
-    <span class="n">n</span> <span class="o">=</span> <span class="n">array</span><span class="o">.</span><span class="n">size</span>
-    <span class="k">if</span> <span class="n">n</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"median requires a non-empty array."</span><span class="p">)</span>
 
-    <span class="n">sorted_values</span> <span class="o">=</span> <span class="n">_sorted_copy</span><span class="p">(</span><span class="n">array</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">n</span> <span class="o">%</span> <span class="mi">2</span> <span class="o">==</span> <span class="mi">1</span><span class="p">:</span>
-        <span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">sorted_values</span><span class="p">,</span> <span class="n">n</span> <span class="o">//</span> <span class="mi">2</span><span class="p">))</span>
-    <span class="n">middle</span> <span class="o">=</span> <span class="n">read_values</span><span class="p">(</span><span class="n">sorted_values</span><span class="p">,</span> <span class="n">n</span> <span class="o">//</span> <span class="mi">2</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
-    <span class="k">return</span> <span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">middle</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span> <span class="o">+</span> <span class="nb">float</span><span class="p">(</span><span class="n">middle</span><span class="p">[</span><span class="mi">1</span><span class="p">]))</span> <span class="o">/</span> <span class="mf">2.0</span>
+<span class="sd">    See Also</span>
+<span class="sd">    --------</span>
+<span class="sd">    [`quantile`][ordito.reduce.quantile]</span>
+<span class="sd">    """</span>
+    <span class="k">return</span> <span class="n">_sorted_quantile</span><span class="p">(</span><span class="n">array</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">,</span> <span class="s2">"median"</span><span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.reduce.quantile" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">quantile</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">quantile</span><span class="p">(</span><span class="n">array</span><span class="p">:</span> <span class="n">ArrayNdScalar</span><span class="p">,</span> <span class="n">q</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Quantile <code>q</code> of a 1D scalar array (<code>numpy.quantile</code> with <code>method="linear"</code>).</p>
+<p>Sorts a copy of the values on-device and interpolates linearly between the two order
+statistics around the fractional rank <code>q * (n - 1)</code>, as NumPy's default method does, so
+<code>q = 0</code> is the minimum, <code>q = 1</code> the maximum and <code>q = 0.5</code> the
+<a class="autorefs autorefs-internal" title="median" href="./#ordito.reduce.median"><code>median</code></a>. The result is always a Python <code>float</code>.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>array</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="ArrayNdScalar
+
+
+  
+      module-attribute
+   (ordito.typing.ArrayNdScalar)" href="../typing/#ordito.typing.ArrayNdScalar">ArrayNdScalar</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n,)</code> array of any 32- or 64-bit scalar dtype accepted by
+<code>warp.utils.radix_sort_pairs</code> (<code>wp.int32</code>, <code>wp.uint32</code>, <code>wp.float32</code>,
+<code>wp.int64</code>, <code>wp.uint64</code>, <code>wp.float64</code>). Must be non-empty.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>q</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#float">float</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Quantile to compute, in <code>[0, 1]</code>.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#float">float</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The quantile on the host.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>array</code> is empty or not rank-1, or <code>q</code> lies outside <code>[0, 1]</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="median" href="./#ordito.reduce.median"><code>median</code></a></p>
+</details>
+
+<p><span class="doc-section-title">Examples:</span></p>
+    <p>Mirrors <a class="autorefs autorefs-external" href="https://numpy.org/doc/stable/reference/generated/numpy.quantile.html#numpy.quantile"><code>numpy.quantile</code></a>: a quantile between two order statistics interpolates them:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">values</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mf">10.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">30.0</span><span class="p">,</span> <span class="mf">20.0</span><span class="p">,</span> <span class="mf">40.0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">quantile</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="mf">0.25</span><span class="p">))</span>  <span class="c1"># 10.0</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">quantile</span><span class="p">(</span><span class="n">values</span><span class="p">,</span> <span class="mf">0.9</span><span class="p">))</span>  <span class="c1"># 36.0</span>
+</code></pre></div>
+
+          
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Referenced by 1 place</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="./#ordito.reduce">reduce</a> › <a href="./#ordito.reduce.median">median</a></span></p>
+    </details>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/reduce.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">895</span>
+<span class="normal">896</span>
+<span class="normal">897</span>
+<span class="normal">898</span>
+<span class="normal">899</span>
+<span class="normal">900</span>
+<span class="normal">901</span>
+<span class="normal">902</span>
+<span class="normal">903</span>
+<span class="normal">904</span>
+<span class="normal">905</span>
+<span class="normal">906</span>
+<span class="normal">907</span>
+<span class="normal">908</span>
+<span class="normal">909</span>
+<span class="normal">910</span>
+<span class="normal">911</span>
+<span class="normal">912</span>
+<span class="normal">913</span>
+<span class="normal">914</span>
+<span class="normal">915</span>
+<span class="normal">916</span>
+<span class="normal">917</span>
+<span class="normal">918</span>
+<span class="normal">919</span>
+<span class="normal">920</span>
+<span class="normal">921</span>
+<span class="normal">922</span>
+<span class="normal">923</span>
+<span class="normal">924</span>
+<span class="normal">925</span>
+<span class="normal">926</span>
+<span class="normal">927</span>
+<span class="normal">928</span>
+<span class="normal">929</span>
+<span class="normal">930</span>
+<span class="normal">931</span>
+<span class="normal">932</span>
+<span class="normal">933</span>
+<span class="normal">934</span>
+<span class="normal">935</span>
+<span class="normal">936</span>
+<span class="normal">937</span>
+<span class="normal">938</span>
+<span class="normal">939</span>
+<span class="normal">940</span>
+<span class="normal">941</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">quantile</span><span class="p">(</span><span class="n">array</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdScalar</span><span class="p">,</span> <span class="n">q</span><span class="p">:</span> <span class="nb">float</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Quantile ``q`` of a 1D scalar array (``numpy.quantile`` with ``method="linear"``).</span>
+
+<span class="sd">    Sorts a copy of the values on-device and interpolates linearly between the two order</span>
+<span class="sd">    statistics around the fractional rank ``q * (n - 1)``, as NumPy's default method does, so</span>
+<span class="sd">    ``q = 0`` is the minimum, ``q = 1`` the maximum and ``q = 0.5`` the</span>
+<span class="sd">    [`median`][ordito.reduce.median]. The result is always a Python ``float``.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    array</span>
+<span class="sd">        ``(n,)`` array of any 32- or 64-bit scalar dtype accepted by</span>
+<span class="sd">        ``warp.utils.radix_sort_pairs`` (``wp.int32``, ``wp.uint32``, ``wp.float32``,</span>
+<span class="sd">        ``wp.int64``, ``wp.uint64``, ``wp.float64``). Must be non-empty.</span>
+<span class="sd">    q</span>
+<span class="sd">        Quantile to compute, in ``[0, 1]``.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    float</span>
+<span class="sd">        The quantile on the host.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If ``array`` is empty or not rank-1, or ``q`` lies outside ``[0, 1]``.</span>
+
+<span class="sd">    See Also</span>
+<span class="sd">    --------</span>
+<span class="sd">    [`median`][ordito.reduce.median]</span>
+
+<span class="sd">    Examples</span>
+<span class="sd">    --------</span>
+<span class="sd">    Mirrors [`numpy.quantile`][]: a quantile between two order statistics interpolates them:</span>
+
+<span class="sd">    ```python</span>
+<span class="sd">    import warp as wp</span>
+
+<span class="sd">    import ordito as od</span>
+
+<span class="sd">    values = wp.array([10.0, 0.0, 30.0, 20.0, 40.0], dtype=wp.float32)</span>
+<span class="sd">    print(od.reduce.quantile(values, 0.25))  # 10.0</span>
+<span class="sd">    print(od.reduce.quantile(values, 0.9))  # 36.0</span>
+<span class="sd">    ```</span>
+<span class="sd">    """</span>
+    <span class="k">return</span> <span class="n">_sorted_quantile</span><span class="p">(</span><span class="n">array</span><span class="p">,</span> <span class="n">q</span><span class="p">,</span> <span class="s2">"quantile"</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
