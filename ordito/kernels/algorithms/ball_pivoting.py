@@ -491,16 +491,17 @@ def push_front_edge(
 ) -> None:
     # Append an edge to the outgoing front list, bounded by the list's allocated capacity.
     #
-    # ``front_out`` is sized ``3 * max_faces + n``, exactly the worst case the commit budget
-    # admits, so there is no slack: any accounting slip would scatter past the end, and because
-    # the buffer comes from the memory pool such a write lands in *another live allocation*
-    # and corrupts it silently rather than faulting.
+    # ``front_out`` is sized ``n + max_faces / 2`` (``_BpaState._allocate_budget``), below the
+    # ``3 * max_faces + n`` worst case the commit budget admits; a write past it would land in
+    # *another live allocation* of the memory pool and corrupt it silently rather than fault, so
+    # the bound is tested here.
     #
     # Overflow is *recoverable*, which is why this drops rather than clamps: the front list is a
     # cache of the edge hash table, not the source of truth, and ``_BpaState.grow`` rebuilds it from
     # that table with ``collect_front_from_table``. So a dropped entry is restored by the same host
-    # round-trip that doubles the budget, and raising ``CNT_GROW`` is what asks for it. In practice
-    # the front peaks at a fraction of a percent of capacity and this never fires; it is hardening.
+    # round-trip that doubles the budget, and raising ``CNT_GROW`` is what asks for it. The front
+    # peaks near 0.3 n on ``bunny`` and 0.03 n on the scans against a 3 n capacity, so this does
+    # not fire in practice. The worst-case size held 13 n entries in each of five lists.
     position = wp.atomic_add(counters, CNT_NEXT_FRONT, 1)
     if position < capacity:
         out_front[position] = slot

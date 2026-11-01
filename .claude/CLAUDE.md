@@ -962,6 +962,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   3.4 us a launch. Weighing is already incremental; list-driven passes (0.99-1.04x) and four fused
   launches a round (1.10-1.33x) were tried and reverted. Only fewer rounds would pay
   (`reference/component-status.md`).
+- **`ball_pivoting` is not reproducible on `happy_buddha` under the deterministic setting**
+  (2026-11-02): two CUDA runs return the same triangles in a different face order every time,
+  and one run in four swaps one triangle. `bunny` and `dragon` repeat bit for bit. Untraced;
+  `happy_buddha` is the scan with overfull BVH leaves (§12.2), whose pivot search takes the
+  per-lane serial walk, a first suspect.
 - **The reconstruction's memory techniques, applied elsewhere** (2026-11-01 sweep, unmeasured
   estimates; measure, A/B byte for byte and re-record the census before each). The techniques:
   brick-sparse storage, rank-packed bitset indices (`brick_number_at`, `occupancy`), rank
@@ -975,8 +980,7 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
     that already syncs can cut it (§3.7).
   - Broad-phase crossing flags `int32` a slot (`_compact_crossing_candidates`); `_link_curves`
     reads the whole weight scan back.
-  - `ball_pivoting`: front arrays at `13 n` and a `4 n + 16` face budget for a front far below
-    them. `triangulate_point_cloud`: `out_tris` ~20 % used.
+  - `triangulate_point_cloud`: `out_tris` ~20 % used.
   - `linalg` workspaces: the Chebyshev's two spares, the squared-Laplacian / V-cycle vectors and
     the adaptive CG's two states could borrow CG `w` and share one state.
   - `levelset`: `marching_cubes` counts are a `vec2i` a node for O(res**2) active ones (large; a

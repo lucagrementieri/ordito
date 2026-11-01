@@ -4542,9 +4542,15 @@ class _BpaState:
         self.max_faces = max_faces
         # A triangle soup of ``max_faces`` faces has at most ``3 * max_faces`` distinct edges, and
         # the insert probe does not terminate on a full table, so the hash is sized for a load
-        # factor of at most 1/2. The front and the proposal list share the same bound.
-        capacity = 1 << (6 * max_faces - 1).bit_length()
-        front_capacity = 3 * max_faces + self.n
+        # factor of at most 3/4 at that bound; a real run fills about an eighth of it (``dragon``:
+        # ~1 M edges in 8.4 M slots), so the probes stay short. The front and the proposal list
+        # share a smaller bound, the cloud plus half the budget: a seeding wave proposes at most a
+        # triangle a point and a pivot wave one a front edge, so the proposals never outgrow it
+        # while the front fits, and a front that would outgrow it raises the same grow request
+        # the budget does, after which ``grow`` rebuilds it from the table
+        # (``kernel_bpa.push_front_edge``).
+        capacity = 1 << (4 * max_faces - 1).bit_length()
+        front_capacity = min(3 * max_faces + self.n, self.n + max_faces // 2)
         self.edge_mask = wp.int32(capacity - 1)
         # The zeroed tables in one allocation, and the unfilled ones in another.
         self.edge_key, self.edge_count, self.edge_state = _launch.carve_typed(
