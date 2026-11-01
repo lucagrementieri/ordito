@@ -957,6 +957,14 @@ def _ranked_successor_cycles(
     device = tails.device
     m = tails.size
     node_count = next_node.size
+    if (
+        mode == kernel_graph.CYCLE_NODES
+        and cycle_counts is None
+        and node_count >= _COMPACT_SUCCESSORS_FROM
+        and node_count >= _COMPACT_SUCCESSORS_RATIO * m
+    ):
+        tails, next_node, node_values = _compact_successor_table(tails, next_node, node_values)
+        node_count = next_node.size
     hops, rounds = kernel_graph.pointer_jump_schedule(max_length)
     # The ranking's windows and, past one round, their ping-pong partner, and per cycle start
     # ``(1, length)``, accumulated by the last round and scanned in place: one allocation.
@@ -1017,6 +1025,47 @@ def _ranked_successor_cycles(
         device=device,
     )
     return flat, offsets
+
+
+# A successor table this long, and this many times its listed nodes, is ranked over those nodes
+# alone (``_compact_successor_table``): the ranking's windows and cycle counts are ``32`` bytes a
+# table node, and a boundary walk lists a few thousand of a mesh's millions of halfedges. Below
+# the length the four launches the compaction adds outweigh what it saves.
+_COMPACT_SUCCESSORS_FROM = 1 << 22
+_COMPACT_SUCCESSORS_RATIO = 4
+
+
+def _compact_successor_table(
+    tails: wp.array[wp.int32], next_node: wp.array[wp.int32], node_values: wp.array[wp.int32] | None
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Restate a successor table over its listed nodes, numbered by rank, with the values to write.
+
+    Returns the renumbered ``tails``, the ``(m,)`` table over them and each rank's output value
+    (``node_values`` of its node, or the node), so ``CYCLE_NODES`` ranking of the result writes
+    what ranking the original would, in the same order: a rank is monotone in its node
+    (``kernels/graph.compact_successor_table``).
+    """
+    device = tails.device
+    m = tails.size
+    node_count = next_node.size
+    n_words = (node_count + 31) // 32
+    bits = _launch.zeros(n_words, dtype=wp.uint32, device=device)
+    _launch.launch(
+        kernel_graph.mark_tail_bits, dim=m, inputs=[tails], outputs=[bits], device=device
+    )
+    word_ranks = _launch.empty(n_words, dtype=wp.int32, device=device)
+    _launch.map(kernel_array.popcount32, bits, out=word_ranks)
+    _launch.array_scan(word_ranks, out_array=word_ranks, inclusive=True)
+    compact_tails, compact_next, values = _launch.carve(wp.int32, [m, m, m], device)
+    _launch.launch(
+        kernel_graph.compact_successor_table,
+        dim=m,
+        inputs=[tails, next_node, bits, word_ranks, node_values],
+        outputs=[compact_tails, compact_next, values],
+        device=device,
+    )
+    return compact_tails, compact_next, values
 
 
 def _closed_cycle_rounds(

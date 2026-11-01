@@ -762,16 +762,24 @@ def test_successor_cycles_excludes_a_chain(device: str) -> None:
     assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
 
 
+@pytest.mark.parametrize("compact", [False, True], ids=["table", "compacted"])
 @pytest.mark.parametrize("length", [1, 17, 300])
-def test_successor_cycles_from_table_matches_the_walk(device: str, length: int) -> None:
+def test_successor_cycles_from_table_matches_the_walk(
+    device: str, monkeypatch: pytest.MonkeyPatch, length: int, compact: bool
+) -> None:
     """
     Not a library comparison: no reference ranks a successor table, so the oracle is the walk.
 
     Cycles of one to ``length`` nodes and chains over shuffled ids, handed over as a table plus
     shuffled tails: each cycle must come back from its smallest node in successor order, the cycles
     in ascending order of it, the chains dropped -- the order the edge form returns too. With
-    ``node_values`` every node is written as its value, in the same places.
+    ``node_values`` every node is written as its value, in the same places. ``compacted`` forces
+    the ranking over the listed nodes alone (a long table's), which no fixture reaches: a chain's
+    last listed node points at an unlisted one, the case that must still end the chain.
     """
+    if compact:
+        monkeypatch.setattr(od.graph, "_COMPACT_SUCCESSORS_FROM", 0)
+        monkeypatch.setattr(od.graph, "_COMPACT_SUCCESSORS_RATIO", 0)
     rng = np.random.default_rng(length)
     sizes = rng.integers(1, length + 1, size=12)
     ids = rng.permutation(2 * int(sizes.sum()) + 5).astype(np.int32)

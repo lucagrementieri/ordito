@@ -548,7 +548,10 @@ def test_boundary_loops_rank_across_jump_round_boundaries(device: str, rim: int)
     assert np.array_equal(offsets_wp.numpy(), np.array([0, rim], dtype=np.int32))
 
 
-def test_boundary_loops_non_manifold_terminates(device: str) -> None:
+@pytest.mark.parametrize("compact", [False, True], ids=["table", "compacted"])
+def test_boundary_loops_non_manifold_terminates(
+    device: str, monkeypatch: pytest.MonkeyPatch, compact: bool
+) -> None:
     """
     Not a library comparison: a bowtie's two rims, each its own loop, from face winding alone.
 
@@ -557,6 +560,10 @@ def test_boundary_loops_non_manifold_terminates(device: str) -> None:
     wins) and return a loop missing edges. Walked by halfedge sector, each triangle's rim closes on
     its own, in the triangle's own winding. Also the original regression: it must terminate.
     """
+    if compact:
+        # The ranking over the listed nodes alone, which only a long table takes.
+        monkeypatch.setattr(od.graph, "_COMPACT_SUCCESSORS_FROM", 0)
+        monkeypatch.setattr(od.graph, "_COMPACT_SUCCESSORS_RATIO", 0)
     vertices_wp = wp.array(
         np.array(
             [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 1.0, 0.0], [2.0, 2.0, 0.0]],
@@ -578,7 +585,10 @@ def test_boundary_loops_non_manifold_terminates(device: str) -> None:
     ]
 
 
-def test_boundary_loops_walk_a_pinched_rim_edge_by_edge(device: str) -> None:
+@pytest.mark.parametrize("compact", [False, True], ids=["table", "compacted"])
+def test_boundary_loops_walk_a_pinched_rim_edge_by_edge(
+    device: str, monkeypatch: pytest.MonkeyPatch, compact: bool
+) -> None:
     """
     Class B, against trimesh's boundary edges: each appears in exactly one loop, once, in winding.
 
@@ -589,6 +599,10 @@ def test_boundary_loops_walk_a_pinched_rim_edge_by_edge(device: str) -> None:
     transform is from consecutive loop pairs to directed edges; the claim is that they are exactly
     the oriented boundary edges, which ``trimesh`` reads off the faces with no loop walk at all.
     """
+    if compact:
+        # The ranking over the listed nodes alone, which only a long table takes.
+        monkeypatch.setattr(od.graph, "_COMPACT_SUCCESSORS_FROM", 0)
+        monkeypatch.setattr(od.graph, "_COMPACT_SUCCESSORS_RATIO", 0)
     vertices_np, faces_np = _pinched_icosphere()
     holed_tm = tm.Trimesh(vertices_np, faces_np, process=False)
     # Non-vacuity: the rim really is pinched -- more boundary edges touch some vertex than two.
@@ -608,7 +622,10 @@ def test_boundary_loops_walk_a_pinched_rim_edge_by_edge(device: str) -> None:
     assert Counter(map(tuple, walked_np.tolist())) == Counter(map(tuple, boundary_np.tolist()))
 
 
-def test_boundary_loops_cut_a_pinched_loop_into_simple_cycles(device: str) -> None:
+@pytest.mark.parametrize("compact", [False, True], ids=["table", "compacted"])
+def test_boundary_loops_cut_a_pinched_loop_into_simple_cycles(
+    device: str, monkeypatch: pytest.MonkeyPatch, compact: bool
+) -> None:
     """
     Class B, against trimesh's boundary edges: two holes touching at a vertex are two loops.
 
@@ -618,6 +635,10 @@ def test_boundary_loops_cut_a_pinched_loop_into_simple_cycles(device: str) -> No
     named transform is from consecutive loop pairs to directed edges: every oriented boundary edge
     ``trimesh`` reads off the faces appears exactly once, in its direction.
     """
+    if compact:
+        # The ranking over the listed nodes alone, which only a long table takes.
+        monkeypatch.setattr(od.graph, "_COMPACT_SUCCESSORS_FROM", 0)
+        monkeypatch.setattr(od.graph, "_COMPACT_SUCCESSORS_RATIO", 0)
     vertices_np, faces_np = touching_holes_grid_arrays()
     mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
     boundary_np = mesh_tm.edges[tm_grouping.group_rows(mesh_tm.edges_sorted, require_count=1)]

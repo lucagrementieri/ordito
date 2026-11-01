@@ -555,6 +555,53 @@ def closed_cycle_windows_serial(
 
 
 @wp.kernel
+def mark_tail_bits(tails: wp.array[wp.int32], out_bits: wp.array[wp.uint32]) -> None:
+    # A bit a node of a successor table, set on the nodes ``tails`` lists (``out_bits`` zeroed).
+    v = tails[wp.tid()]
+    if v >= 0:
+        mask = wp.uint32(1) << wp.uint32(v & 31)
+        if out_bits[v >> 5] & mask == wp.uint32(0):
+            wp.atomic_or(out_bits, v >> 5, mask)
+
+
+@wp.kernel
+def compact_successor_table(
+    tails: wp.array[wp.int32],
+    next_node: wp.array[wp.int32],
+    bits: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    node_values: wp.array[wp.int32],
+    out_tails: wp.array[wp.int32],
+    out_next: wp.array[wp.int32],
+    out_values: wp.array[wp.int32],
+) -> None:
+    # A successor table restated over its listed nodes alone: a node's new number is its rank
+    # among them (``kernel_array.bit_rank`` over ``mark_tail_bits``' bits), which is monotone in the
+    # node, so every cycle keeps its smallest node as its start and the cycles their order. A
+    # successor off the listed nodes (a halfedge walk's rotation can dead-end on a halfedge that is
+    # not a boundary one, whose own successor is ``-1``) becomes ``-1`` itself: the chain ends a
+    # step sooner and is dropped all the same. ``out_values`` is what a ranked node is written out
+    # as: ``node_values`` of it when given, else the node itself.
+    k = wp.int32(wp.tid())
+    v = tails[k]
+    if v < 0:
+        out_tails[k] = -1
+        return
+    r = kernel_array.bit_rank(bits, word_ranks, v)
+    out_tails[k] = r
+    successor = next_node[v]
+    compact = wp.int32(-1)
+    if successor >= 0:
+        if kernel_array.bit_is_set(bits, successor):
+            compact = kernel_array.bit_rank(bits, word_ranks, successor)
+    out_next[r] = compact
+    if node_values.shape[0] > 0:
+        out_values[r] = node_values[v]
+    else:
+        out_values[r] = v
+
+
+@wp.kernel
 def scatter_closed_cycles(
     tails: wp.array[wp.int32],
     windows: wp.array[wp.vec3i],
