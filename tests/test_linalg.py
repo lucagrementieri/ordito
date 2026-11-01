@@ -1715,11 +1715,48 @@ def test_multigrid_galerkin_fallback_builds_the_same_hierarchy(
     assert fallback is not None
     assert len(triplet[0]) == len(fallback[0]) >= 2
     for level_triplet, level_fallback in zip(triplet[0][1:], fallback[0][1:], strict=True):
+        # The deterministic setting (on in every test) keeps the coarsest level's keyed CSR.
+        assert level_triplet.operator is not None
+        assert level_fallback.operator is not None
         dense_triplet = bsr_to_dense(level_triplet.operator, level_triplet.n)
         dense_fallback = bsr_to_dense(level_fallback.operator, level_fallback.n)
         assert dense_triplet.shape == dense_fallback.shape
         assert np.allclose(dense_triplet, dense_fallback, rtol=1e-12, atol=1e-12)
         assert level_triplet.operator.nnz_sync() == level_fallback.operator.nnz_sync()
+
+
+@pytest.mark.parametrize("fits", [True, False], ids=["dense", "keyed"])
+def test_multigrid_coarsest_dense_assembly_is_the_keyed_one(
+    device: str, monkeypatch: pytest.MonkeyPatch, fits: bool
+) -> None:
+    """
+    Ordito against ordito: the coarsest level assembled densely gives the keyed level's inverse.
+
+    With the deterministic setting off, a coarsest level whose key product fits its budget is
+    summed by atomics straight into a dense matrix (``kernels/algorithms/multigrid
+    .galerkin_dense``) instead of a keyed CSR; the keyed path, which the setting keeps on, carries
+    the oracle (the convergence tests above). The two inverses agree to rounding. Both branches of
+    the gate: a zero budget sends the product to ``bsr_mm`` and the level back to the keyed CSR,
+    so the coarsest level then keeps its operator.
+    """
+    matrix_wp, _rhs, _dense_np, _rhs_np = _grid_laplacian_system(device, k=24)
+    keyed = od.linalg._multigrid_hierarchy(matrix_wp, 0)
+    if not fits:
+        monkeypatch.setattr(od.linalg, "_MULTIGRID_TRIPLET_FACTOR", 0)
+    with od.config.deterministic(False):
+        dense = od.linalg._multigrid_hierarchy(matrix_wp, 0)
+    assert keyed is not None
+    assert dense is not None
+    assert len(keyed[0]) == len(dense[0]) >= 2
+    assert keyed[0][-1].operator is not None
+    assert (dense[0][-1].operator is None) == fits
+    assert dense[0][-1].n == keyed[0][-1].n
+    inverse_keyed = keyed[1].inverse.numpy()
+    inverse_dense = dense[1].inverse.numpy()
+    assert np.ptp(inverse_keyed) > 0.0
+    assert np.allclose(
+        inverse_dense, inverse_keyed, rtol=0.0, atol=1e-9 * np.abs(inverse_keyed).max()
+    )
 
 
 def test_multigrid_aggregation_counts_the_aggregates_it_labels(

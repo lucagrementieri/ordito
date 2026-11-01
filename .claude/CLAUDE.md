@@ -971,10 +971,7 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   3.4 us a launch. Weighing is already incremental; list-driven passes (0.99-1.04x) and four fused
   launches a round (1.10-1.33x) were tried and reverted. Only fewer rounds would pay
   (`reference/component-status.md`).
-- **Not built:** the multigrid coarsest level's dense outer-product assembly, gated on the key
-  product fitting its budget (no size predicts it; the budget test separates 18 of 18 levels:
-  0.53-0.70x when it fits, 1.11-2.17x when not; `reference/component-status.md`,
-  preconditioners). Saves 0.2-0.7 ms a setup; off mode only. The remesh split loop's terminal
+- **Not built:** the remesh split loop's terminal
   round (three ~25 us readbacks a call, about 1 % of a crown call) is the last unbuilt step of
   `plans/remesh-pass-structure.md`, whose collapse and flip steps landed on 2026-10-27; not
   worth a fixed-width split stage on its own.

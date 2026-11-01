@@ -3465,22 +3465,22 @@
  },
  "benchmarks/test_linalg.py::test_multigrid_preconditioner[saddle-ordito-cpu]": {
   "counts": {
-   "launch": 76,
-   "alloc": 54,
+   "launch": 74,
+   "alloc": 50,
    "h2h": 4,
-   "readback": 25,
-   "scan": 6,
-   "sort": 8
+   "readback": 22,
+   "scan": 5,
+   "sort": 7
   }
  },
  "benchmarks/test_linalg.py::test_multigrid_preconditioner[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 111,
-   "alloc": 80,
+   "launch": 109,
+   "alloc": 76,
    "h2h": 6,
-   "readback": 34,
-   "scan": 9,
-   "sort": 12
+   "readback": 31,
+   "scan": 8,
+   "sort": 11
   }
  },
  "benchmarks/test_linalg.py::test_operator_factorization_factor[saddle-ordito-cpu]": {

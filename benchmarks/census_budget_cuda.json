@@ -3792,26 +3792,26 @@
  },
  "benchmarks/test_linalg.py::test_multigrid_preconditioner[saddle-ordito-cuda]": {
   "counts": {
-   "launch": 86,
-   "alloc": 57,
-   "memset": 2,
+   "launch": 83,
+   "alloc": 51,
+   "memset": 3,
    "h2d": 1,
-   "d2h": 15,
+   "d2h": 12,
    "sync": 3,
-   "scan": 14,
-   "sort": 8
+   "scan": 12,
+   "sort": 7
   }
  },
  "benchmarks/test_linalg.py::test_multigrid_preconditioner[saddle_graded-ordito-cuda]": {
   "counts": {
-   "launch": 129,
-   "alloc": 83,
-   "memset": 3,
+   "launch": 126,
+   "alloc": 77,
+   "memset": 4,
    "h2d": 1,
-   "d2h": 21,
+   "d2h": 18,
    "sync": 5,
-   "scan": 21,
-   "sort": 12
+   "scan": 19,
+   "sort": 11
   }
  },
  "benchmarks/test_linalg.py::test_operator_factorization_factor[saddle-ordito-cuda]": {

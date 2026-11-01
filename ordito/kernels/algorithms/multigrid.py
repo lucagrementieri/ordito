@@ -532,6 +532,30 @@ def galerkin_keys(
         )
 
 
+@wp.kernel
+def galerkin_dense(
+    p_offsets: wp.array[wp.int32],
+    p_columns: wp.array[wp.int32],
+    p_values: wp.array[wp.float64],
+    ap_offsets: wp.array[wp.int32],
+    ap_columns: wp.array[wp.int32],
+    ap_values: wp.array[wp.float64],
+    n_coarse: wp.int32,
+    out_dense: wp.array[wp.float64],
+) -> None:
+    # ``P^T (A P)`` added straight into the zeroed row-major ``(n_coarse, n_coarse)`` matrix, one
+    # thread a fine row: ``galerkin_keys``' outer product of its two sparse rows, summed by atomics
+    # rather than keyed and sorted, for the coarsest level, which only the dense inverse reads
+    # (``linalg._multigrid_galerkin``). Arrival order decides the sums' rounding, so it serves
+    # the deterministic setting's off mode only.
+    i = wp.int32(wp.tid())
+    for a in range(p_offsets[i], p_offsets[i + 1]):
+        row = p_columns[a] * n_coarse
+        weight = p_values[a]
+        for b in range(ap_offsets[i], ap_offsets[i + 1]):
+            wp.atomic_add(out_dense, row + ap_columns[b], weight * ap_values[b])
+
+
 @wp.func
 def csr_row_dot(
     row: wp.int32,
