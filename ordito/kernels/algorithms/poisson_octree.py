@@ -1721,6 +1721,9 @@ def octree_row(
         weights[corner] = wp.where(
             records[corner] >= 0, screen[wp.max(records[corner], 0) * SCREEN_RECORD], 0.0
         )
+    # Reading a record's hat values before its weight's test (taking that dependent read off a
+    # wave's path) was bit-identical and measured 0.99x wave device time on ``dragon`` depth 10,
+    # within noise on the call (2026-11-01): declined.
     for corner in range(8):
         weight = weights[corner]
         if weight > 0.0:

@@ -1074,7 +1074,7 @@ def screened_poisson(
         vertices and triangles, stitched across changes of depth as ``open3d`` stitches them,
         except where ``open3d``'s minimal-area split of a polygon is decided by rounding (a few
         percent of the triangles; the surface is the same). Those triangles are returned as is:
-        not filtered for degeneracy nor reoriented. ``depth`` is at most 9.
+        not filtered for degeneracy nor reoriented.
 
     Returns
     -------
@@ -2586,9 +2586,17 @@ def _poisson_solve_level(
     and squared residual (``_solve_screened_poisson``) -- nothing is read back here.
     """
     n_nodes = res * res * res
-    # The splat's four accumulators in one zeroed allocation.
-    splat = _launch.zeros(4 * n_nodes, dtype=wp.float32, device=device)
-    vx, vy, vz, weights = (odt.as_dense(splat[k * n_nodes : (k + 1) * n_nodes]) for k in range(4))
+    # The splat's four accumulators borrow the solve's allocation: the weights lead it, ahead of
+    # the conjugate gradient's vectors, and the vector field ``V`` rides in ``r``, ``u`` and ``p``,
+    # which nothing reads before the solve's initial launch writes them; one memset zeroes the
+    # four. The right-hand side rides in ``w``, which nothing reads after that launch before the
+    # first round's mat-vec writes it, and the smoother lives as long as the solve.
+    work = _poisson_workspace(res, [n_nodes], device, leading=1)
+    r, u, w, p, _s = work.vectors
+    _launch.zero_(_launch.view(work.head, 0, 4 * work.stride))
+    weights = _launch.view(work.head, 0, n_nodes)
+    vx, vy, vz, rhs = (_launch.view(vector, 0, n_nodes) for vector in (r, u, p, w))
+    smoother = work.extra[0]
     if is_deterministic() and wp.get_device(device).is_cuda:
         _splat_ordered(
             kernel_reconstruction.splat_corner_keys,
@@ -2620,10 +2628,6 @@ def _poisson_solve_level(
             ],
             device=device,
         )
-    # The right-hand side and the smoother live as long as the solve: they ride in its ``float32``
-    # allocation, after the V-cycle's storage.
-    work = _poisson_workspace(res, [n_nodes] * 2, device)
-    rhs, smoother = work.extra[1:]
     _launch.launch(
         kernel_reconstruction.poisson_level_setup,
         dim=(res, res, res),
@@ -2647,15 +2651,23 @@ def _poisson_solve_level(
     )
 
 
-def _poisson_workspace(res: int, tables: list[int], device: wp.DeviceLike) -> _CgWorkspace:
+def _poisson_workspace(
+    res: int, tables: list[int], device: wp.DeviceLike, *, leading: int = 0
+) -> _CgWorkspace:
     """
     ``_solve_screened_poisson``'s workspace on a ``res**3`` grid, with ``tables`` more views.
 
-    The V-cycle's storage is ``extra[0]``; the caller's ``tables`` follow it.
+    The caller's ``tables`` lead ``extra`` and the V-cycle's storage is ``extra[-1]``; ``leading``
+    vectors precede the conjugate gradient's (``_cg_workspace``).
     """
     span, blocks, _fold = kernel_cg.cg_layout(res * res * res, od.linalg.CG_FOLD_MAX_BLOCKS)
     return _cg_workspace(
-        blocks * span, blocks, [_PoissonMultigrid.footprint(res), *tables], 0, device
+        blocks * span,
+        blocks,
+        [*tables, _PoissonMultigrid.footprint(res)],
+        0,
+        device,
+        leading=leading,
     )
 
 
@@ -2704,7 +2716,7 @@ def _solve_screened_poisson(
     gamma_old, alpha_old, gamma_new, alpha_new = work.recurrence
     state = work.state
     screen_f = wp.float32(screen)
-    multigrid = _PoissonMultigrid(weights, screen, res, smoother, work.extra[0], device)
+    multigrid = _PoissonMultigrid(weights, screen, res, smoother, work.extra[-1], w, device)
     # The V-cycle's first pre-smoothing sweep is pointwise, so the launches that produce the
     # residual write it too -- this one and every round's ``cg_update``, whose Jacobi apply with
     # ``smoother`` as the scaling is that sweep exactly.
@@ -2748,7 +2760,7 @@ def _solve_screened_poisson(
                 _MG_COARSEST,
                 _MG_COARSE_SWEEPS,
                 smoother,
-                work.extra[0],
+                work.extra[-1],
                 atol_sq,
                 r,
                 u,
@@ -2839,7 +2851,7 @@ class _GridLevel(NamedTuple):
     One level of ``_PoissonMultigrid``: its grid, operator and working vectors.
 
     ``b`` and ``x`` are ``None`` on the finest level, whose right-hand side and result are the
-    caller's vectors.
+    caller's vectors, and its ``tmp`` and ``residual`` are one scratch vector of the caller's.
     """
 
     res: int
@@ -2871,6 +2883,11 @@ class _PoissonMultigrid:
     on the finest, the caller -- the conjugate gradient's initial-residual and update kernels --
     into ``start`` before each ``apply``). A cycle is then four launches a level, which the CPU
     device runs as one (``kernels/reconstruction.poisson_mg_vcycle_serial``).
+
+    The finest level's residual is read only by the restriction, before the prolongation writes
+    the corrected start, so with one sweep a side the two share ``scratch``: a vector of the
+    caller's that is free while a cycle runs (the conjugate gradient's ``w``, read by each round's
+    update before the cycle and written by the next round's mat-vec after it).
     """
 
     def __init__(
@@ -2880,12 +2897,14 @@ class _PoissonMultigrid:
         res: int,
         smoother: wp.array[wp.float32],
         storage: wp.array[wp.float32],
+        scratch: wp.array[wp.float32],
         device: wp.DeviceLike,
     ) -> None:
         """Build the hierarchy below ``res`` in ``storage``, cut into the views ``widths(res)``."""
         self._device = device
         self._screen = wp.float32(screen)
         self._storage = storage
+        self._scratch = scratch
         self._levels: list[_GridLevel] = []
         widths = _PoissonMultigrid.widths(res)
         starts = itertools.accumulate((_mg_stride(width) for width in widths), initial=0)
@@ -2900,9 +2919,12 @@ class _PoissonMultigrid:
         # one launch (``poisson_mg_coarsen_serial``), after the views are cut.
         serial = wp.get_device(device).is_cpu
         while True:
-            owned = 3 if finest else 5
-            vectors = [next(views) for _ in range(owned)]
-            b, x = (None, None) if finest else (vectors.pop(), vectors.pop())
+            if finest:
+                vectors = [next(views), scratch, scratch]
+                b, x = None, None
+            else:
+                vectors = [next(views) for _ in range(5)]
+                b, x = vectors.pop(), vectors.pop()
             self._levels.append(_GridLevel(res, wp.float32(lap), w, smooth, b, x, *vectors))
             finest = False
             if res <= _MG_COARSEST:
@@ -2945,7 +2967,7 @@ class _PoissonMultigrid:
         of ``kernels/reconstruction.POISSON_MG_ALIGN``, so the whole hierarchy is one allocation
         (the caller's), laid out as ``kernels/reconstruction.poisson_mg_level_layout`` reads it.
         """
-        widths = [res**3] * 3
+        widths = [res**3]
         while res > _MG_COARSEST:
             res = (res - 1) // 2 + 1
             widths += [res**3] * 2
@@ -3055,6 +3077,7 @@ class _PoissonMultigrid:
                     finest.smoother,
                     source,
                     self._storage,
+                    self._scratch,
                 ],
                 outputs=[destination],
                 device=self._device,
@@ -3234,10 +3257,12 @@ def _screened_poisson_band(
         # The data, weights and solution in one allocation; the solution's zeros are overwritten by
         # its first start.
         b, w, x = _launch.carve(wp.float32, [band.n_nodes] * 3, device, zeroed=True)
+        # The sample band's data has no reader past its embedding: dropping it frees the finest
+        # splat's storage before the finest level's solve, rather than after the extraction.
         _launch.launch(
             kernel_poisson_band.embed_band_data,
             dim=source.n_nodes,
-            inputs=[source.brick_coords, source.res, *data[level], band.brick_map, band.nbk],
+            inputs=[source.brick_coords, source.res, *data.pop(level), band.brick_map, band.nbk],
             outputs=[b, w],
             device=device,
         )
@@ -3510,7 +3535,11 @@ def _band_level_solve(
     corrected by the prolonged change of the coarse one since ``previous``.
     """
     band = state.band
-    rhs, inv_diag = _launch.carve(wp.float32, [band.n_nodes] * 2, device)
+    work = _band_workspace(band.n_nodes, device)
+    inv_diag = work.extra[0]
+    # The folded right-hand side rides in ``w``: the solve's initial launch is its one reader, and
+    # nothing writes ``w`` before the first round's mat-vec.
+    rhs = _launch.view(work.vectors[2], 0, band.n_nodes)
     coarse_map, coarse_x, nbk_c, res_c = _band_coarse_args(coarse, base_x, res_b)
     _launch.launch(
         kernel_poisson_band.band_level_setup,
@@ -3529,8 +3558,14 @@ def _band_level_solve(
         device=device,
     )
     _solve_band_level(
-        band, state.lap, state.weights, screen, rhs, state.x, inv_diag, rounds, tol, device
+        band, state.lap, state.weights, screen, rhs, state.x, inv_diag, rounds, tol, device, work
     )
+
+
+def _band_workspace(n: int, device: wp.DeviceLike) -> _CgWorkspace:
+    """``_solve_band_level``'s workspace for ``n`` band nodes, its ``extra[0]`` the Jacobi scale."""
+    span, blocks, _fold = kernel_cg.cg_layout(n, od.linalg.CG_FOLD_MAX_BLOCKS)
+    return _cg_workspace(blocks * span, blocks, [n], 1, device)
 
 
 def _band_hierarchy_flags(
@@ -3813,19 +3848,20 @@ def _solve_band_level(
     maxiter: int,
     tol: float,
     device: wp.DeviceLike,
+    work: _CgWorkspace,
 ) -> None:
     """
     Jacobi-preconditioned conjugate gradient on one band level, from ``solution`` in place.
 
     ``_solve_screened_poisson``'s Chronopoulos-Gear round with the band's row in place of the dense
     stencil and Jacobi in place of the V-cycle: the shared ``cg_seed`` / ``cg_coefficients`` /
-    ``cg_update`` kernels, one recorded device loop, nothing read back.
+    ``cg_update`` kernels, one recorded device loop, nothing read back. ``work`` is
+    ``_band_workspace``'s.
     """
     n = band.n_nodes
     tile = int(kernel_cg.CG_TILE)
     span, blocks, fold = kernel_cg.cg_layout(n, od.linalg.CG_FOLD_MAX_BLOCKS)
     stride = blocks * span
-    work = _cg_workspace(stride, blocks, [], 1, device)
     r, u, w, p, s = work.vectors
     partials, atol_sq, dots, coefficients = (
         work.partials,
@@ -3941,27 +3977,39 @@ def _solve_band_level(
 
 
 def _cg_workspace(
-    stride: int, blocks: int, extra: list[int], counts: int, device: wp.DeviceLike
+    stride: int,
+    blocks: int,
+    extra: list[int],
+    counts: int,
+    device: wp.DeviceLike,
+    *,
+    leading: int = 0,
 ) -> _CgWorkspace:
     """
     One conjugate-gradient solve's buffers in two allocations.
 
-    The five ``float32`` vectors of ``stride`` entries, then a view per ``extra`` width (a
+    ``leading`` vectors of ``stride`` entries for the caller, then the five ``float32`` vectors,
+    laid out ``r, u, p, s, w`` (``head`` spans the two groups, so the caller can zero the leading
+    vectors with ``r``, ``u`` and ``p`` in one memset), then a view per ``extra`` width (a
     preconditioner's vectors, or the caller's own tables of the solve's lifetime); and, cut from
     one smaller allocation, the ``(3, 1, blocks)`` dot partials and the ten per-solve scalars in
     ``float64`` and the loop state and ``counts`` more ``int32`` slots. The small one is apart
     because the caller keeps the residual pair past the solve, which must not hold the vectors.
     Every entry is written before it is read, by the solve's initial launch or the seed.
     """
-    widths = [stride] * 5 + extra
-    vectors = _launch.carve(wp.float32, widths, device)
+    head, *tables = _launch.carve(wp.float32, [(leading + 5) * stride, *extra], device)
+    r, u, p, s, w = (
+        _launch.view(head, (leading + k) * stride, (leading + k + 1) * stride) for k in range(5)
+    )
     reals, ints = _launch.carve_typed(
         ((wp.float64, 3 * blocks + 10), (wp.int32, kernel_array.LOOP_STATE_SIZE + counts)), device
     )
     scalars = _launch.view(reals, 3 * blocks, 3 * blocks + 10)
     return _CgWorkspace(
-        vectors[:5],
-        vectors[5:],
+        [r, u, w, p, s],
+        tables,
+        head,
+        stride,
         _launch.view(reals, 0, 3 * blocks).reshape((3, 1, blocks)),
         _launch.view(scalars, 0, 1),
         odt.as_array2d(_launch.view(scalars, 1, 3).reshape((2, 1)), wp.float64),
@@ -3980,6 +4028,10 @@ class _CgWorkspace(NamedTuple):
     """``r, u, w, p, s``."""
     extra: list[wp.array[wp.float32]]
     """One view per requested width."""
+    head: wp.array[wp.float32]
+    """The leading vectors and the five, ``stride`` apart."""
+    stride: int
+    """Each vector's footprint in ``head``."""
     partials: wp.array[wp.float64]
     """``(3, 1, blocks)`` per-block dot partials."""
     atol_sq: wp.array[wp.float64]

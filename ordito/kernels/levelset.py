@@ -792,6 +792,18 @@ def mc_values_cross(here: wp.float32, there: wp.float32, iso: wp.float32) -> wp.
 
 
 @wp.func
+def mc_node_emits(offsets: wp.array[wp.vec2i], n: wp.int32) -> wp.bool:
+    # Whether node ``n`` writes a vertex or a triangle: its entry in the inclusive scan of the
+    # ``(vertices, triangles)`` counts differs from its predecessor's. An emit pass returns on the
+    # rest before reading the field, which is most nodes of a lattice.
+    ends = offsets[n]
+    if n == 0:
+        return ends[0] != 0 or ends[1] != 0
+    previous = offsets[n - 1]
+    return ends[0] != previous[0] or ends[1] != previous[1]
+
+
+@wp.func
 def mc_edge_vertex(
     lower: wp.vec3,
     delta: wp.vec3,
@@ -949,7 +961,10 @@ def marching_cubes_emit(
     i, j, k = wp.tid()
     ny = field.shape[1]
     nz = field.shape[2]
-    ends = offsets[ravel_index(i, j, k, ny, nz)]
+    flat = ravel_index(i, j, k, ny, nz)
+    if not mc_node_emits(offsets, flat):
+        return
+    ends = offsets[flat]
     crossing = wp.vec3i(
         mc_edge_crosses(field, iso, i, j, k, 0),
         mc_edge_crosses(field, iso, i, j, k, 1),

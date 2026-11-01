@@ -60,6 +60,7 @@ from ordito.kernels.levelset import (
     mc_case_corner,
     mc_case_final,
     mc_edge_vertex,
+    mc_node_emits,
     mc_triangle_edge,
     mc_values_cross,
 )
@@ -1381,9 +1382,9 @@ def band_marching_cubes_emit(
     # (``mc_edge_vertex``) and face numbering, with an edge's vertex found through its owner node's
     # extraction-band slot.
     n = wp.int32(wp.tid())
-    g = band_coordinates(extract_coords, n)
-    if not node_live(g, res):
+    if not mc_node_emits(offsets, n):
         return
+    g = band_coordinates(extract_coords, n)
     ends = offsets[n]
     here = composite_value(brick_map, nbk, x, coarse_map, coarse, nbk_c, res_c, g[0], g[1], g[2])
     crossing = wp.vec3i(0, 0, 0)

@@ -5150,7 +5150,7 @@
  "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cpu-adaptive-7]": {
   "counts": {
    "launch": 63,
-   "alloc": 59,
+   "alloc": 55,
    "h2h": 7,
    "readback": 8,
    "scan": 7,
@@ -5160,7 +5160,7 @@
  "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cpu-dense-7]": {
   "counts": {
    "launch": 33,
-   "alloc": 29,
+   "alloc": 26,
    "readback": 6,
    "scan": 2,
    "sort": 1

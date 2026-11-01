@@ -2710,13 +2710,14 @@ def poisson_mg_stride(res: wp.int32) -> wp.int32:
 @wp.func
 def poisson_mg_level_layout(res0: wp.int32, level: wp.int32) -> wp.vec3i:
     # Level ``level``'s nodes a side, where its vectors start and their stride, in the one-buffer
-    # layout ``reconstruction._PoissonMultigrid`` cuts: the finest level's ``start``, ``tmp`` and
-    # ``residual``, then per coarser level its weights, smoother, ``start``, ``tmp``,
-    # ``residual``, ``x`` and ``b``, each ``res**3`` long at a ``poisson_mg_stride`` stride.
+    # layout ``reconstruction._PoissonMultigrid`` cuts: the finest level's ``start``, then per
+    # coarser level its weights, smoother, ``start``, ``tmp``, ``residual``, ``x`` and ``b``, each
+    # ``res**3`` long at a ``poisson_mg_stride`` stride. The finest level's residual and corrected
+    # start share the caller's scratch vector instead.
     res = res0
     offset = wp.int32(0)
     for m in range(level):
-        offset += wp.where(m == 0, 3, 7) * poisson_mg_stride(res)
+        offset += wp.where(m == 0, 1, 7) * poisson_mg_stride(res)
         res = (res - 1) // 2 + 1
     return wp.vec3i(res, offset, poisson_mg_stride(res))
 
@@ -2800,6 +2801,40 @@ def poisson_mg_residual_pass(
 
 
 @wp.func
+def poisson_mg_restrict_pass(
+    fine_residual: wp.array[wp.float32],
+    res: wp.int32,
+    res_c: wp.int32,
+    coarse_smoother: wp.array[wp.float32],
+    out_coarse_b: wp.array[wp.float32],
+    out_coarse_start: wp.array[wp.float32],
+):
+    # ``poisson_mg_restrict`` over a whole coarse level, node by node.
+    for ci in range(res_c):
+        for cj in range(res_c):
+            for ck in range(res_c):
+                poisson_mg_restrict_node(
+                    fine_residual, res, res_c, coarse_smoother, out_coarse_b, out_coarse_start,
+                    ci, cj, ck,
+                )  # fmt: skip
+
+
+@wp.func
+def poisson_mg_prolong_add_pass(
+    coarse_x: wp.array[wp.float32],
+    res_c: wp.int32,
+    res: wp.int32,
+    start: wp.array[wp.float32],
+    out_corrected: wp.array[wp.float32],
+):
+    # ``poisson_mg_prolong_add`` over a whole level, node by node.
+    for i in range(res):
+        for j in range(res):
+            for k in range(res):
+                poisson_mg_prolong_add_node(coarse_x, res_c, res, start, out_corrected, i, j, k)
+
+
+@wp.func
 def poisson_mg_vcycle(
     res0: wp.int32,
     screen: wp.float32,
@@ -2809,14 +2844,17 @@ def poisson_mg_vcycle(
     smoother: wp.array[wp.float32],
     source: wp.array[wp.float32],
     storage: wp.array[wp.float32],
+    scratch: wp.array[wp.float32],
     destination: wp.array[wp.float32],
-) -> None:
+):
     # ``reconstruction._PoissonMultigrid``'s V-cycle at one sweep a side, in one thread, every
     # launch of it in launch order: the residual and restriction down to ``coarsest`` nodes a side,
     # ``coarse_sweeps - 1`` sweeps there after the zero-start one, then the prolongation and
     # sweep back up into ``destination``. The finest level reads ``weights``, ``smoother``
-    # and ``source``; every other vector is a view of ``storage`` (``poisson_mg_level_layout``).
-    # The finest ``start`` arrives holding its zero-start sweep, as the launched cycle's does.
+    # and ``source``, keeps its ``start`` first in ``storage`` and its residual and corrected
+    # start in ``scratch``; every other vector is a view of ``storage``
+    # (``poisson_mg_level_layout``). The finest ``start`` arrives holding its zero-start sweep, as
+    # the launched cycle's does.
     levels = wp.int32(1)
     side = res0
     while side > coarsest:
@@ -2834,48 +2872,25 @@ def poisson_mg_vcycle(
         nc = res_c * res_c * res_c
         oc = coarse[1]
         ac = coarse[2]
-        # The finest level's ``start`` and ``residual`` are its first and third vectors, a coarser
-        # level's its third and fifth.
-        start = wp.where(level == 0, 0, o + 2 * a)
-        residual = wp.where(level == 0, 2 * a, o + 4 * a)
+        coarse_smoother = storage[oc + ac : oc + ac + nc]
+        coarse_b = storage[oc + 6 * ac : oc + 6 * ac + nc]
+        coarse_start = storage[oc + 2 * ac : oc + 2 * ac + nc]
+        # A coarser level's ``start`` and ``residual`` are its third and fifth vectors.
         if level == 0:
-            poisson_mg_residual_pass(
-                res,
-                lap,
-                weights,
-                screen,
-                source,
-                storage[start : start + n],
-                storage[residual : residual + n],
-            )
+            poisson_mg_residual_pass(res, lap, weights, screen, source, storage[0:n], scratch)
+            poisson_mg_restrict_pass(scratch, res, res_c, coarse_smoother, coarse_b, coarse_start)
         else:
+            residual = storage[o + 4 * a : o + 4 * a + n]
             poisson_mg_residual_pass(
                 res,
                 lap,
                 storage[o : o + n],
                 screen,
                 storage[o + 6 * a : o + 6 * a + n],
-                storage[start : start + n],
-                storage[residual : residual + n],
+                storage[o + 2 * a : o + 2 * a + n],
+                residual,
             )
-        fine_residual = storage[residual : residual + n]
-        coarse_smoother = storage[oc + ac : oc + ac + nc]
-        coarse_b = storage[oc + 6 * ac : oc + 6 * ac + nc]
-        coarse_start = storage[oc + 2 * ac : oc + 2 * ac + nc]
-        for ci in range(res_c):
-            for cj in range(res_c):
-                for ck in range(res_c):
-                    poisson_mg_restrict_node(
-                        fine_residual,
-                        res,
-                        res_c,
-                        coarse_smoother,
-                        coarse_b,
-                        coarse_start,
-                        ci,
-                        cj,
-                        ck,
-                    )
+            poisson_mg_restrict_pass(residual, res, res_c, coarse_smoother, coarse_b, coarse_start)
         lap = lap * wp.float32(2.0)
     # The coarsest level: its sweeps after the zero-start one, alternating with ``tmp`` so that
     # the last lands in ``x``.
@@ -2899,8 +2914,8 @@ def poisson_mg_vcycle(
             storage[target : target + n],
         )
         cur = target
-    # Back up: each level's ``start`` plus the prolonged correction into ``tmp``, swept into its
-    # ``x`` (the finest level's: ``destination``).
+    # Back up: each level's ``start`` plus the prolonged correction into ``tmp`` (the finest
+    # level's: ``scratch``), swept into its ``x`` (the finest level's: ``destination``).
     for step in range(levels - 1):
         level = levels - 2 - step
         lap = lap * wp.float32(0.5)
@@ -2914,20 +2929,17 @@ def poisson_mg_vcycle(
         nc = res_c * res_c * res_c
         oc = coarse[1]
         ac = coarse[2]
-        start = wp.where(level == 0, 0, o + 2 * a)
-        tmp = wp.where(level == 0, a, o + 3 * a)
         coarse_x = storage[oc + 5 * ac : oc + 5 * ac + nc]
-        fine_start = storage[start : start + n]
-        fine_tmp = storage[tmp : tmp + n]
-        for i in range(res):
-            for j in range(res):
-                for k in range(res):
-                    poisson_mg_prolong_add_node(coarse_x, res_c, res, fine_start, fine_tmp, i, j, k)
         if level == 0:
+            poisson_mg_prolong_add_pass(coarse_x, res_c, res, storage[0:n], scratch)
             poisson_mg_smooth_pass(
-                res, lap, weights, screen, smoother, source, fine_tmp, destination
+                res, lap, weights, screen, smoother, source, scratch, destination
             )
         else:
+            fine_tmp = storage[o + 3 * a : o + 3 * a + n]
+            poisson_mg_prolong_add_pass(
+                coarse_x, res_c, res, storage[o + 2 * a : o + 2 * a + n], fine_tmp
+            )
             poisson_mg_smooth_pass(
                 res,
                 lap,
@@ -2950,12 +2962,14 @@ def poisson_mg_vcycle_serial(
     smoother: wp.array[wp.float32],
     source: wp.array[wp.float32],
     storage: wp.array[wp.float32],
+    scratch: wp.array[wp.float32],
     out_destination: wp.array[wp.float32],
 ) -> None:
     # ``dim=1``: one ``poisson_mg_vcycle`` into ``out_destination``.
     poisson_mg_vcycle(
-        res0, screen, coarsest, coarse_sweeps, weights, smoother, source, storage, out_destination
-    )
+        res0, screen, coarsest, coarse_sweeps, weights, smoother, source, storage, scratch,
+        out_destination,
+    )  # fmt: skip
 
 
 @wp.kernel
@@ -2996,12 +3010,14 @@ def poisson_cg_rounds_serial(
     # condition holds, ``poisson_cg_matvec_dots``'
     # blocks, then (unfolded) ``cg_coefficients``' one column, then ``cg_update``'s blocks (its
     # "Jacobi apply" at ``smoother`` writes the finest zero-start sweep, the first ``storage``
-    # vector), then the V-cycle from ``r`` into ``u``. That device runs a launch's blocks one
-    # after another and ``wp.capture_while`` there tests the same condition word before each
-    # round, so this is the launched loop to the bit (``conjugate_gradient.cg_round_serial``'s
-    # argument, for the whole loop).
+    # vector), then the V-cycle from ``r`` into ``u`` (with ``w``, read by then, as its finest
+    # scratch). That device runs a launch's blocks one after another and ``wp.capture_while``
+    # there tests the same condition word before each round, so this is the launched loop to the
+    # bit (``conjugate_gradient.cg_round_serial``'s argument, for the whole loop).
     start = storage[0:n]
-    poisson_mg_vcycle(res, screen, coarsest, coarse_sweeps, weights, smoother, r, storage, u)
+    poisson_mg_vcycle(
+        res, screen, coarsest, coarse_sweeps, weights, smoother, r, storage, out_w, u
+    )  # fmt: skip
     while state[LOOP_CONDITION] != 0:
         for blk in range(n_blocks):
             poisson_cg_matvec_dots_block(
@@ -3019,7 +3035,9 @@ def poisson_cg_rounds_serial(
                 out_coefficients, gamma_old, alpha_old, atol_sq, smoother, out_w, p, s, r, u,
                 state, out_x, start, gamma_new, alpha_new, out_dots, out_iterations,
             )  # fmt: skip
-        poisson_mg_vcycle(res, screen, coarsest, coarse_sweeps, weights, smoother, r, storage, u)
+        poisson_mg_vcycle(
+            res, screen, coarsest, coarse_sweeps, weights, smoother, r, storage, out_w, u
+        )  # fmt: skip
 
 
 @wp.func
