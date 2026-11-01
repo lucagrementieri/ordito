@@ -1067,7 +1067,7 @@ def test_fast_marching_distance_meshlab_matches_pymeshlab(
     queue holds it then; the call pops in the queue's order. Measured worst **5.1e-8** of the
     range over the four fixtures, both sources and both devices: the ``float32`` rounding of the
     returned ``float64`` field. On the scan meshes the same holds (dragon, happy_buddha and bunny
-    from vertex 0: no vertex over 1e-7 of the range off pymeshlab, worst 2.2e-6 on happy_buddha);
+    from vertex 0: no vertex over 1e-7 of the range off pymeshlab);
     rounds relaxing every face against the previous round's distances, which the call ran until
     2026-11-01, settled 46 dragon vertices more than 1e-5 of the range off.
 

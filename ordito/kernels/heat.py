@@ -822,12 +822,99 @@ def unfolded_distance_exceeds(
 
 
 @wp.func
+def vcg_norm(d: wp.vec3d) -> wp.float64:
+    # ``vcg::Point3::Norm``: the square root of ``x x + y y + z z``, summed in that order.
+    return wp.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
+
+
+@wp.func
+def vcg_scaled_direction(d: wp.vec3d, length: wp.float64) -> wp.vec3d:
+    # ``d.Normalize() * length``, as ``GeoDistance`` forms its edge vectors: each component divided
+    # by the norm (a zero vector left as it is), then multiplied by ``length``.
+    n = vcg_norm(d)
+    if n > wp.float64(0.0):
+        d = wp.vec3d(d[0] / n, d[1] / n, d[2] / n)
+    return wp.vec3d(d[0] * length, d[1] * length, d[2] * length)
+
+
+@wp.func
+def vcg_dot(a: wp.vec3d, b: wp.vec3d) -> wp.float64:
+    # ``vcg::Point3``'s dot product, summed in component order.
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+@wp.func
+def vcg_acos(x: wp.float64) -> wp.float64:
+    # C's ``acos``: NaN outside ``[-1, 1]``, where Warp's clamps (and propagates NaN as NaN).
+    if x >= wp.float64(-1.0) and x <= wp.float64(1.0):
+        return wp.acos(x)
+    return wp.float64(wp.nan)
+
+
+@wp.func
+def vcg_half_angle(numerator: wp.float64, denominator: wp.float64) -> wp.float64:
+    # ``2 acos(std::min(1.0, sqrt(numerator / denominator)))``: ``std::min`` returns ``1`` for a
+    # NaN square root.
+    q = wp.sqrt(numerator / denominator)
+    if not (q < wp.float64(1.0)):
+        q = wp.float64(1.0)
+    return wp.float64(2.0) * wp.acos(q)
+
+
+@wp.func
+def vcg_corner_angle(
+    p: wp.vec3d, q: wp.vec3d, r: wp.vec3d, l_pq: wp.float64, l_pr: wp.float64
+) -> wp.float64:
+    # A face's interior angle at ``p`` as ``GeoDistance`` forms it, for ``alpha`` at the origin
+    # and ``beta`` at the partner: the edges from ``p`` normalized and rescaled to their lengths
+    # ``l_pq`` and ``l_pr`` (vcg's ``Distance``), then ``acos`` of their dot product over the
+    # lengths' product. Both are symmetric in ``q`` and ``r`` bit for bit, and ``beta``'s
+    # ``-w1_c`` is the rescaled edge from the partner exactly, so the angle depends on the corner
+    # alone and is formed once per face.
+    w_q = vcg_scaled_direction(q - p, l_pq)
+    w_r = vcg_scaled_direction(r - p, l_pr)
+    return vcg_acos(vcg_dot(w_q, w_r) / (l_pq * l_pr))
+
+
+@wp.func
+def vcg_unfolded_distance(
+    alpha: wp.float64,
+    beta: wp.float64,
+    ew_c: wp.float64,
+    ew_w1: wp.float64,
+    ec_w1: wp.float64,
+    d_partner: wp.float64,
+    d_origin: wp.float64,
+) -> wp.float64:
+    # ``vcg::tri::Geodesic::GeoDistance`` operation for operation, from the face's angles at the
+    # origin and the partner (``vcg_corner_angle``; edges as ``unfolded_distance`` names them), so
+    # that it rounds as the reference does: which of two near-equal offers lowers a vertex decides
+    # its label, and with it the unfolding downstream. ``unfolded_distance`` is the same line in
+    # cosines, cheaper and equal to rounding; it remains the ``float32`` filter's.
+    s = (d_origin + d_partner + ec_w1) / wp.float64(2.0)
+    a = s / ec_w1
+    b = a * s
+    alpha_ = vcg_half_angle(b - a * d_partner, d_origin)
+    if alpha + alpha_ > wp.float64(math.pi):
+        return d_origin + ew_c
+    beta_ = vcg_half_angle(b - a * d_origin, d_partner)
+    if beta + beta_ > wp.float64(math.pi):
+        return d_partner + ew_w1
+    theta = wp.float64(math.pi) - alpha - alpha_
+    delta = wp.cos(theta) * ew_c
+    h = wp.sin(theta) * ew_c
+    return wp.sqrt(h * h + (d_origin + delta) * (d_origin + delta))
+
+
+@wp.func
 def unfolding_offer(
     ew_c: wp.float64,
     ew_w1: wp.float64,
     inter: wp.float64,
     cos_alpha: wp.float64,
     cos_beta: wp.float64,
+    alpha: wp.float64,
+    beta: wp.float64,
     d_origin: wp.float64,
     d_partner: wp.float64,
     d_target: wp.float64,
@@ -852,7 +939,7 @@ def unfolding_offer(
         ew_c, ew_w1, inter, cos_alpha, cos_beta, d_partner, d_origin, d_target
     ):
         return wp.float64(wp.inf)
-    return unfolded_distance(ew_c, ew_w1, inter, cos_alpha, cos_beta, d_partner, d_origin)
+    return vcg_unfolded_distance(alpha, beta, ew_c, ew_w1, inter, d_partner, d_origin)
 
 
 @wp.func
@@ -865,28 +952,34 @@ def unfolding_corner_offer(
     da: wp.float64,
     db: wp.float64,
     dc: wp.float64,
+    alpha: wp.float64,
+    beta: wp.float64,
     sa: wp.int32,
     sb: wp.int32,
 ) -> wp.float64:
     # The offer corner ``c`` of one face takes from its corner ``a`` as the origin, with ``b`` as
     # the partner (``+inf`` while ``a`` is unreached). ``l_ca``, ``l_cb`` and ``l_ab`` are the
-    # face's edges, ``cos_a`` and ``cos_b`` its interior angle cosines.
+    # face's edges, ``cos_a`` and ``cos_b`` its interior angle cosines, ``alpha`` and ``beta`` the
+    # same angles as the reference forms them (``vcg_corner_angle``).
     if da < wp.inf:
-        return unfolding_offer(l_ca, l_cb, l_ab, cos_a, cos_b, da, db, dc, sa == sb)
+        return unfolding_offer(l_ca, l_cb, l_ab, cos_a, cos_b, alpha, beta, da, db, dc, sa == sb)
     return wp.float64(wp.inf)
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def unfolding_face_geometry(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     out_lengths: wp.array[wp.vec3d],
     out_cosines: wp.array[wp.vec3d],
+    out_angles: wp.array[wp.vec3d],
 ) -> None:
     # Each face's ``float64`` geometry, formed once before the rounds since the positions never
     # move: ``out_lengths[f][k]``, the edge opposite corner ``k``, and ``out_cosines[f][k]``, the
-    # interior angle cosine at corner ``k`` (NaN beside a zero-length edge), which every offer
-    # through the face reads.
+    # interior angle cosine at corner ``k`` (NaN beside a zero-length edge), and
+    # ``out_angles[f][k]`` that angle as the reference forms it, which every offer through the
+    # face reads. The lengths are vcg's ``Distance`` bit for bit (no contraction):
+    # the offers' tests compare them with distances to a relative tolerance.
     f = wp.int32(wp.tid())
     p0 = wp.vec3d(vertices[faces[3 * f]])
     p1 = wp.vec3d(vertices[faces[3 * f + 1]])
@@ -894,12 +987,17 @@ def unfolding_face_geometry(
     e0 = p2 - p1
     e1 = p0 - p2
     e2 = p1 - p0
-    lengths = wp.vec3d(wp.length(e0), wp.length(e1), wp.length(e2))
+    lengths = wp.vec3d(vcg_norm(e0), vcg_norm(e1), vcg_norm(e2))
     out_lengths[f] = lengths
     out_cosines[f] = wp.vec3d(
         -wp.dot(e2, e1) / (lengths[2] * lengths[1]),
         -wp.dot(e0, e2) / (lengths[0] * lengths[2]),
         -wp.dot(e1, e0) / (lengths[1] * lengths[0]),
+    )
+    out_angles[f] = wp.vec3d(
+        vcg_corner_angle(p0, p1, p2, lengths[2], lengths[1]),
+        vcg_corner_angle(p1, p2, p0, lengths[0], lengths[2]),
+        vcg_corner_angle(p2, p0, p1, lengths[1], lengths[0]),
     )
 
 
@@ -921,8 +1019,8 @@ def unfolding_face_geometry(
 # distances, which the serial queue walks one pop at a time (half a million pops of one vertex on
 # ``happy_buddha``); it pops whenever no ordinary pending vertex in its 2-ring precedes it, reading
 # the step's starting distances, so a cycle settles in steps instead of pops, at the limit the
-# queue creeps to. On the scan meshes and from one or three sources the field matches MeshLab's to
-# a few 1e-15 of the range in a serial model of this schedule.
+# queue creeps to. On dragon, happy_buddha and bunny, from one source or three, no vertex is more
+# than 1e-7 of the range off MeshLab (the ``float32`` rounding of the result).
 #
 # Each step is two launches over double-buffered lists (parity ``p``), a block of lanes per listed
 # vertex: ``ordered_pop_pass`` selects and pops ``front[p]``, lowering into ``out_relaxed`` and
@@ -930,10 +1028,21 @@ def unfolding_face_geometry(
 # lowered distances back into ``labels`` and lists the vertices still pending into
 # ``front[1 - p]``. Several sources add ``ordered_relabel_pass`` between the two.
 #
-# The step kernels compile without floating-point contraction (``fuse_fp``), as the reference's
-# ``double`` arithmetic runs: where two sources' offers to a vertex tie to the last bits, the
-# rounding decides which labels it, and the label decides the unfolding downstream (a fused build
-# put two ``torus_irregular`` vertices 2.5e-4 of the range off MeshLab from three sources).
+# The offers round as the reference's do: the step kernels and the face geometry compile without
+# floating-point contraction (``fuse_fp``), the face lengths are vcg's ``Distance`` and the
+# unfolded line its ``GeoDistance`` operation for operation (``vcg_unfolded_distance``, its angles
+# formed once per face). Where two sources' offers to a vertex tie to the last bits, the rounding
+# decides which labels it, and the label decides the unfolding downstream: with contraction two
+# ``torus_irregular`` vertices were 2.5e-4 of the range off MeshLab from three sources, and
+# without it but with the line in cosines one dragon vertex 1.3e-5.
+#
+# Declined layouts (CUDA): the step loop as one launch of resident blocks with a grid barrier
+# between phases, 1.12-1.44x on dragon and 0.89-0.97x on meshes of 500 to 36 k vertices at the
+# best of 2-8 blocks per SM and 16 or 32 lanes, with no setting best on all of them: a size gate
+# for a few per cent, and a spin barrier that hangs wherever the blocks are not all resident
+# (``compute-sanitizer``, a debugger); one block for a small mesh, 46x on bunny (one SM's
+# ``float64`` units then run every pop); 16 or 64 lanes a pop, or 256 to 4 096 blocks, within 3 %
+# on bunny and dragon.
 
 # Pops after which a vertex is taken as cycling (``ordered_pop_selected``).
 UNFOLDING_RELAX_POPS = 8
@@ -973,6 +1082,19 @@ def seed_ordered_front(
         out_next_source_of[v] = v
     if wp.atomic_exch(out_listed, v, -2) != -2:
         out_front[append_slot(out_counts, ORDERED_FRONT)] = v
+
+
+@wp.kernel
+def ordered_corner_records(
+    corner_order: wp.array[wp.int32], faces: wp.array[wp.int32], out_records: wp.array[wp.vec4i]
+) -> None:
+    # For each corner in sorted order, ``(face, its index in the face, the next corner's vertex,
+    # the one after)``: everything a pop reads to reach a face's corners, in one load.
+    e = wp.int32(wp.tid())
+    c = corner_order[e]
+    f = c // 3
+    z = c - 3 * f
+    out_records[e] = wp.vec4i(f, z, faces[3 * f + (z + 1) % 3], faces[3 * f + (z + 2) % 3])
 
 
 @wp.func
@@ -1065,23 +1187,16 @@ def list_touched(
 
 @wp.func
 def ordered_offer_corners(
-    v: wp.int32,
-    j: wp.int32,
-    faces: wp.array[wp.int32],
-    corner_order: wp.array[wp.int32],
-    corner_offsets: wp.array[wp.int32],
+    v: wp.int32, j: wp.int32, corner_records: wp.array[wp.vec4i], corner_offsets: wp.array[wp.int32]
 ) -> tuple[wp.int32, wp.int32, wp.int32, wp.int32, wp.int32]:
     # The ``j``-th offer a pop of ``v`` makes, in vcg's visit order: through ``v``'s corners newest
     # face first, each to the corner after ``v`` with the one after that as the partner, then the
-    # other way round. Returns the face, ``v``'s corner in it, the target's and the partner's
-    # corners, and the target and partner vertices.
-    c = corner_order[corner_offsets[v + 1] - 1 - j // 2]
-    f = c // 3
-    z = c - 3 * f
+    # other way round. Returns the face, ``v``'s corner in it, the target's corner, and the target
+    # and partner vertices, all read off one corner record (``ordered_corner_records``).
+    record = corner_records[corner_offsets[v + 1] - 1 - j // 2]
+    z = record[1]
     k = j % 2
-    target = (z + 1 + k) % 3
-    partner = (z + 2 - k) % 3
-    return f, z, target, faces[3 * f + target], faces[3 * f + partner]
+    return record[0], z, (z + 1 + k) % 3, record[2 + k], record[3 - k]
 
 
 @wp.func
@@ -1091,6 +1206,7 @@ def ordered_offer(
     target: wp.int32,
     lengths: wp.array[wp.vec3d],
     cosines: wp.array[wp.vec3d],
+    angles: wp.array[wp.vec3d],
     d_v: wp.float64,
     s_v: wp.int32,
     d_partner: wp.float64,
@@ -1102,6 +1218,7 @@ def ordered_offer(
     partner = 3 - z - target
     face_lengths = lengths[f]
     face_cosines = cosines[f]
+    face_angles = angles[f]
     return unfolding_corner_offer(
         face_lengths[partner],
         face_lengths[z],
@@ -1111,6 +1228,8 @@ def ordered_offer(
         d_v,
         d_partner,
         d_target,
+        face_angles[z],
+        face_angles[partner],
         s_v,
         s_partner,
     )
@@ -1122,10 +1241,11 @@ def ordered_pop_block(
     lane: wp.int32,
     blocks: wp.int32,
     parity: wp.int32,
-    faces: wp.array[wp.int32],
+    round_index: wp.int32,
     lengths: wp.array[wp.vec3d],
     cosines: wp.array[wp.vec3d],
-    corner_order: wp.array[wp.int32],
+    angles: wp.array[wp.vec3d],
+    corner_records: wp.array[wp.vec4i],
     corner_offsets: wp.array[wp.int32],
     neighbors: wp.array[wp.int32],
     neighbor_offsets: wp.array[wp.int32],
@@ -1135,7 +1255,6 @@ def ordered_pop_block(
     popped: wp.array[wp.float64],
     pop_count: wp.array[wp.int32],
     front: wp.array[wp.int32],
-    state: wp.array[wp.int32],
     out_relaxed: wp.array[wp.float64],
     out_next_source_of: wp.array[wp.int32],
     out_popped_step: wp.array[wp.int32],
@@ -1161,7 +1280,7 @@ def ordered_pop_block(
     # ``ordered_relabel_pass``.
     lanes = wp.block_dim()
     n_vertices = labels.shape[0]
-    stamp = 2 * state[LOOP_ROUND] + parity
+    stamp = 2 * round_index + parity
     window_bound = out_window[parity] + window_scale[0]
     if block == 0 and lane == 0:
         out_counts[ORDERED_TOUCHED + 1 - parity] = 0
@@ -1192,9 +1311,7 @@ def ordered_pop_block(
             pw = wp.int32(-1)
             pw1 = wp.int32(0)
             if active:
-                f, z, target, pw, pw1 = ordered_offer_corners(
-                    v, j, faces, corner_order, corner_offsets
-                )
+                f, z, target, pw, pw1 = ordered_offer_corners(v, j, corner_records, corner_offsets)
             offer = wp.float64(wp.inf)
             if cycling:
                 if active:
@@ -1204,6 +1321,7 @@ def ordered_pop_block(
                         target,
                         lengths,
                         cosines,
+                        angles,
                         d_v,
                         s_v,
                         labels[pw1],
@@ -1226,7 +1344,17 @@ def ordered_pop_block(
             while True:
                 if active:
                     offer = ordered_offer(
-                        f, z, target, lengths, cosines, d_v, s_v, d_partner, s_partner, d_target
+                        f,
+                        z,
+                        target,
+                        lengths,
+                        cosines,
+                        angles,
+                        d_v,
+                        s_v,
+                        d_partner,
+                        s_partner,
+                        d_target,
                     )
                 if lanes == 1:
                     break
@@ -1258,10 +1386,10 @@ def ordered_pop_block(
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def ordered_pop_pass(
     parity: wp.int32,
-    faces: wp.array[wp.int32],
     lengths: wp.array[wp.vec3d],
     cosines: wp.array[wp.vec3d],
-    corner_order: wp.array[wp.int32],
+    angles: wp.array[wp.vec3d],
+    corner_records: wp.array[wp.vec4i],
     corner_offsets: wp.array[wp.int32],
     neighbors: wp.array[wp.int32],
     neighbor_offsets: wp.array[wp.int32],
@@ -1290,10 +1418,11 @@ def ordered_pop_pass(
         lane,
         blocks,
         parity,
-        faces,
+        state[LOOP_ROUND],
         lengths,
         cosines,
-        corner_order,
+        angles,
+        corner_records,
         corner_offsets,
         neighbors,
         neighbor_offsets,
@@ -1303,7 +1432,6 @@ def ordered_pop_pass(
         popped,
         pop_count,
         front,
-        state,
         out_relaxed,
         out_next_source_of,
         out_popped_step,
@@ -1322,10 +1450,11 @@ def ordered_relabel_block(
     lane: wp.int32,
     blocks: wp.int32,
     parity: wp.int32,
-    faces: wp.array[wp.int32],
+    round_index: wp.int32,
     lengths: wp.array[wp.vec3d],
     cosines: wp.array[wp.vec3d],
-    corner_order: wp.array[wp.int32],
+    angles: wp.array[wp.vec3d],
+    corner_records: wp.array[wp.vec4i],
     corner_offsets: wp.array[wp.int32],
     labels: wp.array[wp.float64],
     source_of: wp.array[wp.int32],
@@ -1334,14 +1463,13 @@ def ordered_relabel_block(
     front: wp.array[wp.int32],
     relaxed: wp.array[wp.float64],
     counts: wp.array[wp.int32],
-    state: wp.array[wp.int32],
     out_bids: wp.array[wp.int32],
 ) -> None:
     # With several sources, after ``ordered_pop_pass``: each cycling pop recomputes its offers from
     # the same starting state and bids its label where one set its target's new distance (the
     # smallest bid wins a tie). Block ``block``'s share (``ordered_relabel_pass``).
     n_vertices = labels.shape[0]
-    stamp = 2 * state[LOOP_ROUND] + parity
+    stamp = 2 * round_index + parity
     for item in range(block, counts[ORDERED_FRONT + parity], blocks):
         v = front[parity * n_vertices + item]
         if popped_step[v] != stamp or pop_count[v] < UNFOLDING_RELAX_POPS:
@@ -1350,13 +1478,14 @@ def ordered_relabel_block(
         s_v = ordered_source(source_of, v)
         n_offers = 2 * (corner_offsets[v + 1] - corner_offsets[v])
         for j in range(lane, n_offers, wp.block_dim()):
-            f, z, target, pw, pw1 = ordered_offer_corners(v, j, faces, corner_order, corner_offsets)
+            f, z, target, pw, pw1 = ordered_offer_corners(v, j, corner_records, corner_offsets)
             offer = ordered_offer(
                 f,
                 z,
                 target,
                 lengths,
                 cosines,
+                angles,
                 d_v,
                 s_v,
                 labels[pw1],
@@ -1370,10 +1499,10 @@ def ordered_relabel_block(
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def ordered_relabel_pass(
     parity: wp.int32,
-    faces: wp.array[wp.int32],
     lengths: wp.array[wp.vec3d],
     cosines: wp.array[wp.vec3d],
-    corner_order: wp.array[wp.int32],
+    angles: wp.array[wp.vec3d],
+    corner_records: wp.array[wp.vec4i],
     corner_offsets: wp.array[wp.int32],
     labels: wp.array[wp.float64],
     source_of: wp.array[wp.int32],
@@ -1393,10 +1522,11 @@ def ordered_relabel_pass(
         lane,
         blocks,
         parity,
-        faces,
+        state[LOOP_ROUND],
         lengths,
         cosines,
-        corner_order,
+        angles,
+        corner_records,
         corner_offsets,
         labels,
         source_of,
@@ -1405,7 +1535,6 @@ def ordered_relabel_pass(
         front,
         relaxed,
         counts,
-        state,
         out_bids,
     )
 
@@ -1416,11 +1545,11 @@ def ordered_settle_block(
     lane: wp.int32,
     blocks: wp.int32,
     parity: wp.int32,
+    round_index: wp.int32,
     touched: wp.array[wp.int32],
     relaxed: wp.array[wp.float64],
     next_source_of: wp.array[wp.int32],
     popped_step: wp.array[wp.int32],
-    state: wp.array[wp.int32],
     out_labels: wp.array[wp.float64],
     out_source_of: wp.array[wp.int32],
     out_bids: wp.array[wp.int32],
@@ -1438,7 +1567,7 @@ def ordered_settle_block(
     # ``block``'s share (``ordered_settle_pass``).
     lanes = wp.block_dim()
     n_vertices = out_labels.shape[0]
-    stamp = 2 * state[LOOP_ROUND] + parity
+    stamp = 2 * round_index + parity
     if block == 0 and lane == 0:
         out_counts[ORDERED_FRONT + parity] = 0
         out_window[parity] = wp.float64(wp.inf)
@@ -1485,11 +1614,11 @@ def ordered_settle_pass(
         lane,
         blocks,
         parity,
+        state[LOOP_ROUND],
         touched,
         relaxed,
         next_source_of,
         popped_step,
-        state,
         out_labels,
         out_source_of,
         out_bids,
@@ -1504,10 +1633,10 @@ def ordered_settle_pass(
 
 @wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
 def ordered_front_serial(
-    faces: wp.array[wp.int32],
     lengths: wp.array[wp.vec3d],
     cosines: wp.array[wp.vec3d],
-    corner_order: wp.array[wp.int32],
+    angles: wp.array[wp.vec3d],
+    corner_records: wp.array[wp.vec4i],
     corner_offsets: wp.array[wp.int32],
     neighbors: wp.array[wp.int32],
     neighbor_offsets: wp.array[wp.int32],
@@ -1542,10 +1671,11 @@ def ordered_front_serial(
                 lane,
                 1,
                 parity,
-                faces,
+                state[LOOP_ROUND],
                 lengths,
                 cosines,
-                corner_order,
+                angles,
+                corner_records,
                 corner_offsets,
                 neighbors,
                 neighbor_offsets,
@@ -1555,7 +1685,6 @@ def ordered_front_serial(
                 popped,
                 pop_count,
                 front,
-                state,
                 relaxed,
                 next_source_of,
                 popped_step,
@@ -1572,10 +1701,11 @@ def ordered_front_serial(
                     lane,
                     1,
                     parity,
-                    faces,
+                    state[LOOP_ROUND],
                     lengths,
                     cosines,
-                    corner_order,
+                    angles,
+                    corner_records,
                     corner_offsets,
                     labels,
                     source_of,
@@ -1584,7 +1714,6 @@ def ordered_front_serial(
                     front,
                     relaxed,
                     counts,
-                    state,
                     bids,
                 )
             ordered_settle_block(
@@ -1592,11 +1721,11 @@ def ordered_front_serial(
                 lane,
                 1,
                 parity,
+                state[LOOP_ROUND],
                 touched,
                 relaxed,
                 next_source_of,
                 popped_step,
-                state,
                 labels,
                 source_of,
                 bids,

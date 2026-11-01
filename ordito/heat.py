@@ -741,17 +741,26 @@ def _unfolding_front(
         return labels
     lengths = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
     cosines = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
+    angles = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
     _launch.launch(
         kernel_heat.unfolding_face_geometry,
         dim=n_faces,
         inputs=[vertices, faces],
-        outputs=[lengths, cosines],
+        outputs=[lengths, cosines, angles],
         device=device,
     )
     # Each vertex's corners in ascending order (one stable sort of the face buffer), which the
     # pops walk backwards: vcg's vertex-face lists hold a vertex's faces newest first.
     _, corner_order = od.array.sort_and_argsort(
         faces, end_bit=max(1, (n_vertices - 1).bit_length())
+    )
+    corner_records = _launch.empty(3 * n_faces, dtype=wp.vec4i, device=device)
+    _launch.launch(
+        kernel_heat.ordered_corner_records,
+        dim=3 * n_faces,
+        inputs=[corner_order, faces],
+        outputs=[corner_records],
+        device=device,
     )
     corner_offsets = _launch.zeros(n_vertices + 1, dtype=wp.int32, device=device)
     corner_counts = _launch.view(corner_offsets, 1, n_vertices + 1)
@@ -793,10 +802,10 @@ def _unfolding_front(
             kernel_heat.ordered_front_serial,
             dim=1,
             inputs=[
-                faces,
                 lengths,
                 cosines,
-                corner_order,
+                angles,
+                corner_records,
                 corner_offsets,
                 neighbors,
                 neighbor_offsets,
@@ -836,10 +845,10 @@ def _unfolding_front(
                 dim=blocks,
                 inputs=[
                     parity,
-                    faces,
                     lengths,
                     cosines,
-                    corner_order,
+                    angles,
+                    corner_records,
                     corner_offsets,
                     neighbors,
                     neighbor_offsets,
@@ -872,10 +881,10 @@ def _unfolding_front(
                     dim=blocks,
                     inputs=[
                         parity,
-                        faces,
                         lengths,
                         cosines,
-                        corner_order,
+                        angles,
+                        corner_records,
                         corner_offsets,
                         labels,
                         source_of,

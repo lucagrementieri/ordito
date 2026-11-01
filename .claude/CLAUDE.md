@@ -942,10 +942,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   off on a near-tangent lattice edge; only igl's `float64` lattice reproduces it. Proposed: an
   opt-in `float64` path through the whole extraction (`bounds`, node positions, distances,
   `marching_cubes` interpolation), priced first (`float64` runs at 1/64 rate, §13.2).
-- **The MeshLab geodesic front's speed.** It now pops in vcg's order and matches MeshLab to
-  rounding (`reference/component-status.md`, heat), but a step is ~26 µs of latency: dragon
-  196 ms against MeshLib's front at 29 ms, and bunny from one source 18.0 ms where the old rounds
-  took 6.8. Only fewer steps or a shorter pop would pay; the declined schedules are recorded there.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `heat_geodesic` against potpourri3d's front; `geodesic_path` with an edge-flip shortening;
   `resample_uniform` against pymeshlab's resampler (vcg's grid and sign rule) and `offset_mesh`

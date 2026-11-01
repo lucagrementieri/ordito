@@ -2113,8 +2113,8 @@
  },
  "benchmarks/test_heat.py::test_fast_marching_distance_meshlab[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 12,
-   "alloc": 27,
+   "launch": 13,
+   "alloc": 29,
    "h2h": 2,
    "readback": 3,
    "scan": 3,
