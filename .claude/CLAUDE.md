@@ -962,16 +962,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
 - **`quadric_decimate` worst cases:** rim vertices placed by extrapolating boundary planes
-  (`dragon` max 5x MeshLib's at 0.5). The rim needles at 0.01 are what the opt-in
-  `min_face_quality=0.1` lifts (`dragon` 0.01 1st-percentile quality 0.0086 -> 0.064); the default
-  stays off by the owner's decision.
+  (`dragon` max 5x MeshLib's at 0.5).
 - **`smooth_region` is not flat in `n`** with the squared V-cycle: 1 885 iterations, 43 s on `lucy`.
 - **Unoriented `triangulate_point_cloud`** costs 1.8x the old mesh-level winding (still 3.5x faster
   than MeshLib's): the flood, 2 832 rounds of six launches on dragon, latency-bound at about
   3.4 us a launch. Weighing is already incremental; list-driven passes (0.99-1.04x) and four fused
   launches a round (1.10-1.33x) were tried and reverted. Only fewer rounds would pay
   (`reference/component-status.md`).
-- **Not built:** the remesh split loop's terminal
-  round (three ~25 us readbacks a call, about 1 % of a crown call) is the last unbuilt step of
-  `plans/remesh-pass-structure.md`, whose collapse and flip steps landed on 2026-10-27; not
-  worth a fixed-width split stage on its own.
