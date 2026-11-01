@@ -1619,13 +1619,13 @@ class _OctreeBricks(NamedTuple):
     """Stored bricks of one kind (``kernels/algorithms/poisson_octree``'s storage note)."""
 
     bricks: wp.array[wp.int32]
-    """The per-depth brick tables after their header."""
+    """The header, then every depth's brick table as one rank-packed bitset."""
     slots: wp.array[wp.int32]
-    """``(n_bricks,)`` each stored brick's entry of ``bricks``."""
+    """``(n_bricks,)`` each stored brick's table position."""
     firsts: list[int]
     """Each depth's first entry in the brick-packed values, then their count."""
     offsets: list[int]
-    """Each depth's brick table's offset in ``bricks``, then their end."""
+    """Each depth's first table position, then their end."""
 
 
 def _octree_cells(
@@ -1641,10 +1641,9 @@ def _octree_cells(
     device = sample_keys.device
     shift = kernel_octree.BRICK_SHIFT
     cell_axis = [(2**d + 2 + 2**shift - 1) >> shift for d in range(depth + 1)]
-    cell_head = 2 * (depth + 2)
-    offsets = np.cumsum([cell_head] + [n**3 for n in cell_axis]).astype(np.int32)
-    cells = _launch.zeros(int(offsets[-1]), dtype=wp.int32, device=device)
-    _launch.copy(cells, _launch.array(offsets, wp.int32, device=device), count=depth + 2)
+    head = int(kernel_octree.BRICK_HEAD)
+    offsets = np.cumsum([head] + [n**3 for n in cell_axis]).tolist()
+    cells = _brick_bitset(offsets, device)
     _launch.launch(
         kernel_octree.octree_sample_cells,
         dim=n_samples,
@@ -1658,8 +1657,25 @@ def _octree_cells(
             inputs=[d, depth, full_depth, cells],
             device=device,
         )
-    firsts = _launch.view(cells, depth + 2, cell_head)
-    return _number_bricks(cells, offsets.tolist(), depth, firsts)
+    firsts = _launch.view(cells, depth + 2, 2 * (depth + 2))
+    return _number_bricks(cells, offsets, depth, firsts)
+
+
+def _brick_bitset(offsets: list[int], device: wp.DeviceLike) -> wp.array[wp.int32]:
+    """
+    Allocate a brick kind's zeroed bitset over the table positions ``offsets`` lays out.
+
+    ``offsets`` is each depth's first table position, then their end, and the header holds them;
+    the first is ``kernels/algorithms/poisson_octree.BRICK_HEAD``, the header's length. The bits
+    come in pairs of words (``kernels/algorithms/poisson_octree``'s storage note), one more pair
+    past the end so the last depth's end has a rank to read.
+    """
+    head = offsets[0]
+    n_pairs = ((offsets[-1] - head) >> 5) + 1
+    bricks = _launch.zeros(head + 2 * n_pairs, dtype=wp.int32, device=device)
+    header = _launch.array(np.asarray(offsets, np.int32), wp.int32, device=device)
+    _launch.copy(bricks, header, count=len(offsets))
+    return bricks
 
 
 def _octree_nodes(
@@ -1678,9 +1694,8 @@ def _octree_nodes(
     """
     device = sample_keys.device
     node_axis = [(2**d >> kernel_octree.BRICK_SHIFT) + 1 for d in range(depth + 1)]
-    offsets = np.cumsum([2 * (depth + 2)] + [n**3 for n in node_axis]).astype(np.int32)
-    nodes = _launch.zeros(int(offsets[-1]), dtype=wp.int32, device=device)
-    _launch.copy(nodes, _launch.array(offsets, wp.int32, device=device), count=depth + 2)
+    offsets = np.cumsum([int(kernel_octree.BRICK_HEAD)] + [n**3 for n in node_axis]).tolist()
+    nodes = _brick_bitset(offsets, device)
     _launch.launch(
         kernel_octree.octree_sample_node_bricks,
         dim=n_samples,
@@ -1696,7 +1711,7 @@ def _octree_nodes(
             device=device,
         )
     firsts = _launch.view(nodes, depth + 2, 2 * (depth + 2))
-    return _number_bricks(nodes, offsets.tolist(), depth, firsts)
+    return _number_bricks(nodes, offsets, depth, firsts)
 
 
 def _octree_constraints(
@@ -1801,10 +1816,7 @@ def _octree_data_cells(cells: _OctreeBricks, nodes: _OctreeBricks, depth: int) -
     shift = kernel_octree.BRICK_SHIFT
     cell_axis = [(2**d + 2 + 2**shift - 1) >> shift for d in range(depth)]
     offsets = [*cells.offsets[: depth + 1], cells.offsets[depth]]
-    data = _launch.zeros(offsets[-1], dtype=wp.int32, device=device)
-    _launch.copy(
-        data, _launch.array(np.asarray(offsets, np.int32), wp.int32, device=device), count=depth + 2
-    )
+    data = _brick_bitset(offsets, device)
     for d in reversed(range(depth)):
         _launch.launch(
             kernel_octree.octree_carried_cells,
@@ -1819,31 +1831,38 @@ def _octree_data_cells(cells: _OctreeBricks, nodes: _OctreeBricks, depth: int) -
 def _number_bricks(
     bricks: wp.array[wp.int32], offsets: list[int], depth: int, firsts: wp.array[wp.int32]
 ) -> _OctreeBricks:
-    """Give the bricks marked in ``bricks``' tables (at ``offsets``) numbers, depth by depth."""
+    """Give the bricks marked in ``bricks``' bitset (laid out by ``offsets``) numbers."""
     device = bricks.device
-    head = offsets[0]
-    tables = _launch.view(bricks, head, bricks.size)
-    ranks = _launch.empty(tables.size, dtype=wp.int32, device=device)
-    _launch.map(kernel_octree.brick_marked, tables, out=ranks)
-    _launch.array_scan(ranks, ranks, inclusive=True)
+    n_pairs = (bricks.size - offsets[0]) // 2
+    ranks = _launch.empty(n_pairs, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_octree.octree_brick_word_counts,
+        dim=n_pairs,
+        inputs=[bricks],
+        outputs=[ranks],
+        device=device,
+    )
+    _launch.array_scan(ranks, ranks, inclusive=False)
+    _launch.launch(
+        kernel_octree.octree_brick_word_ranks, dim=n_pairs, inputs=[bricks, ranks], device=device
+    )
+    del ranks
     _launch.launch(
         kernel_octree.octree_brick_firsts,
         dim=depth + 1,
-        inputs=[bricks, ranks, head],
+        inputs=[bricks],
         outputs=[firsts],
         device=device,
     )
     # One read sizes every depth's stored entries.
     starts = [int(n) for n in read_values(firsts, 0, depth + 2)]
-    _launch.map(kernel_octree.brick_number, tables, ranks, out=tables)
-    del ranks
     slots = _launch.empty(
         max(starts[-1] // kernel_octree.BRICK_CELLS, 1), dtype=wp.int32, device=device
     )
     _launch.launch(
         kernel_octree.octree_brick_slots,
-        dim=tables.size,
-        inputs=[bricks, head],
+        dim=n_pairs,
+        inputs=[bricks],
         outputs=[slots],
         device=device,
     )

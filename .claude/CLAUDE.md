@@ -937,23 +937,14 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **`screened_poisson` memory and latency up to depth 10, every method.** Depth 10 is the
-  supported ceiling; deeper trees are not wanted. `octree`: the peak is shared by the cascade
-  and the extraction (`dragon` 124.5 MiB at depth 9, 436 MiB at depth 10). The per-depth brick
-  index tables are dense (cells, nodes, carried data and their numbering, 68 MiB each at depth
-  10) and grow 8x a depth whatever the surface: `bunny`, whose tree stops near depth 8, peaks at
-  315 MiB at depth 10. A sparse index for the finest depths is the lever. The finest depth's
-  stored nodes are 27 % active (`4**3` bricks, nodes within three of a flagged cell).
-  `adaptive` peaks at 1.7-2.1 GB at depth 10 in the finest band's FAS re-solve, and its time is
-  the band CG's bandwidth-bound update; `dense` holds about 10 grid fields a level (5.2 GB at
-  depth 9). Buffer sharing in both is done (`reference/component-status.md`).
 - **`screened_poisson(method="octree")` sweep latency.** A Gauss-Seidel wave is latency-bound at
   8-9 us of device time (one thread's row is a chain of dependent brick-table loads), and a depth
-  takes `4 (2**d + 15)` of them in open3d's order: 74 of `dragon`'s 98 ms at depth 10. Unpriced:
-  replaying the waves as a graph (declined 2026-10-26 when each wave cost 14 us over the dense
-  slice) and a per-brick neighbour table shortening the row's chain. Taking one dependent read
-  off the chain (the screening values loaded before the weight test) bought 0.99x wave time, so
-  a link of the chain is worth ~1 %: the launch count, not the row, sets the cost.
+  takes `4 (2**d + 15)` of them in open3d's order: about 72 of `dragon`'s 95 ms at depth 10.
+  Unpriced: replaying the waves as a graph (declined 2026-10-26 when each wave cost 14 us over
+  the dense slice). A row already looks its eight neighbour bricks up once
+  (`node_window_bricks`), and taking one more dependent read off the chain (the screening values
+  loaded before the weight test) bought 0.99x wave time, so a link of the chain is worth ~1 %:
+  the launch count, not the row, sets the cost.
 - **`signed_distance_level_set` against `igl.offset_surface` at `iso = 0.1`.** One vertex 4.8e-5
   off on a near-tangent lattice edge; only igl's `float64` lattice reproduces it. Proposed: an
   opt-in `float64` path through the whole extraction (`bounds`, node positions, distances,

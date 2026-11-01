@@ -687,14 +687,12 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
         {"counts", "position_sums"}
     ),
     ("algorithms.poisson_octree", "octree_upsample_coarse_data"): frozenset({"normals"}),
-    # The stored cell and node bricks, marked finest first (a depth keeps what its next depth
-    # needs), each pass adding its bit to the marks; and a depth's right-hand sides gathering the
-    # next depth's, in the one buffer every depth's stored nodes share. (``octree_prolong`` writes
-    # a depth's field from the one before it in that buffer through ``octree_prolong_at``, which
-    # check 13 does not follow.)
-    ("algorithms.poisson_octree", "octree_flag_cells"): frozenset({"marks"}),
-    ("algorithms.poisson_octree", "octree_carried_cells"): frozenset({"marks"}),
-    ("algorithms.poisson_octree", "octree_node_bricks"): frozenset({"marks"}),
+    # The stored bricks' bitset, its rank words filled in once every depth is marked (the marking
+    # passes set their bits through ``mark_brick``, which check 13 does not follow); and a depth's
+    # right-hand sides gathering the next depth's, in the one buffer every depth's stored nodes
+    # share. (``octree_prolong`` writes a depth's field from the one before it in that buffer
+    # through ``octree_prolong_at``, likewise unfollowed.)
+    ("algorithms.poisson_octree", "octree_brick_word_ranks"): frozenset({"bricks"}),
     ("algorithms.poisson_octree", "octree_restrict_add"): frozenset({"b"}),
     # The extraction's per-depth tables, each depth's launch reading the finer depth's entries
     # (corner sources) or adding to one buffer every depth shares (pairs); counts written by a
