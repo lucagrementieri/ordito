@@ -935,10 +935,6 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **`screened_poisson(method="octree")` against open3d.** 97-99 % of triangles identical; the
-  rest are open3d's own `float32` rounding ties. On an open cloud a few far-field vertices where
-  the surface brushes the cube's walls differ by up to 0.07 cell: open3d's wall evaluation is
-  untraced.
 - **`screened_poisson(method="octree")` memory.** At depth 9 the constraints, cascade and
   extraction phases peak within 8 MiB of each other (125-133 MiB), so no single table dominates.
   Depth 10 would need `int64` dense edge slots for the vertex order.

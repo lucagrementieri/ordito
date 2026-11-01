@@ -2149,11 +2149,13 @@ def _octree_segments(
             inputs=[
                 d,
                 depth,
+                full_depth,
                 iso32,
                 wp.float32(margin),
                 fields,
                 node_bricks,
                 sources,
+                *activity,
                 nodes.slots,
                 *vertex_tables,
             ],

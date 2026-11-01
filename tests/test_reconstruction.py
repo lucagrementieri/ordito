@@ -1369,14 +1369,15 @@ def _octree_and_open3d(
     "benchmarks for dominating the suite's wall clock (see test_poisson_matches_open3d_metric); "
     "the octree backend's comparison lives here, at a size a correctness test can afford.",
 )
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "torus_irregular"])
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "torus_irregular", "saddle_graded"])
 def test_poisson_octree_matches_open3d(
     request: pytest.FixtureRequest, device: str, mesh_name: str
 ) -> None:
     """
     Class B: ``method="octree"``'s mesh is open3d's (one thread) after a vertex map, up to ties.
 
-    The backend reproduces open3d's system, schedule and extraction, so on a closed surface:
+    The backend reproduces open3d's system, schedule and extraction, so on a closed surface and on
+    an open one whose surface runs out to the cube's walls (``saddle_graded``):
 
     - **Vertices** match one to one by nearest neighbour (a bijection) and agree to ``1e-5`` of the
       cloud's extent, except where ordito keeps a vertex its edge margin (a thousandth of a coarse
@@ -1394,14 +1395,18 @@ def test_poisson_octree_matches_open3d(
     thread order and 5-6 % of its triangles change from run to run.
 
     Measured at depth 6 (``full_depth`` 5: the finest depth is sparse and coarse leaves stitch to
-    finer ones), CPU and CUDA: counts equal, bijection, 9 / 10 margin-clamped vertices past
-    ``1e-5`` (the rest at most ``1e-5``), 98.7-99.0 % of the triangles identical, the rest
-    retriangulating identical polygons with an area gap of ``3.6e-7`` to ``5.9e-7``. Mutation
+    finer ones), CPU and CUDA: counts equal, bijection, 9 / 10 / 1 margin-clamped vertices past
+    ``1e-5`` (the rest at most ``1e-5``), 98.3-99.0 % of the triangles identical, the rest
+    retriangulating identical polygons with an area gap of ``2.4e-8`` to ``1.9e-6``. Mutation
     probes, each failing an assert: the quad split's comparison reversed (53-56 % identical, area
-    gap ``2.2e-5`` to ``2.6e-5``), loops started at the first segment instead of the last (62-65 %,
-    ``0.6e-5`` to ``1.0e-5``), every edge root scaled by 1.001 (2 188-2 417 vertices past
-    ``1e-5``), the corner values not copied up from finer leaves (counts off). Keeping the last
-    best split instead of the first, a tie rule, is invisible (98.2 %), as it should be.
+    gap ``2.2e-5`` to ``2.6e-5``; 38 % on the open cloud), loops started at the first segment
+    instead of the last (62-65 %, ``0.6e-5`` to ``1.0e-5``), every edge root scaled by 1.001
+    (2 188-2 417 vertices past ``1e-5``), the corner values not copied up from finer leaves
+    (counts off), the slope at an upper wall halved where open3d's interior stencil reads the
+    node beyond the wall as zero (``corner_interior``; 14 open-cloud vertices up to 0.70 of a
+    finest cell off, no bijection). Keeping the last best split instead of the first, a tie rule,
+    is invisible (98.2 %), as it should be; so is the reverse order for the leaf a wall corner is
+    read from (no vertex here sits on an edge whose wall corner that order decides).
     """
     mesh_tm, _ = request.getfixturevalue(mesh_name)
     vertices_np, faces_np, vertices_o3d, faces_o3d, scale = _octree_and_open3d(mesh_tm, device)
@@ -1431,45 +1436,6 @@ def test_poisson_octree_matches_open3d(
         return 0.5 * float(np.linalg.norm(normals, axis=1).sum())
 
     assert abs(area(only_ours) - area(only_reference)) <= 3e-6 * area(only_reference)
-
-
-@pytest.mark.parity(
-    "screened_poisson",
-    "open3d",
-    benchmarked=False,
-    reason="open3d wraps Kazhdan's CPU solver, whose screened_poisson rows were removed from the "
-    "benchmarks for dominating the suite's wall clock (see test_poisson_matches_open3d_metric); "
-    "the octree backend's comparison lives here, at a size a correctness test can afford.",
-)
-def test_poisson_octree_matches_open3d_on_an_open_cloud(
-    saddle_graded: tuple[tm.Trimesh, wp.Mesh], device: str
-) -> None:
-    """
-    Class C: the fraction of open3d's triangles ``method="octree"`` reproduces on an open cloud.
-
-    An open cloud's surface runs out to the cube's walls, where a handful of far-field vertices
-    differ (open3d's evaluation at the wall, not traced), so the vertex map is not a bijection and
-    [`test_poisson_octree_matches_open3d`][]'s Class B asserts do not apply. What does: equal
-    counts, the vertices matched by position (a thousandth of a cell), and the share of open3d's
-    oriented triangles reproduced exactly.
-
-    Measured at depth 6, CPU and CUDA: counts equal, 99.5 % of the vertices matched, 97.2-97.4 % of
-    the triangles. The threshold, 92 %, allows about 3x the measured misses. Mutation probes, each
-    failing an assert: the quad split's comparison reversed (38 %), the corner values not copied up
-    from finer leaves (counts off by 2 vertices and 9 faces).
-    """
-    mesh_tm, _ = saddle_graded
-    vertices_np, faces_np, vertices_o3d, faces_o3d, scale = _octree_and_open3d(mesh_tm, device)
-    assert faces_o3d.shape[0] > 1000
-    assert vertices_np.shape[0] == vertices_o3d.shape[0]
-    assert faces_np.shape[0] == faces_o3d.shape[0]
-    distance, nearest = cKDTree(vertices_o3d).query(vertices_np)
-    matched = np.asarray(distance) < 1e-3 * 1.1 * scale / 2**6
-    assert np.mean(matched) > 0.99
-    mapped = canonical_winding(np.where(matched, nearest, -1)[faces_np])
-    ours = {tuple(face) for face in mapped.tolist() if min(face) >= 0}
-    reproduced = np.mean([tuple(face) in ours for face in canonical_winding(faces_o3d).tolist()])
-    assert reproduced > 0.92
 
 
 @pytest.mark.parity("screened_poisson", "meshlib")

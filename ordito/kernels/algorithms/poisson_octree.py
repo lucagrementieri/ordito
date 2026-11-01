@@ -2206,19 +2206,25 @@ def split_slope(
     d: wp.int32,
     node: wp.vec3i,
     axis: wp.int32,
+    open_wall: wp.bool,
 ) -> wp.float32:
     # The field's slope along ``axis`` at depth ``d``'s lattice node, times the depth's cell width,
     # as the upstream evaluator forms it: the depth's own correction's (``field - prolonged``)
     # averaged one-sided slopes plus the coarser field's slope on its own lattice (averaged at its
-    # nodes, exact between them), interpolated linearly across the other two axes.
+    # nodes, exact between them), interpolated linearly across the other two axes. At a wall the
+    # side outside the cube is zero (the one-sided slope halved), except at an upper wall with
+    # ``open_wall`` (``corner_interior``): there the upstream's interior stencil reads the
+    # missing node beyond the wall as a zero coefficient, for both depths.
     res = (1 << d) + 1
     res_c = (1 << (d - 1)) + 1
+    beyond = open_wall and node[axis] == res - 1
     up = wp.vec3i(node[0], node[1], node[2])
     down = wp.vec3i(node[0], node[1], node[2])
     up[axis] = wp.min(node[axis] + 1, res - 1)
     down[axis] = wp.max(node[axis] - 1, 0)
+    up_term = node_value(fields, node_bricks, d, up) - prolonged_at(fields, node_bricks, d, up)
     slope = 0.5 * (
-        (node_value(fields, node_bricks, d, up) - prolonged_at(fields, node_bricks, d, up))
+        wp.where(beyond, wp.float32(0.0), up_term)
         - (node_value(fields, node_bricks, d, down) - prolonged_at(fields, node_bricks, d, down))
     )
     u = (axis + 1) % 3
@@ -2254,13 +2260,9 @@ def split_slope(
                 hi[axis] = m + 1
                 lo[axis] = m
                 factor = wp.float32(0.5)
+            hi_value = wp.where(beyond, wp.float32(0.0), node_value(fields, node_bricks, d - 1, hi))
             coarse_slope += (
-                weight
-                * factor
-                * (
-                    node_value(fields, node_bricks, d - 1, hi)
-                    - node_value(fields, node_bricks, d - 1, lo)
-                )
+                weight * factor * (hi_value - node_value(fields, node_bricks, d - 1, lo))
             )
     return slope + coarse_slope
 
@@ -2280,6 +2282,51 @@ def touched_by_leaf(
         if leaf_cell(flags, cells, depth, full_depth, d, cell):
             return True
     return False
+
+
+@wp.func
+def traversal_key(c: wp.vec3i, d: wp.int32) -> wp.int32:
+    # A depth ``d`` cell's place in the upstream extraction's pass over a corner's leaves: slabs
+    # by ``z`` (a slice's lower slab first), then the tree's order within the slab (``y`` above
+    # ``x`` at every bit).
+    key = c[2]
+    for bit in range(d - 1, -1, -1):
+        key = (key << 2) | (((c[1] >> bit) & 1) << 1) | ((c[0] >> bit) & 1)
+    return key
+
+
+@wp.func
+def corner_interior(
+    flags: wp.array[wp.uint32],
+    cells: wp.array[wp.int32],
+    depth: wp.int32,
+    full_depth: wp.int32,
+    d: wp.int32,
+    node: wp.vec3i,
+) -> wp.bool:
+    # Whether the upstream evaluates depth ``d``'s corner ``node`` with its interior stencils:
+    # the first leaf in its pass having the corner (``traversal_key``) has its parent in the
+    # linear B-spline's interior span ``[1, 2**(d - 1))`` on every axis. The span is one-sided
+    # (``InteriorSupportedSpan``), so a leaf on an upper wall can be interior where one on a lower
+    # wall never is.
+    best = wp.vec3i(-1, -1, -1)
+    best_key = wp.int32(0)
+    for k in range(8):
+        cell = node - wp.vec3i(k & 1, (k >> 1) & 1, (k >> 2) & 1)
+        if leaf_cell(flags, cells, depth, full_depth, d, cell):
+            key = traversal_key(cell, d)
+            if best[0] < 0 or key < best_key:
+                best = cell
+                best_key = key
+    if best[0] < 0:
+        return False
+    parent_res = (1 << d) >> 1
+    interior = wp.bool(True)
+    for a in range(3):
+        parent = best[a] >> 1
+        if parent < 1 or parent >= parent_res:
+            interior = False
+    return interior
 
 
 @wp.func
@@ -2323,26 +2370,53 @@ def corner_sources(
 
 
 @wp.func
-def corner_sample(
+def corner_source(
+    sources: wp.array[wp.int8], node_bricks: wp.array[wp.int32], d: wp.int32, node: wp.vec3i
+) -> wp.int32:
+    # The depth a depth ``d`` leaf reads its corner ``node`` from (``corner_sources``).
+    source = node_source(sources, node_bricks, d, node)
+    return wp.where(source < 0, d, source)
+
+
+@wp.func
+def corner_value(
     fields: wp.array[wp.float32],
     node_bricks: wp.array[wp.int32],
     sources: wp.array[wp.int8],
     d: wp.int32,
     node: wp.vec3i,
+) -> wp.float32:
+    # The value a depth ``d`` leaf reads at ``node``: the source depth's lattice value.
+    source = corner_source(sources, node_bricks, d, node)
+    shift = source - d
+    at = wp.vec3i(node[0] << shift, node[1] << shift, node[2] << shift)
+    return node_value(fields, node_bricks, source, at)
+
+
+@wp.func
+def corner_sample(
+    fields: wp.array[wp.float32],
+    node_bricks: wp.array[wp.int32],
+    sources: wp.array[wp.int8],
+    flags: wp.array[wp.uint32],
+    cells: wp.array[wp.int32],
+    depth: wp.int32,
+    full_depth: wp.int32,
+    d: wp.int32,
+    node: wp.vec3i,
     axis: wp.int32,
 ) -> wp.vec2:
     # ``(value, slope along axis times depth d's cell width)`` a depth ``d`` leaf reads at
-    # ``node``: the source depth's lattice value and slope (``corner_sources``).
-    source = node_source(sources, node_bricks, d, node)
-    if source < 0:
-        source = d
+    # ``node``: the source depth's lattice value and slope (``corner_sources``), the slope at an
+    # upper wall as the leaf the upstream reads it from forms it (``corner_interior``).
+    source = corner_source(sources, node_bricks, d, node)
     shift = source - d
     at = wp.vec3i(node[0] << shift, node[1] << shift, node[2] << shift)
-    value = node_value(fields, node_bricks, source, at)
-    slope = wp.float32(0.0)
-    if axis >= 0:
-        slope = split_slope(fields, node_bricks, source, at, axis) * wp.float32(1 << shift)
-    return wp.vec2(value, slope)
+    open_wall = wp.bool(False)
+    if at[axis] == (1 << source):
+        open_wall = corner_interior(flags, cells, depth, full_depth, source, at)
+    slope = split_slope(fields, node_bricks, source, at, axis, open_wall)
+    return wp.vec2(node_value(fields, node_bricks, source, at), slope * wp.float32(1 << shift))
 
 
 @wp.func
@@ -2355,8 +2429,7 @@ def corner_below(
     node: wp.vec3i,
 ) -> wp.bool:
     # The upstream marching-cubes bit: the corner's value is below the iso-value.
-    sample = corner_sample(fields, node_bricks, sources, d, node, -1)
-    return sample[0] < iso
+    return corner_value(fields, node_bricks, sources, d, node) < iso
 
 
 @wp.func
@@ -2675,11 +2748,14 @@ def pair_edge_vertices(
 def place_edge_vertices(
     d: wp.int32,
     depth: wp.int32,
+    full_depth: wp.int32,
     iso: wp.float32,
     margin: wp.float32,
     fields: wp.array[wp.float32],
     node_bricks: wp.array[wp.int32],
     sources: wp.array[wp.int8],
+    flags: wp.array[wp.uint32],
+    cells: wp.array[wp.int32],
     node_slots: wp.array[wp.int32],
     created: wp.array[wp.uint32],
     ranks: wp.array[wp.int32],
@@ -2699,8 +2775,12 @@ def place_edge_vertices(
     node = wp.vec3i(at[1], at[2], at[3])
     end = wp.vec3i(at[1], at[2], at[3])
     end[axis] = end[axis] + 1
-    here = corner_sample(fields, node_bricks, sources, d, node, axis)
-    there = corner_sample(fields, node_bricks, sources, d, end, axis)
+    here = corner_sample(
+        fields, node_bricks, sources, flags, cells, depth, full_depth, d, node, axis
+    )
+    there = corner_sample(
+        fields, node_bricks, sources, flags, cells, depth, full_depth, d, end, axis
+    )
     t_root = fitted_edge_root(here[0], there[0], here[1], there[1], iso)
     t_root = wp.clamp(t_root, wp.float64(margin), wp.float64(1.0 - margin))
     # The upstream's position: the cell's corner in ``float32`` and ``start + width * t`` along the
