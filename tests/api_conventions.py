@@ -656,8 +656,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("boundary", "cross_pinch_gaps"): frozenset({"next_node"}),
     # The seed distances grow ring by ring in place, one launch a ring.
     ("reconstruction", "grow_seed_rings"): frozenset({"distance"}),
-    # The flood's flips then reverse the fan slots in place.
-    ("reconstruction", "flip_fan_windings"): frozenset({"tris"}),
+    # The flood's flips then reverse the packed fans' rows in place.
+    ("reconstruction", "flip_fan_windings"): frozenset({"rows"}),
     # The serial builder's half-edge records and its per-round marks are its working state across
     # the whole assembly; the answer is ``out_state``.
     ("algorithms.mesh_builder", "build_candidate_mesh"): frozenset({"t", "marked"}),
