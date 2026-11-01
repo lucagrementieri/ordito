@@ -630,7 +630,10 @@ def ball_graph_edges(
 ) -> None:
     # Row ``i``'s ball entries as edges ``(i, j)`` of the radius graph, one per packed entry: the
     # self entry and both directions of a pair are edges too, which the labelling takes as they
-    # come (a self loop joins nothing, a repeated pair joins nothing more).
+    # come (a self loop joins nothing, a repeated pair joins nothing more). Labelling the ball rows
+    # as a CSR instead (``graph.connected_component_labels``, no edge list) took 0.55-0.64x the
+    # peak but 1.3-2.4x the time on ``dragon`` at 1.5 and 3 mean edges (2026-11-02): its hook walks
+    # a row a thread, this one an edge a thread. Declined; an entry-parallel CSR hook is untried.
     i = wp.int32(wp.tid())
     for e in range(offsets[i], offsets[i + 1]):
         out_edges[e, 0] = i
