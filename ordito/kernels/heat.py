@@ -17,7 +17,7 @@ import math
 
 import warp as wp
 
-from ordito.constants import INT64_MAX, TOLERANCE_ZERO_CONSTANT
+from ordito.constants import TOLERANCE_ZERO_CONSTANT
 from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_PROGRESS,
@@ -51,7 +51,13 @@ from ordito.kernels.predicates import (
     vector_angle,
     world_to_tangent,
 )
-from ordito.kernels.reduce import GroupSumPass, block_chunk_1d, store_sum_and_count
+from ordito.kernels.reduce import (
+    GroupSumPass,
+    block_barrier,
+    block_chunk_1d,
+    block_max,
+    store_sum_and_count,
+)
 from ordito.kernels.scatter import add_corner_triple, add_or_store_corner_triple, scatter_add_vector
 from ordito.kernels.triangles import (
     face_normals_and_area,
@@ -704,11 +710,8 @@ def fast_marching_rounds_serial(
 # The unfolding front (``method="meshlab"``) runs in ``float64``, as the reference does: its tests
 # are acos/Heron compositions whose ``float32`` forms drift a few 1e-6 of the range. Each vertex
 # also carries the source whose front reached it, since an offer unfolds across a face only when its
-# two corners came from the same source. With several sources that label is an ``int64`` key,
-# ``(stamp << 32) | source``, where the stamp falls with the round that last lowered the vertex: an
-# ``atomic_min`` of keys then keeps the newest round's label and, among one round's equal offers,
-# the smallest source. A single source needs no key (every reached vertex has it): the key array is
-# then empty.
+# two corners came from the same source; with one source every reached vertex has it, and no labels
+# are kept.
 
 # The reference's relative tolerance on its triangle-inequality tests, the ``float`` literal
 # ``.0001f`` widened to ``double``.
@@ -716,51 +719,6 @@ UNFOLDING_TOLERANCE = wp.float64(9.999999747378752e-05)
 # How far above a target's distance a ``float32`` unfolded offer must lie to be dropped unrefined,
 # relative to the distances and edges it is formed from (``unfolded_distance_exceeds``).
 UNFOLDING_FILTER_MARGIN = wp.float64(1e-3)
-UNFOLDING_SEED_STAMP = wp.int64(1 << 30)
-# A key no offer has written: the fill of every key buffer.
-UNFOLDING_UNLABELLED = wp.int64(INT64_MAX)
-# The round stamp of a vertex no round has lowered, below the seeds' ``-1``.
-UNFOLDING_NEVER_LOWERED = -2
-
-
-@wp.func
-def unfolding_key(stamp: wp.int64, source: wp.int32) -> wp.int64:
-    return (stamp << wp.int64(32)) | wp.int64(source)
-
-
-@wp.func
-def unfolding_source(keys: wp.array[wp.int64], v: wp.int32) -> wp.int32:
-    # The source label of ``v``; ``0`` for every vertex when there is one source (``keys`` empty).
-    if keys.shape[0] == 0:
-        return wp.int32(0)
-    return wp.int32(keys[v] & wp.int64(0xFFFFFFFF))
-
-
-@wp.kernel
-def seed_unfolding_sources(
-    sources: wp.array[wp.int32],
-    out_labels: wp.array[wp.float64],
-    out_keys: wp.array[wp.int64],
-    out_invalid: wp.array[wp.int32],
-) -> None:
-    # Distance zero at each source (``out_labels`` filled with ``+inf`` by the caller) and, when
-    # ``out_keys`` is not empty, the source's own label under the seed stamp, above every round's;
-    # an out-of-range source writes nothing and raises ``out_invalid[0]``.
-    t = wp.int32(wp.tid())
-    v = sources[t]
-    if flag_out_of_range(v, out_labels.shape[0], out_invalid):
-        return
-    out_labels[v] = wp.float64(0.0)
-    if out_keys.shape[0] != 0:
-        wp.atomic_min(out_keys, v, unfolding_key(UNFOLDING_SEED_STAMP, v))
-
-
-@wp.kernel
-def mark_seed_rounds(sources: wp.array[wp.int32], out_lowered_round: wp.array[wp.int32]) -> None:
-    # The sources count as lowered in round ``-1``, so the first round's faces around them run
-    # (``out_lowered_round`` filled with ``UNFOLDING_NEVER_LOWERED``; the sources are in range).
-    t = wp.int32(wp.tid())
-    out_lowered_round[sources[t]] = -1
 
 
 @wp.func
@@ -945,569 +903,711 @@ def unfolding_face_geometry(
     )
 
 
-@wp.func
-def unfolding_face(
-    faces: wp.array[wp.int32], labels: wp.array[wp.float64], keys: wp.array[wp.int64], f: wp.int32
-) -> tuple[wp.vec3i, wp.vec3d, wp.vec3i]:
-    # One face's corner indices, round distances and source labels: the loads every unfolding
-    # pass starts from, beside the face's geometry (``unfolding_face_geometry``).
-    i = wp.vec3i(faces[3 * f], faces[3 * f + 1], faces[3 * f + 2])
-    d = wp.vec3d(labels[i[0]], labels[i[1]], labels[i[2]])
-    s = wp.vec3i(
-        unfolding_source(keys, i[0]), unfolding_source(keys, i[1]), unfolding_source(keys, i[2])
-    )
-    return i, d, s
+# The ordered front: vcg's serial queue, a step at a time. The queue pops its nearest pending
+# vertex (one lowered since it last popped) and offers each face around it, in the order its
+# vertex-face lists hold them, reading every partner's distance as it stands at that moment: a
+# partner not yet popped holds a tentative distance, so the answer depends on the pop order, and
+# the fixpoint of the offers alone does not fix it (rounds relaxing every face against the last
+# round's distances settle elsewhere, up to 1e-4 of the range on scan meshes).
+#
+# A step pops every pending vertex that nothing pending in its 2-ring precedes (smaller distance,
+# then smaller index) and whose distance lies within ``UNFOLDING_WINDOW_EDGES`` mean edges of the
+# window floor. Two such pops are at least three rings apart, so neither writes what the other
+# reads, and each sees exactly what the queue would show it. The floor is the smallest distance of
+# such a 2-ring minimum at the previous step: it keeps a front arriving from far away, nearer the
+# sources, from being overtaken, which the 2-ring test alone cannot see, while a vertex held behind
+# a cycle (below) does not hold back the rest of the mesh. A vertex the queue has popped
+# ``UNFOLDING_RELAX_POPS`` times is caught in a cycle of faces lowering each other below their own
+# distances, which the serial queue walks one pop at a time (half a million pops of one vertex on
+# ``happy_buddha``); it pops whenever no ordinary pending vertex in its 2-ring precedes it, reading
+# the step's starting distances, so a cycle settles in steps instead of pops, at the limit the
+# queue creeps to. On the scan meshes and from one or three sources the field matches MeshLab's to
+# a few 1e-15 of the range in a serial model of this schedule.
+#
+# Each step is two launches over double-buffered lists (parity ``p``), a block of lanes per listed
+# vertex: ``ordered_pop_pass`` selects and pops ``front[p]``, lowering into ``out_relaxed`` and
+# listing every vertex it lowered or kept into ``touched[p]``; ``ordered_settle_pass`` copies the
+# lowered distances back into ``labels`` and lists the vertices still pending into
+# ``front[1 - p]``. Several sources add ``ordered_relabel_pass`` between the two.
+#
+# The step kernels compile without floating-point contraction (``fuse_fp``), as the reference's
+# ``double`` arithmetic runs: where two sources' offers to a vertex tie to the last bits, the
+# rounding decides which labels it, and the label decides the unfolding downstream (a fused build
+# put two ``torus_irregular`` vertices 2.5e-4 of the range off MeshLab from three sources).
 
-
-@wp.func
-def unfolding_face_corner_offer(
-    lengths: wp.vec3d, cosines: wp.vec3d, d: wp.vec3d, s: wp.vec3i, k: wp.int32, origin: wp.int32
-) -> tuple[wp.float64, wp.int32]:
-    # The offer corner ``k`` of a face takes from one of its two others (``origin`` ``0`` or ``1``:
-    # the first or second after ``k`` in the face's order), the third the partner, and the
-    # origin's source label. A launch gives each pair its own thread, ``6 * n_faces`` in all: the
-    # ``float64`` offer is a long serial chain, and splitting it is what sets a round's time.
-    a = (k + 1 + origin) % 3
-    b = (k + 2 - origin) % 3
-    offer = unfolding_corner_offer(
-        lengths[b], lengths[a], lengths[k], cosines[a], cosines[b], d[a], d[b], d[k], s[a], s[b]
-    )
-    return offer, s[a]
-
-
-@wp.func
-def unfolding_face_is_active(
-    faces: wp.array[wp.int32], lowered_round: wp.array[wp.int32], f: wp.int32, this_round: wp.int32
-) -> wp.bool:
-    # Whether a corner of face ``f`` was lowered in the previous round (or is being lowered in this
-    # one; seeds count as lowered in round ``-1``). A face's offers are a function of its corners'
-    # distances and labels only, and a label moves only with its distance, so a face none of whose
-    # corners moved since its last pass would offer what it already has. Reading a stamp the round
-    # is writing concurrently can only add a face, never drop one, so the answer is the same.
-    since = this_round - 1
-    return (
-        lowered_round[faces[3 * f]] >= since
-        or lowered_round[faces[3 * f + 1]] >= since
-        or lowered_round[faces[3 * f + 2]] >= since
-    )
-
-
-@wp.func
-def lower_unfolded_corner(
-    v: wp.int32,
-    offer: wp.float64,
-    label: wp.float64,
-    this_round: wp.int32,
-    out_labels: wp.array[wp.float64],
-    out_lowered_round: wp.array[wp.int32],
-    out_state: wp.array[wp.int32],
-) -> None:
-    # Commit an offer below the round's distance ``label`` of ``v``: an exact ``atomic_min``, the
-    # round stamp that keeps ``v``'s faces active next round, and the progress flag (plain stores;
-    # every writer stores the same value).
-    if offer < label:
-        wp.atomic_min(out_labels, v, offer)
-        out_lowered_round[v] = this_round
-        out_state[LOOP_PROGRESS] = 1
+# Pops after which a vertex is taken as cycling (``ordered_pop_selected``).
+UNFOLDING_RELAX_POPS = 8
+# Width of the pop window, in mean edge lengths.
+UNFOLDING_WINDOW_EDGES = 2.0
+# ``counts`` slots of the ordered front's lists, plus the parity: the pending vertices a step pops
+# from, and the vertices it lowered or kept.
+ORDERED_FRONT = 0
+ORDERED_TOUCHED = 2
+# A source label no cycling pop has bid (``ordered_relabel_pass``).
+ORDERED_NO_BID = 2147483647
 
 
 @wp.kernel
-def unfolding_pass(
-    faces: wp.array[wp.int32],
-    lengths: wp.array[wp.vec3d],
-    cosines: wp.array[wp.vec3d],
-    labels: wp.array[wp.float64],
-    keys: wp.array[wp.int64],
-    lanes: wp.int32,
-    out_labels: wp.array[wp.float64],
-    out_lowered_round: wp.array[wp.int32],
-    out_state: wp.array[wp.int32],
-) -> None:
-    # One face's offers to its three corners from the round's ``labels`` and ``keys``, lowered into
-    # ``out_labels`` (holding ``labels`` on entry) by an exact ``atomic_min``, as
-    # ``fast_marching_pass`` does with the edge-and-plane-wave front's offers; the two differ in the
-    # offer only. The serial front pops each vertex at its final distance and offers both other
-    # corners of each face around it, so at its end every face has been relaxed from final values
-    # by its last-popped corner: this pass relaxes from both and reaches the same fixpoint. One
-    # thread per (corner, origin) pair (``unfolding_face_corner_offer``), and only the faces at
-    # the moving front do any work (``unfolding_face_is_active``).
-    t = wp.int32(wp.tid())
-    f = t // lanes
-    this_round = out_state[LOOP_ROUND]
-    if not unfolding_face_is_active(faces, out_lowered_round, f, this_round):
-        return
-    i, d, s = unfolding_face(faces, labels, keys, f)
-    face_lengths = lengths[f]
-    face_cosines = cosines[f]
-    for j in range(t % lanes, 6, lanes):
-        k = j // 2
-        offer, _label = unfolding_face_corner_offer(face_lengths, face_cosines, d, s, k, j % 2)
-        lower_unfolded_corner(
-            i[k], offer, d[k], this_round, out_labels, out_lowered_round, out_state
-        )
-
-
-@wp.func
-def relabel_unfolded_corner(
-    v: wp.int32,
-    offer: wp.float64,
-    label: wp.int32,
-    labels: wp.array[wp.float64],
-    relaxed: wp.array[wp.float64],
-    stamp: wp.int64,
-    out_keys: wp.array[wp.int64],
-) -> None:
-    # A corner whose round lowered it takes the source of the offer that set its new distance.
-    if relaxed[v] < labels[v] and offer == relaxed[v]:
-        wp.atomic_min(out_keys, v, unfolding_key(stamp, label))
-
-
-# The front lists of the list-driven rounds (``unfolding_front_pass``), double-buffered by round
-# parity ``p``: ``front_counts[FRONT_FACES + p]`` faces queued for the rounds of parity ``p``
-# (``front_faces[p * n_faces:]``) and ``front_counts[FRONT_VERTICES + p]`` vertices lowered by the
-# round of parity ``p`` (``front_vertices[p * n_vertices:]``). Round stamps deduplicate both, so
-# neither outgrows its half of the buffer.
-FRONT_FACES = 0
-FRONT_VERTICES = 2
-
-
-@wp.func
-def front_parity(this_round: wp.int32) -> wp.int32:
-    # The half of each front list a round reads or fills: ``0`` or ``1`` by the round's parity.
-    return this_round & 1
-
-
-@wp.func
-def queue_vertex_faces(
-    v: wp.int32,
-    queued_round: wp.int32,
-    vertex_faces: wp.array[wp.int32],
-    vertex_face_offsets: wp.array[wp.int32],
-    out_face_round: wp.array[wp.int32],
-    out_front_faces: wp.array[wp.int32],
-    out_front_counts: wp.array[wp.int32],
-) -> None:
-    # Queue every face around ``v`` for round ``queued_round``, each face once (its stamp swapped
-    # to that round).
-    parity = front_parity(queued_round)
-    n_faces = out_face_round.shape[0]
-    for e in range(vertex_face_offsets[v], vertex_face_offsets[v + 1]):
-        f = vertex_faces[e]
-        if wp.atomic_exch(out_face_round, f, queued_round) != queued_round:
-            slot = append_slot(out_front_counts, FRONT_FACES + parity)
-            out_front_faces[parity * n_faces + slot] = f
-
-
-@wp.kernel
-def queue_source_faces(
+def seed_ordered_front(
     sources: wp.array[wp.int32],
-    vertex_faces: wp.array[wp.int32],
-    vertex_face_offsets: wp.array[wp.int32],
-    out_lowered_round: wp.array[wp.int32],
-    out_face_round: wp.array[wp.int32],
-    out_front_faces: wp.array[wp.int32],
-    out_front_counts: wp.array[wp.int32],
+    out_labels: wp.array[wp.float64],
+    out_relaxed: wp.array[wp.float64],
+    out_source_of: wp.array[wp.int32],
+    out_next_source_of: wp.array[wp.int32],
+    out_listed: wp.array[wp.int32],
+    out_front: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_invalid: wp.array[wp.int32],
 ) -> None:
-    # The sources as the vertices "lowered" in round ``-1`` (stamped ``-1``, each once however
-    # often it is listed): the faces around them are round 0's.
+    # Distance zero at each source and its own index as its label (when labels are kept), listed
+    # once in ``front[0]`` however often ``sources`` names it. An out-of-range source writes
+    # nothing and raises ``out_invalid[0]``.
     t = wp.int32(wp.tid())
     v = sources[t]
-    if wp.atomic_exch(out_lowered_round, v, -1) != -1:
-        queue_vertex_faces(
-            v,
-            0,
-            vertex_faces,
-            vertex_face_offsets,
-            out_face_round,
-            out_front_faces,
-            out_front_counts,
-        )
+    if flag_out_of_range(v, out_labels.shape[0], out_invalid):
+        return
+    out_labels[v] = wp.float64(0.0)
+    out_relaxed[v] = wp.float64(0.0)
+    if out_source_of.shape[0] != 0:
+        out_source_of[v] = v
+        out_next_source_of[v] = v
+    if wp.atomic_exch(out_listed, v, -2) != -2:
+        out_front[append_slot(out_counts, ORDERED_FRONT)] = v
 
 
 @wp.func
-def unfolding_front_thread(
-    t: wp.int32,
+def ordered_source(source_of: wp.array[wp.int32], v: wp.int32) -> wp.int32:
+    # The source label of ``v``; ``0`` for every vertex when labels are not kept (one source).
+    if source_of.shape[0] == 0:
+        return wp.int32(0)
+    return source_of[v]
+
+
+# What a pending vertex finds below it in its 2-ring (``ordered_precedence``): nothing, only cycling
+# vertices, or an ordinary one. Ordered so the block's maximum is what any lane found.
+ORDERED_LOWEST = 0
+ORDERED_BELOW_CYCLING = 1
+ORDERED_BELOW_ORDINARY = 2
+
+
+@wp.func
+def ordered_precedence(
+    u: wp.int32,
+    v: wp.int32,
+    labels: wp.array[wp.float64],
+    popped: wp.array[wp.float64],
+    pop_count: wp.array[wp.int32],
+) -> wp.int32:
+    # Whether ``u`` is pending and precedes ``v`` in the queue's order (smaller distance, then
+    # smaller index), and if so whether it is cycling.
+    if not (labels[u] < popped[u]):
+        return ORDERED_LOWEST
+    if not (labels[u] < labels[v] or (labels[u] == labels[v] and u < v)):
+        return ORDERED_LOWEST
+    if pop_count[u] >= UNFOLDING_RELAX_POPS:
+        return ORDERED_BELOW_CYCLING
+    return ORDERED_BELOW_ORDINARY
+
+
+@wp.func
+def ordered_pop_selected(
+    v: wp.int32,
+    lane: wp.int32,
+    window_bound: wp.float64,
+    neighbors: wp.array[wp.int32],
+    neighbor_offsets: wp.array[wp.int32],
+    labels: wp.array[wp.float64],
+    popped: wp.array[wp.float64],
+    pop_count: wp.array[wp.int32],
+) -> tuple[wp.bool, wp.bool]:
+    # Whether pending ``v`` pops this step, and whether it is an ordinary vertex nothing in its
+    # 2-ring precedes (whose distance bounds the next step's window). An ordinary ``v`` pops when
+    # it is such a vertex and its distance lies inside the window; a cycling one when no ordinary
+    # vertex in its 2-ring precedes it. The block's lanes split the 1-ring, each scanning its
+    # neighbours' rings; every lane returns the same answer.
+    cycling = pop_count[v] >= UNFOLDING_RELAX_POPS
+    stop = ORDERED_BELOW_CYCLING
+    if cycling:
+        stop = ORDERED_BELOW_ORDINARY
+    below = ORDERED_LOWEST
+    for e in range(neighbor_offsets[v] + lane, neighbor_offsets[v + 1], wp.block_dim()):
+        u = neighbors[e]
+        below = wp.max(below, ordered_precedence(u, v, labels, popped, pop_count))
+        for e2 in range(neighbor_offsets[u], neighbor_offsets[u + 1]):
+            if below >= stop:
+                break
+            w = neighbors[e2]
+            if w != v:
+                below = wp.max(below, ordered_precedence(w, v, labels, popped, pop_count))
+        if below >= stop:
+            break
+    below = block_max(below)
+    if cycling:
+        return below != ORDERED_BELOW_ORDINARY, False
+    lowest = below == ORDERED_LOWEST
+    return lowest and labels[v] < window_bound, lowest
+
+
+@wp.func
+def list_touched(
+    v: wp.int32,
+    stamp: wp.int32,
+    parity: wp.int32,
+    out_listed: wp.array[wp.int32],
+    out_touched: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # List ``v`` in ``touched[parity]``, once a step (its stamp swapped to the step's).
+    if wp.atomic_exch(out_listed, v, stamp) != stamp:
+        slot = append_slot(out_counts, ORDERED_TOUCHED + parity)
+        out_touched[parity * out_listed.shape[0] + slot] = v
+
+
+@wp.func
+def ordered_offer_corners(
+    v: wp.int32,
+    j: wp.int32,
+    faces: wp.array[wp.int32],
+    corner_order: wp.array[wp.int32],
+    corner_offsets: wp.array[wp.int32],
+) -> tuple[wp.int32, wp.int32, wp.int32, wp.int32, wp.int32]:
+    # The ``j``-th offer a pop of ``v`` makes, in vcg's visit order: through ``v``'s corners newest
+    # face first, each to the corner after ``v`` with the one after that as the partner, then the
+    # other way round. Returns the face, ``v``'s corner in it, the target's and the partner's
+    # corners, and the target and partner vertices.
+    c = corner_order[corner_offsets[v + 1] - 1 - j // 2]
+    f = c // 3
+    z = c - 3 * f
+    k = j % 2
+    target = (z + 1 + k) % 3
+    partner = (z + 2 - k) % 3
+    return f, z, target, faces[3 * f + target], faces[3 * f + partner]
+
+
+@wp.func
+def ordered_offer(
+    f: wp.int32,
+    z: wp.int32,
+    target: wp.int32,
+    lengths: wp.array[wp.vec3d],
+    cosines: wp.array[wp.vec3d],
+    d_v: wp.float64,
+    s_v: wp.int32,
+    d_partner: wp.float64,
+    s_partner: wp.int32,
+    d_target: wp.float64,
+) -> wp.float64:
+    # The offer through face ``f`` from ``v`` (its corner ``z``) at distance ``d_v`` and label
+    # ``s_v`` to the corner ``target``, the face's third corner the partner (``unfolding_offer``).
+    partner = 3 - z - target
+    face_lengths = lengths[f]
+    face_cosines = cosines[f]
+    return unfolding_corner_offer(
+        face_lengths[partner],
+        face_lengths[z],
+        face_lengths[target],
+        face_cosines[z],
+        face_cosines[partner],
+        d_v,
+        d_partner,
+        d_target,
+        s_v,
+        s_partner,
+    )
+
+
+@wp.func
+def ordered_pop_block(
+    block: wp.int32,
+    lane: wp.int32,
+    blocks: wp.int32,
+    parity: wp.int32,
     faces: wp.array[wp.int32],
     lengths: wp.array[wp.vec3d],
     cosines: wp.array[wp.vec3d],
+    corner_order: wp.array[wp.int32],
+    corner_offsets: wp.array[wp.int32],
+    neighbors: wp.array[wp.int32],
+    neighbor_offsets: wp.array[wp.int32],
+    window_scale: wp.array[wp.float64],
     labels: wp.array[wp.float64],
-    keys: wp.array[wp.int64],
-    vertex_faces: wp.array[wp.int32],
-    vertex_face_offsets: wp.array[wp.int32],
-    lanes: wp.int32,
-    threads: wp.int32,
-    out_labels: wp.array[wp.float64],
-    out_lowered_round: wp.array[wp.int32],
-    out_face_round: wp.array[wp.int32],
-    out_front_vertices: wp.array[wp.int32],
-    out_front_faces: wp.array[wp.int32],
-    out_front_counts: wp.array[wp.int32],
-    out_state: wp.array[wp.int32],
+    source_of: wp.array[wp.int32],
+    popped: wp.array[wp.float64],
+    pop_count: wp.array[wp.int32],
+    front: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    out_relaxed: wp.array[wp.float64],
+    out_next_source_of: wp.array[wp.int32],
+    out_popped_step: wp.array[wp.int32],
+    out_listed: wp.array[wp.int32],
+    out_touched: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_window: wp.array[wp.float64],
+    out_scratch_targets: wp.array[wp.int32],
+    out_scratch_offers: wp.array[wp.float64],
 ) -> None:
-    # ``unfolding_pass`` over the round's queued faces only: ``threads`` threads stride over
-    # ``lanes`` items a queued face, so the launch has one width every round (a captured loop
-    # replays it) while its work follows the front. A vertex this round lowers for the first time
-    # (its stamp swapped to the round) joins the round's lowered list, for
-    # ``copy_front_vertices``, and queues its faces for the next round. Thread ``t``'s share of
-    # the launch (``unfolding_front_pass``).
-    this_round = out_state[LOOP_ROUND]
-    parity = front_parity(this_round)
-    n_vertices = out_lowered_round.shape[0]
-    n_faces = out_face_round.shape[0]
-    for item in range(t, out_front_counts[FRONT_FACES + parity] * lanes, threads):
-        f = out_front_faces[parity * n_faces + item // lanes]
-        i, d, s = unfolding_face(faces, labels, keys, f)
-        face_lengths = lengths[f]
-        face_cosines = cosines[f]
-        for j in range(item % lanes, 6, lanes):
-            k = j // 2
-            offer, _label = unfolding_face_corner_offer(face_lengths, face_cosines, d, s, k, j % 2)
-            if offer < d[k]:
-                wp.atomic_min(out_labels, i[k], offer)
-                out_state[LOOP_PROGRESS] = 1
-                if wp.atomic_exch(out_lowered_round, i[k], this_round) != this_round:
-                    slot = append_slot(out_front_counts, FRONT_VERTICES + parity)
-                    out_front_vertices[parity * n_vertices + slot] = i[k]
-                    queue_vertex_faces(
-                        i[k],
-                        this_round + 1,
-                        vertex_faces,
-                        vertex_face_offsets,
-                        out_face_round,
-                        out_front_faces,
-                        out_front_counts,
+    # One step's selection and pops over ``front[parity]``, block ``block``'s share
+    # (``ordered_pop_pass``). Selection reads only what the settle pass writes, so every block sees
+    # the step's starting state.
+    #
+    # An ordinary pop owns its 1-ring for the step, so it reads and writes ``out_relaxed`` and
+    # ``out_next_source_of`` there in place. Its offers are spread over the lanes, each computed
+    # from the partner's distance as it stood at the chunk's start; the serial pop reads a partner
+    # an earlier offer of the same pop lowered, so each lane then takes the smallest of the
+    # chunk's earlier offers to its partner (through the block's scratch row) and recomputes,
+    # until no lane's partner moves (two or three passes: a pop's offers chain at most a few
+    # deep). One lane walks the offers one at a time and needs no second pass. A cycling pop
+    # reads the starting ``labels`` and lowers by ``atomic_min``, its labels left to
+    # ``ordered_relabel_pass``.
+    lanes = wp.block_dim()
+    n_vertices = labels.shape[0]
+    stamp = 2 * state[LOOP_ROUND] + parity
+    window_bound = out_window[parity] + window_scale[0]
+    if block == 0 and lane == 0:
+        out_counts[ORDERED_TOUCHED + 1 - parity] = 0
+    row = block * lanes
+    for item in range(block, out_counts[ORDERED_FRONT + parity], blocks):
+        v = front[parity * n_vertices + item]
+        if lane == 0:
+            list_touched(v, stamp, parity, out_listed, out_touched, out_counts)
+        selected, lowest = ordered_pop_selected(
+            v, lane, window_bound, neighbors, neighbor_offsets, labels, popped, pop_count
+        )
+        if lowest and lane == 0 and labels[v] < out_window[1 - parity]:
+            wp.atomic_min(out_window, 1 - parity, labels[v])
+        if not selected:
+            continue
+        if lane == 0:
+            out_popped_step[v] = stamp
+        d_v = labels[v]
+        s_v = ordered_source(source_of, v)
+        cycling = pop_count[v] >= UNFOLDING_RELAX_POPS
+        n_offers = 2 * (corner_offsets[v + 1] - corner_offsets[v])
+        for base in range(0, n_offers, lanes):
+            j = base + lane
+            active = j < n_offers
+            f = wp.int32(0)
+            z = wp.int32(0)
+            target = wp.int32(1)
+            pw = wp.int32(-1)
+            pw1 = wp.int32(0)
+            if active:
+                f, z, target, pw, pw1 = ordered_offer_corners(
+                    v, j, faces, corner_order, corner_offsets
+                )
+            offer = wp.float64(wp.inf)
+            if cycling:
+                if active:
+                    offer = ordered_offer(
+                        f,
+                        z,
+                        target,
+                        lengths,
+                        cosines,
+                        d_v,
+                        s_v,
+                        labels[pw1],
+                        ordered_source(source_of, pw1),
+                        labels[pw],
                     )
+                    if offer < labels[pw]:
+                        wp.atomic_min(out_relaxed, pw, offer)
+                        list_touched(pw, stamp, parity, out_listed, out_touched, out_counts)
+                continue
+            d_start = wp.float64(wp.inf)
+            s_start = wp.int32(0)
+            d_target = wp.float64(wp.inf)
+            if active:
+                d_start = out_relaxed[pw1]
+                s_start = ordered_source(out_next_source_of, pw1)
+                d_target = out_relaxed[pw]
+            d_partner = d_start
+            s_partner = s_start
+            while True:
+                if active:
+                    offer = ordered_offer(
+                        f, z, target, lengths, cosines, d_v, s_v, d_partner, s_partner, d_target
+                    )
+                if lanes == 1:
+                    break
+                out_scratch_targets[row + lane] = pw
+                out_scratch_offers[row + lane] = offer
+                block_barrier()
+                d_seen = d_start
+                s_seen = s_start
+                for i in range(lane):
+                    if out_scratch_targets[row + i] == pw1 and out_scratch_offers[row + i] < d_seen:
+                        d_seen = out_scratch_offers[row + i]
+                        s_seen = s_v
+                moved = wp.int32(0)
+                if active and (d_seen != d_partner or s_seen != s_partner):
+                    moved = 1
+                if block_max(moved) == 0:
+                    break
+                d_partner = d_seen
+                s_partner = s_seen
+            if active and offer < d_target:
+                wp.atomic_min(out_relaxed, pw, offer)
+                if out_next_source_of.shape[0] != 0:
+                    out_next_source_of[pw] = s_v
+                list_touched(pw, stamp, parity, out_listed, out_touched, out_counts)
+            if lanes > 1:
+                block_barrier()
 
 
-@wp.kernel
-def unfolding_front_pass(
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def ordered_pop_pass(
+    parity: wp.int32,
     faces: wp.array[wp.int32],
     lengths: wp.array[wp.vec3d],
     cosines: wp.array[wp.vec3d],
+    corner_order: wp.array[wp.int32],
+    corner_offsets: wp.array[wp.int32],
+    neighbors: wp.array[wp.int32],
+    neighbor_offsets: wp.array[wp.int32],
+    window_scale: wp.array[wp.float64],
     labels: wp.array[wp.float64],
-    keys: wp.array[wp.int64],
-    vertex_faces: wp.array[wp.int32],
-    vertex_face_offsets: wp.array[wp.int32],
-    lanes: wp.int32,
-    threads: wp.int32,
-    out_labels: wp.array[wp.float64],
-    out_lowered_round: wp.array[wp.int32],
-    out_face_round: wp.array[wp.int32],
-    out_front_vertices: wp.array[wp.int32],
-    out_front_faces: wp.array[wp.int32],
-    out_front_counts: wp.array[wp.int32],
-    out_state: wp.array[wp.int32],
+    source_of: wp.array[wp.int32],
+    popped: wp.array[wp.float64],
+    pop_count: wp.array[wp.int32],
+    front: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    blocks: wp.int32,
+    out_relaxed: wp.array[wp.float64],
+    out_next_source_of: wp.array[wp.int32],
+    out_popped_step: wp.array[wp.int32],
+    out_listed: wp.array[wp.int32],
+    out_touched: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_window: wp.array[wp.float64],
+    out_scratch_targets: wp.array[wp.int32],
+    out_scratch_offers: wp.array[wp.float64],
 ) -> None:
-    # ``unfolding_pass`` over the round's queued faces only: ``unfolding_front_thread``.
-    unfolding_front_thread(
-        wp.int32(wp.tid()),
+    # One step's selection and pops, a block per listed vertex: ``ordered_pop_block``.
+    block, lane = wp.tid()
+    ordered_pop_block(
+        block,
+        lane,
+        blocks,
+        parity,
         faces,
         lengths,
         cosines,
+        corner_order,
+        corner_offsets,
+        neighbors,
+        neighbor_offsets,
+        window_scale,
         labels,
-        keys,
-        vertex_faces,
-        vertex_face_offsets,
-        lanes,
-        threads,
+        source_of,
+        popped,
+        pop_count,
+        front,
+        state,
+        out_relaxed,
+        out_next_source_of,
+        out_popped_step,
+        out_listed,
+        out_touched,
+        out_counts,
+        out_window,
+        out_scratch_targets,
+        out_scratch_offers,
+    )
+
+
+@wp.func
+def ordered_relabel_block(
+    block: wp.int32,
+    lane: wp.int32,
+    blocks: wp.int32,
+    parity: wp.int32,
+    faces: wp.array[wp.int32],
+    lengths: wp.array[wp.vec3d],
+    cosines: wp.array[wp.vec3d],
+    corner_order: wp.array[wp.int32],
+    corner_offsets: wp.array[wp.int32],
+    labels: wp.array[wp.float64],
+    source_of: wp.array[wp.int32],
+    pop_count: wp.array[wp.int32],
+    popped_step: wp.array[wp.int32],
+    front: wp.array[wp.int32],
+    relaxed: wp.array[wp.float64],
+    counts: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    out_bids: wp.array[wp.int32],
+) -> None:
+    # With several sources, after ``ordered_pop_pass``: each cycling pop recomputes its offers from
+    # the same starting state and bids its label where one set its target's new distance (the
+    # smallest bid wins a tie). Block ``block``'s share (``ordered_relabel_pass``).
+    n_vertices = labels.shape[0]
+    stamp = 2 * state[LOOP_ROUND] + parity
+    for item in range(block, counts[ORDERED_FRONT + parity], blocks):
+        v = front[parity * n_vertices + item]
+        if popped_step[v] != stamp or pop_count[v] < UNFOLDING_RELAX_POPS:
+            continue
+        d_v = labels[v]
+        s_v = ordered_source(source_of, v)
+        n_offers = 2 * (corner_offsets[v + 1] - corner_offsets[v])
+        for j in range(lane, n_offers, wp.block_dim()):
+            f, z, target, pw, pw1 = ordered_offer_corners(v, j, faces, corner_order, corner_offsets)
+            offer = ordered_offer(
+                f,
+                z,
+                target,
+                lengths,
+                cosines,
+                d_v,
+                s_v,
+                labels[pw1],
+                ordered_source(source_of, pw1),
+                labels[pw],
+            )
+            if offer < labels[pw] and offer == relaxed[pw]:
+                wp.atomic_min(out_bids, pw, s_v)
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def ordered_relabel_pass(
+    parity: wp.int32,
+    faces: wp.array[wp.int32],
+    lengths: wp.array[wp.vec3d],
+    cosines: wp.array[wp.vec3d],
+    corner_order: wp.array[wp.int32],
+    corner_offsets: wp.array[wp.int32],
+    labels: wp.array[wp.float64],
+    source_of: wp.array[wp.int32],
+    pop_count: wp.array[wp.int32],
+    popped_step: wp.array[wp.int32],
+    front: wp.array[wp.int32],
+    relaxed: wp.array[wp.float64],
+    counts: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    blocks: wp.int32,
+    out_bids: wp.array[wp.int32],
+) -> None:
+    # The cycling pops' labels: ``ordered_relabel_block``.
+    block, lane = wp.tid()
+    ordered_relabel_block(
+        block,
+        lane,
+        blocks,
+        parity,
+        faces,
+        lengths,
+        cosines,
+        corner_order,
+        corner_offsets,
+        labels,
+        source_of,
+        pop_count,
+        popped_step,
+        front,
+        relaxed,
+        counts,
+        state,
+        out_bids,
+    )
+
+
+@wp.func
+def ordered_settle_block(
+    block: wp.int32,
+    lane: wp.int32,
+    blocks: wp.int32,
+    parity: wp.int32,
+    touched: wp.array[wp.int32],
+    relaxed: wp.array[wp.float64],
+    next_source_of: wp.array[wp.int32],
+    popped_step: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    out_labels: wp.array[wp.float64],
+    out_source_of: wp.array[wp.int32],
+    out_bids: wp.array[wp.int32],
+    out_popped: wp.array[wp.float64],
+    out_pop_count: wp.array[wp.int32],
+    out_front: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_window: wp.array[wp.float64],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # After a step's pops, over ``touched[parity]``: a vertex that popped records the distance it
+    # popped at, every vertex takes its lowered distance and label, and one still pending (lowered
+    # since it last popped) is listed in ``front[1 - parity]``; the smallest such distance of an
+    # ordinary vertex, folded over the block first, sets the next step's window. Block
+    # ``block``'s share (``ordered_settle_pass``).
+    lanes = wp.block_dim()
+    n_vertices = out_labels.shape[0]
+    stamp = 2 * state[LOOP_ROUND] + parity
+    if block == 0 and lane == 0:
+        out_counts[ORDERED_FRONT + parity] = 0
+        out_window[parity] = wp.float64(wp.inf)
+    for item in range(block * lanes + lane, out_counts[ORDERED_TOUCHED + parity], blocks * lanes):
+        v = touched[parity * n_vertices + item]
+        if popped_step[v] == stamp:
+            out_popped[v] = out_labels[v]
+            out_pop_count[v] = out_pop_count[v] + 1
+        out_labels[v] = relaxed[v]
+        if out_source_of.shape[0] != 0:
+            out_source_of[v] = next_source_of[v]
+            if out_bids[v] != ORDERED_NO_BID:
+                out_source_of[v] = out_bids[v]
+                out_bids[v] = ORDERED_NO_BID
+        if out_labels[v] < out_popped[v]:
+            slot = append_slot(out_counts, ORDERED_FRONT + 1 - parity)
+            out_front[(1 - parity) * n_vertices + slot] = v
+            out_state[LOOP_PROGRESS] = 1
+
+
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def ordered_settle_pass(
+    parity: wp.int32,
+    touched: wp.array[wp.int32],
+    relaxed: wp.array[wp.float64],
+    next_source_of: wp.array[wp.int32],
+    popped_step: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    blocks: wp.int32,
+    out_labels: wp.array[wp.float64],
+    out_source_of: wp.array[wp.int32],
+    out_bids: wp.array[wp.int32],
+    out_popped: wp.array[wp.float64],
+    out_pop_count: wp.array[wp.int32],
+    out_front: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_window: wp.array[wp.float64],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # A step's settle: ``ordered_settle_block``.
+    block, lane = wp.tid()
+    ordered_settle_block(
+        block,
+        lane,
+        blocks,
+        parity,
+        touched,
+        relaxed,
+        next_source_of,
+        popped_step,
+        state,
         out_labels,
-        out_lowered_round,
-        out_face_round,
-        out_front_vertices,
-        out_front_faces,
-        out_front_counts,
+        out_source_of,
+        out_bids,
+        out_popped,
+        out_pop_count,
+        out_front,
+        out_counts,
+        out_window,
         out_state,
     )
 
 
-@wp.func
-def copy_front_thread(
-    t: wp.int32,
-    front_vertices: wp.array[wp.int32],
-    relaxed: wp.array[wp.float64],
-    relabelled: wp.array[wp.int64],
-    state: wp.array[wp.int32],
-    threads: wp.int32,
-    out_labels: wp.array[wp.float64],
-    out_keys: wp.array[wp.int64],
-    out_front_counts: wp.array[wp.int32],
-) -> None:
-    # After a round's passes: each vertex it lowered copies its new distance (and, with several
-    # sources, its new key) back into ``out_labels`` and ``out_keys``, the only entries the round
-    # changed. The first thread also empties the face list the round read and the lowered list
-    # the next round fills, which no thread of this launch reads. Thread ``t``'s share of the
-    # launch (``copy_front_vertices``).
-    parity = front_parity(state[LOOP_ROUND])
-    n_vertices = out_labels.shape[0]
-    for item in range(t, out_front_counts[FRONT_VERTICES + parity], threads):
-        v = front_vertices[parity * n_vertices + item]
-        out_labels[v] = relaxed[v]
-        if out_keys.shape[0] != 0:
-            out_keys[v] = relabelled[v]
-    if t == 0:
-        out_front_counts[FRONT_FACES + parity] = 0
-        out_front_counts[FRONT_VERTICES + 1 - parity] = 0
-
-
-@wp.kernel
-def copy_front_vertices(
-    front_vertices: wp.array[wp.int32],
-    relaxed: wp.array[wp.float64],
-    relabelled: wp.array[wp.int64],
-    state: wp.array[wp.int32],
-    threads: wp.int32,
-    out_labels: wp.array[wp.float64],
-    out_keys: wp.array[wp.int64],
-    out_front_counts: wp.array[wp.int32],
-) -> None:
-    # After a round's passes, the copy-back: ``copy_front_thread``.
-    copy_front_thread(
-        wp.int32(wp.tid()),
-        front_vertices,
-        relaxed,
-        relabelled,
-        state,
-        threads,
-        out_labels,
-        out_keys,
-        out_front_counts,
-    )
-
-
-@wp.func
-def unfolding_front_sources_thread(
-    t: wp.int32,
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False})
+def ordered_front_serial(
     faces: wp.array[wp.int32],
     lengths: wp.array[wp.vec3d],
     cosines: wp.array[wp.vec3d],
-    labels: wp.array[wp.float64],
-    keys: wp.array[wp.int64],
-    relaxed: wp.array[wp.float64],
-    front_faces: wp.array[wp.int32],
-    front_counts: wp.array[wp.int32],
-    state: wp.array[wp.int32],
-    lanes: wp.int32,
-    threads: wp.int32,
-    out_keys: wp.array[wp.int64],
-) -> None:
-    # ``unfolding_sources_pass`` over the round's queued faces, strided as in
-    # ``unfolding_front_pass``. Thread ``t``'s share of the launch
-    # (``unfolding_front_sources_pass``).
-    this_round = state[LOOP_ROUND]
-    parity = front_parity(this_round)
-    n_faces = faces.shape[0] // 3
-    stamp = UNFOLDING_SEED_STAMP - wp.int64(1) - wp.int64(this_round)
-    for item in range(t, front_counts[FRONT_FACES + parity] * lanes, threads):
-        f = front_faces[parity * n_faces + item // lanes]
-        i, d, s = unfolding_face(faces, labels, keys, f)
-        face_lengths = lengths[f]
-        face_cosines = cosines[f]
-        for j in range(item % lanes, 6, lanes):
-            k = j // 2
-            offer, source = unfolding_face_corner_offer(face_lengths, face_cosines, d, s, k, j % 2)
-            relabel_unfolded_corner(i[k], offer, source, labels, relaxed, stamp, out_keys)
-
-
-@wp.kernel
-def unfolding_front_sources_pass(
-    faces: wp.array[wp.int32],
-    lengths: wp.array[wp.vec3d],
-    cosines: wp.array[wp.vec3d],
-    labels: wp.array[wp.float64],
-    keys: wp.array[wp.int64],
-    relaxed: wp.array[wp.float64],
-    front_faces: wp.array[wp.int32],
-    front_counts: wp.array[wp.int32],
-    state: wp.array[wp.int32],
-    lanes: wp.int32,
-    threads: wp.int32,
-    out_keys: wp.array[wp.int64],
-) -> None:
-    # The labelled rounds' relabelling over the queued faces: ``unfolding_front_sources_thread``.
-    unfolding_front_sources_thread(
-        wp.int32(wp.tid()),
-        faces,
-        lengths,
-        cosines,
-        labels,
-        keys,
-        relaxed,
-        front_faces,
-        front_counts,
-        state,
-        lanes,
-        threads,
-        out_keys,
-    )
-
-
-@wp.kernel
-def unfolding_front_rounds_serial(
-    faces: wp.array[wp.int32],
-    lengths: wp.array[wp.vec3d],
-    cosines: wp.array[wp.vec3d],
-    vertex_faces: wp.array[wp.int32],
-    vertex_face_offsets: wp.array[wp.int32],
-    lanes: wp.int32,
-    threads: wp.int32,
-    vertex_threads: wp.int32,
-    labelled: wp.int32,
+    corner_order: wp.array[wp.int32],
+    corner_offsets: wp.array[wp.int32],
+    neighbors: wp.array[wp.int32],
+    neighbor_offsets: wp.array[wp.int32],
+    window_scale: wp.array[wp.float64],
     max_rounds: wp.int32,
     labels: wp.array[wp.float64],
-    keys: wp.array[wp.int64],
+    source_of: wp.array[wp.int32],
     relaxed: wp.array[wp.float64],
-    relabelled: wp.array[wp.int64],
-    lowered_round: wp.array[wp.int32],
-    face_round: wp.array[wp.int32],
-    front_vertices: wp.array[wp.int32],
-    front_faces: wp.array[wp.int32],
-    front_counts: wp.array[wp.int32],
+    next_source_of: wp.array[wp.int32],
+    bids: wp.array[wp.int32],
+    popped: wp.array[wp.float64],
+    pop_count: wp.array[wp.int32],
+    popped_step: wp.array[wp.int32],
+    listed: wp.array[wp.int32],
+    front: wp.array[wp.int32],
+    touched: wp.array[wp.int32],
+    counts: wp.array[wp.int32],
+    window: wp.array[wp.float64],
+    scratch_targets: wp.array[wp.int32],
+    scratch_offers: wp.array[wp.float64],
     state: wp.array[wp.int32],
 ) -> None:
-    # dim=1, the CPU device's front-list round loop: each round's ``unfolding_front_pass``, its
-    # ``unfolding_front_sources_pass`` when ``labelled``, ``copy_front_vertices`` and
-    # ``loop_advance``, as one thread's loops over each launch's threads in the order a device
-    # running them one after another runs them, until the state's condition stops the loop -- so
-    # every buffer comes out as the launched loop leaves it.
+    # One block of one lane, the CPU device's step loop: each step's ``ordered_pop_pass``, its
+    # ``ordered_relabel_pass`` when labels are kept and ``ordered_settle_pass``, two steps a
+    # round, then ``loop_advance``, as one lane running each launch in launch order, so every
+    # buffer comes out as the launched loop leaves it.
+    _block, lane = wp.tid()
     while state[LOOP_CONDITION] != 0:
-        for t in range(threads):
-            unfolding_front_thread(
-                t,
+        for parity in range(2):
+            ordered_pop_block(
+                0,
+                lane,
+                1,
+                parity,
                 faces,
                 lengths,
                 cosines,
+                corner_order,
+                corner_offsets,
+                neighbors,
+                neighbor_offsets,
+                window_scale,
                 labels,
-                keys,
-                vertex_faces,
-                vertex_face_offsets,
-                lanes,
-                threads,
-                relaxed,
-                lowered_round,
-                face_round,
-                front_vertices,
-                front_faces,
-                front_counts,
+                source_of,
+                popped,
+                pop_count,
+                front,
                 state,
+                relaxed,
+                next_source_of,
+                popped_step,
+                listed,
+                touched,
+                counts,
+                window,
+                scratch_targets,
+                scratch_offers,
             )
-        if labelled != 0:
-            for t in range(threads):
-                unfolding_front_sources_thread(
-                    t,
+            if source_of.shape[0] != 0:
+                ordered_relabel_block(
+                    0,
+                    lane,
+                    1,
+                    parity,
                     faces,
                     lengths,
                     cosines,
+                    corner_order,
+                    corner_offsets,
                     labels,
-                    keys,
+                    source_of,
+                    pop_count,
+                    popped_step,
+                    front,
                     relaxed,
-                    front_faces,
-                    front_counts,
+                    counts,
                     state,
-                    lanes,
-                    threads,
-                    relabelled,
+                    bids,
                 )
-        for t in range(vertex_threads):
-            copy_front_thread(
-                t,
-                front_vertices,
+            ordered_settle_block(
+                0,
+                lane,
+                1,
+                parity,
+                touched,
                 relaxed,
-                relabelled,
+                next_source_of,
+                popped_step,
                 state,
-                vertex_threads,
                 labels,
-                keys,
-                front_counts,
+                source_of,
+                bids,
+                popped,
+                pop_count,
+                front,
+                counts,
+                window,
+                state,
             )
         advance_round_loop(max_rounds, state)
-
-
-@wp.kernel
-def unfolding_sources_pass(
-    faces: wp.array[wp.int32],
-    lengths: wp.array[wp.vec3d],
-    cosines: wp.array[wp.vec3d],
-    labels: wp.array[wp.float64],
-    keys: wp.array[wp.int64],
-    relaxed: wp.array[wp.float64],
-    lowered_round: wp.array[wp.int32],
-    state: wp.array[wp.int32],
-    lanes: wp.int32,
-    out_keys: wp.array[wp.int64],
-) -> None:
-    # With several sources, after ``unfolding_pass``: the same offers recomputed from the same
-    # round inputs, and each corner the round lowered keyed under this round's stamp with the
-    # source of an offer equal to its new distance (``out_keys`` holds ``keys`` on entry). The
-    # serial front labels a vertex by whichever origin last lowered it, so the two agree wherever
-    # the smallest offer is unique. A corner the round lowered was lowered from an active face, so
-    # the inactive ones are skipped as in ``unfolding_pass``.
-    t = wp.int32(wp.tid())
-    f = t // lanes
-    this_round = state[LOOP_ROUND]
-    if not unfolding_face_is_active(faces, lowered_round, f, this_round):
-        return
-    stamp = UNFOLDING_SEED_STAMP - wp.int64(1) - wp.int64(this_round)
-    i, d, s = unfolding_face(faces, labels, keys, f)
-    face_lengths = lengths[f]
-    face_cosines = cosines[f]
-    for j in range(t % lanes, 6, lanes):
-        k = j // 2
-        offer, source = unfolding_face_corner_offer(face_lengths, face_cosines, d, s, k, j % 2)
-        relabel_unfolded_corner(i[k], offer, source, labels, relaxed, stamp, out_keys)
-
-
-@wp.func
-def label_unfolded_corner(
-    v: wp.int32,
-    offer: wp.float64,
-    label: wp.int32,
-    labels: wp.array[wp.float64],
-    out_keys: wp.array[wp.int64],
-) -> None:
-    # A reached corner takes the source of an offer equal to its settled distance (the smallest
-    # such source on a tie).
-    if offer == labels[v]:
-        wp.atomic_min(out_keys, v, wp.int64(label))
-
-
-@wp.kernel
-def unfolding_argmin_sources(
-    faces: wp.array[wp.int32],
-    lengths: wp.array[wp.vec3d],
-    cosines: wp.array[wp.vec3d],
-    labels: wp.array[wp.float64],
-    keys: wp.array[wp.int64],
-    lanes: wp.int32,
-    out_keys: wp.array[wp.int64],
-) -> None:
-    # Each vertex's source re-read off a settled fixpoint: the label of the origin whose offer set
-    # its distance (``out_keys`` arrives holding only the sources' own keys, ``INT64_MAX``
-    # elsewhere; a source is never offered its zero, so it keeps its own).
-    t = wp.int32(wp.tid())
-    f = t // lanes
-    i, d, s = unfolding_face(faces, labels, keys, f)
-    face_lengths = lengths[f]
-    face_cosines = cosines[f]
-    for j in range(t % lanes, 6, lanes):
-        k = j // 2
-        offer, source = unfolding_face_corner_offer(face_lengths, face_cosines, d, s, k, j % 2)
-        label_unfolded_corner(i[k], offer, source, labels, out_keys)
-
-
-@wp.kernel
-def keep_or_flag_relabelled(
-    keys: wp.array[wp.int64], out_relabelled: wp.array[wp.int64], out_changed: wp.array[wp.int32]
-) -> None:
-    # After ``unfolding_argmin_sources``: a vertex no settled offer reproduces (its distance came
-    # from an offer made against an earlier state, still the smallest) keeps its label; any other
-    # whose label moved raises ``out_changed[0]`` (a plain store of ``1``).
-    v = wp.int32(wp.tid())
-    if out_relabelled[v] == UNFOLDING_UNLABELLED:
-        out_relabelled[v] = keys[v]
-        return
-    mask = wp.int64(0xFFFFFFFF)
-    if (keys[v] & mask) != (out_relabelled[v] & mask):
-        out_changed[0] = 1
 
 
 # --------------------------------------------------------------------------------------

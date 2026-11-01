@@ -2237,12 +2237,13 @@
  },
  "benchmarks/test_heat.py::test_fast_marching_distance_meshlab[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 6,
-   "alloc": 8,
-   "memset": 3,
-   "d2d": 2,
-   "h2d": 1,
-   "d2h": 1
+   "launch": 16,
+   "alloc": 27,
+   "memset": 13,
+   "h2d": 2,
+   "d2h": 3,
+   "scan": 3,
+   "sort": 2
   }
  },
  "benchmarks/test_heat.py::test_heat_geodesic[sphere_small-ordito-cuda-amortized]": {

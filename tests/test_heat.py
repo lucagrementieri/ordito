@@ -1063,10 +1063,13 @@ def test_fast_marching_distance_meshlab_matches_pymeshlab(
     Class A: MeshLab's geodesic front from one source, vertex for vertex.
 
     vcg's ``Geodesic::Visit`` pops vertices nearest first and offers each neighbour the face
-    unfolding (or the edge where its tests reject it); one source needs no labels, and its serial
-    front reaches the fixpoint the parallel rounds settle on. Measured worst **4.8e-8** of the
+    unfolding (or the edge where its tests reject it), reading each partner's distance as the
+    queue holds it then; the call pops in the queue's order. Measured worst **5.1e-8** of the
     range over the four fixtures, both sources and both devices: the ``float32`` rounding of the
-    returned ``float64`` field.
+    returned ``float64`` field. On the scan meshes the same holds (dragon, happy_buddha and bunny
+    from vertex 0: no vertex over 1e-7 of the range off pymeshlab, worst 2.2e-6 on happy_buddha);
+    rounds relaxing every face against the previous round's distances, which the call ran until
+    2026-11-01, settled 46 dragon vertices more than 1e-5 of the range off.
 
     Mutation probe: the default ``"meshlib"`` front on the same inputs is more than 1e-3 of the
     range off, asserted here so the comparison cannot pass on either front.
@@ -1095,20 +1098,18 @@ def test_fast_marching_distance_meshlab_from_several_sources(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class C (a bound): MeshLab's geodesic front from three sources, whose labels follow its queue.
+    Class A: MeshLab's geodesic front from three sources, vertex for vertex.
 
     An offer unfolds across a face only when both its corners were reached from the same source,
-    and vcg labels a vertex with whichever source's front lowered it last, in its heap's pop order:
-    two orders give two answers near where the regions meet (a serial Python port of the same
-    rule, popping ties differently, is 1.3e-3 of the range off MeshLab on ``sphere_irregular``).
-    ordito settles on labels each vertex's smallest offer confirms. Measured, of the range, on the
-    CPU device: worst **1.75e-2** (``saddle_graded``; 1.3e-3 to 6.0e-3 on the others), median at
-    most **1.7e-8**, the ``float32`` rounding; the difference is the few boundary vertices whose
-    labels differ, and the vertices downstream of them.
+    and vcg labels a vertex with whichever source's front lowered it last, in its heap's pop order;
+    the call pops in that order, so the labels and the field follow. Measured worst **3.8e-8**
+    of the range over the fixtures, both devices: the ``float32`` rounding of the returned
+    ``float64`` field. Rounds relaxing every face against the previous round's distances, which
+    the call ran until 2026-11-01, settled elsewhere near where the regions meet (1.75e-2 of the
+    range on ``saddle_graded``).
 
-    The worst is bounded at 3.4x its measured value, and the median at 1e-6, which only a field
-    equal away from the boundaries holds. Mutation probes: the field shuffled fails both; the
-    default ``"meshlib"`` front, a different update, fails the median (2.7e-3 to 2.2e-2).
+    Mutation probe: the default ``"meshlib"`` front on the same inputs is more than 1e-3 of the
+    range off, asserted here so the comparison cannot pass on either front.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = len(mesh_tm.vertices)
@@ -1122,45 +1123,39 @@ def test_fast_marching_distance_meshlab_from_several_sources(
     distance_wp = od.heat.fast_marching_distance(
         mesh_wp.points, mesh_wp.indices, sources_wp, method="meshlab"
     ).numpy()
-    gap = np.abs(distance_wp - distance_pml) / scale
-    assert gap.max() < 6e-2
-    assert np.median(gap) < 1e-6
+    assert np.allclose(distance_wp, distance_pml, rtol=0.0, atol=1e-5 * scale)
+
+    default_wp = od.heat.fast_marching_distance(mesh_wp.points, mesh_wp.indices, sources_wp)
+    assert np.abs(default_wp.numpy() - distance_pml).max() > 1e-3 * scale
 
 
 @pytest.mark.parametrize("n_sources", [1, 3])
-@pytest.mark.parametrize("mesh_name", ["saddle_graded", "torus_irregular_holes"])
-def test_fast_marching_distance_meshlab_is_independent_of_its_schedule(
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "torus_irregular"])
+def test_fast_marching_distance_meshlab_is_independent_of_its_layout(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, mesh_name: str, n_sources: int
 ) -> None:
     """
-    Ordito against ordito: every round layout gives one field, bit for bit.
+    Ordito against ordito: every launch layout gives one field, bit for bit.
 
-    The call lays its rounds out by device and mesh size (a scan of every face for an active
-    corner, or front lists of the faces the last round touched; lanes a face; the lists' launch
-    width), so the fixtures alone would run one layout per device; the pymeshlab comparison pins
-    that one. Lowering is an exact ``atomic_min``, the ``float32`` filter drops only offers that can
-    neither lower nor label a vertex, and both layouts offer from every face a lowered corner
-    touches, so every layout must give the same bits; three sources take the labelling passes
-    too. Measured bit-identical, both devices, and against the layout before the lists and the
-    filter on ``icosphere(7)``. Mutation probe: a face index hard-wired to six lanes fails every
-    case.
+    On CUDA a pop spreads its offers over a block's lanes and rechecks each lane's partner against
+    the earlier lanes' offers until none moves, where one lane walks them in vcg's order; blocks
+    stride over the front. The pymeshlab comparison pins the default layout; this pins the lanes'
+    recheck to the one-lane walk and the result to the block count. A pop owns its 1-ring for the
+    step and lowers by an exact ``atomic_min``, so every layout must give the same bits; three
+    sources take the relabelling pass too. On the CPU device the steps run as one lane whatever
+    the layout. Mutation probe: dropping the recheck (each lane keeps its first offer) fails both
+    three-source CUDA cases; on these meshes no single-source pop chains its offers far enough to
+    move a bit (on dragon it puts 388 vertices more than 1e-5 of the range off MeshLab).
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_wp.points.shape[0]
     sources_wp = wp.array(
         [0, n_vertices // 3, n_vertices // 2][:n_sources], dtype=wp.int32, device=mesh_wp.device
     )
-    schedules = [
-        (lists, lanes, threads)
-        for lists, threads in ((False, 0), (True, 1), (True, 64), (True, 1 << 17))
-        for lanes in (1, 2, 3, 6)
-    ]
     fields = []
-    for lists, lanes, threads in schedules:
-        schedule = od.heat._UnfoldingSchedule(  # pyright: ignore[reportPrivateUsage]
-            lists=lists, lanes=lanes, threads=threads
-        )
-        monkeypatch.setattr(od.heat, "_unfolding_schedule", lambda _device, _n, s=schedule: s)
+    for lanes, blocks in ((32, 1 << 12), (1, 1 << 12), (32, 1), (8, 64)):
+        monkeypatch.setattr(od.heat, "_ORDERED_FRONT_LANES", lanes)
+        monkeypatch.setattr(od.heat, "_ORDERED_FRONT_BLOCKS", blocks)
         fields.append(
             od.heat.fast_marching_distance(
                 mesh_wp.points, mesh_wp.indices, sources_wp, method="meshlab"

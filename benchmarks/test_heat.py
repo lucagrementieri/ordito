@@ -419,11 +419,11 @@ def test_fast_marching_distance_meshlab(bench_case: BenchCase) -> None:
     MeshLab's ``compute_scalar_by_geodesic_distance_from_given_point_per_vertex`` runs vcg's
     ``Geodesic`` visit: a Dijkstra-style queue that offers each neighbour the straight line from a
     virtual source unfolded across the face (``tests/test_heat.py::
-    test_fast_marching_distance_meshlab_matches_pymeshlab``, Class A). ordito relaxes the same
-    offers in parallel rounds in ``float64``, one thread per offer and only at the moving front,
-    so this row prices the unfolding update's ``float64`` chain on top of
-    ``fast_marching_distance``'s round count. One source: the case the filter takes, and the one
-    whose answer the serial queue's order does not decide.
+    test_fast_marching_distance_meshlab_matches_pymeshlab``, Class A). ordito pops in the queue's
+    order, a step at a time: every vertex nothing pending in its 2-ring precedes, its offers spread
+    over a warp's lanes in ``float64``. The row prices the step count, which follows the front's
+    length as well as the mesh's diameter, against vcg's serial queue. One source: the case the
+    filter takes.
     """
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp

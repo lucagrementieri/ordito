@@ -2113,11 +2113,12 @@
  },
  "benchmarks/test_heat.py::test_fast_marching_distance_meshlab[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 7,
-   "alloc": 13,
+   "launch": 12,
+   "alloc": 27,
    "h2h": 2,
-   "readback": 1,
-   "scan": 1
+   "readback": 3,
+   "scan": 3,
+   "sort": 2
   }
  },
  "benchmarks/test_heat.py::test_heat_geodesic[sphere_small-ordito-cpu-amortized]": {
