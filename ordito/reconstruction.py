@@ -1096,8 +1096,7 @@ def screened_poisson(
     ValueError
         If ``points`` has fewer than 3 points, ``normals`` does not have one entry per point, the
         depth/scale parameters are out of range, ``method`` is not ``"dense"``, ``"adaptive"`` or
-        ``"octree"``, or with ``"octree"`` ``depth`` is above 9, ``confidence`` is set or no normal
-        is nonzero.
+        ``"octree"``, or with ``"octree"`` ``confidence`` is set or no normal is nonzero.
     RuntimeError
         If ``points`` and ``normals`` are not all on one device.
 
@@ -1177,11 +1176,6 @@ def screened_poisson(
     if method not in ("dense", "adaptive", "octree"):
         raise ValueError(
             f"screened_poisson method must be 'dense', 'adaptive' or 'octree', got {method!r}."
-        )
-    if method == "octree" and depth > _OCTREE_MAX_DEPTH:
-        raise ValueError(
-            f"screened_poisson with method='octree' requires depth <= {_OCTREE_MAX_DEPTH}, got "
-            f"{depth}."
         )
     if method == "octree" and confidence:
         raise ValueError("screened_poisson with method='octree' does not take confidence=True.")
@@ -1269,11 +1263,6 @@ def screened_poisson(
     return vertices, faces
 
 
-# ``method="octree"`` numbers its vertices in the dense edge order, whose ``int32`` slots depth 10
-# would pass.
-_OCTREE_MAX_DEPTH = 9
-
-
 def _screened_poisson_octree(
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
@@ -1296,14 +1285,10 @@ def _screened_poisson_octree(
     device = points.device
     n = points.size
     kernel_depth = depth - 2
+    # The extraction's dense cell numbering (the vertices are numbered in the dense order of every
+    # depth's edges, ``dense_edge_slot``).
     cell_offsets_host = [sum(8**e for e in range(d)) for d in range(depth + 2)]
-    # The vertices are numbered in the dense order of every depth's edges.
-    edge_offsets_host = [3 * sum((2**e + 1) ** 3 for e in range(d)) for d in range(depth + 2)]
-    # The extraction's dense cell and edge numberings in one upload.
-    tables = [cell_offsets_host, edge_offsets_host]
-    packed = _launch.array(np.concatenate(tables).astype(np.int32), wp.int32, device=device)
-    cell_offsets = _launch.view(packed, 0, len(cell_offsets_host))
-    edge_offsets = _launch.view(packed, len(cell_offsets_host), packed.size)
+    cell_offsets = _launch.array(np.asarray(cell_offsets_host, np.int32), wp.int32, device=device)
 
     unit_transform = _octree_unit_transform(bounds, scale)
     keys = _launch.empty(n, dtype=wp.int32, device=device)
@@ -1503,9 +1488,7 @@ def _screened_poisson_octree(
     )
     # The extraction takes the iso-value as a host scalar.
     iso = od.reduce.sum(iso_terms) / n_merged
-    segments = _octree_segments(
-        fields, nodes, edge_offsets, iso, depth, full_depth, flags, cells, cell_offsets
-    )
+    segments = _octree_segments(fields, nodes, iso, depth, full_depth, flags, cells, cell_offsets)
     # The solve's tables are dead once the segments are: released before the loops and faces.
     del fields, nodes, flags, cells, cell_tables, occupancy
     unit_vertices, faces = _octree_triangulate(segments)
@@ -1912,6 +1895,7 @@ def _octree_cascade(
         brick0[(i * side + j) * side + k] = x0[4 * i + 2 * j + k]
     _launch.copy(fields, _launch.array(brick0, wp.float32, device=device), count=brick0.size)
     serial = not wp.get_device(device).is_cuda
+    sweep_lists, widest = _octree_sweep_bricks(nodes, cells, flags, depth, full_depth, serial)
     for d in range(1, depth + 1):
         # The depth's right-hand sides: entry ``e`` at ``e + shift`` of ``b``.
         b = [finest_b, -nodes.firsts[depth]] if d == depth else [coarse_b, 0]
@@ -1930,6 +1914,7 @@ def _octree_cascade(
                     depth,
                     full_depth,
                     iterations,
+                    *sweep_lists[d],
                     *b,
                     *sweep_args,
                     start,
@@ -1960,20 +1945,119 @@ def _octree_cascade(
             outputs=[record_index],
             device=device,
         )
+        if widest[d] == 0:
+            # No active node: the depth's field is the coarser one prolonged.
+            continue
+        # A slice's dense colour (``half**2`` nodes) up to ``_OCTREE_SLICE_WAVES`` takes a thread
+        # a node; past it a wave takes the listed bricks (``octree_gauss_seidel_slice_wave``).
         half = (res + 1) // 2
+        dense = widest[d] < 0
+        kernel = (
+            kernel_octree.octree_gauss_seidel_slice_wave
+            if dense
+            else kernel_octree.octree_gauss_seidel_wave
+        )
+        wave_args = [*b, *sweep_args] if dense else [*sweep_lists[d], *b, *sweep_args]
         for wave in range(res + 2 * (iterations - 1)):
             first = max(0, (wave - res + 2) // 2)
             last = min(iterations - 1, wave // 2)
             if first > last:
                 continue
+            width = (half, half) if dense else (4 * widest[d],)
             for colour in range(4):
                 _launch.launch(
-                    kernel_octree.octree_gauss_seidel_wave,
-                    dim=(last - first + 1, half, half),
-                    inputs=[d, depth, full_depth, wave, first, colour, *b, *sweep_args],
+                    kernel,
+                    dim=(last - first + 1, *width),
+                    inputs=[d, depth, full_depth, wave, first, colour, *wave_args],
                     outputs=[fields],
                     device=device,
                 )
+
+
+# The largest dense colour of a slice (``(2**(d - 1) + 1)**2`` nodes) the CUDA sweeps take a thread
+# a node over; depth 9's is past it (``kernels/algorithms/poisson_octree``'s
+# ``octree_gauss_seidel_slice_wave``).
+_OCTREE_SLICE_WAVES = 2**15
+
+
+def _octree_sweep_bricks(
+    nodes: _OctreeBricks,
+    cells: _OctreeBricks,
+    flags: wp.array[wp.uint32],
+    depth: int,
+    full_depth: int,
+    serial: bool,
+) -> tuple[list[list[wp.array[wp.int32]]], list[int]]:
+    """
+    List the stored node bricks holding an active node by ``z`` layer, for the listed sweeps.
+
+    Returns, per depth (index 0 unused), its layer offsets and its bricks sorted by layer
+    (``kernels/algorithms/poisson_octree``'s sweeps' bricks section), and its largest layer's
+    brick count: the waves' launch width, 0 for a depth with no active node. Every CPU depth is
+    listed; a CUDA depth only past ``_OCTREE_SLICE_WAVES``, the rest sweeping their dense slices
+    (no list, width -1). The activity is known before any value, so the lists are formed up front
+    and read once; the CPU's one-launch sweeps read the offsets themselves, with no read.
+    """
+    device = flags.device
+    shift = kernel_octree.BRICK_SHIFT
+    n_bricks = [
+        (nodes.firsts[d + 1] - nodes.firsts[d]) // kernel_octree.BRICK_CELLS
+        for d in range(depth + 1)
+    ]
+    n_layers = [(2**d >> shift) + 1 for d in range(depth + 1)]
+    starts = np.cumsum([0] + [n + 2 for n in n_layers]).tolist()
+    listed = [serial or (2 ** (d - 1) + 1) ** 2 > _OCTREE_SLICE_WAVES for d in range(depth + 1)]
+    if not any(listed[1:]):
+        return [[] for _ in range(depth + 1)], [-1] * (depth + 1)
+    offsets = _launch.zeros(starts[-1], dtype=wp.int32, device=device)
+    tables = _launch.carve(
+        wp.int32, [4 * n if listed[d] else 0 for d, n in enumerate(n_bricks)], device
+    )
+    lists: list[list[wp.array[wp.int32]]] = [[]]
+    for d in range(1, depth + 1):
+        count = n_bricks[d]
+        if not listed[d]:
+            lists.append([])
+            continue
+        layer_offsets = _launch.view(offsets, starts[d], starts[d + 1])
+        if count == 0:
+            lists.append([layer_offsets, tables[d]])
+            continue
+        keys = _launch.view(tables[d], 0, 2 * count)
+        bricks = _launch.view(tables[d], 2 * count, 4 * count)
+        lists.append([layer_offsets, bricks])
+        _launch.launch(
+            kernel_octree.octree_sweep_brick_keys,
+            dim=count,
+            inputs=[
+                d,
+                depth,
+                full_depth,
+                nodes.firsts[d] // kernel_octree.BRICK_CELLS,
+                n_layers[d],
+                flags,
+                cells.bricks,
+                nodes.bricks,
+                nodes.slots,
+            ],
+            outputs=[keys, bricks],
+            device=device,
+        )
+        _launch.radix_sort_pairs(keys, bricks, count, end_bit=n_layers[d].bit_length())
+        _launch.launch(
+            kernel_octree.octree_sweep_layer_offsets,
+            dim=n_layers[d] + 1,
+            inputs=[_launch.view(keys, 0, count), n_layers[d]],
+            outputs=[layer_offsets],
+            device=device,
+        )
+    if serial:
+        return lists, [-1] * (depth + 1)
+    # One read sizes every listed depth's waves.
+    read = read_values(offsets, 0, starts[-1])
+    return lists, [
+        int(read[starts[d] + n_layers[d] + 1]) if listed[d] else -1 for d in range(depth + 1)
+    ]
 
 
 def _octree_base_solve(b: np.ndarray, screen: float, centroid: np.ndarray) -> np.ndarray:
@@ -2039,7 +2123,6 @@ class _OctreeSegments(NamedTuple):
 def _octree_segments(
     fields: wp.array[wp.float32],
     nodes: _OctreeBricks,
-    edge_offsets: wp.array[wp.int32],
     iso: float,
     depth: int,
     full_depth: int,
@@ -2103,11 +2186,11 @@ def _octree_segments(
     # The vertices' numbers: each created edge's rank in the dense edge order, by its bit's rank.
     numbers = _launch.empty(max(n_vertices, 1), dtype=wp.int32, device=device)
     if n_vertices > 0:
-        keys, order = _launch.carve(wp.int32, [2 * n_vertices, 2 * n_vertices], device)
+        keys, order = _launch.sort_buffers(n_vertices, wp.uint32, device)
         _launch.launch(
             kernel_octree.octree_vertex_keys,
             dim=3 * (firsts[-1] - firsts[first]),
-            inputs=[firsts[first], depth, node_bricks, nodes.slots, edge_offsets, created, ranks],
+            inputs=[firsts[first], depth, node_bricks, nodes.slots, created, ranks],
             outputs=[keys, order],
             device=device,
         )

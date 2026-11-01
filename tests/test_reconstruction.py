@@ -1335,22 +1335,20 @@ def test_poisson_matches_pymeshlab_metric(device: str):
 
 
 def _octree_and_open3d(
-    mesh_tm: tm.Trimesh, device: str
+    points_np: np.ndarray, normals_np: np.ndarray, depth: int, device: str
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
     """
-    ``method="octree"``'s mesh and open3d's (one thread) at depth 6 from a mesh's oriented vertices.
+    ``method="octree"``'s mesh and open3d's (one thread) at ``depth`` from an oriented cloud.
 
     Returns ordito's vertices and faces, open3d's vertices and faces, and the cloud's largest
     bounding-box extent (the scale the positions compare at).
     """
-    points_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
-    normals_np = np.asarray(mesh_tm.vertex_normals, dtype=np.float64)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
     vertices_wp, faces_wp = od.reconstruction.screened_poisson(
-        points_wp, normals_wp, depth=6, method="octree"
+        points_wp, normals_wp, depth=depth, method="octree"
     )
     mesh_o3d, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
-        points_to_open3d(points_np, normals_np), depth=6, n_threads=1
+        points_to_open3d(points_np, normals_np), depth=depth, n_threads=1
     )
     return (
         np.asarray(vertices_wp.numpy(), dtype=np.float64),
@@ -1359,6 +1357,49 @@ def _octree_and_open3d(
         np.asarray(mesh_o3d.triangles, dtype=np.int64),
         float(np.ptp(points_np, axis=0).max()),
     )
+
+
+def _assert_octree_matches_open3d(
+    vertices_np: np.ndarray,
+    faces_np: np.ndarray,
+    vertices_o3d: np.ndarray,
+    faces_o3d: np.ndarray,
+    scale: float,
+    depth: int,
+) -> None:
+    """
+    Assert [`test_poisson_octree_matches_open3d`][]'s Class B match of two meshes at ``depth``.
+
+    Equal counts, a vertex bijection within ``1e-5`` of the extent plus the edge margin, at most
+    1 % of the vertices past ``1e-5``, more than 95 % of open3d's triangles, and the rest
+    retriangulating the same oriented polygons with the same area to ``3e-6``.
+    """
+    assert faces_o3d.shape[0] > 1000
+    assert faces_np.shape[0] == faces_o3d.shape[0]
+    finest_cell = 1.1 * scale / 2**depth
+    match_np = assert_nearest_bijection(
+        vertices_np, vertices_o3d, 1e-5 * scale + 2.5e-3 * finest_cell
+    )
+    errors = np.linalg.norm(vertices_np - vertices_o3d[match_np], axis=1)
+    assert np.mean(errors > 1e-5 * scale) < 0.01
+
+    ours = canonical_winding(match_np[faces_np])
+    reference = canonical_winding(faces_o3d)
+    ours_set = {tuple(face) for face in ours.tolist()}
+    reference_set = {tuple(face) for face in reference.tolist()}
+    only_reference = np.array([f for f in reference.tolist() if tuple(f) not in ours_set])
+    only_ours = np.array([f for f in ours.tolist() if tuple(f) not in reference_set])
+    assert 1.0 - only_reference.reshape(-1, 3).shape[0] / reference.shape[0] > 0.95
+    assert np.array_equal(
+        oriented_boundary_edges(only_reference), oriented_boundary_edges(only_ours)
+    )
+
+    def area(faces: np.ndarray) -> float:
+        corners = vertices_o3d[faces.reshape(-1, 3)]
+        normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
+        return 0.5 * float(np.linalg.norm(normals, axis=1).sum())
+
+    assert abs(area(only_ours) - area(only_reference)) <= 3e-6 * area(only_reference)
 
 
 @pytest.mark.parity(
@@ -1396,8 +1437,9 @@ def test_poisson_octree_matches_open3d(
 
     Measured at depth 6 (``full_depth`` 5: the finest depth is sparse and coarse leaves stitch to
     finer ones), CPU and CUDA: counts equal, bijection, 9 / 10 / 1 margin-clamped vertices past
-    ``1e-5`` (the rest at most ``1e-5``), 98.3-99.0 % of the triangles identical, the rest
-    retriangulating identical polygons with an area gap of ``2.4e-8`` to ``1.9e-6``. Mutation
+    ``1e-5`` (the rest at most ``1e-5``), 98.2-99.0 % of the triangles identical, the rest
+    retriangulating identical polygons with an area gap of ``1.9e-7`` to ``2.2e-6``
+    (``saddle_graded`` on the CPU, the closest to the bound). Mutation
     probes, each failing an assert: the quad split's comparison reversed (53-56 % identical, area
     gap ``2.2e-5`` to ``2.6e-5``; 38 % on the open cloud), loops started at the first segment
     instead of the last (62-65 %, ``0.6e-5`` to ``1.0e-5``), every edge root scaled by 1.001
@@ -1409,33 +1451,63 @@ def test_poisson_octree_matches_open3d(
     read from (no vertex here sits on an edge whose wall corner that order decides).
     """
     mesh_tm, _ = request.getfixturevalue(mesh_name)
-    vertices_np, faces_np, vertices_o3d, faces_o3d, scale = _octree_and_open3d(mesh_tm, device)
-    assert faces_o3d.shape[0] > 1000
-    assert faces_np.shape[0] == faces_o3d.shape[0]
-    finest_cell = 1.1 * scale / 2**6
-    match_np = assert_nearest_bijection(
-        vertices_np, vertices_o3d, 1e-5 * scale + 2.5e-3 * finest_cell
+    points_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    normals_np = np.asarray(mesh_tm.vertex_normals, dtype=np.float64)
+    vertices_np, faces_np, vertices_o3d, faces_o3d, scale = _octree_and_open3d(
+        points_np, normals_np, 6, device
     )
-    errors = np.linalg.norm(vertices_np - vertices_o3d[match_np], axis=1)
-    assert np.mean(errors > 1e-5 * scale) < 0.01
+    _assert_octree_matches_open3d(vertices_np, faces_np, vertices_o3d, faces_o3d, scale, 6)
 
-    ours = canonical_winding(match_np[faces_np])
-    reference = canonical_winding(faces_o3d)
-    ours_set = {tuple(face) for face in ours.tolist()}
-    reference_set = {tuple(face) for face in reference.tolist()}
-    only_reference = np.array([f for f in reference.tolist() if tuple(f) not in ours_set])
-    only_ours = np.array([f for f in ours.tolist() if tuple(f) not in reference_set])
-    assert 1.0 - only_reference.reshape(-1, 3).shape[0] / reference.shape[0] > 0.95
-    assert np.array_equal(
-        oriented_boundary_edges(only_reference), oriented_boundary_edges(only_ours)
+
+def _capped_spheres_cloud() -> tuple[np.ndarray, np.ndarray]:
+    """
+    Two spheres of radius 0.02 far apart, each sampled sparsely with a dense cap, and their normals.
+
+    Their cube is about 50 sphere radii wide, so the dense caps refine to depth 10 while the cloud
+    stays small; the cap's edge makes depth-9 leaves meet depth-10 ones along the surface (borrowed
+    faces), one sphere far out along ``x``, where a depth-10 cell's packed index times six passes
+    ``int32``.
+    """
+    sparse_np = tm.creation.icosphere(subdivisions=3).vertices
+    dense_np = tm.creation.icosphere(subdivisions=5).vertices
+    unit_np = np.vstack([sparse_np, dense_np[dense_np[:, 2] > 0.3]])
+    rotation_np = np.asarray(tm.transformations.rotation_matrix(0.4, [1.0, 2.0, 3.0]))[:3, :3]
+    unit_np = unit_np @ rotation_np.T
+    centres_np = np.array([[0.13, -0.07, 0.05], [0.9, 0.6, -0.8]])
+    points_np = np.vstack([0.02 * unit_np + centre_np for centre_np in centres_np])
+    return points_np, np.vstack([unit_np, unit_np])
+
+
+@pytest.mark.parity(
+    "screened_poisson",
+    "open3d",
+    benchmarked=False,
+    reason="open3d wraps Kazhdan's CPU solver, whose screened_poisson rows were removed from the "
+    "benchmarks for dominating the suite's wall clock (see test_poisson_matches_open3d_metric); "
+    "the octree backend's comparison lives here, at a size a correctness test can afford.",
+)
+def test_poisson_octree_matches_open3d_at_depth_10(device: str) -> None:
+    """
+    Class B: [`test_poisson_octree_matches_open3d`][]'s asserts at depth 10, the deepest allowed.
+
+    Depth 10 is where the octree's indices pass ``int32``: the dense edge order the vertices are
+    numbered in runs to ``3.7e9`` (``uint32``), a band leaf's packed cell index times six to
+    ``7.4e9``, and the borrowed faces' sort key needs its rank relative to the coarse cell. The
+    cloud (two small, unevenly sampled spheres far apart) reaches depth 10 along its dense caps
+    with depth-9 leaves beside them, in about a second of open3d.
+
+    Measured, CPU and CUDA: counts equal (9 848 vertices), bijection, no vertex past ``1e-5``,
+    97.7-97.8 % of the triangles identical, the rest retriangulating identical polygons with an
+    area gap of ``9.5e-8`` to ``1.6e-7``. Mutation probe: the borrowed faces' payload as the
+    packed cell index times six (``int32``) fails the face count (19 405 against 19 688) and the
+    polygons. The old borrowed-key packing (full rank, overlapping the depth field from depth 10)
+    is invisible here and on ``dragon`` at depth 10.
+    """
+    points_np, normals_np = _capped_spheres_cloud()
+    vertices_np, faces_np, vertices_o3d, faces_o3d, scale = _octree_and_open3d(
+        points_np, normals_np, 10, device
     )
-
-    def area(faces: np.ndarray) -> float:
-        corners = vertices_o3d[faces.reshape(-1, 3)]
-        normals = np.cross(corners[:, 1] - corners[:, 0], corners[:, 2] - corners[:, 0])
-        return 0.5 * float(np.linalg.norm(normals, axis=1).sum())
-
-    assert abs(area(only_ours) - area(only_reference)) <= 3e-6 * area(only_reference)
+    _assert_octree_matches_open3d(vertices_np, faces_np, vertices_o3d, faces_o3d, scale, 10)
 
 
 @pytest.mark.parity("screened_poisson", "meshlib")
@@ -1508,7 +1580,6 @@ def test_poisson_outer_surface_matches_meshlib_distance_volume(device: str) -> N
         pytest.param(162, {"depth": 11}, "full_depth", id="depth_too_large"),
         pytest.param(162, {"scale": 0.0}, "scale", id="zero_scale"),
         pytest.param(162, {"method": "bogus"}, "method", id="off_menu_method"),
-        pytest.param(162, {"depth": 10, "method": "octree"}, "depth", id="octree_depth_10"),
         pytest.param(
             162, {"confidence": True, "method": "octree"}, "confidence", id="octree_confidence"
         ),

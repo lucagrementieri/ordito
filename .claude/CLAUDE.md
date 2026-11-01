@@ -808,6 +808,7 @@ On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. T
 - Form area vectors and cotangents where they do not cancel (`predicates.triangle_area_vector` crosses at the largest angle); Heron needs sorted sides. Float32 lengths cannot represent a needle (the intrinsic path warns).
 - Never substitute an algebraic identity inside a sign test that feeds a branch; CUDA differs, CPU does not. Exactly coplanar float32 corners give float64 plane distances of ~1e-19 with mixed signs on CUDA (FMA) and exact zeros on CPU: snap a distance within its own rounding to zero before branching on its sign (`predicates.plane_distances_d`; without it two disjoint coplanar triangles "intersected" on CUDA).
 - `mesh_query_point_no_sign` is inexact (~2e-5, the point worse than the distance; its face need not be the nearest, so an exact match re-searches the faces within that distance, `kernels/registration.landmark_match`); `length < r` and `length_sq < r*r` differ in float32 (§2.4); NaN breaks `searchsorted(side="right")` (§3.1).
+- A unit-cube map `p * inverse + translation` that nvcc contracts to an FMA rounds once where the upstream rounds twice: a point on a cell face moves by an ulp, and a quadratic B-spline weight that is exactly zero there becomes nonzero, refining cells the reference leaves as leaves (`dragon` octree depth 10: nine cells, 48 vertices off). Match a reference's rounding with `__fmul_rn` / `__fadd_rn` in a `wp.func_native` (`kernels/algorithms/poisson_octree.unit_position`, `square_area`).
 - Gate an angle near pi on the angle (`atan2` form, `predicates.vector_angle`), not on its `float32` cosine: the cosine is flat there, so every threshold above ~179.98° rounded to `cos == -1` and the fold gate of `face_defective_mask` / `remove_folded_faces` never flagged an exactly folded-back pair (fixed 2026-10-26; MeshLib, which tests `dot <= cos`, is inclusive at the threshold where ordito is strict).
 - Float32 storage sets a noise floor no tolerance reaches; heat fields scale as 1/scale², so absolute tolerances on them are wrong.
 - The backward pass of an empty dynamic `range` runs one iteration past the array: a differentiated thread whose loop can draw nothing must return first.
@@ -935,9 +936,30 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **`screened_poisson(method="octree")` memory.** At depth 9 the constraints, cascade and
-  extraction phases peak within 8 MiB of each other (125-133 MiB), so no single table dominates.
-  Depth 10 would need `int64` dense edge slots for the vertex order.
+- **`screened_poisson(method="octree")` memory and depth 11.** The peak is shared by the cascade
+  and the extraction (`dragon` 124.5 MiB at depth 9, 436 MiB at depth 10). The per-depth brick
+  index tables are dense (cells, nodes, carried data and their numbering, 68 MiB each at depth
+  10) and grow 8x a depth whatever the surface: `bunny`, whose tree stops near depth 8, peaks at
+  315 MiB at depth 10. A sparse index for the finest depths is the lever, and depth 11 needs it
+  plus `int64` lattice, cell and sample-key indices (`2049**3`, `sum 8**e`). The finest depth's
+  stored nodes are 27 % active (`4**3` bricks, nodes within three of a flagged cell).
+- **`screened_poisson(method="octree")` sweep latency.** A Gauss-Seidel wave is latency-bound at
+  8-9 us of device time (one thread's row is a chain of dependent brick-table loads), and a depth
+  takes `4 (2**d + 15)` of them in open3d's order: 74 of `dragon`'s 98 ms at depth 10. Unpriced:
+  replaying the waves as a graph (declined 2026-10-26 when each wave cost 14 us over the dense
+  slice) and a per-brick neighbour table shortening the row's chain.
+- **`screened_poisson(method="octree")` far from the samples.** Surfaces open3d grows around
+  isolated points (a small sphere plus the eight corners of a large cube) differ by up to 0.35 of
+  a finest cell, at depths 8 and 10, CPU and CUDA; the samples' own surfaces match. Untraced.
+- **`screened_poisson(method="adaptive")` past depth 10** would fit (about 4x depth 10's
+  2.3-2.9 GB and 4.5-6.1 M faces) but indexes its lattices in `int32` throughout
+  (`poisson_grid_index`, `kernels/algorithms/poisson_band.py`): `2049**3` needs a 64-bit audit.
+  `dense` cannot pass depth 10 (its lattice alone is ~4.3 GB a field there).
+- **A first call's lazily imported submodules keep its frame.** The first touch of `od.<module>`
+  inside a call runs the PEP 562 import, which leaves the calling frame in a reference cycle: its
+  locals, outputs included, stay allocated until the next garbage collection (26.9 MiB after a
+  depth-9 octree call). Once per process; a probe reading the mempool after a warm-up call must
+  `gc.collect()` first.
 - **`signed_distance_level_set` against `igl.offset_surface` at `iso = 0.1`.** One vertex 4.8e-5
   off on a near-tangent lattice edge; only igl's `float64` lattice reproduces it. Proposed: an
   opt-in `float64` path through the whole extraction (`bounds`, node positions, distances,

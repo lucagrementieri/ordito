@@ -51,8 +51,10 @@ in ascending ``x % 2 + 2 (y % 2)`` order -- the upstream order, sweep for sweep.
 wavefront (``octree_gauss_seidel_wave``): sweep ``s`` on slice ``z`` only waits for sweep ``s`` on
 ``z + 1`` and sweep ``s - 1`` on ``z - 1``, so one launch relaxes every ``(s, z)`` on a diagonal
 and a level costs ``4 * (res + 2 * (iterations - 1))`` launches instead of ``4 * res *
-iterations``, with the same values. The CPU runs a launch's threads one after another anyway, so
-there one launch a level runs every wave in that order (``octree_gauss_seidel_depth``).
+iterations``, with the same values; a launch visits only the stored bricks holding an active node
+(the sweeps' bricks section), and a level with none runs no sweep. The CPU runs a launch's threads
+one after another anyway, so there one launch a level runs every wave in that order
+(``octree_gauss_seidel_depth``).
 
 **Extraction** is the upstream's, cell by cell (the extraction section's note): corner values
 copied up from the deepest leaf at each point, edge vertices placed by the upstream non-linear fit
@@ -725,6 +727,28 @@ def octree_sample_depth(
 # ---------------------------------------------------------------------------------------------
 
 
+# A point's unit-cube position as the upstream transform forms it, a product and then the
+# translation, each rounded: a fused multiply-add rounds once, which moves a point on a cell face by
+# an ulp. There a neighbour's quadratic B-spline weight is exactly zero, and the ulp made it
+# nonzero: on ``dragon`` at depth 10 one such point refined nine cells open3d leaves as leaves.
+_UNIT_POSITION = """
+#if defined(__CUDA_ARCH__)
+return wp::vec3(
+    __fadd_rn(__fmul_rn(p.c[0], inverse), translation.c[0]),
+    __fadd_rn(__fmul_rn(p.c[1], inverse), translation.c[1]),
+    __fadd_rn(__fmul_rn(p.c[2], inverse), translation.c[2]));
+#else
+const float products[3] = {p.c[0] * inverse, p.c[1] * inverse, p.c[2] * inverse};
+return wp::vec3(
+    products[0] + translation.c[0], products[1] + translation.c[1], products[2] + translation.c[2]);
+#endif
+"""
+
+
+@wp.func_native(_UNIT_POSITION)
+def unit_position(p: wp.vec3, inverse: wp.float32, translation: wp.vec3) -> wp.vec3: ...
+
+
 @wp.kernel
 def octree_point_keys(
     points: wp.array[wp.vec3],
@@ -738,9 +762,9 @@ def octree_point_keys(
 ) -> None:
     # Each point's finest cell (the sentinel ``8**depth`` for a zero or non-finite normal, which
     # the upstream reader drops), its unit-cube position and its unit normal. The position is the
-    # upstream transform's arithmetic: a product, then the translation added.
+    # upstream transform's arithmetic (``unit_position``).
     i = wp.int32(wp.tid())
-    u = points[i] * inverse + translation
+    u = unit_position(points[i], inverse, translation)
     n = normals[i]
     length = wp.length(n)
     key = wp.int32(1 << (3 * depth))
@@ -1773,6 +1797,11 @@ def octree_coarse_screening_constraints(
     if d < 0:
         return
     node = wp.vec3i(at[1], at[2], at[3])
+    # The sweeps read an active node's right-hand side alone, and the restriction has already
+    # read every one: an inactive node's is left as it is (depths 9-10 store 2-4x their active
+    # nodes).
+    if not node_active(flags, cells, full_depth, d, node):
+        return
     b = out_b[e + shift]
     if d > 0:
         # The carried-up data only: its bit and rank tables are never read (``data_cells``
@@ -1904,15 +1933,11 @@ def octree_prolong(
 
 
 @wp.func
-def gauss_seidel_node(
+def gauss_seidel_update(
     d: wp.int32,
     depth: wp.int32,
     full_depth: wp.int32,
-    wave: wp.int32,
-    sweep: wp.int32,
-    colour: wp.int32,
-    a: wp.int32,
-    c: wp.int32,
+    node: wp.vec3i,
     b: wp.array[wp.float32],
     b_shift: wp.int32,
     flags: wp.array[wp.uint32],
@@ -1922,24 +1947,10 @@ def gauss_seidel_node(
     node_bricks: wp.array[wp.int32],
     field: wp.array[wp.float32],
 ) -> None:
-    # The Gauss-Seidel update of node ``(2 a + colour % 2, 2 c + colour / 2)`` on the slice sweep
-    # ``sweep`` relaxes on wavefront ``wave = 2 sweep + (res - 1 - z)``, when the node is active;
-    # the caller passes only sweeps whose slice exists. ``field`` starts at the coarser field
-    # prolonged, so its updates are the upstream correction's (which starts at zero against
-    # ``b - A prolonged``) with the coarser field added. Shared by the two schedules of the same
-    # sweeps: ``octree_gauss_seidel_wave`` (one launch a wave and colour, CUDA's) and
-    # ``octree_gauss_seidel_depth`` (every wave of a depth in one thread, the CPU's). The updates
-    # of one wave and colour touch nodes two apart in ``x``, ``y`` and (across sweeps) ``z``,
-    # beyond the stencil's reach, so their order is free and the two give the same bits.
-    # ``field`` holds every depth's stored nodes (``node_bricks``), ``b`` this depth's, entry
-    # ``e`` at ``e + b_shift``.
-    res = (1 << d) + 1
-    z = res - 1 - (wave - 2 * sweep)
-    x = 2 * a + (colour & 1)
-    y = 2 * c + (colour >> 1)
-    if x >= res or y >= res:
-        return
-    node = wp.vec3i(x, y, z)
+    # The Gauss-Seidel update of depth ``d``'s ``node`` when it is active. ``field`` starts at the
+    # coarser field prolonged, so its updates are the upstream correction's (which starts at zero
+    # against ``b - A prolonged``) with the coarser field added. ``field`` holds every depth's
+    # stored nodes (``node_bricks``), ``b`` this depth's, entry ``e`` at ``e + b_shift``.
     if not node_active(flags, cells, full_depth, d, node):
         return
     row = octree_row(d, depth, node, field, node_bricks, cells, record_index, screen)
@@ -1947,8 +1958,96 @@ def gauss_seidel_node(
     field[index] = field[index] + (b[index + b_shift] - row[0]) / row[1]
 
 
+# ---------------------------------------------------------------------------------------------
+# The sweeps' bricks
+# ---------------------------------------------------------------------------------------------
+#
+# A wave relaxes one colour of one ``z`` slice per sweep in flight. Its nodes are read off the
+# depth's stored node bricks holding an active node, sorted by their ``z`` layer of bricks
+# (``octree_sweep_brick_keys``, ``octree_sweep_layer_offsets``): a colour's nodes in one slice of a
+# brick are four (``2 x 2`` in ``x`` and ``y``), so a wave's thread ``t`` takes brick ``t / 4`` of
+# its slice's layer and node ``t % 4``. A listed brick is its ``x`` and ``y`` brick coordinates
+# packed (``x | y << 16``), so a wave reads no brick table to place its nodes. The dense slice
+# (``(2**(d - 1) + 1)**2`` threads a sweep) was 19-70x the active nodes at depths 8-9 on a scan
+# cloud, and ran full-size on depths with none.
+
+
 @wp.kernel
-def octree_gauss_seidel_wave(
+def octree_sweep_brick_keys(
+    d: wp.int32,
+    depth: wp.int32,
+    full_depth: wp.int32,
+    first_brick: wp.int32,
+    n_layers: wp.int32,
+    flags: wp.array[wp.uint32],
+    cells: wp.array[wp.int32],
+    node_bricks: wp.array[wp.int32],
+    node_slots: wp.array[wp.int32],
+    out_keys: wp.array[wp.int32],
+    out_bricks: wp.array[wp.int32],
+) -> None:
+    # A depth ``d`` stored node brick's ``z`` layer when it holds an active node, else ``n_layers``
+    # (sorted past every layer), with its packed ``x`` and ``y`` brick coordinates. One thread a
+    # brick of the depth.
+    t = wp.int32(wp.tid())
+    brick = first_brick + t
+    at = stored_brick(node_bricks, node_slots, depth, 1, brick * BRICK_CELLS)
+    n = 1 << d
+    side = 1 << BRICK_SHIFT
+    key = n_layers
+    for q in range(BRICK_CELLS):
+        node = wp.vec3i(at[1] + q // (side * side), at[2] + (q // side) % side, at[3] + q % side)
+        if node[0] <= n and node[1] <= n and node[2] <= n:
+            if node_active(flags, cells, full_depth, d, node):
+                key = at[3] >> BRICK_SHIFT
+    out_keys[t] = key
+    out_bricks[t] = (at[1] >> BRICK_SHIFT) | ((at[2] >> BRICK_SHIFT) << 16)
+
+
+@wp.kernel
+def octree_sweep_layer_offsets(
+    keys: wp.array[wp.int32], n_layers: wp.int32, out_offsets: wp.array[wp.int32]
+) -> None:
+    # Each layer's first brick in the sorted keys, the active bricks' count at ``n_layers`` and the
+    # largest layer's brick count at ``n_layers + 1`` (zeroed by the caller). One thread a layer
+    # and one for the end.
+    layer = wp.int32(wp.tid())
+    lower = binary_search_index_left(keys, layer)
+    out_offsets[layer] = lower
+    if layer < n_layers:
+        upper = binary_search_index_left(keys, layer + 1)
+        wp.atomic_max(out_offsets, n_layers + 1, upper - lower)
+
+
+@wp.func
+def sweep_node(
+    d: wp.int32,
+    wave: wp.int32,
+    sweep: wp.int32,
+    colour: wp.int32,
+    t: wp.int32,
+    layer_offsets: wp.array[wp.int32],
+    sweep_bricks: wp.array[wp.int32],
+) -> wp.vec3i:
+    # Node ``t`` of colour ``colour`` in sweep ``sweep``'s slice on wavefront ``wave = 2 sweep +
+    # (res - 1 - z)``, ``x = -1`` past the slice's bricks or the lattice. The caller passes only
+    # sweeps whose slice exists.
+    res = (1 << d) + 1
+    z = res - 1 - (wave - 2 * sweep)
+    layer = z >> BRICK_SHIFT
+    slot = layer_offsets[layer] + (t >> 2)
+    if slot >= layer_offsets[layer + 1]:
+        return wp.vec3i(-1, -1, -1)
+    packed = sweep_bricks[slot]
+    x = ((packed & 0xFFFF) << BRICK_SHIFT) + 2 * (t & 1) + (colour & 1)
+    y = ((packed >> 16) << BRICK_SHIFT) + 2 * ((t >> 1) & 1) + (colour >> 1)
+    if x >= res or y >= res:
+        return wp.vec3i(-1, -1, -1)
+    return wp.vec3i(x, y, z)
+
+
+@wp.kernel
+def octree_gauss_seidel_slice_wave(
     d: wp.int32,
     depth: wp.int32,
     full_depth: wp.int32,
@@ -1964,35 +2063,65 @@ def octree_gauss_seidel_wave(
     node_bricks: wp.array[wp.int32],
     field: wp.array[wp.float32],
 ) -> None:
-    # One colour of every ``(sweep, slice)`` on wavefront ``wave``, the sweeps from
-    # ``first_sweep`` on: a launch a wave and colour, sized to the wave's sweeps.
-    #
-    # **Recording the waves as a CUDA graph is declined** (measured 2026-10-26): with the wave read
-    # off a device counter, a group of 8 waves recorded once per depth and replayed was
-    # bit-identical but 0.93-0.96x at depths 6-7 and 0.97-1.00x at depth 8. The sweeps are
-    # device-bound, not launch-bound: the call's kernel time equals its wall time (depth 7: 37.6
-    # against 36.1 ms), each wave launch costs ~14 us of device time rebuilding its rows
-    # (``octree_row``), and the host issues launches faster than the device drains them. The lever
-    # is a launch's own cost, not the launch count.
+    # ``octree_gauss_seidel_wave`` over every node of the colour in each sweep's slice, a thread
+    # each, instead of the listed bricks'. It differs only in how a thread finds its node: up to
+    # depth 8 (``129**2`` nodes a colour of a slice) a wave is latency-bound at ~9 us of device
+    # time either way and the list's two reads cost ~0.5-0.8 us more (``dragon``); from depth 9
+    # (``257**2``) the slice's threads cost more than the list saves (11.8 against 8.9 us a
+    # wave).
     s, a, c = wp.tid()
-    gauss_seidel_node(
-        d,
-        depth,
-        full_depth,
-        wave,
-        first_sweep + s,
-        colour,
-        a,
-        c,
-        b,
-        b_shift,
-        flags,
-        cells,
-        record_index,
-        screen,
-        node_bricks,
+    res = (1 << d) + 1
+    x = 2 * a + (colour & 1)
+    y = 2 * c + (colour >> 1)
+    if x >= res or y >= res:
+        return
+    z = res - 1 - (wave - 2 * (first_sweep + s))
+    gauss_seidel_update(
+        d, depth, full_depth, wp.vec3i(x, y, z), b, b_shift, flags, cells, record_index, screen,
+        node_bricks, field,
+    )  # fmt: skip
+
+
+@wp.kernel
+def octree_gauss_seidel_wave(
+    d: wp.int32,
+    depth: wp.int32,
+    full_depth: wp.int32,
+    wave: wp.int32,
+    first_sweep: wp.int32,
+    colour: wp.int32,
+    layer_offsets: wp.array[wp.int32],
+    sweep_bricks: wp.array[wp.int32],
+    b: wp.array[wp.float32],
+    b_shift: wp.int32,
+    flags: wp.array[wp.uint32],
+    cells: wp.array[wp.int32],
+    record_index: wp.array[wp.int32],
+    screen: wp.array[wp.float32],
+    node_bricks: wp.array[wp.int32],
+    field: wp.array[wp.float32],
+) -> None:
+    # One colour of every ``(sweep, slice)`` on wavefront ``wave``, the sweeps from
+    # ``first_sweep`` on: a launch a wave and colour, sized to the sweeps in flight and four
+    # threads a brick of the largest layer. The updates of one wave and colour touch nodes two
+    # apart in ``x``, ``y`` and (across sweeps) ``z``, beyond the stencil's reach, so their order
+    # is free and this gives ``octree_gauss_seidel_depth``'s bits.
+    #
+    # **Recording the waves as a CUDA graph is declined** (measured 2026-10-26, over the dense
+    # slices): with the wave read off a device counter, a group of 8 waves recorded once per depth
+    # and replayed was bit-identical but 0.93-0.96x at depths 6-7 and 0.97-1.00x at depth 8. The
+    # sweeps were device-bound, not launch-bound: each wave launch cost ~14 us of device time
+    # rebuilding its rows (``octree_row``), and the host issued launches faster than the device
+    # drained them.
+    s, t = wp.tid()
+    sweep = first_sweep + s
+    node = sweep_node(d, wave, sweep, colour, t, layer_offsets, sweep_bricks)
+    if node[0] < 0:
+        return
+    gauss_seidel_update(
+        d, depth, full_depth, node, b, b_shift, flags, cells, record_index, screen, node_bricks,
         field,
-    )
+    )  # fmt: skip
 
 
 @wp.kernel
@@ -2001,6 +2130,8 @@ def octree_gauss_seidel_depth(
     depth: wp.int32,
     full_depth: wp.int32,
     iterations: wp.int32,
+    layer_offsets: wp.array[wp.int32],
+    sweep_bricks: wp.array[wp.int32],
     b: wp.array[wp.float32],
     b_shift: wp.int32,
     flags: wp.array[wp.uint32],
@@ -2026,32 +2157,20 @@ def octree_gauss_seidel_depth(
             field, record_index,
         )  # fmt: skip
     res = (1 << d) + 1
-    half = (res + 1) // 2
     for wave in range(res + 2 * (iterations - 1)):
-        first = wp.max(0, (wave - res + 2) // 2)
+        first_sweep = wp.max(0, (wave - res + 2) // 2)
         last = wp.min(iterations - 1, wave // 2)
         for colour in range(4):
-            for sweep in range(first, last + 1):
-                for a in range(half):
-                    for c in range(half):
-                        gauss_seidel_node(
-                            d,
-                            depth,
-                            full_depth,
-                            wave,
-                            sweep,
-                            colour,
-                            a,
-                            c,
-                            b,
-                            b_shift,
-                            flags,
-                            cells,
-                            record_index,
-                            screen,
-                            node_bricks,
-                            field,
-                        )
+            for sweep in range(first_sweep, last + 1):
+                layer = (res - 1 - (wave - 2 * sweep)) >> BRICK_SHIFT
+                n_threads = 4 * (layer_offsets[layer + 1] - layer_offsets[layer])
+                for t in range(n_threads):
+                    node = sweep_node(d, wave, sweep, colour, t, layer_offsets, sweep_bricks)
+                    if node[0] >= 0:
+                        gauss_seidel_update(
+                            d, depth, full_depth, node, b, b_shift, flags, cells, record_index,
+                            screen, node_bricks, field,
+                        )  # fmt: skip
 
 
 @wp.kernel
@@ -2469,13 +2588,17 @@ def edge_bit_set(bits: wp.array[wp.uint32], slot: wp.int32) -> wp.bool:
 
 
 @wp.func
-def dense_edge_slot(
-    edge_offsets: wp.array[wp.int32], d: wp.int32, axis: wp.int32, node: wp.vec3i
-) -> wp.int32:
+def dense_edge_slot(d: wp.int32, axis: wp.int32, node: wp.vec3i) -> wp.uint32:
     # Depth ``d``'s edge from ``node`` along ``axis`` in the dense order of every depth's edges
-    # (depth, axis, then node row-major): the order the vertices are numbered in.
+    # (depth, axis, then node row-major): the order the vertices are numbered in. ``uint32``: the
+    # order runs to ``3 * 1.23e9`` at depth 10, past ``int32`` but not past ``2**32``.
+    before = wp.uint32(0)
+    for e in range(d):
+        side = wp.uint32((1 << e) + 1)
+        before += wp.uint32(3) * side * side * side
     res = (1 << d) + 1
-    return edge_offsets[d] + axis * res * res * res + lattice_index(d, node)
+    lattice = wp.uint32(res * res * res)
+    return before + wp.uint32(axis) * lattice + wp.uint32(lattice_index(d, node))
 
 
 @wp.func
@@ -2684,10 +2807,9 @@ def octree_vertex_keys(
     depth: wp.int32,
     node_bricks: wp.array[wp.int32],
     node_slots: wp.array[wp.int32],
-    edge_offsets: wp.array[wp.int32],
     created: wp.array[wp.uint32],
     ranks: wp.array[wp.int32],
-    out_keys: wp.array[wp.int32],
+    out_keys: wp.array[wp.uint32],
     out_order: wp.array[wp.int32],
 ) -> None:
     # Each created edge's dense slot (``dense_edge_slot``) at its bit's rank, the identity beside
@@ -2699,7 +2821,7 @@ def octree_vertex_keys(
         return
     at = stored_edge(node_bricks, node_slots, depth, first, t)
     r = bit_rank(created, ranks, slot)
-    out_keys[r] = dense_edge_slot(edge_offsets, at[0], t % 3, wp.vec3i(at[1], at[2], at[3]))
+    out_keys[r] = dense_edge_slot(at[0], t % 3, wp.vec3i(at[1], at[2], at[3]))
     out_order[r] = r
 
 
@@ -2952,10 +3074,15 @@ def borrowed_face_key(
             if leaf_cell(flags, cells, depth, full_depth, j, coarse) and refined_cell(
                 flags, cells, depth, full_depth, j, mine
             ):
-                order = (wp.uint64(15 - d) << wp.uint64(18)) | wp.uint64(depth_first_rank(c, d))
+                # The rank within ``C``'s footprint (the faces of one coarse face share the
+                # rest), at most ``2 (depth - full_depth)`` bits; the slab's top less one,
+                # ``depth`` bits: the order fits 28 bits to depth 10, and sorts as the full rank
+                # and top would.
+                rank = depth_first_rank(c, d) & ((1 << (2 * step)) - 1)
+                order = (wp.uint64(15 - d) << wp.uint64(14)) | wp.uint64(rank)
                 if face_axis(f) != 2:
-                    slab_end = wp.uint64((c[2] + 1) << (depth - d))
-                    order = order | (slab_end << wp.uint64(22))
+                    slab_end = wp.uint64(((c[2] + 1) << (depth - d)) - 1)
+                    order = order | (slab_end << wp.uint64(18))
                 flat = cell_offsets[j] + cell_flat(1 << j, coarse)
                 key = (
                     (wp.uint64(flat) << wp.uint64(35)) | (wp.uint64(5 - f) << wp.uint64(32)) | order
@@ -2985,7 +3112,8 @@ def borrowed_faces(
     out_faces: wp.array[wp.int32],
 ) -> None:
     # One band leaf's face with segments lying on a coarser leaf's face (``borrowed_face_key``):
-    # counted into ``offsets`` while ``out_keys`` is empty, written at its scanned slot otherwise.
+    # counted into ``offsets`` while ``out_keys`` is empty, written at its scanned slot otherwise,
+    # as its key and its band face (``6 * band slot + face``).
     t = wp.int32(wp.tid())
     flat = band[t // 6] + cell_offsets[first_depth]
     f = t % 6
@@ -3004,7 +3132,7 @@ def borrowed_faces(
     elif key != wp.uint64(0):
         slot = offsets[t] - 1
         out_keys[slot] = key
-        out_faces[slot] = flat * 6 + f
+        out_faces[slot] = t
 
 
 @wp.func
@@ -3071,7 +3199,8 @@ def cell_segments(
                 while r < borrowed_keys.shape[0] and (borrowed_keys[r] >> wp.uint64(32)) == (
                     prefix >> wp.uint64(32)
                 ):
-                    fine = unpack_cell(cell_offsets, first_depth, depth, borrowed[r] // 6)
+                    fine_flat = band[borrowed[r] // 6] + cell_offsets[first_depth]
+                    fine = unpack_cell(cell_offsets, first_depth, depth, fine_flat)
                     fc = wp.vec3i(fine[0], fine[1], fine[2])
                     fine_code = cell_case(fields, node_bricks, sources, iso, fine[3], fc)
                     segments = face_segments(

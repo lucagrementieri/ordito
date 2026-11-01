@@ -114,8 +114,8 @@ _BPA_RADIUS_FRACTION = 1.5
 
 # Octree depths of ``ordito.reconstruction.screened_poisson``. This is the module's dominant knob
 # by a wide margin: ``dense`` mode is a ``2^depth`` cubed node grid, so each step is ~8x the nodes
-# and the point count is almost secondary. ``adaptive`` stores that grid only near the surface, so
-# it also runs at depth 10, where the dense grid does not fit the device.
+# and the point count is almost secondary. ``adaptive`` and ``octree`` store their tables only near
+# the surface, so they also run at depth 10, where the dense grid does not fit the device.
 _POISSON_DEPTHS = [7, 9, 10]
 
 # A depth-9 dense solve and a ball-pivoting front are both seconds a call.
@@ -412,8 +412,8 @@ def test_screened_poisson(
     )
     if bench_case.mesh_name not in MESHES_BY_NAME and depth != _POISSON_DEPTHS[0]:
         pytest.skip("the census row on a feature mesh counts the smallest depth only")
-    if depth > 9 and (method != "adaptive" or bench_case.kind == "meshlib"):
-        pytest.skip("the dense 2^10 lattice does not fit the device; only the band backend runs")
+    if depth > 9 and (method == "dense" or bench_case.kind == "meshlib"):
+        pytest.skip("the dense 2^10 lattice does not fit the device; the sparse backends run")
     if bench_case.kind == "meshlib":
         if method != "dense":
             pytest.skip("its lattice is uniform: there is no adaptive or octree variant to match")
