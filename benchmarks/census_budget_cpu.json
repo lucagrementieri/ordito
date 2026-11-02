@@ -5154,6 +5154,22 @@
    "sort": 4
   }
  },
+ "benchmarks/test_reconstruction.py::test_resample_uniform_meshlab[sphere_small-ordito-cpu-0.01]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 11,
+   "readback": 3,
+   "scan": 2
+  }
+ },
+ "benchmarks/test_reconstruction.py::test_resample_uniform_meshlab[sphere_small-ordito-cpu-0.02]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 11,
+   "readback": 3,
+   "scan": 2
+  }
+ },
  "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cpu-adaptive-7]": {
   "counts": {
    "launch": 63,

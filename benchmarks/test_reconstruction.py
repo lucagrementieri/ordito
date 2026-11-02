@@ -541,3 +541,45 @@ def test_resample_uniform(bench_case: BenchCase, cell_fraction: float) -> None:
         rounds=_HEAVY_ROUNDS,
     )
     assert int(out_faces.shape[0]) > 0
+
+
+@pytest.mark.benchmark(group="resample_uniform_meshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
+@pytest.mark.parametrize("cell_fraction", _RESAMPLE_CELL_FRACTIONS)
+def test_resample_uniform_meshlab(bench_case: BenchCase, cell_fraction: float) -> None:
+    """
+    ``resample_uniform(method="meshlab")`` against MeshLab's resampler: the same mesh out.
+
+    The two rows return equal meshes (``tests/test_reconstruction.py``, Class A), at the absolute
+    cell size the ``resample_uniform`` group passes. ordito's field
+    is MeshLab's own: its kd-tree distance, which can overstate a needle's, is found through the
+    Warp BVH from a first guess, and nodes whose sign rounding decides are recomputed on the host
+    -- a scan mesh with coincident, oppositely wound sheets (``dragon``) pays for those in host
+    time, an ordinary mesh does not.
+    """
+    diagonal = float(
+        np.linalg.norm(bench_case.vertices_np.max(axis=0) - bench_case.vertices_np.min(axis=0))
+    )
+    voxel_size = cell_fraction * diagonal
+    if bench_case.kind == "pymeshlab":
+        skip_larger_than(bench_case, "bunny", "MeshLab marches the whole lattice on one core")
+        new_meshset_pml = bench_case.new_meshset_pml
+
+        def resample_pml() -> int:
+            meshset_pml = new_meshset_pml()
+            meshset_pml.generate_resampled_uniform_mesh(
+                cellsize=ml.PureValue(voxel_size), offset=ml.PureValue(0.0)
+            )
+            return meshset_pml.current_mesh().face_number()
+
+        assert bench_case.run(resample_pml, rounds=_HEAVY_ROUNDS) > 0
+        return
+    skip_larger_than(bench_case, "dragon", "the field is float64, 8 bytes a node and its counts")
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _out_vertices, out_faces = bench_case.run(
+        lambda: od.reconstruction.resample_uniform(
+            vertices, faces, voxel_size=voxel_size, method="meshlab"
+        ),
+        rounds=_HEAVY_ROUNDS,
+    )
+    assert int(out_faces.shape[0]) > 0

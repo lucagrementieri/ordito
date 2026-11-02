@@ -716,6 +716,7 @@ the port is the newer code:
 | `uv_seam_edges` | `test_seams` | `compute_selection_by_texture_seams_per_vertex` | **0.94 ms against 300 ms** on `sphere_large`; the filter returns only the seam *vertex set*, unioned with the boundary, so it does strictly less than the ordito row (which also splits boundaries out and finds foldovers) |
 | `filter_normals`, `filter_two_step`, `filter_sharpen` | `test_smoothing` | `apply_normal_smoothing_per_face`, `apply_coord_two_steps_smoothing`, `apply_coord_unsharp_mask` | 8.3 ms against 124 ms; 0.34 ms against 51.8 ms |
 | `resample_uniform` | `test_reconstruction` | `generate_resampled_uniform_mesh` | 13.5 ms against 292 ms on `bunny` at a 1% cell |
+| `resample_uniform_meshlab` | `test_reconstruction` | `generate_resampled_uniform_mesh` | the same mesh out: 11.9 ms against 212 ms on `bunny` at a 1% cell |
 | `quadric_decimate` | `test_remesh` | `meshing_decimation_quadric_edge_collapse` | **the one port that is slower**: ~253 ms on `saddle_graded` at `target_ratio=0.1` against igl's 80 — see below |
 
 Two of those rows are worth reading as findings rather than ratios:

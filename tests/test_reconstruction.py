@@ -58,6 +58,7 @@ from tests.conversions import (
     points_to_pyvista,
     points_to_warp,
     points_to_warp_uv,
+    trimesh_to_pymeshlab,
     warp_empty,
     warp_to_trimesh,
 )
@@ -2225,6 +2226,108 @@ def test_resample_uniform_matches_meshlib(sphere_irregular: tuple[tm.Trimesh, wp
         assert symmetric_surface_distance(resampled_tm, sphere_tm)[0] < 0.1 * voxel_size
 
 
+def _resample_pymeshlab(
+    vertices_np: np.ndarray, faces_np: np.ndarray, voxel_size: float, offset: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """MeshLab's uniform resampling at an absolute cell size and offset, as NumPy arrays."""
+    meshset_pml = trimesh_to_pymeshlab(tm.Trimesh(vertices_np, faces_np, process=False))
+    meshset_pml.generate_resampled_uniform_mesh(
+        cellsize=ml.PureValue(voxel_size), offset=ml.PureValue(offset)
+    )
+    mesh_pml = meshset_pml.current_mesh()
+    return mesh_pml.vertex_matrix(), mesh_pml.face_matrix()
+
+
+@pytest.mark.parity("resample_uniform_meshlab", "pymeshlab")
+@pytest.mark.parametrize(
+    ("mesh_name", "voxel_size", "offset"),
+    [
+        ("sphere_irregular", 0.06, 0.0),
+        ("sphere_irregular", 0.04, 0.1),
+        ("sphere_irregular", 0.04, -0.15),
+        ("sphere_irregular_hollow", 0.09, 0.0),
+        ("saddle_graded", 0.03, 0.0),
+        ("torus_irregular_holes", 0.1, 0.05),
+    ],
+)
+def test_resample_uniform_meshlab_method_matches_pymeshlab(
+    request: pytest.FixtureRequest, mesh_name: str, voxel_size: float, offset: float
+) -> None:
+    """
+    Class A: ``method="meshlab"`` is MeshLab's uniform resampling, mesh for mesh.
+
+    The same lattice (``BestDim`` over the box grown by a tenth of its diagonal plus ``|offset|``),
+    the same field (MeshLab's point-face distance, which overstates a needle's and so can pick
+    another face; its rim sign rule) and Lewiner's MC33 with MeshLab's cell vertex, compared with
+    ``meshes_allclose``: worst vertex 1.5e-9 on ``sphere_irregular``. The first case has two cell
+    vertices and ambiguous cells of cases 3, 4, 6, 7 and 12; the open, holed and two-shell inputs
+    reach the field's search limit, past which no cell is extracted. **Mutation probes, measured:**
+    the Euclidean point-face distance moves two vertices of the first case by 2.7e-4; the classic
+    256-case tables change the counts.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    faces_np = np.asarray(mesh_tm.faces, dtype=np.int32)
+    vertices_pml, faces_pml = _resample_pymeshlab(vertices_np, faces_np, voxel_size, offset)
+    assert faces_pml.shape[0] > 1000  # non-vacuity
+
+    out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(
+        mesh_wp.points, mesh_wp.indices, voxel_size=voxel_size, offset=offset, method="meshlab"
+    )
+    reference_vertices_wp, reference_faces_wp = numpy_to_warp(
+        vertices_pml, faces_pml, mesh_wp.device
+    )
+    assert out_vertices_wp.size == vertices_pml.shape[0]
+    assert out_faces_wp.size == 3 * faces_pml.shape[0]
+    assert od.equality.meshes_allclose(
+        out_vertices_wp, out_faces_wp, reference_vertices_wp, reference_faces_wp
+    )
+
+
+@pytest.mark.parity("resample_uniform_meshlab", "pymeshlab")
+def test_resample_uniform_meshlab_method_settles_ties_as_pymeshlab(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class A on a seam: two sheets meeting on coincident vertices, signed apart.
+
+    ``sphere_irregular`` cut by an oblique plane, the far half moved onto copies of its vertices,
+    wound backwards and listed first: along the cut a node is as near a face of each half, and
+    the two sign it apart, so MeshLab's answer is the face its kd-tree reaches first, not the
+    lower index; where the halves' vertex normals cancel, the sign test is rounding. The host
+    settles those nodes. **Mutation probe, measured:** without the settling 4 vertices and 6
+    faces go missing, on both devices.
+    """
+    sphere_tm, sphere_wp = sphere_irregular
+    vertices_np = np.asarray(sphere_tm.vertices, dtype=np.float32)
+    faces_np = np.asarray(sphere_tm.faces, dtype=np.int32)
+    centroids_np = vertices_np[faces_np].mean(axis=1) - vertices_np.mean(axis=0)
+    far_np = centroids_np @ np.array([0.3, 0.8, 0.5], dtype=np.float32) > 0.0
+    seam_vertices_np = np.vstack([vertices_np, vertices_np])
+    seam_faces_np = np.vstack(
+        [(faces_np[far_np] + vertices_np.shape[0])[:, ::-1], faces_np[~far_np]]
+    ).astype(np.int32)
+    vertices_pml, faces_pml = _resample_pymeshlab(
+        seam_vertices_np.astype(np.float64), seam_faces_np, 0.06, 0.0
+    )
+    assert faces_pml.shape[0] > 1000  # non-vacuity
+
+    seam_vertices_wp, seam_faces_wp = numpy_to_warp(
+        seam_vertices_np, seam_faces_np, sphere_wp.device
+    )
+    out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(
+        seam_vertices_wp, seam_faces_wp, voxel_size=0.06, method="meshlab"
+    )
+    reference_vertices_wp, reference_faces_wp = numpy_to_warp(
+        vertices_pml, faces_pml, sphere_wp.device
+    )
+    assert out_vertices_wp.size == vertices_pml.shape[0]
+    assert out_faces_wp.size == 3 * faces_pml.shape[0]
+    assert od.equality.meshes_allclose(
+        out_vertices_wp, out_faces_wp, reference_vertices_wp, reference_faces_wp
+    )
+
+
 def test_resample_uniform_coarser_is_smaller(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a library comparison: a wider voxel gives fewer triangles, and still a closed surface."""
     _sphere_tm, sphere_wp = sphere_irregular
@@ -2270,6 +2373,13 @@ def test_resample_uniform_invalid_and_empty(device: str) -> None:
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)
     with pytest.raises(ValueError, match="voxel_size > 0"):
         od.reconstruction.resample_uniform(vertices_wp, faces_wp, voxel_size=0.0)
+    with pytest.raises(ValueError, match="'padded', 'igl', 'meshlib' or 'meshlab'"):
+        od.reconstruction.resample_uniform(
+            vertices_wp,
+            faces_wp,
+            voxel_size=0.1,
+            method=cast(Literal["padded", "igl", "meshlib", "meshlab"], "vcg"),
+        )
     vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     faces_wp = warp_empty(0, wp.int32, device)
     out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(vertices_wp, faces_wp)

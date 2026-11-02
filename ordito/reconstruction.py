@@ -46,7 +46,7 @@ from ordito._device import (
     run_device_loop,
 )
 from ordito.config import is_deterministic
-from ordito.constants import TILE_1D
+from ordito.constants import INT32_MAX, TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import levelset as kernel_levelset
 from ordito.kernels import reconstruction as kernel_reconstruction
@@ -55,6 +55,7 @@ from ordito.kernels import remesh as kernel_remesh
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels.algorithms import ball_pivoting as kernel_bpa
 from ordito.kernels.algorithms import conjugate_gradient as kernel_cg
+from ordito.kernels.algorithms import marching_cubes_33 as kernel_mc33
 from ordito.kernels.algorithms import mesh_builder as kernel_mesh_builder
 from ordito.kernels.algorithms import poisson_band as kernel_poisson_band
 from ordito.kernels.algorithms import poisson_octree as kernel_octree
@@ -4092,7 +4093,7 @@ def resample_uniform(
     voxel_size: float | None = None,
     offset: float = 0.0,
     sign_mode: Literal["parity", "winding"] = "winding",
-    method: Literal["padded", "igl", "meshlib"] = "padded",
+    method: Literal["padded", "igl", "meshlib", "meshlab"] = "padded",
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Rebuild a mesh by sampling its signed distance field on a uniform grid and re-extracting it.
@@ -4125,7 +4126,8 @@ def resample_uniform(
         [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh]. The default here is
         ``"winding"`` rather than that function's ``"parity"``: resampling is usually applied to a
         mesh that is *broken*, and ray parity has no principled answer through a hole, while the
-        generalized winding number degrades gracefully.
+        generalized winding number degrades gracefully. Not read by ``method="meshlab"``, which
+        signs as MeshLab does.
     method
         The lattice. ``"padded"`` (the default) pads the bounding box by three voxels plus
         ``offset`` and keeps every vertex off the lattice nodes, then cleans the extraction (see
@@ -4135,7 +4137,8 @@ def resample_uniform(
         Its spacing is therefore near ``voxel_size`` rather than equal to it. ``"meshlib"`` is a
         voxel-centred lattice of exactly ``voxel_size``: the box grown by ``|offset|`` and then
         by two voxels a side, ``floor(width / voxel_size) + 1`` voxels an axis, a sample at each
-        voxel's centre (all in ``float32``), the extraction returned as marched.
+        voxel's centre (all in ``float32``), the extraction returned as marched. ``"meshlab"``
+        is MeshLab's ``generate_resampled_uniform_mesh`` (see ``Notes``).
 
     Returns
     -------
@@ -4147,9 +4150,10 @@ def resample_uniform(
     Raises
     ------
     ValueError
-        If ``voxel_size`` is not positive, if ``method`` is not ``"padded"``, ``"igl"`` or
-        ``"meshlib"``, or if under ``"igl"`` it leaves fewer than four nodes along the longest
-        axis.
+        If ``voxel_size`` is not positive, if ``method`` is not ``"padded"``, ``"igl"``,
+        ``"meshlib"`` or ``"meshlab"``, if under ``"igl"`` it leaves fewer than four nodes along
+        the longest axis, or if under ``"meshlab"`` the lattice has ``2**31`` nodes or more or the
+        surface more vertices or triangles than ``int32`` indices address.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -4165,6 +4169,32 @@ def resample_uniform(
     The grid is padded by three voxels beyond the bounding box *plus* ``offset``, so a dilated level
     set is never clipped by the lattice boundary and the extracted surface is always closed. That
     padding is why the memory cost is a little above ``(extent / voxel_size) ** 3``.
+
+    ``method="meshlab"`` reproduces MeshLab's resampler, mesh for mesh:
+
+    - **The lattice.** The vertex box grows by a tenth of its diagonal plus ``|offset|`` a side,
+      and the cells, ``(side / voxel_size)`` rounded per axis and multiplied, are shared out in
+      proportion to the sides, so the spacing is near ``voxel_size`` and differs slightly per
+      axis. ``voxel_size`` and ``offset`` are rounded to ``float32`` first, as MeshLab stores them.
+    - **The field.** A node takes the face of least distance under MeshLab's point-face distance,
+      which measures from the edge whose side the point's projection first leaves and so can
+      overstate a needle's distance and pick another face. It is negative behind that face's
+      normal, or, where the point measured to is within ``1e-5`` (barycentric) of the face's rim,
+      behind the angle-weighted vertex normals interpolated there. A node with no face nearer
+      than ``3.5 * voxel_size + |offset|`` has no value, and no cell it is a corner of is
+      triangulated: past that reach an open or far-offset surface is left open.
+    - **The extraction.** Lewiner's topologically controlled marching cubes (MC33): ambiguous
+      faces and cell interiors are resolved by the field rather than a fixed table, and some
+      subcases add a vertex inside the cell, at the mean of the crossings MeshLab's slice-by-slice
+      walk has made before it reaches the cell. Returned as marched, with no cleanup.
+
+    Where rounding decides a node's sign -- two faces as near signed apart, as on coincident
+    sheets wound against each other, or a sign test at zero -- the node is recomputed on the host
+    in MeshLab's arithmetic and an exact tie goes to the face MeshLab's search reaches first. Such
+    nodes are rare on an ordinary mesh; on a mesh made of overlapping copies they can be most of
+    the band, and then cost host time in proportion. One ambiguous subcase (6.1.2, a tunnel
+    through the cell) takes nine triangles around a cell vertex, Lewiner's corrected tiling, where
+    MeshLab's table has seven and no cell vertex.
 
     Examples
     --------
@@ -4199,8 +4229,10 @@ def resample_uniform(
         voxel_size = 0.01 * diagonal
     if voxel_size <= 0.0:
         raise ValueError(f"resample_uniform requires voxel_size > 0, got {voxel_size}")
-    if method not in ("padded", "igl", "meshlib"):
-        raise ValueError(f"method must be 'padded', 'igl' or 'meshlib', got {method!r}")
+    if method not in ("padded", "igl", "meshlib", "meshlab"):
+        raise ValueError(f"method must be 'padded', 'igl', 'meshlib' or 'meshlab', got {method!r}")
+    if method == "meshlab":
+        return _meshlab_resample(vertices, faces, lower, upper, offset, voxel_size)
     if method != "padded":
         lattice = _igl_offset_lattice if method == "igl" else _voxel_centred_lattice
         shape, bounds = lattice(lower, upper, offset, voxel_size)
@@ -4299,6 +4331,496 @@ def _voxel_centred_lattice(
     last = origin + (counts.astype(np.float32) - np.float32(0.5)) * v
     shape = (int(counts[0]), int(counts[1]), int(counts[2]))
     return shape, (wp.vec3(*first.tolist()), wp.vec3(*last.tolist()))
+
+
+def _meshlab_resample(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    lower: wp.vec3,
+    upper: wp.vec3,
+    offset: float,
+    voxel_size: float,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    ``resample_uniform(method="meshlab")``: MeshLab's field on MeshLab's lattice, marched by MC33.
+
+    The field is ``kernels/reconstruction.meshlab_signed_distance`` less ``offset``, signed by the
+    angle-weighted vertex normals near a face's rim; a node with no face within
+    ``3.5 * voxel_size + |offset|`` has none, and no cell touching it is triangulated.
+    """
+    shape, origin, spacing, reach, level = _meshlab_lattice(lower, upper, offset, voxel_size)
+    n_nodes = shape[0] * shape[1] * shape[2]
+    # The kernels index nodes, and the scan counts vertices and triangles, in ``int32``.
+    if n_nodes > INT32_MAX:
+        raise ValueError(f"the lattice has {n_nodes} nodes, past the int32 limit of {INT32_MAX}")
+    lattice_lower, lattice_spacing = wp.vec3d(*origin), wp.vec3d(*spacing)
+    device = vertices.device
+    n_vertices = vertices.size
+    vertex_faces, offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    normals = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
+    angles = _launch.empty(n_vertices, dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_reconstruction.corner_angle_weighted_normals,
+        dim=n_vertices,
+        inputs=[vertices, faces, vertex_faces, offsets],
+        outputs=[normals, angles],
+        device=device,
+    )
+    mesh = wp.Mesh(points=vertices, indices=faces)
+    field = odt.empty_3d(shape, wp.float64, device=device)
+    capacity = min(n_nodes, _CONTESTED_CAPACITY)
+    while True:
+        contested = _launch.empty(capacity, dtype=wp.int32, device=device)
+        contested_count = _launch.zeros(1, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_reconstruction.meshlab_signed_distance,
+            dim=shape,
+            inputs=[mesh.id, normals, angles, lattice_lower, lattice_spacing, reach, level],
+            outputs=[field, contested, contested_count],
+            device=device,
+        )
+        # Unavoidable: the host settles the contested nodes, so it needs their count.
+        n_contested = int(read_scalar(contested_count, index=0))
+        if n_contested <= capacity:
+            break
+        capacity = n_contested
+    if n_contested > 0:
+        _settle_contested_nodes(
+            mesh, field, contested, n_contested, vertices, faces, origin, spacing, reach, level
+        )
+    return _marching_cubes_33(field, lattice_lower, lattice_spacing)
+
+
+# Room for contested nodes in one pass of ``meshlab_signed_distance``; a call that finds more runs
+# the pass again with room for all of them.
+_CONTESTED_CAPACITY = 1 << 12
+
+
+def _settle_contested_nodes(
+    mesh: wp.Mesh,
+    field: wp.array[wp.float64, Literal[3]],
+    contested: wp.array[wp.int32],
+    n_contested: int,
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    origin: tuple[float, float, float],
+    spacing: tuple[float, float, float],
+    reach: float,
+    level: float,
+) -> None:
+    """
+    Recompute the contested nodes of a MeshLab field on the host, as MeshLab does, and write them.
+
+    A contested node (``kernels/reconstruction.CONTESTED_MARGIN``) is one whose sign rounding
+    decides: a face as near signed the other way, or a sign test at zero. Here each is formed in
+    ``float64`` with MeshLab's order of operations and its library ``acos``, no fused multiply-add;
+    an exact tie goes to the face MeshLab's search reaches first (``_KdSearchOrder``).
+    """
+    device = field.device
+    shape = (int(field.shape[0]), int(field.shape[1]), int(field.shape[2]))
+    flat_field = field.reshape((shape[0] * shape[1] * shape[2],))
+    capacity = 64 * n_contested
+    while True:
+        pairs = _launch.empty(capacity, dtype=wp.vec2i, device=device)
+        count = _launch.zeros(1, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_reconstruction.contested_candidates,
+            dim=n_contested,
+            inputs=[
+                mesh.id,
+                contested,
+                flat_field,
+                wp.vec3d(*origin),
+                wp.vec3d(*spacing),
+                wp.vec3i(*shape),
+                level,
+            ],
+            outputs=[pairs, count],
+            device=device,
+        )
+        # Unavoidable: the host reads the candidate pairs, sized by their count.
+        n_pairs = int(read_scalar(count, index=0))
+        if n_pairs <= capacity:
+            break
+        capacity = n_pairs
+    # Unavoidable: the settling is a host emulation and reads its nodes, candidates and the mesh.
+    nodes = contested.numpy()[:n_contested]
+    candidates = pairs.numpy()[:n_pairs]
+    candidates = candidates[np.lexsort((candidates[:, 1], candidates[:, 0]))]
+    starts = np.searchsorted(candidates[:, 0], np.arange(n_contested + 1))
+    mesh_faces = _MeshFaces(vertices.numpy(), faces.numpy().reshape(-1, 3))
+    order = _KdSearchOrder(mesh_faces)
+    values = np.empty(n_contested, dtype=np.float64)
+    for slot, flat in enumerate(nodes.tolist()):
+        index = (flat // (shape[1] * shape[2]), (flat // shape[2]) % shape[1], flat % shape[2])
+        q = [index[axis] * spacing[axis] + origin[axis] for axis in range(3)]
+        best, tied, points_at = reach, [], {}
+        for f in candidates[starts[slot] : starts[slot + 1], 1].tolist():
+            a, b, c = mesh_faces.corners(f)
+            point, distance = _edge_test_closest_point(q, a, b, c, mesh_faces.normal(f))
+            if distance < best:
+                best, tied = distance, [f]
+            elif distance == best:
+                tied.append(f)
+            points_at[f] = point
+        if not tied:
+            values[slot] = math.nan
+            continue
+        behind = {
+            f: _dot(
+                _unit_or_zero([q[axis] - points_at[f][axis] for axis in range(3)]),
+                mesh_faces.side_normal(f, points_at[f]),
+            )
+            < 0.0
+            for f in tied
+        }
+        # The search order decides only between tied faces signed apart.
+        face = tied[0] if len(set(behind.values())) == 1 else order.first(tied, q)
+        values[slot] = (-best if behind[face] else best) + level
+    _launch.launch(
+        kernel_reconstruction.write_field_values,
+        dim=n_contested,
+        inputs=[contested, _launch.array(values, dtype=wp.float64, device=device)],
+        outputs=[flat_field],
+        device=device,
+    )
+
+
+def _edge_test_closest_point(
+    q: list[float], a: list[float], b: list[float], c: list[float], n: list[float]
+) -> tuple[list[float], float]:
+    """
+    ``kernels/reconstruction.edge_test_closest_point`` on the host, in MeshLab's order.
+
+    The device form contracts multiply-adds on CUDA; this one rounds every operation, as MeshLab
+    does, so it decides ties and signs as MeshLab does. Kept in step with the kernel.
+    """
+    if n == [0.0, 0.0, 0.0]:
+        lower = [min(a[i], b[i], c[i]) for i in range(3)]
+        upper = [max(a[i], b[i], c[i]) for i in range(3)]
+        point = lower
+        if _norm([upper[i] - lower[i] for i in range(3)]) > 0.0:
+            point = _segment_closest_point(q, lower, upper)
+        return point, _norm([q[i] - point[i] for i in range(3)])
+    direction = _unit_or_zero(n)
+    d = _dot(direction, q) - _dot(a, direction)
+    p = [q[i] - direction[i] * d for i in range(3)]
+    axis = _dominant_axis(n)
+    u, w = (axis + 1) % 3, (axis + 2) % 3
+    scale = 1.0 / direction[axis]
+    e0 = [(b[i] - a[i]) * scale for i in range(3)]
+    e1 = [(c[i] - b[i]) * scale for i in range(3)]
+    e2 = [(a[i] - c[i]) * scale for i in range(3)]
+    tests = (
+        (e1[u] * (p[w] - b[w]) - e1[w] * (p[u] - b[u]), b, c),
+        (e2[u] * (p[w] - c[w]) - e2[w] * (p[u] - c[u]), c, a),
+        (e0[u] * (p[w] - a[w]) - e0[w] * (p[u] - a[u]), a, b),
+    )
+    for value, start, end in tests:
+        if value <= 0.0:
+            point = _segment_closest_point(q, start, end)
+            return point, _norm([q[i] - point[i] for i in range(3)])
+    least = min(tests[0][0], min(tests[1][0], tests[2][0]))
+    if least < 1e-6 * _norm(
+        _cross([b[i] - a[i] for i in range(3)], [c[i] - a[i] for i in range(3)])
+    ):
+        _value, start, end = next(test for test in tests if test[0] == least)
+        point = _segment_closest_point(q, start, end)
+        return point, _norm([q[i] - point[i] for i in range(3)])
+    return p, abs(d)
+
+
+class _MeshFaces:
+    """
+    The faces of a mesh on the host, as MeshLab's resampler reads them, formed face by face.
+
+    A face's corners widen to ``float64``; its unit normal and a vertex's angle-weighted normal
+    round every operation as MeshLab does (``float64``, its library ``acos``), so they agree with
+    MeshLab bit for bit. The faces of each vertex come from one sort of the corners, made on the
+    first vertex asked for; the face boxes stay ``float32``, which holds them exactly.
+    """
+
+    def __init__(self, points: np.ndarray, triangles: np.ndarray) -> None:
+        self.triangles = triangles
+        self._points = points
+        a, b, c = points[triangles[:, 0]], points[triangles[:, 1]], points[triangles[:, 2]]
+        self.low = np.minimum(np.minimum(a, b), c)
+        self.high = np.maximum(np.maximum(a, b), c)
+        self._normals: dict[int, list[float]] = {}
+        self._vertex_normals: dict[int, list[float]] = {}
+        self._by_vertex: tuple[np.ndarray, np.ndarray] | None = None
+
+    def corners(self, face: int) -> list[list[float]]:
+        """``face``'s three corners in ``float64``."""
+        return self._points[self.triangles[face]].astype(np.float64).tolist()
+
+    def normal(self, face: int) -> list[float]:
+        """``face``'s unit normal, zero for a zero-area face."""
+        if face not in self._normals:
+            a, b, c = self.corners(face)
+            edge1 = [b[i] - a[i] for i in range(3)]
+            edge2 = [c[i] - a[i] for i in range(3)]
+            self._normals[face] = _unit_or_zero(_cross(edge1, edge2))
+        return self._normals[face]
+
+    def side_normal(self, face: int, p: list[float]) -> list[float]:
+        """Return the normal that signs a node measured to ``p`` (``side_normal``'s host form)."""
+        a, b, c = self.corners(face)
+        normal = self.normal(face)
+        axis = _dominant_axis(normal)
+        u, w = (1, 2) if axis == 0 else ((0, 2) if axis == 1 else (0, 1))
+        x1, y1, x2, y2, x3, y3, x, y = a[u], a[w], b[u], b[w], c[u], c[w], p[u], p[w]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            l1 = float(
+                np.float64((y2 - y3) * (x - x3) + (x3 - x2) * (y - y3))
+                / np.float64((y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3))
+            )
+            l2 = float(
+                np.float64((y3 - y1) * (x - x3) + (x1 - x3) * (y - y3))
+                / np.float64((y3 - y1) * (x2 - x3) + (x1 - x3) * (y2 - y3))
+            )
+        weights = [l1, l2, 1.0 - l1 - l2]
+        if any(math.isnan(weight) for weight in weights):
+            weights = [1.0 / 3.0] * 3
+        if min(weights) >= float(np.float32(1e-5)):
+            return normal
+        total = [0.0, 0.0, 0.0]
+        for corner in range(3):
+            vertex = self._vertex_normal(int(self.triangles[face, corner]))
+            total = [total[i] + vertex[i] * weights[corner] for i in range(3)]
+        return total
+
+    def _vertex_normal(self, v: int) -> list[float]:
+        # ``kernels/reconstruction.corner_angle_weighted_normals`` of one vertex, in face order.
+        if v in self._vertex_normals:
+            return self._vertex_normals[v]
+        if self._by_vertex is None:
+            flat = self.triangles.reshape(-1)
+            ranks = np.argsort(flat, kind="stable")
+            self._by_vertex = (ranks, np.searchsorted(flat[ranks], np.arange(flat.max() + 2)))
+        ranks, starts = self._by_vertex
+        total = [0.0, 0.0, 0.0]
+        for f in np.unique(ranks[starts[v] : starts[v + 1]] // 3).tolist():
+            a, b, c = self.corners(f)
+            e0 = _unit_or_zero([b[i] - a[i] for i in range(3)])
+            e1 = _unit_or_zero([c[i] - b[i] for i in range(3)])
+            e2 = _unit_or_zero([a[i] - c[i] for i in range(3)])
+            cosines = (
+                _dot(e0, [-x for x in e2]),
+                _dot([-x for x in e0], e1),
+                _dot([-x for x in e1], e2),
+            )
+            normal = self.normal(f)
+            for corner in range(3):
+                if int(self.triangles[f, corner]) == v:
+                    angle = math.acos(min(max(cosines[corner], -1.0), 1.0))
+                    total = [total[i] + normal[i] * angle for i in range(3)]
+        self._vertex_normals[v] = total
+        return total
+
+
+class _KdSearchOrder:
+    """
+    Which of several faces MeshLab's nearest-face search reaches first, from a query point.
+
+    The search is a kd-tree over the faces, each node split at the middle of its box's longest
+    side, a face going to each side some corner of it is on (both for a corner on the split); a
+    child's box is its faces' box clipped to its half, and a child of at most 64 faces is a leaf,
+    its faces in index order. The search descends the child on the query's side first. Only the
+    nodes on the way to the faces asked about are built, each once.
+    """
+
+    def __init__(self, mesh_faces: _MeshFaces) -> None:
+        self._low = mesh_faces.low
+        self._high = mesh_faces.high
+        everything = np.arange(self._low.shape[0])
+        self._nodes: dict[tuple[int, ...], tuple[np.ndarray, np.ndarray, np.ndarray, bool]] = {
+            (): (
+                everything,
+                self._low.min(axis=0).astype(np.float64),
+                self._high.max(axis=0).astype(np.float64),
+                False,
+            )
+        }
+        self._splits: dict[tuple[int, ...], tuple[int, np.float64]] = {}
+
+    def first(self, faces: list[int], q: list[float]) -> int:
+        """Return the face of ``faces`` the search from ``q`` reaches first."""
+        found = self._first(np.asarray(sorted(faces)), q, (), 1)
+        assert found is not None
+        return found
+
+    def _first(
+        self, wanted: np.ndarray, q: list[float], key: tuple[int, ...], level: int
+    ) -> int | None:
+        if wanted.size == 0:
+            return None
+        if self._nodes[key][3]:
+            return int(wanted[0])
+        dim, split = self._split(key, level)
+        sides = (self._low[wanted, dim] <= split, self._high[wanted, dim] >= split)
+        near = 0 if np.float32(q[dim] - float(split)) < 0.0 else 1
+        for side in (near, 1 - near):
+            found = self._first(wanted[sides[side]], q, (*key, side), level + 1)
+            if found is not None:
+                return found
+        return None
+
+    def _split(self, key: tuple[int, ...], level: int) -> tuple[int, np.float64]:
+        if key in self._splits:
+            return self._splits[key]
+        members, low, high, _leaf = self._nodes[key]
+        extent = high - low
+        if extent[0] > extent[1]:
+            dim = 0 if extent[0] > extent[2] else 2
+        else:
+            dim = 1 if extent[1] > extent[2] else 2
+        # ``np.float64``, so comparing the ``float32`` face boxes with it widens them.
+        split = np.float64(0.5 * (high[dim] + low[dim]))
+        # Some corner below or on the split puts a face left; above or on it, right.
+        sides = (self._low[members, dim] <= split, self._high[members, dim] >= split)
+        epsilon = np.finfo(np.float64).eps
+        for side in (0, 1):
+            child = members[sides[side]]
+            box_low, box_high = low.copy(), high.copy()
+            if side == 0:
+                box_high[dim] = split
+            else:
+                box_low[dim] = split
+            box_low, box_high = box_low - epsilon, box_high + epsilon
+            if child.size:
+                box_low = np.maximum(self._low[child].min(axis=0).astype(np.float64), box_low)
+                box_high = np.minimum(self._high[child].max(axis=0).astype(np.float64), box_high)
+            self._nodes[(*key, side)] = (child, box_low, box_high, child.size <= 64 or level >= 64)
+        self._splits[key] = (dim, split)
+        return dim, split
+
+
+def _segment_closest_point(q: list[float], v1: list[float], v2: list[float]) -> list[float]:
+    """``q``'s closest point on the segment ``v1 v2``, by its clamped parameter."""
+    e = [v2[i] - v1[i] for i in range(3)]
+    t = _dot([q[i] - v1[i] for i in range(3)], e) / _dot(e, e)
+    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+    return [v1[i] + e[i] * t for i in range(3)]
+
+
+def _dominant_axis(n: list[float]) -> int:
+    """Return the axis of ``n``'s largest magnitude, as ``kernels/reconstruction`` picks it."""
+    if abs(n[0]) > abs(n[1]):
+        return 0 if abs(n[0]) > abs(n[2]) else 2
+    return 1 if abs(n[1]) > abs(n[2]) else 2
+
+
+def _unit_or_zero(v: list[float]) -> list[float]:
+    """``v`` over its length, each component divided; the zero vector stays zero."""
+    length = _norm(v)
+    return [v[i] / length for i in range(3)] if length > 0.0 else v
+
+
+def _cross(a: list[float], b: list[float]) -> list[float]:
+    """Return the cross product, component by component."""
+    return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+
+
+def _dot(a: list[float], b: list[float]) -> float:
+    """Return the dot product, summed ``x``, ``y``, ``z``."""
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+
+
+def _norm(v: list[float]) -> float:
+    """Return the Euclidean length, its squares summed ``x``, ``y``, ``z``."""
+    return math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+
+
+def _meshlab_lattice(
+    lower: wp.vec3, upper: wp.vec3, offset: float, voxel_size: float
+) -> tuple[
+    tuple[int, int, int], tuple[float, float, float], tuple[float, float, float], float, float
+]:
+    """
+    MeshLab's resampling lattice: node counts, first node, spacing, search reach and level.
+
+    The cell size and offset are rounded to ``float32`` as MeshLab stores them. The vertex box
+    grows by a tenth of its diagonal plus ``|offset|`` a side; ``n`` cells, rounded to the nearest
+    per axis, are shared out in proportion to the box's sides (each rounded down, at least one),
+    so the spacing is the side over its count and differs slightly per axis. The search reach is
+    ``3.5`` cells plus ``|offset|`` in ``float32``, the level ``-offset``. Host arithmetic in
+    ``float64`` otherwise.
+    """
+    cell = float(np.float32(voxel_size))
+    shift = float(np.float32(offset))
+    low, high = odt.vec3_floats(lower), odt.vec3_floats(upper)
+    extent = [high[axis] - low[axis] for axis in range(3)]
+    pad = math.sqrt(extent[0] * extent[0] + extent[1] * extent[1] + extent[2] * extent[2]) / 10.0
+    pad += abs(shift)
+    origin = [low[axis] - pad for axis in range(3)]
+    size = [(high[axis] + pad) - origin[axis] for axis in range(3)]
+    cells = 1
+    for side in size:
+        cells *= int(side / cell + 0.5)
+    tolerance = math.sqrt(size[0] * size[0] + size[1] * size[1] + size[2] * size[2]) * 1e-4
+    counts = [1, 1, 1]
+    # The padding makes every side at least a fifth of the diagonal, so only a box of one point
+    # and no offset is flat; MeshLab's two-dimensional and one-dimensional shares are not reached.
+    if min(size) > tolerance:
+        scale = (max(cells, 1) / (size[0] * size[1] * size[2])) ** (1.0 / 3.0)
+        counts = [max(int(side * scale), 1) for side in size]
+    spacing = (size[0] / counts[0], size[1] / counts[1], size[2] / counts[2])
+    reach = float(np.float32(np.float32(cell * 3.5) + np.float32(abs(shift))))
+    shape = (counts[0] + 1, counts[1] + 1, counts[2] + 1)
+    return shape, (origin[0], origin[1], origin[2]), spacing, reach, -shift
+
+
+def _marching_cubes_33(
+    field: wp.array[wp.float64, Literal[3]], lower: wp.vec3d, spacing: wp.vec3d
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Extract the zero level set of a ``float64`` node lattice by Lewiner's MC33, NaN nodes left out.
+
+    Node ``(i, j, k)`` sits at ``lower + (i, j, k) * spacing``. A cell is triangulated when all
+    eight of its corners carry a value. Edge vertices come first, then the cell vertices some
+    subcases add (``kernels/algorithms/marching_cubes_33.py``). The caller keeps the lattice under
+    ``2**31`` nodes.
+    """
+    shape = (int(field.shape[0]), int(field.shape[1]), int(field.shape[2]))
+    n_nodes = shape[0] * shape[1] * shape[2]
+    device = wp.get_device(field.device)
+    table = _marching_cubes_33_table(device.alias)
+    counts = _launch.empty(n_nodes, dtype=wp.vec3i, device=device)
+    masks = odt.empty_3d(shape, wp.uint8, device=device)
+    _launch.launch(
+        kernel_mc33.mc33_counts,
+        dim=shape,
+        inputs=[field, table],
+        outputs=[counts.reshape(shape), masks],
+        device=device,
+    )
+    _launch.array_scan(counts, counts, inclusive=True)
+    # One read sizes both outputs: the scanned triple's last entry holds all three totals.
+    totals = read_scalar(counts)
+    n_edge_vertices, n_faces, n_cell_vertices = int(totals[0]), int(totals[1]), int(totals[2])
+    if n_edge_vertices < 0 or n_faces < 0 or 3 * n_faces > INT32_MAX:
+        raise ValueError(
+            "the level set has more vertices or triangles than int32 indices address; "
+            "pass a larger voxel_size"
+        )
+    vertices = _launch.empty(n_edge_vertices + n_cell_vertices, dtype=wp.vec3, device=device)
+    faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    if n_faces > 0:
+        _launch.launch(
+            kernel_mc33.mc33_emit,
+            dim=shape,
+            inputs=[field, table, counts.reshape(shape), masks, lower, spacing, n_edge_vertices],
+            outputs=[vertices, faces],
+            device=device,
+        )
+    return vertices, faces
+
+
+@functools.cache
+def _marching_cubes_33_table(device: str) -> wp.array[wp.int32]:
+    """``kernels/algorithms/marching_cubes_33.MC33_TABLE`` on the device ``device`` names, once."""
+    return _launch.array(kernel_mc33.MC33_TABLE, dtype=wp.int32, device=device)
 
 
 def ball_pivoting(

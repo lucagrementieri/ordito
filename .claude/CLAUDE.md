@@ -951,9 +951,9 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `marching_cubes` interpolation), priced first (`float64` runs at 1/64 rate, §13.2).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `heat_geodesic` against potpourri3d's front; `geodesic_path` with an edge-flip shortening;
-  `resample_uniform` against pymeshlab's resampler (vcg's grid and sign rule) and `offset_mesh`
-  against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign; `resample_uniform`
-  already has `method="igl"` and `method="meshlib"`); MeshLib's "nice" fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
+  `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
+  `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`); MeshLib's "nice"
+  fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
 - **`smooth_region` is not flat in `n`** with the squared V-cycle: 1 885 iterations, 43 s on `lucy`.
