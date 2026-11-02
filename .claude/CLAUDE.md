@@ -979,8 +979,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   - `_csr_from_coo_keys` sizes `columns` / `values` by contributions, not entries: public returns
     (`energies` sandwich products, `laplacian`'s keyed path) keep that capacity; only a caller
     that already syncs can cut it (§3.7).
-  - `linalg`: the adaptive CG's probe and escalation states could share one set of vectors
-    (pooled per operator by `_cached_solver`, so the sharing must stay inside one holder).
   - `levelset`: `marching_cubes` counts are a `vec2i` a node for O(res**2) active ones (large; a
     recorded design, not a decline).
   - A shared `array.bit_ranks` / `mark_bit` / `bit_select` would serve the sparse-flag compactions

@@ -3104,7 +3104,9 @@ class _AdaptiveCg:
         # result is what that call returned; ``None`` otherwise.
         self.verdict: int | None = None
 
-    def _state(self, preconditioner: str, maxiter: int) -> _BatchedCg:
+    def _state(
+        self, preconditioner: str, maxiter: int, vectors_from: _BatchedCg | None = None
+    ) -> _BatchedCg:
         if self._cached:
             return _cached_solver(
                 self._matrix,
@@ -3113,6 +3115,7 @@ class _AdaptiveCg:
                 maxiter=maxiter,
                 check_every=self._check_every,
                 preconditioner=preconditioner,
+                vectors_from=vectors_from,
             )
         return _BatchedCg(
             self._matrix,
@@ -3122,6 +3125,7 @@ class _AdaptiveCg:
             maxiter=maxiter,
             check_every=self._check_every,
             preconditioner=preconditioner,
+            vectors_from=vectors_from,
         )
 
     def _run(self, state: _BatchedCg):
@@ -3153,7 +3157,10 @@ class _AdaptiveCg:
             if residual <= tolerance:
                 return result
         if self._escalation is None:
-            self._escalation = self._state("chebyshev", self._maxiter - self._probe_cap)
+            # The escalation never runs while the probe does: it borrows the probe's vectors.
+            self._escalation = self._state(
+                "chebyshev", self._maxiter - self._probe_cap, vectors_from=self._probe
+            )
         iterations, residual, tolerance = self._run(self._escalation)
         if isinstance(iterations, wp.array):
             return iterations, residual, tolerance
@@ -3218,6 +3225,7 @@ class _BatchedCg:
         narrow_values: bool = False,
         own_storage: bool = False,
         row_path: tuple[bool, int] | None = None,
+        vectors_from: _BatchedCg | None = None,
     ) -> None:
         device = matrix.device
         self._device = device
@@ -3292,19 +3300,31 @@ class _BatchedCg:
         n_partials = 3 * self._n_columns * self._blocks
         partial_slots = n_partials + n_partials % 2
         n_head = _INT_WORDS + 10 * self._n_columns
-        if dtype == wp.float64:
-            vectors = _launch.zeros(
-                5 * dofs + partial_slots + n_head, dtype=wp.float64, device=device
-            )
-            scalar_start = 5 * dofs
-            scalar_storage = vectors
-        else:
-            vectors = _launch.zeros(5 * dofs, dtype=dtype, device=device)
+        # ``vectors_from``, a state of the same shape and precision that never runs while this one
+        # does (``_AdaptiveCg``'s probe), lends its five: a solve writes them from its initial
+        # launch on, and both keep their pads at zero.
+        shared = vectors_from is not None and vectors_from.vector_layout() == (dofs, dtype)
+        if shared:
+            assert vectors_from is not None
+            self._r, self._u, self._w, self._p, self._s = vectors_from.vectors()
             scalar_start = 0
             scalar_storage = _launch.zeros(partial_slots + n_head, dtype=wp.float64, device=device)
-        self._r, self._u, self._w, self._p, self._s = (
-            odt.as_dense(_launch.view(vectors, k * dofs, (k + 1) * dofs)) for k in range(5)
-        )
+        else:
+            if dtype == wp.float64:
+                vectors = _launch.zeros(
+                    5 * dofs + partial_slots + n_head, dtype=wp.float64, device=device
+                )
+                scalar_start = 5 * dofs
+                scalar_storage = vectors
+            else:
+                vectors = _launch.zeros(5 * dofs, dtype=dtype, device=device)
+                scalar_start = 0
+                scalar_storage = _launch.zeros(
+                    partial_slots + n_head, dtype=wp.float64, device=device
+                )
+            self._r, self._u, self._w, self._p, self._s = (
+                odt.as_dense(_launch.view(vectors, k * dofs, (k + 1) * dofs)) for k in range(5)
+            )
         # First-stage partials of the three dots ``cg_matvec_dots`` reduces: ``r.u``, ``w.u``,
         # ``r.r`` (and of ``||b||^2`` in row 0 at the start of a solve). Every entry a fold reads,
         # ``[0, blocks)`` of each row, is written by the partials launch before it.
@@ -3426,6 +3446,14 @@ class _BatchedCg:
             self._settle_state = _launch.zeros(
                 kernel_cg.SETTLE_STATE_SIZE, dtype=wp.float64, device=device
             )
+
+    def vector_layout(self) -> tuple[int, object]:
+        """Return the five vectors' length and dtype, which a state borrowing them must match."""
+        return self._dofs, self._dtype
+
+    def vectors(self) -> tuple[wp.array[Any], ...]:
+        """``r, u, w, p, s``, for a state that never runs while this one does to borrow."""
+        return self._r, self._u, self._w, self._p, self._s
 
     def refresh(
         self, matrix: odt.CsrMatrix, preconditioner: str | SquaredLaplacianPreconditioner = "diag"
@@ -4057,6 +4085,7 @@ def _cached_solver(
     settle: tuple[int, float, int] | None = None,
     narrow_values: bool = False,
     pooled: bool = False,
+    vectors_from: _BatchedCg | None = None,
 ) -> _BatchedCg:
     """
     Return the ``_BatchedCg`` state for this operator and configuration, built on first use.
@@ -4154,6 +4183,7 @@ def _cached_solver(
                     narrow_values=narrow_values,
                     own_storage=True,
                     row_path=row_path,
+                    vectors_from=vectors_from,
                 )
             else:
                 pooled_state.refresh(matrix, preconditioner)
@@ -4178,6 +4208,7 @@ def _cached_solver(
             settle=settle,
             narrow_values=narrow_values,
             row_path=row_path,
+            vectors_from=vectors_from,
         )
         while len(entries) >= _SOLVER_CACHE_ENTRIES:
             entries.pop(next(iter(entries)))
