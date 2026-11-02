@@ -16036,12 +16036,7 @@ slides its vertices within the plane:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3906</span>
-<span class="normal">3907</span>
-<span class="normal">3908</span>
-<span class="normal">3909</span>
-<span class="normal">3910</span>
-<span class="normal">3911</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3911</span>
 <span class="normal">3912</span>
 <span class="normal">3913</span>
 <span class="normal">3914</span>
@@ -16213,7 +16208,12 @@ slides its vertices within the plane:</p>
 <span class="normal">4080</span>
 <span class="normal">4081</span>
 <span class="normal">4082</span>
-<span class="normal">4083</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">smooth_region_boundary</span><span class="p">(</span>
+<span class="normal">4083</span>
+<span class="normal">4084</span>
+<span class="normal">4085</span>
+<span class="normal">4086</span>
+<span class="normal">4087</span>
+<span class="normal">4088</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">smooth_region_boundary</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -16650,12 +16650,7 @@ spreads it evenly over that vertex's five neighbours:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4160</span>
-<span class="normal">4161</span>
-<span class="normal">4162</span>
-<span class="normal">4163</span>
-<span class="normal">4164</span>
-<span class="normal">4165</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4165</span>
 <span class="normal">4166</span>
 <span class="normal">4167</span>
 <span class="normal">4168</span>
@@ -16781,7 +16776,12 @@ spreads it evenly over that vertex's five neighbours:</p>
 <span class="normal">4288</span>
 <span class="normal">4289</span>
 <span class="normal">4290</span>
-<span class="normal">4291</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_scalar_laplacian</span><span class="p">(</span>
+<span class="normal">4291</span>
+<span class="normal">4292</span>
+<span class="normal">4293</span>
+<span class="normal">4294</span>
+<span class="normal">4295</span>
+<span class="normal">4296</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_scalar_laplacian</span><span class="p">(</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -17270,12 +17270,7 @@ then finds them and keeps them:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4294</span>
-<span class="normal">4295</span>
-<span class="normal">4296</span>
-<span class="normal">4297</span>
-<span class="normal">4298</span>
-<span class="normal">4299</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4299</span>
 <span class="normal">4300</span>
 <span class="normal">4301</span>
 <span class="normal">4302</span>
@@ -17448,7 +17443,12 @@ then finds them and keeps them:</p>
 <span class="normal">4469</span>
 <span class="normal">4470</span>
 <span class="normal">4471</span>
-<span class="normal">4472</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_normals</span><span class="p">(</span>
+<span class="normal">4472</span>
+<span class="normal">4473</span>
+<span class="normal">4474</span>
+<span class="normal">4475</span>
+<span class="normal">4476</span>
+<span class="normal">4477</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_normals</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -17992,12 +17992,7 @@ close to 1:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4475</span>
-<span class="normal">4476</span>
-<span class="normal">4477</span>
-<span class="normal">4478</span>
-<span class="normal">4479</span>
-<span class="normal">4480</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4480</span>
 <span class="normal">4481</span>
 <span class="normal">4482</span>
 <span class="normal">4483</span>
@@ -18239,7 +18234,12 @@ close to 1:</p>
 <span class="normal">4719</span>
 <span class="normal">4720</span>
 <span class="normal">4721</span>
-<span class="normal">4722</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_two_step</span><span class="p">(</span>
+<span class="normal">4722</span>
+<span class="normal">4723</span>
+<span class="normal">4724</span>
+<span class="normal">4725</span>
+<span class="normal">4726</span>
+<span class="normal">4727</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_two_step</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -18760,12 +18760,7 @@ sphere grows:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/smoothing.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5140</span>
-<span class="normal">5141</span>
-<span class="normal">5142</span>
-<span class="normal">5143</span>
-<span class="normal">5144</span>
-<span class="normal">5145</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5145</span>
 <span class="normal">5146</span>
 <span class="normal">5147</span>
 <span class="normal">5148</span>
@@ -18929,7 +18924,12 @@ sphere grows:</p>
 <span class="normal">5306</span>
 <span class="normal">5307</span>
 <span class="normal">5308</span>
-<span class="normal">5309</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_sharpen</span><span class="p">(</span>
+<span class="normal">5309</span>
+<span class="normal">5310</span>
+<span class="normal">5311</span>
+<span class="normal">5312</span>
+<span class="normal">5313</span>
+<span class="normal">5314</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">filter_sharpen</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>

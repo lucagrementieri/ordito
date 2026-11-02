@@ -9790,12 +9790,7 @@ outward, closed:</p>
 <span class="normal">1134</span>
 <span class="normal">1135</span>
 <span class="normal">1136</span>
-<span class="normal">1137</span>
-<span class="normal">1138</span>
-<span class="normal">1139</span>
-<span class="normal">1140</span>
-<span class="normal">1141</span>
-<span class="normal">1142</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_grid</span><span class="p">(</span>
+<span class="normal">1137</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_grid</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -9916,12 +9911,7 @@ outward, closed:</p>
     <span class="n">lower</span><span class="p">,</span> <span class="n">step</span> <span class="o">=</span> <span class="n">kernel_array</span><span class="o">.</span><span class="n">lattice_lower_and_step</span><span class="p">(</span><span class="n">shape</span><span class="p">,</span> <span class="n">box</span><span class="p">)</span>
     <span class="n">field</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_3d</span><span class="p">(</span><span class="n">shape</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="c1"># ``signed_distance_on_mesh``'s defaults: no cutoff, and its sampling parameters.</span>
-    <span class="k">if</span> <span class="n">sign_mode</span> <span class="o">==</span> <span class="s2">"winding"</span><span class="p">:</span>
-        <span class="n">kernel</span> <span class="o">=</span> <span class="n">kernel_proximity</span><span class="o">.</span><span class="n">signed_distance_on_lattice_winding</span>
-        <span class="n">parameters</span> <span class="o">=</span> <span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="mf">2.0</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)]</span>
-    <span class="k">else</span><span class="p">:</span>
-        <span class="n">kernel</span> <span class="o">=</span> <span class="n">kernel_proximity</span><span class="o">.</span><span class="n">signed_distance_on_lattice</span>
-        <span class="n">parameters</span> <span class="o">=</span> <span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="mi">5</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="mf">0.1</span><span class="p">)]</span>
+    <span class="n">kernel</span><span class="p">,</span> <span class="n">parameters</span> <span class="o">=</span> <span class="n">kernel_proximity</span><span class="o">.</span><span class="n">signed_distance_lattice_kernel</span><span class="p">(</span><span class="n">sign_mode</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">shape</span><span class="p">,</span>
@@ -10120,7 +10110,12 @@ without sampling it:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1145</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1140</span>
+<span class="normal">1141</span>
+<span class="normal">1142</span>
+<span class="normal">1143</span>
+<span class="normal">1144</span>
+<span class="normal">1145</span>
 <span class="normal">1146</span>
 <span class="normal">1147</span>
 <span class="normal">1148</span>
@@ -10193,12 +10188,7 @@ without sampling it:</p>
 <span class="normal">1215</span>
 <span class="normal">1216</span>
 <span class="normal">1217</span>
-<span class="normal">1218</span>
-<span class="normal">1219</span>
-<span class="normal">1220</span>
-<span class="normal">1221</span>
-<span class="normal">1222</span>
-<span class="normal">1223</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_lattice</span><span class="p">(</span>
+<span class="normal">1218</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_lattice</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -10480,7 +10470,12 @@ left-to-right summation makes it the exact-sum reference.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1226</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1221</span>
+<span class="normal">1222</span>
+<span class="normal">1223</span>
+<span class="normal">1224</span>
+<span class="normal">1225</span>
+<span class="normal">1226</span>
 <span class="normal">1227</span>
 <span class="normal">1228</span>
 <span class="normal">1229</span>
@@ -10583,12 +10578,7 @@ left-to-right summation makes it the exact-sum reference.</p>
 <span class="normal">1326</span>
 <span class="normal">1327</span>
 <span class="normal">1328</span>
-<span class="normal">1329</span>
-<span class="normal">1330</span>
-<span class="normal">1331</span>
-<span class="normal">1332</span>
-<span class="normal">1333</span>
-<span class="normal">1334</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">winding_number</span><span class="p">(</span>
+<span class="normal">1329</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">winding_number</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -10897,7 +10887,12 @@ the three sides meeting there; a box away from the cube overlaps none:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1513</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1508</span>
+<span class="normal">1509</span>
+<span class="normal">1510</span>
+<span class="normal">1511</span>
+<span class="normal">1512</span>
+<span class="normal">1513</span>
 <span class="normal">1514</span>
 <span class="normal">1515</span>
 <span class="normal">1516</span>
@@ -11002,12 +10997,7 @@ the three sides meeting there; a box away from the cube overlaps none:</p>
 <span class="normal">1615</span>
 <span class="normal">1616</span>
 <span class="normal">1617</span>
-<span class="normal">1618</span>
-<span class="normal">1619</span>
-<span class="normal">1620</span>
-<span class="normal">1621</span>
-<span class="normal">1622</span>
-<span class="normal">1623</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_mesh_aabb_with_offsets</span><span class="p">(</span>
+<span class="normal">1618</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">query_mesh_aabb_with_offsets</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">,</span>
     <span class="n">query_lower</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">query_upper</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -11309,7 +11299,12 @@ same triangulation pays for it each time -- there is no prebuilt-index entry poi
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/proximity.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1626</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1621</span>
+<span class="normal">1622</span>
+<span class="normal">1623</span>
+<span class="normal">1624</span>
+<span class="normal">1625</span>
+<span class="normal">1626</span>
 <span class="normal">1627</span>
 <span class="normal">1628</span>
 <span class="normal">1629</span>
@@ -11419,12 +11414,7 @@ same triangulation pays for it each time -- there is no prebuilt-index entry poi
 <span class="normal">1733</span>
 <span class="normal">1734</span>
 <span class="normal">1735</span>
-<span class="normal">1736</span>
-<span class="normal">1737</span>
-<span class="normal">1738</span>
-<span class="normal">1739</span>
-<span class="normal">1740</span>
-<span class="normal">1741</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">containing_faces_2d</span><span class="p">(</span>
+<span class="normal">1736</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">containing_faces_2d</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>

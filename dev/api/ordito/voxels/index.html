@@ -13859,16 +13859,16 @@ cell and are exact.</p>
         <span class="p">),</span>
     <span class="p">)</span>
     <span class="n">candidates</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">total</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">grid</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">mask</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">total</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">grid</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">counter</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">grid</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
     <span class="n">dims_i</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3i</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">dims</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">dims</span><span class="p">[</span><span class="mi">1</span><span class="p">]),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">dims</span><span class="p">[</span><span class="mi">2</span><span class="p">]))</span>
     <span class="n">base_i</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3i</span><span class="p">(</span><span class="o">*</span><span class="n">base_cell</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_voxels</span><span class="o">.</span><span class="n">resampled_cell_candidates</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">dims</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">grid</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">lower</span><span class="p">,</span> <span class="n">step</span><span class="p">,</span> <span class="n">dims_i</span><span class="p">,</span> <span class="n">base_i</span><span class="p">,</span> <span class="n">candidates</span><span class="p">,</span> <span class="n">mask</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">grid</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">lower</span><span class="p">,</span> <span class="n">step</span><span class="p">,</span> <span class="n">dims_i</span><span class="p">,</span> <span class="n">base_i</span><span class="p">,</span> <span class="n">counter</span><span class="p">,</span> <span class="n">candidates</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">grid</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="k">return</span> <span class="n">_allocate_masked</span><span class="p">(</span><span class="n">candidates</span><span class="p">,</span> <span class="n">mask</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_allocate_appended</span><span class="p">(</span><span class="n">candidates</span><span class="p">,</span> <span class="n">counter</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -14242,20 +14242,20 @@ rather than against
         <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">labels</span><span class="p">,</span> <span class="n">outside</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="c1"># The filled set goes straight to the builder as candidates plus a keep mask -- the pair</span>
+    <span class="c1"># The filled set goes straight to the builder as appended candidates -- the cells</span>
     <span class="c1"># ``from_dense`` would derive from a filled lattice -- so that lattice is never stored.</span>
     <span class="n">candidates</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">n_nodes</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">mask</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_nodes</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">counter</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">origin_i</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3i</span><span class="p">(</span>
         <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">origin_cell</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">origin_cell</span><span class="p">[</span><span class="mi">1</span><span class="p">]),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">origin_cell</span><span class="p">[</span><span class="mi">2</span><span class="p">])</span>
     <span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_voxels</span><span class="o">.</span><span class="n">enclosed_cell_candidates</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">dims</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">occupancy</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">outside</span><span class="p">,</span> <span class="n">origin_i</span><span class="p">,</span> <span class="n">candidates</span><span class="p">,</span> <span class="n">mask</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">occupancy</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">outside</span><span class="p">,</span> <span class="n">origin_i</span><span class="p">,</span> <span class="n">counter</span><span class="p">,</span> <span class="n">candidates</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="k">return</span> <span class="n">_allocate_masked</span><span class="p">(</span><span class="n">candidates</span><span class="p">,</span> <span class="n">mask</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_allocate_appended</span><span class="p">(</span><span class="n">candidates</span><span class="p">,</span> <span class="n">counter</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -14577,15 +14577,15 @@ Exceeding it raises rather than allocating.</p>
     <span class="p">)</span>
     <span class="n">n_cells</span> <span class="o">=</span> <span class="n">dims</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">*</span> <span class="n">dims</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span> <span class="o">*</span> <span class="n">dims</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span>
     <span class="n">candidates</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">n_cells</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">mask</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_cells</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">counter</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_voxels</span><span class="o">.</span><span class="n">occupied_cells_in_spans</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">dims</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">spans</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3i</span><span class="p">(</span><span class="o">*</span><span class="n">dims</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3i</span><span class="p">(</span><span class="o">*</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">c</span><span class="p">)</span> <span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="n">origin_cell</span><span class="p">))],</span>
-        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">candidates</span><span class="p">,</span> <span class="n">mask</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">spans</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3i</span><span class="p">(</span><span class="o">*</span><span class="n">dims</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3i</span><span class="p">(</span><span class="o">*</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">c</span><span class="p">)</span> <span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="n">origin_cell</span><span class="p">)),</span> <span class="n">counter</span><span class="p">],</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">candidates</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="k">return</span> <span class="n">_allocate_masked</span><span class="p">(</span><span class="n">candidates</span><span class="p">,</span> <span class="n">mask</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_allocate_appended</span><span class="p">(</span><span class="n">candidates</span><span class="p">,</span> <span class="n">counter</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -14857,7 +14857,10 @@ is the whole operation and each name is the other one's mistake.</p>
 <span class="normal">2248</span>
 <span class="normal">2249</span>
 <span class="normal">2250</span>
-<span class="normal">2251</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">dilate</span><span class="p">(</span>
+<span class="normal">2251</span>
+<span class="normal">2252</span>
+<span class="normal">2253</span>
+<span class="normal">2254</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">dilate</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">26</span><span class="p">]</span> <span class="o">=</span> <span class="mi">6</span><span class="p">,</span> <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -14929,14 +14932,17 @@ is the whole operation and each name is the other one's mistake.</p>
             <span class="k">return</span> <span class="n">_empty_grid</span><span class="p">(</span><span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
         <span class="n">stencil</span> <span class="o">=</span> <span class="n">_stencil</span><span class="p">(</span><span class="n">connectivity</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">include_self</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
         <span class="n">n_offsets</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">stencil</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+        <span class="c1"># The voxels and their empty neighbours, appended: the occupied neighbours every voxel's</span>
+        <span class="c1"># stencil also reaches would only be keyed and merged away by the builder.</span>
         <span class="n">candidates</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">n_voxels</span> <span class="o">*</span> <span class="n">n_offsets</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">counter</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_voxels</span><span class="o">.</span><span class="n">neighborhood_candidates</span><span class="p">,</span>
+            <span class="n">kernel_voxels</span><span class="o">.</span><span class="n">dilation_candidates</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">n_voxels</span><span class="p">,</span> <span class="n">n_offsets</span><span class="p">),</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">voxels</span><span class="p">,</span> <span class="n">stencil</span><span class="p">,</span> <span class="n">candidates</span><span class="p">],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">grid</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">voxels</span><span class="p">,</span> <span class="n">stencil</span><span class="p">,</span> <span class="n">counter</span><span class="p">,</span> <span class="n">candidates</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
-        <span class="n">grid</span> <span class="o">=</span> <span class="n">from_cells</span><span class="p">(</span><span class="n">candidates</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
+        <span class="n">grid</span> <span class="o">=</span> <span class="n">_allocate_appended</span><span class="p">(</span><span class="n">candidates</span><span class="p">,</span> <span class="n">counter</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">grid</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -15125,10 +15131,7 @@ region always erodes away — the same convention <code>scipy.ndimage.binary_ero
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2254</span>
-<span class="normal">2255</span>
-<span class="normal">2256</span>
-<span class="normal">2257</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2257</span>
 <span class="normal">2258</span>
 <span class="normal">2259</span>
 <span class="normal">2260</span>
@@ -15189,9 +15192,7 @@ region always erodes away — the same convention <code>scipy.ndimage.binary_ero
 <span class="normal">2315</span>
 <span class="normal">2316</span>
 <span class="normal">2317</span>
-<span class="normal">2318</span>
-<span class="normal">2319</span>
-<span class="normal">2320</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">erode</span><span class="p">(</span>
+<span class="normal">2318</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">erode</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">26</span><span class="p">]</span> <span class="o">=</span> <span class="mi">6</span><span class="p">,</span> <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -15249,14 +15250,9 @@ region always erodes away — the same convention <code>scipy.ndimage.binary_ero
 <span class="sd">    print(od.voxels.cells(od.voxels.erode(block)).numpy().tolist())  # [[1, 1, 1]]</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span> <span class="o">=</span> <span class="n">grid_transform</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span>
     <span class="n">_check_iterations</span><span class="p">(</span><span class="n">connectivity</span><span class="p">,</span> <span class="n">iterations</span><span class="p">)</span>
     <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">iterations</span><span class="p">):</span>
-        <span class="n">voxels</span> <span class="o">=</span> <span class="n">cells</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span>
-        <span class="n">interior</span> <span class="o">=</span> <span class="n">_interior_flags</span><span class="p">(</span><span class="n">grid</span><span class="p">,</span> <span class="n">voxels</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">interior</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">return</span> <span class="n">_empty_grid</span><span class="p">(</span><span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">,</span> <span class="n">grid</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-        <span class="n">grid</span> <span class="o">=</span> <span class="n">_allocate_masked</span><span class="p">(</span><span class="n">voxels</span><span class="p">,</span> <span class="n">interior</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
+        <span class="n">grid</span> <span class="o">=</span> <span class="n">_complete_voxels</span><span class="p">(</span><span class="n">grid</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">,</span> <span class="n">interior</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">grid</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -15452,7 +15448,9 @@ the array it was handed and erodes a shell off every face of it unless the calle
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2323</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2321</span>
+<span class="normal">2322</span>
+<span class="normal">2323</span>
 <span class="normal">2324</span>
 <span class="normal">2325</span>
 <span class="normal">2326</span>
@@ -15519,9 +15517,7 @@ the array it was handed and erodes a shell off every face of it unless the calle
 <span class="normal">2387</span>
 <span class="normal">2388</span>
 <span class="normal">2389</span>
-<span class="normal">2390</span>
-<span class="normal">2391</span>
-<span class="normal">2392</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closing</span><span class="p">(</span>
+<span class="normal">2390</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">closing</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">26</span><span class="p">]</span> <span class="o">=</span> <span class="mi">6</span><span class="p">,</span> <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -15780,7 +15776,9 @@ extent but lose their corners.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2395</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2393</span>
+<span class="normal">2394</span>
+<span class="normal">2395</span>
 <span class="normal">2396</span>
 <span class="normal">2397</span>
 <span class="normal">2398</span>
@@ -15842,9 +15840,7 @@ extent but lose their corners.</p>
 <span class="normal">2454</span>
 <span class="normal">2455</span>
 <span class="normal">2456</span>
-<span class="normal">2457</span>
-<span class="normal">2458</span>
-<span class="normal">2459</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">opening</span><span class="p">(</span>
+<span class="normal">2457</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">opening</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">26</span><span class="p">]</span> <span class="o">=</span> <span class="mi">6</span><span class="p">,</span> <span class="n">iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -16072,7 +16068,9 @@ the set is empty by definition.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2462</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2460</span>
+<span class="normal">2461</span>
+<span class="normal">2462</span>
 <span class="normal">2463</span>
 <span class="normal">2464</span>
 <span class="normal">2465</span>
@@ -16123,14 +16121,7 @@ the set is empty by definition.</p>
 <span class="normal">2510</span>
 <span class="normal">2511</span>
 <span class="normal">2512</span>
-<span class="normal">2513</span>
-<span class="normal">2514</span>
-<span class="normal">2515</span>
-<span class="normal">2516</span>
-<span class="normal">2517</span>
-<span class="normal">2518</span>
-<span class="normal">2519</span>
-<span class="normal">2520</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">surface_voxels</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">26</span><span class="p">]</span> <span class="o">=</span> <span class="mi">6</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
+<span class="normal">2513</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">surface_voxels</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="mi">6</span><span class="p">,</span> <span class="mi">18</span><span class="p">,</span> <span class="mi">26</span><span class="p">]</span> <span class="o">=</span> <span class="mi">6</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Keep the occupied voxels that touch an empty one: the boundary shell of the set.</span>
 
@@ -16181,14 +16172,9 @@ the set is empty by definition.</p>
 <span class="sd">    print(od.voxels.cells(od.voxels.surface_voxels(block)).shape[0])  # 26</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span> <span class="o">=</span> <span class="n">grid_transform</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span>
     <span class="c1"># ``interior=False`` asks the neighbourhood kernel for the complement it already computes,</span>
     <span class="c1"># rather than launching a second pass to negate the flags it just wrote.</span>
-    <span class="n">voxels</span> <span class="o">=</span> <span class="n">cells</span><span class="p">(</span><span class="n">grid</span><span class="p">)</span>
-    <span class="n">boundary</span> <span class="o">=</span> <span class="n">_interior_flags</span><span class="p">(</span><span class="n">grid</span><span class="p">,</span> <span class="n">voxels</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">,</span> <span class="n">interior</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">boundary</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_empty_grid</span><span class="p">(</span><span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">,</span> <span class="n">grid</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">_allocate_masked</span><span class="p">(</span><span class="n">voxels</span><span class="p">,</span> <span class="n">boundary</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_complete_voxels</span><span class="p">(</span><span class="n">grid</span><span class="p">,</span> <span class="n">connectivity</span><span class="p">,</span> <span class="n">interior</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -16380,7 +16366,14 @@ occupied cells, measured from <code>origin_cell</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2523</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2516</span>
+<span class="normal">2517</span>
+<span class="normal">2518</span>
+<span class="normal">2519</span>
+<span class="normal">2520</span>
+<span class="normal">2521</span>
+<span class="normal">2522</span>
+<span class="normal">2523</span>
 <span class="normal">2524</span>
 <span class="normal">2525</span>
 <span class="normal">2526</span>
@@ -16454,14 +16447,7 @@ occupied cells, measured from <code>origin_cell</code>.</p>
 <span class="normal">2594</span>
 <span class="normal">2595</span>
 <span class="normal">2596</span>
-<span class="normal">2597</span>
-<span class="normal">2598</span>
-<span class="normal">2599</span>
-<span class="normal">2600</span>
-<span class="normal">2601</span>
-<span class="normal">2602</span>
-<span class="normal">2603</span>
-<span class="normal">2604</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_dense</span><span class="p">(</span>
+<span class="normal">2597</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_dense</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">origin_cell</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -16743,7 +16729,14 @@ the <code>origin_cell</code> that function returned and the round trip is exact,
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2607</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2600</span>
+<span class="normal">2601</span>
+<span class="normal">2602</span>
+<span class="normal">2603</span>
+<span class="normal">2604</span>
+<span class="normal">2605</span>
+<span class="normal">2606</span>
+<span class="normal">2607</span>
 <span class="normal">2608</span>
 <span class="normal">2609</span>
 <span class="normal">2610</span>
@@ -16810,14 +16803,7 @@ the <code>origin_cell</code> that function returned and the round trip is exact,
 <span class="normal">2671</span>
 <span class="normal">2672</span>
 <span class="normal">2673</span>
-<span class="normal">2674</span>
-<span class="normal">2675</span>
-<span class="normal">2676</span>
-<span class="normal">2677</span>
-<span class="normal">2678</span>
-<span class="normal">2679</span>
-<span class="normal">2680</span>
-<span class="normal">2681</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">from_dense</span><span class="p">(</span>
+<span class="normal">2674</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">from_dense</span><span class="p">(</span>
     <span class="n">occupancy</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array3dBool</span><span class="p">,</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
     <span class="n">origin</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
@@ -16884,14 +16870,14 @@ the <code>origin_cell</code> that function returned and the round trip is exact,
         <span class="k">return</span> <span class="n">_empty_grid</span><span class="p">(</span><span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
 
     <span class="n">candidates</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">n_cells</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">mask</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_cells</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">counter</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_voxels</span><span class="o">.</span><span class="n">occupied_cells</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">dims</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">occupancy</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3i</span><span class="p">(</span><span class="o">*</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">c</span><span class="p">)</span> <span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="n">origin_cell</span><span class="p">)),</span> <span class="n">candidates</span><span class="p">,</span> <span class="n">mask</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">occupancy</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3i</span><span class="p">(</span><span class="o">*</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">c</span><span class="p">)</span> <span class="k">for</span> <span class="n">c</span> <span class="ow">in</span> <span class="n">origin_cell</span><span class="p">)),</span> <span class="n">counter</span><span class="p">,</span> <span class="n">candidates</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="k">return</span> <span class="n">_allocate_masked</span><span class="p">(</span><span class="n">candidates</span><span class="p">,</span> <span class="n">mask</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_allocate_appended</span><span class="p">(</span><span class="n">candidates</span><span class="p">,</span> <span class="n">counter</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">,</span> <span class="n">origin</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -17077,7 +17063,14 @@ occupied cells' outer faces — the same half-voxel offset trimesh's marching-cu
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2684</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2677</span>
+<span class="normal">2678</span>
+<span class="normal">2679</span>
+<span class="normal">2680</span>
+<span class="normal">2681</span>
+<span class="normal">2682</span>
+<span class="normal">2683</span>
+<span class="normal">2684</span>
 <span class="normal">2685</span>
 <span class="normal">2686</span>
 <span class="normal">2687</span>
@@ -17153,14 +17146,7 @@ occupied cells' outer faces — the same half-voxel offset trimesh's marching-cu
 <span class="normal">2757</span>
 <span class="normal">2758</span>
 <span class="normal">2759</span>
-<span class="normal">2760</span>
-<span class="normal">2761</span>
-<span class="normal">2762</span>
-<span class="normal">2763</span>
-<span class="normal">2764</span>
-<span class="normal">2765</span>
-<span class="normal">2766</span>
-<span class="normal">2767</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_field</span><span class="p">(</span>
+<span class="normal">2760</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_field</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">pad</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Array3dFloat32</span><span class="p">,</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -17422,7 +17408,14 @@ relying on an index into the full lattice: it was not, since the lattice itself 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2770</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2763</span>
+<span class="normal">2764</span>
+<span class="normal">2765</span>
+<span class="normal">2766</span>
+<span class="normal">2767</span>
+<span class="normal">2768</span>
+<span class="normal">2769</span>
+<span class="normal">2770</span>
 <span class="normal">2771</span>
 <span class="normal">2772</span>
 <span class="normal">2773</span>
@@ -17523,14 +17516,7 @@ relying on an index into the full lattice: it was not, since the lattice itself 
 <span class="normal">2868</span>
 <span class="normal">2869</span>
 <span class="normal">2870</span>
-<span class="normal">2871</span>
-<span class="normal">2872</span>
-<span class="normal">2873</span>
-<span class="normal">2874</span>
-<span class="normal">2875</span>
-<span class="normal">2876</span>
-<span class="normal">2877</span>
-<span class="normal">2878</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_boxes</span><span class="p">(</span>
+<span class="normal">2871</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">to_boxes</span><span class="p">(</span>
     <span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">cull_internal</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -17795,7 +17781,14 @@ module needs it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/voxels.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2881</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2874</span>
+<span class="normal">2875</span>
+<span class="normal">2876</span>
+<span class="normal">2877</span>
+<span class="normal">2878</span>
+<span class="normal">2879</span>
+<span class="normal">2880</span>
+<span class="normal">2881</span>
 <span class="normal">2882</span>
 <span class="normal">2883</span>
 <span class="normal">2884</span>
@@ -17849,14 +17842,7 @@ module needs it.</p>
 <span class="normal">2932</span>
 <span class="normal">2933</span>
 <span class="normal">2934</span>
-<span class="normal">2935</span>
-<span class="normal">2936</span>
-<span class="normal">2937</span>
-<span class="normal">2938</span>
-<span class="normal">2939</span>
-<span class="normal">2940</span>
-<span class="normal">2941</span>
-<span class="normal">2942</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">voxel_corners</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">]:</span>
+<span class="normal">2935</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">voxel_corners</span><span class="p">(</span><span class="n">grid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Build the deduplicated corner lattice of the voxel set, plus each voxel's eight corners.</span>
 

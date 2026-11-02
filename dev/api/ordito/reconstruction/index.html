@@ -7022,7 +7022,21 @@ than about that radius, so a hole that small closes whatever <code>crit_hole_len
 <span class="normal">427</span>
 <span class="normal">428</span>
 <span class="normal">429</span>
-<span class="normal">430</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_point_cloud</span><span class="p">(</span>
+<span class="normal">430</span>
+<span class="normal">431</span>
+<span class="normal">432</span>
+<span class="normal">433</span>
+<span class="normal">434</span>
+<span class="normal">435</span>
+<span class="normal">436</span>
+<span class="normal">437</span>
+<span class="normal">438</span>
+<span class="normal">439</span>
+<span class="normal">440</span>
+<span class="normal">441</span>
+<span class="normal">442</span>
+<span class="normal">443</span>
+<span class="normal">444</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">triangulate_point_cloud</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7158,11 +7172,11 @@ than about that radius, so a hole that small closes whatever <code>crit_hole_len
     <span class="k">if</span> <span class="n">normals</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">estimate_normals</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">neighbor_idx</span><span class="p">,</span> <span class="n">orientation</span><span class="o">=</span><span class="s2">"centroid"</span><span class="p">)</span>
 
-    <span class="c1"># Per-point local fan triangulation: point ``v``'s fan fills ``out_tris[v, :count]``. The fans,</span>
-    <span class="c1"># their counts and the grown points' flags in one allocation.</span>
-    <span class="n">widths</span> <span class="o">=</span> <span class="p">[</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n</span> <span class="o">*</span> <span class="n">k</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">n</span><span class="p">]</span>
-    <span class="n">tri_rows</span><span class="p">,</span> <span class="n">fan_counts</span><span class="p">,</span> <span class="n">grown_flags</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">widths</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
-    <span class="n">out_tris</span> <span class="o">=</span> <span class="n">tri_rows</span><span class="o">.</span><span class="n">reshape</span><span class="p">((</span><span class="n">n</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
+    <span class="c1"># Per-point local fan triangulation: point ``v``'s fan fills ``out_tris[v, :count]``. The fans</span>
+    <span class="c1"># in an allocation of their own, released once packed; their counts and the grown points'</span>
+    <span class="c1"># flags in another.</span>
+    <span class="n">out_tris</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n</span> <span class="o">*</span> <span class="n">k</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">((</span><span class="n">n</span><span class="p">,</span> <span class="n">k</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span>
+    <span class="n">fan_counts</span><span class="p">,</span> <span class="n">grown_flags</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="p">[</span><span class="n">n</span><span class="p">,</span> <span class="n">n</span><span class="p">],</span> <span class="n">device</span><span class="p">)</span>
     <span class="n">normals_mode</span> <span class="o">=</span> <span class="p">(</span>
         <span class="n">kernel_reconstruction</span><span class="o">.</span><span class="n">NORMALS_ORIENTED</span>
         <span class="k">if</span> <span class="n">oriented</span>
@@ -7185,6 +7199,9 @@ than about that radius, so a hole that small closes whatever <code>crit_hole_len
         <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">out_tris</span><span class="p">,</span> <span class="n">fan_counts</span><span class="p">,</span> <span class="n">grown_radii</span><span class="p">,</span> <span class="n">grown_flags</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
+    <span class="c1"># The neighbour table's last reader: released before the fans are assembled, where the call</span>
+    <span class="c1"># peaks.</span>
+    <span class="k">del</span> <span class="n">neighbor_idx</span><span class="p">,</span> <span class="n">neighbor_dist</span>
     <span class="n">_rebuild_grown_fans</span><span class="p">(</span>
         <span class="n">points</span><span class="p">,</span>
         <span class="n">normals</span><span class="p">,</span>
@@ -7198,6 +7215,7 @@ than about that radius, so a hole that small closes whatever <code>crit_hole_len
         <span class="n">out_tris</span><span class="p">,</span>
         <span class="n">fan_counts</span><span class="p">,</span>
     <span class="p">)</span>
+    <span class="k">del</span> <span class="n">grown_radii</span><span class="p">,</span> <span class="n">normals</span>
     <span class="c1"># Scanned in place: each fan's packed offset is its predecessor's inclusive total, and the last</span>
     <span class="c1"># entry sizes the candidate buffers.</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">fan_counts</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">fan_counts</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
@@ -7205,11 +7223,21 @@ than about that radius, so a hole that small closes whatever <code>crit_hole_len
     <span class="n">n_candidates</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">fan_counts</span><span class="p">))</span>
     <span class="k">if</span> <span class="n">n_candidates</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_launch</span><span class="o">.</span><span class="n">clone</span><span class="p">(</span><span class="n">points</span><span class="p">),</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># The fans fill about six of a point's ``k`` slots: packed before the assembly, where the call</span>
+    <span class="c1"># peaks, and the padded table released.</span>
+    <span class="n">fans</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">n_candidates</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+        <span class="n">kernel_reconstruction</span><span class="o">.</span><span class="n">pack_fan_rows</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">k</span><span class="p">),</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">out_tris</span><span class="p">,</span> <span class="n">fan_counts</span><span class="p">],</span>
+        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">fans</span><span class="p">],</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">del</span> <span class="n">out_tris</span>
 
     <span class="k">return</span> <span class="n">_assemble_fans</span><span class="p">(</span>
         <span class="n">points</span><span class="p">,</span>
-        <span class="n">out_tris</span><span class="p">,</span>
-        <span class="n">fan_counts</span><span class="p">,</span>
+        <span class="n">_Fans</span><span class="p">(</span><span class="n">fans</span><span class="p">,</span> <span class="n">fan_counts</span><span class="p">,</span> <span class="n">k</span><span class="p">),</span>
         <span class="n">n_candidates</span><span class="p">,</span>
         <span class="n">crit_hole_length</span><span class="p">,</span>
         <span class="n">orient_from</span><span class="o">=</span><span class="kc">None</span> <span class="k">if</span> <span class="n">oriented</span> <span class="k">else</span> <span class="n">bounds</span><span class="p">,</span>
@@ -7470,7 +7498,7 @@ solve, and the surface follows that. Its mesh is <code>open3d</code>'s, run on o
 vertices and triangles, stitched across changes of depth as <code>open3d</code> stitches them,
 except where <code>open3d</code>'s minimal-area split of a polygon is decided by rounding (a few
 percent of the triangles; the surface is the same). Those triangles are returned as is:
-not filtered for degeneracy nor reoriented. <code>depth</code> is at most 9.</p>
+not filtered for degeneracy nor reoriented.</p>
               </div>
             </td>
             <td>
@@ -7656,25 +7684,7 @@ taken from it.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 982</span>
-<span class="normal"> 983</span>
-<span class="normal"> 984</span>
-<span class="normal"> 985</span>
-<span class="normal"> 986</span>
-<span class="normal"> 987</span>
-<span class="normal"> 988</span>
-<span class="normal"> 989</span>
-<span class="normal"> 990</span>
-<span class="normal"> 991</span>
-<span class="normal"> 992</span>
-<span class="normal"> 993</span>
-<span class="normal"> 994</span>
-<span class="normal"> 995</span>
-<span class="normal"> 996</span>
-<span class="normal"> 997</span>
-<span class="normal"> 998</span>
-<span class="normal"> 999</span>
-<span class="normal">1000</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1000</span>
 <span class="normal">1001</span>
 <span class="normal">1002</span>
 <span class="normal">1003</span>
@@ -7937,7 +7947,25 @@ taken from it.</p>
 <span class="normal">1260</span>
 <span class="normal">1261</span>
 <span class="normal">1262</span>
-<span class="normal">1263</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">screened_poisson</span><span class="p">(</span>
+<span class="normal">1263</span>
+<span class="normal">1264</span>
+<span class="normal">1265</span>
+<span class="normal">1266</span>
+<span class="normal">1267</span>
+<span class="normal">1268</span>
+<span class="normal">1269</span>
+<span class="normal">1270</span>
+<span class="normal">1271</span>
+<span class="normal">1272</span>
+<span class="normal">1273</span>
+<span class="normal">1274</span>
+<span class="normal">1275</span>
+<span class="normal">1276</span>
+<span class="normal">1277</span>
+<span class="normal">1278</span>
+<span class="normal">1279</span>
+<span class="normal">1280</span>
+<span class="normal">1281</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">screened_poisson</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -8032,7 +8060,7 @@ taken from it.</p>
 <span class="sd">        vertices and triangles, stitched across changes of depth as ``open3d`` stitches them,</span>
 <span class="sd">        except where ``open3d``'s minimal-area split of a polygon is decided by rounding (a few</span>
 <span class="sd">        percent of the triangles; the surface is the same). Those triangles are returned as is:</span>
-<span class="sd">        not filtered for degeneracy nor reoriented. ``depth`` is at most 9.</span>
+<span class="sd">        not filtered for degeneracy nor reoriented.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -8240,7 +8268,9 @@ taken from it.</p>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">offset</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
     <span class="n">sign_mode</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"parity"</span><span class="p">,</span> <span class="s2">"winding"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"winding"</span><span class="p">,</span>
-    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">,</span> <span class="s2">"meshlib"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"padded"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span>
+        <span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">,</span> <span class="s2">"meshlib"</span><span class="p">,</span> <span class="s2">"meshlab"</span>
+    <span class="p">]</span> <span class="o">=</span> <span class="s2">"padded"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
 </code></pre></div>
 
@@ -8350,7 +8380,8 @@ evaluation; and no feature thinner than a voxel survives.</p>
 <a class="autorefs autorefs-internal" title="signed_distance_on_mesh" href="../proximity/#ordito.proximity.signed_distance_on_mesh"><code>signed_distance_on_mesh</code></a>. The default here is
 <code>"winding"</code> rather than that function's <code>"parity"</code>: resampling is usually applied to a
 mesh that is <em>broken</em>, and ray parity has no principled answer through a hole, while the
-generalized winding number degrades gracefully.</p>
+generalized winding number degrades gracefully. Not read by <code>method="meshlab"</code>, which
+signs as MeshLab does.</p>
               </div>
             </td>
             <td>
@@ -8362,7 +8393,7 @@ generalized winding number degrades gracefully.</p>
                 <code>method</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;padded&#39;, &#39;igl&#39;, &#39;meshlib&#39;]</code>
+                  <code><a class="autorefs autorefs-external" title="typing.Literal" href="https://docs.python.org/3/library/typing.html#typing.Literal">Literal</a>[&#39;padded&#39;, &#39;igl&#39;, &#39;meshlib&#39;, &#39;meshlab&#39;]</code>
             </td>
             <td>
               <div class="doc-md-description">
@@ -8374,7 +8405,8 @@ nodes along the box's longest axis, one of them padding at each end, the box gro
 Its spacing is therefore near <code>voxel_size</code> rather than equal to it. <code>"meshlib"</code> is a
 voxel-centred lattice of exactly <code>voxel_size</code>: the box grown by <code>|offset|</code> and then
 by two voxels a side, <code>floor(width / voxel_size) + 1</code> voxels an axis, a sample at each
-voxel's centre (all in <code>float32</code>), the extraction returned as marched.</p>
+voxel's centre (all in <code>float32</code>), the extraction returned as marched. <code>"meshlab"</code>
+is MeshLab's <code>generate_resampled_uniform_mesh</code> (see <code>Notes</code>).</p>
               </div>
             </td>
             <td>
@@ -8433,9 +8465,10 @@ voxel's centre (all in <code>float32</code>), the extraction returned as marched
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>voxel_size</code> is not positive, if <code>method</code> is not <code>"padded"</code>, <code>"igl"</code> or
-<code>"meshlib"</code>, or if under <code>"igl"</code> it leaves fewer than four nodes along the longest
-axis.</p>
+                <p>If <code>voxel_size</code> is not positive, if <code>method</code> is not <code>"padded"</code>, <code>"igl"</code>,
+<code>"meshlib"</code> or <code>"meshlab"</code>, if under <code>"igl"</code> it leaves fewer than four nodes along
+the longest axis, or if under <code>"meshlab"</code> the lattice has <code>2**31</code> nodes or more or the
+surface more vertices or triangles than <code>int32</code> indices address.</p>
               </div>
             </td>
           </tr>
@@ -8466,6 +8499,45 @@ axis.</p>
   <p>The grid is padded by three voxels beyond the bounding box <em>plus</em> <code>offset</code>, so a dilated level
 set is never clipped by the lattice boundary and the extracted surface is always closed. That
 padding is why the memory cost is a little above <code>(extent / voxel_size) ** 3</code>.</p>
+<p><code>method="meshlab"</code> reproduces MeshLab's resampler, mesh for mesh on an ordinary mesh:</p>
+<ul>
+<li><strong>The lattice.</strong> The vertex box grows by a tenth of its diagonal plus <code>|offset|</code> a side,
+  and the cells, <code>(side / voxel_size)</code> rounded per axis and multiplied, are shared out in
+  proportion to the sides, so the spacing is near <code>voxel_size</code> and differs slightly per
+  axis. <code>voxel_size</code> and <code>offset</code> are rounded to <code>float32</code> first, as MeshLab stores them.</li>
+<li><strong>The field.</strong> A node takes the face of least distance under MeshLab's point-face distance,
+  which measures from the edge whose side the point's projection first leaves and so can
+  overstate a needle's distance and pick another face. It is negative behind that face's
+  normal, or, where the point measured to is within <code>1e-5</code> (barycentric) of the face's rim,
+  behind the angle-weighted vertex normals interpolated there. A node with no face nearer
+  than <code>3.5 * voxel_size + |offset|</code> has no value, and no cell it is a corner of is
+  triangulated: past that reach an open or far-offset surface is left open.</li>
+<li><strong>The extraction.</strong> Lewiner's topologically controlled marching cubes (MC33): ambiguous
+  faces and cell interiors are resolved by the field rather than a fixed table, and some
+  subcases add a vertex inside the cell, at the mean of the crossings MeshLab's slice-by-slice
+  walk has made before it reaches the cell. Returned as marched, with no cleanup.</li>
+</ul>
+<div class="admonition note">
+<p class="admonition-title">Where the result can differ from MeshLab's</p>
+<p>Two kinds of lattice node can be signed otherwise than MeshLab signs them, and around
+each such node a few vertices differ, or a small closed blob of a cell or two appears or
+vanishes; everywhere else the mesh is MeshLab's.</p>
+<ul>
+<li><strong>An exact tie between faces signed apart</strong>, which needs coincident geometry wound
+  against itself: duplicated faces of opposite winding, or two sheets meeting on
+  coincident but distinct vertices, as at the seams of some scanned meshes. MeshLab
+  takes the face its kd-tree search happens to reach first; this takes the lower face
+  index.</li>
+<li><strong>A sign test at rounding level</strong>, where opposite faces cancel a vertex normal to
+  nothing: the sign is the rounding of the cancelled sum, which differs with the order of
+  operations, and on CUDA with fused multiply-adds.</li>
+</ul>
+<p>On meshes with neither, every node agrees and so does the mesh. Measured on scanned
+meshes with duplicated or seamed faces, at a 1-5 % cell: tens of vertices out of
+thousands.</p>
+</div>
+<p>One ambiguous subcase (6.1.2, a tunnel through the cell) takes nine triangles around a cell
+vertex, Lewiner's corrected tiling, where MeshLab's table has seven and no cell vertex.</p>
 </details>
 
 <p><span class="doc-section-title">Examples:</span></p>
@@ -8497,88 +8569,7 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4007</span>
-<span class="normal">4008</span>
-<span class="normal">4009</span>
-<span class="normal">4010</span>
-<span class="normal">4011</span>
-<span class="normal">4012</span>
-<span class="normal">4013</span>
-<span class="normal">4014</span>
-<span class="normal">4015</span>
-<span class="normal">4016</span>
-<span class="normal">4017</span>
-<span class="normal">4018</span>
-<span class="normal">4019</span>
-<span class="normal">4020</span>
-<span class="normal">4021</span>
-<span class="normal">4022</span>
-<span class="normal">4023</span>
-<span class="normal">4024</span>
-<span class="normal">4025</span>
-<span class="normal">4026</span>
-<span class="normal">4027</span>
-<span class="normal">4028</span>
-<span class="normal">4029</span>
-<span class="normal">4030</span>
-<span class="normal">4031</span>
-<span class="normal">4032</span>
-<span class="normal">4033</span>
-<span class="normal">4034</span>
-<span class="normal">4035</span>
-<span class="normal">4036</span>
-<span class="normal">4037</span>
-<span class="normal">4038</span>
-<span class="normal">4039</span>
-<span class="normal">4040</span>
-<span class="normal">4041</span>
-<span class="normal">4042</span>
-<span class="normal">4043</span>
-<span class="normal">4044</span>
-<span class="normal">4045</span>
-<span class="normal">4046</span>
-<span class="normal">4047</span>
-<span class="normal">4048</span>
-<span class="normal">4049</span>
-<span class="normal">4050</span>
-<span class="normal">4051</span>
-<span class="normal">4052</span>
-<span class="normal">4053</span>
-<span class="normal">4054</span>
-<span class="normal">4055</span>
-<span class="normal">4056</span>
-<span class="normal">4057</span>
-<span class="normal">4058</span>
-<span class="normal">4059</span>
-<span class="normal">4060</span>
-<span class="normal">4061</span>
-<span class="normal">4062</span>
-<span class="normal">4063</span>
-<span class="normal">4064</span>
-<span class="normal">4065</span>
-<span class="normal">4066</span>
-<span class="normal">4067</span>
-<span class="normal">4068</span>
-<span class="normal">4069</span>
-<span class="normal">4070</span>
-<span class="normal">4071</span>
-<span class="normal">4072</span>
-<span class="normal">4073</span>
-<span class="normal">4074</span>
-<span class="normal">4075</span>
-<span class="normal">4076</span>
-<span class="normal">4077</span>
-<span class="normal">4078</span>
-<span class="normal">4079</span>
-<span class="normal">4080</span>
-<span class="normal">4081</span>
-<span class="normal">4082</span>
-<span class="normal">4083</span>
-<span class="normal">4084</span>
-<span class="normal">4085</span>
-<span class="normal">4086</span>
-<span class="normal">4087</span>
-<span class="normal">4088</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4088</span>
 <span class="normal">4089</span>
 <span class="normal">4090</span>
 <span class="normal">4091</span>
@@ -8649,14 +8640,139 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="normal">4156</span>
 <span class="normal">4157</span>
 <span class="normal">4158</span>
-<span class="normal">4159</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
+<span class="normal">4159</span>
+<span class="normal">4160</span>
+<span class="normal">4161</span>
+<span class="normal">4162</span>
+<span class="normal">4163</span>
+<span class="normal">4164</span>
+<span class="normal">4165</span>
+<span class="normal">4166</span>
+<span class="normal">4167</span>
+<span class="normal">4168</span>
+<span class="normal">4169</span>
+<span class="normal">4170</span>
+<span class="normal">4171</span>
+<span class="normal">4172</span>
+<span class="normal">4173</span>
+<span class="normal">4174</span>
+<span class="normal">4175</span>
+<span class="normal">4176</span>
+<span class="normal">4177</span>
+<span class="normal">4178</span>
+<span class="normal">4179</span>
+<span class="normal">4180</span>
+<span class="normal">4181</span>
+<span class="normal">4182</span>
+<span class="normal">4183</span>
+<span class="normal">4184</span>
+<span class="normal">4185</span>
+<span class="normal">4186</span>
+<span class="normal">4187</span>
+<span class="normal">4188</span>
+<span class="normal">4189</span>
+<span class="normal">4190</span>
+<span class="normal">4191</span>
+<span class="normal">4192</span>
+<span class="normal">4193</span>
+<span class="normal">4194</span>
+<span class="normal">4195</span>
+<span class="normal">4196</span>
+<span class="normal">4197</span>
+<span class="normal">4198</span>
+<span class="normal">4199</span>
+<span class="normal">4200</span>
+<span class="normal">4201</span>
+<span class="normal">4202</span>
+<span class="normal">4203</span>
+<span class="normal">4204</span>
+<span class="normal">4205</span>
+<span class="normal">4206</span>
+<span class="normal">4207</span>
+<span class="normal">4208</span>
+<span class="normal">4209</span>
+<span class="normal">4210</span>
+<span class="normal">4211</span>
+<span class="normal">4212</span>
+<span class="normal">4213</span>
+<span class="normal">4214</span>
+<span class="normal">4215</span>
+<span class="normal">4216</span>
+<span class="normal">4217</span>
+<span class="normal">4218</span>
+<span class="normal">4219</span>
+<span class="normal">4220</span>
+<span class="normal">4221</span>
+<span class="normal">4222</span>
+<span class="normal">4223</span>
+<span class="normal">4224</span>
+<span class="normal">4225</span>
+<span class="normal">4226</span>
+<span class="normal">4227</span>
+<span class="normal">4228</span>
+<span class="normal">4229</span>
+<span class="normal">4230</span>
+<span class="normal">4231</span>
+<span class="normal">4232</span>
+<span class="normal">4233</span>
+<span class="normal">4234</span>
+<span class="normal">4235</span>
+<span class="normal">4236</span>
+<span class="normal">4237</span>
+<span class="normal">4238</span>
+<span class="normal">4239</span>
+<span class="normal">4240</span>
+<span class="normal">4241</span>
+<span class="normal">4242</span>
+<span class="normal">4243</span>
+<span class="normal">4244</span>
+<span class="normal">4245</span>
+<span class="normal">4246</span>
+<span class="normal">4247</span>
+<span class="normal">4248</span>
+<span class="normal">4249</span>
+<span class="normal">4250</span>
+<span class="normal">4251</span>
+<span class="normal">4252</span>
+<span class="normal">4253</span>
+<span class="normal">4254</span>
+<span class="normal">4255</span>
+<span class="normal">4256</span>
+<span class="normal">4257</span>
+<span class="normal">4258</span>
+<span class="normal">4259</span>
+<span class="normal">4260</span>
+<span class="normal">4261</span>
+<span class="normal">4262</span>
+<span class="normal">4263</span>
+<span class="normal">4264</span>
+<span class="normal">4265</span>
+<span class="normal">4266</span>
+<span class="normal">4267</span>
+<span class="normal">4268</span>
+<span class="normal">4269</span>
+<span class="normal">4270</span>
+<span class="normal">4271</span>
+<span class="normal">4272</span>
+<span class="normal">4273</span>
+<span class="normal">4274</span>
+<span class="normal">4275</span>
+<span class="normal">4276</span>
+<span class="normal">4277</span>
+<span class="normal">4278</span>
+<span class="normal">4279</span>
+<span class="normal">4280</span>
+<span class="normal">4281</span>
+<span class="normal">4282</span>
+<span class="normal">4283</span>
+<span class="normal">4284</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">resample_uniform</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">voxel_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">offset</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
     <span class="n">sign_mode</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"parity"</span><span class="p">,</span> <span class="s2">"winding"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"winding"</span><span class="p">,</span>
-    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">,</span> <span class="s2">"meshlib"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"padded"</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">,</span> <span class="s2">"meshlib"</span><span class="p">,</span> <span class="s2">"meshlab"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"padded"</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Rebuild a mesh by sampling its signed distance field on a uniform grid and re-extracting it.</span>
@@ -8689,7 +8805,8 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="sd">        [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh]. The default here is</span>
 <span class="sd">        ``"winding"`` rather than that function's ``"parity"``: resampling is usually applied to a</span>
 <span class="sd">        mesh that is *broken*, and ray parity has no principled answer through a hole, while the</span>
-<span class="sd">        generalized winding number degrades gracefully.</span>
+<span class="sd">        generalized winding number degrades gracefully. Not read by ``method="meshlab"``, which</span>
+<span class="sd">        signs as MeshLab does.</span>
 <span class="sd">    method</span>
 <span class="sd">        The lattice. ``"padded"`` (the default) pads the bounding box by three voxels plus</span>
 <span class="sd">        ``offset`` and keeps every vertex off the lattice nodes, then cleans the extraction (see</span>
@@ -8699,7 +8816,8 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="sd">        Its spacing is therefore near ``voxel_size`` rather than equal to it. ``"meshlib"`` is a</span>
 <span class="sd">        voxel-centred lattice of exactly ``voxel_size``: the box grown by ``|offset|`` and then</span>
 <span class="sd">        by two voxels a side, ``floor(width / voxel_size) + 1`` voxels an axis, a sample at each</span>
-<span class="sd">        voxel's centre (all in ``float32``), the extraction returned as marched.</span>
+<span class="sd">        voxel's centre (all in ``float32``), the extraction returned as marched. ``"meshlab"``</span>
+<span class="sd">        is MeshLab's ``generate_resampled_uniform_mesh`` (see ``Notes``).</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -8711,9 +8829,10 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    ValueError</span>
-<span class="sd">        If ``voxel_size`` is not positive, if ``method`` is not ``"padded"``, ``"igl"`` or</span>
-<span class="sd">        ``"meshlib"``, or if under ``"igl"`` it leaves fewer than four nodes along the longest</span>
-<span class="sd">        axis.</span>
+<span class="sd">        If ``voxel_size`` is not positive, if ``method`` is not ``"padded"``, ``"igl"``,</span>
+<span class="sd">        ``"meshlib"`` or ``"meshlab"``, if under ``"igl"`` it leaves fewer than four nodes along</span>
+<span class="sd">        the longest axis, or if under ``"meshlab"`` the lattice has ``2**31`` nodes or more or the</span>
+<span class="sd">        surface more vertices or triangles than ``int32`` indices address.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices`` and ``faces`` are not all on one device.</span>
 
@@ -8729,6 +8848,45 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
 <span class="sd">    The grid is padded by three voxels beyond the bounding box *plus* ``offset``, so a dilated level</span>
 <span class="sd">    set is never clipped by the lattice boundary and the extracted surface is always closed. That</span>
 <span class="sd">    padding is why the memory cost is a little above ``(extent / voxel_size) ** 3``.</span>
+
+<span class="sd">    ``method="meshlab"`` reproduces MeshLab's resampler, mesh for mesh on an ordinary mesh:</span>
+
+<span class="sd">    - **The lattice.** The vertex box grows by a tenth of its diagonal plus ``|offset|`` a side,</span>
+<span class="sd">      and the cells, ``(side / voxel_size)`` rounded per axis and multiplied, are shared out in</span>
+<span class="sd">      proportion to the sides, so the spacing is near ``voxel_size`` and differs slightly per</span>
+<span class="sd">      axis. ``voxel_size`` and ``offset`` are rounded to ``float32`` first, as MeshLab stores them.</span>
+<span class="sd">    - **The field.** A node takes the face of least distance under MeshLab's point-face distance,</span>
+<span class="sd">      which measures from the edge whose side the point's projection first leaves and so can</span>
+<span class="sd">      overstate a needle's distance and pick another face. It is negative behind that face's</span>
+<span class="sd">      normal, or, where the point measured to is within ``1e-5`` (barycentric) of the face's rim,</span>
+<span class="sd">      behind the angle-weighted vertex normals interpolated there. A node with no face nearer</span>
+<span class="sd">      than ``3.5 * voxel_size + |offset|`` has no value, and no cell it is a corner of is</span>
+<span class="sd">      triangulated: past that reach an open or far-offset surface is left open.</span>
+<span class="sd">    - **The extraction.** Lewiner's topologically controlled marching cubes (MC33): ambiguous</span>
+<span class="sd">      faces and cell interiors are resolved by the field rather than a fixed table, and some</span>
+<span class="sd">      subcases add a vertex inside the cell, at the mean of the crossings MeshLab's slice-by-slice</span>
+<span class="sd">      walk has made before it reaches the cell. Returned as marched, with no cleanup.</span>
+
+<span class="sd">    !!! note "Where the result can differ from MeshLab's"</span>
+<span class="sd">        Two kinds of lattice node can be signed otherwise than MeshLab signs them, and around</span>
+<span class="sd">        each such node a few vertices differ, or a small closed blob of a cell or two appears or</span>
+<span class="sd">        vanishes; everywhere else the mesh is MeshLab's.</span>
+
+<span class="sd">        - **An exact tie between faces signed apart**, which needs coincident geometry wound</span>
+<span class="sd">          against itself: duplicated faces of opposite winding, or two sheets meeting on</span>
+<span class="sd">          coincident but distinct vertices, as at the seams of some scanned meshes. MeshLab</span>
+<span class="sd">          takes the face its kd-tree search happens to reach first; this takes the lower face</span>
+<span class="sd">          index.</span>
+<span class="sd">        - **A sign test at rounding level**, where opposite faces cancel a vertex normal to</span>
+<span class="sd">          nothing: the sign is the rounding of the cancelled sum, which differs with the order of</span>
+<span class="sd">          operations, and on CUDA with fused multiply-adds.</span>
+
+<span class="sd">        On meshes with neither, every node agrees and so does the mesh. Measured on scanned</span>
+<span class="sd">        meshes with duplicated or seamed faces, at a 1-5 % cell: tens of vertices out of</span>
+<span class="sd">        thousands.</span>
+
+<span class="sd">    One ambiguous subcase (6.1.2, a tunnel through the cell) takes nine triangles around a cell</span>
+<span class="sd">    vertex, Lewiner's corrected tiling, where MeshLab's table has seven and no cell vertex.</span>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
@@ -8763,8 +8921,10 @@ padding is why the memory cost is a little above <code>(extent / voxel_size) ** 
         <span class="n">voxel_size</span> <span class="o">=</span> <span class="mf">0.01</span> <span class="o">*</span> <span class="n">diagonal</span>
     <span class="k">if</span> <span class="n">voxel_size</span> <span class="o">&lt;=</span> <span class="mf">0.0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"resample_uniform requires voxel_size &gt; 0, got </span><span class="si">{</span><span class="n">voxel_size</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">,</span> <span class="s2">"meshlib"</span><span class="p">):</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method must be 'padded', 'igl' or 'meshlib', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"padded"</span><span class="p">,</span> <span class="s2">"igl"</span><span class="p">,</span> <span class="s2">"meshlib"</span><span class="p">,</span> <span class="s2">"meshlab"</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method must be 'padded', 'igl', 'meshlib' or 'meshlab', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"meshlab"</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_meshlab_resample</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">lower</span><span class="p">,</span> <span class="n">upper</span><span class="p">,</span> <span class="n">offset</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">method</span> <span class="o">!=</span> <span class="s2">"padded"</span><span class="p">:</span>
         <span class="n">lattice</span> <span class="o">=</span> <span class="n">_igl_offset_lattice</span> <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"igl"</span> <span class="k">else</span> <span class="n">_voxel_centred_lattice</span>
         <span class="n">shape</span><span class="p">,</span> <span class="n">bounds</span> <span class="o">=</span> <span class="n">lattice</span><span class="p">(</span><span class="n">lower</span><span class="p">,</span> <span class="n">upper</span><span class="p">,</span> <span class="n">offset</span><span class="p">,</span> <span class="n">voxel_size</span><span class="p">)</span>
@@ -9114,172 +9274,172 @@ watertight by construction use <a class="autorefs autorefs-internal" title="scre
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/reconstruction.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4223</span>
-<span class="normal">4224</span>
-<span class="normal">4225</span>
-<span class="normal">4226</span>
-<span class="normal">4227</span>
-<span class="normal">4228</span>
-<span class="normal">4229</span>
-<span class="normal">4230</span>
-<span class="normal">4231</span>
-<span class="normal">4232</span>
-<span class="normal">4233</span>
-<span class="normal">4234</span>
-<span class="normal">4235</span>
-<span class="normal">4236</span>
-<span class="normal">4237</span>
-<span class="normal">4238</span>
-<span class="normal">4239</span>
-<span class="normal">4240</span>
-<span class="normal">4241</span>
-<span class="normal">4242</span>
-<span class="normal">4243</span>
-<span class="normal">4244</span>
-<span class="normal">4245</span>
-<span class="normal">4246</span>
-<span class="normal">4247</span>
-<span class="normal">4248</span>
-<span class="normal">4249</span>
-<span class="normal">4250</span>
-<span class="normal">4251</span>
-<span class="normal">4252</span>
-<span class="normal">4253</span>
-<span class="normal">4254</span>
-<span class="normal">4255</span>
-<span class="normal">4256</span>
-<span class="normal">4257</span>
-<span class="normal">4258</span>
-<span class="normal">4259</span>
-<span class="normal">4260</span>
-<span class="normal">4261</span>
-<span class="normal">4262</span>
-<span class="normal">4263</span>
-<span class="normal">4264</span>
-<span class="normal">4265</span>
-<span class="normal">4266</span>
-<span class="normal">4267</span>
-<span class="normal">4268</span>
-<span class="normal">4269</span>
-<span class="normal">4270</span>
-<span class="normal">4271</span>
-<span class="normal">4272</span>
-<span class="normal">4273</span>
-<span class="normal">4274</span>
-<span class="normal">4275</span>
-<span class="normal">4276</span>
-<span class="normal">4277</span>
-<span class="normal">4278</span>
-<span class="normal">4279</span>
-<span class="normal">4280</span>
-<span class="normal">4281</span>
-<span class="normal">4282</span>
-<span class="normal">4283</span>
-<span class="normal">4284</span>
-<span class="normal">4285</span>
-<span class="normal">4286</span>
-<span class="normal">4287</span>
-<span class="normal">4288</span>
-<span class="normal">4289</span>
-<span class="normal">4290</span>
-<span class="normal">4291</span>
-<span class="normal">4292</span>
-<span class="normal">4293</span>
-<span class="normal">4294</span>
-<span class="normal">4295</span>
-<span class="normal">4296</span>
-<span class="normal">4297</span>
-<span class="normal">4298</span>
-<span class="normal">4299</span>
-<span class="normal">4300</span>
-<span class="normal">4301</span>
-<span class="normal">4302</span>
-<span class="normal">4303</span>
-<span class="normal">4304</span>
-<span class="normal">4305</span>
-<span class="normal">4306</span>
-<span class="normal">4307</span>
-<span class="normal">4308</span>
-<span class="normal">4309</span>
-<span class="normal">4310</span>
-<span class="normal">4311</span>
-<span class="normal">4312</span>
-<span class="normal">4313</span>
-<span class="normal">4314</span>
-<span class="normal">4315</span>
-<span class="normal">4316</span>
-<span class="normal">4317</span>
-<span class="normal">4318</span>
-<span class="normal">4319</span>
-<span class="normal">4320</span>
-<span class="normal">4321</span>
-<span class="normal">4322</span>
-<span class="normal">4323</span>
-<span class="normal">4324</span>
-<span class="normal">4325</span>
-<span class="normal">4326</span>
-<span class="normal">4327</span>
-<span class="normal">4328</span>
-<span class="normal">4329</span>
-<span class="normal">4330</span>
-<span class="normal">4331</span>
-<span class="normal">4332</span>
-<span class="normal">4333</span>
-<span class="normal">4334</span>
-<span class="normal">4335</span>
-<span class="normal">4336</span>
-<span class="normal">4337</span>
-<span class="normal">4338</span>
-<span class="normal">4339</span>
-<span class="normal">4340</span>
-<span class="normal">4341</span>
-<span class="normal">4342</span>
-<span class="normal">4343</span>
-<span class="normal">4344</span>
-<span class="normal">4345</span>
-<span class="normal">4346</span>
-<span class="normal">4347</span>
-<span class="normal">4348</span>
-<span class="normal">4349</span>
-<span class="normal">4350</span>
-<span class="normal">4351</span>
-<span class="normal">4352</span>
-<span class="normal">4353</span>
-<span class="normal">4354</span>
-<span class="normal">4355</span>
-<span class="normal">4356</span>
-<span class="normal">4357</span>
-<span class="normal">4358</span>
-<span class="normal">4359</span>
-<span class="normal">4360</span>
-<span class="normal">4361</span>
-<span class="normal">4362</span>
-<span class="normal">4363</span>
-<span class="normal">4364</span>
-<span class="normal">4365</span>
-<span class="normal">4366</span>
-<span class="normal">4367</span>
-<span class="normal">4368</span>
-<span class="normal">4369</span>
-<span class="normal">4370</span>
-<span class="normal">4371</span>
-<span class="normal">4372</span>
-<span class="normal">4373</span>
-<span class="normal">4374</span>
-<span class="normal">4375</span>
-<span class="normal">4376</span>
-<span class="normal">4377</span>
-<span class="normal">4378</span>
-<span class="normal">4379</span>
-<span class="normal">4380</span>
-<span class="normal">4381</span>
-<span class="normal">4382</span>
-<span class="normal">4383</span>
-<span class="normal">4384</span>
-<span class="normal">4385</span>
-<span class="normal">4386</span>
-<span class="normal">4387</span>
-<span class="normal">4388</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4434</span>
+<span class="normal">4435</span>
+<span class="normal">4436</span>
+<span class="normal">4437</span>
+<span class="normal">4438</span>
+<span class="normal">4439</span>
+<span class="normal">4440</span>
+<span class="normal">4441</span>
+<span class="normal">4442</span>
+<span class="normal">4443</span>
+<span class="normal">4444</span>
+<span class="normal">4445</span>
+<span class="normal">4446</span>
+<span class="normal">4447</span>
+<span class="normal">4448</span>
+<span class="normal">4449</span>
+<span class="normal">4450</span>
+<span class="normal">4451</span>
+<span class="normal">4452</span>
+<span class="normal">4453</span>
+<span class="normal">4454</span>
+<span class="normal">4455</span>
+<span class="normal">4456</span>
+<span class="normal">4457</span>
+<span class="normal">4458</span>
+<span class="normal">4459</span>
+<span class="normal">4460</span>
+<span class="normal">4461</span>
+<span class="normal">4462</span>
+<span class="normal">4463</span>
+<span class="normal">4464</span>
+<span class="normal">4465</span>
+<span class="normal">4466</span>
+<span class="normal">4467</span>
+<span class="normal">4468</span>
+<span class="normal">4469</span>
+<span class="normal">4470</span>
+<span class="normal">4471</span>
+<span class="normal">4472</span>
+<span class="normal">4473</span>
+<span class="normal">4474</span>
+<span class="normal">4475</span>
+<span class="normal">4476</span>
+<span class="normal">4477</span>
+<span class="normal">4478</span>
+<span class="normal">4479</span>
+<span class="normal">4480</span>
+<span class="normal">4481</span>
+<span class="normal">4482</span>
+<span class="normal">4483</span>
+<span class="normal">4484</span>
+<span class="normal">4485</span>
+<span class="normal">4486</span>
+<span class="normal">4487</span>
+<span class="normal">4488</span>
+<span class="normal">4489</span>
+<span class="normal">4490</span>
+<span class="normal">4491</span>
+<span class="normal">4492</span>
+<span class="normal">4493</span>
+<span class="normal">4494</span>
+<span class="normal">4495</span>
+<span class="normal">4496</span>
+<span class="normal">4497</span>
+<span class="normal">4498</span>
+<span class="normal">4499</span>
+<span class="normal">4500</span>
+<span class="normal">4501</span>
+<span class="normal">4502</span>
+<span class="normal">4503</span>
+<span class="normal">4504</span>
+<span class="normal">4505</span>
+<span class="normal">4506</span>
+<span class="normal">4507</span>
+<span class="normal">4508</span>
+<span class="normal">4509</span>
+<span class="normal">4510</span>
+<span class="normal">4511</span>
+<span class="normal">4512</span>
+<span class="normal">4513</span>
+<span class="normal">4514</span>
+<span class="normal">4515</span>
+<span class="normal">4516</span>
+<span class="normal">4517</span>
+<span class="normal">4518</span>
+<span class="normal">4519</span>
+<span class="normal">4520</span>
+<span class="normal">4521</span>
+<span class="normal">4522</span>
+<span class="normal">4523</span>
+<span class="normal">4524</span>
+<span class="normal">4525</span>
+<span class="normal">4526</span>
+<span class="normal">4527</span>
+<span class="normal">4528</span>
+<span class="normal">4529</span>
+<span class="normal">4530</span>
+<span class="normal">4531</span>
+<span class="normal">4532</span>
+<span class="normal">4533</span>
+<span class="normal">4534</span>
+<span class="normal">4535</span>
+<span class="normal">4536</span>
+<span class="normal">4537</span>
+<span class="normal">4538</span>
+<span class="normal">4539</span>
+<span class="normal">4540</span>
+<span class="normal">4541</span>
+<span class="normal">4542</span>
+<span class="normal">4543</span>
+<span class="normal">4544</span>
+<span class="normal">4545</span>
+<span class="normal">4546</span>
+<span class="normal">4547</span>
+<span class="normal">4548</span>
+<span class="normal">4549</span>
+<span class="normal">4550</span>
+<span class="normal">4551</span>
+<span class="normal">4552</span>
+<span class="normal">4553</span>
+<span class="normal">4554</span>
+<span class="normal">4555</span>
+<span class="normal">4556</span>
+<span class="normal">4557</span>
+<span class="normal">4558</span>
+<span class="normal">4559</span>
+<span class="normal">4560</span>
+<span class="normal">4561</span>
+<span class="normal">4562</span>
+<span class="normal">4563</span>
+<span class="normal">4564</span>
+<span class="normal">4565</span>
+<span class="normal">4566</span>
+<span class="normal">4567</span>
+<span class="normal">4568</span>
+<span class="normal">4569</span>
+<span class="normal">4570</span>
+<span class="normal">4571</span>
+<span class="normal">4572</span>
+<span class="normal">4573</span>
+<span class="normal">4574</span>
+<span class="normal">4575</span>
+<span class="normal">4576</span>
+<span class="normal">4577</span>
+<span class="normal">4578</span>
+<span class="normal">4579</span>
+<span class="normal">4580</span>
+<span class="normal">4581</span>
+<span class="normal">4582</span>
+<span class="normal">4583</span>
+<span class="normal">4584</span>
+<span class="normal">4585</span>
+<span class="normal">4586</span>
+<span class="normal">4587</span>
+<span class="normal">4588</span>
+<span class="normal">4589</span>
+<span class="normal">4590</span>
+<span class="normal">4591</span>
+<span class="normal">4592</span>
+<span class="normal">4593</span>
+<span class="normal">4594</span>
+<span class="normal">4595</span>
+<span class="normal">4596</span>
+<span class="normal">4597</span>
+<span class="normal">4598</span>
+<span class="normal">4599</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">ball_pivoting</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>

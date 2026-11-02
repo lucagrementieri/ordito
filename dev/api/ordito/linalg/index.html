@@ -10211,45 +10211,45 @@ binds a set of working vectors to the column layout of each solve that uses it.<
 
                   <details class="mkdocstrings-source">
                     <summary>Source code in <code>ordito/linalg.py</code></summary>
-                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4746</span>
-<span class="normal">4747</span>
-<span class="normal">4748</span>
-<span class="normal">4749</span>
-<span class="normal">4750</span>
-<span class="normal">4751</span>
-<span class="normal">4752</span>
-<span class="normal">4753</span>
-<span class="normal">4754</span>
-<span class="normal">4755</span>
-<span class="normal">4756</span>
-<span class="normal">4757</span>
-<span class="normal">4758</span>
-<span class="normal">4759</span>
-<span class="normal">4760</span>
-<span class="normal">4761</span>
-<span class="normal">4762</span>
-<span class="normal">4763</span>
-<span class="normal">4764</span>
-<span class="normal">4765</span>
-<span class="normal">4766</span>
-<span class="normal">4767</span>
-<span class="normal">4768</span>
-<span class="normal">4769</span>
-<span class="normal">4770</span>
-<span class="normal">4771</span>
-<span class="normal">4772</span>
-<span class="normal">4773</span>
-<span class="normal">4774</span>
-<span class="normal">4775</span>
-<span class="normal">4776</span>
-<span class="normal">4777</span>
-<span class="normal">4778</span>
-<span class="normal">4779</span>
-<span class="normal">4780</span>
+                    <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4780</span>
 <span class="normal">4781</span>
 <span class="normal">4782</span>
 <span class="normal">4783</span>
-<span class="normal">4784</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+<span class="normal">4784</span>
+<span class="normal">4785</span>
+<span class="normal">4786</span>
+<span class="normal">4787</span>
+<span class="normal">4788</span>
+<span class="normal">4789</span>
+<span class="normal">4790</span>
+<span class="normal">4791</span>
+<span class="normal">4792</span>
+<span class="normal">4793</span>
+<span class="normal">4794</span>
+<span class="normal">4795</span>
+<span class="normal">4796</span>
+<span class="normal">4797</span>
+<span class="normal">4798</span>
+<span class="normal">4799</span>
+<span class="normal">4800</span>
+<span class="normal">4801</span>
+<span class="normal">4802</span>
+<span class="normal">4803</span>
+<span class="normal">4804</span>
+<span class="normal">4805</span>
+<span class="normal">4806</span>
+<span class="normal">4807</span>
+<span class="normal">4808</span>
+<span class="normal">4809</span>
+<span class="normal">4810</span>
+<span class="normal">4811</span>
+<span class="normal">4812</span>
+<span class="normal">4813</span>
+<span class="normal">4814</span>
+<span class="normal">4815</span>
+<span class="normal">4816</span>
+<span class="normal">4817</span>
+<span class="normal">4818</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
     <span class="bp">self</span><span class="p">,</span> <span class="n">laplacian</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">weight_sums</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""Build ``M_ff`` and its transpose from ``L`` and ``D``, and fix the interval."""</span>
@@ -10442,41 +10442,7 @@ casts them on first use.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4827</span>
-<span class="normal">4828</span>
-<span class="normal">4829</span>
-<span class="normal">4830</span>
-<span class="normal">4831</span>
-<span class="normal">4832</span>
-<span class="normal">4833</span>
-<span class="normal">4834</span>
-<span class="normal">4835</span>
-<span class="normal">4836</span>
-<span class="normal">4837</span>
-<span class="normal">4838</span>
-<span class="normal">4839</span>
-<span class="normal">4840</span>
-<span class="normal">4841</span>
-<span class="normal">4842</span>
-<span class="normal">4843</span>
-<span class="normal">4844</span>
-<span class="normal">4845</span>
-<span class="normal">4846</span>
-<span class="normal">4847</span>
-<span class="normal">4848</span>
-<span class="normal">4849</span>
-<span class="normal">4850</span>
-<span class="normal">4851</span>
-<span class="normal">4852</span>
-<span class="normal">4853</span>
-<span class="normal">4854</span>
-<span class="normal">4855</span>
-<span class="normal">4856</span>
-<span class="normal">4857</span>
-<span class="normal">4858</span>
-<span class="normal">4859</span>
-<span class="normal">4860</span>
-<span class="normal">4861</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4861</span>
 <span class="normal">4862</span>
 <span class="normal">4863</span>
 <span class="normal">4864</span>
@@ -10491,7 +10457,41 @@ casts them on first use.</p>
 <span class="normal">4873</span>
 <span class="normal">4874</span>
 <span class="normal">4875</span>
-<span class="normal">4876</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@classmethod</span>
+<span class="normal">4876</span>
+<span class="normal">4877</span>
+<span class="normal">4878</span>
+<span class="normal">4879</span>
+<span class="normal">4880</span>
+<span class="normal">4881</span>
+<span class="normal">4882</span>
+<span class="normal">4883</span>
+<span class="normal">4884</span>
+<span class="normal">4885</span>
+<span class="normal">4886</span>
+<span class="normal">4887</span>
+<span class="normal">4888</span>
+<span class="normal">4889</span>
+<span class="normal">4890</span>
+<span class="normal">4891</span>
+<span class="normal">4892</span>
+<span class="normal">4893</span>
+<span class="normal">4894</span>
+<span class="normal">4895</span>
+<span class="normal">4896</span>
+<span class="normal">4897</span>
+<span class="normal">4898</span>
+<span class="normal">4899</span>
+<span class="normal">4900</span>
+<span class="normal">4901</span>
+<span class="normal">4902</span>
+<span class="normal">4903</span>
+<span class="normal">4904</span>
+<span class="normal">4905</span>
+<span class="normal">4906</span>
+<span class="normal">4907</span>
+<span class="normal">4908</span>
+<span class="normal">4909</span>
+<span class="normal">4910</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="nd">@classmethod</span>
 <span class="k">def</span><span class="w"> </span><span class="nf">from_factors</span><span class="p">(</span>
     <span class="bp">cls</span><span class="p">,</span>
     <span class="n">factor</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
@@ -10556,27 +10556,52 @@ casts them on first use.</p>
 
 </h3>
 <div class="doc-signature highlight"><pre><span></span><code><span class="nf">bind</span><span class="p">(</span>
-    <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">stride</span><span class="p">:</span> <span class="nb">int</span>
+    <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">stride</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">free</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">array</span><span class="p">[</span><span class="n">float64</span><span class="p">],</span> <span class="n">array</span><span class="p">[</span><span class="n">float64</span><span class="p">]]</span>
+    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_SquaredLaplacianApply</span> <span class="o">|</span> <span class="n">_SquaredMultigridApply</span>
 </code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Working vectors for <code>n_columns</code> blocks at column pitch <code>stride</code>.</p>
+<p><code>free</code> is two vectors an apply may overwrite, its destination one of them
+(<code>_ChebyshevApply</code>).</p>
 
           
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4878</span>
-<span class="normal">4879</span>
-<span class="normal">4880</span>
-<span class="normal">4881</span>
-<span class="normal">4882</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">stride</span><span class="p">:</span> <span class="nb">int</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_SquaredLaplacianApply</span> <span class="o">|</span> <span class="n">_SquaredMultigridApply</span><span class="p">:</span>
-<span class="w">    </span><span class="sd">"""Working vectors for ``n_columns`` blocks at column pitch ``stride``."""</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4912</span>
+<span class="normal">4913</span>
+<span class="normal">4914</span>
+<span class="normal">4915</span>
+<span class="normal">4916</span>
+<span class="normal">4917</span>
+<span class="normal">4918</span>
+<span class="normal">4919</span>
+<span class="normal">4920</span>
+<span class="normal">4921</span>
+<span class="normal">4922</span>
+<span class="normal">4923</span>
+<span class="normal">4924</span>
+<span class="normal">4925</span>
+<span class="normal">4926</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bind</span><span class="p">(</span>
+    <span class="bp">self</span><span class="p">,</span>
+    <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">stride</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="n">free</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">_SquaredLaplacianApply</span> <span class="o">|</span> <span class="n">_SquaredMultigridApply</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Working vectors for ``n_columns`` blocks at column pitch ``stride``.</span>
+
+<span class="sd">    ``free`` is two vectors an apply may overwrite, its destination one of them</span>
+<span class="sd">    (``_ChebyshevApply``).</span>
+<span class="sd">    """</span>
     <span class="k">if</span> <span class="bp">self</span><span class="o">.</span><span class="n">_multigrid</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_SquaredMultigridApply</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_multigrid</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_n</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">,</span> <span class="n">stride</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">_SquaredLaplacianApply</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">,</span> <span class="n">stride</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">_SquaredMultigridApply</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_multigrid</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_n</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">,</span> <span class="n">stride</span><span class="p">,</span> <span class="n">free</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_SquaredLaplacianApply</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">,</span> <span class="n">stride</span><span class="p">,</span> <span class="n">free</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -10606,22 +10631,22 @@ casts them on first use.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4944</span>
-<span class="normal">4945</span>
-<span class="normal">4946</span>
-<span class="normal">4947</span>
-<span class="normal">4948</span>
-<span class="normal">4949</span>
-<span class="normal">4950</span>
-<span class="normal">4951</span>
-<span class="normal">4952</span>
-<span class="normal">4953</span>
-<span class="normal">4954</span>
-<span class="normal">4955</span>
-<span class="normal">4956</span>
-<span class="normal">4957</span>
-<span class="normal">4958</span>
-<span class="normal">4959</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">narrowed</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4988</span>
+<span class="normal">4989</span>
+<span class="normal">4990</span>
+<span class="normal">4991</span>
+<span class="normal">4992</span>
+<span class="normal">4993</span>
+<span class="normal">4994</span>
+<span class="normal">4995</span>
+<span class="normal">4996</span>
+<span class="normal">4997</span>
+<span class="normal">4998</span>
+<span class="normal">4999</span>
+<span class="normal">5000</span>
+<span class="normal">5001</span>
+<span class="normal">5002</span>
+<span class="normal">5003</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">narrowed</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Return ``B``'s and ``Bᵀ``'s values in ``float32``, built once.</span>
 
@@ -16603,41 +16628,7 @@ lumped masses:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4259</span>
-<span class="normal">4260</span>
-<span class="normal">4261</span>
-<span class="normal">4262</span>
-<span class="normal">4263</span>
-<span class="normal">4264</span>
-<span class="normal">4265</span>
-<span class="normal">4266</span>
-<span class="normal">4267</span>
-<span class="normal">4268</span>
-<span class="normal">4269</span>
-<span class="normal">4270</span>
-<span class="normal">4271</span>
-<span class="normal">4272</span>
-<span class="normal">4273</span>
-<span class="normal">4274</span>
-<span class="normal">4275</span>
-<span class="normal">4276</span>
-<span class="normal">4277</span>
-<span class="normal">4278</span>
-<span class="normal">4279</span>
-<span class="normal">4280</span>
-<span class="normal">4281</span>
-<span class="normal">4282</span>
-<span class="normal">4283</span>
-<span class="normal">4284</span>
-<span class="normal">4285</span>
-<span class="normal">4286</span>
-<span class="normal">4287</span>
-<span class="normal">4288</span>
-<span class="normal">4289</span>
-<span class="normal">4290</span>
-<span class="normal">4291</span>
-<span class="normal">4292</span>
-<span class="normal">4293</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4293</span>
 <span class="normal">4294</span>
 <span class="normal">4295</span>
 <span class="normal">4296</span>
@@ -16704,7 +16695,41 @@ lumped masses:</p>
 <span class="normal">4357</span>
 <span class="normal">4358</span>
 <span class="normal">4359</span>
-<span class="normal">4360</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">replicated_operator</span><span class="p">(</span>
+<span class="normal">4360</span>
+<span class="normal">4361</span>
+<span class="normal">4362</span>
+<span class="normal">4363</span>
+<span class="normal">4364</span>
+<span class="normal">4365</span>
+<span class="normal">4366</span>
+<span class="normal">4367</span>
+<span class="normal">4368</span>
+<span class="normal">4369</span>
+<span class="normal">4370</span>
+<span class="normal">4371</span>
+<span class="normal">4372</span>
+<span class="normal">4373</span>
+<span class="normal">4374</span>
+<span class="normal">4375</span>
+<span class="normal">4376</span>
+<span class="normal">4377</span>
+<span class="normal">4378</span>
+<span class="normal">4379</span>
+<span class="normal">4380</span>
+<span class="normal">4381</span>
+<span class="normal">4382</span>
+<span class="normal">4383</span>
+<span class="normal">4384</span>
+<span class="normal">4385</span>
+<span class="normal">4386</span>
+<span class="normal">4387</span>
+<span class="normal">4388</span>
+<span class="normal">4389</span>
+<span class="normal">4390</span>
+<span class="normal">4391</span>
+<span class="normal">4392</span>
+<span class="normal">4393</span>
+<span class="normal">4394</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">replicated_operator</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">]</span> <span class="o">|</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">,</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -17018,41 +17043,7 @@ that did not help.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4363</span>
-<span class="normal">4364</span>
-<span class="normal">4365</span>
-<span class="normal">4366</span>
-<span class="normal">4367</span>
-<span class="normal">4368</span>
-<span class="normal">4369</span>
-<span class="normal">4370</span>
-<span class="normal">4371</span>
-<span class="normal">4372</span>
-<span class="normal">4373</span>
-<span class="normal">4374</span>
-<span class="normal">4375</span>
-<span class="normal">4376</span>
-<span class="normal">4377</span>
-<span class="normal">4378</span>
-<span class="normal">4379</span>
-<span class="normal">4380</span>
-<span class="normal">4381</span>
-<span class="normal">4382</span>
-<span class="normal">4383</span>
-<span class="normal">4384</span>
-<span class="normal">4385</span>
-<span class="normal">4386</span>
-<span class="normal">4387</span>
-<span class="normal">4388</span>
-<span class="normal">4389</span>
-<span class="normal">4390</span>
-<span class="normal">4391</span>
-<span class="normal">4392</span>
-<span class="normal">4393</span>
-<span class="normal">4394</span>
-<span class="normal">4395</span>
-<span class="normal">4396</span>
-<span class="normal">4397</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4397</span>
 <span class="normal">4398</span>
 <span class="normal">4399</span>
 <span class="normal">4400</span>
@@ -17130,7 +17121,41 @@ that did not help.</p>
 <span class="normal">4472</span>
 <span class="normal">4473</span>
 <span class="normal">4474</span>
-<span class="normal">4475</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">multigrid_preconditioner</span><span class="p">(</span>
+<span class="normal">4475</span>
+<span class="normal">4476</span>
+<span class="normal">4477</span>
+<span class="normal">4478</span>
+<span class="normal">4479</span>
+<span class="normal">4480</span>
+<span class="normal">4481</span>
+<span class="normal">4482</span>
+<span class="normal">4483</span>
+<span class="normal">4484</span>
+<span class="normal">4485</span>
+<span class="normal">4486</span>
+<span class="normal">4487</span>
+<span class="normal">4488</span>
+<span class="normal">4489</span>
+<span class="normal">4490</span>
+<span class="normal">4491</span>
+<span class="normal">4492</span>
+<span class="normal">4493</span>
+<span class="normal">4494</span>
+<span class="normal">4495</span>
+<span class="normal">4496</span>
+<span class="normal">4497</span>
+<span class="normal">4498</span>
+<span class="normal">4499</span>
+<span class="normal">4500</span>
+<span class="normal">4501</span>
+<span class="normal">4502</span>
+<span class="normal">4503</span>
+<span class="normal">4504</span>
+<span class="normal">4505</span>
+<span class="normal">4506</span>
+<span class="normal">4507</span>
+<span class="normal">4508</span>
+<span class="normal">4509</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">multigrid_preconditioner</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -17432,41 +17457,7 @@ preconditioner apply is always <code>z = M x</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4478</span>
-<span class="normal">4479</span>
-<span class="normal">4480</span>
-<span class="normal">4481</span>
-<span class="normal">4482</span>
-<span class="normal">4483</span>
-<span class="normal">4484</span>
-<span class="normal">4485</span>
-<span class="normal">4486</span>
-<span class="normal">4487</span>
-<span class="normal">4488</span>
-<span class="normal">4489</span>
-<span class="normal">4490</span>
-<span class="normal">4491</span>
-<span class="normal">4492</span>
-<span class="normal">4493</span>
-<span class="normal">4494</span>
-<span class="normal">4495</span>
-<span class="normal">4496</span>
-<span class="normal">4497</span>
-<span class="normal">4498</span>
-<span class="normal">4499</span>
-<span class="normal">4500</span>
-<span class="normal">4501</span>
-<span class="normal">4502</span>
-<span class="normal">4503</span>
-<span class="normal">4504</span>
-<span class="normal">4505</span>
-<span class="normal">4506</span>
-<span class="normal">4507</span>
-<span class="normal">4508</span>
-<span class="normal">4509</span>
-<span class="normal">4510</span>
-<span class="normal">4511</span>
-<span class="normal">4512</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4512</span>
 <span class="normal">4513</span>
 <span class="normal">4514</span>
 <span class="normal">4515</span>
@@ -17529,7 +17520,41 @@ preconditioner apply is always <code>z = M x</code>.</p>
 <span class="normal">4572</span>
 <span class="normal">4573</span>
 <span class="normal">4574</span>
-<span class="normal">4575</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chebyshev_preconditioner</span><span class="p">(</span>
+<span class="normal">4575</span>
+<span class="normal">4576</span>
+<span class="normal">4577</span>
+<span class="normal">4578</span>
+<span class="normal">4579</span>
+<span class="normal">4580</span>
+<span class="normal">4581</span>
+<span class="normal">4582</span>
+<span class="normal">4583</span>
+<span class="normal">4584</span>
+<span class="normal">4585</span>
+<span class="normal">4586</span>
+<span class="normal">4587</span>
+<span class="normal">4588</span>
+<span class="normal">4589</span>
+<span class="normal">4590</span>
+<span class="normal">4591</span>
+<span class="normal">4592</span>
+<span class="normal">4593</span>
+<span class="normal">4594</span>
+<span class="normal">4595</span>
+<span class="normal">4596</span>
+<span class="normal">4597</span>
+<span class="normal">4598</span>
+<span class="normal">4599</span>
+<span class="normal">4600</span>
+<span class="normal">4601</span>
+<span class="normal">4602</span>
+<span class="normal">4603</span>
+<span class="normal">4604</span>
+<span class="normal">4605</span>
+<span class="normal">4606</span>
+<span class="normal">4607</span>
+<span class="normal">4608</span>
+<span class="normal">4609</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">chebyshev_preconditioner</span><span class="p">(</span>
     <span class="n">matrix</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span> <span class="n">n_columns</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">1</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wpl</span><span class="o">.</span><span class="n">LinearOperator</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -17873,41 +17898,7 @@ square of its interior Laplacian block (<code>D = 1</code>), agrees with a direc
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/linalg.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4578</span>
-<span class="normal">4579</span>
-<span class="normal">4580</span>
-<span class="normal">4581</span>
-<span class="normal">4582</span>
-<span class="normal">4583</span>
-<span class="normal">4584</span>
-<span class="normal">4585</span>
-<span class="normal">4586</span>
-<span class="normal">4587</span>
-<span class="normal">4588</span>
-<span class="normal">4589</span>
-<span class="normal">4590</span>
-<span class="normal">4591</span>
-<span class="normal">4592</span>
-<span class="normal">4593</span>
-<span class="normal">4594</span>
-<span class="normal">4595</span>
-<span class="normal">4596</span>
-<span class="normal">4597</span>
-<span class="normal">4598</span>
-<span class="normal">4599</span>
-<span class="normal">4600</span>
-<span class="normal">4601</span>
-<span class="normal">4602</span>
-<span class="normal">4603</span>
-<span class="normal">4604</span>
-<span class="normal">4605</span>
-<span class="normal">4606</span>
-<span class="normal">4607</span>
-<span class="normal">4608</span>
-<span class="normal">4609</span>
-<span class="normal">4610</span>
-<span class="normal">4611</span>
-<span class="normal">4612</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">4612</span>
 <span class="normal">4613</span>
 <span class="normal">4614</span>
 <span class="normal">4615</span>
@@ -17985,7 +17976,41 @@ square of its interior Laplacian block (<code>D = 1</code>), agrees with a direc
 <span class="normal">4687</span>
 <span class="normal">4688</span>
 <span class="normal">4689</span>
-<span class="normal">4690</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">squared_laplacian_preconditioner</span><span class="p">(</span>
+<span class="normal">4690</span>
+<span class="normal">4691</span>
+<span class="normal">4692</span>
+<span class="normal">4693</span>
+<span class="normal">4694</span>
+<span class="normal">4695</span>
+<span class="normal">4696</span>
+<span class="normal">4697</span>
+<span class="normal">4698</span>
+<span class="normal">4699</span>
+<span class="normal">4700</span>
+<span class="normal">4701</span>
+<span class="normal">4702</span>
+<span class="normal">4703</span>
+<span class="normal">4704</span>
+<span class="normal">4705</span>
+<span class="normal">4706</span>
+<span class="normal">4707</span>
+<span class="normal">4708</span>
+<span class="normal">4709</span>
+<span class="normal">4710</span>
+<span class="normal">4711</span>
+<span class="normal">4712</span>
+<span class="normal">4713</span>
+<span class="normal">4714</span>
+<span class="normal">4715</span>
+<span class="normal">4716</span>
+<span class="normal">4717</span>
+<span class="normal">4718</span>
+<span class="normal">4719</span>
+<span class="normal">4720</span>
+<span class="normal">4721</span>
+<span class="normal">4722</span>
+<span class="normal">4723</span>
+<span class="normal">4724</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">squared_laplacian_preconditioner</span><span class="p">(</span>
     <span class="n">laplacian</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
     <span class="n">weight_sums</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
