@@ -550,12 +550,11 @@ def test_resample_uniform_meshlab(bench_case: BenchCase, cell_fraction: float) -
     """
     ``resample_uniform(method="meshlab")`` against MeshLab's resampler: the same mesh out.
 
-    The two rows return equal meshes (``tests/test_reconstruction.py``, Class A), at the absolute
-    cell size the ``resample_uniform`` group passes. ordito's field
-    is MeshLab's own: its kd-tree distance, which can overstate a needle's, is found through the
-    Warp BVH from a first guess, and nodes whose sign rounding decides are recomputed on the host
-    -- a scan mesh with coincident, oppositely wound sheets (``dragon``) pays for those in host
-    time, an ordinary mesh does not.
+    Equal meshes on an ordinary mesh (``tests/test_reconstruction.py``, Class A), at the absolute
+    cell size the ``resample_uniform`` group passes; on one with duplicated or seamed faces wound
+    against each other (``bunny_decimated``) a few vertices differ around the nodes MeshLab's
+    kd-tree order or rounding signs. ordito's field is MeshLab's own: its point-face distance,
+    which can overstate a needle's, found through a walk of the Warp BVH, all on the device.
     """
     diagonal = float(
         np.linalg.norm(bench_case.vertices_np.max(axis=0) - bench_case.vertices_np.min(axis=0))
@@ -574,7 +573,6 @@ def test_resample_uniform_meshlab(bench_case: BenchCase, cell_fraction: float) -
 
         assert bench_case.run(resample_pml, rounds=_HEAVY_ROUNDS) > 0
         return
-    skip_larger_than(bench_case, "dragon", "the field is float64, 8 bytes a node and its counts")
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _out_vertices, out_faces = bench_case.run(
         lambda: od.reconstruction.resample_uniform(

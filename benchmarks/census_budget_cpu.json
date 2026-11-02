@@ -3267,6 +3267,22 @@
    "scan": 1
   }
  },
+ "benchmarks/test_levelset.py::test_marching_cubes_lewiner[ordito-cpu-128]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1
+  }
+ },
+ "benchmarks/test_levelset.py::test_marching_cubes_lewiner[ordito-cpu-64]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 4,
+   "readback": 1,
+   "scan": 1
+  }
+ },
  "benchmarks/test_levelset.py::test_offset_mesh[sphere_small-ordito-cpu-128]": {
   "counts": {
    "launch": 12,
@@ -5159,16 +5175,16 @@
  "benchmarks/test_reconstruction.py::test_resample_uniform_meshlab[sphere_small-ordito-cpu-0.01]": {
   "counts": {
    "launch": 7,
-   "alloc": 11,
-   "readback": 3,
+   "alloc": 8,
+   "readback": 2,
    "scan": 2
   }
  },
  "benchmarks/test_reconstruction.py::test_resample_uniform_meshlab[sphere_small-ordito-cpu-0.02]": {
   "counts": {
    "launch": 7,
-   "alloc": 11,
-   "readback": 3,
+   "alloc": 8,
+   "readback": 2,
    "scan": 2
   }
  },

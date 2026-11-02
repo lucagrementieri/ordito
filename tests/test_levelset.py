@@ -9,7 +9,7 @@ every output vertex must sit at the requested signed distance from the input.
 from __future__ import annotations
 
 import math
-from typing import cast
+from typing import Literal, cast
 
 import igl
 import numpy as np
@@ -508,6 +508,101 @@ def test_marching_cubes_refuses_what_int32_cannot_index(
     monkeypatch.setattr(od.levelset, "_INT32_MAX", 999)
     with pytest.raises(ValueError, match="int32 limit"):
         od.levelset.marching_cubes(field_wp)
+
+
+@pytest.mark.parametrize(("above", "below", "n_components"), [(2.0, -1.0, 1), (1.0, -2.0, 2)])
+def test_marching_cubes_lewiner_resolves_an_ambiguous_face_by_the_field(
+    device: str, above: float, below: float, n_components: int
+) -> None:
+    """
+    Not a library comparison: no reference among the nine extracts Lewiner's MC33 from a lattice.
+
+    (``resample_uniform(method="meshlab")`` is this extraction of MeshLab's field and is Class A
+    against pymeshlab end to end, ambiguous cells included.) One cell, two diagonal corners of its
+    ``z = 0`` face above the level and every other corner below: the corners' signs alone cannot
+    say whether the two pieces join across the face. The bilinear field there decides -- joined
+    (one piece, four triangles) when the corners above outweigh those below, ``above**2 >
+    below**2``, apart otherwise -- where the classic table gives two pieces whatever the values.
+    """
+    field_np = np.full((2, 2, 2), -1.0, dtype=np.float32)
+    field_np[0, 0, 0] = field_np[1, 1, 0] = above
+    field_np[1, 0, 0] = field_np[0, 1, 0] = below
+    field_wp = wp.array(field_np, dtype=wp.float32, device=device)
+
+    cases: tuple[tuple[Literal["classic", "lewiner"], int], ...] = (
+        ("lewiner", n_components),
+        ("classic", 2),
+    )
+    for method, expected in cases:
+        _vertices_wp, faces_wp = od.levelset.marching_cubes(field_wp, method=method)
+        labels_np = od.adjacency.face_connected_component_labels(faces_wp).numpy()
+        assert np.unique(labels_np).shape[0] == expected
+
+
+def test_marching_cubes_lewiner_matches_classic_where_nothing_is_ambiguous(device: str) -> None:
+    """
+    Ordito against ordito: on a sphere SDF the two triangulations cross the same edges.
+
+    No cell of a smooth convex field is ambiguous, so ``method="lewiner"`` places a vertex on
+    exactly the edges the classic extraction does (in ``float64`` where the classic one forms them
+    in ``float32``), with as many triangles, and adds no cell vertex. A ``float64`` field gives the
+    ``float32`` one's buffers bit for bit, the extraction widening every value before using it.
+    """
+    field_np = _sphere_field(33, 0.7)
+    field_wp = wp.array(field_np, dtype=wp.float32, device=device)
+    classic_vertices_wp, classic_faces_wp = od.levelset.marching_cubes(field_wp)
+    vertices_wp, faces_wp = od.levelset.marching_cubes(field_wp, method="lewiner")
+
+    assert faces_wp.size == classic_faces_wp.size
+    assert od.equality.points_allclose(vertices_wp, classic_vertices_wp)
+    assert od.validation.is_watertight(vertices_wp, faces_wp)
+
+    wide_wp = wp.array(
+        field_np.astype(np.float32).astype(np.float64), dtype=wp.float64, device=device
+    )
+    wide_vertices_wp, wide_faces_wp = od.levelset.marching_cubes(wide_wp, method="lewiner")
+    assert np.array_equal(wide_vertices_wp.numpy(), vertices_wp.numpy())
+    assert np.array_equal(wide_faces_wp.numpy(), faces_wp.numpy())
+
+
+def test_marching_cubes_lewiner_leaves_nan_cells_out(device: str) -> None:
+    """
+    Not a library comparison: a cell with a NaN corner is not triangulated, and has no vertices.
+
+    The classic extraction's NaN fixture (``test_marching_cubes_emits_no_triangle_in_a_cell_with_
+    a_nan_corner``): where the classic one keeps the three vertices on the crossing edges only the
+    NaN cell shares, unreferenced, this one makes a vertex only for an edge a triangulated cell
+    shares, so the result is empty.
+    """
+    field_np = np.ones((2, 2, 3), dtype=np.float32)
+    field_np[0, 0, 0] = np.nan
+    field_np[1, 1, 0] = -1.0
+    field_wp = wp.array(field_np, dtype=wp.float32, device=device)
+    vertices_wp, faces_wp = od.levelset.marching_cubes(field_wp, method="lewiner")
+    assert vertices_wp.size == 0
+    assert faces_wp.size == 0
+
+
+def test_marching_cubes_method_invalid(device: str) -> None:
+    """Not a library comparison: the method menu, and what each method takes."""
+    field_np = _sphere_field(9, 0.7)
+    with pytest.raises(ValueError, match="'classic' or 'lewiner'"):
+        od.levelset.marching_cubes(
+            wp.array(field_np, dtype=wp.float32, device=device),
+            method=cast(Literal["classic", "lewiner"], "flying_edges"),
+        )
+    with pytest.raises(ValueError, match="no edge_margin"):
+        od.levelset.marching_cubes(
+            wp.array(field_np, dtype=wp.float32, device=device), edge_margin=0.1, method="lewiner"
+        )
+    with pytest.raises(TypeError):
+        od.levelset.marching_cubes(
+            wp.array(field_np.astype(np.float64), dtype=wp.float64, device=device)
+        )
+    with pytest.raises(TypeError, match="float32 or float64"):
+        od.levelset.marching_cubes(
+            wp.array(field_np.astype(np.int32), dtype=wp.int32, device=device), method="lewiner"
+        )
 
 
 def _signed_distance_to(

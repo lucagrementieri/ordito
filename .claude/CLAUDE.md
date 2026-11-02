@@ -962,7 +962,8 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `heat_geodesic` against potpourri3d's front; `geodesic_path` with an edge-flip shortening;
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
-  `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`); MeshLib's "nice"
+  `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
+  `levelset.marching_cubes(method="lewiner")` is MeshLab's extraction); MeshLib's "nice"
   fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).

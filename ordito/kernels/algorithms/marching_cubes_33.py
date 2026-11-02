@@ -1,8 +1,10 @@
 """
-Kernels for Lewiner's topologically controlled marching cubes (MC33) on a ``float64`` node lattice.
+Kernels for Lewiner's topologically controlled marching cubes (MC33) on a node lattice.
 
-One cell of the lattice is classified as in Lewiner, Lopes, Vieira and Tavares, *Efficient
-implementation of Marching Cubes' cases with topological guarantees* (JGT 8(2), 2003): the sign
+The lattice is ``float32`` or ``float64``; each value is widened to ``float64`` and has the level
+subtracted (``mc33_value``) before any test reads it. One cell of the lattice is classified as in
+Lewiner, Lopes, Vieira and Tavares, *Efficient implementation of Marching Cubes' cases with
+topological guarantees* (JGT 8(2), 2003): the sign
 pattern of its eight corners names one of the 15 cases of Chernyaev's MC33 and a configuration,
 and the cases whose triangulation is ambiguous take a *face test* (the asymptotic decider on one
 face: whether the two components touching it join through its interior) or an *interior test*
@@ -54,6 +56,8 @@ import base64
 
 import numpy as np
 import warp as wp
+
+from ordito.kernels.array import OverloadTable
 
 wp.set_module_options({"enable_backward": False})
 
@@ -898,7 +902,14 @@ def mc33_tiling(table: wp.array[wp.int32], values: vec8d, cube: wp.int32) -> wp.
 
 
 @wp.func
-def mc33_cell_good(field: wp.array3d[wp.float64], cell: wp.vec3i) -> wp.bool:
+def mc33_value(field: wp.array3d[wp.Float], node: wp.vec3i, iso: wp.float64) -> wp.float64:
+    # The field at ``node`` less the level, widened to ``float64`` (exactly, from either precision)
+    # before the subtraction, so every test and crossing below is formed in ``float64``.
+    return wp.float64(field[node[0], node[1], node[2]]) - iso
+
+
+@wp.func
+def mc33_cell_good(field: wp.array3d[wp.Float], cell: wp.vec3i) -> wp.bool:
     # Whether ``cell`` is inside the lattice and all eight of its corners carry a value: only such
     # a cell is triangulated, so a NaN node leaves a hole around it.
     for axis in range(3):
@@ -912,15 +923,17 @@ def mc33_cell_good(field: wp.array3d[wp.float64], cell: wp.vec3i) -> wp.bool:
 
 
 @wp.func
-def mc33_edge_crosses(field: wp.array3d[wp.float64], node: wp.vec3i, axis: wp.int32) -> wp.bool:
+def mc33_edge_crosses(
+    field: wp.array3d[wp.Float], iso: wp.float64, node: wp.vec3i, axis: wp.int32
+) -> wp.bool:
     # Whether the edge from ``node`` along ``axis`` joins a node above the level (``> 0``) to one
     # that is not. Its far end must be in the lattice; a NaN end never crosses.
     far = node
     far[axis] = far[axis] + 1
     if far[axis] >= field.shape[axis]:
         return False
-    a = field[node[0], node[1], node[2]]
-    b = field[far[0], far[1], far[2]]
+    a = mc33_value(field, node, iso)
+    b = mc33_value(field, far, iso)
     if wp.isnan(a) or wp.isnan(b):
         return False
     return (a > wp.float64(0.0)) != (b > wp.float64(0.0))
@@ -938,9 +951,11 @@ def mc33_sharing_cell(node: wp.vec3i, axis: wp.int32, slot: wp.int32) -> wp.vec3
 
 
 @wp.func
-def mc33_edge_has_vertex(field: wp.array3d[wp.float64], node: wp.vec3i, axis: wp.int32) -> wp.bool:
+def mc33_edge_has_vertex(
+    field: wp.array3d[wp.Float], iso: wp.float64, node: wp.vec3i, axis: wp.int32
+) -> wp.bool:
     # A crossing edge carries a vertex once a triangulated cell shares it.
-    if not mc33_edge_crosses(field, node, axis):
+    if not mc33_edge_crosses(field, iso, node, axis):
         return False
     for slot in range(4):
         if mc33_cell_good(field, mc33_sharing_cell(node, axis, slot)):
@@ -960,13 +975,15 @@ def mc33_walked_before(a: wp.vec3i, b: wp.vec3i) -> wp.bool:
 
 
 @wp.func
-def mc33_edge_vertex(field: wp.array3d[wp.float64], node: wp.vec3i, axis: wp.int32) -> wp.vec3d:
+def mc33_edge_vertex(
+    field: wp.array3d[wp.Float], iso: wp.float64, node: wp.vec3i, axis: wp.int32
+) -> wp.vec3d:
     # The crossing on the edge from ``node`` along ``axis``, in lattice coordinates: linear in the
     # field, from the edge's lower end.
     far = node
     far[axis] = far[axis] + 1
-    f1 = field[node[0], node[1], node[2]]
-    u = f1 / (f1 - field[far[0], far[1], far[2]])
+    f1 = mc33_value(field, node, iso)
+    u = f1 / (f1 - mc33_value(field, far, iso))
     p = wp.vec3d(wp.float64(node[0]), wp.float64(node[1]), wp.float64(node[2]))
     p[axis] = p[axis] * (wp.float64(1.0) - u) + u * wp.float64(far[axis])
     return p
@@ -974,7 +991,7 @@ def mc33_edge_vertex(field: wp.array3d[wp.float64], node: wp.vec3i, axis: wp.int
 
 @wp.func
 def mc33_cell_vertex(
-    table: wp.array[wp.int32], field: wp.array3d[wp.float64], cell: wp.vec3i
+    table: wp.array[wp.int32], field: wp.array3d[wp.Float], iso: wp.float64, cell: wp.vec3i
 ) -> wp.vec3d:
     # The vertex a subcase adds inside ``cell``, in lattice coordinates: the mean of the crossings
     # on the cell's edges, in edge order, that a serial walk (``mc33_walked_before``) has made
@@ -995,20 +1012,20 @@ def mc33_cell_vertex(
             axis = 2
         node = cell + low
         made = False
-        if mc33_edge_crosses(field, node, axis):
+        if mc33_edge_crosses(field, iso, node, axis):
             for slot in range(4):
                 other = mc33_sharing_cell(node, axis, slot)
                 if mc33_walked_before(other, cell) and mc33_cell_good(field, other):
                     made = True
         if made:
-            total += mc33_edge_vertex(field, node, axis)
+            total += mc33_edge_vertex(field, iso, node, axis)
             count += 1
     return total / wp.float64(count)
 
 
 @wp.func
 def mc33_cell_tiling(
-    table: wp.array[wp.int32], field: wp.array3d[wp.float64], cell: wp.vec3i
+    table: wp.array[wp.int32], field: wp.array3d[wp.Float], iso: wp.float64, cell: wp.vec3i
 ) -> wp.vec3i:
     # ``mc33_tiling`` of ``cell``, empty for a cell outside the lattice or with a NaN corner.
     if not mc33_cell_good(field, cell):
@@ -1017,7 +1034,7 @@ def mc33_cell_tiling(
     cube = wp.int32(0)
     for c in range(8):
         node = cell + mc33_corner(c)
-        value = field[node[0], node[1], node[2]]
+        value = mc33_value(field, node, iso)
         values[c] = value
         if value > wp.float64(0.0):
             cube += 1 << c
@@ -1025,11 +1042,11 @@ def mc33_cell_tiling(
 
 
 @wp.func
-def mc33_vertex_mask(field: wp.array3d[wp.float64], node: wp.vec3i) -> wp.int32:
+def mc33_vertex_mask(field: wp.array3d[wp.Float], iso: wp.float64, node: wp.vec3i) -> wp.int32:
     # Bit ``axis`` set where the edge from ``node`` along ``axis`` carries a vertex.
     mask = wp.int32(0)
     for axis in range(3):
-        if mc33_edge_has_vertex(field, node, axis):
+        if mc33_edge_has_vertex(field, iso, node, axis):
             mask |= 1 << axis
     return mask
 
@@ -1043,7 +1060,8 @@ def mc33_bits_from(mask: wp.int32, axis: wp.int32) -> wp.int32:
 
 @wp.kernel
 def mc33_counts(
-    field: wp.array3d[wp.float64],
+    field: wp.array3d[wp.Float],
+    iso: wp.float64,
     table: wp.array[wp.int32],
     out_counts: wp.array3d[wp.vec3i],
     out_masks: wp.array3d[wp.uint8],
@@ -1056,15 +1074,16 @@ def mc33_counts(
     """
     i, j, k = wp.tid()
     node = wp.vec3i(i, j, k)
-    mask = mc33_vertex_mask(field, node)
-    tiles = mc33_cell_tiling(table, field, node)
+    mask = mc33_vertex_mask(field, iso, node)
+    tiles = mc33_cell_tiling(table, field, iso, node)
     out_counts[i, j, k] = wp.vec3i(mc33_bits_from(mask, 0), tiles[1] // 3, tiles[2])
     out_masks[i, j, k] = wp.uint8(mask)
 
 
 @wp.kernel
 def mc33_emit(
-    field: wp.array3d[wp.float64],
+    field: wp.array3d[wp.Float],
+    iso: wp.float64,
     table: wp.array[wp.int32],
     counts: wp.array3d[wp.vec3i],
     masks: wp.array3d[wp.uint8],
@@ -1088,15 +1107,15 @@ def mc33_emit(
     slot = scanned[0] - mc33_bits_from(mask, 0)
     for axis in range(3):
         if (mask >> axis) & 1 != 0:
-            p = mc33_edge_vertex(field, node, axis)
+            p = mc33_edge_vertex(field, iso, node, axis)
             out_vertices[slot] = wp.vec3(wp.cw_mul(p, spacing) + lower)
             slot += 1
-    tiles = mc33_cell_tiling(table, field, node)
+    tiles = mc33_cell_tiling(table, field, iso, node)
     if tiles[1] == 0:
         return
     centre = n_edge_vertices + scanned[2] - tiles[2]
     if tiles[2] != 0:
-        p = mc33_cell_vertex(table, field, node)
+        p = mc33_cell_vertex(table, field, iso, node)
         out_vertices[centre] = wp.vec3(wp.cw_mul(p, spacing) + lower)
     corner = 3 * (scanned[1] - tiles[1] // 3)
     for entry in range(tiles[1]):
@@ -1116,3 +1135,42 @@ def mc33_emit(
                 wp.int32(masks[owner[0], owner[1], owner[2]]), axis
             )
         out_faces[corner + entry] = vertex
+
+
+# The two kernels at each field precision, keyed by the field's dtype.
+MC33_COUNTS: OverloadTable
+MC33_EMIT: OverloadTable
+
+
+def _register_overloads() -> None:
+    """Instantiate every concrete overload of this module's generic kernels."""
+    global MC33_COUNTS, MC33_EMIT
+    i32 = wp.array[wp.int32]
+    MC33_COUNTS = OverloadTable(
+        mc33_counts,
+        {
+            d: [wp.array3d[d], wp.float64, i32, wp.array3d[wp.vec3i], wp.array3d[wp.uint8]]
+            for d in (wp.float32, wp.float64)
+        },
+    )
+    MC33_EMIT = OverloadTable(
+        mc33_emit,
+        {
+            d: [
+                wp.array3d[d],
+                wp.float64,
+                i32,
+                wp.array3d[wp.vec3i],
+                wp.array3d[wp.uint8],
+                wp.vec3d,
+                wp.vec3d,
+                wp.int32,
+                wp.array[wp.vec3],
+                i32,
+            ]
+            for d in (wp.float32, wp.float64)
+        },
+    )
+
+
+_register_overloads()

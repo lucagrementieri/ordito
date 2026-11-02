@@ -428,16 +428,43 @@ def test_marching_cubes(bench_lib: BenchLibrary, resolution: int) -> None:
         mesh_ml = bench_lib.run(lambda: mm.marchingCubes(volume_ml, params_ml))
         assert mesh_ml.topology.numValidFaces() > 0
         return
-    device = bench_lib.device
-    key = (resolution, str(device))
-    if key not in _marching_field_wp_cache:
-        _marching_field_wp_cache[key] = odt.as_array3d(
-            wp.array(_marching_field_np(resolution), dtype=wp.float32, device=device), wp.float32
-        )
-    field_wp = _marching_field_wp_cache[key]
+    field_wp = _marching_field_wp(bench_lib, resolution)
     half = _MARCHING_TORUS[2]
     bounds = (wp.vec3(-half, -half, -half), wp.vec3(half, half, half))
     _vertices_wp, faces_wp = bench_lib.run(
         lambda: od.levelset.marching_cubes(field_wp, 0.0, bounds=bounds)
+    )
+    assert faces_wp.size > 0
+
+
+def _marching_field_wp(bench_lib: BenchLibrary, resolution: int) -> odt.Array3dFloat32:
+    """``_marching_field_np`` on the row's device, uploaded once a resolution and device."""
+    key = (resolution, str(bench_lib.device))
+    if key not in _marching_field_wp_cache:
+        _marching_field_wp_cache[key] = odt.as_array3d(
+            wp.array(_marching_field_np(resolution), dtype=wp.float32, device=bench_lib.device),
+            wp.float32,
+        )
+    return _marching_field_wp_cache[key]
+
+
+@pytest.mark.benchmark(group="marching_cubes_lewiner")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("resolution", _MARCHING_RESOLUTIONS)
+def test_marching_cubes_lewiner(bench_lib: BenchLibrary, resolution: int) -> None:
+    """
+    ``marching_cubes(method="lewiner")`` on ``marching_cubes``' torus: the price of MC33.
+
+    Ordito alone: none of the nine references extracts Lewiner's MC33 from a lattice (MeshLab does
+    inside its resampler, timed in ``resample_uniform_meshlab``). Read it against the
+    ``marching_cubes`` group's ordito row on the same field: the ambiguity tests run only on the
+    cells that need them, and the cost over the classic table is the ``float64`` crossings and the
+    third count a node carries.
+    """
+    field_wp = _marching_field_wp(bench_lib, resolution)
+    half = _MARCHING_TORUS[2]
+    bounds = (wp.vec3(-half, -half, -half), wp.vec3(half, half, half))
+    _vertices_wp, faces_wp = bench_lib.run(
+        lambda: od.levelset.marching_cubes(field_wp, 0.0, bounds=bounds, method="lewiner")
     )
     assert faces_wp.size > 0

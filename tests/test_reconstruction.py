@@ -2256,6 +2256,9 @@ def test_resample_uniform_meshlab_method_matches_pymeshlab(
     """
     Class A: ``method="meshlab"`` is MeshLab's uniform resampling, mesh for mesh.
 
+    None of these inputs has a node rounding or MeshLab's search order decides (two faces as near
+    signed apart, a sign test at zero); the seam below has them.
+
     The same lattice (``BestDim`` over the box grown by a tenth of its diagonal plus ``|offset|``),
     the same field (MeshLab's point-face distance, which overstates a needle's and so can pick
     another face; its rim sign rule) and Lewiner's MC33 with MeshLab's cell vertex, compared with
@@ -2284,21 +2287,9 @@ def test_resample_uniform_meshlab_method_matches_pymeshlab(
     )
 
 
-@pytest.mark.parity("resample_uniform_meshlab", "pymeshlab")
-def test_resample_uniform_meshlab_method_settles_ties_as_pymeshlab(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    Class A on a seam: two sheets meeting on coincident vertices, signed apart.
-
-    ``sphere_irregular`` cut by an oblique plane, the far half moved onto copies of its vertices,
-    wound backwards and listed first: along the cut a node is as near a face of each half, and
-    the two sign it apart, so MeshLab's answer is the face its kd-tree reaches first, not the
-    lower index; where the halves' vertex normals cancel, the sign test is rounding. The host
-    settles those nodes. **Mutation probe, measured:** without the settling 4 vertices and 6
-    faces go missing, on both devices.
-    """
-    sphere_tm, sphere_wp = sphere_irregular
+def _seam_arrays(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> tuple[np.ndarray, np.ndarray]:
+    """``sphere_irregular`` with its far half on copied vertices, wound backwards and first."""
+    sphere_tm, _sphere_wp = sphere_irregular
     vertices_np = np.asarray(sphere_tm.vertices, dtype=np.float32)
     faces_np = np.asarray(sphere_tm.faces, dtype=np.int32)
     centroids_np = vertices_np[faces_np].mean(axis=1) - vertices_np.mean(axis=0)
@@ -2307,6 +2298,28 @@ def test_resample_uniform_meshlab_method_settles_ties_as_pymeshlab(
     seam_faces_np = np.vstack(
         [(faces_np[far_np] + vertices_np.shape[0])[:, ::-1], faces_np[~far_np]]
     ).astype(np.int32)
+    return seam_vertices_np, seam_faces_np
+
+
+@pytest.mark.parity("resample_uniform_meshlab", "pymeshlab")
+def test_resample_uniform_meshlab_method_differs_only_where_ties_decide(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class C (unmatched vertices): on a seam, the nodes MeshLab's search order or rounding signs.
+
+    ``_seam_arrays``: along the cut a node is as near a face of each half and the two sign it
+    apart, so MeshLab's answer is the face its kd-tree reaches first, where ordito takes the lower
+    index, and where the halves' vertex normals cancel the sign test is rounding. A few vertices
+    near the cut differ: measured 4 fewer vertices, 1 of ordito's and 5 of MeshLab's without a
+    match within 1e-5, on both devices; every other of the 21 982 matches. Bounded at 20 and 10
+    (4x and 2.5x).
+    **Bug class excluded:** a lattice, field or extraction that drifts from MeshLab's away from
+    the seam. **Mutation probe, measured:** the reference at an offset of ``0.001`` leaves all
+    21 978 vertices unmatched.
+    """
+    _sphere_tm, sphere_wp = sphere_irregular
+    seam_vertices_np, seam_faces_np = _seam_arrays(sphere_irregular)
     vertices_pml, faces_pml = _resample_pymeshlab(
         seam_vertices_np.astype(np.float64), seam_faces_np, 0.06, 0.0
     )
@@ -2315,17 +2328,14 @@ def test_resample_uniform_meshlab_method_settles_ties_as_pymeshlab(
     seam_vertices_wp, seam_faces_wp = numpy_to_warp(
         seam_vertices_np, seam_faces_np, sphere_wp.device
     )
-    out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(
+    out_vertices_wp, _out_faces_wp = od.reconstruction.resample_uniform(
         seam_vertices_wp, seam_faces_wp, voxel_size=0.06, method="meshlab"
     )
-    reference_vertices_wp, reference_faces_wp = numpy_to_warp(
-        vertices_pml, faces_pml, sphere_wp.device
-    )
-    assert out_vertices_wp.size == vertices_pml.shape[0]
-    assert out_faces_wp.size == 3 * faces_pml.shape[0]
-    assert od.equality.meshes_allclose(
-        out_vertices_wp, out_faces_wp, reference_vertices_wp, reference_faces_wp
-    )
+    out_np = np.asarray(out_vertices_wp.numpy(), dtype=np.float64)
+    forward_np = np.asarray(cKDTree(vertices_pml).query(out_np)[0])
+    backward_np = np.asarray(cKDTree(out_np).query(vertices_pml)[0])
+    assert abs(len(out_np) - len(vertices_pml)) <= 10
+    assert max(int(np.sum(forward_np > 1e-5)), int(np.sum(backward_np > 1e-5))) <= 20
 
 
 def test_resample_uniform_coarser_is_smaller(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:

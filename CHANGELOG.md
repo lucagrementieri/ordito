@@ -42,8 +42,13 @@ from the one matching its tag — so prose sections do not belong between them.
   `remove_duplicated_triangles` and `meshing_remove_duplicate_faces` do. The default still raises.
 - `reconstruction.resample_uniform(method="igl")`: `igl.offset_surface`'s lattice.
 - `reconstruction.resample_uniform(method="meshlab")`: MeshLab's uniform resampling, equal to
-  `generate_resampled_uniform_mesh` mesh for mesh: its lattice, its point-face distance and sign
-  rule, and Lewiner's topologically controlled marching cubes (MC33).
+  `generate_resampled_uniform_mesh` mesh for mesh on an ordinary mesh: its lattice, its
+  point-face distance and sign rule, and Lewiner's topologically controlled marching cubes
+  (MC33). Where faces wound against each other coincide (duplicated or seamed faces), a few
+  vertices around the affected lattice nodes can differ.
+- `levelset.marching_cubes(method="lewiner")`: Lewiner et al.'s topologically controlled marching
+  cubes (MC33), its ambiguous faces and cell interiors resolved by the field, on a `float32` or
+  `float64` lattice.
 - `array.bit_ranks`: the running set-bit count of a `uint32` bitmask's words, the rank table of
   a flag stored as one bit (`out=` writes it into a caller's buffer).
 - `texture.rasterize_attribute` / `rasterize_discrete_attribute(subpixel_bits=)`: snap vertices

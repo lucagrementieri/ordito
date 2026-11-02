@@ -3178,19 +3178,16 @@ def corner_angle_weighted_normals(
     vertex_faces: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     out_normals: wp.array[wp.vec3d],
-    out_angles: wp.array[wp.float64],
 ) -> None:
     """
     Each vertex's sum of its faces' unit normals weighted by the face's angle there, unnormalized.
 
     In ``float64``, over the vertex's row of ``vertex_faces`` in row order (ascending face order
     when the rows are sorted). A face listed once per corner at the vertex adds each such corner;
-    a zero-area face adds nothing, its normal being zero. ``out_angles`` is the sum of the angles,
-    the length the normal would have if its terms did not cancel.
+    a zero-area face adds nothing, its normal being zero.
     """
     v = wp.int32(wp.tid())
     total = wp.vec3d()
-    angles = wp.float64(0.0)
     for slot in range(offsets[v], offsets[v + 1]):
         f = vertex_faces[slot]
         i0 = faces[3 * f]
@@ -3205,19 +3202,12 @@ def corner_angle_weighted_normals(
         e2 = unit_or_zero_d(a - c)
         one = wp.float64(1.0)
         if i0 == v:
-            angle = wp.acos(wp.clamp(wp.dot(e0, -e2), -one, one))
-            total += normal * angle
-            angles += angle
+            total += normal * wp.acos(wp.clamp(wp.dot(e0, -e2), -one, one))
         if i1 == v:
-            angle = wp.acos(wp.clamp(wp.dot(-e0, e1), -one, one))
-            total += normal * angle
-            angles += angle
+            total += normal * wp.acos(wp.clamp(wp.dot(-e0, e1), -one, one))
         if i2 == v:
-            angle = wp.acos(wp.clamp(wp.dot(-e1, e2), -one, one))
-            total += normal * angle
-            angles += angle
+            total += normal * wp.acos(wp.clamp(wp.dot(-e1, e2), -one, one))
     out_normals[v] = total
-    out_angles[v] = angles
 
 
 @wp.func
@@ -3330,44 +3320,24 @@ def rim_barycentric_d(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d, n: wp.vec3d, p: wp.
 
 @wp.func
 def side_normal(
-    mesh: wp.uint64,
-    vertex_normals: wp.array[wp.vec3d],
-    vertex_angles: wp.array[wp.float64],
-    face: wp.int32,
-    p: wp.vec3d,
-) -> tuple[wp.vec3d, wp.float64]:
-    # The normal that signs a node whose distance is taken to ``p`` on ``face``, and the length it
-    # would have if nothing in it cancelled: the face's unit normal (length one), or, when one of
-    # ``p``'s barycentric coordinates is under ``1e-5`` (``float32``), the vertex normals
-    # interpolated at ``p`` (``vertex_angles`` interpolated by the magnitudes of the weights).
+    mesh: wp.uint64, vertex_normals: wp.array[wp.vec3d], face: wp.int32, p: wp.vec3d
+) -> wp.vec3d:
+    # The normal that signs a node whose distance is taken to ``p`` on ``face``: the face's unit
+    # normal, or, when one of ``p``'s barycentric coordinates is under ``1e-5`` (``float32``), the
+    # vertex normals interpolated at ``p``.
     a, b, c = face_corners_d(mesh, face)
     normal = unit_or_zero_d(wp.cross(b - a, c - a))
     weights = rim_barycentric_d(a, b, c, normal, p)
     rim = wp.float64(wp.float32(1e-5))
-    scale = wp.float64(1.0)
     if weights[0] < rim or weights[1] < rim or weights[2] < rim:
         corner = face * 3
-        i0 = wp.mesh_get_index(mesh, corner)
-        i1 = wp.mesh_get_index(mesh, corner + 1)
-        i2 = wp.mesh_get_index(mesh, corner + 2)
         normal = (
-            vertex_normals[i0] * weights[0]
-            + vertex_normals[i1] * weights[1]
-            + vertex_normals[i2] * weights[2]
+            vertex_normals[wp.mesh_get_index(mesh, corner)] * weights[0]
+            + vertex_normals[wp.mesh_get_index(mesh, corner + 1)] * weights[1]
+            + vertex_normals[wp.mesh_get_index(mesh, corner + 2)] * weights[2]
         )
-        scale = (
-            vertex_angles[i0] * wp.abs(weights[0])
-            + vertex_angles[i1] * wp.abs(weights[1])
-            + vertex_angles[i2] * wp.abs(weights[2])
-        )
-    return normal, scale
+    return normal
 
-
-# A node is contested when the face it takes is within this relative distance of another face
-# signed the other way, or when its sign test is within this relative margin of zero: rounding
-# decides those (and, on an exact tie, MeshLab's search order), so the host settles them
-# (``reconstruction._settle_contested_nodes``).
-CONTESTED_MARGIN = 1e-9
 
 # The walk's node stack. Warp's builders make every node at depth 32 a leaf, and the walk pushes
 # two children for each node it pops, so it never holds more than 33 entries.
@@ -3391,18 +3361,15 @@ def box_gap_exceeds(
 @wp.func
 def nearest_meshlab_face(
     mesh: wp.uint64, p: wp.vec3d, reach: wp.float64
-) -> tuple[wp.int32, wp.float64, wp.float64, wp.vec3d]:
+) -> tuple[wp.int32, wp.float64, wp.vec3d]:
     # The face of least ``edge_test_closest_point`` distance from ``p`` strictly under ``reach``
-    # (the lower index on a tie; ``-1`` for none), that distance, the least distance of any other
-    # face (exact only within ``CONTESTED_MARGIN`` of the first: a farther face may be skipped), and
-    # the point measured to. A depth-first walk of the mesh's BVH, nearer child first, that skips a
-    # node or a face whose box is farther than the margin past the best distance found.
+    # (the lower index on a tie; ``-1`` for none), that distance and the point measured to. A
+    # depth-first walk of the mesh's BVH, nearer child first, that skips a node or a face whose
+    # box is farther than the best distance found.
     bvh = wp.mesh_get_bvh(mesh)
     best = reach
-    runner_up = reach
     face = wp.int32(-1)
     closest = p
-    margin = wp.float64(1.0) + wp.float64(CONTESTED_MARGIN)
     q = wp.vec3(p)
     slack = wp.float32(1e-6) * (
         wp.max(wp.abs(q[0]), wp.max(wp.abs(q[1]), wp.abs(q[2]))) + wp.float32(reach)
@@ -3413,9 +3380,8 @@ def nearest_meshlab_face(
     while top > 0:
         top -= 1
         node = stack[top]
-        bound = wp.float32(best * margin)
         if box_gap_exceeds(
-            q, bvh_node_bound(bvh, node, 0), bvh_node_bound(bvh, node, 1), bound, slack
+            q, bvh_node_bound(bvh, node, 0), bvh_node_bound(bvh, node, 1), wp.float32(best), slack
         ):
             continue
         if bvh_node_is_leaf(bvh, node) != 0:
@@ -3429,7 +3395,7 @@ def nearest_meshlab_face(
                     q,
                     wp.min(a32, wp.min(b32, c32)),
                     wp.max(a32, wp.max(b32, c32)),
-                    wp.float32(best * margin),
+                    wp.float32(best),
                     slack,
                 ):
                     continue
@@ -3440,12 +3406,9 @@ def nearest_meshlab_face(
                     p, a, b, c, unit_or_zero_d(wp.cross(b - a, c - a))
                 )
                 if distance < best or (distance == best and face >= 0 and candidate < face):
-                    runner_up = best
                     best = distance
                     face = candidate
                     closest = point
-                elif distance < runner_up:
-                    runner_up = distance
             continue
         first = bvh_node_index(bvh, node, 0)
         second = bvh_node_index(bvh, node, 1)
@@ -3468,88 +3431,28 @@ def nearest_meshlab_face(
             stack[top] = first
             stack[top + 1] = second
         top += 2
-    return face, best, runner_up, closest
-
-
-@wp.func
-def near_face_signed_apart(
-    mesh: wp.uint64,
-    vertex_normals: wp.array[wp.vec3d],
-    vertex_angles: wp.array[wp.float64],
-    p: wp.vec3d,
-    face: wp.int32,
-    best: wp.float64,
-    behind: wp.bool,
-) -> wp.bool:
-    # Whether a face other than ``face`` within ``CONTESTED_MARGIN`` of the distance ``best`` signs
-    # ``p`` the other way (``behind`` is ``face``'s side). The walk of ``nearest_meshlab_face``
-    # with the margin past ``best`` as its fixed bound.
-    bvh = wp.mesh_get_bvh(mesh)
-    bound = best * (wp.float64(1.0) + wp.float64(CONTESTED_MARGIN))
-    q = wp.vec3(p)
-    slack = wp.float32(1e-6) * (
-        wp.max(wp.abs(q[0]), wp.max(wp.abs(q[1]), wp.abs(q[2]))) + wp.float32(bound)
-    )
-    stack = _WalkStack()
-    stack[0] = bvh_root(bvh)
-    top = wp.int32(1)
-    while top > 0:
-        top -= 1
-        node = stack[top]
-        lower = bvh_node_bound(bvh, node, 0)
-        if box_gap_exceeds(q, lower, bvh_node_bound(bvh, node, 1), wp.float32(bound), slack):
-            continue
-        if bvh_node_is_leaf(bvh, node) != 0:
-            for position in range(bvh_node_index(bvh, node, 0), bvh_node_index(bvh, node, 1)):
-                candidate = bvh_primitive(bvh, position)
-                corner = candidate * 3
-                a32 = wp.mesh_get_point(mesh, corner)
-                b32 = wp.mesh_get_point(mesh, corner + 1)
-                c32 = wp.mesh_get_point(mesh, corner + 2)
-                if candidate != face and not box_gap_exceeds(
-                    q,
-                    wp.min(a32, wp.min(b32, c32)),
-                    wp.max(a32, wp.max(b32, c32)),
-                    wp.float32(bound),
-                    slack,
-                ):
-                    a, b, c = face_corners_d(mesh, candidate)
-                    point, distance = edge_test_closest_point(
-                        p, a, b, c, unit_or_zero_d(wp.cross(b - a, c - a))
-                    )
-                    if distance <= bound:
-                        normal, _scale = side_normal(
-                            mesh, vertex_normals, vertex_angles, candidate, point
-                        )
-                        if (wp.dot(p - point, normal) < wp.float64(0.0)) != behind:
-                            return True
-            continue
-        stack[top] = bvh_node_index(bvh, node, 0)
-        stack[top + 1] = bvh_node_index(bvh, node, 1)
-        top += 2
-    return False
+    return face, best, closest
 
 
 @wp.kernel
 def meshlab_signed_distance(
     mesh: wp.uint64,
     vertex_normals: wp.array[wp.vec3d],
-    vertex_angles: wp.array[wp.float64],
     lower: wp.vec3d,
     spacing: wp.vec3d,
     reach: wp.float64,
     level: wp.float64,
     out_field: wp.array3d[wp.float64],
-    out_contested: wp.array[wp.int32],
-    out_contested_count: wp.array[wp.int32],
 ) -> None:
     """
     MeshLab's signed distance at each lattice node, plus ``level``; NaN where no face is in reach.
 
     Node ``(i, j, k)`` sits at ``lower + (i, j, k) * spacing``. Its face is
     ``nearest_meshlab_face``'s, and the distance is negative where the node is behind
-    ``side_normal``. A contested node (``CONTESTED_MARGIN``) appends its flat index to
-    ``out_contested`` while there is room, counting every one in ``out_contested_count``.
+    ``side_normal``. Two places can sign a node otherwise than MeshLab: an exact tie between faces
+    signed apart, which MeshLab gives to the face its kd-tree reaches first and this to the lower
+    index, and a sign test at rounding level (vertex normals that cancel), formed here in another
+    order of operations.
     """
     i, j, k = wp.tid()
     p = wp.vec3d(
@@ -3557,76 +3460,10 @@ def meshlab_signed_distance(
         wp.float64(j) * spacing[1] + lower[1],
         wp.float64(k) * spacing[2] + lower[2],
     )
-    face, best, runner_up, closest = nearest_meshlab_face(mesh, p, reach)
+    face, best, closest = nearest_meshlab_face(mesh, p, reach)
     if face < 0:
         out_field[i, j, k] = wp.float64(wp.nan)
         return
-    margin = wp.float64(CONTESTED_MARGIN)
-    offset = p - closest
-    normal, scale = side_normal(mesh, vertex_normals, vertex_angles, face, closest)
-    side = wp.dot(offset, normal)
-    behind = side < wp.float64(0.0)
-    contested = wp.abs(side) <= margin * wp.length(offset) * scale
-    if not contested and runner_up - best <= margin * best:
-        contested = near_face_signed_apart(
-            mesh, vertex_normals, vertex_angles, p, face, best, behind
-        )
-    if contested:
-        slot = wp.atomic_add(out_contested_count, 0, 1)
-        if slot < out_contested.shape[0]:
-            out_contested[slot] = (i * out_field.shape[1] + j) * out_field.shape[2] + k
-    if behind:
+    if wp.dot(p - closest, side_normal(mesh, vertex_normals, face, closest)) < wp.float64(0.0):
         best = -best
     out_field[i, j, k] = best + level
-
-
-@wp.kernel
-def write_field_values(
-    nodes: wp.array[wp.int32], values: wp.array[wp.float64], out_field: wp.array[wp.float64]
-) -> None:
-    """Write ``values`` into the flat ``out_field`` at ``nodes``."""
-    t = wp.int32(wp.tid())
-    out_field[nodes[t]] = values[t]
-
-
-@wp.kernel
-def contested_candidates(
-    mesh: wp.uint64,
-    nodes: wp.array[wp.int32],
-    field: wp.array[wp.float64],
-    lower: wp.vec3d,
-    spacing: wp.vec3d,
-    shape: wp.vec3i,
-    level: wp.float64,
-    out_pairs: wp.array[wp.vec2i],
-    out_count: wp.array[wp.int32],
-) -> None:
-    """
-    List the faces that can be nearest to each contested node, as ``(slot in nodes, face)`` pairs.
-
-    A face whose MeshLab distance equals the node's is no farther than it in the Euclidean sense,
-    so its box is within that radius, grown by a relative ``1e-6`` for the rounding the device's
-    distance carries. Pairs are appended while there is room, every one counted in ``out_count``.
-    """
-    t = wp.int32(wp.tid())
-    flat = nodes[t]
-    i = flat // (shape[1] * shape[2])
-    j = (flat // shape[2]) % shape[1]
-    k = flat % shape[2]
-    p = wp.vec3d(
-        wp.float64(i) * spacing[0] + lower[0],
-        wp.float64(j) * spacing[1] + lower[1],
-        wp.float64(k) * spacing[2] + lower[2],
-    )
-    radius = wp.abs(field[flat] - level)
-    radius += wp.float64(1e-6) * (radius + wp.max(wp.abs(p[0]), wp.max(wp.abs(p[1]), wp.abs(p[2]))))
-    box = wp.vec3d(radius, radius, radius)
-    query = wp.mesh_query_aabb(mesh, wp.vec3(p - box), wp.vec3(p + box))
-    face = wp.int32(0)
-    while wp.mesh_query_next(query, face):
-        a, b, c = face_corners_d(mesh, face)
-        gap = wp.max(wp.max(wp.min(a, wp.min(b, c)) - p, p - wp.max(a, wp.max(b, c))), wp.vec3d())
-        if wp.length_sq(gap) <= radius * radius:
-            slot = wp.atomic_add(out_count, 0, 1)
-            if slot < out_pairs.shape[0]:
-                out_pairs[slot] = wp.vec2i(t, face)

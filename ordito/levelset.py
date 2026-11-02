@@ -52,6 +52,7 @@ from ordito.kernels import levelset as kernel_levelset
 from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import vertices as kernel_vertices
+from ordito.kernels.algorithms import marching_cubes_33 as kernel_mc33
 
 # Bounds on the automatic ``voxel_size``, both expressed as a sample count across a span, and both
 # load-bearing rather than defensive. The spans differ, which is the part to read carefully: the
@@ -133,11 +134,12 @@ _MAX_CONE_WORK = 1 << 34
 
 
 def marching_cubes(
-    field: odt.ArrayNdFloat32,
+    field: odt.ArrayNdFloat,
     iso: float = 0.0,
     *,
-    bounds: tuple[wp.vec3, wp.vec3] | None = None,
+    bounds: tuple[wp.vec3, wp.vec3] | tuple[wp.vec3d, wp.vec3d] | None = None,
     edge_margin: float = 0.0,
+    method: Literal["classic", "lewiner"] = "classic",
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Extract the ``iso`` level set of a dense scalar lattice as a triangle mesh.
@@ -151,7 +153,8 @@ def marching_cubes(
     Parameters
     ----------
     field
-        ``(nx, ny, nz)`` lattice of scalar values, with ``x`` the slowest axis. The surface is
+        ``(nx, ny, nz)`` lattice of scalar values, with ``x`` the slowest axis: ``wp.float32``, or
+        under ``method="lewiner"`` also ``wp.float64``. The surface is
         extracted where the field crosses ``iso``; the sign convention is the caller's, and the
         winding follows it (with ordito's outside-positive
         [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh] convention the
@@ -172,6 +175,17 @@ def marching_cubes(
         slivers whose area is rounding noise; a positive margin moves such a vertex at most that
         fraction of an edge and bounds every triangle's altitudes below by a fixed fraction of
         ``edge_margin`` times the lattice spacing, without changing the topology.
+        Not taken by ``method="lewiner"``, whose vertices are linear in the field.
+    method
+        The triangulation. ``"classic"`` (the default) is Lorensen and Cline's 256-case table as
+        Warp's ``warp.geometry.IsoSurfaceMarchingCubes`` has it (see ``Notes``). ``"lewiner"`` is
+        Lewiner et al.'s topologically controlled marching cubes (MC33): a face or the interior of
+        a cell whose corners alone leave the surface ambiguous is resolved by the bilinear and
+        trilinear field there, some cells gain a vertex inside them, and the result is a closed,
+        edge-manifold surface wherever the field is closed. Its tests and crossings are formed in
+        ``float64``. MeshLab extracts with it, and
+        [`reconstruction.resample_uniform`][ordito.reconstruction.resample_uniform]'s
+        ``method="meshlab"`` is this extraction of MeshLab's field.
 
     Returns
     -------
@@ -184,9 +198,11 @@ def marching_cubes(
     Raises
     ------
     TypeError
-        If ``field`` is not a rank-3 ``wp.float32`` array.
+        If ``field`` is not a rank-3 ``wp.float32`` array, or under ``method="lewiner"`` a rank-3
+        ``wp.float32`` or ``wp.float64`` one.
     ValueError
-        If any of ``field``'s dimensions is below 2, ``edge_margin`` is outside ``[0, 0.5)``,
+        If ``method`` is not ``"classic"`` or ``"lewiner"``, any of ``field``'s dimensions is
+        below 2, ``edge_margin`` is outside ``[0, 0.5)`` (or not ``0`` under ``"lewiner"``),
         ``field`` has ``2**31`` nodes or more, or the level set has ``2**31`` vertices or more or
         ``3 * n_faces`` reaches ``2**31``: the extraction indexes in ``int32``.
 
@@ -200,7 +216,8 @@ def marching_cubes(
 
     Notes
     -----
-    The triangulation is Warp's ``warp.geometry.IsoSurfaceMarchingCubes``: its case tables, its
+    Under ``method="classic"`` the triangulation is Warp's
+    ``warp.geometry.IsoSurfaceMarchingCubes``: its case tables, its
     vertex numbering (one vertex per crossing lattice edge, in row-major order of the edge's lower
     node and then by axis), its triangle order and its interpolation, so on a field without NaN
     the result equals ``IsoSurfaceMarchingCubes.extract`` on the same lattice and bounds bit for
@@ -215,10 +232,18 @@ def marching_cubes(
     margin between fitting a fine lattice on the device and not. A small lattice takes a pair of
     counters per node, about twice the field.
 
-    The consequence worth knowing is that the result is **not guaranteed manifold** at an
-    ambiguous cell, and can carry duplicate vertices where two cells agree on a crossing —
+    The consequence worth knowing is that the classic result is **not guaranteed manifold** at
+    an ambiguous cell, and can carry duplicate vertices where two cells agree on a crossing —
     [`reconstruction.resample_uniform`][ordito.reconstruction.resample_uniform] runs
     [`ordito.repair`][ordito.repair] over it for exactly that reason.
+
+    Under ``method="lewiner"`` each crossing edge has one vertex, made only where a triangulated
+    cell shares the edge (a cell with a NaN corner is not triangulated, and an edge only such
+    cells share has no vertex), numbered by the edge's lower node and then by axis; the vertices
+    some subcases add inside a cell follow, by cell. Such a vertex sits at the mean of the
+    crossings on the cell's edges that cells before it in slices along ``y``, then rows along
+    ``x``, then ``z`` share, MeshLab's placement. Its scratch is three counters and a byte per
+    node.
 
     Examples
     --------
@@ -239,7 +264,11 @@ def marching_cubes(
     print(f"{od.measures.volume(vertices, faces):.2f}")  # 2.12
     ```
     """
-    field = odt.as_array3d(field, wp.float32)
+    if method not in ("classic", "lewiner"):
+        raise ValueError(f"method must be 'classic' or 'lewiner', got {method!r}")
+    if method == "lewiner":
+        return _marching_cubes_lewiner(field, iso, bounds, edge_margin)
+    field = odt.as_array3d(cast(odt.ArrayNdFloat32, field), wp.float32)
     shape = tuple(int(dim) for dim in field.shape)
     if min(shape) < 2:
         raise ValueError(f"field must be at least 2 wide along every axis, got {shape}")
@@ -361,6 +390,89 @@ def marching_cubes(
             device=device,
         )
     return vertices, faces
+
+
+def _marching_cubes_lewiner(
+    field: odt.ArrayNdFloat,
+    iso: float,
+    bounds: tuple[wp.vec3, wp.vec3] | tuple[wp.vec3d, wp.vec3d] | None,
+    edge_margin: float,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    ``marching_cubes(method="lewiner")``: count, scan and emit over the nodes, in ``float64``.
+
+    Each node owns its three positive-axis edges and the cell it is the lowest corner of
+    (``kernels/algorithms/marching_cubes_33.py``). Edge vertices come first, by node and axis,
+    then the cell vertices some subcases add; a crossing no triangulated cell shares has none.
+    """
+    if field.dtype not in (wp.float32, wp.float64):
+        raise TypeError(f"method='lewiner' takes a float32 or float64 field, got {field.dtype}")
+    lattice = (
+        odt.as_array3d(cast(odt.ArrayNdFloat64, field), wp.float64)
+        if field.dtype == wp.float64
+        else odt.as_array3d(cast(odt.ArrayNdFloat32, field), wp.float32)
+    )
+    shape = (int(lattice.shape[0]), int(lattice.shape[1]), int(lattice.shape[2]))
+    if min(shape) < 2:
+        raise ValueError(f"field must be at least 2 wide along every axis, got {shape}")
+    if edge_margin != 0.0:
+        raise ValueError(f"method='lewiner' takes no edge_margin, got {edge_margin}")
+    n_nodes = shape[0] * shape[1] * shape[2]
+    if n_nodes > _INT32_MAX:
+        raise ValueError(f"field has {n_nodes} nodes, past the int32 limit of {_INT32_MAX}")
+    cells = np.array((shape[0] - 1, shape[1] - 1, shape[2] - 1), dtype=np.float64)
+    lower_np, spacing_np = np.zeros(3), np.ones(3)
+    if bounds is not None:
+        lower_np = np.asarray(bounds[0], dtype=np.float64)
+        spacing_np = (np.asarray(bounds[1], dtype=np.float64) - lower_np) / cells
+    lower, spacing = wp.vec3d(*lower_np.tolist()), wp.vec3d(*spacing_np.tolist())
+
+    device = wp.get_device(lattice.device)
+    table = _marching_cubes_33_table(device.alias)
+    counts = _launch.empty(n_nodes, dtype=wp.vec3i, device=device)
+    masks = odt.empty_3d(shape, wp.uint8, device=device)
+    _launch.launch(
+        kernel_mc33.MC33_COUNTS[lattice.dtype],
+        dim=shape,
+        inputs=[lattice, wp.float64(iso), table],
+        outputs=[counts.reshape(shape), masks],
+        device=device,
+    )
+    _launch.array_scan(counts, counts, inclusive=True)
+    # One read sizes both outputs: the scanned triple's last entry holds all three totals.
+    totals = read_scalar(counts)
+    n_edge_vertices, n_faces, n_cell_vertices = int(totals[0]), int(totals[1]), int(totals[2])
+    if n_edge_vertices < 0 or n_faces < 0 or 3 * n_faces > _INT32_MAX:
+        raise ValueError(
+            "the level set has more vertices or triangles than int32 indices address; "
+            "extract it from a coarser field or in pieces"
+        )
+    vertices = _launch.empty(n_edge_vertices + n_cell_vertices, dtype=wp.vec3, device=device)
+    faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    if n_faces > 0:
+        _launch.launch(
+            kernel_mc33.MC33_EMIT[lattice.dtype],
+            dim=shape,
+            inputs=[
+                lattice,
+                wp.float64(iso),
+                table,
+                counts.reshape(shape),
+                masks,
+                lower,
+                spacing,
+                n_edge_vertices,
+            ],
+            outputs=[vertices, faces],
+            device=device,
+        )
+    return vertices, faces
+
+
+@functools.cache
+def _marching_cubes_33_table(device: str) -> wp.array[wp.int32]:
+    """``kernels/algorithms/marching_cubes_33.MC33_TABLE`` on the device ``device`` names, once."""
+    return _launch.array(kernel_mc33.MC33_TABLE, dtype=wp.int32, device=device)
 
 
 @functools.cache
