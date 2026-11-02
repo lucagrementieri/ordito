@@ -2,7 +2,14 @@ import warp as wp
 from warp.geometry import IsoSurfaceMarchingCubes
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE, TOLERANCE_MERGE_CONSTANT
-from ordito.kernels.array import lattice_position, ravel_index
+from ordito.kernels.array import (
+    bit_rank,
+    lattice_position,
+    nth_bit_position,
+    ravel_index,
+    store_counted_ballot_bit,
+    unravel_index,
+)
 from ordito.kernels.vertices import normalized_accumulated_row
 
 
@@ -927,6 +934,26 @@ def mc_cell_triangles(
     return wp.vec2i(start, (table[code + 1] - start) // 3)
 
 
+@wp.func
+def mc_node_counts(
+    field: wp.array3d[wp.float32],
+    iso: wp.float32,
+    table: wp.array[wp.int32],
+    i: wp.int32,
+    j: wp.int32,
+    k: wp.int32,
+) -> wp.vec2i:
+    # Node ``(i, j, k)``'s output: how many of its three positive-axis edges cross ``iso`` (its
+    # vertices) and how many triangles its cell emits.
+    vertices = (
+        mc_edge_crosses(field, iso, i, j, k, 0)
+        + mc_edge_crosses(field, iso, i, j, k, 1)
+        + mc_edge_crosses(field, iso, i, j, k, 2)
+    )
+    cell = mc_cell_triangles(field, iso, table, i, j, k)
+    return wp.vec2i(vertices, cell[1])
+
+
 @wp.kernel
 def marching_cubes_counts(
     field: wp.array3d[wp.float32],
@@ -934,20 +961,30 @@ def marching_cubes_counts(
     table: wp.array[wp.int32],
     out_counts: wp.array[wp.vec2i],
 ) -> None:
-    # Per node: how many of its three positive-axis edges cross ``iso`` (its vertices) and how many
-    # triangles its cell emits. Scanned inclusively in place, the pair is both output offsets.
+    # Per node, ``mc_node_counts``. Scanned inclusively in place, the pair is both output offsets.
     i, j, k = wp.tid()
-    vertices = (
-        mc_edge_crosses(field, iso, i, j, k, 0)
-        + mc_edge_crosses(field, iso, i, j, k, 1)
-        + mc_edge_crosses(field, iso, i, j, k, 2)
+    out_counts[ravel_index(i, j, k, field.shape[1], field.shape[2])] = mc_node_counts(
+        field, iso, table, i, j, k
     )
-    cell = mc_cell_triangles(field, iso, table, i, j, k)
-    out_counts[ravel_index(i, j, k, field.shape[1], field.shape[2])] = wp.vec2i(vertices, cell[1])
 
 
-@wp.kernel
-def marching_cubes_emit(
+@wp.func
+def mc_vertex_end(
+    offsets: wp.array[wp.vec2i],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    flat: wp.int32,
+) -> wp.int32:
+    # The inclusive vertex count at node ``flat``: its entry of the scanned counts, which are a
+    # node's each (``words`` empty) or an active node's each, an active node numbered by its rank
+    # in the active bitmask.
+    if words.shape[0] > 0:
+        return offsets[bit_rank(words, word_ranks, flat)][0]
+    return offsets[flat][0]
+
+
+@wp.func
+def mc_emit_node(
     field: wp.array3d[wp.float32],
     iso: wp.float32,
     lower: wp.vec3,
@@ -955,19 +992,21 @@ def marching_cubes_emit(
     margin: wp.float32,
     table: wp.array[wp.int32],
     offsets: wp.array[wp.vec2i],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    ends: wp.vec2i,
+    i: wp.int32,
+    j: wp.int32,
+    k: wp.int32,
     out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
-    # Writes node ``(i, j, k)``'s crossing-edge vertices and its cell's triangles at the slots the
-    # inclusive scan of ``marching_cubes_counts`` gives (each count is subtracted back off its
-    # inclusive total). The vertex arithmetic is ``mc_edge_vertex``'s.
-    i, j, k = wp.tid()
+    # Writes node ``(i, j, k)``'s crossing-edge vertices and its cell's triangles at the slots its
+    # inclusive totals ``ends`` give (each count is subtracted back off its total). The vertex
+    # arithmetic is ``mc_edge_vertex``'s. ``marching_cubes_emit`` and
+    # ``marching_cubes_emit_active`` differ only in where a node's totals, and its owners', are.
     ny = field.shape[1]
     nz = field.shape[2]
-    flat = ravel_index(i, j, k, ny, nz)
-    if not mc_node_emits(offsets, flat):
-        return
-    ends = offsets[flat]
     crossing = wp.vec3i(
         mc_edge_crosses(field, iso, i, j, k, 0),
         mc_edge_crosses(field, iso, i, j, k, 1),
@@ -998,11 +1037,108 @@ def marching_cubes_emit(
             # The owner's vertices sit at the end of its scanned count, in axis order, so this
             # edge's is its total less one less each crossing edge on a higher axis. The case
             # table names only crossing edges, a cell with a NaN corner having no case
-            # (``mc_case_code``), so the edge always has its vertex.
-            vertex = offsets[ravel_index(oi, oj, ok, ny, nz)][0] - 1
+            # (``mc_case_code``), so the edge always has its vertex, and its owner is active.
+            vertex = mc_vertex_end(offsets, words, word_ranks, ravel_index(oi, oj, ok, ny, nz)) - 1
             for higher in range(axis + 1, 3):
                 vertex -= mc_edge_crosses(field, iso, oi, oj, ok, higher)
             out_faces[3 * (first_face + tri) + s] = vertex
+
+
+@wp.kernel
+def marching_cubes_emit(
+    field: wp.array3d[wp.float32],
+    iso: wp.float32,
+    lower: wp.vec3,
+    delta: wp.vec3,
+    margin: wp.float32,
+    table: wp.array[wp.int32],
+    offsets: wp.array[wp.vec2i],
+    no_words: wp.array[wp.uint32],
+    no_word_ranks: wp.array[wp.int32],
+    out_vertices: wp.array[wp.vec3],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # ``mc_emit_node`` at every node that emits, over ``marching_cubes_counts``' inclusive scan.
+    # ``no_words`` and ``no_word_ranks`` are passed empty (``None``): a node's totals are its own.
+    i, j, k = wp.tid()
+    flat = ravel_index(i, j, k, field.shape[1], field.shape[2])
+    if not mc_node_emits(offsets, flat):
+        return
+    mc_emit_node(
+        field, iso, lower, delta, margin, table, offsets, no_words, no_word_ranks, offsets[flat],
+        i, j, k, out_vertices, out_faces,
+    )  # fmt: skip
+
+
+# The large-lattice form (``levelset._MARCHING_CUBES_ACTIVE_FROM``): a lattice's emitting nodes
+# are O(res**2) of its res**3, so a ``vec2i`` count a node (8 B, 1 GiB at 512**3) is replaced by
+# a bit a node, its word ranks, and the counts and node index of the active nodes alone. The active
+# nodes keep node order, so the output is ``marching_cubes_emit``'s to the bit. Measured on a
+# perturbed sphere's distance field, new/old on CUDA: 256**3 0.41x the time and 0.08x the scratch
+# above the field, 512**3 0.28x and 0.06x; at par from 128**3 (2 M nodes, the gate), losing below
+# it to the extra readback. CPU 1.00x at 128**3, 0.86x at 256**3.
+@wp.kernel
+def marching_cubes_active(
+    field: wp.array3d[wp.float32],
+    iso: wp.float32,
+    table: wp.array[wp.int32],
+    out_words: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
+) -> None:
+    # Bit ``flat`` set where the node emits a vertex or a triangle. A 3-D launch's linear thread
+    # index is the node's row-major flat index, so a warp's lanes hold one word's bits
+    # (``store_counted_ballot_bit``), and every thread reaches the ballot.
+    i, j, k = wp.tid()
+    counts = mc_node_counts(field, iso, table, i, j, k)
+    store_counted_ballot_bit(
+        out_words,
+        out_word_counts,
+        ravel_index(i, j, k, field.shape[1], field.shape[2]),
+        counts[0] != 0 or counts[1] != 0,
+    )
+
+
+@wp.kernel
+def marching_cubes_active_counts(
+    field: wp.array3d[wp.float32],
+    iso: wp.float32,
+    table: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    out_nodes: wp.array[wp.int32],
+    out_counts: wp.array[wp.vec2i],
+) -> None:
+    # One thread an active node, in node order: its flat index and ``mc_node_counts``, which the
+    # caller scans inclusively in place.
+    a = wp.int32(wp.tid())
+    flat = nth_bit_position(words, word_ranks, a)
+    i, j, k = unravel_index(flat, field.shape[1], field.shape[2])
+    out_nodes[a] = flat
+    out_counts[a] = mc_node_counts(field, iso, table, i, j, k)
+
+
+@wp.kernel
+def marching_cubes_emit_active(
+    field: wp.array3d[wp.float32],
+    iso: wp.float32,
+    lower: wp.vec3,
+    delta: wp.vec3,
+    margin: wp.float32,
+    table: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    nodes: wp.array[wp.int32],
+    offsets: wp.array[wp.vec2i],
+    out_vertices: wp.array[wp.vec3],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # ``mc_emit_node`` at each active node, its totals the active scan's.
+    a = wp.int32(wp.tid())
+    i, j, k = unravel_index(nodes[a], field.shape[1], field.shape[2])
+    mc_emit_node(
+        field, iso, lower, delta, margin, table, offsets, words, word_ranks, offsets[a], i, j, k,
+        out_vertices, out_faces,
+    )  # fmt: skip
 
 
 @wp.func

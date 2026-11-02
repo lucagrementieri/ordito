@@ -321,8 +321,11 @@ def _cell_rims(
     }
 
 
+@pytest.mark.parametrize("active", [False, True], ids=["every-node", "active-nodes"])
 @pytest.mark.parametrize("case", ["anisotropic", "ties", "nan"])
-def test_marching_cubes_is_warps_extraction_bit_for_bit(device: str, case: str) -> None:
+def test_marching_cubes_is_warps_extraction_bit_for_bit(
+    device: str, case: str, active: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """
     Class A: byte-identical to ``warp.geometry.IsoSurfaceMarchingCubes.extract``, buffer order too.
 
@@ -334,7 +337,12 @@ def test_marching_cubes_is_warps_extraction_bit_for_bit(device: str, case: str) 
     edge test never crosses, so a cell with a NaN corner names edges with no vertex (``-1``);
     ordito emits no triangle for such a cell, so its faces are Warp's with those cells' triangles
     removed (Class B: equal after that named filter), and every index names a vertex.
+
+    Both counting forms are forced: a count a node, and the large-lattice form that counts only
+    the active nodes of a bitmask (``_MARCHING_CUBES_ACTIVE_FROM``), whose owner lookups go
+    through the bits' ranks.
     """
+    monkeypatch.setattr(od.levelset, "_MARCHING_CUBES_ACTIVE_FROM", 0 if active else 1 << 62)
     rng = np.random.default_rng(7)
     bounds = None
     iso = 0.0
@@ -460,11 +468,14 @@ def test_marching_cubes_edge_margin_removes_degenerate_triangles(device: str) ->
             od.levelset.marching_cubes(field_wp, edge_margin=margin)
 
 
-def test_marching_cubes_empty_and_invalid(device: str) -> None:
+def test_marching_cubes_empty_and_invalid(device: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """Not a library comparison: a field that never crosses is empty, a 1-wide lattice raises."""
     field_wp = wp.array(np.full((8, 8, 8), 1.0, dtype=np.float32), dtype=wp.float32, device=device)
-    _vertices_wp, faces_wp = od.levelset.marching_cubes(odt.as_array3d(field_wp, wp.float32))
-    assert faces_wp.size == 0
+    for active_from in (1 << 62, 0):
+        monkeypatch.setattr(od.levelset, "_MARCHING_CUBES_ACTIVE_FROM", active_from)
+        vertices_wp, faces_wp = od.levelset.marching_cubes(odt.as_array3d(field_wp, wp.float32))
+        assert vertices_wp.size == 0
+        assert faces_wp.size == 0
 
     thin_wp = wp.array(np.zeros((1, 8, 8), dtype=np.float32), dtype=wp.float32, device=device)
     with pytest.raises(ValueError, match="at least 2 wide"):

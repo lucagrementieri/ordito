@@ -3251,10 +3251,10 @@
  },
  "benchmarks/test_levelset.py::test_marching_cubes[ordito-cpu-128]": {
   "counts": {
-   "launch": 2,
-   "alloc": 3,
-   "readback": 1,
-   "scan": 1
+   "launch": 3,
+   "alloc": 5,
+   "readback": 2,
+   "scan": 2
   }
  },
  "benchmarks/test_levelset.py::test_marching_cubes[ordito-cpu-64]": {
@@ -3276,10 +3276,10 @@
  },
  "benchmarks/test_levelset.py::test_offset_mesh[sphere_small-ordito-cpu-256]": {
   "counts": {
-   "launch": 12,
-   "alloc": 12,
-   "readback": 4,
-   "scan": 2,
+   "launch": 13,
+   "alloc": 14,
+   "readback": 5,
+   "scan": 3,
    "sort": 1
   }
  },
@@ -5166,10 +5166,10 @@
  },
  "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cpu-dense-7]": {
   "counts": {
-   "launch": 33,
-   "alloc": 26,
-   "readback": 6,
-   "scan": 2,
+   "launch": 34,
+   "alloc": 28,
+   "readback": 7,
+   "scan": 3,
    "sort": 1
   }
  },

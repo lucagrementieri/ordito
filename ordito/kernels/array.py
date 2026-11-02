@@ -175,6 +175,15 @@ def ravel_index(i: wp.int32, j: wp.int32, k: wp.int32, ny: wp.int32, nz: wp.int3
 
 
 @wp.func
+def unravel_index(
+    flat: wp.int32, ny: wp.int32, nz: wp.int32
+) -> tuple[wp.int32, wp.int32, wp.int32]:
+    # ``ravel_index``' inverse: the ``(i, j, k)`` of row-major flat index ``flat``.
+    row = flat // nz
+    return row // ny, row % ny, flat % nz
+
+
+@wp.func
 def atomic_min_packed_box(
     out_corners: wp.array[wp.float32], box: wp.int32, lower: wp.vec3, upper: wp.vec3
 ) -> None:

@@ -97,6 +97,12 @@ _SAMPLES_PER_DISTANCE = 3
 # is two key sorts, 0.98x at worst (``lucy``, 28 M faces).
 _SPARSE_LEVEL_SET_FROM_NODES = 1 << 21
 
+# From this many lattice nodes ``marching_cubes`` counts only its active nodes, a bit a node marking
+# them (``kernels/levelset.marching_cubes_active``), rather than a ``vec2i`` a node: one more
+# readback for a 32nd of the scan and none of the 8 B a node. Below it the readback costs more than
+# the scan it saves.
+_MARCHING_CUBES_ACTIVE_FROM = 1 << 21
+
 # The winding-signed extraction that replaces sampling the whole lattice (``kernels/levelset.py``'s
 # header has the method) is taken below this many nodes, whatever the input's topology; from here a
 # closed input goes back to the octree above. It reproduces the dense lattice's surface bit for bit,
@@ -203,9 +209,11 @@ def marching_cubes(
     and every face index names a vertex. Warp's extraction instead triangulates such a cell as if
     the sample were below ``iso`` and gives the edges from it, which have no vertex, index ``-1``.
     A vertex on a crossing edge all of whose cells have a NaN corner is kept, unreferenced, so
-    the vertex numbering stays Warp's. What differs otherwise is the scratch it needs: a pair of
-    counters per lattice node, about twice the field, where Warp's extraction needs about eleven
-    times the field -- the margin between fitting a fine lattice on the device and not.
+    the vertex numbering stays Warp's. What differs otherwise is the scratch it needs: on a large
+    lattice a bit per node and a pair of counters per node the surface passes through, a small
+    fraction of the field, where Warp's extraction needs about eleven times the field -- the
+    margin between fitting a fine lattice on the device and not. A small lattice takes a pair of
+    counters per node, about twice the field.
 
     The consequence worth knowing is that the result is **not guaranteed manifold** at an
     ambiguous cell, and can carry duplicate vertices where two cells agree on a crossing —
@@ -257,14 +265,48 @@ def marching_cubes(
 
     device = wp.get_device(field.device)
     table = _marching_cubes_table(device.alias)
-    counts = _launch.empty(nx * ny * nz, dtype=wp.vec2i, device=device)
-    _launch.launch(
-        kernel_levelset.marching_cubes_counts,
-        dim=(nx, ny, nz),
-        inputs=[field, wp.float32(iso), table],
-        outputs=[counts],
-        device=device,
-    )
+    n_nodes = nx * ny * nz
+    words: wp.array[wp.uint32] | None = None
+    word_ranks: wp.array[wp.int32] | None = None
+    nodes: wp.array[wp.int32] | None = None
+    if n_nodes >= _MARCHING_CUBES_ACTIVE_FROM:
+        # A bit a node, then counts for the emitting nodes alone (``kernels/levelset``'s
+        # large-lattice form): one more read, for the active count.
+        n_words = (n_nodes + 31) // 32
+        bits = _launch.zeros(2 * n_words, dtype=wp.int32, device=device)
+        words = _launch.view_as(_launch.view(bits, 0, n_words), wp.uint32)
+        word_ranks = _launch.view(bits, n_words, 2 * n_words)
+        _launch.launch(
+            kernel_levelset.marching_cubes_active,
+            dim=(nx, ny, nz),
+            inputs=[field, wp.float32(iso), table, words, word_ranks],
+            device=device,
+        )
+        _launch.array_scan(word_ranks, word_ranks, inclusive=True)
+        # Sizes the active nodes' counts.
+        n_active = int(read_scalar(word_ranks))
+        if n_active == 0:
+            return (
+                _launch.empty(0, dtype=wp.vec3, device=device),
+                _launch.empty(0, dtype=wp.int32, device=device),
+            )
+        nodes = _launch.empty(n_active, dtype=wp.int32, device=device)
+        counts = _launch.empty(n_active, dtype=wp.vec2i, device=device)
+        _launch.launch(
+            kernel_levelset.marching_cubes_active_counts,
+            dim=n_active,
+            inputs=[field, wp.float32(iso), table, words, word_ranks, nodes, counts],
+            device=device,
+        )
+    else:
+        counts = _launch.empty(n_nodes, dtype=wp.vec2i, device=device)
+        _launch.launch(
+            kernel_levelset.marching_cubes_counts,
+            dim=(nx, ny, nz),
+            inputs=[field, wp.float32(iso), table],
+            outputs=[counts],
+            device=device,
+        )
     _launch.array_scan(counts, counts, inclusive=True)
     # One read sizes both outputs: the scanned pair's last entry is the vertex and triangle totals.
     totals = read_scalar(counts)
@@ -281,11 +323,40 @@ def marching_cubes(
     faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
     # A crossing edge whose every cell has a NaN corner still owns a vertex, so either total alone
     # can be non-zero.
-    if n_vertices > 0 or n_faces > 0:
+    if nodes is not None:
+        _launch.launch(
+            kernel_levelset.marching_cubes_emit_active,
+            dim=nodes.size,
+            inputs=[
+                field,
+                wp.float32(iso),
+                lower,
+                delta,
+                wp.float32(edge_margin),
+                table,
+                words,
+                word_ranks,
+                nodes,
+                counts,
+            ],
+            outputs=[vertices, faces],
+            device=device,
+        )
+    elif n_vertices > 0 or n_faces > 0:
         _launch.launch(
             kernel_levelset.marching_cubes_emit,
             dim=(nx, ny, nz),
-            inputs=[field, wp.float32(iso), lower, delta, wp.float32(edge_margin), table, counts],
+            inputs=[
+                field,
+                wp.float32(iso),
+                lower,
+                delta,
+                wp.float32(edge_margin),
+                table,
+                counts,
+                None,
+                None,
+            ],
             outputs=[vertices, faces],
             device=device,
         )

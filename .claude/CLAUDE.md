@@ -973,8 +973,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   - `_csr_from_coo_keys` sizes `columns` / `values` by contributions, not entries: public returns
     (`energies` sandwich products, `laplacian`'s keyed path) keep that capacity; only a caller
     that already syncs can cut it (§3.7).
-  - `levelset`: `marching_cubes` counts are a `vec2i` a node for O(res**2) active ones (large; a
-    recorded design, not a decline).
   - `remesh`'s split passes rank their edges through `array.mask_to_compact_ranks`' `(m + 1)`
     `int32` offsets (`:5853`, and the budget trim's `_keep_longest_edges`), which every split
     kernel reads: a bitset (`kernels/array.store_counted_ballot_bit` and `bit_slot`, as
