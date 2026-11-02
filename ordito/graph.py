@@ -1054,9 +1054,7 @@ def _compact_successor_table(
     _launch.launch(
         kernel_graph.mark_tail_bits, dim=m, inputs=[tails], outputs=[bits], device=device
     )
-    word_ranks = _launch.empty(n_words, dtype=wp.int32, device=device)
-    _launch.map(kernel_array.popcount32, bits, out=word_ranks)
-    _launch.array_scan(word_ranks, out_array=word_ranks, inclusive=True)
+    word_ranks = od.array.bit_ranks(bits)
     compact_tails, compact_next, values = _launch.carve(wp.int32, [m, m, m], device)
     _launch.launch(
         kernel_graph.compact_successor_table,

@@ -981,6 +981,8 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
     that already syncs can cut it (§3.7).
   - `levelset`: `marching_cubes` counts are a `vec2i` a node for O(res**2) active ones (large; a
     recorded design, not a decline).
-  - A shared `array.bit_ranks` / `mark_bit` / `bit_select` would serve the sparse-flag compactions
-    (intersection, selection, seams, boundary, remesh) behind a size gate; it would replace
-    `reconstruction._bit_ranks` and `kernels/remesh.scan_word_counts_exclusive`.
+  - The sparse-flag compactions with an `int32` flag a position (`selection.py` ~`:120`,
+    `seams.py` ~`:146`, `boundary.py` ~`:1264` and ~`:1394`, `remesh.py` ~`:5385`) could take a
+    bit a position through `array.bit_ranks`, `kernels/array.store_ballot_bit` and
+    `nth_bit_position` (as the broad phase's verdicts do), behind a size gate (est. 5-15 MB and
+    10-20 us a call).

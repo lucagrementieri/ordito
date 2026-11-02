@@ -153,6 +153,13 @@
    "alloc": 1
   }
  },
+ "benchmarks/test_array.py::test_bit_ranks[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 1,
+   "alloc": 1,
+   "scan": 1
+  }
+ },
  "benchmarks/test_array.py::test_bitcast_from_int[sphere_small-ordito-cuda]": {
   "counts": {
    "alloc": 1,

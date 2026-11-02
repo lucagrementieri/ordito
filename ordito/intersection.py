@@ -33,7 +33,6 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_nonempty_mesh, require_same_device
 from ordito.constants import TILE_1D, TOLERANCE_MERGE
-from ordito.kernels import array as kernel_array
 from ordito.kernels import graph as kernel_graph
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import intersection as kernel_intersections
@@ -1141,9 +1140,7 @@ def _compact_crossing_candidates(candidates: _Candidates, *, segments: bool) -> 
         outputs=[bits],
         device=device,
     )
-    word_ranks = _launch.empty(n_words, dtype=wp.int32, device=device)
-    _launch.map(kernel_array.popcount32, bits, out=word_ranks)
-    _launch.array_scan(word_ranks, out_array=word_ranks, inclusive=True)
+    word_ranks = od.array.bit_ranks(bits)
     n_hit = int(read_scalar(word_ranks))
     if n_hit == 0:
         return None

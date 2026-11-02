@@ -3035,6 +3035,53 @@ def mask_to_compact_ranks(
     return _launch.view(buffer, 0, n), _scan_into_tail(buffer, flags, flags)
 
 
+def bit_ranks(words: wp.array[wp.uint32]) -> wp.array[wp.int32]:
+    """
+    Return each word's inclusive count of set bits over a ``uint32`` bitmask.
+
+    The rank table of a bitmask stored 32 flags to a word: ``ranks[w]`` is the number of set bits
+    in ``words[0 : w + 1]``, so the last entry is the population, the set bits before position
+    ``p`` are ``ranks[p >> 5]`` less the set bits of word ``p >> 5`` at or past ``p``
+    (``kernels/array.bit_rank``), and the ``k``-th set bit lies in the first word whose rank
+    passes ``k`` (``kernels/array.nth_bit_position``). A flag a position stored this way and
+    ranked takes a 32nd of an ``int32`` flag's memory and scan.
+
+    Parameters
+    ----------
+    words
+        ``(n_words,)`` bitmask, bit ``p & 31`` of word ``p >> 5`` the flag of position ``p``.
+
+    Returns
+    -------
+    wp.array[wp.int32]
+        ``(n_words,)`` inclusive running count of the words' set bits, on ``words.device``.
+
+    See Also
+    --------
+    [`mask_to_compact_ranks`][ordito.array.mask_to_compact_ranks]
+    [`flatnonzero`][ordito.array.flatnonzero]
+
+    Examples
+    --------
+    Three set bits in the first word, none in the second, one in the third:
+
+    ```python
+    import warp as wp
+
+    import ordito as od
+
+    words = wp.array([0b1011, 0, 0b100], dtype=wp.uint32)
+    print(od.array.bit_ranks(words).numpy().tolist())  # [3, 3, 4]
+    ```
+    """
+    ranks = _launch.empty(words.size, dtype=wp.int32, device=words.device)
+    if words.size == 0:
+        return ranks
+    _launch.map(kernel_array.popcount32, words, out=ranks)
+    _launch.array_scan(ranks, out_array=ranks, inclusive=True)
+    return ranks
+
+
 def counts_to_offsets(counts: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], int]:
     """
     Total-terminated exclusive prefix sum of ``counts``, plus their total.

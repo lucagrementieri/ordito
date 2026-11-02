@@ -1352,7 +1352,7 @@ def _screened_poisson_octree(
         outputs=[occupied],
         device=device,
     )
-    occupied_ranks = _bit_ranks(occupied)
+    occupied_ranks = od.array.bit_ranks(occupied)
     # One read sizes the occupied cells' tables.
     n_occupied = int(read_scalar(occupied_ranks))
     # Each word of the bits beside the rank before it: a rank is one read (``occupied_rank``).
@@ -1566,7 +1566,7 @@ def _octree_normal_splat(
         outputs=[targets],
         device=device,
     )
-    ranks = _bit_ranks(targets)
+    ranks = od.array.bit_ranks(targets)
     # One read sizes the sums.
     n_targets = int(read_scalar(ranks))
     sums = _launch.group_sums(max(n_targets, 1), wp.vec3, 2 * n_samples, device)
@@ -2217,7 +2217,7 @@ def _octree_segments(
             outputs=[holds, created],
             device=device,
         )
-    ranks = _bit_ranks(created)
+    ranks = od.array.bit_ranks(created)
     # One read sizes the vertices.
     n_vertices = int(read_scalar(ranks))
     # The vertices' numbers: each created edge's rank in the dense edge order, by its bit's rank.
@@ -2296,7 +2296,7 @@ def _octree_segments(
         outputs=[band_bits],
         device=device,
     )
-    band_ranks = _bit_ranks(band_bits)
+    band_ranks = od.array.bit_ranks(band_bits)
     # One read sizes the band.
     n_band = int(read_scalar(band_ranks))
     # Twice the band: the sort's room.
@@ -2412,14 +2412,6 @@ def _octree_triangulate(state: _OctreeSegments) -> tuple[wp.array[wp.vec3], wp.a
         device=device,
     )
     return positions, faces
-
-
-def _bit_ranks(words: wp.array[wp.uint32]) -> wp.array[wp.int32]:
-    """Return the inclusive scan of a bitmask's word bit counts, for ``kernel_array.bit_rank``."""
-    ranks = _launch.empty(words.size, dtype=wp.int32, device=words.device)
-    _launch.map(kernel_array.popcount32, words, out=ranks)
-    _launch.array_scan(ranks, ranks, inclusive=True)
-    return ranks
 
 
 @functools.cache

@@ -946,6 +946,30 @@ def test_indices_to_mask(bench_case: BenchCase) -> None:
     assert mask.shape == (n,)
 
 
+@pytest.mark.benchmark(group="bit_ranks")
+@pytest.mark.benchlibs("ordito", "numpy")
+def test_bit_ranks(bench_case: BenchCase) -> None:
+    """
+    The rank table of ``flatnonzero``'s half mask packed 32 flags to a word.
+
+    The NumPy row is the word populations' cumulative sum ``tests/test_array.py`` compares
+    against, the same words unpacked.
+    """
+    words_np = np.packbits(_mask_np(bench_case, 0.5), bitorder="little")
+    words_np = np.pad(words_np, (0, -words_np.size % 4)).view(np.uint32)
+    if bench_case.kind == "numpy":
+
+        def ranks_np() -> np.ndarray:
+            flags_np = np.unpackbits(words_np.view(np.uint8), bitorder="little")
+            return np.cumsum(flags_np.reshape(-1, 32).sum(axis=1))
+
+        assert bench_case.run(ranks_np).size == words_np.size
+        return
+    words = wp.array(words_np, dtype=wp.uint32, device=bench_case.device)
+    ranks = bench_case.run(lambda: od.array.bit_ranks(words))
+    assert ranks.shape == (words_np.size,)
+
+
 @pytest.mark.benchmark(group="mask_to_compact_ranks")
 @pytest.mark.benchlibs("ordito", "numpy")
 def test_mask_to_compact_ranks(bench_case: BenchCase) -> None:

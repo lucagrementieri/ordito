@@ -1346,6 +1346,30 @@ def test_mask_to_compact_ranks_is_the_exclusive_scan_of_the_mask(device: str, in
     assert np.array_equal(index_map_wp.numpy()[positions_np], np.arange(count, dtype=np.int32))
 
 
+@pytest.mark.parity("bit_ranks", "numpy")
+@pytest.mark.parametrize("n_words", [0, 1, 7, 5000])
+def test_bit_ranks_is_the_scan_of_the_word_populations(device: str, n_words: int) -> None:
+    """
+    Class A against NumPy: each rank is the running count of the words' set bits.
+
+    The bit rank and the ``k``-th set bit the kernels read off the table are pinned too, against
+    the flags unpacked by NumPy, at every set bit, so a table one word off fails. ``5000`` words
+    take the scan past one block.
+    """
+    rng = np.random.default_rng(n_words)
+    words_np = rng.integers(0, 2**32, n_words, dtype=np.uint64).astype(np.uint32)
+    words_np[rng.random(n_words) < 0.3] = 0
+    words_wp = wp.array(words_np, dtype=wp.uint32, device=device)
+
+    ranks_wp = od.array.bit_ranks(words_wp)
+
+    flags_np = np.unpackbits(words_np.view(np.uint8), bitorder="little").astype(np.int64)
+    populations_np = flags_np.reshape(-1, 32).sum(axis=1) if n_words else np.zeros(0)
+    assert np.array_equal(ranks_wp.numpy(), np.cumsum(populations_np).astype(np.int32))
+    if n_words:
+        assert np.ptp(ranks_wp.numpy()) > 0 or n_words == 1
+
+
 @pytest.mark.parity("counts_to_offsets", "numpy")
 def test_counts_to_offsets(device: str) -> None:
     """Class A: the total-terminated exclusive prefix sum is ``numpy.cumsum`` behind a zero."""
