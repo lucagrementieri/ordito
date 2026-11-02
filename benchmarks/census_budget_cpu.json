@@ -1497,8 +1497,9 @@
  "benchmarks/test_energies.py::test_curved_hessian_energy[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 8,
-   "alloc": 12,
-   "readback": 2,
+   "alloc": 14,
+   "h2h": 2,
+   "readback": 3,
    "scan": 1,
    "sort": 2
   }
@@ -1514,16 +1515,17 @@
  },
  "benchmarks/test_energies.py::test_hessian_energy[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 6,
-   "alloc": 9,
-   "readback": 1,
+   "launch": 7,
+   "alloc": 11,
+   "h2h": 2,
+   "readback": 2,
    "scan": 2,
    "sort": 1
   }
  },
  "benchmarks/test_energies.py::test_k_harmonic[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 3,
+   "launch": 4,
    "alloc": 7,
    "readback": 1,
    "scan": 1,
@@ -4437,7 +4439,7 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[hemisphere-ordito-cpu-2]": {
   "counts": {
-   "launch": 175,
+   "launch": 176,
    "alloc": 52,
    "readback": 5,
    "scan": 20,
@@ -4455,7 +4457,7 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[saddle_small-ordito-cpu-2]": {
   "counts": {
-   "launch": 146,
+   "launch": 147,
    "alloc": 52,
    "readback": 5,
    "scan": 18,

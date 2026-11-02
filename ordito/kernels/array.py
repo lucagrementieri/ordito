@@ -219,6 +219,17 @@ def scanned_count(inclusive: wp.array[wp.int32], i: wp.int32) -> tuple[wp.int32,
     return start, inclusive[i] - start
 
 
+@wp.kernel
+def flag_wrapped_scan(inclusive: wp.array[wp.int32], out_flag: wp.array[wp.int32]) -> None:
+    # Set ``out_flag[0]`` when an ``int32`` inclusive scan of non-negative counts wrapped. The
+    # first partial sum past ``2**31 - 1`` is negative, so the scan steps down there, even where
+    # the total wraps all the way round to a positive value -- which a test of the total alone
+    # misses, and which sized ``energies.hessian_energy``'s buffers short on ``lucy``.
+    i = wp.int32(wp.tid())
+    if inclusive[i] < 0 or (i > 0 and inclusive[i] < inclusive[i - 1]):
+        out_flag[0] = 1
+
+
 @wp.func
 def scanned_slot(offsets: wp.array[wp.int32], i: wp.int32) -> tuple[wp.int32, wp.bool]:
     # ``scanned_count``'s sibling for the *exclusive* scan that ends in its total -- the

@@ -387,6 +387,66 @@ def test_hessian_energy_annihilates_linear_fields_where_biharmonic_does_not(devi
     assert residual_biharmonic > 1e-3 * scale
 
 
+@pytest.mark.parametrize("energy", ["hessian_energy", "curved_hessian_energy"])
+def test_hessian_energies_store_only_their_entries(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], energy: str
+) -> None:
+    """
+    Not a library comparison: storage, not values (``test_hessian_energies_match_igl`` has those).
+
+    Each entry sums many triplets, about sixteen on these meshes, and the assembly keeps a slot
+    for every one; the returned operator is cut to the entries it stores, so ``columns`` and
+    ``values`` end at the offsets' total rather than at the triplet count.
+    """
+    _mesh_tm, mesh_wp = sphere_irregular
+    energy_od, _energy_igl = _HESSIAN_ENERGIES[energy]
+    matrix = energy_od(mesh_wp.points, mesh_wp.indices)
+    entries = int(matrix.offsets.numpy()[-1])
+    assert entries > 0
+    assert matrix.columns.size == entries
+    assert matrix.values.size == entries
+    assert int(matrix.nnz) == entries
+
+
+def test_triplet_count_refuses_a_scan_that_wrapped(device: str) -> None:
+    """
+    Not a library comparison: the guard that kept ``hessian_energy`` from writing past its buffers.
+
+    On ``lucy`` the Hessian's triplet total passes ``2**32``, so its ``int32`` scan wraps all the
+    way round to a small positive total that sized the buffers short (CUDA error 700). Four counts
+    of ``2**30`` and a fifth of 5 reproduce that shape -- a total of 5 after the wrap -- which a
+    test of the total's sign alone would pass; a count total under ``2**31`` comes back exactly.
+    """
+    wrapped = wp.array(
+        np.array([0, 1 << 30, 1 << 30, 1 << 30, 1 << 30, 5, 0], dtype=np.int32),
+        dtype=wp.int32,
+        device=device,
+    )
+    with pytest.raises(ValueError, match="int32"):
+        od.energies._scanned_triplet_count(wrapped)  # pyright: ignore[reportPrivateUsage]
+    exact = wp.array(np.array([0, 3, 0, 4, 0], dtype=np.int32), dtype=wp.int32, device=device)
+    assert od.energies._scanned_triplet_count(exact) == 7  # pyright: ignore[reportPrivateUsage]
+    assert exact.numpy()[1:4].tolist() == [3, 3, 7]
+
+
+def test_curved_hessian_energy_refuses_more_triplets_than_int32_addresses(
+    icosahedron: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: ``144 * n_faces`` past the limit raises before anything is written.
+
+    The limit is lowered to just under the icosahedron's 2 880 triplets, which reaches the same
+    branch ``lucy``'s 4.0 billion do; at the limit itself the energy assembles.
+    """
+    _mesh_tm, mesh_wp = icosahedron
+    n_triplets = 144 * (mesh_wp.indices.size // 3)
+    monkeypatch.setattr(od.energies, "INT32_MAX", n_triplets - 1)
+    with pytest.raises(ValueError, match="int32"):
+        od.energies.curved_hessian_energy(mesh_wp.points, mesh_wp.indices)
+    monkeypatch.setattr(od.energies, "INT32_MAX", n_triplets)
+    assert od.energies.curved_hessian_energy(mesh_wp.points, mesh_wp.indices).shape == (12, 12)
+
+
 def _igl_edge_arguments(mesh_wp: wp.Mesh) -> tuple[np.ndarray, np.ndarray]:
     """
     Ordito's ``edges_unique`` numbering in the ``(E, EMAP)`` layout igl's CR bindings take.

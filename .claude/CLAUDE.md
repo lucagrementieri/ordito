@@ -284,6 +284,16 @@ Never size a buffer, slice or launch `dim` off `matrix.nnz`.
   (§12.5).
 - Any Warp `*_count` / `.nnz` field is a capacity until proven otherwise
   (`Volume.get_voxel_count()`; use `get_active_stats().voxel_count`).
+- A key assembly keeps `columns` / `values` at the contribution count. Only
+  `energies.hessian_energy` and `curved_hessian_energy` cut theirs (`energies._compacted`, one
+  count readback, when the capacity passes twice the entries): they hold 15-17x their entries
+  (`dragon` 1.7 GB for 0.1 GB) for under 1 % of the call (8-14 % at Warp's default release
+  threshold, §15). Every other public assembly returns at most a handful of spare slots, where a
+  readback, and on a few duplicates a full copy, buys nothing; leave them as they are.
+- A scanned `int32` triplet count that sizes buffers is checked for a wrap
+  (`kernels/array.flag_wrapped_scan`, read with the total): a total past `2**32` wraps back to a
+  small positive count, so its sign alone does not tell (`hessian_energy` on `lucy`, CUDA error
+  700).
 
 More `warp.sparse` behaviour: §12.5.
 
@@ -970,9 +980,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   lookup dedup (`node_window_bricks`). Per-function context (structure, sizes, proposal,
   constraints, what to verify) is `reference/component-status.md` §16.3c; read it before working
   on any of these. Candidates, largest first:
-  - `_csr_from_coo_keys` sizes `columns` / `values` by contributions, not entries: public returns
-    (`energies` sandwich products, `laplacian`'s keyed path) keep that capacity; only a caller
-    that already syncs can cut it (§3.7).
   - `remesh`'s refinement loops (`subdivide_to_size`, `refine_region_to_density`) rank their long
     edges in `(m + 1)` `int32` offsets written off the corner sort (`emit_long_edges`, the published
     count, `_keep_longest_edges`, `_extend_sizing_field`). `split_edges` now ranks a bitset and the

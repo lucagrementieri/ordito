@@ -50,9 +50,11 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
 from ordito.config import is_deterministic
+from ordito.constants import INT32_MAX
 from ordito.edges import edges_unique, edges_unique_length
+from ordito.kernels import array as kernel_array
 from ordito.kernels import energies as kernel_energies
 from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import reduce as kernel_reduce
@@ -463,7 +465,7 @@ def k_harmonic(
     Raises
     ------
     ValueError
-        If ``k < 1``.
+        If ``k < 1``, or if a product needs more triplets than ``int32`` indices address.
     RuntimeError
         If ``laplacian`` and ``mass`` are not on the same device.
 
@@ -555,8 +557,9 @@ def _diagonal_sandwich(
     """
     n_rows = int(a.nrow)
     device = inverse_mass.device
-    # Each row's count lands in the offsets' buffer past its leading zero and is scanned in place.
-    segment_offsets = _launch.zeros(n_rows + 1, dtype=wp.int32, device=device)
+    # Each row's count lands in the offsets' buffer past its leading zero and is scanned in place;
+    # the trailing slot flags a scan that wrapped (``_scanned_triplet_count``).
+    segment_offsets = _launch.zeros(n_rows + 2, dtype=wp.int32, device=device)
     n_triplets = 0
     if n_rows > 0:
         counts = _launch.view(segment_offsets, 1, n_rows + 1)
@@ -572,9 +575,7 @@ def _diagonal_sandwich(
             outputs=[counts, None if mass is None else inverse_mass],
             device=device,
         )
-        _launch.array_scan(counts, out_array=counts, inclusive=True)
-        # Host readback: only the device knows the scan total, and it sizes the triplet buffers.
-        n_triplets = int(read_scalar(segment_offsets))
+        n_triplets = _scanned_triplet_count(segment_offsets)
 
     dtype = a.values.dtype
     keys, order = od.array.csr_key_buffers(n_triplets, device)
@@ -652,6 +653,8 @@ def hessian_energy(
 
     Raises
     ------
+    ValueError
+        If the assembly needs more triplets than ``int32`` indices address.
     RuntimeError
         If ``vertices``, ``faces`` and ``vertex_faces`` are not all on one device.
 
@@ -729,8 +732,9 @@ def hessian_energy(
         vf_indices, vf_offsets = sorted_rows
     else:
         vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
-    # Each vertex's count lands in the offsets' buffer past its leading zero, scanned in place.
-    segment_offsets = _launch.zeros(n_vertices + 1, dtype=wp.int32, device=device)
+    # Each vertex's count lands in the offsets' buffer past its leading zero, scanned in place;
+    # the trailing slot flags a scan that wrapped (``_scanned_triplet_count``).
+    segment_offsets = _launch.zeros(n_vertices + 2, dtype=wp.int32, device=device)
     counts = _launch.view(segment_offsets, 1, n_vertices + 1)
     _launch.launch(
         kernel_energies.hessian_energy_counts,
@@ -738,9 +742,7 @@ def hessian_energy(
         inputs=[faces, vf_offsets, vf_indices, mass, inverse_mass, counts],
         device=device,
     )
-    _launch.array_scan(counts, out_array=counts, inclusive=True)
-    # Host readback: only the device knows the scan total, and it sizes the triplet buffers.
-    n_triplets = int(read_scalar(segment_offsets))
+    n_triplets = _scanned_triplet_count(segment_offsets)
 
     keys, order = od.array.csr_key_buffers(n_triplets, device)
     vals = _launch.empty(n_triplets, dtype=dtype, device=device)
@@ -761,7 +763,35 @@ def hessian_energy(
             outputs=[keys, order, vals],
             device=device,
         )
-    return od.array.csr_from_coo_keys(n_vertices, n_vertices, keys, order, vals)
+    return _compacted(od.array.csr_from_coo_keys(n_vertices, n_vertices, keys, order, vals))
+
+
+def _scanned_triplet_count(segment_offsets: wp.array[wp.int32]) -> int:
+    """
+    Scan the per-row triplet counts in ``segment_offsets[1:-1]`` in place; return their total.
+
+    ``segment_offsets`` is ``(n_rows + 2,)``, zeroed: a leading zero, the counts, and a trailing
+    slot that ``kernels/array.flag_wrapped_scan`` sets when the ``int32`` scan wrapped. Both come
+    back in the one readback, which sizes the triplet buffers.
+    """
+    n_rows = segment_offsets.size - 2
+    device = segment_offsets.device
+    counts = _launch.view(segment_offsets, 1, n_rows + 1)
+    _launch.array_scan(counts, out_array=counts, inclusive=True)
+    _launch.launch(
+        kernel_array.flag_wrapped_scan,
+        dim=n_rows,
+        inputs=[counts, _launch.view(segment_offsets, n_rows + 1, n_rows + 2)],
+        device=device,
+    )
+    # Host readback: only the device knows the scan total, and it sizes the triplet buffers.
+    total, wrapped = read_values(segment_offsets, n_rows, 2)
+    if wrapped:
+        raise ValueError(
+            "the operator has more triplets than int32 indices address; assemble it from a "
+            "coarser mesh or in pieces"
+        )
+    return int(total)
 
 
 def curved_hessian_energy(
@@ -815,8 +845,9 @@ def curved_hessian_energy(
     Raises
     ------
     ValueError
-        If the mesh is not edge-manifold (some edge is shared by more than two faces), or if only
-        one of ``unique_edges`` and ``edge_map`` is passed.
+        If the mesh is not edge-manifold (some edge is shared by more than two faces), if only
+        one of ``unique_edges`` and ``edge_map`` is passed, or if the assembly needs more
+        triplets than ``int32`` indices address (``144 * n_faces``).
     RuntimeError
         If ``vertices``, ``faces``, ``unique_edges`` and ``edge_map`` are not all on one
         device.
@@ -853,6 +884,12 @@ def curved_hessian_energy(
     if n_faces == 0:
         return od.array.empty_square_bsr(n_vertices, dtype, device)
 
+    # 144 triplets a face, indexed in ``int32``.
+    if 144 * n_faces > INT32_MAX:
+        raise ValueError(
+            f"curved_hessian_energy writes 144 triplets a face, {144 * n_faces} for {n_faces} "
+            "faces, past the int32 limit; assemble it from a coarser mesh or in pieces"
+        )
     unique_edges, inverse = _edge_numbering(vertices, faces, unique_edges, edge_map)
     n_edges = int(unique_edges.shape[0])
 
@@ -941,7 +978,34 @@ def curved_hessian_energy(
         outputs=[keys, order, vals],
         device=device,
     )
-    return od.array.csr_from_coo_keys(n_vertices, n_vertices, keys, order, vals)
+    return _compacted(od.array.csr_from_coo_keys(n_vertices, n_vertices, keys, order, vals))
+
+
+def _compacted(matrix: odt.BsrMatrix[odt.Block]) -> odt.BsrMatrix[odt.Block]:
+    """
+    Return ``matrix`` with its columns and values cut to its entries when it holds over twice them.
+
+    [`hessian_energy`][ordito.energies.hessian_energy] and
+    [`curved_hessian_energy`][ordito.energies.curved_hessian_energy] sum many contributions
+    into each entry, so the assembled matrix keeps storage for every contribution; the returned
+    operator is cut to what it stores, and the assembly's own buffers are freed. The entry count
+    is read back from the offsets' total.
+    """
+    n_rows = int(matrix.nrow)
+    capacity = int(matrix.columns.size)
+    # Host readback: the stored count is known only on the device, and it sizes the copies.
+    entries = int(read_scalar(matrix.offsets, n_rows))
+    if capacity <= 2 * entries:
+        return matrix
+    device = matrix.columns.device
+    columns = _launch.empty(entries, dtype=wp.int32, device=device)
+    values = _launch.empty(entries, dtype=matrix.values.dtype, device=device)
+    if entries > 0:
+        wp.copy(columns, matrix.columns, count=entries)
+        wp.copy(values, matrix.values, count=entries)
+    return od.array.bsr_from_csr(
+        n_rows, int(matrix.ncol), matrix.offsets, columns, values, nnz=entries
+    )
 
 
 def crouzeix_raviart_cotmatrix(
