@@ -4509,10 +4509,14 @@ class _BpaState:
         # On the plain cpu device the cooperative walk is a serial query with no result buffer to
         # overrun, so the bitset stays zero there and every pivot search takes the builtin.
         n_nodes = 2 * self.n
-        # ``boundary_degree`` is zeroed too, and rides in the same allocation.
-        state_words, self.boundary_degree = _launch.carve(
+        # ``boundary_degree`` and ``seed_failed_wave`` are zeroed too, and ride in the same
+        # allocation. ``seed_failed_wave`` persists across every seeding wave for the run's whole
+        # lifetime -- see ``kernel_bpa.seed_triangles`` for why a point that once exhausted its
+        # candidates without seeding can never succeed later (its candidate set only shrinks),
+        # which is what makes never resetting it safe.
+        state_words, self.boundary_degree, self.seed_failed_wave = _launch.carve(
             wp.int32,
-            [kernel_bpa.BPA_COUNTERS + (n_nodes + 31) // 32, self.n],
+            [kernel_bpa.BPA_COUNTERS + (n_nodes + 31) // 32, self.n, self.n],
             self.device,
             zeroed=True,
         )
@@ -4526,13 +4530,7 @@ class _BpaState:
                 device=self.device,
             )
         _launch.fill_(self.counters[kernel_bpa.CNT_SEEDING : kernel_bpa.CNT_SEEDING + 1], 1)
-        # ``seed_failed`` persists across every seeding wave for the run's whole lifetime -- see
-        # ``kernel_bpa.seed_triangles`` for why a point that once exhausted its candidates without
-        # seeding can never succeed later (its candidate set only shrinks), which is what makes
-        # never resetting this safe.
-        self.point_used, self.seed_failed = _launch.carve(
-            wp.bool, [self.n] * 2, self.device, zeroed=True
-        )
+        self.point_used = _launch.zeros(self.n, dtype=wp.bool, device=self.device)
         # The orphan each point last deferred to, or whether it can ever seed; see the same kernel.
         self.seed_blocker = _launch.full(
             self.n, int(kernel_bpa.SEED_UNKNOWN), dtype=wp.int32, device=self.device
@@ -4799,7 +4797,7 @@ def _bpa_waves_serial(state: _BpaState, max_waves: int, *, begin: bool) -> None:
             state.max_faces,
             state.points,
             state.normals,
-            state.seed_failed,
+            state.seed_failed_wave,
             state.seed_blocker,
             state.grid.id,
             state.bvh.id,
@@ -4842,7 +4840,7 @@ def _bpa_wave(state: _BpaState, max_waves: int, *, begin: bool) -> None:
             state.points,
             state.normals,
             state.point_used,
-            state.seed_failed,
+            state.seed_failed_wave,
             state.seed_blocker,
             state.grid.id,
             state.radius,

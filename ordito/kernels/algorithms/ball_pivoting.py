@@ -18,7 +18,11 @@ unique within a wave, and ``commit_triangles`` for the one other place arrival o
 One thing this deliberately does *not* pin, so compare a run as a **set** of wound triangles
 rather than buffer to buffer: ``CNT_FACE`` is still a ``wp.atomic_add``, so the face buffer's row
 order remains arrival-ordered; determinizing it would mean sorting the whole buffer for a property
-no caller has asked for.
+no caller has asked for (``reconstruction``'s cleanup emits the returned faces in key order).
+
+A seeding wave reads the points that gave up seeding as of the wave's start
+(``seed_failed_before``): a failure found in a wave becomes visible to the next one, never to its
+own, so the deferral choices do not depend on which threads ran first.
 
 Winding
 -------
@@ -544,12 +548,26 @@ def propose_triangle(
 
 
 @wp.func
+def seed_failed_before(
+    seed_failed_wave: wp.array[wp.int32], j: wp.int32, wave: wp.int32
+) -> wp.bool:
+    # Point ``j`` gave up seeding (``seed_triangle``'s release) in a wave before ``wave``.
+    # ``seed_failed_wave`` holds that wave plus one, ``0`` while the point has not given up. A
+    # failure is invisible for the rest of the wave that finds it, so every thread of a seeding
+    # wave reads the same released set whatever order the threads run in. Read as a plain flag
+    # set in the same launch, it made a deferring point's choice race its blocker's write: one
+    # run of four on ``happy_buddha`` proposed a different seed, and a different triangle set.
+    stamp = seed_failed_wave[j]
+    return stamp != 0 and stamp <= wave
+
+
+@wp.func
 def seed_triangle(
     p: wp.int32,
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
     point_used: wp.array[wp.bool],
-    seed_failed: wp.array[wp.bool],
+    seed_failed_wave: wp.array[wp.int32],
     seed_blocker: wp.array[wp.int32],
     grid_id: wp.uint64,
     radius: wp.float32,
@@ -585,13 +603,14 @@ def seed_triangle(
     blocker = seed_blocker[p]
     if blocker == SEED_EXHAUSTED:
         return
+    wave = counters[CNT_WAVE]
     if blocker >= 0:
-        if not point_used[blocker] and not seed_failed[blocker]:
+        if not point_used[blocker] and not seed_failed_before(seed_failed_wave, blocker, wave):
             return
 
     # Gather the local orphan neighbourhood into scratch so it can be scanned as a double loop.
     # A point yields to any lower-index orphan it *sees* that has not already given up
-    # (``seed_failed``, below), so seed fronts start well separated and do not collide into
+    # (``seed_failed_wave``, below), so seed fronts start well separated and do not collide into
     # overlapping sheets before they can glue.
     #
     # ``wp.zeros``, not the ``wp.types.vector(length=K)`` register row ``neighbors.py`` uses:
@@ -609,7 +628,7 @@ def seed_triangle(
     # let the walk run to completion) was built and measured: it collapses the wave-0 seed count to
     # one or zero, and zero seeds makes ``end_wave`` raise ``CNT_DONE`` on an empty mesh.
     #
-    # ``seed_failed`` is what keeps the rule from deadlocking: it elects **one** seeder per
+    # ``seed_failed_wave`` is what keeps the rule from deadlocking: it elects **one** seeder per
     # neighbourhood, so a neighbourhood whose lowest-indexed orphan cannot form a valid seed
     # triangle would otherwise be dead for good — the next wave sees identical state and fails
     # identically. Marking a failed elected point releases its neighbourhood to the next-lowest
@@ -626,7 +645,7 @@ def seed_triangle(
             truncated = wp.bool(True)
             break
         if j != p and not point_used[j]:
-            if j < p and not seed_failed[j]:
+            if j < p and not seed_failed_before(seed_failed_wave, j, wave):
                 seed_blocker[p] = j
                 return  # a lower-index, still-viable orphan neighbour will seed this instead
             nbr[count] = j
@@ -700,8 +719,8 @@ def seed_triangle(
     # No candidate pair among those seen produced a valid seed: release this neighbourhood so a
     # deferring orphan can try on a later wave, and count it so ``end_wave`` knows the seed-failure
     # state is still changing and keeps seeding rather than declaring the run done.
-    if not seed_failed[p]:
-        seed_failed[p] = True
+    if seed_failed_wave[p] == 0:
+        seed_failed_wave[p] = wave + 1
         wp.atomic_add(counters, CNT_SEED_FAILED, 1)
     if not truncated:
         seed_blocker[p] = SEED_EXHAUSTED
@@ -712,7 +731,7 @@ def seed_triangles(
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
     point_used: wp.array[wp.bool],
-    seed_failed: wp.array[wp.bool],
+    seed_failed_wave: wp.array[wp.int32],
     seed_blocker: wp.array[wp.int32],
     grid_id: wp.uint64,
     radius: wp.float32,
@@ -730,7 +749,7 @@ def seed_triangles(
         points,
         normals,
         point_used,
-        seed_failed,
+        seed_failed_wave,
         seed_blocker,
         grid_id,
         radius,
@@ -1360,9 +1379,10 @@ def end_wave_step(max_waves: wp.int32, counters: wp.array[wp.int32]) -> None:
     # A wave either pivots the current front or seeds orphans; seeding runs whenever the previous
     # wave committed nothing. The termination test used to be exactly that stall (a stalled pivot
     # followed by one stalled seed wave means there is nothing left to do) -- but a single seeding
-    # wave marking some elected orphans ``seed_failed`` (see ``seed_triangles``) only *releases*
-    # their neighbourhoods for the *next* wave to try, so declaring done the first time a seeding
-    # wave commits nothing would end the run before any of those releases had a chance to matter.
+    # wave marking some elected orphans failed (``seed_failed_wave``, see ``seed_triangles``) only
+    # *releases* their neighbourhoods for the *next* wave to try, so declaring done the first time
+    # a seeding wave commits nothing would end the run before any of those releases had a chance
+    # to matter.
     # The second progress test (``CNT_SEED_FAILED`` against its snapshot) is what keeps seeding
     # going for as long as the failure state is still changing, and only declares done once a
     # seeding wave commits no faces *and* discovers no new failures either -- genuinely nothing
@@ -1418,7 +1438,7 @@ def wave_serial(
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
     point_used: wp.array[wp.bool],
-    seed_failed: wp.array[wp.bool],
+    seed_failed_wave: wp.array[wp.int32],
     seed_blocker: wp.array[wp.int32],
     grid_id: wp.uint64,
     bvh_id: wp.uint64,
@@ -1443,7 +1463,7 @@ def wave_serial(
     # every thread and block of each in launch order, on one lane.
     for p in range(n):
         seed_triangle(
-            p, points, normals, point_used, seed_failed, seed_blocker, grid_id, radius,
+            p, points, normals, point_used, seed_failed_wave, seed_blocker, grid_id, radius,
             clustering, front_capacity, counters, owner, tri_a, tri_b, tri_c,
         )  # fmt: skip
     for block in range(front_grid):
@@ -1475,7 +1495,7 @@ def waves_serial(
     max_faces: wp.int32,
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
-    seed_failed: wp.array[wp.bool],
+    seed_failed_wave: wp.array[wp.int32],
     seed_blocker: wp.array[wp.int32],
     grid_id: wp.uint64,
     bvh_id: wp.uint64,
@@ -1510,14 +1530,14 @@ def waves_serial(
         if wave % 2 == 0:
             wave_serial(
                 n, front_grid, claim_grid, max_waves, max_faces, points, normals, point_used,
-                seed_failed, seed_blocker, grid_id, bvh_id, overfull, radius, clustering,
+                seed_failed_wave, seed_blocker, grid_id, bvh_id, overfull, radius, clustering,
                 crease_cos, boundary_degree, front_a, front_capacity, counters, edges, owner,
                 front_b, tri_a, tri_b, tri_c, out_faces,
             )  # fmt: skip
         else:
             wave_serial(
                 n, front_grid, claim_grid, max_waves, max_faces, points, normals, point_used,
-                seed_failed, seed_blocker, grid_id, bvh_id, overfull, radius, clustering,
+                seed_failed_wave, seed_blocker, grid_id, bvh_id, overfull, radius, clustering,
                 crease_cos, boundary_degree, front_b, front_capacity, counters, edges, owner,
                 front_a, tri_a, tri_b, tri_c, out_faces,
             )  # fmt: skip
