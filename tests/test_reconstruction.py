@@ -772,17 +772,24 @@ def _fan_orientation_rows(cloud: str, device: str) -> tuple[np.ndarray, int, np.
     assert rep2.shape[0] > 0
 
     points_wp = points_to_warp(points_np, device)
-    tris_wp = wp.array(tris_np, dtype=wp.int32, device=device)
     inclusive_counts = wp.array(np.cumsum(counts_np, dtype=np.int32), dtype=wp.int32, device=device)
     n_candidates = int(counts_np.sum())
+    # The fans packed as ``triangulate_point_cloud`` packs them, a fan slot keeping its padded
+    # number ``v * k + j``.
+    packed_np = np.concatenate([tris_np[v, : counts_np[v]] for v in range(n)]).astype(np.int32)
+    fans = od.reconstruction._Fans(  # pyright: ignore[reportPrivateUsage]
+        odt.as_array2d(wp.array(packed_np, dtype=wp.int32, device=device), wp.int32),
+        inclusive_counts,
+        int(tris_np.shape[1]),
+    )
     keys, slots = od.reconstruction._sorted_candidate_keys(  # pyright: ignore[reportPrivateUsage]
-        tris_wp, inclusive_counts, n_candidates, n
+        fans, n_candidates, n
     )
     od.reconstruction._orient_fans(  # pyright: ignore[reportPrivateUsage]
-        points_wp, tris_wp, inclusive_counts, keys, slots, n_candidates, od.bounds.aabb(points_wp)
+        points_wp, fans, keys, slots, n_candidates, od.bounds.aabb(points_wp)
     )
     rows_wp, n_rep3 = od.reconstruction._oriented_candidate_rows(  # pyright: ignore[reportPrivateUsage]
-        points_wp, tris_wp, keys, slots, n_candidates
+        points_wp, fans, keys, slots, n_candidates
     )
     return rows_wp.numpy(), n_rep3, rows_ml, rep3.shape[0]
 
