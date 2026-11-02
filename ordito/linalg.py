@@ -3368,12 +3368,15 @@ class _BatchedCg:
         # hierarchy is batched over the columns at *this* solver's pitch, so the cycle's elementwise
         # passes stay one launch each rather than one per column.
         self._cycle = None
+        # A polynomial's rotating iterates are ``w`` -- dead from the update, its last reader, to
+        # the next round's mat-vec -- and ``u``, the apply's destination (``_ChebyshevApply``).
+        free = (self._w, self._u)
         if isinstance(preconditioner, SquaredLaplacianPreconditioner):
-            self._cycle = preconditioner.bind(self._n_columns, self._stride)
+            self._cycle = preconditioner.bind(self._n_columns, self._stride, free)
         elif preconditioner == "chebyshev":
             # Only ``float64`` systems get a non-Jacobi one (``_batched_preconditioner_kind``).
             assert odt.has_blocks(matrix, wp.float64)
-            self._cycle = _JacobiChebyshev(matrix).bind(self._n_columns, self._stride)
+            self._cycle = _JacobiChebyshev(matrix).bind(self._n_columns, self._stride, free)
         elif preconditioner == "multigrid":
             assert odt.has_blocks(matrix, wp.float64)
             hierarchy = _multigrid_hierarchy(matrix, 0)
@@ -4875,11 +4878,21 @@ class SquaredLaplacianPreconditioner:
         self._multigrid = None
         return self
 
-    def bind(self, n_columns: int, stride: int) -> _SquaredLaplacianApply | _SquaredMultigridApply:
-        """Working vectors for ``n_columns`` blocks at column pitch ``stride``."""
+    def bind(
+        self,
+        n_columns: int,
+        stride: int,
+        free: tuple[wp.array[wp.float64], wp.array[wp.float64]] | None = None,
+    ) -> _SquaredLaplacianApply | _SquaredMultigridApply:
+        """
+        Working vectors for ``n_columns`` blocks at column pitch ``stride``.
+
+        ``free`` is two vectors an apply may overwrite, its destination one of them
+        (``_ChebyshevApply``).
+        """
         if self._multigrid is not None:
             return _SquaredMultigridApply(self._multigrid, self._n, n_columns, stride)
-        return _SquaredLaplacianApply(self, n_columns, stride)
+        return _SquaredLaplacianApply(self, n_columns, stride, free)
 
     def _is_polynomial(self) -> bool:
         """
@@ -4969,7 +4982,13 @@ class _ChebyshevApply:
     """
 
     def __init__(
-        self, n: int, n_columns: int, stride: int, steps: wp.array[wp.vec4d], device: wp.DeviceLike
+        self,
+        n: int,
+        n_columns: int,
+        stride: int,
+        steps: wp.array[wp.vec4d],
+        device: wp.DeviceLike,
+        free: tuple[wp.array[wp.float64], wp.array[wp.float64]] | None = None,
     ) -> None:
         self._n = n
         self._stride = stride
@@ -4984,9 +5003,13 @@ class _ChebyshevApply:
         self._dofs = n_columns * stride
         # The rotating iterates and the subclass's own vector (``_work``), in one allocation: two
         # iterates for the launched steps, which write over the iterate two back (``_polynomial``),
-        # and three for the CPU's one-launch walk (``chebyshev_polynomial_column``).
+        # and three for the CPU's one-launch walk (``chebyshev_polynomial_column``). ``free`` is
+        # two vectors of the caller's that an apply may overwrite, one of them the destination it
+        # is handed (a conjugate-gradient state's ``w``, dead between the update and the next
+        # mat-vec, and ``u``): the launched steps rotate through them instead of their own.
         dofs = self._dofs
-        n_spare = 3 if self._serial else 2
+        self._free = None if self._serial else free
+        n_spare = 3 if self._serial else (0 if self._free is not None else 2)
         if dofs > 0:
             vectors = _launch.zeros((n_spare + 1) * dofs, dtype=wp.float64, device=device)
             views = [_launch.view(vectors, k * dofs, (k + 1) * dofs) for k in range(n_spare + 1)]
@@ -5042,14 +5065,21 @@ class _ChebyshevApply:
         # over the current one or ``source``. The first two steps read ``source`` in the place of
         # the iterates no launch writes (``chebyshev_step``), so they write the two spares; every
         # later step writes over the iterate two back, and the last into ``destination``. Three
-        # rotating iterates cost a vector a state more for the same steps.
+        # rotating iterates cost a vector a state more for the same steps. Step ``k`` writes spare
+        # ``k % 2``, so when ``destination`` is one of the spares it takes the slot the last step
+        # reads as its previous iterate, never its current one.
         previous, current = source, source
         n_steps = steps.size
+        spares = list(self._spare) if self._free is None else list(self._free)
+        last = n_steps - 1
+        if last >= 1 and any(spare is destination for spare in spares):
+            other = spares[1] if spares[0] is destination else spares[0]
+            spares[last % 2], spares[(last - 1) % 2] = destination, other
         for index in range(n_steps):
-            if index == n_steps - 1:
+            if index == last:
                 target = destination
             elif index < 2:
-                target = self._spare[index]
+                target = spares[index]
             else:
                 target = previous
             _launch.launch(
@@ -5078,8 +5108,14 @@ class _ChebyshevApply:
 class _SquaredLaplacianApply(_ChebyshevApply):
     """``z = B Bᵀ r`` over the padded column blocks of one conjugate-gradient state."""
 
-    def __init__(self, owner: SquaredLaplacianPreconditioner, n_columns: int, stride: int) -> None:
-        super().__init__(owner._n, n_columns, stride, owner._steps, owner._device)  # pyright: ignore[reportPrivateUsage]
+    def __init__(
+        self,
+        owner: SquaredLaplacianPreconditioner,
+        n_columns: int,
+        stride: int,
+        free: tuple[wp.array[wp.float64], wp.array[wp.float64]] | None = None,
+    ) -> None:
+        super().__init__(owner._n, n_columns, stride, owner._steps, owner._device, free)  # pyright: ignore[reportPrivateUsage]
         self._owner = owner
         self._middle = self._work
 
@@ -5273,9 +5309,19 @@ class _JacobiChebyshev:
             self.bound, self.n, CHEBYSHEV_INTERVAL, CHEBYSHEV_DEGREE, squared=False, out=self.steps
         )
 
-    def bind(self, n_columns: int, stride: int) -> _JacobiChebyshevApply:
-        """Working vectors for ``n_columns`` blocks at column pitch ``stride``."""
-        return _JacobiChebyshevApply(self, n_columns, stride)
+    def bind(
+        self,
+        n_columns: int,
+        stride: int,
+        free: tuple[wp.array[wp.float64], wp.array[wp.float64]] | None = None,
+    ) -> _JacobiChebyshevApply:
+        """
+        Working vectors for ``n_columns`` blocks at column pitch ``stride``.
+
+        ``free`` is two vectors an apply may overwrite, its destination one of them
+        (``_ChebyshevApply``).
+        """
+        return _JacobiChebyshevApply(self, n_columns, stride, free)
 
 
 def _dominance_bound(
@@ -5319,8 +5365,14 @@ def _dominance_bound(
 class _JacobiChebyshevApply(_ChebyshevApply):
     """``z = p(D⁻¹ A) D⁻¹ r`` over the padded column blocks of one conjugate-gradient state."""
 
-    def __init__(self, owner: _JacobiChebyshev, n_columns: int, stride: int) -> None:
-        super().__init__(owner.n, n_columns, stride, owner.steps, owner.device)
+    def __init__(
+        self,
+        owner: _JacobiChebyshev,
+        n_columns: int,
+        stride: int,
+        free: tuple[wp.array[wp.float64], wp.array[wp.float64]] | None = None,
+    ) -> None:
+        super().__init__(owner.n, n_columns, stride, owner.steps, owner.device, free)
         self._owner = owner
         self._scaled = self._work
 
