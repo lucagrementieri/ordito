@@ -284,12 +284,15 @@ Never size a buffer, slice or launch `dim` off `matrix.nnz`.
   (§12.5).
 - Any Warp `*_count` / `.nnz` field is a capacity until proven otherwise
   (`Volume.get_voxel_count()`; use `get_active_stats().voxel_count`).
-- A key assembly keeps `columns` / `values` at the contribution count. Only
-  `energies.hessian_energy` and `curved_hessian_energy` cut theirs (`energies._compacted`, one
-  count readback, when the capacity passes twice the entries): they hold 15-17x their entries
-  (`dragon` 1.7 GB for 0.1 GB) for under 1 % of the call (8-14 % at Warp's default release
-  threshold, §15). Every other public assembly returns at most a handful of spare slots, where a
-  readback, and on a few duplicates a full copy, buys nothing; leave them as they are.
+- A key assembly keeps `columns` / `values` at the contribution count. Every public one returns
+  at most a handful of spare slots, where a cutting readback, and on a few duplicates a full copy,
+  buys nothing; leave them as they are. An operator that sums many contributions into each entry
+  builds its pattern first instead: keys for the entries' pairs alone, `csr_from_keys`, one entry
+  count readback to cut `columns`, then a row a thread gathering each entry's contributions in the
+  order the triplet sort summed them, through a thread-owned `wp.atomic_add` so the product is
+  rounded before the add (`energies.hessian_energy` / `curved_hessian_energy`, byte-identical to
+  their triplet forms: call peak 6.3 -> 0.7 GB and 5.5 -> 1.0 GB on `dragon`, 0.5x / 0.76x time;
+  `kernels/energies.hessian_energy_rows` records the declined entry-a-thread gather).
 - A scanned `int32` triplet count that sizes buffers is checked for a wrap
   (`kernels/array.flag_wrapped_scan`, read with the total): a total past `2**32` wraps back to a
   small positive count, so its sign alone does not tell (`hessian_energy` on `lucy`, CUDA error

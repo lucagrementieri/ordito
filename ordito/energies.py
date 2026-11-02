@@ -742,13 +742,43 @@ def hessian_energy(
         inputs=[faces, vf_offsets, vf_indices, mass, inverse_mass, counts],
         device=device,
     )
-    n_triplets = _scanned_triplet_count(segment_offsets)
-
-    keys, order = od.array.csr_key_buffers(n_triplets, device)
-    vals = _launch.empty(n_triplets, dtype=dtype, device=device)
-    if n_triplets > 0:
+    # The pattern first: one key per pair of an active vertex's star vertices, sorted into the
+    # rows; the values are then gathered a row a thread in the order a triplet sort would have
+    # summed them (``kernels/energies.hessian_energy_rows``), so no triplet is stored.
+    n_keys = _scanned_triplet_count(segment_offsets)
+    keys, order = od.array.csr_key_buffers(n_keys, device)
+    if n_keys > 0:
         _launch.launch(
-            kernel_energies.HESSIAN_ENERGY_TRIPLETS[dtype],
+            kernel_energies.hessian_energy_keys,
+            dim=n_vertices,
+            inputs=[
+                faces,
+                vf_offsets,
+                vf_indices,
+                inverse_mass,
+                segment_offsets,
+                wp.int32(n_vertices),
+                keys,
+                order,
+            ],
+            device=device,
+        )
+    offsets, key_columns, _starts = od.array.csr_from_keys(
+        keys, order, n_keys, n_vertices, n_vertices
+    )
+    # Host readback: the entry count is known only on the device, and it sizes the operator.
+    n_entries = int(read_scalar(offsets, n_vertices))
+    columns = _launch.empty(n_entries, dtype=wp.int32, device=device)
+    if n_entries > 0:
+        wp.copy(columns, key_columns, count=n_entries)
+    # The key buffers and the key-sized columns go before the values arrive.
+    del keys, order, key_columns, _starts
+    # ``-0.0``: the identity of floating-point addition, so each entry is its contributions' sum
+    # from the first one on.
+    values = _launch.full(n_entries, -0.0, dtype=dtype, device=device)
+    if n_entries > 0:
+        _launch.launch(
+            kernel_energies.HESSIAN_ENERGY_ROWS[dtype],
             dim=n_vertices,
             inputs=[
                 faces,
@@ -757,13 +787,13 @@ def hessian_energy(
                 gradients,
                 areas,
                 inverse_mass,
-                segment_offsets,
-                wp.int32(n_vertices),
+                offsets,
+                columns,
+                values,
             ],
-            outputs=[keys, order, vals],
             device=device,
         )
-    return _compacted(od.array.csr_from_coo_keys(n_vertices, n_vertices, keys, order, vals))
+    return od.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values, nnz=n_entries)
 
 
 def _scanned_triplet_count(segment_offsets: wp.array[wp.int32]) -> int:
@@ -814,9 +844,9 @@ def curved_hessian_energy(
     Assembled as ``Q = D^T M^-1 (L + K) M^-1 D`` over edge-based Crouzeix-Raviart vector elements
     — ``D`` the scalar-to-CR-vector gradient, ``M`` the CR vector mass, ``L`` the CR vector
     Laplacian and ``K`` the curvature correction — but contracted per face in one pass: ``L + K``
-    couples edges within a face only, so each face emits its own 6x6 block sandwiched between its
-    edges' gradient rows (a fixed 144 triplets per face), and no intermediate ``(2 n_edges, ...)``
-    matrix or sparse product exists. Requires an edge-manifold mesh, like the igl original (which
+    couples edges within a face only, so each face contributes its own 6x6 block sandwiched
+    between its edges' gradient rows, and no intermediate ``(2 n_edges, ...)`` matrix or sparse
+    product exists. Requires an edge-manifold mesh, like the igl original (which
     asserts it) — raises ``ValueError`` otherwise; a degenerate face contributes nothing.
 
     Parameters
@@ -847,7 +877,7 @@ def curved_hessian_energy(
     ValueError
         If the mesh is not edge-manifold (some edge is shared by more than two faces), if only
         one of ``unique_edges`` and ``edge_map`` is passed, or if the assembly needs more
-        triplets than ``int32`` indices address (``144 * n_faces``).
+        pattern keys than ``int32`` indices address (``36 * n_faces``).
     RuntimeError
         If ``vertices``, ``faces``, ``unique_edges`` and ``edge_map`` are not all on one
         device.
@@ -884,10 +914,10 @@ def curved_hessian_energy(
     if n_faces == 0:
         return od.array.empty_square_bsr(n_vertices, dtype, device)
 
-    # 144 triplets a face, indexed in ``int32``.
-    if 144 * n_faces > INT32_MAX:
+    # 36 pattern keys a face, indexed in ``int32``.
+    if 36 * n_faces > INT32_MAX:
         raise ValueError(
-            f"curved_hessian_energy writes 144 triplets a face, {144 * n_faces} for {n_faces} "
+            f"curved_hessian_energy writes 36 pattern keys a face, {36 * n_faces} for {n_faces} "
             "faces, past the int32 limit; assemble it from a coarser mesh or in pieces"
         )
     unique_edges, inverse = _edge_numbering(vertices, faces, unique_edges, edge_map)
@@ -930,7 +960,7 @@ def curved_hessian_energy(
     # launch below), and an edge on one is a boundary edge.
     # igl::cr_vector_curvature_correction's kappa scaling, ``angle_defect / angle_sum``, is zero
     # on the boundary (curvature is only corrected at interior vertices) and for a non-positive
-    # angle sum: zeroing the boundary's *sums* gives that zero where the triplet kernel forms the
+    # angle sum: zeroing the boundary's *sums* gives that zero where the row kernel forms the
     # kappa as it reads it, and it forms each edge's inverse mass likewise.
     _launch.launch(
         kernel_energies.zero_at_boundary_edges,
@@ -957,55 +987,55 @@ def curved_hessian_energy(
         device=device,
     )
 
-    n_triplets = 144 * n_faces
-    keys, order = od.array.csr_key_buffers(n_triplets, device)
-    vals = _launch.empty(n_triplets, dtype=dtype, device=device)
+    # The pattern first: 36 keys a face, the pairs of the vertices its edges' gradient rows touch,
+    # sorted into the rows; the values are then gathered a row a thread in the order a triplet
+    # sort would have summed them (``kernels/energies.curved_hessian_rows``).
+    n_keys = 36 * n_faces
+    keys, order = od.array.csr_key_buffers(n_keys, device)
     _launch.launch(
-        kernel_energies.CURVED_HESSIAN_TRIPLETS[dtype],
+        kernel_energies.curved_hessian_keys,
         dim=n_faces,
-        inputs=[
-            vertices,
-            faces,
-            inverse,
-            angles,
-            angle_sums,
-            mass,
-            vertex_slots,
-            par,
-            perp,
-            wp.int32(n_vertices),
-        ],
-        outputs=[keys, order, vals],
+        inputs=[vertices, faces, inverse, vertex_slots, wp.int32(n_vertices), keys, order],
         device=device,
     )
-    return _compacted(od.array.csr_from_coo_keys(n_vertices, n_vertices, keys, order, vals))
-
-
-def _compacted(matrix: odt.BsrMatrix[odt.Block]) -> odt.BsrMatrix[odt.Block]:
-    """
-    Return ``matrix`` with its columns and values cut to its entries when it holds over twice them.
-
-    [`hessian_energy`][ordito.energies.hessian_energy] and
-    [`curved_hessian_energy`][ordito.energies.curved_hessian_energy] sum many contributions
-    into each entry, so the assembled matrix keeps storage for every contribution; the returned
-    operator is cut to what it stores, and the assembly's own buffers are freed. The entry count
-    is read back from the offsets' total.
-    """
-    n_rows = int(matrix.nrow)
-    capacity = int(matrix.columns.size)
-    # Host readback: the stored count is known only on the device, and it sizes the copies.
-    entries = int(read_scalar(matrix.offsets, n_rows))
-    if capacity <= 2 * entries:
-        return matrix
-    device = matrix.columns.device
-    columns = _launch.empty(entries, dtype=wp.int32, device=device)
-    values = _launch.empty(entries, dtype=matrix.values.dtype, device=device)
-    if entries > 0:
-        wp.copy(columns, matrix.columns, count=entries)
-        wp.copy(values, matrix.values, count=entries)
-    return od.array.bsr_from_csr(
-        n_rows, int(matrix.ncol), matrix.offsets, columns, values, nnz=entries
+    offsets, key_columns, _starts = od.array.csr_from_keys(
+        keys, order, n_keys, n_vertices, n_vertices
     )
+    # Host readback: the entry count is known only on the device, and it sizes the operator.
+    n_entries = int(read_scalar(offsets, n_vertices))
+    columns = _launch.empty(n_entries, dtype=wp.int32, device=device)
+    if n_entries > 0:
+        wp.copy(columns, key_columns, count=n_entries)
+    # The key buffers and the key-sized columns go before the values arrive.
+    del keys, order, key_columns, _starts
+    vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    # ``-0.0``: the identity of floating-point addition, so each entry is its contributions' sum
+    # from the first one on.
+    values = _launch.full(n_entries, -0.0, dtype=dtype, device=device)
+    if n_entries > 0:
+        _launch.launch(
+            kernel_energies.CURVED_HESSIAN_ROWS[dtype],
+            dim=n_vertices,
+            inputs=[
+                vertices,
+                faces,
+                inverse,
+                angles,
+                angle_sums,
+                mass,
+                edge_halfedges,
+                vertex_slots,
+                par,
+                perp,
+                vf_offsets,
+                vf_indices,
+                offsets,
+                columns,
+                values,
+            ],
+            device=device,
+        )
+    return od.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values, nnz=n_entries)
 
 
 def crouzeix_raviart_cotmatrix(

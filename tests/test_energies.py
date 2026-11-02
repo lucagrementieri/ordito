@@ -394,9 +394,9 @@ def test_hessian_energies_store_only_their_entries(
     """
     Not a library comparison: storage, not values (``test_hessian_energies_match_igl`` has those).
 
-    Each entry sums many triplets, about sixteen on these meshes, and the assembly keeps a slot
-    for every one; the returned operator is cut to the entries it stores, so ``columns`` and
-    ``values`` end at the offsets' total rather than at the triplet count.
+    The pattern is built from keys before any value, several to an entry; the returned operator
+    is cut to the entries it stores, so ``columns`` and ``values`` end at the offsets' total
+    rather than at the key count.
     """
     _mesh_tm, mesh_wp = sphere_irregular
     energy_od, _energy_igl = _HESSIAN_ENERGIES[energy]
@@ -429,21 +429,21 @@ def test_triplet_count_refuses_a_scan_that_wrapped(device: str) -> None:
     assert exact.numpy()[1:4].tolist() == [3, 3, 7]
 
 
-def test_curved_hessian_energy_refuses_more_triplets_than_int32_addresses(
+def test_curved_hessian_energy_refuses_more_keys_than_int32_addresses(
     icosahedron: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    Not a library comparison: ``144 * n_faces`` past the limit raises before anything is written.
+    Not a library comparison: ``36 * n_faces`` past the limit raises before anything is written.
 
-    The limit is lowered to just under the icosahedron's 2 880 triplets, which reaches the same
-    branch ``lucy``'s 4.0 billion do; at the limit itself the energy assembles.
+    The limit is lowered to just under the icosahedron's 720 pattern keys, which reaches the same
+    branch a mesh of 60 million faces would; at the limit itself the energy assembles.
     """
     _mesh_tm, mesh_wp = icosahedron
-    n_triplets = 144 * (mesh_wp.indices.size // 3)
-    monkeypatch.setattr(od.energies, "INT32_MAX", n_triplets - 1)
+    n_keys = 36 * (mesh_wp.indices.size // 3)
+    monkeypatch.setattr(od.energies, "INT32_MAX", n_keys - 1)
     with pytest.raises(ValueError, match="int32"):
         od.energies.curved_hessian_energy(mesh_wp.points, mesh_wp.indices)
-    monkeypatch.setattr(od.energies, "INT32_MAX", n_triplets)
+    monkeypatch.setattr(od.energies, "INT32_MAX", n_keys)
     assert od.energies.curved_hessian_energy(mesh_wp.points, mesh_wp.indices).shape == (12, 12)
 
 

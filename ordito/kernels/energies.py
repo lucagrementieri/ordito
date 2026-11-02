@@ -490,6 +490,42 @@ def row_vertex_on_boundary(
     return False
 
 
+# The Hessian energy's corner mask covers up to this many corners of a vertex's fan (a valence of
+# 21): past it a star vertex's first-occurrence flag is not kept, and its pattern keys pair each
+# star vertex with every corner, duplicates included, which the key sort folds.
+HESSIAN_MASK_CORNERS = 64
+
+
+@wp.func
+def hessian_star_mask(
+    faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    vf_indices: wp.array[wp.int32],
+    k: wp.int32,
+) -> tuple[wp.uint64, wp.int32]:
+    # The corners of vertex ``k``'s fan that are a star vertex's first occurrence, as bits
+    # ``3 * (a - start) + c`` (corner ``c`` of the ``a``-th face of ``k``'s row), and how many
+    # there are. Bits past ``HESSIAN_MASK_CORNERS`` are counted but not stored.
+    start = vf_offsets[k]
+    end = vf_offsets[k + 1]
+    mask = wp.uint64(0)
+    unique = wp.int32(0)
+    for a in range(start, end):
+        for c in range(3):
+            vertex = faces[vf_indices[a] * 3 + c]
+            seen = wp.bool(False)
+            for a2 in range(start, a + 1):
+                for c2 in range(3):
+                    if not seen and (a2 < a or c2 < c) and faces[vf_indices[a2] * 3 + c2] == vertex:
+                        seen = wp.bool(True)
+            if not seen:
+                unique += 1
+                bit = 3 * (a - start) + c
+                if bit < HESSIAN_MASK_CORNERS:
+                    mask = mask | (wp.uint64(1) << wp.uint64(bit))
+    return mask, unique
+
+
 @wp.kernel
 def hessian_energy_counts(
     faces: wp.array[wp.int32],
@@ -499,19 +535,21 @@ def hessian_energy_counts(
     out_inverse_mass: wp.array[wp.float64],
     out_counts: wp.array[wp.int32],
 ) -> None:
-    # Vertex ``k`` couples every ordered pair of its incident faces, 3 x 3 corners each; a killed
-    # degree of freedom (boundary vertex, zeroed mass) emits nothing. The mass is defined only at
+    # Vertex ``k`` couples every pair of vertices of its star (the vertices of its faces); a
+    # killed degree of freedom (boundary vertex, zeroed mass) couples nothing. Its count is the
+    # pattern keys ``hessian_energy_keys`` writes for those pairs. The mass is defined only at
     # interior vertices, so a boundary vertex (``row_vertex_on_boundary``) inverts as a zero mass.
     # The mass inversion rides in the same launch: the gate reads the inverse it has just written,
-    # which is the value ``hessian_energy_triplets`` gates on.
+    # which is the value ``hessian_energy_keys`` and ``hessian_energy_rows`` gate on.
     k = wp.int32(wp.tid())
     inverse = wp.float64(0.0)
     if not row_vertex_on_boundary(faces, vf_offsets, vf_indices, k):
         inverse = reciprocal_or_zero(mass[k])
     out_inverse_mass[k] = inverse
     if inverse > wp.float64(0.0):
-        degree = vf_offsets[k + 1] - vf_offsets[k]
-        out_counts[k] = 9 * degree * degree
+        corners = 3 * (vf_offsets[k + 1] - vf_offsets[k])
+        _mask, unique = hessian_star_mask(faces, vf_offsets, vf_indices, k)
+        out_counts[k] = unique * wp.where(corners <= HESSIAN_MASK_CORNERS, unique, corners)
     else:
         out_counts[k] = 0
 
@@ -526,52 +564,117 @@ def face_corner_of_vertex(faces: wp.array[wp.int32], face: wp.int32, vertex: wp.
 
 
 @wp.kernel
-def hessian_energy_triplets(
+def hessian_energy_keys(
+    faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    vf_indices: wp.array[wp.int32],
+    inv_mass: wp.array[wp.float64],
+    segment_offsets: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # The Hessian energy's pattern: entry ``(i, j)`` exists where an active vertex ``k`` has both
+    # in its star, which is where ``hessian_energy_rows`` gathers a contribution. One thread per
+    # vertex, one key per pair of its star vertices (first occurrences, ``hessian_star_mask``);
+    # the payload is unread, the values coming from the gather.
+    k = wp.int32(wp.tid())
+    if not (inv_mass[k] > wp.float64(0.0)):
+        return
+    start = vf_offsets[k]
+    end = vf_offsets[k + 1]
+    corners = 3 * (end - start)
+    mask, _unique = hessian_star_mask(faces, vf_offsets, vf_indices, k)
+    cursor = segment_offsets[k]
+    full = corners <= HESSIAN_MASK_CORNERS
+    for p in range(corners):
+        if p < HESSIAN_MASK_CORNERS and (mask >> wp.uint64(p)) & wp.uint64(1) != wp.uint64(0):
+            row = faces[vf_indices[start + p // 3] * 3 + p % 3]
+            for q in range(corners):
+                if not full or (mask >> wp.uint64(q)) & wp.uint64(1) != wp.uint64(0):
+                    column = faces[vf_indices[start + q // 3] * 3 + q % 3]
+                    store_coo_key(cursor, row, column, n_vertices, n_vertices, out_keys, out_order)
+                    cursor += 1
+
+
+@wp.kernel
+def hessian_energy_rows(
     faces: wp.array[wp.int32],
     vf_offsets: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
     gradients: wp.array[wp.vec3d],
     areas: wp.array[wp.float64],
     inv_mass: wp.array[wp.float64],
-    segment_offsets: wp.array[wp.int32],
-    n_vertices: wp.int32,
-    out_keys: wp.array[wp.uint64],
-    out_order: wp.array[wp.int32],
-    out_vals: wp.array[wp.Float],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    out_values: wp.array[wp.Float],
 ) -> None:
     # ``Q = H^T Minv H`` contracted analytically over the 9 component pairs of the stacked
     # Hessian: ``Q_ij = sum_k Minv_k sum_{f,g ni k} A_f A_g (g_fk . g_gk)(g_fi . g_gj)`` with
-    # ``g_fc`` the hat-function gradient of corner ``c`` in face ``f``. One thread per vertex
-    # ``k``; the per-thread work is quadratic in the vertex's valence.
-    k = wp.int32(wp.tid())
-    weight = inv_mass[k]
-    # The negation of ``hessian_energy_counts``'s own gate -- see ``sandwich_row_triplets`` for why
-    # this must not be an independent ``<=``.
-    if not (weight > wp.float64(0.0)):
+    # ``g_fc`` the hat-function gradient of corner ``c`` in face ``f``. One thread per row ``i``,
+    # over ``hessian_energy_keys``' pattern, its values arriving at ``-0.0``, the identity of
+    # floating-point addition: the vertices ``k`` sharing a face with ``i`` in ascending order,
+    # then ``k``'s face pairs ``(f, g)`` in its vertex-face row's order, the corner ``i`` holds in
+    # ``f`` and each corner of ``g``, each contribution searched into the row. That is the order
+    # an entry's contributions held when one thread a ``k`` emitted every corner pair of every
+    # pair of ``k``'s faces as a triplet and the triplets' sort summed each run, so each entry is
+    # that sum bit for bit, with no triplet stored.
+    #
+    # Declined: a thread an entry, walking the same order for its own ``(i, j)`` (no search, 19x
+    # the threads): 2.0x this kernel's call on ``dragon``, 1.24x on ``bunny``, each entry walking
+    # its row's ring again and adding through its own atomic.
+    i = wp.int32(wp.tid())
+    row_start = offsets[i]
+    row_end = offsets[i + 1]
+    if row_start == row_end:
         return
-    start = vf_offsets[k]
-    end = vf_offsets[k + 1]
-    cursor = segment_offsets[k]
-    for a in range(start, end):
-        f = vertex_faces[a]
-        corner_f = face_corner_of_vertex(faces, f, k)
-        gradient_fk = gradients[f * 3 + corner_f]
-        left = weight * areas[f]
-        for b in range(start, end):
-            g = vertex_faces[b]
-            corner_g = face_corner_of_vertex(faces, g, k)
-            pair = left * areas[g] * wp.dot(gradient_fk, gradients[g * 3 + corner_g])
-            for ci in range(3):
-                row = faces[f * 3 + ci]
-                gradient_fi = gradients[f * 3 + ci]
-                for cj in range(3):
-                    store_coo_key(
-                        cursor, row, faces[g * 3 + cj], n_vertices, n_vertices, out_keys, out_order
-                    )
-                    out_vals[cursor] = type(out_vals[0])(
-                        pair * wp.dot(gradient_fi, gradients[g * 3 + cj])
-                    )
-                    cursor += 1
+    ring_start = vf_offsets[i]
+    ring_end = vf_offsets[i + 1]
+    previous = wp.int32(-1)
+    while True:
+        # The next vertex ``k`` above ``previous`` sharing a face with ``i`` (``i`` included).
+        k = wp.int32(-1)
+        for a in range(ring_start, ring_end):
+            for c in range(3):
+                candidate = faces[vertex_faces[a] * 3 + c]
+                if candidate > previous and (k < 0 or candidate < k):
+                    k = candidate
+        if k < 0:
+            break
+        previous = k
+        weight = inv_mass[k]
+        if not (weight > wp.float64(0.0)):
+            continue
+        start = vf_offsets[k]
+        end = vf_offsets[k + 1]
+        for a in range(start, end):
+            f = vertex_faces[a]
+            if faces[f * 3] != i and faces[f * 3 + 1] != i and faces[f * 3 + 2] != i:
+                continue
+            gradient_fk = gradients[f * 3 + face_corner_of_vertex(faces, f, k)]
+            left = weight * areas[f]
+            for b in range(start, end):
+                g = vertex_faces[b]
+                pair = (
+                    left
+                    * areas[g]
+                    * wp.dot(gradient_fk, gradients[g * 3 + face_corner_of_vertex(faces, g, k)])
+                )
+                for ci in range(3):
+                    if faces[f * 3 + ci] == i:
+                        gradient_fi = gradients[f * 3 + ci]
+                        for cj in range(3):
+                            slot = wp.lower_bound(columns, row_start, row_end, faces[g * 3 + cj])
+                            # An atomic though the row is this thread's alone: the product is
+                            # rounded before it is added, where ``acc + pair * dot`` would be
+                            # one fused multiply-add on CUDA and differ in the last bits.
+                            wp.atomic_add(
+                                out_values,
+                                slot,
+                                type(out_values[0])(
+                                    pair * wp.dot(gradient_fi, gradients[g * 3 + cj])
+                                ),
+                            )
 
 
 @wp.kernel
@@ -780,39 +883,31 @@ def halfedge_orientation(faces: wp.array[wp.int32], halfedge: wp.int32) -> wp.fl
     return wp.float64(-1.0)
 
 
-@wp.kernel
-def curved_hessian_triplets(
+@wp.func
+def curved_face_terms(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     inverse: wp.array[wp.int32],
     angles: wp.array2d[wp.float64],
     angle_sums: wp.array[wp.float64],
     mass: wp.array[wp.float64],
-    edge_vertex_slots: wp.array2d[wp.int32],
-    par: wp.array2d[wp.float64],
-    perp: wp.array2d[wp.float64],
-    n_vertices: wp.int32,
-    out_keys: wp.array[wp.uint64],
-    out_order: wp.array[wp.int32],
-    out_vals: wp.array[wp.Float],
-) -> None:
-    # Per face, the sandwich ``D^T Mi (L + K) Mi D`` restricted to this face's 6x6 block of
-    # ``L + K`` (both operators couple edges within a face only): 9 ordered edge-slot pairs, each a
-    # 2x2 block over the parallel/perpendicular components, contracted against the two edges' CR
-    # gradient rows (up to 4 vertices each) -> a fixed 144 triplets per face, zero-padded.
-    f = wp.int32(wp.tid())
+    f: wp.int32,
+) -> tuple[wp.bool, wp.vec3i, wp.vec3d, wp.vec3d, wp.vec3d, wp.vec3d]:
+    # Face ``f``'s share of the sandwich ``D^T Mi (L + K) Mi D``, restricted to its 6x6 block of
+    # ``L + K`` (both operators couple edges within a face only): whether it contributes (a
+    # degenerate face does not), its three edges in igl's slot order, their inverse lumped masses,
+    # and each slot's diagonal, parallel-parallel and parallel-perpendicular terms.
     zero = wp.float64(0.0)
-    base_out = f * 144
     l2_0, l2_1, l2_2, dbl_area = triangle_geometry_f64(vertices, faces, f)
     if dbl_area <= zero:
-        # Padding must be a hole, not a value: -1 is out of range for ``bsr_from_triplets``'s
-        # ``(n_vertices, n_vertices)`` build and is silently dropped, where row/col 0 would collide
-        # with every other degenerate face (and every absent edge-vertex slot below) on that one
-        # real matrix entry and serialize the assembly's duplicate accumulation there.
-        for empty in range(144):
-            store_coo_key(base_out + empty, -1, -1, n_vertices, n_vertices, out_keys, out_order)
-            out_vals[base_out + empty] = type(out_vals[0])(0.0)
-        return
+        return (
+            wp.bool(False),
+            wp.vec3i(0),
+            wp.vec3d(0.0),
+            wp.vec3d(0.0),
+            wp.vec3d(0.0),
+            wp.vec3d(0.0),
+        )
     # l2_0/l2_1/l2_2: column e opposite corner e (the igl intrinsic convention).
     # Curvature ingredients per corner c: scaledKappa(F(f,c)) * theta(f,c), the scaled kappa formed
     # from the vertex's angle sum as it is read (the wrapper zeroes the boundary's sums, which
@@ -824,62 +919,185 @@ def curved_hessian_triplets(
     oh0 = halfedge_orientation(faces, f * 3 + 0)
     oh1 = halfedge_orientation(faces, f * 3 + 1)
     oh2 = halfedge_orientation(faces, f * 3 + 2)
-    eid0 = inverse[f * 3 + 1]
-    eid1 = inverse[f * 3 + 2]
-    eid2 = inverse[f * 3 + 0]
+    eids = wp.vec3i(inverse[f * 3 + 1], inverse[f * 3 + 2], inverse[f * 3 + 0])
     # The three edges' inverse lumped masses, each formed once from the mass diagonal.
-    im0 = reciprocal_or_zero(mass[eid0])
-    im1 = reciprocal_or_zero(mass[eid1])
-    im2 = reciprocal_or_zero(mass[eid2])
+    ims = wp.vec3d(
+        reciprocal_or_zero(mass[eids[0]]),
+        reciprocal_or_zero(mass[eids[1]]),
+        reciprocal_or_zero(mass[eids[2]]),
+    )
     diag0, pp0, pq0 = curved_pair_terms(l2_0, l2_1, l2_2, dbl_area, oh0 * oh1, kv1, kv2, kv0)
     diag1, pp1, pq1 = curved_pair_terms(l2_1, l2_2, l2_0, dbl_area, oh1 * oh2, kv2, kv0, kv1)
     diag2, pp2, pq2 = curved_pair_terms(l2_2, l2_0, l2_1, dbl_area, oh2 * oh0, kv0, kv1, kv2)
-    for alpha in range(3):
-        edge_a = select3(eid0, eid1, eid2, alpha)
-        mi_a = select3(im0, im1, im2, alpha)
-        for beta in range(3):
-            edge_b = select3(eid0, eid1, eid2, beta)
-            mimi = mi_a * select3(im0, im1, im2, beta)
-            b_pp = zero
-            b_pq = zero
-            b_qp = zero
-            if alpha == beta:
-                b_pp = select3(diag0, diag1, diag2, alpha)
-            elif beta == (alpha + 2) % 3:
-                b_pp = select3(pp0, pp1, pp2, alpha)
-                b_pq = select3(pq0, pq1, pq2, alpha)
-                b_qp = -b_pq
-            else:
-                b_pp = select3(pp0, pp1, pp2, beta)
-                b_qp = select3(pq0, pq1, pq2, beta)
-                b_pq = -b_qp
-            pair_out = base_out + (alpha * 3 + beta) * 16
+    return (
+        wp.bool(True),
+        eids,
+        ims,
+        wp.vec3d(diag0, diag1, diag2),
+        wp.vec3d(pp0, pp1, pp2),
+        wp.vec3d(pq0, pq1, pq2),
+    )
+
+
+@wp.func
+def curved_pair_block(
+    diag: wp.vec3d, pp: wp.vec3d, pq: wp.vec3d, alpha: wp.int32, beta: wp.int32
+) -> tuple[wp.float64, wp.float64, wp.float64]:
+    # The 2x2 block ``(pp, pq, qp)`` of ``L + K`` coupling edge slots ``alpha`` and ``beta`` of a
+    # face, over the parallel / perpendicular components (``curved_face_terms``' slot terms).
+    zero = wp.float64(0.0)
+    b_pp = zero
+    b_pq = zero
+    b_qp = zero
+    if alpha == beta:
+        b_pp = diag[alpha]
+    elif beta == (alpha + 2) % 3:
+        b_pp = pp[alpha]
+        b_pq = pq[alpha]
+        b_qp = -b_pq
+    else:
+        b_pp = pp[beta]
+        b_qp = pq[beta]
+        b_pq = -b_qp
+    return b_pp, b_pq, b_qp
+
+
+# The at most six vertices a face's three edges' gradient rows touch, in registers.
+vec6i = wp.types.vector(length=6, dtype=wp.int32)
+
+
+@wp.kernel
+def curved_hessian_keys(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    inverse: wp.array[wp.int32],
+    edge_vertex_slots: wp.array2d[wp.int32],
+    n_vertices: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # The curved Hessian's pattern: face ``f`` couples every pair of the vertices its three edges'
+    # Crouzeix-Raviart gradient rows touch (each edge's endpoints and the vertices opposite it, at
+    # most six), which is where ``curved_hessian_rows`` gathers a contribution. A fixed 36 keys a
+    # face, the pairs past the face's own count and a degenerate face's all the sentinel; the
+    # payload is unread, the values coming from the gather.
+    f = wp.int32(wp.tid())
+    base_out = f * 36
+    _l2_0, _l2_1, _l2_2, dbl_area = triangle_geometry_f64(vertices, faces, f)
+    star = vec6i()
+    count = wp.int32(0)
+    if dbl_area > wp.float64(0.0):
+        for alpha in range(3):
+            edge = inverse[f * 3 + (alpha + 1) % 3]
             for u_slot in range(4):
-                row = edge_vertex_slots[edge_a, u_slot]
-                par_u = par[edge_a, u_slot]
-                perp_u = perp[edge_a, u_slot]
-                for v_slot in range(4):
-                    col = edge_vertex_slots[edge_b, v_slot]
-                    position = pair_out + u_slot * 4 + v_slot
-                    value = zero
-                    # An absent slot (a boundary edge's missing second incident face) pads with an
-                    # out-of-range row/col rather than 0 -- see the degenerate-face branch above.
-                    out_row = -1
-                    out_col = -1
-                    if row >= 0 and col >= 0:
-                        par_v = par[edge_b, v_slot]
-                        perp_v = perp[edge_b, v_slot]
-                        value = mimi * (
-                            b_pp * (par_u * par_v + perp_u * perp_v)
-                            + b_pq * par_u * perp_v
-                            + b_qp * perp_u * par_v
-                        )
-                        out_row = row
-                        out_col = col
-                    store_coo_key(
-                        position, out_row, out_col, n_vertices, n_vertices, out_keys, out_order
-                    )
-                    out_vals[position] = type(out_vals[0])(value)
+                vertex = edge_vertex_slots[edge, u_slot]
+                seen = vertex < 0
+                for p in range(6):
+                    if p < count and star[p] == vertex:
+                        seen = wp.bool(True)
+                if not seen:
+                    for p in range(6):
+                        if p == count:
+                            star[p] = vertex
+                    count += 1
+    for p in range(6):
+        for q in range(6):
+            row = wp.int32(-1)
+            column = wp.int32(-1)
+            if p < count and q < count:
+                row = star[p]
+                column = star[q]
+            store_coo_key(
+                base_out + p * 6 + q, row, column, n_vertices, n_vertices, out_keys, out_order
+            )
+
+
+@wp.kernel
+def curved_hessian_rows(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    inverse: wp.array[wp.int32],
+    angles: wp.array2d[wp.float64],
+    angle_sums: wp.array[wp.float64],
+    mass: wp.array[wp.float64],
+    edge_halfedges: wp.array2d[wp.int32],
+    edge_vertex_slots: wp.array2d[wp.int32],
+    par: wp.array2d[wp.float64],
+    perp: wp.array2d[wp.float64],
+    vf_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    out_values: wp.array[wp.Float],
+) -> None:
+    # One thread per row ``i`` of ``curved_hessian_keys``' pattern, its values arriving at
+    # ``-0.0``, the identity of floating-point addition. Row ``i`` takes from a face that holds
+    # ``i`` or lies across an edge of one that does (an edge's gradient row touches the vertices of
+    # its two faces; the mesh is edge-manifold), in ascending face order, then each face's ordered
+    # edge-slot pairs ``(alpha, beta)``, the slot of edge ``alpha`` holding ``i`` and each slot of
+    # edge ``beta``, each contribution searched into the row. That is the order an entry's
+    # contributions held when one thread a face emitted its 144 triplets and their sort summed
+    # each run, so each entry is that sum bit for bit, with no triplet stored.
+    i = wp.int32(wp.tid())
+    row_start = offsets[i]
+    row_end = offsets[i + 1]
+    if row_start == row_end:
+        return
+    ring_start = vf_offsets[i]
+    ring_end = vf_offsets[i + 1]
+    previous = wp.int32(-1)
+    while True:
+        # The next face above ``previous`` among those at ``i`` and those across their edges.
+        f = wp.int32(-1)
+        for a in range(ring_start, ring_end):
+            h = vertex_faces[a]
+            if h > previous and (f < 0 or h < f):
+                f = h
+            for c in range(3):
+                edge = inverse[h * 3 + c]
+                for side in range(2):
+                    halfedge = edge_halfedges[edge, side]
+                    if halfedge >= 0:
+                        across = halfedge // 3
+                        if across > previous and (f < 0 or across < f):
+                            f = across
+        if f < 0:
+            break
+        previous = f
+        valid, eids, ims, diag, pp, pq = curved_face_terms(
+            vertices, faces, inverse, angles, angle_sums, mass, f
+        )
+        if not valid:
+            continue
+        for alpha in range(3):
+            edge_a = eids[alpha]
+            mi_a = ims[alpha]
+            for beta in range(3):
+                edge_b = eids[beta]
+                mimi = mi_a * ims[beta]
+                b_pp, b_pq, b_qp = curved_pair_block(diag, pp, pq, alpha, beta)
+                for u_slot in range(4):
+                    if edge_vertex_slots[edge_a, u_slot] == i:
+                        par_u = par[edge_a, u_slot]
+                        perp_u = perp[edge_a, u_slot]
+                        for v_slot in range(4):
+                            col = edge_vertex_slots[edge_b, v_slot]
+                            if col >= 0:
+                                par_v = par[edge_b, v_slot]
+                                perp_v = perp[edge_b, v_slot]
+                                value = mimi * (
+                                    b_pp * (par_u * par_v + perp_u * perp_v)
+                                    + b_pq * par_u * perp_v
+                                    + b_qp * perp_u * par_v
+                                )
+                                # An atomic though the row is this thread's alone: each
+                                # contribution is rounded before it is added, as the triplets'
+                                # run sum added them, rather than fused into the add.
+                                wp.atomic_add(
+                                    out_values,
+                                    wp.lower_bound(columns, row_start, row_end, col),
+                                    type(out_values[0])(value),
+                                )
 
 
 # The "no further column" sentinel of ``crouzeix_raviart_next_column``.
@@ -1228,8 +1446,8 @@ CROUZEIX_RAVIART_MASS_DIAG: OverloadTable
 CROUZEIX_RAVIART_CSR: OverloadTable
 SANDWICH_ROW_COUNTS: OverloadTable
 SANDWICH_ROW_TRIPLETS: OverloadTable
-HESSIAN_ENERGY_TRIPLETS: OverloadTable
-CURVED_HESSIAN_TRIPLETS: OverloadTable
+HESSIAN_ENERGY_ROWS: OverloadTable
+CURVED_HESSIAN_ROWS: OverloadTable
 LSCM_LAPLACIAN_ROWS_AND_COUNTS: OverloadTable
 
 
@@ -1237,7 +1455,7 @@ def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global CROUZEIX_RAVIART_MASS_DIAG, CROUZEIX_RAVIART_CSR
     global SANDWICH_ROW_COUNTS, SANDWICH_ROW_TRIPLETS
-    global HESSIAN_ENERGY_TRIPLETS, CURVED_HESSIAN_TRIPLETS, LSCM_LAPLACIAN_ROWS_AND_COUNTS
+    global HESSIAN_ENERGY_ROWS, CURVED_HESSIAN_ROWS, LSCM_LAPLACIAN_ROWS_AND_COUNTS
     i32 = wp.array[wp.int32]
     CROUZEIX_RAVIART_MASS_DIAG = OverloadTable(
         crouzeix_raviart_mass_diag,
@@ -1282,8 +1500,8 @@ def _register_overloads() -> None:
             for d in _MATRIX_DTYPES
         },
     )
-    HESSIAN_ENERGY_TRIPLETS = OverloadTable(
-        hessian_energy_triplets,
+    HESSIAN_ENERGY_ROWS = OverloadTable(
+        hessian_energy_rows,
         {
             d: [
                 i32,
@@ -1293,16 +1511,14 @@ def _register_overloads() -> None:
                 wp.array[wp.float64],
                 wp.array[wp.float64],
                 i32,
-                wp.int32,
-                wp.array[wp.uint64],
                 i32,
                 wp.array[d],
             ]
             for d in _MATRIX_DTYPES
         },
     )
-    CURVED_HESSIAN_TRIPLETS = OverloadTable(
-        curved_hessian_triplets,
+    CURVED_HESSIAN_ROWS = OverloadTable(
+        curved_hessian_rows,
         {
             d: [
                 wp.array[wp.vec3],
@@ -1312,10 +1528,12 @@ def _register_overloads() -> None:
                 wp.array[wp.float64],
                 wp.array[wp.float64],
                 wp.array2d[wp.int32],
+                wp.array2d[wp.int32],
                 wp.array2d[wp.float64],
                 wp.array2d[wp.float64],
-                wp.int32,
-                wp.array[wp.uint64],
+                i32,
+                i32,
+                i32,
                 i32,
                 wp.array[d],
             ]
