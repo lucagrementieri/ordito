@@ -696,9 +696,9 @@ def crossing_slot_flags(
     # The narrow-phase verdict of every broad-phase slot, the table's and the overflow tail's, as
     # a bit a slot (``out_bits``, zeroed by the caller; ``kernel_array.store_ballot_bit``): the
     # table is ``max_hits`` slots a query face, mostly empty, and a 0 / 1 ``int32`` flag a slot was
-    # the call's largest buffer. ``with_segment`` (warp-uniform) additionally rejects a pair whose intersection
-    # segment is degenerate, which is ``mesh_with_mesh``'s question; ``mesh_collision_pairs`` asks
-    # only whether the faces cross.
+    # the call's largest buffer. ``with_segment`` (warp-uniform) additionally rejects a pair whose
+    # intersection segment is degenerate, which is ``mesh_with_mesh``'s question;
+    # ``mesh_collision_pairs`` asks only whether the faces cross.
     #
     # ``triangle_intersection_segment`` recomputes each pair's normals, edge vectors and
     # plane-distance projections that ``triangles_intersect`` already derived; sharing them would
