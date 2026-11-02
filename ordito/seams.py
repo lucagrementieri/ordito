@@ -126,30 +126,43 @@ def crease_edges(
 
     # The halfedge mates classify every edge: an interior edge is a pair -- ``face_adjacency``'s
     # row -- and a boundary edge a halfedge with no mate, so both classes are flagged off the one
-    # pairing, numbered by one scan of the flag table, creases first, each class in ascending key
-    # order: read in the key sort's order where the mates came from it, else only the flagged
-    # halfedges sorted. A key is below ``n_vertices ** 2``, so only
-    # those bits are sorted.
+    # pairing, a bit a halfedge, numbered by one ranking of the bitmask, creases first, each class
+    # in ascending key order: read in the key sort's order where the mates came from it, else only
+    # the flagged halfedges sorted. A key is below ``n_vertices ** 2``, so only those bits are
+    # sorted.
     n_vertices = vertices.size
     n = 3 * n_faces
     key_order = None
     if mates is None:
         mates, key_order = od.halfedge.halfedge_mates(faces, n_vertices, return_key_order=True)
-    flags = odt.empty_2d((2 if include_boundary else 1, n), wp.int32, device=device)
+    row_words = (n + 31) // 32
+    n_words = (2 if include_boundary else 1) * row_words
+    # The bits, then their words' populations, which the flagging launch adds and the scan ranks.
+    buffer = _launch.zeros(2 * n_words, dtype=wp.int32, device=device)
+    words = _launch.view_as(_launch.view(buffer, 0, n_words), wp.uint32)
+    word_ranks = _launch.view(buffer, n_words, 2 * n_words)
     _launch.launch(
         kernel_seams.crease_flags,
         dim=n,
-        inputs=[vertices, faces, mates, key_order, wp.float32(math.radians(angle)), flags],
+        inputs=[
+            vertices,
+            faces,
+            mates,
+            key_order,
+            wp.float32(math.radians(angle)),
+            32 * row_words,
+            words,
+            word_ranks,
+        ],
         device=device,
     )
-    inclusive = flags.flatten()
-    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    _launch.array_scan(word_ranks, out_array=word_ranks, inclusive=True)
     # Sizes the output: the one host readback.
-    n_edges = int(read_scalar(inclusive))
+    n_edges = int(read_scalar(word_ranks))
     edges = odt.empty_2d((n_edges, 2), wp.int32, device=device)
     if n_edges > 0:
         halfedges = od.halfedge.key_ordered_halfedges(
-            faces, inclusive, n_edges, key_order=key_order, n_vertices=n_vertices
+            faces, words, word_ranks, n_edges, key_order=key_order, n_vertices=n_vertices
         )
         _launch.launch(
             kernel_seams.emit_crease_edges,

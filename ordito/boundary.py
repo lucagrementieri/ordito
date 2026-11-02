@@ -1315,7 +1315,8 @@ class _BoundaryHalfedges:
         self._sorted_keys: wp.array[wp.uint64] | None = None
         # Where the pairing sorts here, the sort's free upper halves: ``(n,)`` from the payload's,
         # which takes the mates, and ``(2 * n,)`` ``int32`` from the keys', which takes the
-        # unscanned-census flags and the successor tails. Each would be an allocation of its own.
+        # uncensused bits and their ranks, then the successor tails. Each would be an allocation of
+        # its own.
         self._spare_order: wp.array[wp.int32] | None = None
         self._spare_keys: wp.array[wp.int32] | None = None
         if mates is not None:
@@ -1334,7 +1335,9 @@ class _BoundaryHalfedges:
                 self.key_order = _launch.view(order, 0, n)
                 self._spare_order = _launch.view(order, n, 2 * n)
                 self._spare_keys = _launch.view_as(_launch.view(keys, n, 2 * n), wp.int32)
-        self._inclusive: wp.array[wp.int32] | None = None
+        # One bit a flag position, and the words' ranks (``array.bit_ranks``' table).
+        self._words: wp.array[wp.uint32] | None = None
+        self._ranks: wp.array[wp.int32] | None = None
         self._degree_scratch: wp.array[wp.int32] | None = None
         self._count = 0
         self.defects = (False, False)
@@ -1347,25 +1350,31 @@ class _BoundaryHalfedges:
         degree census runs in the flagging launch and its seam and pinch bits come back with the
         total, into ``defects``.
         """
-        if self._inclusive is None:
+        if self._ranks is None:
             device = self.faces.device
             n = self.n
-            degrees: odt.Array2dInt32 | None = None
+            n_words = (n + 31) // 32
+            # One zeroed buffer: the bits, their ranks, and with the census its two defect bits and
+            # the ``(n_vertices, 2)`` degree table after those -- one allocation, and the total and
+            # both bits adjacent for the single readback.
+            census_size = 0 if census is None else 2 + 2 * census
             if census is None and self._spare_keys is not None:
-                flags = _launch.view(self._spare_keys, 0, n)
-            elif census is None:
-                flags = _launch.empty(n, dtype=wp.int32, device=device)
+                # The sort's free half holds them (``2 * n_words <= n``), below the tails.
+                buffer = _launch.view(self._spare_keys, 0, 2 * n_words)
+                _launch.zero_(buffer)
             else:
-                n_vertices = census
-                # One zeroed buffer: the scanned flags, the census' two defect bits beyond them,
-                # and the ``(n_vertices, 2)`` degree table after those -- one allocation, and the
-                # total and both bits adjacent for the single readback.
-                flags = _launch.zeros(n + 2 + 2 * n_vertices, dtype=wp.int32, device=device)
-                degrees = odt.as_array2d(
-                    odt.as_dense(flags[n + 2 :]).reshape((n_vertices, 2)), wp.int32
-                )
+                buffer = _launch.zeros(2 * n_words + census_size, dtype=wp.int32, device=device)
+            words = _launch.view_as(_launch.view(buffer, 0, n_words), wp.uint32)
+            # The words' populations, added by the marking launch and scanned here into their ranks.
+            ranks = _launch.view(buffer, n_words, 2 * n_words)
+            degrees: odt.Array2dInt32 | None = None
+            defects: wp.array[wp.int32] | None = None
+            if census is not None:
+                defects = _launch.view(buffer, 2 * n_words, 2 * n_words + 2)
+                degree_table = _launch.view(buffer, 2 * n_words + 2, 2 * n_words + census_size)
+                degrees = odt.as_array2d(degree_table.reshape((census, 2)), wp.int32)
                 # Dead once the census bits are read: ``successors`` refills it as its table.
-                self._degree_scratch = _launch.view(flags, n + 2, n + 2 + 2 * n_vertices)
+                self._degree_scratch = degree_table
             if self._mates is None:
                 assert self._sorted_keys is not None
                 assert self._spare_order is not None
@@ -1378,8 +1387,10 @@ class _BoundaryHalfedges:
                         self.key_order,
                         self.faces,
                         degrees,
+                        defects,
                         self._mates,
-                        flags,
+                        words,
+                        ranks,
                     ],
                     device=device,
                 )
@@ -1387,18 +1398,26 @@ class _BoundaryHalfedges:
                 _launch.launch(
                     kernel_boundary.mark_boundary_halfedges,
                     dim=n,
-                    inputs=[self._mates, self.key_order, self.faces, degrees, flags],
+                    inputs=[
+                        self._mates,
+                        self.key_order,
+                        self.faces,
+                        degrees,
+                        defects,
+                        words,
+                        ranks,
+                    ],
                     device=device,
                 )
-            inclusive = flags if census is None else odt.as_dense(flags[:n])
-            _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
-            self._inclusive = inclusive
+            _launch.array_scan(ranks, out_array=ranks, inclusive=True)
+            self._words = words
+            self._ranks = ranks
             # Sizes every output below: the one host readback of the boundary detection, which
             # carries the census' two bits alongside the total when there is one.
             if census is None:
-                self._count = int(read_scalar(inclusive))
+                self._count = int(read_scalar(ranks))
             else:
-                total, seam, pinch = read_values(flags, n - 1, 3)
+                total, seam, pinch = read_values(buffer, 2 * n_words - 1, 3)
                 self._count = total
                 self.defects = (bool(seam), bool(pinch))
         return self._count
@@ -1409,17 +1428,18 @@ class _BoundaryHalfedges:
         k = self.count()
         out_edges = odt.empty_2d((k, 2), wp.int32, device=device)
         if k > 0 and self.key_order is not None:
-            # The flags were scanned in key order: the rows are stored at their ranks directly.
+            # The bits were ranked in key order: the rows are stored at their ranks directly.
             _launch.launch(
                 kernel_boundary.emit_key_ordered_boundary_edges,
                 dim=self.n,
-                inputs=[self._inclusive, self.key_order, self.faces, sort_pair, out_edges],
+                inputs=[self._words, self._ranks, self.key_order, self.faces, sort_pair, out_edges],
                 device=device,
             )
         elif k > 0:
-            assert self._inclusive is not None
+            assert self._words is not None
+            assert self._ranks is not None
             halfedges = od.halfedge.key_ordered_halfedges(
-                self.faces, self._inclusive, k, key_order=self.key_order, n_vertices=self.n_vertices
+                self.faces, self._words, self._ranks, k, n_vertices=self.n_vertices
             )
             _launch.launch(
                 kernel_boundary.emit_boundary_edges,
@@ -1457,7 +1477,7 @@ class _BoundaryHalfedges:
         _launch.launch(
             kernel_boundary.emit_boundary_successors,
             dim=self.n,
-            inputs=[self._inclusive, self.key_order, self.faces, twins, tails, next_node],
+            inputs=[self._words, self._ranks, self.key_order, self.faces, twins, tails, next_node],
             device=device,
         )
         return tails, next_node

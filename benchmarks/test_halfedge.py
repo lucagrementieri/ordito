@@ -141,16 +141,21 @@ def test_key_ordered_halfedges(bench_case: BenchCase) -> None:
     One halfedge per undirected edge (origin below destination), read back in edge-key order.
 
     One class with no ``key_order`` given, so the row is a compaction plus the key sort of half the
-    halfedges: the ``edges_unique`` row order reached from a flag scan. The scan is an input,
-    built on the host outside the timed region. Ordito only: the test oracle is NumPy.
+    halfedges: the ``edges_unique`` row order reached from a ranked bitmask. The bitmask and its
+    ranks are inputs, built outside the timed region. Ordito only: the test oracle is NumPy.
     """
     faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
     faces_np = bench_case.faces_np
     flags_np = (faces_np < faces_np[:, [1, 2, 0]]).reshape(-1)
-    inclusive_np = np.cumsum(flags_np, dtype=np.int32)
-    count = int(inclusive_np[-1])
-    inclusive = wp.array(inclusive_np, dtype=wp.int32, device=bench_case.device)
+    count = int(flags_np.sum())
+    padded_np = np.zeros(-(-flags_np.size // 32) * 32, dtype=bool)
+    padded_np[: flags_np.size] = flags_np
+    words_np = np.packbits(padded_np, bitorder="little").view("<u4").astype(np.uint32)
+    words = wp.array(words_np, dtype=wp.uint32, device=bench_case.device)
+    word_ranks = od.array.bit_ranks(words)
     halfedges = bench_case.run(
-        lambda: od.halfedge.key_ordered_halfedges(faces, inclusive, count, n_vertices=n_vertices)
+        lambda: od.halfedge.key_ordered_halfedges(
+            faces, words, word_ranks, count, n_vertices=n_vertices
+        )
     )
     assert halfedges.shape == (count,)

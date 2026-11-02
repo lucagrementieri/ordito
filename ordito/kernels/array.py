@@ -1792,6 +1792,18 @@ def bit_rank(words: wp.array[wp.uint32], word_ranks: wp.array[wp.int32], p: wp.i
     return word_ranks[p >> 5] - popcount32(word) + popcount32(word & below)
 
 
+@wp.func
+def bit_slot(
+    words: wp.array[wp.uint32], word_ranks: wp.array[wp.int32], p: wp.int32
+) -> tuple[wp.int32, wp.bool]:
+    # ``scanned_count`` over a ranked bitmask: bit ``p``'s compacted slot (``bit_rank``) and whether
+    # it is set, from one load of its word.
+    word = words[p >> 5]
+    bit = wp.uint32(1) << wp.uint32(p & 31)
+    below = word_ranks[p >> 5] - popcount32(word) + popcount32(word & (bit - wp.uint32(1)))
+    return below, (word & bit) != wp.uint32(0)
+
+
 # ``wp.map`` has the same lazy-instantiation property ``_register_overloads`` exists for, and the
 # same fix: a ``wp.map(op, ...)`` call generates a module named ``map_<unqualified op name>``, each
 # distinct *call signature* forks its hash, and a module's hash covers the kernels instantiated in
@@ -2052,27 +2064,48 @@ def append_slot(counter: wp.array[wp.int32], index: wp.int32) -> wp.int32: ...
 # thread ``index`` is slot ``index`` of a dense 1-D domain: on CUDA the converged lanes of a warp
 # hold consecutive slots of one word (lane ``index & 31``, a launch's threads coming in warps of
 # 32), so their bits are one ballot and the lowest lane ors the word in with one atomic; the CPU
-# device ors each set bit. A 0/1 ``int32`` verdict a slot is 32 times the bytes for the same scan.
-_STORE_BALLOT_BIT = """
+# device, which runs a launch's threads one after another, ors every bit in, set or not, with no
+# branch (an ``if (bit)`` over a random mask cost ``selection.region_boundary_edges``' flagging
+# 1.8x on the CPU). A 0/1 ``int32`` verdict a slot is 32 times the bytes for the same scan.
+# The counted form also adds the ballot's population into ``word_counts[index >> 5]`` (zeroed by
+# the caller), so an inclusive scan of the counts in place is ``array.bit_ranks``' table with no
+# ``popcount32`` pass; lanes that diverged ballot separately and both add.
+_BALLOT_BIT_TEMPLATE = """
 #if defined(__CUDA_ARCH__)
 const unsigned active = __activemask();
 const unsigned word = __ballot_sync(active, bit);
 if ((int)(threadIdx.x & 31u) == __ffs(active) - 1 && word != 0u) {
     atomicOr(
         (unsigned int*)wp::data_at_byte_offset(words, wp::byte_offset(words, index >> 5)), word);
+    COUNT_CUDA
 }
 #else
-if (bit) {
-    wp::atomic_or(
-        wp::data_at_byte_offset(words, wp::byte_offset(words, index >> 5)),
-        (wp::uint32)(1u << (index & 31)));
-}
+wp::atomic_or(
+    wp::data_at_byte_offset(words, wp::byte_offset(words, index >> 5)),
+    (wp::uint32)((unsigned)bit << (index & 31)));
+COUNT_CPU
 #endif
 """
+_STORE_BALLOT_BIT = _BALLOT_BIT_TEMPLATE.replace("COUNT_CUDA", "").replace("COUNT_CPU", "")
+_STORE_COUNTED_BALLOT_BIT = _BALLOT_BIT_TEMPLATE.replace(
+    "COUNT_CUDA",
+    "atomicAdd((int*)wp::data_at_byte_offset(word_counts, "
+    "wp::byte_offset(word_counts, index >> 5)), __popc(word));",
+).replace(
+    "COUNT_CPU",
+    "wp::atomic_add(wp::data_at_byte_offset(word_counts, "
+    "wp::byte_offset(word_counts, index >> 5)), (int)bit);",
+)
 
 
 @wp.func_native(_STORE_BALLOT_BIT)
 def store_ballot_bit(words: wp.array[wp.uint32], index: wp.int32, bit: wp.bool): ...
+
+
+@wp.func_native(_STORE_COUNTED_BALLOT_BIT)
+def store_counted_ballot_bit(
+    words: wp.array[wp.uint32], word_counts: wp.array[wp.int32], index: wp.int32, bit: wp.bool
+): ...
 
 
 @wp.func

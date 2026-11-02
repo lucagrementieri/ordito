@@ -21,7 +21,6 @@ from typing import Literal, overload
 import warp as wp
 
 import ordito as od
-import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
 from ordito.adjacency import _sorted_face_edge_buffers  # pyright: ignore[reportPrivateUsage]
@@ -649,7 +648,8 @@ def _sorted_pairing(
 
 def key_ordered_halfedges(
     faces: wp.array[wp.int32],
-    inclusive: odt.ArrayNdInt32,
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
     count: int,
     *,
     key_order: wp.array[wp.int32] | None = None,
@@ -665,18 +665,24 @@ def key_ordered_halfedges(
     that order and nothing is sorted; without it only the flagged halfedges are sorted, which is
     cheap when they are few.
 
+    The flags are a bitmask, one bit a halfedge, ranked by
+    [`bit_ranks`][ordito.array.bit_ranks]: each class is a row of ``n_row_words = ceil(3 *
+    n_faces / 32)`` words, its bits past the last halfedge clear.
+
     Parameters
     ----------
     faces
         ``(3 * n_faces,)`` triangle index buffer.
-    inclusive
-        ``(n_classes * 3 * n_faces,)`` inclusive scan of 0/1 flags, row ``c`` of the flattened
-        ``(n_classes, 3 * n_faces)`` table flagging the halfedges of class ``c``: entry ``i`` of a
-        row flags halfedge ``key_order[i]`` when ``key_order`` is given, halfedge ``i`` otherwise.
-        Read, not modified.
+    words
+        ``(n_classes * n_row_words,)`` bitmask, row ``c`` flagging the halfedges of class ``c``:
+        bit ``i`` of a row (bit ``i & 31`` of its word ``i >> 5``) flags halfedge ``key_order[i]``
+        when ``key_order`` is given, halfedge ``i`` otherwise. Read, not modified.
+    word_ranks
+        ``(n_classes * n_row_words,)`` inclusive running count of the set bits of ``words``
+        ([`bit_ranks`][ordito.array.bit_ranks]).
     count
-        The number of flagged entries, ``inclusive[-1]``, which the caller has already read back
-        to size its output.
+        The number of set bits, ``word_ranks[-1]``, which the caller has already read back to
+        size its output.
     key_order
         ``(3 * n_faces,)`` halfedges in ascending key order, ties by index, or ``None``.
     n_vertices
@@ -690,19 +696,22 @@ def key_ordered_halfedges(
 
     Raises
     ------
+    RuntimeError
+        If the arrays are not all on one device.
     ValueError
-        If ``inclusive`` is not a whole number of halfedge rows, or several classes are to be
-        sorted and ``n_vertices`` is not given.
+        If ``words`` is not a whole number of word rows, ``word_ranks`` does not hold one entry
+        per word, or several classes are to be sorted and ``n_vertices`` is not given.
 
     See Also
     --------
     [`halfedge_mates`][ordito.halfedge.halfedge_mates]
     [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys]
+    [`bit_ranks`][ordito.array.bit_ranks]
 
     Examples
     --------
-    Flag the boundary halfedges of two triangles, scan the flags, and read the flagged halfedges
-    back in the row order of [`edges_unique`][ordito.edges.edges_unique]:
+    Flag the boundary halfedges of two triangles as bits, rank them, and read the flagged
+    halfedges back in the row order of [`edges_unique`][ordito.edges.edges_unique]:
 
     ```python
     import numpy as np
@@ -712,28 +721,37 @@ def key_ordered_halfedges(
 
     faces = wp.array([2, 1, 3, 0, 1, 2], dtype=wp.int32)
     mates = od.halfedge.halfedge_mates(faces)
-    inclusive_np = np.cumsum(mates.numpy() == -1).astype(np.int32)
-    inclusive = wp.array(inclusive_np, dtype=wp.int32)
-    halfedges = od.halfedge.key_ordered_halfedges(faces, inclusive, int(inclusive_np[-1]))
+    bits_np = (mates.numpy() == -1).astype(np.uint32)
+    word_np = np.sum(bits_np << np.arange(bits_np.size, dtype=np.uint32), dtype=np.uint32)
+    words = wp.array([word_np], dtype=wp.uint32)
+    word_ranks = od.array.bit_ranks(words)
+    halfedges = od.halfedge.key_ordered_halfedges(faces, words, word_ranks, int(bits_np.sum()))
     print(halfedges.numpy().tolist())  # [3, 5, 1, 2]
     unique_edges, _inverse = od.edges.edges_unique(faces)
     print(unique_edges.numpy().tolist())  # [[0, 1], [0, 2], [1, 2], [1, 3], [2, 3]]
     ```
     """
+    require_same_device(faces=faces, words=words, word_ranks=word_ranks, key_order=key_order)
     device = faces.device
     n = faces.size // 3 * 3
-    if (n == 0 and inclusive.size > 0) or (n > 0 and inclusive.size % n != 0):
+    row_words = (n + 31) // 32
+    if (row_words == 0 and words.size > 0) or (row_words > 0 and words.size % row_words != 0):
         raise ValueError(
-            f"inclusive must hold a whole number of {n}-halfedge rows, got {inclusive.size}"
+            f"words must hold a whole number of {row_words}-word rows, got {words.size}"
         )
-    n_classes = inclusive.size // n if n > 0 else 0
+    if word_ranks.size != words.size:
+        raise ValueError(
+            f"word_ranks must hold one rank per word, got {word_ranks.size} for {words.size}"
+        )
+    n_classes = words.size // row_words if row_words > 0 else 0
+    row_bits = 32 * row_words
     if key_order is not None:
         halfedges = _launch.empty(count, dtype=wp.int32, device=device)
         if count > 0:
             _launch.launch(
                 kernel_halfedge.flagged_key_ordered_halfedges,
-                dim=inclusive.size,
-                inputs=[inclusive, key_order, wp.int32(n), halfedges],
+                dim=(n_classes, n),
+                inputs=[words, word_ranks, key_order, row_bits, halfedges],
                 device=device,
             )
         return halfedges
@@ -746,8 +764,8 @@ def key_ordered_halfedges(
         return order
     _launch.launch(
         kernel_halfedge.flagged_halfedge_keys,
-        dim=inclusive.size,
-        inputs=[faces, inclusive, wp.int32(n), wp.uint64(n_vertices), keys, order],
+        dim=(n_classes, n),
+        inputs=[faces, words, word_ranks, row_bits, wp.uint64(n_vertices), keys, order],
         device=device,
     )
     _launch.radix_sort_pairs(

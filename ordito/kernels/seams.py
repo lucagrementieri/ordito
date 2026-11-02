@@ -14,6 +14,7 @@ from ordito.kernels.array import (
     mark_at,
     pack_edge_key,
     scanned_count,
+    store_counted_ballot_bit,
 )
 from ordito.kernels.halfedge import (
     HALFEDGE_MATE_BOUNDARY,
@@ -34,15 +35,19 @@ def crease_flags(
     mates: wp.array[wp.int32],
     key_order: wp.array[wp.int32],
     threshold: wp.float32,
-    out_flags: wp.array2d[wp.int32],
+    row_bits: wp.int32,
+    out_words: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
 ) -> None:
-    # One thread per halfedge, over its mate (``halfedge.halfedge_mates``). Row 0 of
-    # ``out_flags``: 1 on the lower halfedge of an edge carrying exactly two -- an
-    # ``adjacency.face_adjacency`` row -- whose two faces meet at more than ``threshold``. Row 1,
-    # when the table has one: 1 on a halfedge alone on its edge, a boundary edge. The caller scans
-    # the flattened table in place, so the boundary rows number on from the creases, and
-    # ``halfedge.key_ordered_halfedges`` puts each row in ascending key order. Entry ``i`` of a row
-    # stands for halfedge ``key_ordered_halfedge(key_order, i)``.
+    # One thread per halfedge, over its mate (``halfedge.halfedge_mates``), setting bits of the
+    # zeroed ``out_words``, rows ``row_bits`` (a whole number of words) apart. Row 0: the lower
+    # halfedge of an edge carrying exactly two -- an ``adjacency.face_adjacency`` row -- whose two
+    # faces meet at more than ``threshold``. Row 1, when the bitmask has one: a halfedge alone on
+    # its edge, a boundary edge. Each word's population goes into the zeroed ``out_word_counts``,
+    # which the caller scans in place into the words' ranks, so the boundary rows number on from
+    # the creases, and ``halfedge.key_ordered_halfedges`` puts each row in ascending key order. Bit
+    # ``i`` of a row stands for halfedge ``key_ordered_halfedge(key_order, i)``; every thread
+    # reaches each ballot.
     #
     # The angle is ``adjacency.face_adjacency_angles``' exactly: the same unit normals (from
     # ``face_normals_and_area``, which ``triangles.face_normals_and_areas`` writes them with, formed
@@ -53,16 +58,18 @@ def crease_flags(
     i = wp.int32(wp.tid())
     h = key_ordered_halfedge(key_order, i)
     mate = mates[h]
-    crease = wp.int32(0)
+    crease = wp.bool(False)
     if mate > h:
         face_a = h // 3
         face_b = mate // 3
         normal_a, _area_a = face_normals_and_area(vertices, faces, wp.min(face_a, face_b))
         normal_b, _area_b = face_normals_and_area(vertices, faces, wp.max(face_a, face_b))
-        crease = wp.where(vector_angle(normal_a, normal_b) > threshold, wp.int32(1), wp.int32(0))
-    out_flags[0, i] = crease
-    if out_flags.shape[0] > 1:
-        out_flags[1, i] = wp.where(mate == HALFEDGE_MATE_BOUNDARY, wp.int32(1), wp.int32(0))
+        crease = vector_angle(normal_a, normal_b) > threshold
+    store_counted_ballot_bit(out_words, out_word_counts, i, crease)
+    if out_words.shape[0] > row_bits >> 5:
+        store_counted_ballot_bit(
+            out_words, out_word_counts, row_bits + i, mate == HALFEDGE_MATE_BOUNDARY
+        )
 
 
 @wp.kernel

@@ -41,12 +41,17 @@ from the one matching its tag — so prose sections do not belong between them.
   libigl does; `"open3d"` and `"meshlab"` keep the first face of each duplicate group, as
   `remove_duplicated_triangles` and `meshing_remove_duplicate_faces` do. The default still raises.
 - `reconstruction.resample_uniform(method="igl")`: `igl.offset_surface`'s lattice.
+- `array.bit_ranks`: the running set-bit count of a `uint32` bitmask's words, the rank table of
+  a flag stored as one bit (`out=` writes it into a caller's buffer).
 - `texture.rasterize_attribute` / `rasterize_discrete_attribute(subpixel_bits=)`: snap vertices
   to a sub-pixel grid as a GPU rasterizer does; `8` reproduces OpenGL.
 
 ### Changed
 
 - `smoothing.filter_two_step(method="meshlab")` runs in `float64`, MeshLab's precision.
+- `halfedge.key_ordered_halfedges` takes its flags as a bitmask and the bitmask's word ranks
+  (`words, word_ranks`, from `array.bit_ranks`), a bit a halfedge and each class row padded to
+  whole words, in place of an `int32` inclusive scan: a 32nd of the memory.
 
 ## [0.1.0] - 2026-10-27
 

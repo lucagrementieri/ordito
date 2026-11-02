@@ -129,6 +129,21 @@ def numpy_to_warp_uv(
     )
 
 
+def flags_to_warp_bitmask(flags_np: np.ndarray, device: wp.DeviceLike) -> wp.array[wp.uint32]:
+    """
+    Upload a ``(n_rows, n)`` 0/1 flag table as a ``uint32`` bitmask, each row padded to whole words.
+
+    Bit ``i & 31`` of word ``i >> 5`` of a row holds flag ``i``, the layout
+    ``od.halfedge.key_ordered_halfedges`` and ``od.array.bit_ranks`` read; a 1-D table is one row.
+    """
+    rows_np = np.atleast_2d(np.asarray(flags_np) != 0)
+    row_words = (rows_np.shape[1] + 31) // 32
+    padded_np = np.zeros((rows_np.shape[0], 32 * row_words), dtype=bool)
+    padded_np[:, : rows_np.shape[1]] = rows_np
+    words_np = np.packbits(padded_np, axis=1, bitorder="little").view("<u4").reshape(-1)
+    return wp.array(words_np.astype(np.uint32), dtype=wp.uint32, device=device)
+
+
 def points_to_warp(points_np: np.ndarray, device: wp.DeviceLike) -> wp.array[wp.vec3]:
     """
     Upload an ``(n, 3)`` point cloud as ``wp.array[wp.vec3]``.

@@ -3035,7 +3035,9 @@ def mask_to_compact_ranks(
     return _launch.view(buffer, 0, n), _scan_into_tail(buffer, flags, flags)
 
 
-def bit_ranks(words: wp.array[wp.uint32]) -> wp.array[wp.int32]:
+def bit_ranks(
+    words: wp.array[wp.uint32], *, out: wp.array[wp.int32] | None = None
+) -> wp.array[wp.int32]:
     """
     Return each word's inclusive count of set bits over a ``uint32`` bitmask.
 
@@ -3050,11 +3052,22 @@ def bit_ranks(words: wp.array[wp.uint32]) -> wp.array[wp.int32]:
     ----------
     words
         ``(n_words,)`` bitmask, bit ``p & 31`` of word ``p >> 5`` the flag of position ``p``.
+    out
+        ``(n_words,)`` buffer on ``words.device`` to write the ranks into, or ``None`` to allocate
+        one.
 
     Returns
     -------
     wp.array[wp.int32]
-        ``(n_words,)`` inclusive running count of the words' set bits, on ``words.device``.
+        ``(n_words,)`` inclusive running count of the words' set bits, on ``words.device``:
+        ``out`` when given.
+
+    Raises
+    ------
+    RuntimeError
+        If ``words`` and ``out`` are on different devices.
+    ValueError
+        If ``out`` does not hold one entry per word.
 
     See Also
     --------
@@ -3074,7 +3087,13 @@ def bit_ranks(words: wp.array[wp.uint32]) -> wp.array[wp.int32]:
     print(od.array.bit_ranks(words).numpy().tolist())  # [3, 3, 4]
     ```
     """
-    ranks = _launch.empty(words.size, dtype=wp.int32, device=words.device)
+    require_same_device(words=words, out=out)
+    if out is None:
+        ranks = _launch.empty(words.size, dtype=wp.int32, device=words.device)
+    elif out.size != words.size:
+        raise ValueError(f"out must hold {words.size} ranks, one per word, got {out.size}")
+    else:
+        ranks = out
     if words.size == 0:
         return ranks
     _launch.map(kernel_array.popcount32, words, out=ranks)

@@ -422,6 +422,7 @@
   "counts": {
    "launch": 3,
    "alloc": 2,
+   "memset": 1,
    "d2h": 1,
    "scan": 1,
    "sort": 1
@@ -431,6 +432,7 @@
   "counts": {
    "launch": 3,
    "alloc": 2,
+   "memset": 1,
    "d2h": 1,
    "scan": 1,
    "sort": 1
@@ -440,6 +442,7 @@
   "counts": {
    "launch": 2,
    "alloc": 1,
+   "memset": 1,
    "d2h": 1,
    "scan": 1,
    "sort": 1
@@ -628,6 +631,7 @@
   "counts": {
    "launch": 3,
    "alloc": 2,
+   "memset": 1,
    "d2h": 1,
    "scan": 1,
    "sort": 1
@@ -637,6 +641,7 @@
   "counts": {
    "launch": 3,
    "alloc": 2,
+   "memset": 1,
    "d2h": 1,
    "scan": 1,
    "sort": 1
@@ -646,6 +651,7 @@
   "counts": {
    "launch": 2,
    "alloc": 1,
+   "memset": 1,
    "d2h": 1,
    "scan": 1,
    "sort": 1
@@ -1037,7 +1043,7 @@
   "counts": {
    "launch": 5,
    "alloc": 5,
-   "memset": 1,
+   "memset": 2,
    "d2h": 1,
    "scan": 1,
    "sort": 1
@@ -1047,7 +1053,7 @@
   "counts": {
    "launch": 5,
    "alloc": 5,
-   "memset": 1,
+   "memset": 2,
    "d2h": 1,
    "scan": 1,
    "sort": 1
@@ -1643,6 +1649,7 @@
   "counts": {
    "launch": 6,
    "alloc": 7,
+   "memset": 1,
    "d2h": 1,
    "scan": 2,
    "sort": 2
@@ -1652,6 +1659,7 @@
   "counts": {
    "launch": 6,
    "alloc": 7,
+   "memset": 1,
    "d2h": 1,
    "scan": 2,
    "sort": 2
@@ -2957,7 +2965,7 @@
   "counts": {
    "launch": 24,
    "alloc": 12,
-   "memset": 2,
+   "memset": 3,
    "d2d": 2,
    "h2d": 1,
    "d2h": 3,
@@ -2969,7 +2977,7 @@
   "counts": {
    "launch": 12,
    "alloc": 12,
-   "memset": 2,
+   "memset": 3,
    "d2d": 2,
    "h2d": 1,
    "d2h": 3,
@@ -2981,7 +2989,7 @@
   "counts": {
    "launch": 72,
    "alloc": 12,
-   "memset": 2,
+   "memset": 3,
    "d2d": 2,
    "h2d": 1,
    "d2h": 3,
@@ -3212,7 +3220,7 @@
   "counts": {
    "launch": 20,
    "alloc": 28,
-   "memset": 7,
+   "memset": 8,
    "d2d": 3,
    "h2d": 1,
    "d2h": 9,
@@ -3640,7 +3648,7 @@
   "counts": {
    "launch": 4,
    "alloc": 4,
-   "memset": 1,
+   "memset": 2,
    "d2h": 1,
    "scan": 1,
    "sort": 1
@@ -4360,6 +4368,7 @@
   "counts": {
    "launch": 5,
    "alloc": 5,
+   "memset": 1,
    "d2h": 1,
    "scan": 1,
    "sort": 2
@@ -6739,6 +6748,7 @@
   "counts": {
    "launch": 3,
    "alloc": 3,
+   "memset": 1,
    "d2h": 1,
    "scan": 1,
    "sort": 1
@@ -6890,6 +6900,7 @@
   "counts": {
    "launch": 4,
    "alloc": 4,
+   "memset": 1,
    "d2h": 1,
    "scan": 1,
    "sort": 1

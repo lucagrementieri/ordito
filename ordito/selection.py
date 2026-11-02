@@ -103,34 +103,38 @@ def region_boundary_edges(
     if n_faces == 0:
         return odt.empty_2d((0, 2), wp.int32, device=device)
     # The halfedge mates flag a seam edge on its lower halfedge (an edge of exactly two halfedges
-    # whose faces straddle the region), read in the key sort's order where the mates came from
-    # it, else only the seam's halfedges sorted: ascending key order either way, no unique-edge
-    # table, and one readback, of the seam size.
+    # whose faces straddle the region), a bit a halfedge, read in the key sort's order where the
+    # mates came from it, else only the seam's halfedges sorted: ascending key order either way,
+    # no unique-edge table, and one readback, of the seam size.
     n = 3 * n_faces
     key_order = None
     if mates is None:
         mates, key_order = od.halfedge.halfedge_mates(faces, n_vertices, return_key_order=True)
-    inclusive = _launch.empty(n, dtype=wp.int32, device=device)
+    n_words = (n + 31) // 32
+    # The bits, then their words' populations, which the flagging launch adds and the scan ranks.
+    buffer = _launch.zeros(2 * n_words, dtype=wp.int32, device=device)
+    words = _launch.view_as(_launch.view(buffer, 0, n_words), wp.uint32)
+    word_ranks = _launch.view(buffer, n_words, 2 * n_words)
     _launch.launch(
         kernel_selection.mark_region_seam,
         dim=n,
-        inputs=[mates, key_order, face_mask, inclusive],
+        inputs=[mates, key_order, face_mask, words, word_ranks],
         device=device,
     )
-    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    _launch.array_scan(word_ranks, out_array=word_ranks, inclusive=True)
     # Sizes the output: the one host readback.
-    n_seam = int(read_scalar(inclusive))
+    n_seam = int(read_scalar(word_ranks))
     out_edges = odt.empty_2d((n_seam, 2), wp.int32, device=device)
     if n_seam > 0 and key_order is not None:
         _launch.launch(
             kernel_selection.emit_key_ordered_region_seam,
             dim=n,
-            inputs=[inclusive, key_order, mates, faces, face_mask, oriented, out_edges],
+            inputs=[words, word_ranks, key_order, mates, faces, face_mask, oriented, out_edges],
             device=device,
         )
     elif n_seam > 0:
         halfedges = od.halfedge.key_ordered_halfedges(
-            faces, inclusive, n_seam, n_vertices=n_vertices
+            faces, words, word_ranks, n_seam, n_vertices=n_vertices
         )
         _launch.launch(
             kernel_selection.emit_region_seam,

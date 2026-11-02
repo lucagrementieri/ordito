@@ -983,11 +983,8 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
     that already syncs can cut it (§3.7).
   - `levelset`: `marching_cubes` counts are a `vec2i` a node for O(res**2) active ones (large; a
     recorded design, not a decline).
-  - The sparse-flag compactions with an `int32` flag a position could take a bit a position
-    through `array.bit_ranks`, `kernels/array.store_ballot_bit` and `nth_bit_position` (as the
-    broad phase's verdicts do), behind a size gate. Largest: `boundary._BoundaryHalfedges.count`'s
-    flag scan, 428 MiB of `boundary_loops`' 1.39 GB peak on `lucy` (bucketed pairing path); it
-    shares one zeroed allocation with the degree census (whose degree table `successors` reuses)
-    and its scan is read by `edges`, `halfedge.key_ordered_halfedges` and
-    `emit_boundary_successors`. The rest are estimates (`selection.py` ~`:120`, `seams.py`
-    ~`:146`, `remesh.py` ~`:5385`; 5-15 MB and 10-20 us a call).
+  - `remesh`'s split passes rank their edges through `array.mask_to_compact_ranks`' `(m + 1)`
+    `int32` offsets (`:5853`, and the budget trim's `_keep_longest_edges`), which every split
+    kernel reads: a bitset (`kernels/array.store_counted_ballot_bit` and `bit_slot`, as
+    `boundary`, `seams` and `selection` now flag) needs those readers reworked together.
+    Unmeasured.
