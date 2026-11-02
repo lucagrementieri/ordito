@@ -963,11 +963,13 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   launches a round (1.10-1.33x) were tried and reverted. Only fewer rounds would pay
   (`reference/component-status.md`).
 - **Two calls are not reproducible at scan size under the deterministic setting** (2026-11-02,
-  CUDA, untraced). `ball_pivoting` on `happy_buddha`: the same triangles in a different face
-  order every run, and one run in four swaps one triangle (`bunny`, `dragon` repeat bit for bit;
-  `happy_buddha` is the scan with overfull BVH leaves, §12.2, whose pivot search takes the
-  per-lane serial walk, a first suspect). `sample_surface_poisson_disk(lucy, 2_000_000, seed=3)`
-  differs between runs (`dragon` at 200 k repeats).
+  CUDA). `ball_pivoting` on `happy_buddha`: one run in four swaps one triangle, against its
+  docstring's promise of a reproducible triangle set (untraced; `happy_buddha` is the scan with
+  overfull BVH leaves, §12.2, whose pivot search takes the per-lane serial walk, a first
+  suspect). Its face row order also changes every run: the docstring declares the order unpinned
+  (`commit_triangles` appends by `atomic_add`), but §2.2 says the setting turns such a fill into a
+  stable sort, which `ball_pivoting` does not do. `sample_surface_poisson_disk(lucy, 2_000_000,
+  seed=3)` differs between runs (`dragon` at 200 k repeats), untraced.
 - **The reconstruction's memory techniques, applied elsewhere** (2026-11-01 sweep, unmeasured
   estimates; measure, A/B byte for byte and re-record the census before each). The techniques:
   brick-sparse storage, rank-packed bitset indices (`brick_number_at`, `occupancy`), rank
