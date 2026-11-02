@@ -63,34 +63,43 @@ TRANSFORMS: list[tuple[TransformKind, wp.mat44]] = [
 # ---------------------------------------------------------------------------
 
 
+_BUILDER_CASES: list[tuple[str, Callable[[], wp.mat44], np.ndarray]] = [
+    (
+        "rotation",
+        lambda: od.transform.rotation_matrix((0.3, 0.5, 0.81), 1.234, (1.0, -2.0, 0.5)),
+        np.asarray(tm.transformations.rotation_matrix(1.234, [0.3, 0.5, 0.81], [1.0, -2.0, 0.5])),
+    ),
+    (
+        "reflection",
+        lambda: od.transform.reflection_matrix((0.3, 0.5, 0.81), (1.0, -2.0, 0.5)),
+        np.asarray(tm.transformations.reflection_matrix([1.0, -2.0, 0.5], [0.3, 0.5, 0.81])),
+    ),
+    (
+        "translation",
+        lambda: od.transform.translation_matrix((1.0, -2.0, 0.5)),
+        np.asarray(tm.transformations.translation_matrix([1.0, -2.0, 0.5])),
+    ),
+    (
+        "scale",
+        lambda: od.transform.scale_matrix(3.0, (1.0, -2.0, 0.5)),
+        np.asarray(tm.transformations.scale_matrix(3.0, [1.0, -2.0, 0.5])),
+    ),
+]
+
+
 @pytest.mark.parity("transform_points", "trimesh")
-def test_rotation_matrix_matches_trimesh() -> None:
-    """Class A: ``rotation_matrix`` against ``trimesh.transformations.rotation_matrix``."""
-    axis, angle, center = (0.3, 0.5, 0.81), 1.234, (1.0, -2.0, 0.5)
-    matrix_wp = np.array(od.transform.rotation_matrix(axis, angle, center)).reshape(4, 4)
-    matrix_tm = tm.transformations.rotation_matrix(angle, list(axis), list(center))
-    assert np.allclose(matrix_wp, matrix_tm, rtol=1e-5, atol=1e-5)
-
-
-def test_reflection_matrix_matches_trimesh() -> None:
-    """Class A: ``reflection_matrix`` against ``trimesh.transformations.reflection_matrix``."""
-    normal, center = (0.3, 0.5, 0.81), (1.0, -2.0, 0.5)
-    matrix_wp = np.array(od.transform.reflection_matrix(normal, center)).reshape(4, 4)
-    matrix_tm = tm.transformations.reflection_matrix(list(center), list(normal))
-    assert np.allclose(matrix_wp, matrix_tm, rtol=1e-5, atol=1e-5)
-
-
 @pytest.mark.parity("translation_matrix", "trimesh")
 @pytest.mark.parity("scale_matrix", "trimesh")
-def test_translation_and_scale_matrices_match_trimesh() -> None:
-    """Class A: the two remaining builders against ``trimesh.transformations``."""
-    offset = (1.0, -2.0, 0.5)
-    translation_wp = np.array(od.transform.translation_matrix(offset)).reshape(4, 4)
-    assert np.allclose(translation_wp, tm.transformations.translation_matrix(list(offset)))
-
-    scale_wp = np.array(od.transform.scale_matrix(3.0, offset)).reshape(4, 4)
-    scale_tm = tm.transformations.scale_matrix(3.0, list(offset))
-    assert np.allclose(scale_wp, scale_tm, rtol=1e-5, atol=1e-5)
+@pytest.mark.parametrize(
+    ("build", "matrix_tm"),
+    [pytest.param(build, matrix_tm, id=name) for name, build, matrix_tm in _BUILDER_CASES],
+)
+def test_matrix_builders_match_trimesh(
+    build: Callable[[], wp.mat44], matrix_tm: np.ndarray
+) -> None:
+    """Class A: every matrix builder against its ``trimesh.transformations`` namesake."""
+    matrix_wp = np.array(build()).reshape(4, 4)
+    assert np.allclose(matrix_wp, matrix_tm, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize(
@@ -704,19 +713,17 @@ def test_mass_properties_are_never_carried(request: pytest.FixtureRequest, mesh_
         assert not np.allclose(before, after, rtol=1e-3, atol=1e-3), key
 
 
-def test_transform_identity_returns_self(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Not a parity assert: the identity short-circuit does no work at all."""
-    _mesh_tm, mesh_wp = sphere_irregular
-    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
-    assert mesh.transform(od.transform.translation_matrix((0.0, 0.0, 0.0))) is mesh
-
-
 def test_transform_shares_faces_unless_it_mirrors(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
-    """Not a parity assert: the face buffer is aliased, and copied reversed only by a mirror."""
+    """
+    Not a parity assert: the face buffer is aliased, and copied reversed only by a mirror.
+
+    The identity short-circuits further: it does no work at all and returns the mesh itself.
+    """
     _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
+    assert mesh.transform(TRANSFORMS[0][1]) is mesh
     for kind, matrix in TRANSFORMS[1:]:
         moved = mesh.transform(matrix)
         mirrors = od.transform.reverses_orientation(matrix)

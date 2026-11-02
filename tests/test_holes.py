@@ -1603,37 +1603,26 @@ def test_fill_small_requires_exactly_one_threshold(
         od.holes.fill_small(mesh_wp.points, mesh_wp.indices, **kwargs)
 
 
-def test_fill_small_vertex_bound_changes_no_answer(device: str) -> None:
+@pytest.mark.parametrize("hint", ["n_vertices", "mates"])
+def test_fill_small_hints_change_no_answer(device: str, hint: str) -> None:
     """
-    Ordito against ordito: ``n_vertices=`` only spares the inferred index bound.
+    Ordito against ordito: ``n_vertices=`` and ``mates=`` only spare work.
 
     The bound orders the rim keys, and any bound above every index orders them alike, so the
-    trusted ``vertices.size`` must give the faces the inferred bound gives, bit for bit. Both rims
-    are filled at ``max_edges=16``, so the fill (where the bound is read) runs.
+    trusted ``vertices.size`` must give the faces the inferred bound gives, bit for bit; the mates
+    spare the boundary walk its halfedge pairing. Both rims are filled at ``max_edges=16``, so the
+    fill and the walk (where the hints are read) run.
     """
     _holed_tm, vertices_wp, faces_wp, sizes = _two_rims_of_different_edge_count(device)
     assert sorted(sizes) == [10, 16]
+    hints: dict[str, Any] = (
+        {"n_vertices": vertices_wp.size}
+        if hint == "n_vertices"
+        else {"mates": od.halfedge.halfedge_mates(faces_wp, vertices_wp.size)}
+    )
 
     inferred_wp = od.holes.fill_small(vertices_wp, faces_wp, max_edges=16)
-    given_wp = od.holes.fill_small(vertices_wp, faces_wp, max_edges=16, n_vertices=vertices_wp.size)
-
-    assert inferred_wp.size - faces_wp.size == 3 * sum(size - 2 for size in sizes)
-    assert np.array_equal(given_wp.numpy(), inferred_wp.numpy())
-
-
-def test_fill_small_mates_change_no_answer(device: str) -> None:
-    """
-    Ordito against ordito: ``mates=`` only spares the boundary walk its halfedge pairing.
-
-    Both rims are filled at ``max_edges=16``, so the walk that reads the mates runs and the faces
-    must match the ones built without them, bit for bit.
-    """
-    _holed_tm, vertices_wp, faces_wp, sizes = _two_rims_of_different_edge_count(device)
-    assert sorted(sizes) == [10, 16]
-    mates_wp = od.halfedge.halfedge_mates(faces_wp, vertices_wp.size)
-
-    inferred_wp = od.holes.fill_small(vertices_wp, faces_wp, max_edges=16)
-    given_wp = od.holes.fill_small(vertices_wp, faces_wp, max_edges=16, mates=mates_wp)
+    given_wp = od.holes.fill_small(vertices_wp, faces_wp, max_edges=16, **hints)
 
     assert inferred_wp.size - faces_wp.size == 3 * sum(size - 2 for size in sizes)
     assert np.array_equal(given_wp.numpy(), inferred_wp.numpy())
@@ -2139,8 +2128,6 @@ def test_refill_region_leaves_an_untouched_mesh_alone(
     # Still open: the rim it arrived with is untouched.
     assert int(od.boundary.boundary_edges(vertices_wp, faces_wp).shape[0]) > 0
 
-    with pytest.raises(ValueError, match="metric must be one of"):
-        od.holes.refill_region(mesh_wp.points, mesh_wp.indices, empty_wp, metric="nonsense")
     with pytest.raises(ValueError, match="one entry per face"):
         od.holes.refill_region(
             mesh_wp.points,

@@ -561,14 +561,17 @@ def test_voxel_down_sample_spanning_root_tiles_matches_numpy(device: str):
     )
 
 
-@pytest.mark.parametrize("pooling", ["min", "max"])
-def test_pool_by_voxel_extrema_match_numpy(device: str, pooling: Literal["min", "max"]):
+@pytest.mark.parametrize("pooling", ["min", "max", "mean"])
+def test_pool_by_voxel_matches_a_numpy_group_by(
+    device: str, pooling: Literal["min", "max", "mean"]
+):
     """
-    Class B: ``min`` / ``max`` pooling equals a NumPy group-by, matched through cell rows.
+    Class B: ``min`` / ``max`` / ``mean`` pooling is a NumPy group-by, matched through cell rows.
 
     The payload is independent of the positions, every voxel but one is reached, and one point lies
-    outside the grid, so a sentinel bucket leak, a missed reset of an unreached voxel (it must read
-    zero, not ``+-inf``) or a swapped reduction all fail.
+    outside the grid carrying a large value, so a sentinel bucket leak (an outside point must
+    contribute nothing), a missed reset of an unreached voxel (it must read zero, not ``+-inf`` or
+    a ``0 / 0``) or a swapped reduction all fail.
     """
     rng = np.random.default_rng(32)
     points_np = rng.uniform(0.0, 3.0, (500, 3)).astype(np.float32)
@@ -586,8 +589,13 @@ def test_pool_by_voxel_extrema_match_numpy(device: str, pooling: Literal["min", 
         pooling=pooling,
     ).numpy()
 
-    ufunc = np.minimum if pooling == "min" else np.maximum
-    pooled_np = _group_reduce_np(cells_np.astype(np.int64), values_np.astype(np.float64), ufunc)
+    keys_np = cells_np.astype(np.int64)
+    if pooling == "mean":
+        sums_np = _group_reduce_np(keys_np, values_np.astype(np.float64), np.add)
+        pooled_np = sums_np / _group_reduce_np(keys_np, np.ones((len(keys_np), 1)), np.add)
+    else:
+        ufunc = np.minimum if pooling == "min" else np.maximum
+        pooled_np = _group_reduce_np(keys_np, values_np.astype(np.float64), ufunc)
     rows = [tuple(c) for c in od.voxels.cells(grid).numpy().tolist()]
     reference = {
         tuple(c): v for c, v in zip(np.unique(cells_np, axis=0).tolist(), pooled_np, strict=True)
@@ -607,22 +615,6 @@ def _group_reduce_np(
     order = np.argsort(inverse, kind="stable")
     starts = np.flatnonzero(np.r_[True, np.diff(inverse[order]) != 0])
     return ufunc.reduceat(values_np[order], starts, axis=0)
-
-
-def test_pool_by_voxel_ignores_outside_points(device: str):
-    """Points outside the grid contribute nothing, and voxels with no point pool to zero."""
-    cells_np = np.array([[0, 0, 0], [5, 5, 5]], dtype=np.int32)
-    grid = od.voxels.from_cells(
-        wp.array(cells_np, dtype=wp.int32, device=device), 1.0, wp.vec3(0.0, 0.0, 0.0)
-    )
-    points_np = np.array([[0.25, 0.25, 0.25], [0.75, 0.75, 0.75], [-9.0, -9.0, -9.0]])
-    points_wp = points_to_warp(points_np, device)
-    pooled = od.voxels.pool_by_voxel(grid, points_wp, points_wp).numpy()
-
-    slot = od.voxels.cells(grid).numpy().tolist().index([0, 0, 0])
-    other = 1 - slot
-    assert np.allclose(pooled[slot], [0.5, 0.5, 0.5])
-    assert np.array_equal(pooled[other], np.zeros(3))
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1455,7 +1447,7 @@ def test_resolve_voxel_grid_defaults_are_one_percent_and_a_half_cell_below(devic
     Open3D's anchor, and the reason ``voxelize_points``, ``voxel_down_sample`` and
     ``cluster_decimate`` agree cell for cell. Both defaults resolve independently, so each is
     checked with the other supplied: a rule applied only when *both* are ``None`` would pass a test
-    that always omits both.
+    that always omits both. With both supplied it reads no bounds and returns them unchanged.
 
     ``atol`` rather than exact: ``origin`` is a ``wp.vec3``, so the returned corner is ``float32``
     where the arithmetic here is ``float64`` (measured gap 7e-10).
@@ -1476,6 +1468,9 @@ def test_resolve_voxel_grid_defaults_are_one_percent_and_a_half_cell_below(devic
     given_size, origin_only = od.voxels.resolve_voxel_grid(points_wp, 0.25)
     assert given_size == 0.25
     assert np.allclose(list(origin_only), -0.125, rtol=0, atol=1e-7)
+    both_size, both_origin = od.voxels.resolve_voxel_grid(points_wp, 0.25, wp.vec3(1.0, 2.0, 3.0))
+    assert both_size == 0.25
+    assert list(both_origin) == [1.0, 2.0, 3.0]
 
 
 def test_resolve_voxel_grid_with_the_callers_bounds(
@@ -1506,18 +1501,6 @@ def test_resolve_voxel_grid_with_the_callers_bounds(
     assert size_box == size
     assert list(origin_box) == list(origin)
     assert bound_box == bound
-
-
-def test_resolve_voxel_grid_passes_both_arguments_through(device: str) -> None:
-    """With both supplied it reads no bounds at all, so it must return them unchanged."""
-    points_wp = wp.array(
-        np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]], dtype=np.float32), dtype=wp.vec3, device=device
-    )
-
-    voxel_size, origin = od.voxels.resolve_voxel_grid(points_wp, 0.25, wp.vec3(1.0, 2.0, 3.0))
-
-    assert voxel_size == 0.25
-    assert list(origin) == [1.0, 2.0, 3.0]
 
 
 @pytest.mark.parametrize(

@@ -49,6 +49,10 @@ def test_volume(request: pytest.FixtureRequest, mesh_name: str):
     pyvista's does -- the volume alone, no centre of mass and no inertia tensor. Its ``region``
     argument defaults to the whole mesh, which is the comparison; ordito has no per-region form, so
     nothing is left untested by passing ``None``.
+
+    Reversing every face must negate the volume, with trimesh agreeing on the sign: the *signed*
+    result is the claim -- an implementation taking the absolute value would pass the first asserts
+    and fail that one, and ``validation.is_volume`` depends on the sign.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh_ml = trimesh_to_meshlib(mesh_tm)
@@ -60,6 +64,11 @@ def test_volume(request: pytest.FixtureRequest, mesh_name: str):
     assert np.isclose(volume_wp, mm.volume(mesh_ml.topology, mesh_ml.points), rtol=1e-5, atol=1e-5)
     assert np.isclose(volume_wp, volume_pv, rtol=1e-5)
     assert np.isclose(volume_pv, mesh_tm.volume, rtol=1e-5)
+
+    faces_flipped_np = np.ascontiguousarray(mesh_tm.faces[:, ::-1].reshape(-1), dtype=np.int32)
+    faces_flipped_wp = wp.array(faces_flipped_np, dtype=wp.int32, device=mesh_wp.device)
+    volume_flipped_wp = od.measures.volume(mesh_wp.points, faces_flipped_wp)
+    assert np.isclose(volume_flipped_wp, -mesh_tm.volume, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("deterministic", [True, False], indirect=True)
@@ -86,22 +95,6 @@ def test_volume_and_moments_on_a_large_mesh(device: str, deterministic: bool) ->
     if deterministic:
         assert od.measures.volume(vertices_wp, faces_wp) == volume_wp
         assert od.measures.moments(vertices_wp, faces_wp)[0] == volume_m
-
-
-def test_volume_inward_normals_negative(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
-    """
-    Class A: reversing every face negates the volume, and trimesh agrees on the sign.
-
-    The *signed* result is the claim -- an implementation taking the absolute value would pass
-    [`test_volume`] and fail this, and ``validation.is_volume`` depends on the sign.
-    """
-    mesh_tm, mesh_wp = sphere_irregular
-    faces_np = mesh_tm.faces[:, ::-1].reshape(-1).astype(np.int32)
-    faces_flipped_wp = wp.array(
-        np.ascontiguousarray(faces_np), dtype=wp.int32, device=mesh_wp.device
-    )
-    volume_wp = od.measures.volume(mesh_wp.points, faces_flipped_wp)
-    assert np.isclose(volume_wp, -mesh_tm.volume, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])

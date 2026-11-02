@@ -406,75 +406,57 @@ def test_mesh_to_mesh_distance_matches_meshlib_where_no_vertex_wins(
 
 
 @pytest.mark.parity("mesh_to_mesh_distance", "meshlib")
-def test_mesh_to_mesh_distance_gap_overlap_and_contact(device: str) -> None:
+@pytest.mark.parametrize(
+    ("shift", "expected"),
+    [
+        *(
+            pytest.param(2.0 + gap, max(gap, 0.0), id=f"gap-{gap}")
+            for gap in (1.0, 0.5, 0.1, 0.01, 0.0, -0.05)
+        ),
+        pytest.param(1.5, 0.0, id="overlap"),
+        pytest.param(None, 0.2 * np.sqrt(2.0), id="corner-contact"),
+    ],
+)
+def test_mesh_to_mesh_distance_matches_meshlib_across_regimes(
+    device: str, shift: float | None, expected: float
+) -> None:
     """
-    Class A on three regimes, one of which is the exact zero.
+    Class A on the separated, touching, overlapping and corner-contact regimes.
 
-    Separated, overlapping and corner-to-corner, because they take different paths: a positive
-    distance comes from the fifteen sub-distances, a zero comes from the intersection test
-    short-circuiting them, and a corner contact is the case where the two disagree if either is
-    wrong about closed versus open triangles. ``findDistance`` matches on all three -- measured
-    1.00000000 for two spheres three apart, 0.00000000 for overlapping ones and 0.28284270 for two
-    unit boxes offset by ``(1.2, 1.2)``, which is ``0.2 * sqrt(2)`` exactly.
+    They take different paths: a positive distance comes from the fifteen sub-distances, a zero
+    from the intersection test short-circuiting them, and a corner contact is the case where the
+    two disagree if either is wrong about closed versus open triangles. ``findDistance`` matches on
+    every one -- measured 1.00000000 for two spheres three apart, 0.00000000 for overlapping ones
+    and 0.28284270 for two unit boxes offset by ``(1.2, 1.2)``, ``0.2 * sqrt(2)`` exactly, a value
+    only a correct closest-feature search produces (a bounding-box answer would give 0.2).
 
-    That last number is why the corner case is here: it is a value only a correct closest-feature
-    search produces, where a bounding-box answer would give 0.2 and a centroid answer something else
-    entirely.
+    The unit-icosphere gaps (the second sphere ``shift`` along ``x``) are the regime the kernel's
+    seeded running minimum could silently break: the two touch closest at a *vertex* of each, so
+    the upper bound the vertex query derives is exactly the answer. The broad phase seeds its
+    global running minimum with that bound, and seeded at exactly ``upper_bound ** 2`` the ``>=``
+    prune discards the very pair achieving it and the call returns ``inf``, which is why the seed
+    carries a relative bump. The sweep closes the gap to zero and reverses it into an overlap, so
+    the bump is exercised at, above and below the boundary; the ``isfinite`` and ``face >= 0``
+    asserts catch that pruning failure, which returns ``inf`` rather than a wrong number.
     """
-    sphere_tm = tm.creation.icosphere(subdivisions=2)
-    cases = []
-    far_tm = tm.creation.icosphere(subdivisions=2)
-    far_tm.apply_translation([3.0, 0.0, 0.0])
-    cases.append((sphere_tm, far_tm, 1.0))
-    overlapping_tm = tm.creation.icosphere(subdivisions=2)
-    overlapping_tm.apply_translation([1.5, 0.0, 0.0])
-    cases.append((sphere_tm, overlapping_tm, 0.0))
-    box_tm = tm.creation.box()
-    corner_tm = tm.creation.box()
-    corner_tm.apply_translation([1.2, 1.2, 0.0])
-    cases.append((box_tm, corner_tm, 0.2 * np.sqrt(2.0)))
-
-    for a_tm, b_tm, expected in cases:
-        a_vertices_wp, a_faces_wp = _upload(a_tm, device)
-        b_vertices_wp, b_faces_wp = _upload(b_tm, device)
-        distance, _face_a, _face_b = od.proximity.mesh_to_mesh_distance(
-            a_vertices_wp, a_faces_wp, b_vertices_wp, b_faces_wp
-        )
-        distance_ml = _meshlib_distance(a_tm, b_tm)
-        assert np.isclose(distance, expected, rtol=1e-5, atol=1e-6)
-        assert np.isclose(distance, distance_ml, rtol=1e-5, atol=1e-6)
-
-
-@pytest.mark.parity("mesh_to_mesh_distance", "meshlib")
-def test_mesh_to_mesh_distance_when_the_vertex_bound_is_the_answer(device: str) -> None:
-    """
-    Class A on the regime that the kernel's seeded running minimum could silently break.
-
-    Two icospheres separated along an axis touch closest at a *vertex* of each, so the upper bound
-    the vertex query derives is exactly the answer rather than a strict over-estimate. That matters
-    because the broad phase seeds its global running minimum with that bound: seeded at exactly
-    ``upper_bound ** 2`` the ``>=`` prune discards the very pair achieving it and the call returns
-    ``inf``, which is why the seed carries a relative bump. Swept across a gap that closes to zero
-    and then reverses into an overlap, so the bump is exercised at, above and below the boundary.
-
-    ``findDistance`` is the oracle for the value; the ``isfinite`` and ``face >= 0`` assertions are
-    what catch the pruning failure, since that mode returns ``inf`` rather than a wrong number.
-    """
-    sphere_tm = tm.creation.icosphere(subdivisions=2, radius=1.0)
-    for gap in (0.5, 0.1, 0.01, 0.0, -0.05):
-        shifted_tm = tm.creation.icosphere(subdivisions=2, radius=1.0)
-        shifted_tm.apply_translation([2.0 + gap, 0.0, 0.0])
-        a_vertices_wp, a_faces_wp = _upload(sphere_tm, device)
-        b_vertices_wp, b_faces_wp = _upload(shifted_tm, device)
-        distance, face_a, face_b = od.proximity.mesh_to_mesh_distance(
-            a_vertices_wp, a_faces_wp, b_vertices_wp, b_faces_wp
-        )
-        distance_ml = _meshlib_distance(sphere_tm, shifted_tm)
-        assert np.isfinite(distance), f"gap {gap} pruned the pair achieving the bound"
-        assert face_a >= 0
-        assert face_b >= 0
-        assert np.isclose(distance, max(gap, 0.0), rtol=1e-5, atol=1e-6)
-        assert np.isclose(distance, distance_ml, rtol=1e-5, atol=1e-6)
+    if shift is None:
+        a_tm, b_tm = tm.creation.box(), tm.creation.box()
+        b_tm.apply_translation([1.2, 1.2, 0.0])
+    else:
+        a_tm = tm.creation.icosphere(subdivisions=2, radius=1.0)
+        b_tm = tm.creation.icosphere(subdivisions=2, radius=1.0)
+        b_tm.apply_translation([shift, 0.0, 0.0])
+    a_vertices_wp, a_faces_wp = _upload(a_tm, device)
+    b_vertices_wp, b_faces_wp = _upload(b_tm, device)
+    distance, face_a, face_b = od.proximity.mesh_to_mesh_distance(
+        a_vertices_wp, a_faces_wp, b_vertices_wp, b_faces_wp
+    )
+    assert np.isfinite(distance), "the pair achieving the bound was pruned"
+    assert face_a >= 0
+    assert face_b >= 0
+    assert np.isclose(distance, expected, rtol=1e-5, atol=1e-6)
+    distance_ml = _meshlib_distance(a_tm, b_tm)
+    assert np.isclose(distance, distance_ml, rtol=1e-5, atol=1e-6)
 
 
 def test_mesh_to_mesh_distance_face_a_tie_break_is_the_lowest_index(device: str) -> None:
@@ -639,7 +621,7 @@ def test_mesh_to_mesh_distance_tiled_pass_agrees_with_the_capped_one(
     capped at ``_QUERY_CANDIDATE_CAP`` candidates, then a whole block per face that exceeded the
     cap -- because the traversal is a long tail on a flat floor (98 % of faces return no candidate,
     0.5 % carry half the work). The oracle for the *value* is
-    ``test_mesh_to_mesh_distance_when_the_vertex_bound_is_the_answer`` above, which compares against
+    ``test_mesh_to_mesh_distance_matches_meshlib_across_regimes`` above, which compares against
     MeshLib; what this pins is that routing a face through the tiled walk instead of the serial one
     does not change the answer.
 
@@ -1148,32 +1130,6 @@ def test_normals_at_closest_faces_empty(sphere_irregular: tuple[tm.Trimesh, wp.M
     assert np.all(np.isnan(normals_wp.numpy()))
 
 
-@pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES)
-def test_signed_distance_on_mesh_matches_trimesh(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Class B (a sign negation): both sign modes against trimesh's opposite convention.
-
-    trimesh is positive *inside*, ordito negative, so the reference is negated -- the named
-    transform. On a watertight mesh the ray-parity default and ``sign_mode="winding"`` must both
-    match it, and between themselves only the sign may differ: the unsigned distance is the same
-    query (ordito against ordito).
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    points_np = _random_queries_np()
-    expected_np = -tm_proximity.signed_distance(mesh_tm, points_np)
-    points_wp = points_to_warp(points_np, mesh_wp.device)
-
-    parity_wp = od.proximity.signed_distance_on_mesh(mesh_wp.points, mesh_wp.indices, points_wp)
-    winding_wp = od.proximity.signed_distance_on_mesh(
-        mesh_wp.points, mesh_wp.indices, points_wp, sign_mode="winding"
-    )
-    assert np.allclose(parity_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
-    assert np.allclose(winding_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
-    assert np.allclose(np.abs(parity_wp.numpy()), np.abs(winding_wp.numpy()), rtol=1e-5, atol=1e-5)
-
-
 @pytest.mark.parametrize(
     ("mesh_name", "compare_pymeshlab"),
     [("sphere_irregular_hollow", False), ("torus_irregular", True)],
@@ -1264,7 +1220,7 @@ def test_signed_distance_on_mesh_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class A, sign included: MeshLib shares ordito's convention exactly, and trimesh's does not.
+    Class A, sign included: MeshLib shares ordito's convention exactly; Class B against trimesh.
 
     ``findSignedDistances(refMesh, testPoints)`` is the batched form and the one used here; the
     per-query ``signedDistanceToMesh`` gives the identical numbers. Both are **negative inside**,
@@ -1281,6 +1237,11 @@ def test_signed_distance_on_mesh_matches_meshlib(
     every sign and to 3.1e-07 / 3.6e-07 (``sphere_irregular`` / ``_hollow``). A cavity is what
     makes that non-trivial, since a convex mesh cannot separate a projection-normal sign from a
     parity one.
+
+    trimesh is positive *inside*, ordito negative, so it is compared under a sign negation (the
+    named transform). On a watertight mesh the ray-parity default and ``sign_mode="winding"`` must
+    both match it, and between themselves only the sign may differ: the unsigned distance is the
+    same query (ordito against ordito).
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np = _queries_in_bounds_np(mesh_tm, 200, seed=42)
@@ -1297,10 +1258,14 @@ def test_signed_distance_on_mesh_matches_meshlib(
     assert (distances_ml < 0).any()  # non-vacuity: some query is inside, so the sign is exercised
     assert (distances_ml > 0).any()
     assert np.allclose(distances_wp, distances_ml, rtol=1e-5, atol=1e-5)
-    # The convention, stated as an assert: trimesh's sign is the other one.
-    assert np.allclose(
-        distances_wp, -tm_proximity.signed_distance(mesh_tm, points_np), rtol=1e-5, atol=1e-5
-    )
+    # The convention, stated as an assert: trimesh's sign is the other one, in both sign modes.
+    negated_tm = -tm_proximity.signed_distance(mesh_tm, points_np)
+    winding_wp = od.proximity.signed_distance_on_mesh(
+        mesh_wp.points, mesh_wp.indices, points_wp, sign_mode="winding"
+    ).numpy()
+    assert np.allclose(distances_wp, negated_tm, rtol=1e-5, atol=1e-5)
+    assert np.allclose(winding_wp, negated_tm, rtol=1e-5, atol=1e-5)
+    assert np.allclose(np.abs(distances_wp), np.abs(winding_wp), rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES_TORUS)
@@ -1709,28 +1674,6 @@ def test_winding_number_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
     assert np.allclose(winding_wp, winding_ml, rtol=1e-5, atol=1e-5)
 
 
-def test_winding_number_tiled_matches_igl_on_the_cpu() -> None:
-    """
-    Class A: the tiled winding sum on the CPU device the ``device`` fixture never reaches.
-
-    ``wp.launch_tiled`` executes exactly one lane per block on Warp 1.18's CPU backend -- the lane
-    index from ``wp.tid()`` is always 0 -- so the block-wide ``wp.tile_sum`` this reduction used to
-    perform summed one face per 64-face tile and returned a winding number off by up to 0.99 there,
-    i.e. a whole turn. The reduction is lane-free now; this is the test that fails if it regresses.
-    The CUDA tiled path is held to igl by ``test_winding_number_random[True-*]``.
-    """
-    kernel_device = "cpu"
-    mesh_tm = tm.creation.icosphere(subdivisions=2)
-    mesh_wp = trimesh_to_warp(mesh_tm, kernel_device)
-    rng = np.random.default_rng(43)
-    query_np = rng.random((200, 3), dtype=np.float64) * 3.0 - 1.5
-
-    winding_igl = igl.winding_number(*mesh_igl(mesh_tm), query_np)
-    query_wp = points_to_warp(query_np, kernel_device)
-    winding_wp = od.proximity.winding_number(mesh_wp.points, mesh_wp.indices, query_wp, tiled=True)
-    assert np.allclose(winding_wp.numpy(), np.asarray(winding_igl).ravel(), rtol=1e-5, atol=1e-5)
-
-
 def _near_surface_queries_np(mesh_tm: tm.Trimesh, n: int, seed: int) -> np.ndarray:
     """``n`` queries jittered off the surface at three scales, plus a quarter drawn from the box."""
     rng = np.random.default_rng(seed)
@@ -1833,23 +1776,30 @@ def test_winding_number_tree_fans_from_inside_the_patch_region(
     assert np.allclose(tree_np, serial_np, rtol=0.0, atol=1e-5)
 
 
-def test_winding_number_tree_matches_igl_on_the_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("path", ["tiled", "tree"])
+def test_winding_number_lane_paths_match_igl_on_the_cpu(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
     """
-    Class A: the patch hierarchy on the CPU device the ``device`` fixture never reaches.
+    Class A: the two ``launch_tiled`` paths on the CPU device the ``device`` fixture never reaches.
 
-    Its walk is a ``launch_tiled`` kernel whose lanes split each patch's work by
+    ``wp.launch_tiled`` executes exactly one lane per block on Warp 1.18's CPU backend -- the lane
+    index from ``wp.tid()`` is always 0. The tiled sum used to perform a block-wide ``wp.tile_sum``
+    there, which summed one face per 64-face tile and returned a winding number off by up to 0.99,
+    i.e. a whole turn; it is lane-free now. The patch hierarchy's walk splits each patch's work by
     ``wp.block_dim()``: one lane on the CPU device, which must then cover every fan edge and face
-    itself. A lane partition that ignored the block width would sum a fraction of them there.
+    itself, where a lane partition that ignored the block width would sum a fraction of them. The
+    CUDA paths are held to igl by ``test_winding_number_random``.
     """
     kernel_device = "cpu"
     mesh_tm = tm.creation.icosphere(subdivisions=3)
     mesh_wp = trimesh_to_warp(mesh_tm, kernel_device)
     query_np = _near_surface_queries_np(mesh_tm, 200, seed=43)
-    _force_winding_tree(monkeypatch, enabled=True)
+    _force_winding_tree(monkeypatch, enabled=path == "tree")
 
     winding_igl = igl.winding_number(*mesh_igl(mesh_tm), query_np)
     query_wp = points_to_warp(query_np, kernel_device)
-    winding_wp = od.proximity.winding_number(mesh_wp.points, mesh_wp.indices, query_wp)
+    winding_wp = od.proximity.winding_number(mesh_wp.points, mesh_wp.indices, query_wp, tiled=True)
     assert np.ptp(np.asarray(winding_igl)) > 0.5
     assert np.allclose(winding_wp.numpy(), np.asarray(winding_igl).ravel(), rtol=1e-5, atol=1e-5)
 

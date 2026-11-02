@@ -247,16 +247,21 @@ def test_region_boundary_edges_oriented_round_trips_through_the_fill(
     assert int(od.selection.faces_left_of_contour(faces_wp, unoriented_wp).numpy().sum()) == n_faces
 
 
+@pytest.mark.parametrize("variant", ["buckets", "mates"])
 @pytest.mark.parametrize("oriented", [False, True])
-def test_region_boundary_edges_bucketed_match_the_key_sort(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], oriented: bool, request: pytest.FixtureRequest
+def test_region_boundary_edges_other_pairings_match_the_key_sort(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+    oriented: bool,
+    variant: str,
+    request: pytest.FixtureRequest,
 ) -> None:
     """
-    Ordito against ordito: the bucketed mates give the key sort's seam, row for row.
+    Ordito against ordito: the bucketed mates and given ``mates=`` give the key sort's seam.
 
     The sort path carries the oracles (``test_region_boundary_edges`` and the pyvista
-    comparison); on the bucket path only the seam's halfedges are sorted, so the rows are pinned to
-    strictly ascending ``(max, min)`` keys and to the sort path's rows.
+    comparison). On the bucket path, and given the faces' mates (which only spare the pairing
+    sort), only the seam's halfedges are put in key order, so the rows are pinned to strictly
+    ascending ``(max, min)`` keys and to the sort path's rows.
     """
     mesh_tm, mesh_wp = sphere_irregular
     mask_np = mesh_tm.triangles_center[:, 0] < 0.2
@@ -265,39 +270,17 @@ def test_region_boundary_edges_bucketed_match_the_key_sort(
     sorted_np = od.selection.region_boundary_edges(
         mesh_wp.indices, face_mask, n_vertices, oriented=oriented
     ).numpy()
-    request.getfixturevalue("force_halfedge_buckets")
-    bucketed_np = od.selection.region_boundary_edges(
-        mesh_wp.indices, face_mask, n_vertices, oriented=oriented
-    ).numpy()
-    assert len(sorted_np) > 0
-    _assert_edge_key_order(bucketed_np)
-    assert np.array_equal(sorted_np, bucketed_np)
-
-
-@pytest.mark.parametrize("oriented", [False, True])
-def test_region_boundary_edges_mates_change_no_answer(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], oriented: bool
-) -> None:
-    """
-    Ordito against ordito: ``mates=`` only spares the pairing sort.
-
-    Given the faces' mates, only the seam's halfedges are put in key order, and the rows must be
-    the plain call's.
-    """
-    mesh_tm, mesh_wp = sphere_irregular
-    mask_np = mesh_tm.triangles_center[:, 0] < 0.2
-    face_mask = wp.array(mask_np, dtype=wp.bool, device=mesh_wp.indices.device)
-    n_vertices = len(mesh_tm.vertices)
-    mates_wp = od.halfedge.halfedge_mates(mesh_wp.indices, n_vertices)
-
-    plain_np = od.selection.region_boundary_edges(
-        mesh_wp.indices, face_mask, n_vertices, oriented=oriented
-    ).numpy()
-    given_np = od.selection.region_boundary_edges(
+    mates_wp = None
+    if variant == "buckets":
+        request.getfixturevalue("force_halfedge_buckets")
+    else:
+        mates_wp = od.halfedge.halfedge_mates(mesh_wp.indices, n_vertices)
+    other_np = od.selection.region_boundary_edges(
         mesh_wp.indices, face_mask, n_vertices, oriented=oriented, mates=mates_wp
     ).numpy()
-    assert len(plain_np) > 0
-    assert np.array_equal(given_np, plain_np)
+    assert len(sorted_np) > 0
+    _assert_edge_key_order(other_np)
+    assert np.array_equal(sorted_np, other_np)
 
 
 @pytest.mark.parametrize(
@@ -1042,46 +1025,30 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     assert int(meshset_pml.current_mesh().face_number()) == half
 
 
+@pytest.mark.parametrize(
+    ("mesh_name", "selection"),
+    [
+        *((name, selection) for name in MESHES for selection in ("random_third", "all_faces")),
+        ("sphere_irregular", "repeated"),
+    ],
+)
 @pytest.mark.parity("submesh_from_face_indices", "trimesh")
-def test_submesh_from_face_indices_matches_trimesh_on_short_lists(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    Class A: a short index list against ``trimesh.util.submesh``, positions and remapped indices.
-
-    ``repair=False, append=False`` on the reference side is not a transform but a *disabling* of
-    one: trimesh would otherwise weld and reorder, a different operation from this one. The list
-    repeats faces, which is where the *face* count is the interesting half: a face named three times
-    must appear three times -- the output length is asserted exactly -- while its vertices are
-    shared, so the vertex count is bounded by the distinct faces' corners rather than fixed.
-    """
-    mesh_tm, mesh_wp = sphere_irregular
-    face_indices_np = np.array([0, 0, 0, 5, 5, 12, 12], dtype=np.int32)
-    face_indices = wp.array(face_indices_np, dtype=wp.int32, device=mesh_wp.points.device)
-    submesh_tm = tm.util.submesh(mesh_tm, [face_indices_np], repair=False, append=False)[0]
-    submesh_vertices_wp, submesh_faces_wp = od.selection.submesh_from_face_indices(
-        mesh_wp.points, mesh_wp.indices, face_indices
-    )
-    assert submesh_vertices_wp.shape == (len(submesh_tm.vertices),)
-    assert submesh_vertices_wp.size <= len(np.unique(face_indices_np)) * 3
-    assert submesh_faces_wp.shape == (len(face_indices_np) * 3,)
-    assert np.allclose(submesh_vertices_wp.numpy(), submesh_tm.vertices)
-    assert np.array_equal(submesh_faces_wp.numpy(), submesh_tm.faces.reshape(-1))
-
-
-@pytest.mark.parametrize("selection", ["random_third", "all_faces"])
-@pytest.mark.parametrize("mesh_name", MESHES)
 def test_submesh_from_face_indices_matches_trimesh(
     request: pytest.FixtureRequest, mesh_name: str, selection: str
 ) -> None:
     """
-    Class A over a random third of the faces and over every face, on three fixtures, no transform.
+    Class A against ``trimesh.util.submesh``: positions and remapped indices, no transform.
 
-    Both the vertex *order* and the index remapping are compared elementwise, so this pins the
+    ``repair=False, append=False`` on the reference side is not a transform but a *disabling* of
+    one: trimesh would otherwise weld and reorder, a different operation from this one. Both the
+    vertex *order* and the index remapping are compared elementwise, so this pins the
     first-occurrence compaction rule and not merely the resulting set. Selecting every face must
     reproduce the input mesh, not merely an equivalent one: the identity case is the one that pins
     the compaction's *order*, since any renumbering that is not the identity there would still give
-    a valid mesh with the same geometry.
+    a valid mesh with the same geometry. A short ``repeated`` list is where the *face* count is the
+    interesting half: a face named three times must appear three times -- the output length is
+    asserted exactly -- while its vertices are shared, so the vertex count is bounded by the
+    distinct faces' corners rather than fixed.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_faces = mesh_tm.faces.shape[0]
@@ -1089,15 +1056,18 @@ def test_submesh_from_face_indices_matches_trimesh(
         rng = np.random.default_rng(42)
         n_select = max(1, n_faces // 3)
         face_indices_np = rng.choice(n_faces, size=n_select, replace=False).astype(np.int32)
-    else:
+    elif selection == "all_faces":
         face_indices_np = np.arange(n_faces, dtype=np.int32)
+    else:
+        face_indices_np = np.array([0, 0, 0, 5, 5, 12, 12], dtype=np.int32)
     face_indices = wp.array(face_indices_np, dtype=wp.int32, device=mesh_wp.points.device)
     submesh_tm = tm.util.submesh(mesh_tm, [face_indices_np], repair=False, append=False)[0]
     submesh_vertices_wp, submesh_faces_wp = od.selection.submesh_from_face_indices(
         mesh_wp.points, mesh_wp.indices, face_indices
     )
-    assert submesh_vertices_wp.size <= mesh_tm.vertices.shape[0]
-    assert submesh_faces_wp.size == face_indices_np.size * 3
+    assert submesh_vertices_wp.shape == (len(submesh_tm.vertices),)
+    assert submesh_vertices_wp.size <= len(np.unique(face_indices_np)) * 3
+    assert submesh_faces_wp.shape == (face_indices_np.size * 3,)
     assert np.allclose(submesh_vertices_wp.numpy(), submesh_tm.vertices)
     assert np.array_equal(submesh_faces_wp.numpy(), submesh_tm.faces.reshape(-1))
 
@@ -1285,17 +1255,21 @@ def test_delete_region_keep_boundary_matches_meshlib(
     assert len(kept_boundary_np) == sum(loop.size for loop in new_loops)
 
 
-def test_delete_region_keep_boundary_with_nothing_deleted_reports_no_rim(
-    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
+def test_delete_region_keep_boundary_reports_no_rim_where_none_opens(
+    device: str, saddle_graded: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
-    Not a library comparison: an empty deletion opens no rim, whatever rims the input has.
+    Not a library comparison: deleting nothing, or whole components, opens no rim on what survives.
 
-    The hemisphere arrives with one, which is what makes the empty answer a claim rather than a
-    tautology -- its rim is a loop of the survivor, and it must not be reported as new.
+    An empty deletion opens no rim, whatever rims the input has: ``saddle_graded`` arrives with
+    one, which is what makes the empty answer a claim rather than a tautology -- its rim is a loop
+    of the survivor, and it must not be reported as new. Two disjoint open grids: deleting all of
+    one leaves the other with its own rim only, which is not new, in the list form and the packed
+    form (``[0]`` offsets); deleting both leaves nothing. The surviving grid's rim is asserted
+    present, so the empty answer is a claim about novelty, not an absent boundary. Two disjoint
+    closed spheres: deleting one leaves a closed survivor with no loop at all.
     """
     mesh_tm, mesh_wp = saddle_graded
-    device = mesh_wp.points.device
     assert od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).size > 0
     nothing = wp.zeros(mesh_tm.faces.shape[0], dtype=wp.bool, device=device)
     kept_vertices_wp, kept_faces_wp, loops = od.selection.delete_region_keep_boundary(
@@ -1305,17 +1279,6 @@ def test_delete_region_keep_boundary_with_nothing_deleted_reports_no_rim(
     assert np.array_equal(kept_faces_wp.numpy(), mesh_wp.indices.numpy())
     assert kept_vertices_wp.size == mesh_wp.points.size
 
-
-def test_delete_region_keep_boundary_of_whole_components_reports_no_rim(device: str) -> None:
-    """
-    Not a library comparison: deleting a whole component opens no rim on what survives.
-
-    Two disjoint open grids: deleting all of one leaves the other with its own rim only, which is
-    not new, in the list form and the packed form (``[0]`` offsets); deleting both leaves nothing.
-    The surviving grid's rim is asserted present, so the empty answer is a claim about novelty, not
-    an absent boundary. Two disjoint closed spheres: deleting one leaves a closed survivor with no
-    loop at all.
-    """
     vertices_np, faces_np = _grid_mesh(4)
     n_vertices, n_faces = len(vertices_np), len(faces_np) // 3
     pair_vertices_np = np.vstack([vertices_np, vertices_np + np.array([0.0, 0.0, 5.0])])
@@ -1374,7 +1337,8 @@ def test_delete_region_keep_boundary_reports_only_new_rims(
     Both regions are grown face by face over shared edges, so each opens one *simple* rim; the
     loops are asserted simple to keep it that way. An earlier version took the first faces in index
     order, which were not contiguous: the interior region's rim was pinched, and the test passed on
-    a loop the vertex walk had left full of ``(0, 0)`` edges. The pinched case is the next test.
+    a loop the vertex walk had left full of ``(0, 0)`` edges. The pinched case is the next test's
+    ``pinched`` arm.
     """
     mesh_tm, mesh_wp = saddle_graded
     n_faces = mesh_tm.faces.shape[0]
@@ -1409,51 +1373,6 @@ def test_delete_region_keep_boundary_reports_only_new_rims(
     assert edge_loop_np.size > rim_vertices_np.size  # the rim grew rather than vanished
 
 
-def test_delete_region_keep_boundary_reports_a_pinched_rim(
-    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    Not a library comparison: two deleted faces that share only a corner open a rim that is new.
-
-    The deletion's rim meets itself at the shared vertex, so it is not a set of simple loops through
-    the vertices. The loops come back walked by halfedge sector, every rim edge once, and all of
-    them are new: nothing reported may be an input rim edge, and every edge of both deleted faces
-    must be reported. This is the case the vertex walk used to answer with fake ``(0, 0)`` edges.
-    """
-    mesh_tm, mesh_wp = saddle_graded
-    n_faces = mesh_tm.faces.shape[0]
-    device = mesh_wp.points.device
-    rim_vertices_np = od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
-    faces_np = mesh_tm.faces
-    interior_faces_np = np.flatnonzero(~np.isin(faces_np, rim_vertices_np).any(axis=1))
-    # Two faces meeting at exactly one vertex and no edge: their rims meet at that vertex.
-    edge_neighbours = {frozenset(pair) for pair in mesh_tm.face_adjacency.tolist()}
-    first = int(interior_faces_np[0])
-    second = next(
-        int(f)
-        for f in interior_faces_np
-        if np.intersect1d(faces_np[f], faces_np[first]).size == 1
-        and frozenset((first, int(f))) not in edge_neighbours
-    )
-    pinched_np = np.zeros(n_faces, dtype=bool)
-    pinched_np[[first, second]] = True
-
-    _kept_vertices_wp, _kept_faces_wp, loops = od.selection.delete_region_keep_boundary(
-        mesh_wp.points, mesh_wp.indices, wp.array(pinched_np, dtype=wp.bool, device=device)
-    )
-    reported_np = np.concatenate(
-        [
-            np.sort(np.stack([loop_np, np.roll(loop_np, -1)], axis=1), axis=1)
-            for loop_np in (loop_wp.numpy() for loop_wp in loops)
-        ]
-    )
-    deleted_edges_np = np.sort(
-        np.concatenate([faces_np[pinched_np][:, [a, b]] for a, b in ((0, 1), (1, 2), (2, 0))]),
-        axis=1,
-    )
-    assert np.array_equal(lexsort_rows(reported_np), lexsort_rows(deleted_edges_np))
-
-
 @pytest.mark.parametrize("region", ["interior", "two_interior", "on_rim", "pinched"])
 def test_delete_region_keep_boundary_is_its_packed_form_split(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh], region: str
@@ -1464,6 +1383,12 @@ def test_delete_region_keep_boundary_is_its_packed_form_split(
     ``delete_region_keep_boundary`` carries the MeshLib comparison above; this pins
     ``delete_region_keep_boundary_with_offsets`` to it over every shape of answer: one rim, two,
     the input's rim grown (so a loop is classified *and* kept), and a pinched rim.
+
+    Not a library comparison, the pinched arm: two deleted faces that share only a corner open a
+    rim that meets itself at the shared vertex, so it is not a set of simple loops through the
+    vertices. The loops come back walked by halfedge sector, every rim edge once, and all of them
+    are new: nothing reported may be an input rim edge, and every edge of both deleted faces must
+    be reported. This is the case the vertex walk used to answer with fake ``(0, 0)`` edges.
     """
     mesh_tm, mesh_wp = saddle_graded
     n_faces = mesh_tm.faces.shape[0]
@@ -1481,15 +1406,7 @@ def test_delete_region_keep_boundary_is_its_packed_form_split(
         on_rim_np = np.flatnonzero(np.isin(mesh_tm.faces, rim_vertices_np).sum(axis=1) >= 2)
         mask_np |= _grown_region(mesh_tm, int(on_rim_np[0]), 4, np.ones(n_faces, dtype=bool))
     if region == "pinched":
-        first = int(interior_faces_np[0])
-        adjacent = {frozenset(pair) for pair in mesh_tm.face_adjacency.tolist()}
-        second = next(
-            int(f)
-            for f in interior_faces_np
-            if np.intersect1d(mesh_tm.faces[f], mesh_tm.faces[first]).size == 1
-            and frozenset((first, int(f))) not in adjacent
-        )
-        mask_np[[first, second]] = True
+        mask_np |= _pinched_pair(mesh_tm, interior_faces_np)
     mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
 
     vertices_wp, faces_wp, loops_wp = od.selection.delete_region_keep_boundary(
@@ -1514,6 +1431,36 @@ def test_delete_region_keep_boundary_is_its_packed_form_split(
     flat_np = flat_wp.numpy()
     for i, loop_wp in enumerate(loops_wp):
         assert np.array_equal(loop_wp.numpy(), flat_np[offsets_np[i] : offsets_np[i + 1]])
+    if region == "pinched":
+        reported_np = np.concatenate(
+            [
+                np.sort(np.stack([loop_np, np.roll(loop_np, -1)], axis=1), axis=1)
+                for loop_np in (loop_wp.numpy() for loop_wp in loops_wp)
+            ]
+        )
+        deleted_edges_np = np.sort(
+            np.concatenate(
+                [mesh_tm.faces[mask_np][:, [a, b]] for a, b in ((0, 1), (1, 2), (2, 0))]
+            ),
+            axis=1,
+        )
+        assert np.array_equal(lexsort_rows(reported_np), lexsort_rows(deleted_edges_np))
+
+
+def _pinched_pair(mesh_tm: tm.Trimesh, interior_faces_np: np.ndarray) -> np.ndarray:
+    """Face mask of two interior faces meeting at exactly one vertex and no edge."""
+    faces_np = mesh_tm.faces
+    edge_neighbours = {frozenset(pair) for pair in mesh_tm.face_adjacency.tolist()}
+    first = int(interior_faces_np[0])
+    second = next(
+        int(f)
+        for f in interior_faces_np
+        if np.intersect1d(faces_np[f], faces_np[first]).size == 1
+        and frozenset((first, int(f))) not in edge_neighbours
+    )
+    mask_np = np.zeros(faces_np.shape[0], dtype=bool)
+    mask_np[[first, second]] = True
+    return mask_np
 
 
 def _grown_region(

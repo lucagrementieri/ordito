@@ -741,36 +741,23 @@ def test_upsample_polyline_counts_at_an_exact_multiple(
     assert upsampled.shape == (pieces,)
 
 
-def test_upsample_polyline_rejects_an_unknown_method(device: str) -> None:
-    points_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
-    with pytest.raises(ValueError, match="method must be 'floor' or 'bisect'"):
-        od.polyline.polyline_upsample(
-            points_to_warp(points_np, device),
-            0.25,
-            method="ceil",  # pyright: ignore[reportArgumentType]
-        )
-
-
 # --- smooth upsample (curvature-aware, NumPy reference + circle oracle) ---
 
 
-def test_smooth_upsample_matches_reference(device: str) -> None:
+@pytest.mark.parametrize(
+    ("seed", "closed"), [pytest.param(50, False, id="open"), pytest.param(52, True, id="closed")]
+)
+def test_smooth_upsample_matches_reference(device: str, seed: int, closed: bool) -> None:
+    """Not a library comparison: ``_smooth_upsample_np``, open and ``closed=True`` input."""
     step = 0.3
-    pts_np = _random_open_polyline(50)
-    smoothed_wp = od.polyline.polyline_smooth_upsample(points_to_warp(pts_np, device), step)
-    assert np.allclose(
-        smoothed_wp.numpy(), _smooth_upsample_np(pts_np, step, closed=False), rtol=1e-4, atol=1e-4
-    )
-
-
-def test_smooth_upsample_closed_matches_reference(device: str) -> None:
-    step = 0.3
-    pts_np = _closed_from(_random_open_polyline(52))
+    pts_np = _random_open_polyline(seed)
+    if closed:
+        pts_np = _closed_from(pts_np)
     smoothed_wp = od.polyline.polyline_smooth_upsample(
-        points_to_warp(pts_np, device), step, closed=True
+        points_to_warp(pts_np, device), step, closed=closed
     )
     assert np.allclose(
-        smoothed_wp.numpy(), _smooth_upsample_np(pts_np, step, closed=True), rtol=1e-4, atol=1e-4
+        smoothed_wp.numpy(), _smooth_upsample_np(pts_np, step, closed=closed), rtol=1e-4, atol=1e-4
     )
 
 
@@ -824,11 +811,6 @@ def test_smooth_upsample_detects_an_already_closed_input(device: str) -> None:
     closed_np = np.concatenate([ring_np, ring_np[:1]], axis=0)
     smoothed = od.polyline.polyline_smooth_upsample(points_to_warp(closed_np, device), 0.35).numpy()
     assert np.allclose(np.linalg.norm(smoothed[:, :2], axis=-1), radius, rtol=1e-3, atol=1e-3)
-
-
-def test_smooth_upsample_short_polyline_unchanged(device: str) -> None:
-    single = points_to_warp(np.array([[1.0, 2.0, 3.0]]), device)
-    assert od.polyline.polyline_smooth_upsample(single, 0.5).size == 1
 
 
 # --- cumulative_arc_length (NumPy reference) ---
@@ -981,13 +963,6 @@ def test_downsample_polyline_above_the_doubling_threshold(device: str) -> None:
     assert np.all(np.diff(arc_np[matches]) >= step - 1e-4)
 
 
-def test_downsample_single_point_is_returned_unchanged(device: str) -> None:
-    """Not a library comparison: a polyline with no segment has nothing to drop."""
-    single_wp = points_to_warp(np.array([[0.5, -1.0, 2.0]]), device)
-    kept_wp = od.polyline.polyline_downsample(single_wp, 0.25)
-    assert np.array_equal(kept_wp.numpy(), single_wp.numpy())
-
-
 @pytest.mark.parity("polyline_downsample", "meshlib")
 def test_downsample_polyline_matches_meshlib(device: str) -> None:
     """
@@ -1081,12 +1056,6 @@ def test_resample_polyline_matches_trimesh(device: str) -> None:
     resampled_tm = tm_traversal.resample_path(pts_np, count=num_points)
     resampled_wp = od.polyline.polyline_resample(points_to_warp(pts_np, device), num_points)
     assert np.allclose(resampled_wp.numpy(), resampled_tm, rtol=1e-3, atol=1e-3)
-
-
-def test_resample_single_point_repeats(device: str) -> None:
-    point_np = np.array([[1.0, 2.0, 3.0]])
-    resampled_wp = od.polyline.polyline_resample(points_to_warp(point_np, device), 5)
-    assert np.allclose(resampled_wp.numpy(), np.repeat(point_np, 5, axis=0), rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("closed", [False, True])
@@ -1275,6 +1244,15 @@ def test_polyline_radius_with_an_explicit_plane_needs_no_fit(
             "polyline_normal requires at least three points",
             id="radius-closed-three-points-default-plane",
         ),
+        pytest.param(
+            lambda device: od.polyline.polyline_upsample(
+                points_to_warp(np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), device),
+                0.25,
+                method="ceil",  # pyright: ignore[reportArgumentType]
+            ),
+            "method must be 'floor' or 'bisect'",
+            id="upsample-unknown-method",
+        ),
     ],
 )
 def test_invalid_inputs_raise(device: str, call: Callable[[str], object], match: str) -> None:
@@ -1291,15 +1269,46 @@ def test_invalid_inputs_raise(device: str, call: Callable[[str], object], match:
         call(device)
 
 
-def test_length_short_polyline_is_zero(device: str) -> None:
-    single = points_to_warp(np.array([[0.0, 0.0, 0.0]]), device)
-    assert od.polyline.polyline_length(single) == 0.0
+@pytest.mark.parametrize(
+    ("call", "expected"),
+    [
+        pytest.param(
+            lambda polyline: np.array([od.polyline.polyline_length(polyline)]), [0.0], id="length"
+        ),
+        pytest.param(
+            lambda polyline: od.polyline.polyline_angles(polyline).numpy(), [0.0], id="angles"
+        ),
+        pytest.param(
+            lambda polyline: od.polyline.polyline_smooth_upsample(polyline, 0.5).numpy(),
+            [[0.5, -1.0, 2.0]],
+            id="smooth-upsample",
+        ),
+        pytest.param(
+            lambda polyline: od.polyline.polyline_downsample(polyline, 0.25).numpy(),
+            [[0.5, -1.0, 2.0]],
+            id="downsample",
+        ),
+        pytest.param(
+            lambda polyline: od.polyline.polyline_resample(polyline, 5).numpy(),
+            [[0.5, -1.0, 2.0]] * 5,
+            id="resample-repeats",
+        ),
+    ],
+)
+def test_single_point_polyline(
+    device: str, call: Callable[[wp.array[wp.vec3]], np.ndarray], expected: list[object]
+) -> None:
+    """
+    Not a library comparison: a polyline with no segment, through each function's early return.
 
-
-def test_angles_short_polyline_is_zeros(device: str) -> None:
-    single = points_to_warp(np.array([[0.0, 0.0, 0.0]]), device)
-    angles = od.polyline.polyline_angles(single).numpy()
-    assert np.array_equal(angles, np.zeros(1, dtype=np.float32))
+    It has zero length and one zero angle; upsampling or downsampling returns it unchanged, and
+    resampling repeats the point.
+    """
+    single_wp = points_to_warp(np.array([[0.5, -1.0, 2.0]]), device)
+    result_np = call(single_wp)
+    expected_np = np.array(expected, dtype=np.float32)
+    assert result_np.shape == expected_np.shape
+    assert np.allclose(result_np, expected_np, rtol=1e-5, atol=1e-5)
 
 
 # --- triangulate (ear clipping) ---
@@ -1478,10 +1487,11 @@ def test_triangulate_polyline_matches_pyvista(device: str) -> None:
         )
 
 
-def test_triangulate_convex_is_fan(device: str) -> None:
-    pts_np = _planar_circle(8, 1.5)
+@pytest.mark.parametrize("n", [3, 8])
+def test_triangulate_convex_is_fan(device: str, n: int) -> None:
+    """Not a library comparison: a convex polygon (a lone triangle included) is the fan at 0."""
+    pts_np = _planar_circle(n, 1.5)
     faces_wp = od.polyline.polyline_triangulate(points_to_warp(pts_np, device))
-    n = pts_np.shape[0]
     expected = np.stack([np.zeros(n - 2), np.arange(1, n - 1), np.arange(2, n)], axis=1)
     assert np.array_equal(faces_wp.numpy(), expected.astype(np.int32))
     _assert_valid_triangulation(pts_np, faces_wp.numpy())
@@ -1512,13 +1522,6 @@ def test_triangulate_closed_input_matches_open(device: str) -> None:
     faces_open = od.polyline.polyline_triangulate(points_to_warp(pts_np, device)).numpy()
     faces_closed = od.polyline.polyline_triangulate(points_to_warp(closed_np, device)).numpy()
     assert np.array_equal(faces_open, faces_closed)
-
-
-def test_triangulate_single_triangle(device: str) -> None:
-    pts_np = _planar_circle(3, 1.5)
-    faces_wp = od.polyline.polyline_triangulate(points_to_warp(pts_np, device))
-    assert faces_wp.shape == (1, 3)
-    assert set(faces_wp.numpy().ravel().tolist()) == {0, 1, 2}
 
 
 def test_triangulate_too_few_points(device: str) -> None:
@@ -1990,11 +1993,17 @@ def _tiled_area(ring_np: np.ndarray, faces_np: np.ndarray) -> float:
     return 0.5 * float(np.abs(edge_a[:, 0] * edge_b[:, 1] - edge_a[:, 1] * edge_b[:, 0]).sum())
 
 
-def test_triangulate_polygon(device: str) -> None:
-    ring_np = _SQUARE_RING
+@pytest.mark.parametrize("closed", [False, True], ids=["open", "repeated-closing-point"])
+def test_triangulate_polygon(device: str, closed: bool) -> None:
+    """
+    Not a library comparison: a square ring tiles into two faces over its own four points.
+
+    A ring repeating its first point drops the repeat, so the answer is the open ring's.
+    """
+    ring_np = np.vstack((_SQUARE_RING, _SQUARE_RING[:1])) if closed else _SQUARE_RING
     vertices_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
-    assert vertices_wp.size == ring_np.shape[0]
-    assert faces_wp.size // 3 == ring_np.shape[0] - 2
+    assert vertices_wp.size == _SQUARE_RING.shape[0]
+    assert faces_wp.size // 3 == _SQUARE_RING.shape[0] - 2
     # No Steiner points, and the triangles must tile the polygon exactly.
     assert np.isclose(_tiled_area(vertices_wp.numpy(), faces_wp.numpy()), 2.0, rtol=1e-5)
 
@@ -2145,13 +2154,6 @@ def test_triangulate_polygon_near_collinear(device: str) -> None:
     assert _signed_ring_area(ring_np) < 0.0
     _assert_tiles_the_ring(ring_np, vertices_tm, faces_tm, reoriented=True)
     _assert_tiles_the_ring(ring_np, vertices_wp.numpy(), faces_wp.numpy().reshape(-1, 3))
-
-
-def test_triangulate_polygon_drops_repeated_closing_point(device: str) -> None:
-    closed_np = np.vstack((_SQUARE_RING, _SQUARE_RING[:1]))
-    vertices_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(closed_np, device))
-    assert vertices_wp.size == _SQUARE_RING.shape[0]
-    assert faces_wp.size // 3 == _SQUARE_RING.shape[0] - 2
 
 
 def test_triangulate_polygon_too_few_points(device: str) -> None:

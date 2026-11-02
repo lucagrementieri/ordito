@@ -566,33 +566,36 @@ def test_vertex_curvatures_match_pymeshlab(request: pytest.FixtureRequest, mesh_
     )
 
 
-@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
+@pytest.mark.parametrize("radius", [0.1, 0.5])
 @pytest.mark.parity("discrete_gaussian_curvature", "trimesh")
-def test_discrete_gaussian_curvature(request: pytest.FixtureRequest, mesh_name: str):
+def test_discrete_gaussian_curvature(
+    saddle_graded: tuple[tm.Trimesh, wp.Mesh], radius: float
+) -> None:
     """
     Class A: the Cohen-Steiner/Morvan ball measure against trimesh's, at the same radius.
 
     Both sides are fed *trimesh's* face angles, so the comparison isolates the ball integration
-    rather than re-testing [`triangles.face_angles`], which has its own oracle. Only four query
-    points, which is enough because the measure is local and each one integrates an independent
-    1-ring.
+    rather than re-testing [`triangles.face_angles`], which has its own oracle. The call runs with
+    the CPU as Warp's current device, so on a CUDA run it must still answer on its inputs' device: a
+    launch that forwarded no ``device=`` once went unseen, because the ordinary tests run with the
+    arrays' device already current (companion to ``test_vertices.py``'s scatter-wrapper case).
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-
-    face_angles_tm = mesh_tm.face_angles
-    points_tm = mesh_tm.vertices[:4]
-    radius = 0.1
+    mesh_tm, mesh_wp = saddle_graded
+    points_tm = mesh_tm.vertices
     gauss_curvature_tm = tm.curvature.discrete_gaussian_curvature_measure(
         mesh_tm, points_tm, radius
     )
 
     points_wp = points_to_warp(points_tm, mesh_wp.device)
     face_angles_wp = odt.as_array2d(
-        wp.array(face_angles_tm, dtype=wp.float32, device=mesh_wp.device), wp.float32
+        wp.array(mesh_tm.face_angles, dtype=wp.float32, device=mesh_wp.device), wp.float32
     )
-    gauss_curvature_wp = od.curvature.discrete_gaussian_curvature(
-        points_wp, mesh_wp.points, mesh_wp.indices, face_angles_wp, radius
-    )
+    with wp.ScopedDevice("cpu"):
+        gauss_curvature_wp = od.curvature.discrete_gaussian_curvature(
+            points_wp, mesh_wp.points, mesh_wp.indices, face_angles_wp, radius
+        )
+    assert str(gauss_curvature_wp.device) == str(mesh_wp.device)
+    assert_nonconstant(gauss_curvature_tm, tol=1e-3)
     assert np.allclose(gauss_curvature_wp.numpy(), gauss_curvature_tm, rtol=1e-5, atol=1e-5)
 
 
@@ -628,10 +631,17 @@ def test_discrete_gaussian_curvature_edge_cases(saddle_graded: tuple[tm.Trimesh,
     assert np.array_equal(zero.numpy(), np.zeros(3, dtype=np.float32))
 
 
-@pytest.mark.parametrize("radius", [2.0, 0.5])
+@pytest.mark.parametrize(
+    ("radius", "supplied"),
+    [
+        pytest.param(2.0, False, id="2.0"),
+        pytest.param(0.5, False, id="0.5"),
+        pytest.param(0.5, True, id="0.5-supplied"),
+    ],
+)
 @pytest.mark.parity("discrete_mean_curvature", "trimesh")
 def test_discrete_mean_curvature(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], radius: float
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], radius: float, supplied: bool
 ) -> None:
     """
     Class A: the ball mean-curvature measure against trimesh's, over every vertex.
@@ -643,7 +653,8 @@ def test_discrete_mean_curvature(
     permuted result, an off-by-one in the gather or a query/vertex index swap is visible, and the
     assert below checks that the reference really did vary before comparing to it. (On a regular
     icosahedron the whole-surface radius gave one value repeated, which could see only a global
-    scale error.)
+    scale error.) The ``supplied`` arm hands over a caller's ``face_adjacency`` pair, which must
+    give the same measure as the derived one.
 
     MeshLab's pointwise curvature is a different operator, compared as a statistic in
     ``test_discrete_curvatures_match_pymeshlab_pointwise``.
@@ -652,26 +663,10 @@ def test_discrete_mean_curvature(
     points_tm = mesh_tm.vertices
     mean_curvature_tm = tm.curvature.discrete_mean_curvature_measure(mesh_tm, points_tm, radius)
 
-    points_wp = points_to_warp(points_tm, mesh_wp.device)
-    mean_curvature_wp = od.curvature.discrete_mean_curvature(
-        points_wp, mesh_wp.points, mesh_wp.indices, radius
-    )
-    # Non-vacuous on the curved fixture: a constant reference would pass any per-vertex bug.
-    assert_nonconstant(mean_curvature_tm, tol=1e-3)
-    assert np.allclose(mean_curvature_wp.numpy(), mean_curvature_tm, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parity("discrete_mean_curvature", "trimesh")
-def test_discrete_mean_curvature_with_supplied_adjacency(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """Class A: a caller's ``face_adjacency`` pair gives trimesh's measure, as derived ones do."""
-    mesh_tm, mesh_wp = sphere_irregular
-    radius = 0.5
-    points_tm = mesh_tm.vertices[:64]
-    mean_curvature_tm = tm.curvature.discrete_mean_curvature_measure(mesh_tm, points_tm, radius)
-    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(
-        mesh_wp.indices, return_edges=True
+    adjacency_wp, adjacency_edges_wp = (
+        od.adjacency.face_adjacency(mesh_wp.indices, return_edges=True)
+        if supplied
+        else (None, None)
     )
     mean_curvature_wp = od.curvature.discrete_mean_curvature(
         points_to_warp(points_tm, mesh_wp.device),
@@ -681,6 +676,7 @@ def test_discrete_mean_curvature_with_supplied_adjacency(
         face_adjacency=adjacency_wp,
         face_adjacency_edges=adjacency_edges_wp,
     )
+    # Non-vacuous on the curved fixture: a constant reference would pass any per-vertex bug.
     assert_nonconstant(mean_curvature_tm, tol=1e-3)
     assert np.allclose(mean_curvature_wp.numpy(), mean_curvature_tm, rtol=1e-5, atol=1e-5)
 
@@ -756,42 +752,6 @@ def test_discrete_mean_curvature_without_a_dihedral(device: str, case: str) -> N
         2.0,
     )
     assert np.array_equal(measure_wp.numpy(), np.zeros(len(queries_np), dtype=np.float32))
-
-
-@pytest.mark.skipif(
-    not wp.is_cuda_available(),
-    reason="needs a second device to make the current device differ from the arrays' device",
-)
-def test_discrete_gaussian_curvature_ignores_the_current_device(
-    saddle_graded: tuple[tm.Trimesh, wp.Mesh],
-):
-    """
-    Class A: ``discrete_gaussian_curvature`` answers on its inputs' device, not Warp's current one.
-
-    Companion to ``test_vertices.py``'s scatter-wrapper case: a launch of this function that
-    forwarded no ``device=`` once went unseen, because the ordinary tests run with the arrays'
-    device already current.
-    """
-    mesh_tm, mesh_wp = saddle_graded
-    radius = 0.5
-    points_tm = mesh_tm.vertices
-    face_angles_tm = mesh_tm.face_angles
-    gauss_curvature_tm = tm.curvature.discrete_gaussian_curvature_measure(
-        mesh_tm, points_tm, radius
-    )
-
-    points_wp = points_to_warp(points_tm, mesh_wp.device)
-    face_angles_wp = odt.as_array2d(
-        wp.array(face_angles_tm, dtype=wp.float32, device=mesh_wp.device), wp.float32
-    )
-
-    with wp.ScopedDevice("cpu"):
-        gauss_curvature_wp = od.curvature.discrete_gaussian_curvature(
-            points_wp, mesh_wp.points, mesh_wp.indices, face_angles_wp, radius
-        )
-
-    assert str(gauss_curvature_wp.device) == str(mesh_wp.device)
-    assert np.allclose(gauss_curvature_wp.numpy(), gauss_curvature_tm, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("frame_independent", [True, False])

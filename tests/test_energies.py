@@ -14,6 +14,7 @@ mistaken for a direct one.
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable
 from typing import Literal, cast
 
 import igl
@@ -62,20 +63,6 @@ def test_edge_length_loss_matches_pytorch3d(
 
     assert loss_p3d > 1e-6
     assert np.allclose(loss_wp, loss_p3d, rtol=1e-5, atol=0.0)
-
-
-def test_edge_length_loss_edges_change_no_answer(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """Ordito against ordito: ``unique_edges=`` only spares the edge sort; the loss is unchanged."""
-    _mesh_tm, mesh_wp = sphere_irregular
-    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
-    plain = od.energies.edge_length_loss(mesh.vertices, mesh.faces, 0.3)
-    given = od.energies.edge_length_loss(
-        mesh.vertices, mesh.faces, 0.3, unique_edges=mesh.edges_unique
-    )
-    assert plain > 0.0
-    assert given == plain
 
 
 @pytest.mark.parametrize("mesh_name", [*MESHES, "mobius", "boy_surface"])
@@ -141,20 +128,6 @@ def test_normal_consistency_loss_matches_pytorch3d_on_flips_and_fans(
     assert np.allclose(fan_wp, fan_p3d, rtol=1e-5, atol=0.0)
 
 
-def test_normal_consistency_loss_sorted_edge_keys_change_no_answer(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """Ordito against ordito: ``sorted_edge_keys=`` only spares the edge sort."""
-    _mesh_tm, mesh_wp = sphere_irregular
-    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    plain = od.energies.normal_consistency_loss(vertices_wp, faces_wp)
-    given = od.energies.normal_consistency_loss(
-        vertices_wp, faces_wp, sorted_edge_keys=od.adjacency.sorted_face_edge_keys(faces_wp)
-    )
-    assert plain > 0.0
-    assert given == plain
-
-
 @pytest.mark.parametrize(
     ("method", "mesh_name"),
     [
@@ -197,7 +170,7 @@ def test_laplacian_smoothing_loss_methods_are_three_quantities(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Ordito against ordito: the three methods are far apart, and an empty mesh is 0.0.
+    Ordito against ordito: the three methods are far apart, an empty mesh is 0.0, bad input raises.
 
     Not a parity assert -- the reference comparison above carries the oracle. This is the guard
     that keeps the parametrized test above non-vacuous: if two methods ever collapsed onto one
@@ -226,34 +199,82 @@ def test_laplacian_smoothing_loss_methods_are_three_quantities(
             mesh_wp.indices,
             "cotan",  # pyright: ignore[reportArgumentType]  # the off-menu value under test
         )
+    # Each method refuses the pattern of the other operator.
+    for method, right in _METHOD_OPERATORS[:2]:
+        wrong: _OperatorName = (
+            "cotmatrix" if right == "laplacian_directed" else "laplacian_directed"
+        )
+        with pytest.raises(ValueError, match="pattern was built for"):
+            od.energies.laplacian_smoothing_loss(
+                mesh_wp.points,
+                mesh_wp.indices,
+                method,
+                pattern=od.laplacian.mesh_operator_pattern(
+                    mesh_wp.indices, mesh_wp.points.size, operator=wrong
+                ),
+            )
 
 
-@pytest.mark.parametrize("method", ["uniform", "cot", "cotcurv"])
-def test_laplacian_smoothing_loss_pattern_changes_no_answer(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], method: Literal["uniform", "cot", "cotcurv"]
+_OperatorName = Literal["cotmatrix", "laplacian_directed"]
+_METHOD_OPERATORS: tuple[tuple[Literal["uniform", "cot", "cotcurv"], _OperatorName], ...] = (
+    ("uniform", "laplacian_directed"),
+    ("cot", "cotmatrix"),
+    ("cotcurv", "cotmatrix"),
+)
+
+
+def _pattern_of(operator: _OperatorName) -> Callable[[od.Trimesh], dict[str, object]]:
+    """Return the ``pattern=`` keyword of ``operator`` on a mesh, built when called."""
+    return lambda mesh: {
+        "pattern": od.laplacian.mesh_operator_pattern(
+            mesh.faces, mesh.n_vertices, operator=operator
+        )
+    }
+
+
+_LOSS_SHORTCUTS: dict[
+    str, tuple[str, dict[str, object], Callable[[od.Trimesh], dict[str, object]]]
+] = {
+    "edge_length_loss-unique_edges": (
+        "edge_length_loss",
+        {"target_length": 0.3},
+        lambda mesh: {"unique_edges": mesh.edges_unique},
+    ),
+    "normal_consistency_loss-sorted_edge_keys": (
+        "normal_consistency_loss",
+        {},
+        lambda mesh: {"sorted_edge_keys": od.adjacency.sorted_face_edge_keys(mesh.faces)},
+    ),
+    **{
+        f"laplacian_smoothing_loss-{method}-pattern": (
+            "laplacian_smoothing_loss",
+            {"method": method},
+            _pattern_of(operator),
+        )
+        for method, operator in _METHOD_OPERATORS
+    },
+}
+
+
+@pytest.mark.parametrize("case", list(_LOSS_SHORTCUTS))
+def test_loss_shortcut_keywords_change_no_answer(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], case: str
 ) -> None:
     """
-    Ordito against ordito: ``pattern=`` only spares the operator's sort, so the loss is unchanged.
+    Ordito against ordito: each precomputed-input keyword only spares a sort; the loss is unchanged.
 
-    Each method takes the pattern of the operator it assembles, and the other one is refused.
+    ``unique_edges=`` and ``sorted_edge_keys=`` spare the edge sort, ``pattern=`` the operator's;
+    each Laplacian method takes the pattern of the operator it assembles (the other is refused in
+    ``test_laplacian_smoothing_loss_methods_are_three_quantities``). Equality is bit for bit.
     """
     _mesh_tm, mesh_wp = sphere_irregular
-    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    operators = ("laplacian_directed", "cotmatrix")
-    right, wrong = operators if method == "uniform" else operators[::-1]
-    pattern = od.laplacian.mesh_operator_pattern(faces_wp, vertices_wp.size, operator=right)
-
-    plain = od.energies.laplacian_smoothing_loss(vertices_wp, faces_wp, method)
-    given = od.energies.laplacian_smoothing_loss(vertices_wp, faces_wp, method, pattern=pattern)
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    function, options, shortcut = _LOSS_SHORTCUTS[case]
+    loss = getattr(od.energies, function)
+    plain = loss(mesh.vertices, mesh.faces, **options)
+    given = loss(mesh.vertices, mesh.faces, **options, **shortcut(mesh))
     assert plain > 0.0
     assert given == plain
-    with pytest.raises(ValueError, match="pattern was built for"):
-        od.energies.laplacian_smoothing_loss(
-            vertices_wp,
-            faces_wp,
-            method,
-            pattern=od.laplacian.mesh_operator_pattern(faces_wp, vertices_wp.size, operator=wrong),
-        )
 
 
 @pytest.mark.parametrize("k", [1, 2, 3])

@@ -955,6 +955,34 @@ def test_isotropic_remesh_is_reproducible(saddle_graded: tuple[tm.Trimesh, wp.Me
     assert outputs[1:] == outputs[:-1]
 
 
+def test_isotropic_remesh_arrival_order_agrees_with_the_default(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: determinism off remeshes as the default does.
+
+    The mode reaches only a sizing field's mean, whose last bits flip no edge of this mesh, so the
+    connectivity must be equal and the positions equal to rounding. One iteration with a sizing
+    field and no smoothing is all the mean feeds.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    edge_np = float(mesh_tm.edges_unique_length.mean())
+    field_wp = wp.full(vertices_wp.size, 1.5 * edge_np, dtype=wp.float32, device=vertices_wp.device)
+    results = []
+    for enabled in (True, False):
+        with od.config.deterministic(enabled):
+            results.append(
+                od.remesh.isotropic_remesh(
+                    vertices_wp, faces_wp, target_length=field_wp, iterations=1, smooth=False
+                )
+            )
+    (fixed_values, fixed_faces), (arrival_values, arrival_faces) = results
+    assert fixed_faces.size > 0
+    assert np.array_equal(fixed_faces.numpy(), arrival_faces.numpy())
+    assert np.allclose(fixed_values.numpy(), arrival_values.numpy(), rtol=1e-5, atol=1e-6)
+
+
 def test_isotropic_remesh_bounds_change_no_answer(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
@@ -3446,17 +3474,23 @@ def test_subdivide_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> 
     )
 
 
-def test_subdivide_edges_change_no_answer(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+@pytest.mark.parametrize("entry_point", ["subdivide", "subdivide_loop"])
+def test_subdivide_edges_change_no_answer(
+    entry_point: Literal["subdivide", "subdivide_loop"],
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Ordito against ordito: ``unique_edges=`` / ``inverse=`` only spare the edge sort.
 
-    The mesh's cached ``edges_unique`` pair must give the plain call's subdivision, bit for bit.
+    For both uniform subdividers, the mesh's cached ``edges_unique`` pair must give the plain
+    call's positions and faces, bit for bit.
     """
     _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    subdivider = od.remesh.subdivide if entry_point == "subdivide" else od.remesh.subdivide_loop
 
-    plain = od.remesh.subdivide(mesh.vertices, mesh.faces)
-    given = od.remesh.subdivide(
+    plain = subdivider(mesh.vertices, mesh.faces)
+    given = subdivider(
         mesh.vertices, mesh.faces, unique_edges=mesh.edges_unique, inverse=mesh.edges_unique_inverse
     )
     assert np.array_equal(given[0].numpy(), plain[0].numpy())
@@ -3759,26 +3793,6 @@ def test_subdivide_loop_operator_carries_a_field(
     assert np.allclose(carried_uv_np.sum(axis=1), 1.0, rtol=1e-6, atol=1e-6)
 
 
-def test_subdivide_loop_edges_change_no_answer(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    Ordito against ordito: ``unique_edges=`` / ``inverse=`` only spare the edge sort.
-
-    The mesh's cached ``edges_unique`` pair must give the plain call's positions and faces, bit for
-    bit.
-    """
-    _mesh_tm, mesh_wp = sphere_irregular
-    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
-
-    plain = od.remesh.subdivide_loop(mesh.vertices, mesh.faces)
-    given = od.remesh.subdivide_loop(
-        mesh.vertices, mesh.faces, unique_edges=mesh.edges_unique, inverse=mesh.edges_unique_inverse
-    )
-    assert np.array_equal(given[0].numpy(), plain[0].numpy())
-    assert np.array_equal(given[1].numpy(), plain[1].numpy())
-
-
 def test_transfer_through_operator_guards_and_empty_inputs(device: str) -> None:
     """
     Not a library comparison: the column-count guard, and the two degenerate shapes.
@@ -3817,13 +3831,28 @@ def test_transfer_through_operator_guards_and_empty_inputs(device: str) -> None:
 # --------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("case", ["regular", "mixed"])
 @pytest.mark.parity("subdivide_to_size", "trimesh")
-def test_subdivide_to_size_reference_regular(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Class A: a single pass on a regular mesh, where every face splits 1-to-4, matches trimesh."""
-    mesh_tm, mesh_wp = sphere_irregular
-    faces_np = mesh_tm.faces.astype(np.int32)
-    max_edge = 0.6 * _max_edge_length(mesh_tm.vertices.astype(np.float32), faces_np)
-    _assert_matches_trimesh_subdivide_to_size(mesh_tm, mesh_wp, max_edge)
+def test_subdivide_to_size_matches_trimesh(
+    case: Literal["regular", "mixed"], device: str, request: pytest.FixtureRequest
+) -> None:
+    """
+    Class A: one pass matches trimesh exactly, on a regular and on a mixed-split input.
+
+    ``regular``: ``sphere_irregular`` at 0.6 of its longest edge, where every face splits 1-to-4.
+    ``mixed``: a stretched icosahedron, whose two distinct edge lengths make faces split on 1, 2
+    or 3 edges in one pass at an intermediate threshold.
+    """
+    if case == "regular":
+        mesh_tm, mesh_wp = request.getfixturevalue("sphere_irregular")
+        faces_np = mesh_tm.faces.astype(np.int32)
+        max_edge = 0.6 * _max_edge_length(mesh_tm.vertices.astype(np.float32), faces_np)
+        _assert_matches_trimesh_subdivide_to_size(mesh_tm, mesh_wp, max_edge)
+    else:
+        mesh_tm = tm.creation.icosahedron()
+        mesh_tm.vertices = mesh_tm.vertices * np.array([1.0, 1.0, 2.2])
+        mesh_wp = trimesh_to_warp(mesh_tm, device)
+        _assert_matches_trimesh_subdivide_to_size(mesh_tm, mesh_wp, 1.9, max_iter=1)
 
 
 @pytest.mark.parametrize("split_fraction", [0.7, 0.35])
@@ -3874,16 +3903,6 @@ def test_subdivide_to_size_matches_pymeshlab(
 
     # Same vertices and the same faces, with their winding, up to numbering.
     _assert_same_mesh_under_vertex_match(vertices_wp, faces_wp, vertices_pml, faces_pml, 1e-5)
-
-
-def test_subdivide_to_size_reference_mixed(device: str) -> None:
-    """A single pass with mixed 1/2/3-split faces matches trimesh exactly."""
-    # A stretched icosahedron gives two distinct edge lengths so that, for an
-    # intermediate threshold, faces split on 1, 2, or 3 edges in one pass.
-    mesh_tm = tm.creation.icosahedron()
-    mesh_tm.vertices = mesh_tm.vertices * np.array([1.0, 1.0, 2.2])
-    mesh_wp = trimesh_to_warp(mesh_tm, device)
-    _assert_matches_trimesh_subdivide_to_size(mesh_tm, mesh_wp, 1.9, max_iter=1)
 
 
 def _assert_matches_trimesh_subdivide_to_size(
@@ -4505,12 +4524,8 @@ def test_split_edges_all_matches_igl_and_open3d(
 
     That is the operation both ``igl.upsample`` and open3d's ``subdivide_midpoint(1)`` perform.
 
-    The direct version of the transitive claim
-    [`test_split_edges_every_edge_is_the_regular_subdivision`] makes: rather than routing through
-    ``subdivide`` and inheriting *its* references, this hands the primitive's own output to
-    ``igl.upsample`` and open3d's ``subdivide_midpoint(1)``. Both insert one vertex per edge at its
-    midpoint and retriangulate each face into four, which is exactly ``split_edges`` with an
-    all-``True`` mask.
+    Both insert one vertex per edge at its midpoint and retriangulate each face into four, which is
+    exactly ``split_edges`` with an all-``True`` mask.
 
     The comparison is up to numbering
     ([`_assert_same_mesh_under_vertex_match`][tests.test_remesh._assert_same_mesh_under_vertex_match]),
@@ -4520,11 +4535,20 @@ def test_split_edges_all_matches_igl_and_open3d(
 
     ``igl.upsample`` is kept to a small fixture: it corrupts the heap on the scan meshes and
     SIGSEGVs on ``bunny``.
+
+    Ordito against ordito on the same call: the output also equals ``subdivide``'s buffer for
+    buffer, numbering included, which the up-to-numbering match cannot see. The ``count == 3``
+    branch of the emission kernel is only reachable this way, and ``subdivide`` is independently
+    tested against trimesh, Open3D, pytorch3d and igl.
     """
     mesh_tm, mesh_wp = sphere_irregular
     n_faces = mesh_wp.indices.size // 3
     split_vertices_wp, split_faces_wp = _split_every_edge(mesh_wp)
     split_np = split_vertices_wp.numpy().astype(np.float64)
+
+    fine_vertices_wp, fine_faces_wp = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
+    assert np.array_equal(split_faces_wp.numpy(), fine_faces_wp.numpy())
+    assert np.allclose(split_vertices_wp.numpy(), fine_vertices_wp.numpy())
 
     vertices_igl, faces_upsampled_igl = map(
         np.asarray,
@@ -4547,34 +4571,6 @@ def test_split_edges_all_matches_igl_and_open3d(
         _assert_same_mesh_under_vertex_match(
             split_vertices_wp, split_faces_wp, reference_vertices, reference_faces, 1e-5
         )
-
-
-def test_split_edges_every_edge_is_the_regular_subdivision(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    Ordito against ordito: splitting every edge must equal ``subdivide``.
-
-    ``subdivide`` is the half of the pair carrying the oracle -- splitting every edge *is* the
-    1-to-4 subdivision, so the two must agree exactly.
-
-    The strongest available check on the templates: the ``count == 3`` branch of the emission kernel
-    is only reachable this way, and ``subdivide`` is independently tested against trimesh and igl,
-    so agreeing with it exactly validates the primitive against those references transitively.
-
-    That transitivity is why the ``split_edges`` benchmark group carries no parity claim: the
-    reference coverage here is real but indirect, and a marker would assert a comparison this test
-    does not make. The *direct* comparison against ``igl.upsample`` and open3d's
-    ``subdivide_midpoint`` is
-    [`test_split_edges_every_edge_matches_igl_and_open3d`][tests.test_remesh.test_split_edges_every_edge_matches_igl_and_open3d].
-    """
-    _mesh_tm, mesh_wp = sphere_irregular
-    split_v, split_f = _split_every_edge(mesh_wp)
-    fine_v, fine_f = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
-
-    assert split_f.size // 3 == 4 * (mesh_wp.indices.size // 3)
-    assert np.array_equal(split_f.numpy(), fine_f.numpy())
-    assert np.allclose(split_v.numpy(), fine_v.numpy())
 
 
 def test_split_edges_honours_caller_supplied_positions(
@@ -4662,9 +4658,22 @@ def test_split_edges_carries_a_per_face_index(sphere_irregular: tuple[tm.Trimesh
 
 
 def test_split_edges_empty_mask_is_a_copy(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a library comparison: buffer ownership is ordito's contract, not a reference's.
+
+    With nothing flagged the mesh comes back unchanged and the default ``index`` is the identity;
+    a caller's own ``index`` is copied rather than handed straight back, so that ownership does not
+    silently depend on whether any edge happened to be flagged.
+
+    **Bug class excluded:** a caller writing into the returned index destroying its own input.
+    **Mutation probe, measured against a detached pre-fix worktree:** returning ``carried``
+    unchanged makes the write below land in ``carry`` as well, failing the last assert.
+    """
     _mesh_tm, mesh_wp = sphere_irregular
+    device = mesh_wp.indices.device
     unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
-    nothing = wp.zeros(int(unique_edges.shape[0]), dtype=wp.bool, device=mesh_wp.indices.device)
+    nothing = wp.zeros(int(unique_edges.shape[0]), dtype=wp.bool, device=device)
+    n_faces = mesh_wp.indices.size // 3
 
     split_v, split_f, index = od.remesh.split_edges(
         mesh_wp.points,
@@ -4676,30 +4685,9 @@ def test_split_edges_empty_mask_is_a_copy(sphere_irregular: tuple[tm.Trimesh, wp
     )
     assert np.array_equal(split_f.numpy(), mesh_wp.indices.numpy())
     assert np.allclose(split_v.numpy(), mesh_wp.points.numpy())
-    assert np.array_equal(index.numpy(), np.arange(mesh_wp.indices.size // 3))
+    assert np.array_equal(index.numpy(), np.arange(n_faces))
 
-
-def test_split_edges_empty_mask_does_not_alias_the_caller_index(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    Not a library comparison: buffer ownership is ordito's contract, not a reference's.
-
-    The sibling above pins the *values* on the no-split path; this pins that the third return is
-    the caller's own ``index`` buffer copied rather than handed straight back, so that ownership
-    does not silently depend on whether any edge happened to be flagged.
-
-    **Bug class excluded:** a caller writing into the returned index destroying its own input.
-    **Mutation probe, measured against a detached pre-fix worktree:** returning ``carried``
-    unchanged makes the write below land in ``carry`` as well, failing the last assert.
-    """
-    _mesh_tm, mesh_wp = sphere_irregular
-    device = mesh_wp.indices.device
-    unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
-    nothing = wp.zeros(int(unique_edges.shape[0]), dtype=wp.bool, device=device)
-    n_faces = mesh_wp.indices.size // 3
     carry = od.array.arange(n_faces, device=device)
-
     _split_v, _split_f, index = od.remesh.split_edges(
         mesh_wp.points,
         mesh_wp.indices,
@@ -4765,31 +4753,3 @@ def _split_every_edge(mesh_wp: wp.Mesh, **kwargs: Any) -> tuple[Any, ...]:
         inverse=inverse,
         **kwargs,
     )
-
-
-def test_isotropic_remesh_arrival_order_agrees_with_the_default(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    Ordito against ordito: determinism off remeshes as the default does.
-
-    The mode reaches only a sizing field's mean, whose last bits flip no edge of this mesh, so the
-    connectivity must be equal and the positions equal to rounding. One iteration with a sizing
-    field and no smoothing is all the mean feeds.
-    """
-    mesh_tm, mesh_wp = sphere_irregular
-    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    edge_np = float(mesh_tm.edges_unique_length.mean())
-    field_wp = wp.full(vertices_wp.size, 1.5 * edge_np, dtype=wp.float32, device=vertices_wp.device)
-    results = []
-    for enabled in (True, False):
-        with od.config.deterministic(enabled):
-            results.append(
-                od.remesh.isotropic_remesh(
-                    vertices_wp, faces_wp, target_length=field_wp, iterations=1, smooth=False
-                )
-            )
-    (fixed_values, fixed_faces), (arrival_values, arrival_faces) = results
-    assert fixed_faces.size > 0
-    assert np.array_equal(fixed_faces.numpy(), arrival_faces.numpy())
-    assert np.allclose(fixed_values.numpy(), arrival_values.numpy(), rtol=1e-5, atol=1e-6)

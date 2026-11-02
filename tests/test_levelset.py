@@ -406,7 +406,8 @@ def test_marching_cubes_emits_no_triangle_in_a_cell_with_a_nan_corner(device: st
     buffer, sized by the triangle count, must not be returned unwritten. Then a corner of that
     cell drops below ``iso`` and a finite cell wholly above it is stacked on: the corner's three
     crossing edges belong only to the NaN cell, so their vertices are kept, Warp's bit for bit,
-    with no face naming them (a vertex count but no face count).
+    with no face naming them (a vertex count but no face count). ``method="lewiner"`` makes a
+    vertex only for an edge a triangulated cell shares, so on that stack it returns nothing at all.
     """
     field_np = np.ones((2, 2, 2), dtype=np.float32)
     field_np[0, 0, 0] = np.nan
@@ -431,6 +432,9 @@ def test_marching_cubes_emits_no_triangle_in_a_cell_with_a_nan_corner(device: st
     assert faces_wp.size == 0
     assert vertices_wp.size == 3
     assert np.array_equal(vertices_wp.numpy(), vertices_warp.numpy())
+    lewiner_vertices_wp, lewiner_faces_wp = od.levelset.marching_cubes(field_wp, method="lewiner")
+    assert lewiner_vertices_wp.size == 0
+    assert lewiner_faces_wp.size == 0
 
 
 def test_marching_cubes_edge_margin_removes_degenerate_triangles(device: str) -> None:
@@ -463,23 +467,17 @@ def test_marching_cubes_edge_margin_removes_degenerate_triangles(device: str) ->
     slack = 2.0 * float(np.spacing(np.float32(32.0)))
     assert np.abs(margin_vertices_wp.numpy() - vertices_wp.numpy()).max() <= 1e-3 + slack
 
-    for margin in (-0.1, 0.5):
-        with pytest.raises(ValueError, match="edge_margin"):
-            od.levelset.marching_cubes(field_wp, edge_margin=margin)
 
-
-def test_marching_cubes_empty_and_invalid(device: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Not a library comparison: a field that never crosses is empty, a 1-wide lattice raises."""
+def test_marching_cubes_of_a_field_that_never_crosses_is_empty(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not a library comparison: a field that never crosses is empty, in both counting forms."""
     field_wp = wp.array(np.full((8, 8, 8), 1.0, dtype=np.float32), dtype=wp.float32, device=device)
     for active_from in (1 << 62, 0):
         monkeypatch.setattr(od.levelset, "_MARCHING_CUBES_ACTIVE_FROM", active_from)
         vertices_wp, faces_wp = od.levelset.marching_cubes(odt.as_array3d(field_wp, wp.float32))
         assert vertices_wp.size == 0
         assert faces_wp.size == 0
-
-    thin_wp = wp.array(np.zeros((1, 8, 8), dtype=np.float32), dtype=wp.float32, device=device)
-    with pytest.raises(ValueError, match="at least 2 wide"):
-        od.levelset.marching_cubes(odt.as_array3d(thin_wp, wp.float32))
 
 
 def test_marching_cubes_refuses_what_int32_cannot_index(
@@ -565,44 +563,61 @@ def test_marching_cubes_lewiner_matches_classic_where_nothing_is_ambiguous(devic
     assert np.array_equal(wide_faces_wp.numpy(), faces_wp.numpy())
 
 
-def test_marching_cubes_lewiner_leaves_nan_cells_out(device: str) -> None:
+@pytest.mark.parametrize(
+    ("shape", "dtype", "options", "error", "match"),
+    [
+        pytest.param(
+            (9, 9, 9),
+            np.float32,
+            {"method": "flying_edges"},
+            ValueError,
+            "'classic' or 'lewiner'",
+            id="unknown-method",
+        ),
+        pytest.param(
+            (9, 9, 9),
+            np.float32,
+            {"edge_margin": 0.1, "method": "lewiner"},
+            ValueError,
+            "no edge_margin",
+            id="lewiner-edge-margin",
+        ),
+        pytest.param(
+            (9, 9, 9), np.float32, {"edge_margin": -0.1}, ValueError, "edge_margin", id="margin-neg"
+        ),
+        pytest.param(
+            (9, 9, 9), np.float32, {"edge_margin": 0.5}, ValueError, "edge_margin", id="margin-half"
+        ),
+        pytest.param((9, 9, 9), np.float64, {}, TypeError, None, id="classic-float64"),
+        pytest.param(
+            (9, 9, 9),
+            np.int32,
+            {"method": "lewiner"},
+            TypeError,
+            "float32 or float64",
+            id="lewiner-int32",
+        ),
+        pytest.param((1, 9, 9), np.float32, {}, ValueError, "at least 2 wide", id="one-wide"),
+    ],
+)
+def test_marching_cubes_rejects_invalid_arguments(
+    device: str,
+    shape: tuple[int, int, int],
+    dtype: type[np.generic],
+    options: dict[str, object],
+    error: type[Exception],
+    match: str | None,
+) -> None:
     """
-    Not a library comparison: a cell with a NaN corner is not triangulated, and has no vertices.
+    Not a library comparison: the method menu, what each method takes, and the lattice's extent.
 
-    The classic extraction's NaN fixture (``test_marching_cubes_emits_no_triangle_in_a_cell_with_
-    a_nan_corner``): where the classic one keeps the three vertices on the crossing edges only the
-    NaN cell shares, unreferenced, this one makes a vertex only for an edge a triangulated cell
-    shares, so the result is empty.
+    ``edge_margin`` must lie in ``[0, 0.5)``; the classic extraction takes only ``float32`` and
+    ``method="lewiner"`` a float field; a lattice must be at least two nodes wide on every axis.
     """
-    field_np = np.ones((2, 2, 3), dtype=np.float32)
-    field_np[0, 0, 0] = np.nan
-    field_np[1, 1, 0] = -1.0
-    field_wp = wp.array(field_np, dtype=wp.float32, device=device)
-    vertices_wp, faces_wp = od.levelset.marching_cubes(field_wp, method="lewiner")
-    assert vertices_wp.size == 0
-    assert faces_wp.size == 0
-
-
-def test_marching_cubes_method_invalid(device: str) -> None:
-    """Not a library comparison: the method menu, and what each method takes."""
-    field_np = _sphere_field(9, 0.7)
-    with pytest.raises(ValueError, match="'classic' or 'lewiner'"):
-        od.levelset.marching_cubes(
-            wp.array(field_np, dtype=wp.float32, device=device),
-            method=cast(Literal["classic", "lewiner"], "flying_edges"),
-        )
-    with pytest.raises(ValueError, match="no edge_margin"):
-        od.levelset.marching_cubes(
-            wp.array(field_np, dtype=wp.float32, device=device), edge_margin=0.1, method="lewiner"
-        )
-    with pytest.raises(TypeError):
-        od.levelset.marching_cubes(
-            wp.array(field_np.astype(np.float64), dtype=wp.float64, device=device)
-        )
-    with pytest.raises(TypeError, match="float32 or float64"):
-        od.levelset.marching_cubes(
-            wp.array(field_np.astype(np.int32), dtype=wp.int32, device=device), method="lewiner"
-        )
+    field_np = np.zeros(shape) if shape[0] < 2 else _sphere_field(shape[0], 0.7)
+    field_wp = wp.array(field_np.astype(dtype), dtype=wp.dtype_from_numpy(dtype), device=device)
+    with pytest.raises(error, match=match):
+        od.levelset.marching_cubes(field_wp, **options)  # pyright: ignore[reportArgumentType]
 
 
 def _signed_distance_to(

@@ -170,22 +170,20 @@ def test_map_vertices_to_circle_on_a_long_loop(device: str, deterministic: bool)
         )
 
 
-def test_map_vertices_to_circle_single_vertex_loop(device: str):
-    """A single-vertex loop has zero perimeter; the arc-length map must not divide 0/0 into NaN."""
-    vertices_wp = wp.array(np.array([[0.0, 0.0, 0.0]]), dtype=wp.vec3, device=device)
-    boundary_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
-    circle_wp = od.parametrization.map_vertices_to_circle(vertices_wp, boundary_wp)
-    assert np.isfinite(circle_wp.numpy()).all()
+@pytest.mark.parametrize("n_loop", [0, 1])
+def test_map_vertices_to_circle_degenerate_loop(device: str, n_loop: int):
+    """
+    Not a library comparison: an empty or single-vertex loop maps without a raise or a NaN.
 
-
-def test_map_vertices_to_circle_empty_loop(device: str):
-    """Not a library comparison: an empty loop maps to an empty ``wp.vec2`` buffer, not a raise."""
+    An empty loop maps to an empty ``wp.vec2`` buffer; a single-vertex loop has zero perimeter,
+    and the arc-length map must not divide 0/0 into NaN.
+    """
     vertices_wp = wp.array(np.eye(3, dtype=np.float32), dtype=wp.vec3, device=device)
-    circle_wp = od.parametrization.map_vertices_to_circle(
-        vertices_wp, warp_empty(0, wp.int32, device)
-    )
+    boundary_wp = wp.array(np.arange(n_loop, dtype=np.int32), dtype=wp.int32, device=device)
+    circle_wp = od.parametrization.map_vertices_to_circle(vertices_wp, boundary_wp)
     assert circle_wp.dtype == wp.vec2
-    assert circle_wp.shape == (0,)
+    assert circle_wp.shape == (n_loop,)
+    assert np.isfinite(circle_wp.numpy()).all()
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
@@ -739,39 +737,30 @@ def test_solvers_cpu_match_cuda(solve: Callable[[str], wp.array[wp.vec2]]):
     assert np.allclose(uv["cpu"], uv["cuda:0"], rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("solver", ["arap", "lscm"])
-def test_solvers_on_an_empty_mesh(device: str, solver: str):
-    """Not a library comparison: no vertices, no pins, an empty UV buffer rather than a raise."""
-    vertices_wp = warp_empty(0, wp.vec3, device)
-    faces_wp = warp_empty(0, wp.int32, device)
-    pins_wp = warp_empty(0, wp.int32, device)
-    pins_uv_wp = warp_empty(0, wp.vec2, device)
-    if solver == "arap":
-        uv_init_wp = warp_empty(0, wp.vec2, device)
-        uv_wp = od.parametrization.arap(vertices_wp, faces_wp, pins_wp, pins_uv_wp, uv_init_wp)
-    else:
-        uv_wp = od.parametrization.lscm(vertices_wp, faces_wp, pins_wp, pins_uv_wp)
-    assert uv_wp.numpy().size == 0
-
-
-@pytest.mark.parametrize("method", ["harmonic", "tutte"])
-def test_fixed_boundary_maps_on_an_empty_mesh_and_a_bad_power(device: str, method: str):
+@pytest.mark.parametrize("method", ["harmonic", "tutte", "arap", "lscm"])
+def test_solvers_on_an_empty_mesh(device: str, method: str):
     """
-    Not a library comparison: the empty mesh maps to nothing, and a power below one raises.
+    Not a library comparison: no vertices, no pins, an empty UV buffer rather than a raise.
 
-    ``igl.harmonic`` rejects ``k=0`` with an assertion rather than a message; ordito's
-    ``ValueError`` names the method and the power, and is raised before the empty-mesh return.
+    For the fixed-boundary maps a power below one raises too: ``igl.harmonic`` rejects ``k=0`` with
+    an assertion rather than a message; ordito's ``ValueError`` names the method and the power, and
+    is raised before the empty-mesh return.
     """
     vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = warp_empty(0, wp.int32, device)
     pins_wp = warp_empty(0, wp.int32, device)
     pins_uv_wp = warp_empty(0, wp.vec2, device)
     function = getattr(od.parametrization, method)
-    uv_wp = function(vertices_wp, faces_wp, pins_wp, pins_uv_wp)
+    if method == "arap":
+        uv_init_wp = warp_empty(0, wp.vec2, device)
+        uv_wp = function(vertices_wp, faces_wp, pins_wp, pins_uv_wp, uv_init_wp)
+    else:
+        uv_wp = function(vertices_wp, faces_wp, pins_wp, pins_uv_wp)
     assert uv_wp.dtype == wp.vec2
     assert uv_wp.shape == (0,)
-    with pytest.raises(ValueError, match=rf"{method} power k must be >= 1, got 0"):
-        function(vertices_wp, faces_wp, pins_wp, pins_uv_wp, k=0)
+    if method in ("harmonic", "tutte"):
+        with pytest.raises(ValueError, match=rf"{method} power k must be >= 1, got 0"):
+            function(vertices_wp, faces_wp, pins_wp, pins_uv_wp, k=0)
 
 
 def _short_boundary_uv(mesh_wp: wp.Mesh) -> tuple[wp.array[wp.int32], wp.array[wp.vec2]]:

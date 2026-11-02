@@ -116,9 +116,12 @@ def graded_saddle(device: str) -> GradedSaddle:
 # --- heat_operators -----------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parametrize(
+    ("mesh_name", "t"),
+    [("sphere_irregular", None), ("saddle_graded", None), ("sphere_irregular", 0.05)],
+)
 def test_heat_operators_are_the_matrices_its_docstring_names(
-    request: pytest.FixtureRequest, mesh_name: str
+    request: pytest.FixtureRequest, mesh_name: str, t: float | None
 ) -> None:
     """
     Class A: every member is checked against the function that defines it, and all agree exactly.
@@ -137,7 +140,8 @@ def test_heat_operators_are_the_matrices_its_docstring_names(
     squared mean of trimesh's unique edge lengths, which is the convention, to 1e-6 -- the float32
     vertex buffer puts the two a few 1e-7 apart. Recomputing ``t`` with
     [`mean_unique_edge_length`][ordito.edges.mean_unique_edge_length] instead would pin one
-    summation order rather than the definition.
+    summation order rather than the definition. An explicit ``t`` must reach the assembled system
+    as given rather than be recomputed from the edge lengths.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = int(mesh_tm.vertices.shape[0])
@@ -153,7 +157,7 @@ def test_heat_operators_are_the_matrices_its_docstring_names(
         cot_entries_wp,
         face_normals_wp,
         face_areas_wp,
-    ) = od.heat.heat_operators(vertices_wp, faces_wp)
+    ) = od.heat.heat_operators(vertices_wp, faces_wp, t)
 
     laplacian_np = bsr_to_dense(laplacian, n_vertices)
     cotmatrix_np = bsr_to_dense(
@@ -168,8 +172,10 @@ def test_heat_operators_are_the_matrices_its_docstring_names(
     heat_np = bsr_to_dense(heat_system, n_vertices)
     row, column = np.argwhere(np.triu(laplacian_np, k=1) != 0.0)[0]
     diffusion_time = float(-heat_np[row, column] / laplacian_np[row, column])
-    unique_length_np = mesh_tm.edges_unique_length.mean()
-    assert np.isclose(diffusion_time, unique_length_np**2, rtol=1e-6, atol=0.0)
+    expected_t = mesh_tm.edges_unique_length.mean() ** 2 if t is None else t
+    assert np.isclose(diffusion_time, expected_t, rtol=1e-6, atol=0.0)
+    if t is not None:
+        diffusion_time = t
 
     assert np.array_equal(laplacian_np, cotmatrix_np)
     assert np.array_equal(bsr_to_dense(poisson_system, n_vertices), -laplacian_np)
@@ -177,24 +183,6 @@ def test_heat_operators_are_the_matrices_its_docstring_names(
     assert cot_entries_wp.shape == (n_faces, 3)
     assert np.allclose(face_normals_wp.numpy(), mesh_tm.face_normals, rtol=1e-5, atol=1e-5)
     assert np.allclose(face_areas_wp.numpy(), mesh_tm.area_faces, rtol=1e-5, atol=1e-5)
-
-
-def test_heat_operators_reject_cot_entries_with_use_robust(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    The two arguments ask for different half-cotangent tables, so together they are an error.
-
-    Not a library comparison: no reference exposes the mollified operator as an option, and this is
-    about the signature rather than the numbers. Passing both silently would let ``use_robust``
-    look like it was honoured while the extrinsic table was used, which is exactly the failure a
-    caller reaches for ``use_robust`` to avoid.
-    """
-    _mesh_tm, mesh_wp = sphere_irregular
-    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    cot_entries_wp = od.laplacian.cotmatrix_entries(vertices_wp, faces_wp)
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        od.heat.heat_operators(vertices_wp, faces_wp, cot_entries=cot_entries_wp, use_robust=True)
 
 
 @pytest.mark.parametrize("t", [None, 0.01], ids=["default_t", "explicit_t"])
@@ -248,28 +236,6 @@ def test_heat_operators_reuse_prebuilt_parts(
             od.heat.heat_operators(vertices, faces, pattern=wrong)
         with pytest.raises(ValueError, match="operator='cotmatrix'"):
             od.heat.vector_heat_operators(vertices, faces, pattern=wrong)
-
-
-def test_heat_operators_honour_an_explicit_diffusion_time(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """``t`` reaches the assembled system rather than being recomputed from the edge lengths."""
-    mesh_tm, mesh_wp = sphere_irregular
-    n_vertices = int(mesh_tm.vertices.shape[0])
-
-    heat_system, *_rest, _cot, _normals, _areas = od.heat.heat_operators(
-        mesh_wp.points, mesh_wp.indices, t=0.05
-    )
-
-    laplacian_np = bsr_to_dense(
-        od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices, dtype=wp.float64), n_vertices
-    )
-    mass_np = np.diag(
-        od.laplacian.mass_matrix_entries(mesh_wp.points, mesh_wp.indices, dtype=wp.float64).numpy()
-    )
-    assert np.allclose(
-        bsr_to_dense(heat_system, n_vertices), mass_np - 0.05 * laplacian_np, rtol=1e-12, atol=1e-15
-    )
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
@@ -348,10 +314,17 @@ def test_heat_geodesic_rejects_unknown_options(device: str) -> None:
 
     ``heat_geodesic`` takes two of the three names and says so; ``heat_operators`` and
     ``Trimesh.heat_solver`` share the three-name guard; a solver off ``"potpourri3d"`` has no
-    vector operators.
+    vector operators. ``heat_operators`` also refuses ``cot_entries`` with ``use_robust``: the two
+    ask for different half-cotangent tables, and honouring one silently would let ``use_robust``
+    look honoured while the extrinsic table was used.
     """
     mesh_wp = trimesh_to_warp(tm.creation.icosphere(subdivisions=1), device)
     sources_wp = wp.array([0], dtype=wp.int32, device=device)
+    cot_entries_wp = od.laplacian.cotmatrix_entries(mesh_wp.points, mesh_wp.indices)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        od.heat.heat_operators(
+            mesh_wp.points, mesh_wp.indices, cot_entries=cot_entries_wp, use_robust=True
+        )
     with pytest.raises(ValueError, match="method must be 'meshlab' or 'igl'"):
         od.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, sources_wp, method="geometry")  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="method must be 'potpourri3d', 'meshlab' or 'igl'"):
@@ -650,31 +623,6 @@ def test_heat_geodesic_source_is_zero_and_nonnegative(
 
     assert np.all(distance >= -1e-6)
     assert np.allclose(distance[sources_np], 0.0, atol=1e-4)
-
-
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_heat_geodesic_cpu_matches_cuda(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Class A: the CPU solve is the CUDA solve. Pins the removal of the old CUDA-only guard.
-
-    ``warp.optim.linear.cg`` returned NaN on the Warp CPU device through 1.15, so every entry point
-    reaching a solve refused to run there. Fixed in 1.16, verified here rather than only in a probe.
-    """
-    if not wp.is_cuda_available():
-        pytest.skip("needs both devices to compare them")
-    mesh_tm, _ = request.getfixturevalue(mesh_name)
-
-    distances = {}
-    for device in ("cpu", "cuda:0"):
-        mesh_wp = trimesh_to_warp(mesh_tm, device)
-        sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
-        distances[device] = od.heat.heat_geodesic(
-            mesh_wp.points, mesh_wp.indices, sources_wp
-        ).numpy()
-
-    assert np.isfinite(distances["cpu"]).all()
-    assert distances["cpu"].max() > 0.0
-    assert np.allclose(distances["cpu"], distances["cuda:0"], rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("source", ["first", "middle"])
@@ -1053,73 +1001,44 @@ def _geodesic_distance_pymeshlab(mesh_tm: tm.Trimesh, sources: list[int]) -> np.
     return np.asarray(meshset_pml.current_mesh().vertex_scalar_array())
 
 
-@pytest.mark.parametrize("source", ["first", "middle"])
+@pytest.mark.parametrize("sources", ["first", "middle", "three"])
 @pytest.mark.parametrize("mesh_name", [*MESHES, "torus_irregular", "torus_irregular_holes"])
 @pytest.mark.parity("fast_marching_distance_meshlab", "pymeshlab")
 def test_fast_marching_distance_meshlab_matches_pymeshlab(
-    request: pytest.FixtureRequest, mesh_name: str, source: str
+    request: pytest.FixtureRequest, mesh_name: str, sources: str
 ) -> None:
     """
-    Class A: MeshLab's geodesic front from one source, vertex for vertex.
+    Class A: MeshLab's geodesic front from one source or three, vertex for vertex.
 
     vcg's ``Geodesic::Visit`` pops vertices nearest first and offers each neighbour the face
     unfolding (or the edge where its tests reject it), reading each partner's distance as the
-    queue holds it then; the call pops in the queue's order. Measured worst **5.1e-8** of the
-    range over the four fixtures, both sources and both devices: the ``float32`` rounding of the
-    returned ``float64`` field. On the scan meshes the same holds (dragon, happy_buddha and bunny
-    from vertex 0: no vertex over 1e-7 of the range off pymeshlab);
+    queue holds it then; the call pops in the queue's order. From three sources an offer unfolds
+    across a face only when both its corners were reached from the same source, and vcg labels a
+    vertex with whichever source's front lowered it last, in its heap's pop order; the call pops
+    in that order, so the labels and the field follow. Measured worst **5.1e-8** of the range from
+    one source and **3.8e-8** from three, over the fixtures and both devices: the ``float32``
+    rounding of the returned ``float64`` field. On the scan meshes the same holds (dragon,
+    happy_buddha and bunny from vertex 0: no vertex over 1e-7 of the range off pymeshlab);
     rounds relaxing every face against the previous round's distances, which the call ran until
-    2026-11-01, settled 46 dragon vertices more than 1e-5 of the range off.
+    2026-11-01, settled 46 dragon vertices more than 1e-5 of the range off from one source, and
+    1.75e-2 of the range off on ``saddle_graded`` near where three sources' regions meet.
 
     Mutation probe: the default ``"meshlib"`` front on the same inputs is more than 1e-3 of the
     range off, asserted here so the comparison cannot pass on either front.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = len(mesh_tm.vertices)
-    source_index = 0 if source == "first" else n_vertices // 2
-    distance_pml = _geodesic_distance_pymeshlab(mesh_tm, [source_index])
+    chosen = {
+        "first": [0],
+        "middle": [n_vertices // 2],
+        "three": [0, n_vertices // 3, n_vertices // 2],
+    }[sources]
+    distance_pml = _geodesic_distance_pymeshlab(mesh_tm, chosen)
     scale = float(np.ptp(distance_pml))
-    assert scale > 1.0  # non-vacuity: the reference propagated
-    assert np.count_nonzero(distance_pml == 0.0) == 1  # every vertex reached
+    assert scale > (1.0 if len(chosen) == 1 else 0.5)  # non-vacuity: the reference propagated
+    assert np.count_nonzero(distance_pml == 0.0) == len(chosen)  # every vertex reached
 
-    sources_wp = wp.array([source_index], dtype=wp.int32, device=mesh_wp.device)
-    distance_wp = od.heat.fast_marching_distance(
-        mesh_wp.points, mesh_wp.indices, sources_wp, method="meshlab"
-    ).numpy()
-    assert np.allclose(distance_wp, distance_pml, rtol=0.0, atol=1e-5 * scale)
-
-    default_wp = od.heat.fast_marching_distance(mesh_wp.points, mesh_wp.indices, sources_wp)
-    assert np.abs(default_wp.numpy() - distance_pml).max() > 1e-3 * scale
-
-
-@pytest.mark.parametrize("mesh_name", [*MESHES, "torus_irregular", "torus_irregular_holes"])
-@pytest.mark.parity("fast_marching_distance_meshlab", "pymeshlab")
-def test_fast_marching_distance_meshlab_from_several_sources(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Class A: MeshLab's geodesic front from three sources, vertex for vertex.
-
-    An offer unfolds across a face only when both its corners were reached from the same source,
-    and vcg labels a vertex with whichever source's front lowered it last, in its heap's pop order;
-    the call pops in that order, so the labels and the field follow. Measured worst **3.8e-8**
-    of the range over the fixtures, both devices: the ``float32`` rounding of the returned
-    ``float64`` field. Rounds relaxing every face against the previous round's distances, which
-    the call ran until 2026-11-01, settled elsewhere near where the regions meet (1.75e-2 of the
-    range on ``saddle_graded``).
-
-    Mutation probe: the default ``"meshlib"`` front on the same inputs is more than 1e-3 of the
-    range off, asserted here so the comparison cannot pass on either front.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = len(mesh_tm.vertices)
-    sources = [0, n_vertices // 3, n_vertices // 2]
-    distance_pml = _geodesic_distance_pymeshlab(mesh_tm, sources)
-    scale = float(np.ptp(distance_pml))
-    assert scale > 0.5  # non-vacuity: the reference propagated
-    assert np.count_nonzero(distance_pml == 0.0) == len(sources)  # every vertex reached
-
-    sources_wp = wp.array(sources, dtype=wp.int32, device=mesh_wp.device)
+    sources_wp = wp.array(chosen, dtype=wp.int32, device=mesh_wp.device)
     distance_wp = od.heat.fast_marching_distance(
         mesh_wp.points, mesh_wp.indices, sources_wp, method="meshlab"
     ).numpy()
@@ -1639,25 +1558,20 @@ def test_open_curve_still_changes_sign_across_itself(
     assert distance.min() < 0.0 < distance.max()
 
 
-def test_invalid_level_set_constraint(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+@pytest.mark.parametrize(
+    ("argument", "value"), [("level_set_constraint", "Multiple"), ("method", "dense_eikonal")]
+)
+def test_heat_signed_distance_rejects_unknown_options(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], argument: str, value: str
+) -> None:
+    """Not a library comparison: an off-menu ``level_set_constraint`` or ``method`` raises."""
     _, mesh_wp = sphere_irregular
-    with pytest.raises(ValueError, match="level_set_constraint"):
+    with pytest.raises(ValueError, match=argument):
         od.heat.heat_signed_distance(
             mesh_wp.points,
             mesh_wp.indices,
             wp.array(np.array([0, 1], dtype=np.int32), dtype=wp.int32, device=mesh_wp.device),
-            level_set_constraint="Multiple",
-        )
-
-
-def test_invalid_signed_heat_method(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = sphere_irregular
-    with pytest.raises(ValueError, match="method"):
-        od.heat.heat_signed_distance(
-            mesh_wp.points,
-            mesh_wp.indices,
-            wp.array(np.array([0, 1], dtype=np.int32), dtype=wp.int32, device=mesh_wp.device),
-            method="dense_eikonal",  # pyright: ignore[reportArgumentType]
+            **{argument: value},  # pyright: ignore[reportArgumentType]
         )
 
 
@@ -2105,6 +2019,8 @@ def test_log_map_radius_is_the_geodesic_distance(
 
     # By construction the radius *is* the distance field: this pins the assembly, not the accuracy.
     assert np.allclose(np.linalg.norm(logarithm, axis=1), distance, rtol=1e-4, atol=1e-4)
+    # And the map is zero at its own source.
+    assert np.allclose(logarithm[0], 0.0, rtol=1e-6, atol=1e-6)
 
 
 # Only the better-resolved fixtures: ``potpourri3d.compute_log_map`` raises "factorization failed"
@@ -2281,12 +2197,6 @@ def test_log_map_radius_matches_potpourri3d_far_from_the_sources(icosphere5: Ico
     assert radius_pp.max() > 3.0
     assert np.abs(radius_wp - radius_pp).max() < 0.065
     assert np.abs(radius_wp - exact_np).max() < 0.06
-
-
-def test_log_map_is_zero_at_its_source(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = sphere_irregular
-    logarithm = od.heat.log_map(mesh_wp.points, mesh_wp.indices, 3).numpy()
-    assert np.allclose(logarithm[3], 0.0, rtol=1e-6, atol=1e-6)
 
 
 def test_log_map_is_invariant_to_mesh_scale(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:

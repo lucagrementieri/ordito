@@ -124,6 +124,8 @@ def test_edges_to_neighbor_lists_empty_and_out_of_range(device: str) -> None:
     """
     No edges means every row is empty, and the offsets are still the ``n + 1`` CSR form.
 
+    Through both the counting entry point and the from-counts one.
+
     An out-of-range endpoint raises: the guard that keeps an unchecked index off a raw
     ``degree[a]`` write.
     """
@@ -132,9 +134,14 @@ def test_edges_to_neighbor_lists_empty_and_out_of_range(device: str) -> None:
             3, _edges_wp(np.array([[0, 1], [1, 5]], dtype=np.int32), device)
         )
     edges_wp = odt.as_array2d(wp.zeros((0, 2), dtype=wp.int32, device=device), wp.int32)
-    neighbors_wp, offsets_wp = od.graph.edges_to_neighbor_lists(4, edges_wp)
-    assert neighbors_wp.size == 0
-    assert np.array_equal(offsets_wp.numpy(), np.zeros(5, dtype=np.int32))
+    for neighbors_wp, offsets_wp in (
+        od.graph.edges_to_neighbor_lists(4, edges_wp),
+        od.graph.edges_to_neighbor_lists_from_counts(
+            edges_wp, wp.zeros(4, dtype=wp.int32, device=device)
+        ),
+    ):
+        assert neighbors_wp.size == 0
+        assert np.array_equal(offsets_wp.numpy(), np.zeros(5, dtype=np.int32))
 
 
 @pytest.mark.parametrize("sort_rows", [False, True])
@@ -169,15 +176,6 @@ def test_edges_to_neighbor_lists_from_counts_is_the_counted_form(
     for start, stop in itertools.pairwise(offsets_np):
         assert np.array_equal(np.sort(neighbors_np[start:stop]), np.sort(expected_np[start:stop]))
     assert np.array_equal(counts_wp.numpy(), np.zeros(n_vertices, dtype=np.int32))
-
-
-def test_edges_to_neighbor_lists_from_counts_without_edges(device: str) -> None:
-    """Not a library comparison: no edges give empty rows, one offset per node plus the total."""
-    edges_wp = odt.empty_2d((0, 2), wp.int32, device=device)
-    counts_wp = wp.zeros(4, dtype=wp.int32, device=device)
-    neighbors_wp, offsets_wp = od.graph.edges_to_neighbor_lists_from_counts(edges_wp, counts_wp)
-    assert neighbors_wp.numpy().tolist() == []
-    assert offsets_wp.numpy().tolist() == [0, 0, 0, 0, 0]
 
 
 @pytest.mark.parametrize(("node_count", "n_edges"), [(64, 24), (2048, 2047)])
@@ -244,7 +242,9 @@ def test_connected_component_labels_matches_igl(device: str, node_count: int, n_
 
 
 @pytest.mark.parametrize("shape", ["random", "path", "star", "loops_and_duplicates"])
-def test_connected_component_labels_edge_list_matches_csr(device: str, shape: str) -> None:
+def test_connected_component_labels_edge_list_matches_csr(
+    device: str, monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
     """
     Ordito against ordito: the edge-list entry point returns the CSR one's labels exactly.
 
@@ -255,7 +255,14 @@ def test_connected_component_labels_edge_list_matches_csr(device: str, shape: st
     meshlib, below); the edge-list one carries scipy and igl, above. The four shapes are a
     fragmented random graph, a path (diameter equal to its node count), a star whose hub is the
     *largest* id (every union lands on one root), and a graph with self-loops and repeated edges.
+
+    Compressing the pre-hooked forest changes no label either: ``connected_components.
+    ecl_compress`` runs between the pre-hook and the hook only from ``ECL_COMPRESS_FROM`` nodes,
+    which no test graph reaches, so the threshold is lowered to force it. The path is the shape the
+    compression exists for: a long descending chain after the pre-hook.
     """
+    from ordito.kernels.algorithms import connected_components as kernel_cc
+
     rng = np.random.default_rng(11)
     node_count = 512
     if shape == "random":
@@ -280,38 +287,11 @@ def test_connected_component_labels_edge_list_matches_csr(device: str, shape: st
     labels_np = labels_edges.numpy()
     assert np.array_equal(labels_np[labels_np], labels_np)
     assert np.all(labels_np <= np.arange(node_count))
+    assert np.unique(labels_np).size > 1 or shape in ("path", "star")
 
-
-@pytest.mark.parametrize("shape", ["random", "path", "star"])
-def test_connected_component_labels_compressed_forest(
-    device: str, monkeypatch: pytest.MonkeyPatch, shape: str
-) -> None:
-    """
-    Ordito against ordito: compressing the pre-hooked forest changes no label.
-
-    ``connected_components.ecl_compress`` runs between the pre-hook and the hook only from
-    ``ECL_COMPRESS_FROM`` nodes, which no test graph reaches, so the threshold is lowered to force
-    it; the uncompressed path carries the oracles (scipy and igl, above). The path is the shape the
-    compression exists for: a long descending chain after the pre-hook.
-    """
-    from ordito.kernels.algorithms import connected_components as kernel_cc
-
-    rng = np.random.default_rng(13)
-    node_count = 512
-    if shape == "random":
-        edges_np = rng.integers(0, node_count, size=(300, 2), dtype=np.int32)
-    elif shape == "path":
-        order = rng.permutation(node_count).astype(np.int32)
-        edges_np = np.stack([order[:-1], order[1:]], axis=1)
-    else:
-        leaves = np.arange(node_count - 1, dtype=np.int32)
-        edges_np = np.stack([np.full_like(leaves, node_count - 1), leaves], axis=1)
-    edges_wp = _edges_wp(edges_np, device)
-    plain = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count).numpy()
     monkeypatch.setattr(kernel_cc, "ECL_COMPRESS_FROM", 0)
     compressed = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
-    assert np.unique(plain).size > 1 or shape != "random"
-    assert np.array_equal(compressed.numpy(), plain)
+    assert np.array_equal(compressed.numpy(), labels_np)
 
 
 @pytest.mark.parametrize("face_ratio", [0.0, 0.1, 0.5])
@@ -418,11 +398,19 @@ def test_connected_component_labels_matches_meshlib(request: pytest.FixtureReque
     assert same_partition(labels_wp.numpy(), labels_ml)
 
 
-@pytest.mark.parametrize("node_count", [10, 0], ids=["isolated_nodes", "zero_nodes"])
-def test_connected_component_labels_empty_edges(device: str, node_count: int) -> None:
-    """Class A: with no edges every node is its own component (scipy's answer), or none exist."""
+@pytest.mark.parametrize("node_count", [10, 1, 0], ids=["isolated_nodes", "one_node", "zero_nodes"])
+@pytest.mark.parametrize("entry", ["edges", "csr"])
+def test_connected_component_labels_empty_edges(device: str, node_count: int, entry: str) -> None:
+    """
+    Class A: with no edges every node is its own component (scipy's answer), or none exist.
+
+    Through both entry points: a lone node is its own component and no node has no label.
+    """
     edges_wp = odt.empty_2d((0, 2), wp.int32, device=device)
-    labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
+    if entry == "edges":
+        labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
+    else:
+        labels_wp = od.graph.connected_component_labels(od.graph.edges_to_csr(node_count, edges_wp))
     labels_exp = _scipy_component_labels(np.empty((0, 2), dtype=np.int32), node_count)
     assert labels_wp.shape == (node_count,)
     assert np.array_equal(labels_wp.numpy(), labels_exp)
@@ -444,15 +432,6 @@ def test_connected_component_labels_infers_the_node_count(device: str) -> None:
     assert _partitions_equal(labels_wp, labels_exp)
     with pytest.raises(ValueError, match="node_count must be non-negative, got -1"):
         od.graph.connected_component_labels_from_edges(_edges_wp(edges_np, device), node_count=-1)
-
-
-@pytest.mark.parametrize("node_count", [0, 1])
-def test_connected_component_labels_of_at_most_one_node(device: str, node_count: int) -> None:
-    """Not a library comparison: a lone node is its own component, and no node has no label."""
-    edges_wp = odt.empty_2d((0, 2), wp.int32, device=device)
-    adjacency = od.graph.edges_to_csr(node_count, edges_wp)
-    labels_wp = od.graph.connected_component_labels(adjacency)
-    assert np.array_equal(labels_wp.numpy(), np.zeros(node_count, dtype=np.int32))
 
 
 def test_connected_component_labels_rejects_a_malformed_adjacency(device: str) -> None:
@@ -661,21 +640,6 @@ def _scipy_component_labels(edges: np.ndarray, node_count: int) -> np.ndarray:
     return labels.astype(np.int32)
 
 
-def test_successor_cycles_single_cycle(device: str) -> None:
-    """One 4-cycle: the result starts at the smallest node and follows the edge direction."""
-    edges_wp = _edges_wp(np.array([[5, 2], [2, 7], [7, 3], [3, 5]], dtype=np.int32), device)
-    flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 8)
-
-    assert np.array_equal(flat_wp.numpy(), np.array([2, 7, 3, 5], dtype=np.int32))
-    assert np.array_equal(offsets_wp.numpy(), np.array([0, 4], dtype=np.int32))
-    # No edges: no cycles, and the offsets are the empty ``[0]``.
-    flat_wp, offsets_wp = od.graph.successor_cycles(
-        odt.empty_2d((0, 2), wp.int32, device=device), 5
-    )
-    assert flat_wp.shape == (0,)
-    assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
-
-
 # Cycle lengths straddling the powers of the pointer-jump widths (8 and 16), where the schedule
 # adds a round or narrows its hop: an off-by-one in the round count or the window arithmetic shows
 # up at exactly one of these.
@@ -746,9 +710,12 @@ def test_successor_cycles_malformed_input_stays_in_range(device: str) -> None:
     assert np.all((flat_np >= 0) & (flat_np < 4))
 
 
-def test_successor_cycles_excludes_a_chain(device: str) -> None:
+@pytest.mark.parametrize(
+    "edges", [pytest.param([], id="no_edges"), pytest.param([[5, 3], [3, 7]], id="chain")]
+)
+def test_successor_cycles_without_a_cycle(device: str, edges: list[list[int]]) -> None:
     """
-    A plain successor chain (no cycle at all) contributes nothing to the result.
+    No edges, or a plain successor chain, give no cycles and the empty ``[0]`` offsets.
 
     The docstring promises a successor graph decomposes into cycles *and* chains, with only
     cycles returned. A chain's dead end (a node with no outgoing edge) used to be treated as a
@@ -756,7 +723,7 @@ def test_successor_cycles_excludes_a_chain(device: str) -> None:
     the two collided and fabricated a bogus "cycle" out of the collision -- one that could even
     contain a node id that never appeared in the input at all.
     """
-    edges_wp = _edges_wp(np.array([[5, 3], [3, 7]], dtype=np.int32), device)
+    edges_wp = _edges_wp(np.array(edges, dtype=np.int32).reshape(-1, 2), device)
     flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 8)
     assert flat_wp.shape == (0,)
     assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))

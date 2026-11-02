@@ -44,7 +44,11 @@ def _row(
 
 
 def test_load_groups_by_module_group_mesh_and_rest(tmp_path: Path) -> None:
-    """Two rows differing only in `library` land in the same cell; a third `rest` value does not."""
+    """
+    Rows differing only in `library` land in the same cell; another mesh or `rest` value does not.
+
+    A third parametrize value (beyond mesh_name/library) is part of the cell key.
+    """
     _write_benchmark_json(
         tmp_path / "test_edges.json",
         [
@@ -53,19 +57,6 @@ def test_load_groups_by_module_group_mesh_and_rest(tmp_path: Path) -> None:
             _row("faces_to_edges", "trimesh", 0.020, mesh_name="dragon"),
         ],
     )
-
-    loaded = results.load(tmp_path)
-    cells, modules = loaded.cells, loaded.modules
-
-    assert modules == {"test_edges": 3}
-    bunny_key = ("test_edges", "faces_to_edges", "bunny", ())
-    dragon_key = ("test_edges", "faces_to_edges", "dragon", ())
-    assert cells[bunny_key] == {"ordito-cuda": 0.001, "trimesh": 0.010}
-    assert cells[dragon_key] == {"trimesh": 0.020}
-
-
-def test_load_keys_distinct_rest_params_into_separate_cells(tmp_path: Path) -> None:
-    """A third parametrize value (beyond mesh_name/library) is part of the cell key."""
     _write_benchmark_json(
         tmp_path / "test_heat.json",
         [
@@ -74,13 +65,16 @@ def test_load_keys_distinct_rest_params_into_separate_cells(tmp_path: Path) -> N
         ],
     )
 
-    cells = results.load(tmp_path).cells
+    loaded = results.load(tmp_path)
+    cells, modules = loaded.cells, loaded.modules
 
-    assert len(cells) == 2
-    full_key = ("test_heat", "heat_geodesic", "sphere", (("setup", "full"),))
-    amortized_key = ("test_heat", "heat_geodesic", "sphere", (("setup", "amortized"),))
-    assert cells[full_key] == {"ordito-cuda": 0.005}
-    assert cells[amortized_key] == {"ordito-cuda": 0.001}
+    assert modules == {"test_edges": 3, "test_heat": 2}
+    assert cells == {
+        ("test_edges", "faces_to_edges", "bunny", ()): {"ordito-cuda": 0.001, "trimesh": 0.010},
+        ("test_edges", "faces_to_edges", "dragon", ()): {"trimesh": 0.020},
+        ("test_heat", "heat_geodesic", "sphere", (("setup", "full"),)): {"ordito-cuda": 0.005},
+        ("test_heat", "heat_geodesic", "sphere", (("setup", "amortized"),)): {"ordito-cuda": 0.001},
+    }
 
 
 def test_load_skips_a_row_with_no_library(tmp_path: Path) -> None:

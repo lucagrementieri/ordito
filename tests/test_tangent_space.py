@@ -74,21 +74,6 @@ def test_vertex_tangent_frames_match_potpourri3d(
     assert np.allclose(basis_y, basis_y_pp, rtol=1e-5, atol=1e-5)
 
 
-def test_vertex_tangent_frames_isolated_vertex(device: str) -> None:
-    # An unreferenced vertex has no halfedge to take a reference direction from; the frame must
-    # still be finite and orthogonal to its (zero-sum, then normalized) normal.
-    vertices_wp = wp.array(
-        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [5.0, 5.0, 5.0]]),
-        dtype=wp.vec3,
-        device=device,
-    )
-    faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
-    basis_x_wp, basis_y_wp, _ = od.tangent_space.vertex_tangent_frames(vertices_wp, faces_wp)
-
-    assert np.isfinite(basis_x_wp.numpy()).all()
-    assert np.allclose(np.linalg.norm(basis_y_wp.numpy(), axis=1), 1.0, rtol=1e-5, atol=1e-5)
-
-
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
 def test_vertex_tangent_frames_derived_normals_match_supplied(
     request: pytest.FixtureRequest, mesh_name: str
@@ -142,25 +127,110 @@ def test_vertex_tangent_frames_without_vertices(device: str, with_normals: bool)
     assert (normals is normals_wp) is with_normals
 
 
-def test_vertex_tangent_frames_without_faces(device: str) -> None:
+@pytest.mark.parametrize("faces_np", [[0, 1, 2], []], ids=["isolated_vertex", "no_faces"])
+def test_vertex_tangent_frames_unreferenced_vertices(device: str, faces_np: list[int]) -> None:
     """
-    Not a library comparison: vertices no face references still get finite orthonormal frames.
+    Not a library comparison: a vertex no face references still gets a finite orthonormal frame.
 
-    With no face there is no angle-weighted normal to scatter, so every vertex takes the isolated
-    vertex's fallback; the frame must be unit, orthogonal and orthogonal to the returned normal.
+    It has no halfedge to take a reference direction from and no angle-weighted normal to scatter,
+    so it takes the fallback: one such vertex beside a triangle, and every vertex when there is no
+    face at all. The frame must be unit, orthogonal and orthogonal to the returned normal.
     """
     vertices_wp = wp.array(
-        np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0], [-4.0, 0.5, 2.0]]), dtype=wp.vec3, device=device
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [5.0, 5.0, 5.0]]),
+        dtype=wp.vec3,
+        device=device,
     )
-    faces_wp = wp.zeros(0, dtype=wp.int32, device=device)
+    faces_wp = wp.array(np.array(faces_np, dtype=np.int32), dtype=wp.int32, device=device)
     basis_x_wp, basis_y_wp, normals_wp = od.tangent_space.vertex_tangent_frames(
         vertices_wp, faces_wp
     )
     basis_x, basis_y, normals = basis_x_wp.numpy(), basis_y_wp.numpy(), normals_wp.numpy()
+    assert np.isfinite(basis_x).all()
     assert np.allclose(np.linalg.norm(basis_x, axis=1), 1.0, rtol=1e-5, atol=1e-5)
     assert np.allclose(np.linalg.norm(basis_y, axis=1), 1.0, rtol=1e-5, atol=1e-5)
     assert np.allclose((basis_x * basis_y).sum(axis=1), 0.0, rtol=1e-5, atol=1e-5)
     assert np.allclose((basis_x * normals).sum(axis=1), 0.0, rtol=1e-5, atol=1e-5)
+
+
+# ---------------------------------------------------------------------------
+# face_tangent_frames
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parity("face_tangent_frames", "igl")
+def test_face_tangent_frames_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Class A on all three vectors -- the one tangent-space comparison in the package that can be.
+
+    Every other frame in this module is **gauge-dependent**: a vertex frame is pinned to "the first
+    halfedge of the ring", which depends on face ordering, so it agrees with another library's only
+    up to a rotation about the normal -- which is why the potpourri3d comparison above uses
+    invariants. A *face* frame is not: "the first edge of the face" is a property of the face table
+    itself, and ``igl.local_basis`` uses the same rule, so ``basis_x``, ``basis_y`` and the normal
+    are each compared element-wise with no transform.
+
+    That makes this the test that pins the **convention** rather than a property: were ordito to
+    switch to, say, the longest edge or a projected global axis, the frame would still be
+    orthonormal and still span the face, and only this comparison would notice. Since igl's frame
+    is unit, right-handed, in the face and along the first edge, element-wise agreement pins all
+    four properties on ordito's side too.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    basis_x_igl, basis_y_igl, normal_igl = igl.local_basis(
+        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
+        np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
+    )
+
+    basis_x_wp, basis_y_wp, normal_wp = od.tangent_space.face_tangent_frames(
+        mesh_wp.points, mesh_wp.indices
+    )
+
+    assert np.allclose(basis_x_wp.numpy(), basis_x_igl, rtol=1e-5, atol=1e-5)
+    assert np.allclose(basis_y_wp.numpy(), basis_y_igl, rtol=1e-5, atol=1e-5)
+    assert np.allclose(normal_wp.numpy(), normal_igl, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parity("face_tangent_frames", "igl")
+def test_face_tangent_frames_with_supplied_normals_matches_igl(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class A: given igl's own face normals, the frame is ``igl.local_basis``'s, element-wise.
+
+    A supplied ``normals`` takes a separate kernel from the derived path above; it must build the
+    same first-edge frame about the normal it is handed, and return that array itself.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    basis_x_igl, basis_y_igl, normal_igl = igl.local_basis(
+        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
+        np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
+    )
+    normals_wp = wp.array(
+        np.asarray(normal_igl, dtype=np.float32), dtype=wp.vec3, device=mesh_wp.device
+    )
+    basis_x_wp, basis_y_wp, returned_wp = od.tangent_space.face_tangent_frames(
+        mesh_wp.points, mesh_wp.indices, normals=normals_wp
+    )
+    assert returned_wp is normals_wp
+    assert np.allclose(basis_x_wp.numpy(), basis_x_igl, rtol=1e-5, atol=1e-5)
+    assert np.allclose(basis_y_wp.numpy(), basis_y_igl, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("with_normals", [False, True], ids=["derived", "supplied"])
+def test_face_tangent_frames_empty(device: str, with_normals: bool) -> None:
+    """Not a library comparison: no face gives three empty arrays, the given normals unchanged."""
+    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
+    vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
+    normals_wp = wp.zeros(0, dtype=wp.vec3, device=device) if with_normals else None
+    basis_x, basis_y, normals = od.tangent_space.face_tangent_frames(
+        vertices_wp, faces_wp, normals=normals_wp
+    )
+    assert (normals is normals_wp) is with_normals
+    assert basis_x.shape == (0,)
+    assert basis_y.shape == (0,)
+    assert normals.shape == (0,)
 
 
 # ---------------------------------------------------------------------------
@@ -331,78 +401,3 @@ def test_halfedge_transport_angles_from_supplied_tangent_angles(
     assert np.ptp(derived) > 1e-3
     assert np.array_equal(without_twins.numpy(), derived)
     assert np.array_equal(with_twins.numpy(), derived)
-
-
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
-@pytest.mark.parity("face_tangent_frames", "igl")
-def test_face_tangent_frames_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Class A on all three vectors -- the one tangent-space comparison in the package that can be.
-
-    Every other frame in this module is **gauge-dependent**: a vertex frame is pinned to "the first
-    halfedge of the ring", which depends on face ordering, so it agrees with another library's only
-    up to a rotation about the normal -- which is why the potpourri3d comparison above uses
-    invariants. A *face* frame is not: "the first edge of the face" is a property of the face table
-    itself, and ``igl.local_basis`` uses the same rule, so ``basis_x``, ``basis_y`` and the normal
-    are each compared element-wise with no transform.
-
-    That makes this the test that pins the **convention** rather than a property: were ordito to
-    switch to, say, the longest edge or a projected global axis, the frame would still be
-    orthonormal and still span the face, and only this comparison would notice. Since igl's frame
-    is unit, right-handed, in the face and along the first edge, element-wise agreement pins all
-    four properties on ordito's side too.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    basis_x_igl, basis_y_igl, normal_igl = igl.local_basis(
-        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
-        np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
-    )
-
-    basis_x_wp, basis_y_wp, normal_wp = od.tangent_space.face_tangent_frames(
-        mesh_wp.points, mesh_wp.indices
-    )
-
-    assert np.allclose(basis_x_wp.numpy(), basis_x_igl, rtol=1e-5, atol=1e-5)
-    assert np.allclose(basis_y_wp.numpy(), basis_y_igl, rtol=1e-5, atol=1e-5)
-    assert np.allclose(normal_wp.numpy(), normal_igl, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parity("face_tangent_frames", "igl")
-def test_face_tangent_frames_with_supplied_normals_matches_igl(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    Class A: given igl's own face normals, the frame is ``igl.local_basis``'s, element-wise.
-
-    A supplied ``normals`` takes a separate kernel from the derived path above; it must build the
-    same first-edge frame about the normal it is handed, and return that array itself.
-    """
-    mesh_tm, mesh_wp = sphere_irregular
-    basis_x_igl, basis_y_igl, normal_igl = igl.local_basis(
-        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
-        np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
-    )
-    normals_wp = wp.array(
-        np.asarray(normal_igl, dtype=np.float32), dtype=wp.vec3, device=mesh_wp.device
-    )
-    basis_x_wp, basis_y_wp, returned_wp = od.tangent_space.face_tangent_frames(
-        mesh_wp.points, mesh_wp.indices, normals=normals_wp
-    )
-    assert returned_wp is normals_wp
-    assert np.allclose(basis_x_wp.numpy(), basis_x_igl, rtol=1e-5, atol=1e-5)
-    assert np.allclose(basis_y_wp.numpy(), basis_y_igl, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("with_normals", [False, True], ids=["derived", "supplied"])
-def test_face_tangent_frames_empty(device: str, with_normals: bool) -> None:
-    """Not a library comparison: no face gives three empty arrays, the given normals unchanged."""
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    normals_wp = wp.zeros(0, dtype=wp.vec3, device=device) if with_normals else None
-    basis_x, basis_y, normals = od.tangent_space.face_tangent_frames(
-        vertices_wp, faces_wp, normals=normals_wp
-    )
-    assert (normals is normals_wp) is with_normals
-    assert basis_x.shape == (0,)
-    assert basis_y.shape == (0,)
-    assert normals.shape == (0,)

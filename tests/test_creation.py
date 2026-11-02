@@ -931,9 +931,13 @@ def test_icosphere_launch_schedule_is_value_neutral(
     ``test_icosphere`` carries the trimesh oracle; this pins the schedules to each other. At five
     levels the shipped schedule is one launch descending every level per vertex; one level per
     launch refines exactly as the recursive build does, and three levels then one per launch mixes
-    a multi-level launch reading the vertices an earlier one wrote.
+    a multi-level launch reading the vertices an earlier one wrote. The radius scales the sphere:
+    every vertex on it, and the enclosed volume within 1 % of the ball's.
     """
     vertices_wp, faces_wp = od.creation.icosphere(subdivisions=5, radius=1.7, device=device)
+    assert np.allclose(np.linalg.norm(vertices_wp.numpy(), axis=1), 1.7, rtol=1e-5, atol=1e-5)
+    exact_volume = 4.0 / 3.0 * np.pi * 1.7**3
+    assert abs(warp_to_trimesh(vertices_wp, faces_wp).volume - exact_volume) / exact_volume < 0.01
     monkeypatch.setattr(od.creation, "_ICOSPHERE_LEVELS_PER_LAUNCH", levels_per_launch)
     other_vertices_wp, other_faces_wp = od.creation.icosphere(
         subdivisions=5, radius=1.7, device=device
@@ -942,13 +946,6 @@ def test_icosphere_launch_schedule_is_value_neutral(
         vertices_wp.numpy().view(np.uint32), other_vertices_wp.numpy().view(np.uint32)
     )
     assert np.array_equal(faces_wp.numpy(), other_faces_wp.numpy())
-
-
-def test_icosphere_radius(device: str) -> None:
-    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=3, radius=2.5, device=device)
-    assert np.allclose(np.linalg.norm(vertices_wp.numpy(), axis=1), 2.5, rtol=1e-5, atol=1e-5)
-    exact_volume = 4.0 / 3.0 * np.pi * 2.5**3
-    assert abs(warp_to_trimesh(vertices_wp, faces_wp).volume - exact_volume) / exact_volume < 0.01
 
 
 # --- revolution primitives --------------------------------------------------------------
@@ -1739,6 +1736,7 @@ def test_truncated_prisms(device: str, case: str) -> None:
 
 
 def test_axis(device: str) -> None:
+    """Not a library comparison: a ball and three shafts; ``transform`` moves the whole marker."""
     vertices_wp, faces_wp = od.creation.axis(device=device)
     ball_v, ball_f = od.creation.icosphere(radius=0.04, device=device)
     shaft_v, shaft_f = od.creation.cylinder(radius=0.008, height=0.4, device=device)
@@ -1750,16 +1748,12 @@ def test_axis(device: str) -> None:
         warp_to_trimesh(vertices_wp, faces_wp).bounds[0], -0.04, rtol=1e-3, atol=1e-3
     )
 
-
-def test_axis_transform(device: str) -> None:
     matrix_np = np.asarray(tm.transformations.rotation_matrix(np.deg2rad(90.0), [1.0, 0.0, 0.0]))
     matrix_np[:3, 3] = np.array([1.0, 0.0, 0.0])
-    vertices_wp, faces_wp = od.creation.axis(transform=_mat44(matrix_np), device=device)
-    expected_np = tm.transform_points(
-        od.creation.axis(device=device)[0].numpy().astype(np.float64), matrix_np
-    )
-    assert np.allclose(vertices_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
-    assert faces_wp.size > 0
+    moved_wp, moved_faces_wp = od.creation.axis(transform=_mat44(matrix_np), device=device)
+    expected_np = tm.transform_points(vertices_wp.numpy().astype(np.float64), matrix_np)
+    assert np.allclose(moved_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
+    assert np.array_equal(moved_faces_wp.numpy(), faces_wp.numpy())
 
 
 @pytest.mark.parametrize("surface", sorted(_PARAMETRIC_TABLE))

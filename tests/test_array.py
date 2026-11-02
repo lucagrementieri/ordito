@@ -89,12 +89,6 @@ def test_index_builders_are_int32_and_guard_the_range(device: str) -> None:
         od.array.sort_pair_indices(1, 2**31, device)
 
 
-def test_concatenate_single_returns_input(device: str) -> None:
-    arr_wp = wp.array([1, 2], dtype=wp.int32, device=device)
-    out_wp = od.array.concatenate([arr_wp])
-    assert out_wp is arr_wp
-
-
 @pytest.mark.parity("concatenate_arrays", "numpy")
 @pytest.mark.parity("pack_1d_arrays", "numpy")
 @pytest.mark.parity("split_array", "numpy")
@@ -117,7 +111,7 @@ def test_the_packing_family_matches_numpy(device: str, copy: bool) -> None:
     A **zero-length segment** is in the middle of the input on purpose. It is the case an offsets
     scheme gets wrong (two consecutive offsets that are equal), and the one where ``np.split`` and
     ordito could plausibly disagree about which piece is empty. The packed buffer and its offsets
-    land on the segments' device.
+    land on the segments' device. A single array concatenates to itself, uncopied.
     """
     rng = np.random.default_rng(3)
     parts_np = [
@@ -129,6 +123,7 @@ def test_the_packing_family_matches_numpy(device: str, copy: bool) -> None:
     flat_np = np.concatenate(parts_np)
     offsets_np = np.cumsum([0] + [part.size for part in parts_np])
     assert np.array_equal(od.array.concatenate(parts_wp).numpy(), flat_np)
+    assert od.array.concatenate(parts_wp[:1]) is parts_wp[0]  # one array is returned as is
 
     packed_wp, packed_offsets_wp = od.array.pack_1d_arrays(parts_wp)
     assert packed_wp.device == device
@@ -321,10 +316,13 @@ def test_split_accepts_host_offsets(device: str, copy: bool) -> None:
     Ordito against ordito: host bounds split exactly as the same bounds on the device do.
 
     The device offsets carry the ``numpy.split`` oracle through the tests above; the host form
-    exists for a caller that already holds the bounds, and must validate the same way.
+    exists for a caller that already holds the bounds, and must validate the same way. The bounds
+    end in an empty segment *at the end* of the buffer, which the copy form must copy rather than
+    slice (Warp rejects ``arr[n:n]``); its view form is ``test_segment_views_match_real_slices``'
+    last segment, compared key by key against a real slice.
     """
     flat_wp = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
-    bounds = [0, 2, 2, 6]
+    bounds = [0, 2, 2, 6, 6]
     offsets_wp = wp.array(np.array(bounds, dtype=np.int32), dtype=wp.int32, device=device)
 
     segments_host = od.array.split(flat_wp, bounds, copy=copy)
@@ -333,25 +331,9 @@ def test_split_accepts_host_offsets(device: str, copy: bool) -> None:
     assert [s.numpy().tolist() for s in segments_host] == [
         s.numpy().tolist() for s in segments_device
     ]
-    assert [s.numpy().tolist() for s in segments_host] == [[0, 1], [], [2, 3, 4, 5]]
+    assert [s.numpy().tolist() for s in segments_host] == [[0, 1], [], [2, 3, 4, 5], []]
     with pytest.raises(ValueError, match="offsets must be total-terminated"):
         od.array.split(flat_wp, [0, 2])
-
-
-def test_split_trailing_empty_segment(device: str) -> None:
-    """
-    A segment that is empty *at the end* of the buffer copies (Warp rejects ``arr[n:n]``).
-
-    The view form of a trailing empty segment is ``test_segment_views_match_real_slices``' last
-    segment, compared key by key against a real slice.
-    """
-    flat_wp = wp.array(np.arange(4, dtype=np.int32), dtype=wp.int32, device=device)
-    offsets_wp = wp.array(np.array([0, 4, 4, 4], dtype=np.int32), dtype=wp.int32, device=device)
-
-    segments_wp = od.array.split(flat_wp, offsets_wp, copy=True)
-
-    assert [segment.size for segment in segments_wp] == [4, 0, 0]
-    assert np.array_equal(segments_wp[0].numpy(), np.arange(4, dtype=np.int32))
 
 
 # One-, two- and three-word elements: index loops and neighbour lists (``int32``), ``float64``,
@@ -690,17 +672,6 @@ def test_bsr_with_values_shares_the_pattern(device: str) -> None:
         od.array.bsr_with_values(laplacian_wp, odt.as_dense(ones_wp[:-1]))
 
 
-def test_bsr_with_values_rejects_values_on_another_device() -> None:
-    """Not a library comparison: values on another device than the pattern raise."""
-    if not wp.is_cuda_available():
-        pytest.skip("needs both devices to construct a mismatch")
-    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=1, device="cpu")
-    laplacian_wp = od.laplacian.cotmatrix(vertices_wp, faces_wp, dtype=wp.float64)
-    values_wp = wp.zeros(laplacian_wp.values.size, dtype=wp.float64, device="cuda:0")
-    with pytest.raises(RuntimeError, match="one device"):
-        od.array.bsr_with_values(laplacian_wp, values_wp)
-
-
 @pytest.mark.parity("block_diag", "scipy")
 def test_block_diag_matches_scipy(device: str) -> None:
     """
@@ -743,21 +714,6 @@ def test_block_diag_matches_scipy(device: str) -> None:
         bsr_to_dense(stacked_wp, expected_np.shape[0]), expected_np, rtol=1e-12, atol=1e-12
     )
     assert od.array.block_diag((vector_wp, scalar_wp, scalar_wp)) is stacked_wp
-
-
-def test_block_diag_rejects_a_rectangular_operator(device: str) -> None:
-    """Not a library comparison: a rectangular block has no place on a diagonal."""
-    rectangular_wp = wps.bsr_zeros(
-        3,
-        4,
-        wp.float64,  # pyright: ignore[reportArgumentType]  # Warp types it a BlockType instance
-        device=device,
-    )
-    assert odt.has_blocks(rectangular_wp, wp.float64)
-    with pytest.raises(ValueError, match="square"):
-        od.array.block_diag((rectangular_wp,))
-    with pytest.raises(ValueError, match="at least one"):
-        od.array.block_diag(())
 
 
 def test_scalar_expansion_matches_scipy(device: str) -> None:
@@ -804,19 +760,6 @@ def test_scalar_expansion_matches_scipy(device: str) -> None:
     assert np.allclose(
         bsr_to_dense(scalar_wp, 2 * n_blocks), 2.0 * expected_np, rtol=1e-12, atol=1e-12
     )
-
-
-def test_scalar_expansion_rejects_scalar_blocks(device: str) -> None:
-    """Not a library comparison: a scalar operator has no blocks to expand."""
-    scalar_wp = wps.bsr_zeros(
-        3,
-        3,
-        wp.float64,  # pyright: ignore[reportArgumentType]  # Warp types it a BlockType instance
-        device=device,
-    )
-    assert odt.has_blocks(scalar_wp, wp.float64)
-    with pytest.raises(ValueError, match="mat22d"):
-        od.array.scalar_expansion(scalar_wp)
 
 
 @pytest.mark.parity("csr_from_keys", "scipy")
@@ -1062,20 +1005,6 @@ def test_csr_transpose(dtype: type, synced: bool, device: str) -> None:
         )
 
 
-def test_csr_transpose_empty(device: str) -> None:
-    """An entry-free matrix transposes to an entry-free matrix of the swapped shape."""
-    matrix_wp = od.array.csr_from_triplets(
-        3,
-        5,
-        wp.zeros(0, dtype=wp.int32, device=device),
-        wp.zeros(0, dtype=wp.int32, device=device),
-        wp.zeros(0, dtype=wp.float32, device=device),
-    )
-    transposed_wp = od.array.csr_transpose(matrix_wp)
-    assert (transposed_wp.nrow, transposed_wp.ncol) == (5, 3)
-    assert np.array_equal(transposed_wp.offsets.numpy(), np.zeros(6))
-
-
 @pytest.mark.parity("index_sparse", "trimesh")
 @pytest.mark.parametrize("data", [None, np.arange(1, 13, dtype=np.int32)])
 def test_index_sparse(data: npt.NDArray[np.int32] | None, device: str):
@@ -1153,22 +1082,6 @@ def test_isin_matches_numpy_at_every_rank(device: str, shape: tuple[int, ...]) -
     assert np.array_equal(mask_wp.numpy(), mask_np)
 
 
-def test_isin_negative_values(device: str) -> None:
-    """
-    Regression: the membership table is anchored at the global minimum, not at zero.
-
-    Anchored at zero this returned a *silent wrong answer* -- ``mark_membership_mask`` drops a
-    negative test value as out of range, so ``-5`` read back as absent while ``3`` was found.
-    """
-    elements_np = np.array([-5, 3, -1, 4, -5], dtype=np.int32)
-    test_np = np.array([3, -5], dtype=np.int32)
-    elements_wp = wp.array(elements_np, dtype=wp.int32, device=device)
-    test_wp = wp.array(test_np, dtype=wp.int32, device=device)
-    assert np.array_equal(
-        od.array.isin(elements_wp, test_wp).numpy(), np.isin(elements_np, test_np)
-    )
-
-
 _ISIN_DTYPES = [
     (wp.int8, np.int8),
     (wp.uint8, np.uint8),
@@ -1181,38 +1094,38 @@ _ISIN_DTYPES = [
 ]
 
 
+@pytest.mark.parametrize("branch", ["table", "sorted"])
 @pytest.mark.parametrize(
     ("dtype_wp", "dtype_np"), _ISIN_DTYPES, ids=lambda d: getattr(d, "__name__", "")
 )
-def test_isin_integer_dtypes(device: str, dtype_wp: type, dtype_np: type) -> None:
-    """Every Warp integer dtype, on the membership-table branch. Sub-32-bit ones are widened."""
-    info = np.iinfo(dtype_np)
-    low, high = max(int(info.min), -60), min(int(info.max), 60)
-    rng = np.random.default_rng(19)
-    elements_np = rng.integers(low, high + 1, size=97).astype(dtype_np)
-    test_np = rng.integers(low, high + 1, size=11).astype(dtype_np)
+def test_isin_integer_dtypes(device: str, dtype_wp: type, dtype_np: type, branch: str) -> None:
+    """
+    Class A against [`numpy.isin`][]: every Warp integer dtype, on both strategies.
 
+    ``table`` draws values from ``[-60, 60]`` (clipped to the dtype), so the membership-table
+    branch runs, sub-32-bit dtypes widened; ``sorted`` spans up to ``2**40``, which dwarfs the test
+    set and takes the sort + binary-search branch. On a signed dtype the table branch holds a
+    negative element that is a member: the table is anchored at the global minimum, and anchored
+    at zero ``mark_membership_mask`` dropped a negative test value as out of range -- a silent
+    wrong answer.
+    """
+    if branch == "table":
+        info = np.iinfo(dtype_np)
+        low, high = max(int(info.min), -60), min(int(info.max), 60)
+        rng = np.random.default_rng(19)
+        elements_np = rng.integers(low, high + 1, size=97).astype(dtype_np)
+        test_np = rng.integers(low, high + 1, size=11).astype(dtype_np)
+    else:
+        span = min(int(np.iinfo(dtype_np).max), 2**40)
+        test_np = np.array([0, span // 3, span // 2, span], dtype=dtype_np)
+        elements_np = np.array([0, 1, span // 2, span], dtype=dtype_np)
+
+    expected_np = np.isin(elements_np, test_np)
+    if branch == "table" and np.iinfo(dtype_np).min < 0:
+        assert expected_np[elements_np < 0].any()  # non-vacuity: a negative member
     elements_wp = wp.array(elements_np, dtype=dtype_wp, device=device)
     test_wp = wp.array(test_np, dtype=dtype_wp, device=device)
-    assert np.array_equal(
-        od.array.isin(elements_wp, test_wp).numpy(), np.isin(elements_np, test_np)
-    )
-
-
-@pytest.mark.parametrize(
-    ("dtype_wp", "dtype_np"), _ISIN_DTYPES, ids=lambda d: getattr(d, "__name__", "")
-)
-def test_isin_integer_dtypes_sparse(device: str, dtype_wp: type, dtype_np: type) -> None:
-    """The same dtypes on the sort + binary-search branch, where the span dwarfs the test set."""
-    span = min(int(np.iinfo(dtype_np).max), 2**40)
-    test_np = np.array([0, span // 3, span // 2, span], dtype=dtype_np)
-    elements_np = np.array([0, 1, span // 2, span], dtype=dtype_np)
-
-    elements_wp = wp.array(elements_np, dtype=dtype_wp, device=device)
-    test_wp = wp.array(test_np, dtype=dtype_wp, device=device)
-    assert np.array_equal(
-        od.array.isin(elements_wp, test_wp).numpy(), np.isin(elements_np, test_np)
-    )
+    assert np.array_equal(od.array.isin(elements_wp, test_wp).numpy(), expected_np)
 
 
 @pytest.mark.parity("flatnonzero", "numpy")
@@ -1625,30 +1538,27 @@ def test_copyto_with_a_matching_dtype_is_a_copy(device: str) -> None:
 @pytest.mark.parametrize(
     "data", bitcast_test_data, ids=[a.dtype.__name__ for a in bitcast_test_data]
 )
-def test_bitcast_int_reciprocity(device: str, data: wp.array[wp.Scalar]):
-    as_int = od.array.bitcast_to_int(cast("wp.array[wp.Scalar]", data.to(device)))
-    recovered = od.array.bitcast_from_int(as_int, data.dtype)
-    assert np.array_equal(data.numpy(), recovered.numpy(), equal_nan=True)
-
-
-@pytest.mark.parametrize(
-    "data", bitcast_test_data, ids=[a.dtype.__name__ for a in bitcast_test_data]
-)
-def test_bitcast_honours_an_explicit_zero_count(device: str, data: wp.array[wp.Scalar]):
+def test_bitcast_round_trips_and_honours_an_explicit_zero_count(
+    device: str, data: wp.array[wp.Scalar]
+):
     """
-    Not a library comparison: ``count=0`` is a length, not an omitted argument.
+    Not a library comparison: ``bitcast_from_int`` inverts ``bitcast_to_int``, and ``count=0``.
 
-    Both functions resolved the argument with ``count = count or n``, so a caller asking for an
-    empty result got the whole buffer -- ``n`` elements of *stale* bits, since the tail past
-    ``copy_count`` is deliberately left uninitialized for radix-sort scratch. The signature already
-    spelled the distinction as ``int | None``; only the resolution lost it.
+    The round trip is bit for bit, NaN, infinities, signed zeros and subnormals included. And
+    ``count=0`` is a length, not an omitted argument: both functions resolved the argument with
+    ``count = count or n``, so a caller asking for an empty result got the whole buffer -- ``n``
+    elements of *stale* bits, since the tail past ``copy_count`` is deliberately left uninitialized
+    for radix-sort scratch. The signature already spelled the distinction as ``int | None``; only
+    the resolution lost it.
 
-    Parametrized over the same dtype table as the reciprocity test above, because the two functions
-    branch on the input's width and the zero path has to hold on every branch. ``count=1`` is the
-    control: it separates "honours a zero" from "returns empty for any small count".
+    Parametrized over every width, because the two functions branch on the input's width and the
+    zero path has to hold on every branch. ``count=1`` is the control: it separates "honours a
+    zero" from "returns empty for any small count".
     """
     data_wp = cast("wp.array[wp.Scalar]", data.to(device))
     as_int = od.array.bitcast_to_int(data_wp)
+    recovered = od.array.bitcast_from_int(as_int, data.dtype)
+    assert np.array_equal(data.numpy(), recovered.numpy(), equal_nan=True)
 
     assert od.array.bitcast_to_int(data_wp, count=0).shape == (0,)
     assert od.array.bitcast_from_int(as_int, data.dtype, count=0).shape == (0,)
@@ -1860,6 +1770,12 @@ def test_cross_device_inputs_are_rejected() -> None:
     # ``_device.require_same_device`` (the helper itself is pinned below).
     with pytest.raises(RuntimeError, match="one device"):
         od.array.allclose(cpu_wp, cuda_wp)
+    # A matrix and its values: ``bsr_with_values`` checks the values against the pattern's device.
+    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=1, device="cpu")
+    laplacian_wp = od.laplacian.cotmatrix(vertices_wp, faces_wp, dtype=wp.float64)
+    values_wp = wp.zeros(laplacian_wp.values.size, dtype=wp.float64, device="cuda:0")
+    with pytest.raises(RuntimeError, match="one device"):
+        od.array.bsr_with_values(laplacian_wp, values_wp)
 
 
 def test_require_same_device_flags_a_mismatch_and_ignores_none(device: str) -> None:
@@ -1902,6 +1818,7 @@ _EMPTY_INPUT_CASES = [
     "split_copy_all_empty_segments",
     "empty_square_bsr",
     "csr_from_keys",
+    "csr_transpose",
     "flatnonzero_empty",
     "copyto",
 ]
@@ -1919,7 +1836,8 @@ def test_empty_inputs(device: str, case: str) -> None:
     no rows keeps the trailing dimension, ``isin`` against an empty test set and ``flatnonzero``
     of an all-``False`` mask select nothing, and ``trim_to_count`` at a zero counter returns empty
     buffers rather than a zero-length copy of the whole tail. ``mask_to_compact_ranks`` answers
-    without launching a scan.
+    without launching a scan. An entry-free matrix transposes to an entry-free one of the
+    swapped shape.
     """
     empty_wp = warp_empty(0, wp.int32, device)
     if case == "concatenate":
@@ -1972,6 +1890,13 @@ def test_empty_inputs(device: str, case: str) -> None:
         assert np.array_equal(offsets_wp.numpy(), np.zeros(4, dtype=np.int32))
         assert columns_wp.shape == (0,)
         assert np.array_equal(starts_wp.numpy(), np.zeros(1, dtype=np.int32))
+    elif case == "csr_transpose":
+        matrix_wp = od.array.csr_from_triplets(
+            3, 5, empty_wp, empty_wp, warp_empty(0, wp.float32, device)
+        )
+        transposed_wp = od.array.csr_transpose(matrix_wp)
+        assert (transposed_wp.nrow, transposed_wp.ncol) == (5, 3)
+        assert np.array_equal(transposed_wp.offsets.numpy(), np.zeros(6))
     elif case == "flatnonzero_empty":
         assert od.array.flatnonzero(warp_empty(0, wp.bool, device)).shape == (0,)
     elif case == "copyto":
@@ -2009,6 +1934,9 @@ _INVALID_ARGUMENT_CASES = [
     "sort_rows_float64",
     "bsr_from_csr_offsets_length",
     "bsr_from_csr_columns_values",
+    "block_diag_rectangular",
+    "block_diag_empty",
+    "scalar_expansion_scalar_blocks",
     "csr_from_triplets_mismatched_lengths",
     "csr_transpose_blocks",
     "index_sparse_data_size",
@@ -2123,6 +2051,24 @@ def test_invalid_arguments_raise(device: str, case: str) -> None:
                 wp.zeros(2, dtype=wp.int32, device=device),
                 wp.zeros(3, dtype=wp.float32, device=device),
             )
+    elif case in ("block_diag_rectangular", "scalar_expansion_scalar_blocks"):
+        # A rectangular block has no place on a diagonal; a scalar operator has no blocks to expand.
+        scalar_wp = wps.bsr_zeros(
+            3,
+            4 if case == "block_diag_rectangular" else 3,
+            wp.float64,  # pyright: ignore[reportArgumentType]  # Warp types it a BlockType instance
+            device=device,
+        )
+        assert odt.has_blocks(scalar_wp, wp.float64)
+        if case == "block_diag_rectangular":
+            with pytest.raises(ValueError, match="square"):
+                od.array.block_diag((scalar_wp,))
+        else:
+            with pytest.raises(ValueError, match="mat22d"):
+                od.array.scalar_expansion(scalar_wp)
+    elif case == "block_diag_empty":
+        with pytest.raises(ValueError, match="at least one"):
+            od.array.block_diag(())
     elif case == "csr_from_triplets_mismatched_lengths":
         with pytest.raises(ValueError, match="equal length"):
             od.array.csr_from_triplets(

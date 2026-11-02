@@ -903,16 +903,22 @@ def test_ears_match_igl_on_the_rim_fixtures(
     assert np.array_equal(ear_opp_wp.numpy(), np.asarray(ear_opp_igl))
 
 
-def test_boundary_queries_watertight(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Not a library comparison: a closed mesh has no boundary edges, vertices, loops or ears."""
-    _, mesh_wp = sphere_irregular
-    _assert_no_boundary(mesh_wp.points, mesh_wp.indices)
+@pytest.mark.parametrize("case", ["watertight", "empty"])
+def test_boundary_queries_without_a_boundary(
+    request: pytest.FixtureRequest, device: str, case: str
+) -> None:
+    """
+    Not a library comparison: no boundary means every query answers empty.
 
-
-def test_boundary_queries_empty(device: str) -> None:
-    """Not a library comparison: a mesh with no vertices or faces answers every query empty."""
-    vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
+    A closed mesh has no boundary edges, vertices, loops or ears, and neither does a mesh with no
+    vertices or faces.
+    """
+    if case == "watertight":
+        _, mesh_wp = request.getfixturevalue("sphere_irregular")
+        vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    else:
+        vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
+        faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     _assert_no_boundary(vertices_wp, faces_wp)
 
 

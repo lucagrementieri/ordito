@@ -103,13 +103,6 @@ def test_face_adjacency_edges_paired_matches_the_grouped_path(
     )
 
 
-def test_face_adjacency_edges_paired_rejects_an_odd_face_count(device: str) -> None:
-    """A closed triangle mesh has an even face count, so an odd one cannot keep the promise."""
-    faces_wp = wp.array(np.arange(3, dtype=np.int32), dtype=wp.int32, device=device)
-    with pytest.raises(ValueError, match="even face count"):
-        od.adjacency.face_adjacency(faces_wp, edges_paired=True)
-
-
 @pytest.mark.parametrize(
     ("function", "shapes"),
     [
@@ -183,37 +176,88 @@ def test_empty_mesh_gives_empty_tables(
     assert [result.shape for result in results] == shapes
 
 
-@pytest.mark.parametrize(
-    "function",
-    [
-        od.adjacency.face_adjacency_unshared,
-        od.adjacency.face_adjacency_projections,
-        od.adjacency.face_adjacency_convex,
-    ],
-)
-def test_half_a_precomputed_pair_raises_even_on_an_empty_mesh(
-    device: str, function: Callable[..., object]
-) -> None:
-    """
-    Not a library comparison: no reference takes a precomputed face-adjacency pair at all.
-
-    The four wrappers that accept ``(face_adjacency, face_adjacency_edges)`` used to disagree about
-    when a half-supplied pair is rejected -- two checked before their empty-mesh guard and two
-    returned an empty answer first, so the same wrong call raised or did not depending on the mesh.
-    The empty mesh is the whole point of the test: a non-empty one has always raised, so a
-    regression here is invisible without it.
-
-    ``face_adjacency_unshared`` takes ``faces`` first and the other two take ``vertices, faces``,
-    which is why the call goes through ``*args`` rather than a shared signature.
-    """
-    faces_wp = warp_empty(0, wp.int32, device)
-    vertices_wp = warp_empty(0, wp.vec3, device)
-    adjacency_wp = odt.empty_2d((0, 2), wp.int32, device=device)
-    args = (
-        (faces_wp,) if function is od.adjacency.face_adjacency_unshared else (vertices_wp, faces_wp)
+def _two_face_strip(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """Two triangles sharing the edge ``1-2``: the smallest mesh with one adjacency row."""
+    vertices_wp = wp.array(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
+        dtype=wp.vec3,
+        device=device,
     )
-    with pytest.raises(ValueError, match="both be provided or both omitted"):
-        function(*args, adjacency_wp)
+    return vertices_wp, wp.array([0, 1, 2, 1, 2, 0], dtype=wp.int32, device=device)
+
+
+def _one_row(row: list[int], device: str) -> odt.Array2dInt32:
+    """Upload one ``(1, 2)`` table row."""
+    return odt.as_array2d(wp.array(np.array([row], dtype=np.int32), device=device), wp.int32)
+
+
+def _no_rows(device: str) -> odt.Array2dInt32:
+    return odt.empty_2d((0, 2), wp.int32, device=device)
+
+
+def _empty_mesh(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return warp_empty(0, wp.vec3, device), warp_empty(0, wp.int32, device)
+
+
+# The half-supplied pair runs on an **empty** mesh on purpose: the wrappers accepting
+# ``(face_adjacency, face_adjacency_edges)`` used to disagree about when a half-supplied pair is
+# rejected -- two checked before their empty-mesh guard and two returned an empty answer first --
+# and a non-empty mesh has always raised, so a regression is invisible without it.
+_INVALID_CALLS: dict[str, tuple[Callable[[str], object], str]] = {
+    "face_adjacency_edges_paired_odd_face_count": (
+        lambda device: od.adjacency.face_adjacency(
+            wp.array(np.arange(3, dtype=np.int32), dtype=wp.int32, device=device), edges_paired=True
+        ),
+        "even face count",
+    ),
+    "face_adjacency_unshared_half_pair": (
+        lambda device: od.adjacency.face_adjacency_unshared(
+            _empty_mesh(device)[1], _no_rows(device)
+        ),
+        "both be provided or both omitted",
+    ),
+    "face_adjacency_projections_half_pair": (
+        lambda device: od.adjacency.face_adjacency_projections(
+            *_empty_mesh(device), _no_rows(device)
+        ),
+        "both be provided or both omitted",
+    ),
+    "face_adjacency_convex_half_pair": (
+        lambda device: od.adjacency.face_adjacency_convex(*_empty_mesh(device), _no_rows(device)),
+        "both be provided or both omitted",
+    ),
+    # The kernel reads row ``i`` of both tables, so an edges table one row short is an
+    # out-of-bounds read; the guard names both counts.
+    "face_adjacency_unshared_misaligned_pair": (
+        lambda device: od.adjacency.face_adjacency_unshared(
+            _two_face_strip(device)[1], _one_row([0, 1], device), _no_rows(device)
+        ),
+        "row counts must match, got 1 and 0",
+    ),
+    "face_adjacency_projections_short_unshared": (
+        lambda device: od.adjacency.face_adjacency_projections(
+            *_two_face_strip(device),
+            face_adjacency=_one_row([0, 1], device),
+            face_adjacency_edges=_one_row([1, 2], device),
+            face_adjacency_unshared=_no_rows(device),
+        ),
+        "row count must match",
+    ),
+    "sorted_face_edge_keys_non_positive_vertex_count": (
+        lambda device: od.adjacency.sorted_face_edge_keys(
+            wp.array([0, 1, 2], dtype=wp.int32, device=device), n_vertices=0
+        ),
+        "n_vertices must be positive, got 0",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(_INVALID_CALLS))
+def test_invalid_arguments_raise(device: str, case: str) -> None:
+    """Not a library comparison: each documented ``ValueError``, with its message."""
+    call, message = _INVALID_CALLS[case]
+    with pytest.raises(ValueError, match=message):
+        call(device)
 
 
 def test_require_paired_adjacency_accepts_both_and_neither(device: str) -> None:
@@ -292,29 +336,25 @@ def test_vertex_face_adjacency_rows_follow_the_deterministic_setting(
         assert np.array_equal(np.sort(arrival_np[start:stop]), first_np[start:stop])
 
 
-def test_vertex_face_adjacency_unreferenced_vertex(device: str) -> None:
+@pytest.mark.parametrize(
+    ("n_vertices", "offsets"),
+    [pytest.param(5, [0, 1, 2, 3, 3, 3], id="unreferenced"), pytest.param(0, [0], id="zero_rows")],
+)
+def test_vertex_face_adjacency_row_count_is_n_vertices(
+    device: str, n_vertices: int, offsets: list[int]
+) -> None:
     """
-    A vertex no face touches gets an **empty row**, not a missing one.
+    The offsets have ``n_vertices + 1`` entries whatever the faces reference.
 
-    That is the property the offsets encode and the reason ``n_vertices`` is a parameter rather than
-    inferred unconditionally: with two trailing unreferenced vertices the payload is unchanged and
-    only the offsets grow, repeating the final value.
+    A vertex no face touches gets an **empty row**, not a missing one: with two trailing
+    unreferenced vertices the payload is unchanged and only the offsets grow, repeating the final
+    value. That is the reason ``n_vertices`` is a parameter rather than inferred unconditionally.
+    At ``n_vertices=0`` on a non-empty mesh the payload is zeros, not an unwritten buffer.
     """
-    faces_np = np.array([0, 1, 2], dtype=np.int32)
-    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-
-    payload_wp, offsets_wp = od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=5)
-
-    assert np.array_equal(offsets_wp.numpy(), np.array([0, 1, 2, 3, 3, 3], dtype=np.int32))
-    assert np.array_equal(np.sort(payload_wp.numpy()), np.zeros(3, dtype=np.int32))
-
-
-def test_vertex_face_adjacency_zero_rows_with_faces(device: str) -> None:
-    """``n_vertices=0`` on a non-empty mesh returns zeros, not an unwritten buffer."""
     faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
-    payload_wp, offsets_wp = od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=0)
-    assert offsets_wp.shape == (1,)
-    assert np.array_equal(payload_wp.numpy(), np.zeros(3, dtype=np.int32))
+    payload_wp, offsets_wp = od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=n_vertices)
+    assert np.array_equal(offsets_wp.numpy(), np.array(offsets, dtype=np.int32))
+    assert np.array_equal(np.sort(payload_wp.numpy()), np.zeros(3, dtype=np.int32))
 
 
 @pytest.mark.parametrize("deterministic", [True, False])
@@ -487,24 +527,6 @@ def test_face_adjacency_unshared_duplicate_faces(device: str) -> None:
     )
     assert np.array_equal(unshared_tabled_wp.numpy(), off_edge_np)
     assert np.array_equal(unshared_wp.numpy(), off_edge_np)
-
-
-def test_face_adjacency_unshared_rejects_a_misaligned_pair(device: str) -> None:
-    """
-    Not a library comparison: a supplied pair whose two tables disagree in length raises.
-
-    The kernel reads row ``i`` of both tables, so an edges table one row short is an out-of-bounds
-    read; the guard names both counts. The aligned pair is accepted, so the guard is not vacuous.
-    """
-    faces_wp = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32, device=device)
-    adjacency_wp, edges_wp = od.adjacency.face_adjacency(faces_wp, return_edges=True)
-    assert od.adjacency.face_adjacency_unshared(
-        faces_wp, adjacency_wp, edges_wp
-    ).numpy().tolist() == [[0, 3]]
-    with pytest.raises(ValueError, match="row counts must match, got 1 and 0"):
-        od.adjacency.face_adjacency_unshared(
-            faces_wp, adjacency_wp, odt.empty_2d((0, 2), wp.int32, device=device)
-        )
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -791,31 +813,6 @@ def test_face_adjacency_projections_degenerate_second_face(device: str) -> None:
     assert not bool(convex_wp.numpy()[0])
 
 
-def test_face_adjacency_projections_unshared_length_mismatch_raises(device: str) -> None:
-    """A caller-supplied ``face_adjacency_unshared`` shorter than ``face_adjacency`` must raise."""
-    vertices_wp = wp.array(
-        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32),
-        dtype=wp.vec3,
-        device=device,
-    )
-    faces_wp = wp.array(np.array([0, 1, 2, 1, 2, 0], dtype=np.int32), dtype=wp.int32, device=device)
-    adjacency_wp = odt.as_array2d(
-        wp.array(np.array([[0, 1]], dtype=np.int32), device=device), wp.int32
-    )
-    adjacency_edges_wp = odt.as_array2d(
-        wp.array(np.array([[1, 2]], dtype=np.int32), device=device), wp.int32
-    )
-    empty_unshared_wp = odt.empty_2d((0, 2), wp.int32, device=device)
-    with pytest.raises(ValueError, match="row count must match"):
-        od.adjacency.face_adjacency_projections(
-            vertices_wp,
-            faces_wp,
-            face_adjacency=adjacency_wp,
-            face_adjacency_edges=adjacency_edges_wp,
-            face_adjacency_unshared=empty_unshared_wp,
-        )
-
-
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("face_adjacency_convex", "trimesh")
 def test_face_adjacency_convex(request: pytest.FixtureRequest, mesh_name: str) -> None:
@@ -1091,10 +1088,3 @@ def test_sorted_face_edge_keys(
     )
     assert np.array_equal(order_wp.numpy(), order_np)
     assert np.array_equal(sorted_wp.numpy(), keys_np[order_np])
-
-
-def test_sorted_face_edge_keys_rejects_a_non_positive_vertex_count(device: str) -> None:
-    """Not a library comparison: the documented ``n_vertices`` guard, with its message."""
-    faces_wp = wp.array([0, 1, 2], dtype=wp.int32, device=device)
-    with pytest.raises(ValueError, match="n_vertices must be positive, got 0"):
-        od.adjacency.sorted_face_edge_keys(faces_wp, n_vertices=0)

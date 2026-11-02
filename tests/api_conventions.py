@@ -1964,8 +1964,8 @@ def comparison_label_problems() -> list[str]:
     only checks that one of the four phrases is present. It cannot check that the label is the
     *right* one -- that stays a review question, as with every naming rule -- and it
     must not try: a ``_tm`` name inside an ``assert`` is not proof of an oracle.
-    ``test_split_single_component`` compares ``split``'s output against ``mesh_tm.vertices``, the
-    *input* mesh, which is a round trip. It is correctly labelled and is not a library comparison.
+    ``test_split_meshes`` compares ``split``'s output against the input parts' ``_tm`` vertices,
+    which is a round trip. It is correctly labelled and is not a library comparison.
 
     Two decisions make it fire only on real omissions. It keys on ``ast.Assert`` rather than on the
     whole function body, because a fixture unpack ``mesh_tm, mesh_wp = icosphere`` names a ``_tm``

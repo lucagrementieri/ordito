@@ -36,35 +36,44 @@ def _poisson_system(mesh_wp: wp.Mesh) -> odt.BsrMatrix[wp.float64]:
 
 @pytest.mark.parametrize("ordering", ["geometric", "pattern"])
 @pytest.mark.parametrize(
-    ("mesh_name", "rtol"), [("sphere_irregular", 1e-12), ("saddle_graded", 1e-11)]
+    ("mesh_name", "rtol"),
+    [("sphere_irregular", 1e-12), ("saddle_graded", 1e-11), ("two_components", 1e-12)],
 )
 def test_sparse_cholesky_matches_spsolve(
-    request: pytest.FixtureRequest, mesh_name: str, rtol: float, ordering: str
+    request: pytest.FixtureRequest, device: str, mesh_name: str, rtol: float, ordering: str
 ) -> None:
     """
     Class A at 1e-12 componentwise: the heat system ``M - tL`` against SciPy's direct solve.
 
-    The right-hand side is one source's indicator, so the solution decays by orders of magnitude
-    away from it and a componentwise comparison is the meaningful one. Both orderings (from the
-    vertices, and from the pattern alone) must give the same system's answer.
+    The right-hand side is one source's indicator per component, so the solution decays by orders
+    of magnitude away from it and a componentwise comparison is the meaningful one. Both orderings
+    (from the vertices, and from the pattern alone) must give the same system's answer.
 
     On ``saddle_graded`` the bar is 1e-11, set by the system rather than the solver: there both
     answers have a componentwise backward error of 5e-16 (ordito 4.3e-16 to 5.0e-16, SciPy 5.2e-16
     to 5.3e-16), and the operator's componentwise conditioning turns that into forward differences
     up to 1.67e-12. So the backward error is asserted too, against SciPy's own.
+
+    ``two_components`` is two disconnected surfaces in one operator: the first bisection crosses no
+    pattern edge, so it makes no separator and the two halves are the roots of two dissection
+    trees, the branch a single connected mesh never reaches.
     """
-    _, mesh_wp = request.getfixturevalue(mesh_name)
-    system = _heat_system(mesh_wp)
+    if mesh_name == "two_components":
+        system_np, vertices_np = _two_component_system(device)
+        system = scipy_to_bsr(system_np, device)
+        points = wp.array(vertices_np, dtype=wp.vec3, device=device)
+        sources = [0, system_np.shape[0] - 1]
+    else:
+        _, mesh_wp = request.getfixturevalue(mesh_name)
+        system, points, sources = _heat_system(mesh_wp), mesh_wp.points, [0]
     n = int(system.nrow)
     rhs_np = np.zeros(n)
-    rhs_np[0] = 1.0
+    rhs_np[sources] = 1.0
     expected = spla.spsolve(bsr_to_csr(system).tocsc(), rhs_np)
-    coordinates = mesh_wp.points if ordering == "geometric" else None
+    coordinates = points if ordering == "geometric" else None
     factor = od.cholesky.sparse_cholesky(system, coordinates)
-    solution = wp.zeros(n, dtype=wp.float64, device=mesh_wp.device)
-    factor.solve(
-        wp.array(rhs_np, dtype=wp.float64, device=mesh_wp.device), solution, componentwise=True
-    )
+    solution = wp.zeros(n, dtype=wp.float64, device=device)
+    factor.solve(wp.array(rhs_np, dtype=wp.float64, device=device), solution, componentwise=True)
     # Magnitudes: on ``sphere_irregular``'s obtuse faces the system is not an M-matrix, so some
     # entries of the decaying solution are negative.
     assert np.ptp(np.log10(np.abs(expected[expected != 0.0]))) > 3.0
@@ -80,12 +89,9 @@ def test_sparse_cholesky_matches_spsolve(
     # either: the pattern ordering stops there at 8.2e-16 / 9.5e-16 (CUDA / CPU). At 1e-16, below
     # what rounding reaches, every ordering on both fixtures and devices refines to 1.9e-16 to
     # 2.8e-16, below SciPy's 3.7e-16 to 5.4e-16.
-    tight = wp.zeros(n, dtype=wp.float64, device=mesh_wp.device)
+    tight = wp.zeros(n, dtype=wp.float64, device=device)
     factor.solve(
-        wp.array(rhs_np, dtype=wp.float64, device=mesh_wp.device),
-        tight,
-        tol=1e-16,
-        componentwise=True,
+        wp.array(rhs_np, dtype=wp.float64, device=device), tight, tol=1e-16, componentwise=True
     )
     assert backward_error(tight.numpy()) <= 2.0 * backward_error(expected) + 1e-16
 
@@ -281,6 +287,11 @@ def test_sparse_cholesky_rejects_invalid_inputs(
 
     An indefinite operator, coordinates of another length, a ``float32`` or mis-sized solve, and a
     factorization past ``CHOLESKY_MEMORY_BUDGET`` are each refused with their message.
+
+    SciPy's solvers take any pattern. The factorization reads one triangle of the pattern, so an
+    entry stored on one side only (here an explicit zero, numerically symmetric) made its
+    extend-add write outside the fronts; the analysis now rejects it. Both an entry in the upper
+    and one in the lower triangle are tried, between rows the mesh does not join.
     """
     _, mesh_wp = sphere_irregular
     system = _heat_system(mesh_wp)
@@ -297,25 +308,7 @@ def test_sparse_cholesky_rejects_invalid_inputs(
                 wp.zeros(rows, dtype=dtype, device=device),
                 wp.zeros(rows, dtype=dtype, device=device),
             )
-    monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", 1024)
-    with pytest.raises(ValueError, match="CHOLESKY_MEMORY_BUDGET"):
-        od.cholesky.sparse_cholesky(system, mesh_wp.points)
-
-
-def test_sparse_cholesky_rejects_a_one_sided_entry(
-    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
-) -> None:
-    """
-    Not a library comparison: a stored entry whose transpose is not stored raises ``ValueError``.
-
-    SciPy's solvers take any pattern. The factorization reads one triangle of the pattern, so an
-    entry stored on one side only (here an explicit zero, numerically symmetric) made its
-    extend-add write outside the fronts; the analysis now rejects it. Both an entry in the upper
-    and one in the lower triangle are tried, between rows the mesh does not join.
-    """
-    _, mesh_wp = sphere_irregular
-    system_np = bsr_to_csr(_heat_system(mesh_wp)).tolil()
-    n = system_np.shape[0]
+    system_np = bsr_to_csr(system).tolil()
     far = int(np.flatnonzero(system_np.getrow(0).toarray()[0] == 0.0)[-1])
     assert far > 0
     for row, column in ((0, far), (far, 0)):
@@ -328,7 +321,9 @@ def test_sparse_cholesky_rejects_a_one_sided_entry(
         assert one_sided.nnz == system_np.nnz + 1
         with pytest.raises(ValueError, match="not symmetric"):
             od.cholesky.sparse_cholesky(scipy_to_bsr(one_sided, device), mesh_wp.points)
-    assert n == int(mesh_wp.points.shape[0])
+    monkeypatch.setattr(od.cholesky, "CHOLESKY_MEMORY_BUDGET", 1024)
+    with pytest.raises(ValueError, match="CHOLESKY_MEMORY_BUDGET"):
+        od.cholesky.sparse_cholesky(system, mesh_wp.points)
 
 
 def test_refinement_never_passes_a_nan_residual(
@@ -510,31 +505,6 @@ def _two_component_system(device: str) -> tuple[sp.csr_matrix, np.ndarray]:
         points, faces = numpy_to_warp(part.vertices, part.faces.astype(np.int32).ravel(), device)
         blocks.append(bsr_to_csr(od.heat.heat_operators(points, faces)[0]))
     return sp.csr_matrix(sp.block_diag(blocks)), vertices_np
-
-
-@pytest.mark.parametrize("ordering", ["geometric", "pattern"])
-def test_sparse_cholesky_orders_two_components(device: str, ordering: str) -> None:
-    """
-    Class A at 1e-12 componentwise: two disconnected surfaces in one operator against ``spsolve``.
-
-    The first bisection crosses no pattern edge, so it makes no separator and the two halves are
-    the roots of two dissection trees: the branch a single connected mesh never reaches.
-    """
-    system_np, vertices_np = _two_component_system(device)
-    n = system_np.shape[0]
-    rhs_np = np.zeros(n)
-    rhs_np[[0, n - 1]] = 1.0
-    expected = spla.spsolve(system_np.tocsc(), rhs_np)
-    coordinates = (
-        wp.array(vertices_np, dtype=wp.vec3, device=device) if ordering == "geometric" else None
-    )
-    factor = od.cholesky.sparse_cholesky(scipy_to_bsr(system_np, device), coordinates)
-    solution = wp.zeros(n, dtype=wp.float64, device=device)
-    factor.solve(wp.array(rhs_np, dtype=wp.float64, device=device), solution, componentwise=True)
-    # Magnitudes: on ``sphere_irregular``'s obtuse faces the system is not an M-matrix, so some
-    # entries of the decaying solution are negative.
-    assert np.ptp(np.log10(np.abs(expected[expected != 0.0]))) > 3.0
-    assert np.allclose(solution.numpy(), expected, rtol=1e-12, atol=0.0)
 
 
 def _fill_case(case: str, device: str) -> tuple[sp.csr_matrix, wp.array[wp.vec3]]:

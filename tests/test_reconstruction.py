@@ -880,90 +880,61 @@ def test_open_hemisphere_keeps_single_boundary(device: str):
         assert heights[gap.numpy()].max() < 0.08  # within one edge of the rim
 
 
-def test_build_local_triangulations_two_neighbour_ring_no_duplicate(device: str):
+@pytest.mark.parametrize(
+    ("angles_deg", "padded", "boundary_angle", "expected"),
+    [
+        pytest.param(
+            [0.0, 170.0], True, 2.0 * math.pi - 0.01, [{0, 1, 2}], id="two_neighbour_ring"
+        ),
+        pytest.param([0.0, 1.0, 2.0, 180.0, 181.0, 182.0], False, 0.9 * math.pi, [], id="two_gaps"),
+    ],
+)
+def test_build_local_triangulations_degenerate_fans(
+    device: str,
+    angles_deg: list[float],
+    padded: bool,
+    boundary_angle: float,
+    expected: list[set[int]],
+):
     """
-    A fan with exactly two live neighbours and no boundary gap emits one triangle, not two.
+    Not a library comparison: the two degenerate fans emit what they should, and grow their search.
 
-    Direct ``kernel_reconstruction.build_local_triangulations`` launch (bypassing the neighbour
-    query and normal estimation) so the degenerate ring -- ``cycle_prev(i) == cycle_next(i)`` for
-    both of the two live slots -- is reached deterministically rather than by engineering the
-    greedy edge-removal loop's convergence. ``boundary_angle`` near ``2*pi`` keeps this specific
-    two-point ring from being read as a boundary (its two angular gaps sum to ``2*pi``, so neither
-    can exceed the default ``0.9*pi`` threshold, which is what makes the ordinary wrapper unable to
-    reach this branch with only two neighbours -- see the regression-fixture note in
-    ``plans/review.md``).
+    Direct ``kernel_reconstruction.build_local_triangulations`` launches (bypassing the neighbour
+    query and normal estimation), so each degenerate ring is reached deterministically rather than
+    by engineering the greedy edge-removal loop's convergence.
+
+    ``two_neighbour_ring``: a fan with exactly two live neighbours (and one padded slot) and no
+    boundary gap emits one triangle, not two -- ``cycle_prev(i) == cycle_next(i)`` for both live
+    slots. ``boundary_angle`` near ``2*pi`` keeps this two-point ring from being read as a boundary
+    (its two angular gaps sum to ``2*pi``, so neither can exceed the default ``0.9*pi`` threshold,
+    which is what makes the ordinary wrapper unable to reach this branch with only two neighbours).
+    The 170-degree wedge's circumcircle reaches far past the unit search radius, so the fan grows
+    its search to MeshLib's cap, twice that radius.
+
+    ``two_gaps``: six neighbours in two tight clusters (0-2 and 180-182 degrees) leave two gaps of
+    ~178 degrees each, both past the default ``boundary_angle`` (162 degrees). ``border`` can mark
+    only one gap, so before this guard a spurious triangle could connect the two clusters across the
+    other, unregistered one; now the point contributes nothing, and its early return must still
+    report its (empty) count. Its gaps are borders, so it searches again in twice its unit radius.
     """
-    angle = np.deg2rad(170.0)
-    points_np = np.array(
-        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [np.cos(angle), np.sin(angle), 0.0]], dtype=np.float64
-    )
-    points_wp = wp.array(points_np, dtype=wp.vec3, device=device)
-    normals_wp = wp.array(np.tile([0.0, 0.0, 1.0], (3, 1)), dtype=wp.vec3, device=device)
-    neighbor_idx_wp = wp.array(
-        np.array([[1, 2, -1]], dtype=np.int32), dtype=wp.int32, device=device
-    )
-    neighbor_dist_wp = wp.array(
-        np.array([[1.0, 1.0, 0.0]], dtype=np.float32), dtype=wp.float32, device=device
-    )
-    out_tris_wp = wp.zeros((1, 3, 3), dtype=wp.int32, device=device)
-    # Seeded off zero, so the assert below also shows the kernel wrote the count itself.
-    out_counts_wp = wp.full(1, -1, dtype=wp.int32, device=device)
-    out_grown_radius_wp = wp.full(1, -1.0, dtype=wp.float32, device=device)
-    out_grown_flags_wp = wp.full(1, -1, dtype=wp.int32, device=device)
-    wp.launch(
-        kernel_reconstruction.build_local_triangulations,
-        dim=1,
-        inputs=[
-            points_wp,
-            normals_wp,
-            neighbor_idx_wp,
-            neighbor_dist_wp,
-            wp.float32(0.0),
-            wp.float32(math.pi / 2.0),
-            wp.float32(2.0 * math.pi - 0.01),
-            kernel_reconstruction.NORMALS_ORIENTED,
-            out_tris_wp,
-            out_counts_wp,
-            out_grown_radius_wp,
-            out_grown_flags_wp,
-        ],
-        device=device,
-    )
-    assert out_counts_wp.numpy()[0] == 1
-    triangle = out_tris_wp.numpy()[0, 0]
-    assert set(triangle.tolist()) == {0, 1, 2}
-    # The 170-degree wedge's circumcircle reaches far past the unit search radius, so the fan grows
-    # its search to MeshLib's cap, twice that radius.
-    assert out_grown_radius_wp.numpy()[0] == 2.0
-    assert out_grown_flags_wp.numpy()[0] == 1
-
-
-def test_build_local_triangulations_two_gaps_emits_nothing(device: str):
-    """
-    A fan with two disjoint angular gaps emits no triangle rather than bridging them.
-
-    Direct kernel launch (bypassing the neighbour query): six neighbours in two tight clusters
-    (0-2 degrees and 180-182 degrees) leave two gaps of ~178 degrees each, both past the default
-    ``boundary_angle`` (0.9*pi = 162 degrees). ``border`` can mark only one gap, so before this
-    guard a spurious triangle could connect the two clusters across the other, unregistered one;
-    now the point contributes nothing instead.
-    """
-    angles_deg = [0.0, 1.0, 2.0, 180.0, 181.0, 182.0]
     points_np = np.array(
         [[0.0, 0.0, 0.0]]
         + [[math.cos(math.radians(a)), math.sin(math.radians(a)), 0.0] for a in angles_deg],
         dtype=np.float64,
     )
+    n_slots = len(angles_deg) + int(padded)
+    neighbor_idx_np = np.full((1, n_slots), -1, dtype=np.int32)
+    neighbor_idx_np[0, : len(angles_deg)] = np.arange(1, len(angles_deg) + 1)
+    neighbor_dist_np = np.zeros((1, n_slots), dtype=np.float32)
+    neighbor_dist_np[0, : len(angles_deg)] = 1.0
     points_wp = wp.array(points_np, dtype=wp.vec3, device=device)
     normals_wp = wp.array(
         np.tile([0.0, 0.0, 1.0], (points_np.shape[0], 1)), dtype=wp.vec3, device=device
     )
-    neighbor_idx_wp = wp.array(
-        np.array([[1, 2, 3, 4, 5, 6]], dtype=np.int32), dtype=wp.int32, device=device
-    )
-    neighbor_dist_wp = wp.array(np.ones((1, 6), dtype=np.float32), dtype=wp.float32, device=device)
-    out_tris_wp = wp.zeros((1, 6, 3), dtype=wp.int32, device=device)
-    # Seeded off zero: the early return this fan takes must still report its (empty) count.
+    neighbor_idx_wp = wp.array(neighbor_idx_np, dtype=wp.int32, device=device)
+    neighbor_dist_wp = wp.array(neighbor_dist_np, dtype=wp.float32, device=device)
+    out_tris_wp = wp.zeros((1, n_slots, 3), dtype=wp.int32, device=device)
+    # Seeded off zero, so the asserts below also show the kernel wrote each output itself.
     out_counts_wp = wp.full(1, -1, dtype=wp.int32, device=device)
     out_grown_radius_wp = wp.full(1, -1.0, dtype=wp.float32, device=device)
     out_grown_flags_wp = wp.full(1, -1, dtype=wp.int32, device=device)
@@ -977,7 +948,7 @@ def test_build_local_triangulations_two_gaps_emits_nothing(device: str):
             neighbor_dist_wp,
             wp.float32(0.0),
             wp.float32(math.pi / 2.0),
-            wp.float32(0.9 * math.pi),
+            wp.float32(boundary_angle),
             kernel_reconstruction.NORMALS_ORIENTED,
             out_tris_wp,
             out_counts_wp,
@@ -986,8 +957,9 @@ def test_build_local_triangulations_two_gaps_emits_nothing(device: str):
         ],
         device=device,
     )
-    assert out_counts_wp.numpy()[0] == 0
-    # Its gaps are borders, so it searches again in twice its unit radius.
+    count = int(out_counts_wp.numpy()[0])
+    assert count == len(expected)
+    assert [set(row) for row in out_tris_wp.numpy()[0, :count].tolist()] == expected
     assert out_grown_radius_wp.numpy()[0] == 2.0
     assert out_grown_flags_wp.numpy()[0] == 1
 
@@ -1581,42 +1553,44 @@ def test_poisson_outer_surface_matches_meshlib_distance_volume(device: str) -> N
     assert symmetric_surface_distance(moved_tm, outer_tm)[1] > 0.9 * voxel
 
 
+_DEPTH_5 = {"depth": 5, "full_depth": 4}
+
+
 @pytest.mark.parametrize(
-    ("n_points", "arguments", "match"),
+    ("n_points", "n_normals", "arguments", "match"),
     [
-        pytest.param(162, {"depth": 6, "full_depth": 8}, "full_depth", id="full_depth_above_depth"),
-        pytest.param(162, {"depth": 11}, "full_depth", id="depth_too_large"),
-        pytest.param(162, {"scale": 0.0}, "scale", id="zero_scale"),
-        pytest.param(162, {"method": "bogus"}, "method", id="off_menu_method"),
         pytest.param(
-            162, {"confidence": True, "method": "octree"}, "confidence", id="octree_confidence"
+            162, 162, {"depth": 6, "full_depth": 8}, "full_depth", id="full_depth_above_depth"
         ),
-        pytest.param(2, {"depth": 4, "full_depth": 3}, "at least 3 points", id="two_points"),
+        pytest.param(162, 162, {"depth": 11}, "full_depth", id="depth_too_large"),
+        pytest.param(162, 162, {"scale": 0.0}, "scale", id="zero_scale"),
+        pytest.param(162, 162, {"method": "bogus"}, "method", id="off_menu_method"),
+        pytest.param(
+            162, 162, {"confidence": True, "method": "octree"}, "confidence", id="octree_confidence"
+        ),
+        pytest.param(2, 2, {"depth": 4, "full_depth": 3}, "at least 3 points", id="two_points"),
+        *[
+            pytest.param(162, n, _DEPTH_5, "one normal per point", id=f"{n}_normals")
+            for n in (10, 161, 163)
+        ],
     ],
 )
 def test_poisson_rejects_invalid_arguments(
-    device: str, n_points: int, arguments: dict[str, object], match: str
+    device: str, n_points: int, n_normals: int, arguments: dict[str, object], match: str
 ):
-    """Each invalid parameter, and a cloud too small to reconstruct, raises ``ValueError``."""
+    """
+    Not a library comparison: each invalid parameter or input raises ``ValueError``.
+
+    A cloud too small to reconstruct, and a ``normals`` array not one per point: every splat and
+    sampling kernel reads ``normals[i]`` for each point, so a shorter array would read past its
+    end; the boundary values one short and one long of ``n`` both raise.
+    """
     points_np, normals_np = _sphere_cloud(2)
-    points_wp, normals_wp = _to_warp(points_np[:n_points], normals_np[:n_points], device)
+    points_wp, normals_wp = _to_warp(
+        points_np[:n_points], np.resize(normals_np, (n_normals, 3)), device
+    )
     with pytest.raises(ValueError, match=match):
         od.reconstruction.screened_poisson(points_wp, normals_wp, **arguments)  # pyright: ignore[reportArgumentType]
-
-
-def test_poisson_rejects_one_normal_per_point_mismatch(device: str) -> None:
-    """
-    Not a library comparison: a ``normals`` array not one per point raises ``ValueError``.
-
-    Every splat and sampling kernel reads ``normals[i]`` for each point, so a shorter array would
-    read past its end; the boundary values one short and one long of ``n`` both raise.
-    """
-    points_np, normals_np = _sphere_cloud(2)
-    for n_normals in (10, 161, 163):
-        points_wp, normals_wp = _to_warp(points_np, np.resize(normals_np, (n_normals, 3)), device)
-        assert points_wp.size == 162
-        with pytest.raises(ValueError, match="one normal per point"):
-            od.reconstruction.screened_poisson(points_wp, normals_wp, depth=5, full_depth=4)
 
 
 def test_poisson_cpu_matches_cuda():
@@ -1648,16 +1622,17 @@ def test_poisson_cpu_matches_cuda():
 
 
 _POISSON_WATERTIGHT_CASES = [
-    pytest.param("sphere", "dense", marks=pytest.mark.slow_cpu(71.9), id="sphere-dense"),
-    pytest.param("sphere", "adaptive", id="sphere-adaptive"),
-    pytest.param("torus_irregular", "dense", id="torus-dense"),
-    pytest.param("torus_irregular", "adaptive", id="torus-adaptive"),
+    pytest.param("sphere", "dense", False, marks=pytest.mark.slow_cpu(71.9), id="sphere-dense"),
+    pytest.param("sphere", "adaptive", False, id="sphere-adaptive"),
+    pytest.param("sphere", "adaptive", True, id="sphere-adaptive-confidence"),
+    pytest.param("torus_irregular", "dense", False, id="torus-dense"),
+    pytest.param("torus_irregular", "adaptive", False, id="torus-adaptive"),
 ]
 
 
-@pytest.mark.parametrize(("shape", "method"), _POISSON_WATERTIGHT_CASES)
+@pytest.mark.parametrize(("shape", "method", "confidence"), _POISSON_WATERTIGHT_CASES)
 def test_poisson_watertight_manifold(
-    device: str, shape: str, method: Literal["dense", "adaptive"]
+    device: str, shape: str, method: Literal["dense", "adaptive"], confidence: bool
 ) -> None:
     """
     Not a library comparison: reconstructing a closed surface from a clean, oriented cloud closes.
@@ -1665,7 +1640,8 @@ def test_poisson_watertight_manifold(
     ``sphere`` asserts the reconstructed radius hugs the unit sphere in addition to the topology;
     ``torus`` only checks watertightness and genus, since it has no analogous single-number shape
     to pin. ``adaptive`` additionally asserts outward orientation directly (the dense backend's is
-    asserted by [`test_poisson_dense_solve_converges_in_few_iterations`]).
+    asserted by [`test_poisson_dense_solve_converges_in_few_iterations`]), with and without
+    ``confidence`` weighting.
 
     **The sphere/dense cell is pinned to depth 6 on both devices**, unlike every other cell here,
     which uses [`_poisson_depth`] and so drops to 5 on CPU. Measured on this 642-point cloud,
@@ -1686,7 +1662,7 @@ def test_poisson_watertight_manifold(
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
     vertices_wp, faces_wp = od.reconstruction.screened_poisson(
-        points_wp, normals_wp, depth=depth, full_depth=4, method=method
+        points_wp, normals_wp, depth=depth, full_depth=4, confidence=confidence, method=method
     )
     mesh_od = warp_to_trimesh(vertices_wp, faces_wp)
 
@@ -1846,22 +1822,6 @@ def test_poisson_band_nests_and_extracts_closed(device: str) -> None:
     assert faces_wp.size > 0
     assert np.all(od.triangles.face_nondegenerate_mask(vertices_wp, faces_wp).numpy())
     assert od.validation.is_watertight(vertices_wp, faces_wp)
-
-
-def test_poisson_adaptive_confidence_runs(device: str):
-    points_np, normals_np = _sphere_cloud(4)
-    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
-
-    vertices_wp, faces_wp = od.reconstruction.screened_poisson(
-        points_wp,
-        normals_wp,
-        depth=_poisson_depth(device),
-        full_depth=4,
-        confidence=True,
-        method="adaptive",
-    )
-    assert od.validation.is_watertight(vertices_wp, faces_wp)
-    assert warp_to_trimesh(vertices_wp, faces_wp).euler_number == 2
 
 
 @pytest.mark.parametrize(

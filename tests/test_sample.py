@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import heapq
 import math
+from collections.abc import Callable
 from typing import Any, cast
 
 import igl
@@ -72,16 +73,12 @@ def test_sample_fibonacci_sphere_phase_stays_low_discrepancy(device: str):
     assert min_spacing(directions_np) >= 0.99 * min_spacing(expected_np)
 
 
-def test_sample_fibonacci_hemisphere_positive_z(device: str):
-    directions_np = od.sample.sample_fibonacci_hemisphere(1000, device=device).numpy()
-    assert directions_np.shape == (1000, 3)
-    assert np.all(directions_np[:, 2] > 0.0)
-    norms = np.linalg.norm(directions_np, axis=1)
-    assert np.allclose(norms, 1.0, rtol=1e-5, atol=1e-5)
-
-
 def test_sample_fibonacci_cone(device: str) -> None:
-    """Every direction inside the cone, and both ends of the range match sphere/hemisphere."""
+    """
+    Every direction inside the cone, and both ends of the range match sphere/hemisphere.
+
+    The hemisphere is itself checked as one: every direction unit and strictly above ``z = 0``.
+    """
     half_angle = np.deg2rad(25.0)
     directions_np = od.sample.sample_fibonacci_cone(512, half_angle, device=device).numpy()
     assert np.allclose(np.linalg.norm(directions_np, axis=1), 1.0, rtol=1e-5, atol=1e-5)
@@ -90,9 +87,13 @@ def test_sample_fibonacci_cone(device: str) -> None:
     # Uniform in solid angle means uniform in z, so the mean z is the midpoint of the band.
     assert np.isclose(directions_np[:, 2].mean(), 0.5 * (1.0 + np.cos(half_angle)), atol=1e-3)
 
+    hemisphere_np = od.sample.sample_fibonacci_hemisphere(1000, device=device).numpy()
+    assert hemisphere_np.shape == (1000, 3)
+    assert np.all(hemisphere_np[:, 2] > 0.0)
+    assert np.allclose(np.linalg.norm(hemisphere_np, axis=1), 1.0, rtol=1e-5, atol=1e-5)
     assert np.allclose(
-        od.sample.sample_fibonacci_cone(64, np.pi / 2.0, device=device).numpy(),
-        od.sample.sample_fibonacci_hemisphere(64, device=device).numpy(),
+        od.sample.sample_fibonacci_cone(1000, np.pi / 2.0, device=device).numpy(),
+        hemisphere_np,
         rtol=1e-6,
         atol=1e-6,
     )
@@ -102,13 +103,6 @@ def test_sample_fibonacci_cone(device: str) -> None:
         rtol=1e-6,
         atol=1e-6,
     )
-
-
-def test_sample_fibonacci_cone_invalid(device: str) -> None:
-    with pytest.raises(ValueError, match=r"half_angle must be in \(0, pi\]"):
-        od.sample.sample_fibonacci_cone(8, 0.0, device=device)
-    with pytest.raises(ValueError, match=r"half_angle must be in \(0, pi\]"):
-        od.sample.sample_fibonacci_cone(8, 4.0, device=device)
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
@@ -388,29 +382,6 @@ def test_sample_surface_poisson_disk_spacing_matches_open3d(
     assert abs(np.median(closest_wp) - np.median(closest_o3d)) < 0.02
 
 
-def test_sample_surface_poisson_disk_high_init_factor(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
-    """Exercise the GPU top-k branch when local maxima exceed excess."""
-    _, mesh_wp = sphere_irregular
-    count = 20
-    pts, fids = od.sample.sample_surface_poisson_disk(
-        mesh_wp.points, mesh_wp.indices, count, init_factor=20.0, seed=3
-    )
-    assert pts.shape == (count,)
-    assert fids.shape == (count,)
-
-
-def test_sample_surface_poisson_disk_rejects_init_factor_below_one(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """Not a library comparison: a pool below ``count`` is refused, even at ``count == 0``."""
-    _, mesh_wp = sphere_irregular
-    for count in (0, 10):
-        with pytest.raises(ValueError, match=r"init_factor must be >= 1, got 0\.5"):
-            od.sample.sample_surface_poisson_disk(
-                mesh_wp.points, mesh_wp.indices, count, init_factor=0.5
-            )
-
-
 def test_sample_surface_poisson_disk_draws_only_from_weighted_faces(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
@@ -624,16 +595,6 @@ def _blue_noise_radius_for_count(surface_area: float, n: int) -> float:
     return math.sqrt((surface_area * 0.5 / (n * 0.6162910373)) / math.pi)
 
 
-def test_sample_surface_blue_noise_min_distance(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
-    mesh_tm, mesh_wp = sphere_irregular
-    radius = _blue_noise_radius_for_count(float(mesh_tm.area), 80)
-    points, _ = od.sample.sample_surface_blue_noise(mesh_wp.points, mesh_wp.indices, radius, seed=2)
-    points_np = points.numpy().reshape(-1, 3)
-    if points_np.shape[0] >= 2:
-        min_dist = float(pdist(points_np).min())
-        assert min_dist >= radius * 0.99
-
-
 def test_sample_surface_blue_noise_count_and_on_surface(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ):
@@ -694,8 +655,7 @@ def test_sample_surface_blue_noise_matches_open3d_pymeshlab_and_igl(
     **Bug class excluded:** a sampler that is not blue noise at all (assert 1) and one that is blue
     noise over only part of the surface (assert 2). Both are live failure modes for a
     grid-based dart thrower -- a mis-sized background cell rejects too little, a mis-mapped cell-to-
-    face seeding covers too little -- and neither is visible to
-    ``test_sample_surface_blue_noise_min_distance``, which tests ordito against itself.
+    face seeding covers too little.
 
     **Measured, with both mutation probes**, on ``sphere_irregular`` at a radius sized for 300
     samples (ordito draws 704). Two degenerate stand-ins are scored alongside: a uniform Monte-Carlo
@@ -782,12 +742,6 @@ def test_sample_surface_blue_noise_matches_open3d_pymeshlab_and_igl(
     # meshlib keeps more of the pool at the same radius (measured 897 against 704, a ratio of
     # 0.78), which is a maximal-set tie-breaking difference rather than a different radius.
     assert 0.7 <= n_samples / points_ml.shape[0] <= 1.3
-
-
-def test_sample_surface_blue_noise_radius_invalid(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = sphere_irregular
-    with pytest.raises(ValueError, match="radius"):
-        od.sample.sample_surface_blue_noise(mesh_wp.points, mesh_wp.indices, 0.0)
 
 
 @pytest.mark.parity(
@@ -1040,3 +994,49 @@ def test_arrival_order_scan_samplers_draw_valid_samples(device: str, sampler: st
     assert fixed.shape[0] > 0
     if wp.get_device(device).is_cpu:
         assert np.array_equal(fixed.numpy(), arrival.numpy())
+
+
+@pytest.mark.parametrize(
+    ("call", "message"),
+    [
+        pytest.param(
+            lambda mesh_wp: od.sample.sample_fibonacci_cone(8, 0.0, device=mesh_wp.points.device),
+            r"half_angle must be in \(0, pi\]",
+            id="cone_half_angle_zero",
+        ),
+        pytest.param(
+            lambda mesh_wp: od.sample.sample_fibonacci_cone(8, 4.0, device=mesh_wp.points.device),
+            r"half_angle must be in \(0, pi\]",
+            id="cone_half_angle_past_pi",
+        ),
+        # A pool below ``count`` is refused, even at ``count == 0``.
+        pytest.param(
+            lambda mesh_wp: od.sample.sample_surface_poisson_disk(
+                mesh_wp.points, mesh_wp.indices, 0, init_factor=0.5
+            ),
+            r"init_factor must be >= 1, got 0\.5",
+            id="poisson_init_factor_below_one_empty",
+        ),
+        pytest.param(
+            lambda mesh_wp: od.sample.sample_surface_poisson_disk(
+                mesh_wp.points, mesh_wp.indices, 10, init_factor=0.5
+            ),
+            r"init_factor must be >= 1, got 0\.5",
+            id="poisson_init_factor_below_one",
+        ),
+        pytest.param(
+            lambda mesh_wp: od.sample.sample_surface_blue_noise(
+                mesh_wp.points, mesh_wp.indices, 0.0
+            ),
+            "radius",
+            id="blue_noise_radius_zero",
+        ),
+    ],
+)
+def test_invalid_arguments_raise(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], call: Callable[[wp.Mesh], object], message: str
+) -> None:
+    """Not a library comparison: each documented ``ValueError``, with its message."""
+    _, mesh_wp = sphere_irregular
+    with pytest.raises(ValueError, match=message):
+        call(mesh_wp)

@@ -1146,18 +1146,28 @@ def test_query_nearest_empty(device: str, backend: Literal["bvh", "hashgrid"], k
         assert np.array_equal(indices.numpy(), np.full(distances_np.shape, -1, dtype=np.int32))
 
 
-def test_query_nearest_rejects_bad_parameters(device: str) -> None:
+@pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        pytest.param({"k": 0}, "k must be >= 1", id="k-zero"),
+        pytest.param({"k": 2, "max_radius": -1.0}, "max_radius must be >= 0", id="max-radius"),
+        pytest.param({"k": 1, "initial_radius": -1.0}, "initial_radius", id="initial-radius"),
+    ],
+)
+def test_query_nearest_rejects_bad_parameters(
+    device: str, backend: Literal["bvh", "hashgrid"], kwargs: dict[str, float], match: str
+) -> None:
     """
-    Not a library comparison: ``k`` and ``max_radius`` guards raise their documented messages.
+    Not a library comparison: ``k``, ``max_radius`` and ``initial_radius`` guards, on both backends.
 
     ``KDTree.query`` rejects ``k=0`` as well; the claim is ordito's own message, raised before any
     index is built.
     """
     points_wp = points_to_warp(np.random.default_rng(0).random((8, 3), dtype=np.float32), device)
-    with pytest.raises(ValueError, match="k must be >= 1"):
-        od.neighbors.query_nearest(points_wp, points_wp, 0)
-    with pytest.raises(ValueError, match="max_radius must be >= 0"):
-        od.neighbors.query_nearest(points_wp, points_wp, 2, max_radius=-1.0)
+    query_nearest = cast("Callable[..., object]", od.neighbors.query_nearest)
+    with pytest.raises(ValueError, match=match):
+        query_nearest(points_wp, points_wp, backend=backend, **kwargs)
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
@@ -1523,7 +1533,6 @@ def test_backend_and_accelerator_must_agree(device: str) -> None:
     accepted (it selects the backend by its type), and a matching pair must be accepted too, or the
     guard would be rejecting correct calls.
 
-    ``query_nearest``'s ``initial_radius`` must not be negative, on either backend.
     """
     points_wp = points_to_warp(np.random.default_rng(0).random((32, 3)), device)
     bvh = od.neighbors.bvh_from_points(points_wp)
@@ -1550,12 +1559,6 @@ def test_backend_and_accelerator_must_agree(device: str) -> None:
         # An accelerator on its own, and a matching pair, are both fine.
         query(points_wp, points_wp, accelerator=bvh, **extra)
         query(points_wp, points_wp, accelerator=grid, backend="hashgrid", **extra)
-
-    for backend in ("bvh", "hashgrid"):
-        with pytest.raises(ValueError, match="initial_radius"):
-            od.neighbors.query_nearest(
-                points_wp, points_wp, k=1, initial_radius=-1.0, backend=backend
-            )
 
 
 def test_the_two_backends_agree(device: str) -> None:
@@ -2007,27 +2010,6 @@ def test_geodesic_ball_matches_meshlib(device: str) -> None:
         assert ball_wp == ball_ml, f"source {source}"
 
 
-def test_geodesic_ball_neighborhoods_overflow_warns(device: str) -> None:
-    """Not a library comparison: a ball past the 512 cap clamps and counts its source once."""
-    # A subdivided icosphere has > 512 vertices; a radius covering the whole mesh makes every
-    # vertex's geodesic ball the entire connected component, exceeding the fixed scratch capacity.
-    mesh_tm = tm.creation.icosphere(subdivisions=4)
-    assert mesh_tm.vertices.shape[0] > 512
-    vertices_wp, faces_wp = numpy_to_warp(
-        np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
-    )
-    radius = 100.0 * float(mesh_tm.scale)
-
-    # Every vertex's ball is the whole mesh, so every vertex is clipped exactly once.
-    n_vertices = mesh_tm.vertices.shape[0]
-    with pytest.warns(
-        UserWarning, match=f"{n_vertices} of {n_vertices} neighborhoods exceeded the fixed capacity"
-    ):
-        _, offsets_wp, _ = od.neighbors.geodesic_ball(vertices_wp, faces_wp, radius)
-    # Clamped, not crashed: every per-vertex count fits within the fixed capacity.
-    assert np.diff(offsets_wp.numpy()).max() <= 512
-
-
 def test_geodesic_ball_without_faces_is_each_vertex_alone(device: str) -> None:
     """
     Not a library comparison: with no edge to walk, every ball holds its own vertex only.
@@ -2060,7 +2042,8 @@ def test_geodesic_ball_chunks_agree(
     scratch pools between launches and stitching the per-chunk rows together; no fixture in this
     suite is that large, so the chunk is forced down to an uneven split. The one-launch call carries
     the oracle (the libigl and meshlib comparisons above). Rows, offsets, reference neighbours and
-    the clipped-source warning must be identical, on a ball and on a radius that clips every source.
+    the clipped-source warning must be identical, on a ball and on a radius that clips every source;
+    the clipped arm also pins that warning's count and the 512-entry clamp.
     """
     mesh_tm = tm.creation.icosphere(subdivisions=4)
     vertices_wp, faces_wp = numpy_to_warp(
@@ -2079,6 +2062,16 @@ def test_geodesic_ball_chunks_agree(
         assert np.array_equal(whole_wp.numpy(), chunked_wp.numpy())
     assert [str(w.message) for w in whole_warnings] == [str(w.message) for w in chunked_warnings]
     assert len(whole_warnings) == (1 if radius_scale > 10.0 else 0)
+    if radius_scale > 10.0:
+        # Every ball is the whole mesh, past the 512 cap: each source is clipped and counted once,
+        # and clamped rather than crashed.
+        n_vertices = vertices_wp.size
+        assert n_vertices > 512
+        assert issubclass(whole_warnings[0].category, UserWarning)
+        assert f"{n_vertices} of {n_vertices} neighborhoods exceeded the fixed capacity" in str(
+            whole_warnings[0].message
+        )
+        assert np.diff(whole[1].numpy()).max() <= 512
 
 
 def test_geodesic_ball_refuses_a_list_past_its_offsets(

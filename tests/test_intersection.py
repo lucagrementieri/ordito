@@ -870,19 +870,6 @@ def _intersection_curves_match(
     return bool(np.all(np.isfinite(ref_distances_np)) and np.all(np.isfinite(got_distances_np)))
 
 
-def test_mesh_with_mesh_empty(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Not a library comparison: two disjoint meshes cross nowhere."""
-    mesh_tm, mesh_wp = sphere_irregular
-    far_tm = mesh_tm.copy()
-    far_tm.apply_translation([10.0, 0.0, 0.0])
-    far_wp = trimesh_to_warp(far_tm, str(mesh_wp.points.device))
-
-    lines_wp = od.intersection.mesh_with_mesh(
-        mesh_wp.points, mesh_wp.indices, far_wp.points, far_wp.indices
-    )
-    assert lines_wp.shape == (0, 2)
-
-
 @pytest.mark.parity("mesh_with_mesh", "pyvista")
 def test_mesh_with_mesh_matches_pyvista_on_nested_shells(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
@@ -1256,9 +1243,10 @@ def test_mesh_collision_pairs_degenerate(device: str) -> None:
     """
     Not a library comparison: separated meshes, an empty mesh, and the candidate-cap guard.
 
-    Two boxes three units apart must report no collision at all -- the case a broad phase that
-    forgot its narrow phase would fail -- and an empty face buffer must give empty answers rather
-    than raising, since ``collision_masks`` still owes a mask per mesh.
+    Two boxes three units apart must report no collision at all, nor a crossing segment from
+    ``mesh_with_mesh`` -- the case a broad phase that forgot its narrow phase would fail -- and an
+    empty face buffer must give empty answers rather than raising, since ``collision_masks`` still
+    owes a mask per mesh.
     """
     first_tm = tm.creation.box()
     far_tm = tm.creation.box()
@@ -1275,6 +1263,10 @@ def test_mesh_collision_pairs_degenerate(device: str) -> None:
     )
     assert not bool(first_mask_wp.numpy().any())
     assert not bool(far_mask_wp.numpy().any())
+    segments_wp = od.intersection.mesh_with_mesh(
+        first_wp.points, first_wp.indices, far_wp.points, far_wp.indices
+    )
+    assert segments_wp.shape == (0, 2)
 
     empty_faces_wp = warp_empty(0, wp.int32, device)
     empty_pairs_wp = od.intersection.mesh_collision_pairs(

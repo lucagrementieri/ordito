@@ -58,7 +58,8 @@ def test_point_plane_distance(device: str) -> None:
     Class A: signed distances against trimesh and against VTK's plane implicit function.
 
     The normal is not unit length here, which is what makes the normalization part of the claim
-    rather than an assumption both sides happen to share.
+    rather than an assumption both sides happen to share. The default-origin overload is compared
+    against trimesh's own default too.
 
     pyvista's ``compute_implicit_distance`` evaluates the same signed dot product, and the
     comparison is made against the **exact** float64 answer as well as against ordito's so the
@@ -87,6 +88,15 @@ def test_point_plane_distance(device: str) -> None:
     )
 
     assert np.allclose(distances_wp.numpy(), distances_tm, rtol=1e-5, atol=1e-5)
+
+    # The default origin is the world origin, a different code path from any value the caller could
+    # pass: an implementation defaulting to the centroid would pass the line above and fail this.
+    assert np.allclose(
+        od.point_plane_distance(points_wp, wp.vec3(*plane_normal_np.tolist())).numpy(),
+        tm.point_plane_distance(points_np, plane_normal_np),
+        rtol=1e-5,
+        atol=1e-5,
+    )
 
     # pyvista, against the exact answer as well as against ordito's.
     unit_np = plane_normal_np / np.linalg.norm(plane_normal_np)
@@ -593,26 +603,6 @@ def test_covariance(device: str) -> None:
     assert np.allclose(od.covariance(points_wp).numpy()[0], cov_np, rtol=1e-4, atol=1e-4)
 
 
-def test_point_plane_distance_no_origin(device: str) -> None:
-    """
-    Class A: the default-origin overload, where the plane passes through the world origin.
-
-    A separate test because the default is a different code path, not a value the caller could
-    pass -- and an implementation defaulting to the *centroid* instead would pass the test
-    above and fail this one.
-    """
-    rng = np.random.default_rng(1)
-    points_np = rng.standard_normal((30, 3))
-    plane_normal_np = rng.standard_normal(3)
-
-    distances_tm = tm.point_plane_distance(points_np, plane_normal_np)
-
-    points_wp = points_to_warp(points_np, device)
-    distances_wp = od.point_plane_distance(points_wp, wp.vec3(*plane_normal_np.tolist()))
-
-    assert np.allclose(distances_wp.numpy(), distances_tm, rtol=1e-5, atol=1e-5)
-
-
 @pytest.mark.parametrize("with_start", [False, True], ids=["default_start", "given_start"])
 @pytest.mark.parity("radial_sort", "trimesh")
 def test_radial_sort(device: str, with_start: bool) -> None:
@@ -839,14 +829,6 @@ def test_estimate_normals_matches_pytorch3d(device: str) -> None:
             assert np.all(np.einsum("ij,ij->i", normals_wp.numpy(), sphere_np) < 0.0)
 
 
-def test_estimate_normals_rejects_an_unknown_orientation(device: str) -> None:
-    """Not a library comparison: ``orientation`` is a menu, guarded with its options named."""
-    points_wp = points_to_warp(np.eye(3, dtype=np.float32), device)
-    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=3)
-    with pytest.raises(ValueError, match="orientation must be 'neighbors' or 'centroid'"):
-        od.estimate_normals(points_wp, neighbor_idx_wp, orientation="shot")  # pyright: ignore[reportArgumentType]
-
-
 @pytest.mark.parity(
     "estimate_normals",
     "meshlib",
@@ -906,6 +888,12 @@ def test_estimate_normals_matches_meshlib(device: str) -> None:
 
 
 def test_estimate_normals_orientation(device: str) -> None:
+    """
+    Not a library comparison: ``orientation="centroid"`` points outward, the default inward.
+
+    No reference implements the centroid rule. ``orient_reference`` and ``camera_location`` are
+    compared directly against Open3D and MeshLab above, and the default against pytorch3d.
+    """
     # Small negative slack: the kernel enforces the sign in float32, so a float64
     # recomputation can dip just below zero at a zero-crossing.
     tol = 1e-5
@@ -922,20 +910,6 @@ def test_estimate_normals_orientation(device: str) -> None:
     # The default, the neighbours' side: inward on a convex cloud.
     normals_default = od.estimate_normals(points_wp, neighbor_idx_wp).numpy()
     assert np.all(np.einsum("ij,ij->i", normals_default, points_np - centroid_np) <= tol)
-
-    # Align with a fixed direction (Open3D orient_normals_to_align_with_direction).
-    reference_np = np.array([0.0, 0.0, 1.0])
-    normals_dir = od.estimate_normals(
-        points_wp, neighbor_idx_wp, orient_reference=wp.vec3(*reference_np.tolist())
-    ).numpy()
-    assert np.all(normals_dir @ reference_np >= -tol)
-
-    # Toward a camera at the sphere centre (Open3D orient_normals_towards_camera_location):
-    # every normal points inward, i.e. opposite the outward position vector.
-    normals_cam = od.estimate_normals(
-        points_wp, neighbor_idx_wp, camera_location=wp.vec3(0.0, 0.0, 0.0)
-    ).numpy()
-    assert np.all(np.einsum("ij,ij->i", normals_cam, points_np) <= tol)
 
 
 def _cloud_with_outliers(seed: int = 3, n_inliers: int = 400, n_outliers: int = 15) -> np.ndarray:
@@ -1973,23 +1947,6 @@ def test_convex_subset_mask_against_the_three_qhull_backends(device: str) -> Non
         assert len(selected & hull) / len(hull) > 0.85, f"{name}: recall too low"
 
 
-def test_convex_subset_mask_scale_invariant(device: str) -> None:
-    rng = np.random.default_rng(7)
-    points_np = rng.standard_normal((500, 3)).astype(np.float64)
-    scaled_np = points_np * 1e4
-
-    points_wp = points_to_warp(points_np, device)
-    scaled_wp = points_to_warp(scaled_np, device)
-
-    mask_wp = od.convex_subset_mask(points_wp, n_directions=256)
-    mask_scaled_wp = od.convex_subset_mask(scaled_wp, n_directions=256)
-    assert np.array_equal(mask_wp.numpy(), mask_scaled_wp.numpy())
-
-    hull_scipy = scipy.spatial.ConvexHull(scaled_np)
-    selected = np.flatnonzero(mask_scaled_wp.numpy())
-    assert set(selected.tolist()) <= set(hull_scipy.vertices.tolist())
-
-
 def test_convex_subset_recall(device: str) -> None:
     rng = np.random.default_rng(2)
     points_np = rng.standard_normal((200, 3)).astype(np.float64)
@@ -2124,8 +2081,13 @@ def test_convex_superset_mask_tightens_with_subdivisions(device: str, kind: str)
     assert counts[-1] >= len(hull_scipy)
 
 
-def test_convex_superset_mask_scale_invariant(device: str) -> None:
-    """The flatness and margin tests are relative, so scaling the cloud cannot change the mask."""
+def test_convex_masks_are_scale_invariant(device: str) -> None:
+    """
+    Not a library comparison: both hull filters' tests are relative, so scaling cannot move a mask.
+
+    The subset's flatness and margin tests and the superset's alike. The scaled subset is also held
+    to soundness against qhull on the scaled cloud, so an all-``False`` mask cannot pass.
+    """
     points_np = _cloud("gaussian", 5_000, seed=14)
     points_wp = points_to_warp(points_np, device)
     scaled_wp = points_to_warp(points_np * 10000.0, device)
@@ -2133,6 +2095,15 @@ def test_convex_superset_mask_scale_invariant(device: str) -> None:
     assert np.array_equal(
         od.convex_superset_mask(points_wp).numpy(), od.convex_superset_mask(scaled_wp).numpy()
     )
+
+    subset_np = _cloud("gaussian", 500, seed=7)
+    scaled_np = subset_np * 1e4
+    mask_wp = od.convex_subset_mask(points_to_warp(subset_np, device), n_directions=256)
+    mask_scaled_wp = od.convex_subset_mask(points_to_warp(scaled_np, device), n_directions=256)
+    assert np.array_equal(mask_wp.numpy(), mask_scaled_wp.numpy())
+    selected = np.flatnonzero(mask_scaled_wp.numpy())
+    assert selected.size > 0
+    assert set(selected.tolist()) <= set(scipy.spatial.ConvexHull(scaled_np).vertices.tolist())
 
 
 @pytest.mark.parametrize("offset", [1e3, 1e5])
@@ -2228,6 +2199,15 @@ _INVALID_CALLS: dict[str, tuple[Callable[[str], object], str]] = {
             camera_location=wp.vec3(0.0, 0.0, 0.0),
         ),
         "at most one",
+    ),
+    # ``orientation`` is a menu, guarded with its options named.
+    "estimate_normals_unknown_orientation": (
+        lambda device: od.estimate_normals(
+            points_to_warp(_fibonacci_sphere(16), device),
+            _sphere_knn(device, 8)[0],
+            orientation="shot",  # pyright: ignore[reportArgumentType]
+        ),
+        "orientation must be 'neighbors' or 'centroid'",
     ),
     # One thread per point reads its own row of ``neighbor_idx``, so a short table is an
     # out-of-bounds read (heap corruption on CPU); a long one is survivable but still a caller

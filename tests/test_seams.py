@@ -256,18 +256,6 @@ def test_crease_edges_mates_change_no_answer(
     assert np.array_equal(given_np, plain_np)
 
 
-def test_cut_along_edges_is_geometrically_a_noop(device: str) -> None:
-    """Every output vertex sits exactly where its input did, so the surface is unchanged."""
-    box_tm = tm.creation.box(extents=[1.0, 2.0, 3.0])
-    vertices_wp, faces_wp = numpy_to_warp(box_tm.vertices, box_tm.faces, device)
-    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
-    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
-
-    before_np = box_tm.vertices[box_tm.faces].astype(np.float32)
-    after_np = cut_vertices_wp.numpy()[cut_faces_wp.numpy().reshape(-1, 3)]
-    assert np.allclose(after_np, before_np, rtol=1e-6, atol=1e-6)
-
-
 def test_cut_along_edges_with_no_edges_is_the_identity(
     unit_box: tuple[tm.Trimesh, wp.Mesh], device: str
 ) -> None:
@@ -497,7 +485,8 @@ def test_cut_along_edges_matches_pymeshlab_and_igl(
 
     Each of the 8 corners is incident to 3 of the 6 quads and every crease through it is cut, so it
     becomes 3 vertices -- **24 in all**, which is minimal -- while the 12 faces and their winding
-    are untouched.
+    are untouched, and every output corner sits exactly where its input did (the cut moves no
+    point, so the surface is unchanged).
 
     **Class B (topology only) against MeshLab**, which opens the same seams but re-welds some
     vertices: both sides produce 6 face-connected components, 12 faces and the same surface area --
@@ -537,6 +526,13 @@ def test_cut_along_edges_matches_pymeshlab_and_igl(
     assert _face_component_count(cut_vertices_wp, cut_faces_wp) == 6
     assert od.validation.is_winding_consistent(cut_faces_wp)
     assert np.isclose(cut_tm.area, box_tm.area, rtol=1e-5)
+    # Geometrically a no-op: every output corner sits exactly where its input corner did.
+    assert np.allclose(
+        cut_vertices_wp.numpy()[cut_faces_wp.numpy().reshape(-1, 3)],
+        box_tm.vertices[box_tm.faces],
+        rtol=1e-6,
+        atol=1e-6,
+    )
 
     meshset_pml = trimesh_to_pymeshlab(box_tm)
     meshset_pml.meshing_cut_along_crease_edges(angledeg=angle)
@@ -1013,32 +1009,6 @@ def test_uv_seam_edges_single_triangle(device: str) -> None:
     }
 
 
-def test_uv_seam_match_rejects_an_off_menu_mode(device: str) -> None:
-    """
-    Not a library comparison: the ``match`` menu's own guard, on both entry points.
-
-    An unrecognised mode used to reach ``_UV_MATCH_MODES[match]`` and surface as a bare
-    ``KeyError('bogus')`` naming neither the argument nor the two modes -- the one place in the
-    package where an off-menu value did not raise the ``ValueError`` every other menu argument
-    raises. ``uv_seam_vertex_mask`` delegates, so it is checked too: the guard lives in the
-    function the delegation lands in, and only a call through the wrapper shows that.
-    """
-    faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
-    corner_uv_wp = points_to_warp_uv(
-        np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float32), device
-    )
-    for match in ("bogus", "Index", ""):
-        with pytest.raises(ValueError, match="match must be one of"):
-            od.seams.uv_seam_edges(faces_wp, corner_uv_wp, n_vertices=3, match=match)  # pyright: ignore[reportArgumentType]  # deliberately off-menu
-        with pytest.raises(ValueError, match="match must be one of"):
-            od.seams.uv_seam_vertex_mask(faces_wp, corner_uv_wp, n_vertices=3, match=match)  # pyright: ignore[reportArgumentType]  # deliberately off-menu
-    # Both documented modes still run; ``index`` needs ``face_texcoords`` and is covered above.
-    assert od.seams.uv_seam_edges(faces_wp, corner_uv_wp, n_vertices=3, match="uv")[0].shape == (
-        0,
-        4,
-    )
-
-
 def test_cut_along_edges_accepts_a_row_in_either_order(
     device: str, unit_box: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
@@ -1111,6 +1081,26 @@ _INVALID_CALLS: dict[str, tuple[Callable[[str], object], str]] = {
             _quad_mesh(device)[0], points_to_warp_uv(np.zeros((4, 2), dtype=np.float32), device)
         ),
         "texcoords must be per-corner",
+    ),
+    # An unrecognised ``match`` once surfaced as a bare ``KeyError`` naming neither the argument nor
+    # the modes; ``uv_seam_vertex_mask`` delegates, so the guard is checked through it too.
+    "uv_edges_match_off_menu": (
+        lambda device: od.seams.uv_seam_edges(
+            _quad_mesh(device)[0],
+            points_to_warp_uv(np.zeros((6, 2), dtype=np.float32), device),
+            n_vertices=4,
+            match="bogus",  # pyright: ignore[reportArgumentType]  # deliberately off-menu
+        ),
+        "match must be one of",
+    ),
+    "uv_mask_match_off_menu": (
+        lambda device: od.seams.uv_seam_vertex_mask(
+            _quad_mesh(device)[0],
+            points_to_warp_uv(np.zeros((6, 2), dtype=np.float32), device),
+            n_vertices=4,
+            match="Index",  # pyright: ignore[reportArgumentType]  # deliberately off-menu
+        ),
+        "match must be one of",
     ),
     # Three faces on one edge: "the other side" is undefined, as it is for the cut.
     "uv_nonmanifold": (

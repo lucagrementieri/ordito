@@ -1179,29 +1179,7 @@ def test_float_sum_of_a_strided_view_is_reproducible(device: str) -> None:
     assert np.isclose(sums.pop(), table_np[:, 1:3].astype(np.float64).sum(), rtol=1e-5)
 
 
-@pytest.mark.parametrize("n", [7, 8])
-@pytest.mark.parametrize(
-    ("dtype_wp", "dtype_np"),
-    [
-        (wp.float32, np.float32),
-        (wp.float64, np.float64),
-        (wp.int32, np.int32),
-        (wp.int64, np.int64),
-        (wp.uint32, np.uint32),
-        (wp.uint64, np.uint64),
-    ],
-)
-def test_reduce_median_matches_numpy(device: str, n: int, dtype_wp: type, dtype_np: type) -> None:
-    """Class A: ``reduce.median`` equals ``np.median`` at both parities and every key dtype."""
-    rng = np.random.default_rng(90 + n)
-    if np.issubdtype(dtype_np, np.floating):
-        values_np = rng.standard_normal(n).astype(dtype_np)
-    else:
-        values_np = rng.integers(0, 1000, size=n).astype(dtype_np)
-    values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
-    assert np.allclose(od_reduce.median(values_wp), np.median(values_np), rtol=1e-5, atol=1e-5)
-
-
+@pytest.mark.parametrize("n", [36, 37])
 @pytest.mark.parametrize("q", [0.0, 0.1, 0.25, 0.5, 0.7, 0.999, 1.0])
 @pytest.mark.parametrize(
     ("dtype_wp", "dtype_np"),
@@ -1216,17 +1194,18 @@ def test_reduce_median_matches_numpy(device: str, n: int, dtype_wp: type, dtype_
 )
 @pytest.mark.parity("quantile", "numpy")
 def test_reduce_quantile_matches_numpy(
-    device: str, q: float, dtype_wp: type, dtype_np: type
+    device: str, q: float, dtype_wp: type, dtype_np: type, n: int
 ) -> None:
     """
-    Class A: ``reduce.quantile`` equals ``np.quantile`` (linear method) at every key dtype.
+    Class A: ``reduce.quantile`` and ``reduce.median`` equal NumPy's at every key dtype.
 
-    The quantiles include both ends (exact order statistics) and fractional ranks on either side
-    of one half, where NumPy interpolates from the nearer order statistic. The values are spread
+    ``quantile`` against ``np.quantile`` (linear method): the quantiles include both ends (exact
+    order statistics) and fractional ranks on either side of one half, where NumPy interpolates
+    from the nearer order statistic. At ``q = 0.5`` ``median`` is also held to ``np.median``, at
+    both parities (an even length averages the two middle values). The values are spread
     (``np.ptp`` well above the tolerance) and not constant, so a rank off by one fails.
     """
     rng = np.random.default_rng(91)
-    n = 37
     if np.issubdtype(dtype_np, np.floating):
         values_np = rng.standard_normal(n).astype(dtype_np)
     else:
@@ -1235,6 +1214,8 @@ def test_reduce_quantile_matches_numpy(
     values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
     expected_np = np.quantile(values_np.astype(np.float64), q)
     assert np.isclose(od_reduce.quantile(values_wp, q), expected_np, rtol=1e-5, atol=1e-5)
+    if q == 0.5:
+        assert np.isclose(od_reduce.median(values_wp), np.median(values_np), rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("n", [1, 6, 7])
@@ -1265,7 +1246,7 @@ def test_scalar_statistics_match_pymeshlab(device: str, n: int) -> None:
     statistic at ``n // 2 - 1``, and ordito's median equals the mean of its ranks ``n // 2 - 1`` and
     ``n // 2`` (even) or its rank ``n // 2`` (odd), so the two answers are tied together through
     one sorted buffer rather than each against NumPy alone.
-    [`tests.test_reduce.test_reduce_median_matches_numpy`][] stays the oracle for the median
+    [`tests.test_reduce.test_reduce_quantile_matches_numpy`][] stays the oracle for the median
     itself. Both parities run, since that is where the two definitions part: one rank below the
     averaged middle pair at even ``n``, one full rank below at odd ``n``.
     """

@@ -106,6 +106,11 @@ _INVALID_HALFEDGE_CASES: list[tuple[str, Callable[[str], object], str]] = [
         lambda device: od.halfedge.halfedge_twins(_faces([0, 1, 2, 0, 1, 2], device), n_vertices=3),
         "consistently wound",
     ),
+    (
+        "pair-wound-the-same-way",
+        lambda device: od.halfedge.halfedge_twins(_faces([0, 1, 2, 1, 2, 3], device), n_vertices=4),
+        "consistently wound",
+    ),
     ("pinched-vertex", _pinched_rings_call, "vertex-manifold"),
     ("twin-past-the-halfedge-count", _ragged_twins_call, "opposite halfedge"),
 ]
@@ -124,45 +129,25 @@ def test_halfedge_rejects_invalid_small_inputs(
     Three faces hinged on one edge have no "the" opposite halfedge. An *exactly* duplicated face
     carries all three edges twice the same way, the defect a non-orientable surface produces; a
     *reversed* duplicate is consistently wound (if degenerate) and must still pair, asserted below.
-    Two closed sheets meeting at vertex 0 alone pair soundly but their rotation closes after one
-    fan, and that diagnosis must stay distinct from the winding guard's. A twin index is bounded
-    by the halfedge count (``faces.shape[0] // 3 * 3``), not the face length: on a ragged buffer a
-    range test against the wrong one lets ``halfedge_destination`` read past the end, a host-heap
-    read on CPU.
+    Beside ``(0, 1, 2)``, which crosses edge ``{1, 2}`` as ``1 -> 2``, ``(1, 2, 3)`` crosses it the
+    same way a second time and is rejected, while the consistent neighbour ``(2, 1, 3)`` crosses
+    back and pairs exactly that edge: the key ``halfedge_twins`` sorts on is the *undirected*
+    edge, so nothing in the pairing itself distinguishes the two, and the accepting arms keep the
+    guards from passing against a function that rejects everything. Two closed sheets meeting at
+    vertex 0 alone pair soundly but their rotation closes after one fan, and that diagnosis must
+    stay distinct from the winding guard's. A twin index is bounded by the halfedge count
+    (``faces.shape[0] // 3 * 3``), not the face length: on a ragged buffer a range test against the
+    wrong one lets ``halfedge_destination`` read past the end, a host-heap read on CPU.
     """
     with pytest.raises(ValueError, match=match):
         call(device)
     assert (
         od.halfedge.halfedge_twins(_faces([0, 1, 2, 0, 2, 1], device), n_vertices=3).numpy() >= 0
     ).all()
-
-
-@pytest.mark.parametrize("consistent", [True, False])
-def test_halfedge_twins_rejects_a_face_pair_wound_against_each_other(
-    consistent: bool, device: str
-) -> None:
-    """
-    Not a library comparison: trimesh has no halfedge structure, so the oracle is the algebra.
-
-    Parametrized over both windings because the rejecting arm alone would pass against a function
-    that rejects *everything*. Both arms are the same two triangles sharing edge ``{1, 2}``; only
-    the second face's winding differs. Beside ``(0, 1, 2)``, which crosses that edge as ``1 -> 2``,
-    the *consistent* neighbour is ``(2, 1, 3)`` -- it crosses back as ``2 -> 1`` -- while
-    ``(1, 2, 3)`` is the inconsistent one, crossing ``1 -> 2`` a second time. The key
-    ``halfedge_twins`` sorts on is the *undirected* edge, so nothing in the pairing itself
-    distinguishes the two cases, which is exactly the defect this guards.
-    """
-    second = [2, 1, 3] if consistent else [1, 2, 3]
-    faces_np = np.array([0, 1, 2, *second], dtype=np.int32)
-    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-    if not consistent:
-        with pytest.raises(ValueError, match="consistently wound"):
-            od.halfedge.halfedge_twins(faces_wp, n_vertices=4)
-        return
-    twins = od.halfedge.halfedge_twins(faces_wp, n_vertices=4).numpy()
+    twins = od.halfedge.halfedge_twins(_faces([0, 1, 2, 2, 1, 3], device), n_vertices=4).numpy()
     # Exactly the shared edge is paired, and it is the involution the docstring promises.
-    assert np.count_nonzero(twins >= 0) == 2
     paired = np.flatnonzero(twins >= 0)
+    assert paired.size == 2
     assert np.array_equal(twins[twins[paired]], paired)
 
 
@@ -737,10 +722,18 @@ def test_halfedge_mates_key_order_is_the_edge_key_sort(
     assert np.array_equal(mates.numpy(), _expected_mates(faces_np))
 
 
-@pytest.mark.parametrize("n_classes", [1, 2])
-@pytest.mark.parametrize("given_order", [True, False], ids=["key-order", "sorted"])
+@pytest.mark.parametrize(
+    ("n_classes", "given_order", "bounded"),
+    [
+        pytest.param(1, True, True, id="1-key-order"),
+        pytest.param(1, False, True, id="1-sorted"),
+        pytest.param(2, True, True, id="2-key-order"),
+        pytest.param(2, False, True, id="2-sorted"),
+        pytest.param(1, False, False, id="1-sorted-pair-radix"),
+    ],
+)
 def test_key_ordered_halfedges_match_numpy(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], n_classes: int, given_order: bool
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], n_classes: int, given_order: bool, bounded: bool
 ) -> None:
     """
     Not a library comparison: the order is ordito's edge-key convention, recomputed by NumPy.
@@ -748,7 +741,8 @@ def test_key_ordered_halfedges_match_numpy(
     Random flags over every halfedge, so both halfedges of an edge are often flagged together and
     the key ties have to break by halfedge index. Each class comes out in stable ascending key
     order, class 0 first -- from the sort's permutation when it is given (nothing sorted), and by
-    sorting only the flagged halfedges when not.
+    sorting only the flagged halfedges when not. A single class needs no ``n_vertices``: the sort
+    then packs at the pair radix, which must give the same order as the vertex-count radix.
     """
     mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.indices.device
@@ -770,13 +764,18 @@ def test_key_ordered_halfedges_match_numpy(
         od.array.bit_ranks(words),
         int(flags_np.sum()),
         key_order=key_order if given_order else None,
-        n_vertices=n_vertices,
+        n_vertices=n_vertices if bounded else None,
     ).numpy()
     assert np.any(np.diff(keys_np[expected]) == 0)
     assert np.array_equal(halfedges, expected)
 
 
 def test_key_ordered_halfedges_validates(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a library comparison: the bitset guards, and an empty selection.
+
+    An empty selection returns an empty order with no sort, with or without a key order.
+    """
     _mesh_tm, mesh_wp = sphere_irregular
     device = mesh_wp.indices.device
     row_words = (mesh_wp.indices.size + 31) // 32
@@ -795,39 +794,14 @@ def test_key_ordered_halfedges_validates(sphere_irregular: tuple[tm.Trimesh, wp.
             mesh_wp.indices, two_rows, od.array.bit_ranks(two_rows), 0
         )
 
-
-def test_key_ordered_halfedges_single_class_and_empty_selection(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    Not a library comparison: the key order is ordito's convention, recomputed by NumPy.
-
-    A single class needs no ``n_vertices``: the sort then packs at the pair radix, which must give
-    the same stable ascending key order as the vertex-count radix. An empty selection returns an
-    empty order with no sort.
-    """
-    mesh_tm, mesh_wp = sphere_irregular
-    device = mesh_wp.indices.device
-    faces_np = np.asarray(mesh_tm.faces)
-    n_vertices = len(mesh_tm.vertices)
-    edges_np = np.sort(tm.geometry.faces_to_edges(faces_np), axis=1)
-    keys_np = edges_np[:, 0] + edges_np[:, 1] * n_vertices
-    flags_np = (np.random.default_rng(3).random(faces_np.size) < 0.4).astype(np.int32)
-    order_np = np.argsort(keys_np, kind="stable")
-    expected = order_np[flags_np[order_np] == 1]
-    words = flags_to_warp_bitmask(flags_np, device)
-    halfedges = od.halfedge.key_ordered_halfedges(
-        mesh_wp.indices, words, od.array.bit_ranks(words), int(flags_np.sum())
-    ).numpy()
-    assert expected.size > 0
-    assert np.array_equal(halfedges, expected)
-
-    none_flagged = wp.zeros((faces_np.size + 31) // 32, dtype=wp.uint32, device=device)
+    none_flagged = wp.zeros(row_words, dtype=wp.uint32, device=device)
     no_ranks = od.array.bit_ranks(none_flagged)
     assert od.halfedge.key_ordered_halfedges(mesh_wp.indices, none_flagged, no_ranks, 0).shape == (
         0,
     )
-    _, key_order = od.halfedge.halfedge_mates(mesh_wp.indices, n_vertices, return_key_order=True)
+    _, key_order = od.halfedge.halfedge_mates(
+        mesh_wp.indices, mesh_wp.points.size, return_key_order=True
+    )
     assert key_order is not None
     from_order = od.halfedge.key_ordered_halfedges(
         mesh_wp.indices, none_flagged, no_ranks, 0, key_order=key_order

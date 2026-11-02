@@ -1297,8 +1297,14 @@ def _host_prefix_median(values: np.ndarray) -> float:
     return (float(values[count // 2 - 1]) + float(values[count // 2])) / 2.0
 
 
-@pytest.mark.parametrize("n_valid", [201, 200, 1])
-def test_robust_scale_matches_the_host_mad(device: str, n_valid: int) -> None:
+@pytest.mark.parametrize(
+    ("seed", "n_valid", "n_tied"),
+    [(31, 201, 0), (31, 200, 0), (31, 1, 0), (41, 201, 151)],
+    ids=["odd", "even", "single", "zero_mad"],
+)
+def test_robust_scale_matches_the_host_mad(
+    device: str, seed: int, n_valid: int, n_tied: int
+) -> None:
     """
     Not a library comparison: the device MAD scale against the host arithmetic it replaced.
 
@@ -1311,16 +1317,23 @@ def test_robust_scale_matches_the_host_mad(device: str, n_valid: int) -> None:
     covered, and the answer must be the same double. Mutation probe: taking the upper middle
     value alone for an even count fails the even arm, and counting the prefix one short fails
     both many-inlier arms (a lone inlier's scale is zero either way).
+
+    The ``zero_mad`` arm ties over half the in-range residuals to one value, so both medians land
+    on it and the MAD is zero; the scale then falls back to ``1.345`` times the population standard
+    deviation of the in-range residuals, checked against NumPy's in ``float64``. Counting the
+    out-of-range correspondences there moves the answer by orders of magnitude more than the
+    tolerance.
     """
-    rng = np.random.default_rng(31)
+    rng = np.random.default_rng(seed)
     n = n_valid + 100
     closest_np = np.zeros((n, 3), dtype=np.float32)
     closest_np[:, :2] = rng.standard_normal((n, 2))
     residual_np = rng.standard_normal(n).astype(np.float32)
+    order = rng.permutation(n)
+    residual_np[order[:n_tied]] = 0.25
     current_np = closest_np.copy()
     current_np[:, 2] = residual_np
     normals_np = np.tile(np.array([0.0, 0.0, 1.0], dtype=np.float32), (n, 1))
-    order = rng.permutation(n)
     valid = np.zeros(n, dtype=bool)
     valid[order[:n_valid]] = True
     distance_np = np.where(valid, 0.5, 2.0).astype(np.float32)
@@ -1337,6 +1350,13 @@ def test_robust_scale_matches_the_host_mad(device: str, n_valid: int) -> None:
         1.0,
         1,
     )
+    if n_tied:
+        kept = residual_np[valid].astype(np.float64)
+        assert np.median(np.abs(kept - np.median(kept))) == 0.0
+        expected = 1.345 * float(np.std(kept))
+        assert expected > 0.0
+        assert np.isclose(scale, expected, rtol=1e-6, atol=0.0)
+        return
     kept = np.sort(residual_np[valid])
     center = np.float32(_host_prefix_median(kept))
     deviation = np.sort(np.abs(kept - center))
@@ -1344,50 +1364,6 @@ def test_robust_scale_matches_the_host_mad(device: str, n_valid: int) -> None:
     assert sigma > 0.0 or n_valid == 1
     expected = 1.345 * sigma if sigma > 0.0 else 0.0
     assert scale == expected
-
-
-def test_robust_scale_falls_back_to_the_standard_deviation(device: str) -> None:
-    """
-    Not a library comparison: a zero MAD falls back to the in-range residuals' standard deviation.
-
-    Over half the in-range residuals are one value, so both medians land on it and the MAD is
-    zero; the scale is then ``1.345`` times the population standard deviation of the in-range
-    residuals, checked against NumPy's in ``float64``. A third of the correspondences are out of
-    range by distance or by a missing match and must not enter it: counting them moves the answer
-    by orders of magnitude more than the tolerance.
-    """
-    rng = np.random.default_rng(41)
-    n_valid = 201
-    n = n_valid + 100
-    closest_np = np.zeros((n, 3), dtype=np.float32)
-    closest_np[:, :2] = rng.standard_normal((n, 2))
-    residual_np = rng.standard_normal(n).astype(np.float32)
-    order = rng.permutation(n)
-    residual_np[order[:151]] = 0.25
-    current_np = closest_np.copy()
-    current_np[:, 2] = residual_np
-    normals_np = np.tile(np.array([0.0, 0.0, 1.0], dtype=np.float32), (n, 1))
-    valid = np.zeros(n, dtype=bool)
-    valid[order[:n_valid]] = True
-    distance_np = np.where(valid, 0.5, 2.0).astype(np.float32)
-    index_np = np.arange(n, dtype=np.int32)
-    index_np[order[n_valid : n_valid + 50]] = -1
-    distance_np[order[n_valid : n_valid + 50]] = 0.5
-
-    scale = od.registration._robust_scale_from_residuals(  # pyright: ignore[reportPrivateUsage]
-        points_to_warp(current_np, device),
-        points_to_warp(closest_np, device),
-        points_to_warp(normals_np, device),
-        wp.array(distance_np, dtype=wp.float32, device=device),
-        wp.array(index_np, dtype=wp.int32, device=device),
-        1.0,
-        1,
-    )
-    kept = residual_np[valid].astype(np.float64)
-    assert np.median(np.abs(kept - np.median(kept))) == 0.0
-    expected = 1.345 * float(np.std(kept))
-    assert expected > 0.0
-    assert np.isclose(scale, expected, rtol=1e-6, atol=0.0)
 
 
 def test_robust_scale_ignores_the_length_of_the_target_normals(device: str) -> None:
@@ -1608,76 +1584,75 @@ def test_icp_empty_source(device: str) -> None:
 
 @pytest.mark.parametrize(
     ("method", "max_iterations"),
-    [("point", 1), ("point", 2), ("point", 10), ("plane", 10)],
-    ids=["point-1", "point-2", "point-10", "plane-10"],
+    [("point", 1), ("point", 2), ("point", 10), ("plane", 10), ("tukey", 10)],
+    ids=["point-1", "point-2", "point-10", "plane-10", "tukey-10"],
 )
-def test_icp_max_distance_all_rejected(device: str, method: str, max_iterations: int) -> None:
+def test_icp_weightless_first_fit_is_not_kept(
+    device: str, method: str, max_iterations: int
+) -> None:
     """
     Not a library comparison: a first fit with no weight is not kept, at every loop shape.
 
-    Every correspondence is beyond ``max_distance``, so the first fit divides by a zero weight sum
-    and is a matrix of NaN. One iteration decides that in the device round alone, and more read
-    the round counter after the recording and skip the replay; both must return the seed and
-    ``inf`` -- point-to-point also the seed's image. Point-to-plane must likewise bail out on the
-    first iteration rather than read a zeroed accumulator as a converged ``cost=0.0`` fit. Mutation
-    probe: letting ``point_to_point_round`` keep a weightless fit fails all three point arms on the
-    matrix.
+    In the ``point`` and ``plane`` arms every correspondence is beyond ``max_distance``, so the
+    first fit divides by a zero weight sum and is a matrix of NaN. One iteration decides that in
+    the device round alone, and more read the round counter after the recording and skip the
+    replay; both must return the seed and ``inf`` -- point-to-point also the seed's image.
+    Point-to-plane must likewise bail out on the first iteration rather than read a zeroed
+    accumulator as a converged ``cost=0.0`` fit. Mutation probe: letting ``point_to_point_round``
+    keep a weightless fit fails all three point arms on the matrix.
+
+    The ``tukey`` arm is the distinct failure mode of a Tukey kernel driving every in-range
+    correspondence's *weight* to zero: ``residual_valid`` (and so the ``valid`` guard) accepts
+    every correspondence, since none is out of range, and ``robust_weight`` alone zeroes every
+    contribution once ``robust_scale`` is tighter than every residual. The offset is real, so a
+    converged fit would move every source point; the collapsed-weight bail must report the same
+    "did not converge" signal: the identity and a non-finite cost.
     """
-    rng = np.random.default_rng(15 if method == "point" else 17)
-    target_np = rng.standard_normal((100, 3)).astype(np.float32)
-    source_np = (target_np + np.array([5.0, 5.0, 5.0], dtype=np.float32)).astype(np.float32)
+    if method == "tukey":
+        rng = np.random.default_rng(23)
+        target_np = rng.standard_normal((100, 3)).astype(np.float32) * 2.0
+        offset_np = np.array([1.0, 0.5, -0.3], dtype=np.float32)
+    else:
+        rng = np.random.default_rng(15 if method == "point" else 17)
+        target_np = rng.standard_normal((100, 3)).astype(np.float32)
+        offset_np = np.array([5.0, 5.0, 5.0], dtype=np.float32)
+    source_np = (target_np + offset_np).astype(np.float32)
     source_wp = points_to_warp(source_np, device)
     target_wp = points_to_warp(target_np, device)
+    normals_wp = points_to_warp(
+        target_np / np.linalg.norm(target_np, axis=1, keepdims=True), device
+    )
 
     if method == "point":
         matrix_wp, transformed_wp, cost = od.registration.icp(
             source_wp, target_wp, None, max_iterations=max_iterations, max_distance=1e-6
         )
         assert np.array_equal(transformed_wp.numpy(), source_np)
-    else:
-        normals_np = target_np / np.linalg.norm(target_np, axis=1, keepdims=True)
+    elif method == "plane":
         matrix_wp, _, cost = od.registration.icp_point_to_plane(
             source_wp,
             target_wp,
             None,
-            target_normals=points_to_warp(normals_np, device),
+            target_normals=normals_wp,
             max_iterations=max_iterations,
             max_distance=1e-6,
         )
+    else:
+        matrix_wp, _, cost = od.registration.icp_point_to_plane(
+            source_wp,
+            target_wp,
+            None,
+            target_normals=normals_wp,
+            max_iterations=max_iterations,
+            robust_kernel="tukey",
+            robust_scale=1e-9,
+        )
     assert np.isfinite(matrix_wp.numpy()).all()
     assert np.allclose(matrix_wp.numpy()[0], np.eye(4), atol=1e-6)
-    assert cost == np.inf
-
-
-def test_icp_point_to_plane_tukey_all_weights_zero(device: str) -> None:
-    # Not a library comparison: this pins the loop's own bail-out against a Tukey kernel driving
-    # every in-range correspondence's *weight* to zero, a distinct failure mode from the
-    # distance-rejection case above -- ``residual_valid`` (and so the ``valid`` guard) accepts
-    # every correspondence here, since none of them is out of range; it is ``robust_weight`` alone
-    # that zeroes every contribution once ``robust_scale`` is tighter than every residual.
-    rng = np.random.default_rng(23)
-    target_np = rng.standard_normal((100, 3)).astype(np.float32) * 2.0
-    normals_np = target_np / np.linalg.norm(target_np, axis=1, keepdims=True)
-    # A real, nontrivial offset: a correctly converged fit would move every source point.
-    source_np = (target_np + np.array([1.0, 0.5, -0.3], dtype=np.float32)).astype(np.float32)
-    source_wp = points_to_warp(source_np, device)
-    target_wp = points_to_warp(target_np, device)
-    normals_wp = points_to_warp(normals_np, device)
-
-    matrix_wp, _, cost_od = od.registration.icp_point_to_plane(
-        source_wp,
-        target_wp,
-        None,
-        target_normals=normals_wp,
-        max_iterations=10,
-        robust_kernel="tukey",
-        robust_scale=1e-9,
-    )
-    # A collapsed-weight bail must report the same "did not converge" signal as an all-rejected
-    # one: an untouched (identity) transform and a non-finite cost, never the spurious cost=0.0 a
-    # zeroed accumulator would otherwise read as a perfect fit.
-    assert np.allclose(matrix_wp.numpy()[0], np.eye(4), atol=1e-6)
-    assert not np.isfinite(cost_od)
+    if method == "tukey":
+        assert not np.isfinite(cost)
+    else:
+        assert cost == np.inf
 
 
 @pytest.mark.parametrize("max_iterations", [2, 10])

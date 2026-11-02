@@ -995,7 +995,18 @@ def test_visibility_rejects_invalid_arguments(
         call(mesh_wp)
 
 
-@pytest.mark.parametrize("function", ["ambient_occlusion", "shape_diameter", "max_tangent_sphere"])
+_NORMALS_QUERIES: dict[str, Callable[..., object]] = {
+    "ambient_occlusion": od.visibility.ambient_occlusion,
+    "shape_diameter": od.visibility.shape_diameter,
+    "max_tangent_sphere": od.visibility.max_tangent_sphere,
+    "thickness-max_sphere": lambda *args, **kwargs: od.visibility.thickness(
+        *args, method="max_sphere", **kwargs
+    ),
+    "thickness-ray": lambda *args, **kwargs: od.visibility.thickness(*args, method="ray", **kwargs),
+}
+
+
+@pytest.mark.parametrize("function", list(_NORMALS_QUERIES))
 @pytest.mark.parametrize("n_points", [0, 3], ids=["empty", "points"])
 def test_visibility_queries_check_normals_and_return_empty(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], function: str, n_points: int
@@ -1006,46 +1017,25 @@ def test_visibility_queries_check_normals_and_return_empty(
     The empty early return must not silently skip the ``normals`` length check: a caller passing a
     stale, wrong-length ``normals`` array alongside an empty ``points`` gets the ``ValueError`` the
     docstring promises unconditionally, not an empty result. ``max_tangent_sphere``'s ``m == 0``
-    return once sat after its check but behind two ``aabb`` passes, so it is pinned the same way.
+    return once sat after its check but behind two ``aabb`` passes, so it is pinned the same way;
+    both ``thickness`` methods resolve ``normals`` before their early return. With points the
+    thickness is finite and positive inside the closed fixture, so its empty answer is not a
+    constant output.
     """
     _mesh_tm, mesh_wp = sphere_irregular
-    query = getattr(od.visibility, function)
-    points_wp = mesh_wp.points[:n_points] if n_points else warp_empty(0, wp.vec3, mesh_wp.device)
-    with pytest.raises(ValueError, match="one entry per point"):
-        query(mesh_wp, points_wp, normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device))
-    if n_points == 0:
-        result = query(mesh_wp, points_wp)
-        for part in result if isinstance(result, tuple) else (result,):
-            assert part.shape == (0,)
-
-
-@pytest.mark.parametrize("method", ["max_sphere", "ray"])
-@pytest.mark.parametrize("n_points", [0, 3], ids=["empty", "points"])
-def test_thickness_checks_normals_and_returns_empty(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-    method: Literal["max_sphere", "ray"],
-    n_points: int,
-) -> None:
-    """
-    Not a parity assert: an empty ``points`` gives an empty thickness, and still checks ``normals``.
-
-    Both methods resolve ``normals`` before their empty early return, so a wrong-length array is
-    rejected whatever the query count; with points the measure is finite and positive inside the
-    closed fixture, so the empty answer is not a constant output.
-    """
-    _mesh_tm, mesh_wp = sphere_irregular
+    query = _NORMALS_QUERIES[function]
     points_wp = (
         odt.as_dense(mesh_wp.points[:n_points])
         if n_points
         else warp_empty(0, wp.vec3, mesh_wp.device)
     )
     with pytest.raises(ValueError, match="one entry per point"):
-        od.visibility.thickness(
-            mesh_wp,
-            points_wp,
-            normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device),
-            method=method,
-        )
-    thickness_np = od.visibility.thickness(mesh_wp, points_wp, method=method).numpy()
-    assert thickness_np.shape == (n_points,)
-    assert (np.isfinite(thickness_np) & (thickness_np > 0.0)).all()
+        query(mesh_wp, points_wp, normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device))
+    if n_points == 0 or function.startswith("thickness"):
+        result = query(mesh_wp, points_wp)
+        for part in result if isinstance(result, tuple) else (result,):
+            assert isinstance(part, wp.array)
+            assert part.shape == (n_points,)
+            if n_points:
+                thickness_np = part.numpy()
+                assert (np.isfinite(thickness_np) & (thickness_np > 0.0)).all()

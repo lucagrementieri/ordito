@@ -133,8 +133,15 @@ def test_aabb_single_point(device: str) -> None:
     assert od.bounds.enclosing_diagonal(points_wp) == 0.0
 
 
-def test_aabb_union_encloses_both_boxes() -> None:
-    """The union takes the component-wise min of the mins and max of the maxes, nothing more."""
+def test_aabb_union_encloses_both_boxes(device: str) -> None:
+    """
+    The union takes the component-wise min of the mins and max of the maxes, nothing more.
+
+    On two literal boxes the corners are exact, the union is idempotent and contains each input.
+    On two clouds the union of their boxes must equal the box of the concatenated cloud: the
+    property callers rely on when they accumulate bounds incrementally, and the one thing a
+    per-component slip would break while leaving both boxes individually plausible.
+    """
     a_min, a_max = wp.vec3(-1.0, 0.0, 2.0), wp.vec3(1.0, 3.0, 4.0)
     b_min, b_max = wp.vec3(0.0, -5.0, 3.0), wp.vec3(2.0, 1.0, 3.5)
 
@@ -148,21 +155,11 @@ def test_aabb_union_encloses_both_boxes() -> None:
         assert np.allclose(odt.vec3_floats(again_min), [-1.0, -5.0, 2.0])
         assert np.allclose(odt.vec3_floats(again_max), [2.0, 3.0, 4.0])
 
-
-def test_aabb_union_matches_a_pooled_reduction(device: str) -> None:
-    """
-    Unioning two clouds' boxes must equal the box of the concatenated cloud.
-
-    That is the property callers rely on when they accumulate bounds incrementally, and the one
-    thing a per-component slip would break while leaving both boxes individually plausible.
-    """
     rng = np.random.default_rng(5)
     cloud_a = rng.normal(size=(200, 3)).astype(np.float32) + 4.0
     cloud_b = rng.normal(size=(300, 3)).astype(np.float32) - 2.0
-
     boxes = [od.bounds.aabb(points_to_warp(cloud, device)) for cloud in (cloud_a, cloud_b)]
     union_min, union_max = od.bounds.aabb_union(*boxes[0], *boxes[1])
-
     pooled_min, pooled_max = od.bounds.aabb(points_to_warp(np.vstack([cloud_a, cloud_b]), device))
     assert np.allclose(_bounds_np(union_min, union_max), _bounds_np(pooled_min, pooled_max))
 
@@ -813,28 +810,6 @@ def test_oriented_bounding_box_prefilter_returns_the_identical_box(device: str) 
     assert np.array_equal(_bounds_np(lower_dense, upper_dense), _bounds_np(lower_kept, upper_kept))
 
 
-def test_oriented_bounding_box_single_rotation_is_the_aabb(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    ``rotations=1`` scores only the identity, so it must reproduce ``aabb`` exactly.
-
-    The identity is deliberately the *last* candidate rather than the first, which is what makes
-    this an edge case worth pinning: an off-by-one in the spiral's ``n - 1`` split would drop it and
-    return some arbitrary orientation here. ``refine_iterations=0``, because refinement exists to
-    *improve* on the sampled answer -- refined ``rotations=1`` legitimately beats the AABB.
-    """
-    _, mesh_wp = sphere_irregular
-    rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(
-        mesh_wp.points, 1, refine_iterations=0
-    )
-
-    assert np.array_equal(_frame_np(rotation_wp), np.eye(3))
-    assert np.array_equal(
-        _bounds_np(lower_wp, upper_wp), _bounds_np(*od.bounds.aabb(mesh_wp.points))
-    )
-
-
 def test_oriented_bounding_box_never_loses_to_the_aabb(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
@@ -848,6 +823,11 @@ def test_oriented_bounding_box_never_loses_to_the_aabb(
     refinement converges to whichever basin each count's winner lands in, so *refined* volumes are
     not monotone in ``rotations`` -- the refined guarantee is the separate one pinned in
     [`test_oriented_bounding_box_refinement_is_monotone`][tests.test_bounds.test_oriented_bounding_box_refinement_is_monotone].
+
+    ``rotations=1`` scores only the identity, so it must reproduce ``aabb`` exactly, frame and
+    corners. The identity is deliberately the *last* candidate rather than the first, which is
+    what makes this an edge case worth pinning: an off-by-one in the spiral's ``n - 1`` split would
+    drop it and return some arbitrary orientation here.
     """
     mesh_tm, mesh_wp = saddle_graded
     _, points_wp = _tilted_cloud(mesh_tm, mesh_wp.device)
@@ -865,6 +845,12 @@ def test_oriented_bounding_box_never_loses_to_the_aabb(
         )
         for n in (1, 16, 256, 4096)
     ]
+
+    rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(
+        points_wp, 1, refine_iterations=0
+    )
+    assert np.array_equal(_frame_np(rotation_wp), np.eye(3))
+    assert np.array_equal(_bounds_np(lower_wp, upper_wp), _bounds_np(*od.bounds.aabb(points_wp)))
 
     assert volumes == sorted(volumes, reverse=True)
     assert volumes[-1] < volumes[0] * 0.95, "the tilted cloud's box is materially tighter"

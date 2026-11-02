@@ -227,18 +227,6 @@ def test_unique_1d_hash_dtypes_match_numpy(device: str, dtype: type) -> None:
     assert empty_unique_wp.size == empty_inverse_wp.size == empty_counts_wp.size == 0
 
 
-def test_unique_rows_inverse_counts(device: str):
-    data_np = np.array([[0, 1], [2, 3], [0, 1], [2, 3], [4, 5]], dtype=np.int32)
-    data_wp = wp.array(data_np, dtype=wp.int32, device=device)
-    unique_wp, inverse_wp, counts_wp = od.grouping.unique_rows(
-        data_wp, return_inverse=True, return_counts=True
-    )
-    _, _inverse_np, counts_np = np.unique(data_np, axis=0, return_inverse=True, return_counts=True)
-    assert np.array_equal(np.sort(counts_wp.numpy()), np.sort(counts_np))
-    for i in range(data_np.shape[0]):
-        assert np.array_equal(unique_wp.numpy()[inverse_wp.numpy()[i]], data_np[i])
-
-
 @pytest.mark.parametrize("unique_fraction", [1.0, 0.1], ids=["allunique", "tenth"])
 @pytest.mark.parity("unique_rows", "trimesh")
 def test_unique_rows_matches_trimesh(
@@ -302,23 +290,24 @@ def test_hashed_occurrence_counts_match_numpy(device: str) -> None:
     assert np.array_equal(np.sort(counts_wp[counts_wp > 0]), np.sort(counts_np))
 
 
-@pytest.mark.parametrize("layout", ["width5", "strided"])
-def test_unique_rows_without_a_row_vector_view_matches_numpy(device: str, layout: str) -> None:
+@pytest.mark.parametrize("layout", ["width2", "width5", "strided"])
+def test_unique_rows_matches_numpy(device: str, layout: str) -> None:
     """
-    Class B (column order reversed) against ``numpy.unique(axis=0)``, on the gather fallback.
+    Class B (column order reversed) against ``numpy.unique(axis=0)``, rows, inverse and counts.
 
-    A five-column table has no integer-vector view and a column-strided one is not contiguous, so
-    both dedup through the key core and gather the representatives. ordito orders rows by a key
-    whose least significant digit is column 0, and ``numpy.unique`` lexicographically from column
-    0, so numpy is handed the columns reversed and its answer reversed back: then the rows, the
-    inverse and the counts all compare elementwise. (This test lexsorted both sides and compared
-    the counts as a sorted multiset, which passed for any permutation of the output.)
+    A two-column table dedups through its integer-vector view. A five-column table has no such
+    view and a column-strided one is not contiguous, so both dedup through the key core and
+    gather the representatives (the fallback). ordito orders rows by a key whose least significant
+    digit is column 0, and ``numpy.unique`` lexicographically from column 0, so numpy is handed
+    the columns reversed and its answer reversed back: then the rows, the inverse and the counts
+    all compare elementwise. (This test lexsorted both sides and compared the counts as a sorted
+    multiset, which passed for any permutation of the output.)
     """
     rng = np.random.default_rng(37)
-    width, high = (5, 2) if layout == "width5" else (6, 3)
+    width, high = {"width2": (2, 4), "width5": (5, 2), "strided": (6, 3)}[layout]
     base_np = rng.integers(0, high, size=(60, width)).astype(np.int32)
     base_wp = _int_rows(base_np, device)
-    if layout == "width5":
+    if layout != "strided":
         data_np, data_wp = base_np, base_wp
     else:
         data_np = base_np[:, ::2]
@@ -633,22 +622,6 @@ def test_hash_vector_rows_epsilon_far_from_origin(device: str) -> None:
     assert len(set(keys_np.tolist())) == 64
 
 
-def test_hash_indices_rows_valid(device: str) -> None:
-    rng = np.random.default_rng(23)
-    n_rows, n_cols = 64, 5
-    actual_max_index = 17
-    max_index = actual_max_index + 3
-    indices_np = rng.integers(0, actual_max_index, size=(n_rows, n_cols), dtype=np.int32)
-    packed_np = _pack_indices_rows_np(indices_np, max_index)
-    packed_default_np = _pack_indices_rows_np(indices_np)
-
-    indices_wp = _int_rows(indices_np, device)
-    packed_wp = od.grouping.hash_indices_rows(indices_wp, max_index=max_index)
-    packed_default_wp = od.grouping.hash_indices_rows(indices_wp)
-    assert np.array_equal(packed_wp.numpy(), packed_np)
-    assert np.array_equal(packed_default_wp.numpy(), packed_default_np)
-
-
 def test_invalid_arguments_raise(device: str) -> None:
     """
     Not a library comparison: each documented ``ValueError``, raised with its message.
@@ -690,7 +663,24 @@ def test_invalid_arguments_raise(device: str) -> None:
         _ = od.grouping.unique_1d(wp.zeros((2, 2), dtype=wp.int32, device=device))
 
 
-def test_hash_indices_rows_unvalidated(device: str) -> None:
+def test_hash_indices_rows_matches_numpy(device: str) -> None:
+    """
+    Not a library comparison: the mixed-radix packing, recomputed by NumPy.
+
+    At the tight inferred radix and at a looser supplied one on five columns, and unvalidated on
+    two, where no radix is needed at all.
+    """
+    rng = np.random.default_rng(23)
+    wide_np = rng.integers(0, 17, size=(64, 5), dtype=np.int32)
+    wide_rows_wp = _int_rows(wide_np, device)
+    assert np.array_equal(
+        od.grouping.hash_indices_rows(wide_rows_wp, max_index=20).numpy(),
+        _pack_indices_rows_np(wide_np, 20),
+    )
+    assert np.array_equal(
+        od.grouping.hash_indices_rows(wide_rows_wp).numpy(), _pack_indices_rows_np(wide_np)
+    )
+
     rng = np.random.default_rng(11)
     max_index = 23
     indices_np = rng.integers(0, max_index, size=(64, 2), dtype=np.int32)

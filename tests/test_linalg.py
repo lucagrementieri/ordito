@@ -568,7 +568,9 @@ def test_partitioned_interior_system_equals_the_two_step_extraction(
     "is the strongest oracle available for it -- exact up to conditioning.",
 )
 @pytest.mark.parametrize("n", [1, 2, 255, 256, 257, 511, 512, 513])
-@pytest.mark.parametrize(("engine", "n_rhs"), [("one_block", 3), ("batched", 2), ("batched", 3)])
+@pytest.mark.parametrize(
+    ("engine", "n_rhs"), [("one_block", 1), ("one_block", 3), ("batched", 2), ("batched", 3)]
+)
 def test_solve_spd_columns_across_the_reduction_tile_boundary(
     device: str, n: int, engine: str, n_rhs: int, request: pytest.FixtureRequest
 ) -> None:
@@ -586,36 +588,15 @@ def test_solve_spd_columns_across_the_reduction_tile_boundary(
     so the batched arms lower the gate to reach the padded solver at all. The batched solver runs
     at two column counts because the reduction's padded ``stride`` is derived from the column
     count as well as from ``n``, so an even count exercises a different padding than an odd one.
+
+    The one-block solve runs one block per column, so its column count is the launch's grid: a
+    block that read another column's right-hand side or wrote another column's solution would
+    converge to a plausible wrong answer at every count but one, hence its one- and three-column
+    arms.
     """
     if engine == "batched":
         request.getfixturevalue("batched_engine")
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device, n=n, n_rhs=n_rhs)
-    solution_wp = wp.zeros_like(rhs_wp)
-    od.linalg.solve_spd_columns(matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64))
-    assert np.allclose(
-        solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, rtol=1e-5, atol=1e-5
-    )
-
-
-@pytest.mark.parity(
-    "solve_spd_columns",
-    "numpy",
-    benchmarked=False,
-    reason="numpy.linalg.solve is a dense LU on the host and this is a batched preconditioned CG "
-    "on the device, so a row would compare an O(n^3) factorization with an iterative solve and "
-    "report the crossover as a speedup. The *answer* is what is comparable, and a dense solve "
-    "is the strongest oracle available for it -- exact up to conditioning.",
-)
-def test_solve_spd_columns_agrees_across_column_counts(device: str) -> None:
-    """
-    Class A, against ``numpy.linalg.solve``, at one column through the default path.
-
-    A system this size takes the one-block solve, which runs one block per column, so the column
-    count is the launch's grid: a block that read another column's right-hand side or wrote another
-    column's solution would converge to a plausible wrong answer at every count but one. The
-    multi-column counts of both engines are covered by the tile-boundary test above.
-    """
-    matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device, n_rhs=1)
     solution_wp = wp.zeros_like(rhs_wp)
     od.linalg.solve_spd_columns(matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64))
     assert np.allclose(
@@ -1143,11 +1124,11 @@ def test_solve_spd_settled_falls_back_on_a_rejected_iterate(
         assert error > 1e-4
 
 
-def test_solve_spd_warns_when_it_runs_out_of_iterations(device: str) -> None:
+def test_solve_spd_warns_only_when_it_runs_out_of_iterations(device: str) -> None:
     """
-    A conjugate gradient that stops on ``maxiter`` rather than on ``tol`` says so.
+    A conjugate gradient warns when it stops on ``maxiter``, and stays quiet when it converges.
 
-    Without this the returned array is the last iterate and looks exactly like a solution --
+    Without the warning the returned array is the last iterate and looks exactly like a solution --
     which is how a diverging smoothing pass used to reach a caller silently.
     """
     # A 1-D Laplacian: SPD, but Jacobi-preconditioned CG needs O(n) iterations on it, so a budget
@@ -1164,6 +1145,19 @@ def test_solve_spd_warns_when_it_runs_out_of_iterations(device: str) -> None:
             matrix, rhs, solution, tol=1e-14, maxiter=2, name="test_solve_spd"
         )
     assert int(iterations) >= 2
+
+    # The warning is specific to non-convergence: a well-posed (diagonal) solve emits nothing.
+    n = 8
+    index_np = np.arange(n)
+    matrix = scipy_to_bsr(
+        sp.coo_matrix((np.full(n, 2.0), (index_np, index_np)), shape=(n, n)), device
+    )
+    rhs = wp.array(np.ones(n, dtype=np.float64), dtype=wp.float64, device=device)
+    solution = wp.zeros(n, dtype=wp.float64, device=device)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # any warning fails the test
+        od.linalg.solve_spd(matrix, rhs, solution, maxiter=10 * n)
+    assert np.allclose(solution.numpy(), np.full(n, 0.5))
 
 
 def test_solve_spd_applies_another_operators_preconditioner_through_warp(device: str) -> None:
@@ -1196,22 +1190,6 @@ def test_solve_spd_applies_another_operators_preconditioner_through_warp(device:
     assert np.allclose(
         solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np[0]), rtol=1e-8, atol=1e-8
     )
-
-
-def test_solve_spd_is_quiet_when_it_converges(device: str) -> None:
-    """The warning is specific to non-convergence: a well-posed solve emits nothing."""
-    n = 8
-    index_np = np.arange(n)
-    matrix = scipy_to_bsr(
-        sp.coo_matrix((np.full(n, 2.0), (index_np, index_np)), shape=(n, n)), device
-    )
-    rhs = wp.array(np.ones(n, dtype=np.float64), dtype=wp.float64, device=device)
-    solution = wp.zeros(n, dtype=wp.float64, device=device)
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")  # any warning fails the test
-        od.linalg.solve_spd(matrix, rhs, solution, maxiter=10 * n)
-    assert np.allclose(solution.numpy(), np.full(n, 0.5))
 
 
 @pytest.mark.usefixtures("batched_engine")

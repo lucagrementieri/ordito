@@ -128,28 +128,29 @@ def test_concatenate_matches_pytorch3d(request: pytest.FixtureRequest, device: s
 
 
 @pytest.mark.parity("split", "trimesh")
-def test_split_meshes(three_parts: list[MeshPair]) -> None:
+@pytest.mark.parametrize("n_parts", [1, 3], ids=["one_component", "three_components"])
+def test_split_meshes(three_parts: list[MeshPair], n_parts: int) -> None:
     """
-    Ordito against ordito: ``split`` inverts ``concatenate`` on three known components.
+    Ordito against ordito: ``split`` inverts ``concatenate`` on one or three known components.
 
     The component *count* is the reference-checkable part and is pinned separately by
     [`test_split_matches_open3d_and_pymeshlab`]; what only a round trip can check is that each
     component comes back with its own vertices renumbered consistently. ``concatenate`` has its
-    own trimesh oracle above, so the loop is not closed on an untested function.
+    own trimesh oracle above, so the loop is not closed on an untested function. The one-component
+    arm is the ``k == 1`` fast path, which must equal the batched key packing.
     """
-    concat_vertices_wp, concat_faces_wp = _concatenate_parts(three_parts)
+    parts = three_parts[:n_parts]
+    concat_vertices_wp, concat_faces_wp = _concatenate_parts(parts)
 
     split_wp = od.combine.split(concat_vertices_wp, concat_faces_wp)
-    assert len(split_wp) == 3
+    assert len(split_wp) == n_parts
 
     roundtrip_vertices_wp, roundtrip_faces_wp = od.combine.concatenate(split_wp)
     assert np.allclose(roundtrip_vertices_wp.numpy(), concat_vertices_wp.numpy())
     assert np.array_equal(roundtrip_faces_wp.numpy(), concat_faces_wp.numpy())
 
     split_wp_sorted = sorted(split_wp, key=lambda mesh: mesh[1].size)
-    meshes_tm_sorted = sorted(
-        [mesh_tm for mesh_tm, _ in three_parts], key=lambda mesh: len(mesh.faces)
-    )
+    meshes_tm_sorted = sorted([mesh_tm for mesh_tm, _ in parts], key=lambda mesh: len(mesh.faces))
     for (vertices_wp, faces_wp), mesh_tm in zip(split_wp_sorted, meshes_tm_sorted, strict=True):
         assert np.allclose(vertices_wp.numpy(), mesh_tm.vertices, rtol=1e-5, atol=1e-5)
         assert np.array_equal(faces_wp.numpy(), mesh_tm.faces.reshape(-1))
@@ -290,14 +291,6 @@ def test_split_with_offsets_matches_split(three_parts: list[MeshPair]) -> None:
         assert np.array_equal(vertices_all_wp.numpy()[v_begin:v_end], vertices_wp.numpy())
         assert np.array_equal(faces_all_wp.numpy()[3 * f_begin : 3 * f_end], faces_wp.numpy())
 
-    # ``copy=True`` returns the same data in independent buffers.
-    for (view_vertices_wp, view_faces_wp), (copy_vertices_wp, copy_faces_wp) in zip(
-        split_wp, od.combine.split(concat_vertices_wp, concat_faces_wp, copy=True), strict=True
-    ):
-        assert np.array_equal(view_vertices_wp.numpy(), copy_vertices_wp.numpy())
-        assert np.array_equal(view_faces_wp.numpy(), copy_faces_wp.numpy())
-        assert copy_vertices_wp.ptr != view_vertices_wp.ptr
-
 
 def test_split_labels_change_no_answer(three_parts: list[MeshPair]) -> None:
     """
@@ -322,16 +315,20 @@ def test_split_labels_change_no_answer(three_parts: list[MeshPair]) -> None:
         assert np.array_equal(given_faces_wp.numpy(), plain_faces_wp.numpy())
 
 
-def test_split_copies_many_components(device: str) -> None:
+@pytest.mark.parametrize("n_components", [1, 3, 40])
+def test_split_copies_equal_their_views(device: str, n_components: int) -> None:
     """
-    Ordito against ordito: forty components copy out equal to their views, into owned buffers.
+    Ordito against ordito: ``copy=True`` returns each component equal to its view, in owned buffers.
 
-    Forty is past the count at which ``array.split(copy=True)`` fills its copies in one launch, the
-    path a handful of components never reaches. The views carry the oracle through
-    ``test_split_meshes``; this pins the copies to them.
+    One component takes the whole-buffer fast path (a clone of each buffer), three the
+    per-component copies, and forty is past the count at which ``array.split(copy=True)`` fills its
+    copies in one launch, the path a handful of components never reaches. The views carry the
+    oracle through ``test_split_meshes``; this pins the copies to them.
     """
     sphere_tm = tm.creation.icosphere(subdivisions=0)
-    parts_tm = [sphere_tm.copy().apply_translation([3.0 * i, 0.0, 0.0]) for i in range(40)]
+    parts_tm = [
+        sphere_tm.copy().apply_translation([3.0 * i, 0.0, 0.0]) for i in range(n_components)
+    ]
     mesh_tm = tm.util.concatenate(parts_tm)
     assert isinstance(mesh_tm, tm.Trimesh)
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces.reshape(-1), device)
@@ -339,24 +336,16 @@ def test_split_copies_many_components(device: str) -> None:
     views_wp = od.combine.split(vertices_wp, faces_wp)
     copies_wp = od.combine.split(vertices_wp, faces_wp, copy=True)
 
-    assert len(views_wp) == len(copies_wp) == 40
+    assert len(views_wp) == len(copies_wp) == n_components
     for (view_vertices_wp, view_faces_wp), (copy_vertices_wp, copy_faces_wp) in zip(
         views_wp, copies_wp, strict=True
     ):
         assert np.array_equal(view_vertices_wp.numpy(), copy_vertices_wp.numpy())
         assert np.array_equal(view_faces_wp.numpy(), copy_faces_wp.numpy())
         assert copy_faces_wp.size == 3 * sphere_tm.faces.shape[0]
+        assert copy_vertices_wp.ptr != view_vertices_wp.ptr
         assert copy_vertices_wp._ref is None  # pyright: ignore[reportPrivateUsage]
         assert copy_faces_wp._ref is None  # pyright: ignore[reportPrivateUsage]
-
-
-def test_split_single_component(request: pytest.FixtureRequest) -> None:
-    """Ordito against ordito: the ``k == 1`` fast path equals the batched key packing."""
-    mesh_tm, mesh_wp = request.getfixturevalue("sphere_irregular")
-    split_wp = od.combine.split(mesh_wp.points, mesh_wp.indices)
-    assert len(split_wp) == 1
-    assert np.allclose(split_wp[0][0].numpy(), mesh_tm.vertices, rtol=1e-5, atol=1e-5)
-    assert np.array_equal(split_wp[0][1].numpy(), mesh_tm.faces.reshape(-1))
 
 
 def test_concatenate_and_split_empty(device: str) -> None:

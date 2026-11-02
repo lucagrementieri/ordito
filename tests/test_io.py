@@ -157,27 +157,39 @@ def test_face_normals_cover_every_triangle_block(monkeypatch: pytest.MonkeyPatch
     assert np.allclose(data_wp["face_normals"].numpy(), normals_mio, rtol=1e-5, atol=1e-5)
 
 
-def test_load_mesh_without_faces_raises(tmp_path: Path, device: str):
-    path = tmp_path / "cloud.ply"
-    points_np = np.random.default_rng(0).random((10, 3)).astype(np.float64)
-    meshio.write(str(path), meshio.Mesh(points_np, []))
-
-    with pytest.raises(ValueError, match="no triangle faces"):
-        od.io.load_mesh(path, device=device)
-
-
-def test_load_mesh_rejects_an_index_wrapping_past_int32(tmp_path: Path, device: str):
+@pytest.mark.parametrize(
+    ("filename", "mesh_mio", "match"),
+    [
+        pytest.param(
+            "cloud.ply",
+            meshio.Mesh(np.random.default_rng(0).random((10, 3)).astype(np.float64), []),
+            "no triangle faces",
+            id="no_faces",
+        ),
+        pytest.param(
+            "wrap.obj",
+            meshio.Mesh(
+                np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+                [("triangle", np.array([[0, 1, 2], [0, 1, 2**32]], dtype=np.int64))],
+            ),
+            "faces must reference vertex indices",
+            id="index_wraps_past_int32",
+        ),
+    ],
+)
+def test_load_mesh_rejects_an_invalid_file(
+    tmp_path: Path, device: str, filename: str, mesh_mio: meshio.Mesh, match: str
+):
     """
-    Not a library comparison: an input-validation contract no reference library checks.
+    Not a library comparison: input-validation contracts no reference library checks.
 
-    Index ``2**32`` wraps to ``0`` under the ``int32`` narrowing, so a device-side range check
-    would pass it; the host check reads the decoder's own integers first.
+    A file with no triangle faces is refused, and so is an index of ``2**32``, which wraps to ``0``
+    under the ``int32`` narrowing, so a device-side range check would pass it; the host check reads
+    the decoder's own integers first.
     """
-    path = tmp_path / "wrap.obj"
-    vertices_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
-    faces_np = np.array([[0, 1, 2], [0, 1, 2**32]], dtype=np.int64)
-    meshio.write(str(path), meshio.Mesh(vertices_np, [("triangle", faces_np)]))
-    with pytest.raises(ValueError, match="faces must reference vertex indices"):
+    path = tmp_path / filename
+    meshio.write(str(path), mesh_mio)
+    with pytest.raises(ValueError, match=match):
         od.io.load_mesh(path, device=device)
 
 

@@ -30,7 +30,7 @@ from tests.comparisons import (
     same_partition,
     undirected_edges,
 )
-from tests.conftest import torus_irregular_arrays
+from tests.conftest import sphere_irregular_arrays, torus_irregular_arrays
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
@@ -226,6 +226,11 @@ def test_make_solid_closes_and_connects_open_shells(device: str) -> None:
     is built rather than taken from the ``hemisphere`` fixture for a reason worth reading in
     [`_spaced_bowls_tm`] -- with rotated bowls the welded path does *not* converge, which is a real
     limit of the composite and is documented on ``make_solid`` itself.
+
+    Ordito against ordito on the same input: ``inner_iter=0`` is a valid cap, zero cut-and-refill
+    passes. The documented range is non-negative, so zero must run rather than reach the
+    ``fix_self_intersections`` guard against a zero pass count; open bowls never intersect, so the
+    result is the default call's, byte for byte.
     """
     mesh_tm = _spaced_bowls_tm(3)
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
@@ -242,21 +247,9 @@ def test_make_solid_closes_and_connects_open_shells(device: str) -> None:
     assert welded_tm.volume > 2.5 * largest_tm.volume
     assert welded_faces_wp.size > largest_faces_wp.size
 
-
-def test_make_solid_runs_with_no_cut_passes(device: str) -> None:
-    """
-    Ordito against ordito: ``inner_iter=0`` is a valid cap, zero cut-and-refill passes.
-
-    The documented range is non-negative, so zero must run rather than reach the
-    ``fix_self_intersections`` guard against a zero pass count. Three open bowls never intersect,
-    so the result is the default call's, byte for byte.
-    """
-    mesh_tm = _spaced_bowls_tm(3)
-    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
-    default_wp, default_faces_wp = od.repair.make_solid(vertices_wp, faces_wp)
     uncut_wp, uncut_faces_wp = od.repair.make_solid(vertices_wp, faces_wp, inner_iter=0)
-    assert np.array_equal(uncut_faces_wp.numpy(), default_faces_wp.numpy())
-    assert np.array_equal(uncut_wp.numpy(), default_wp.numpy())
+    assert np.array_equal(uncut_faces_wp.numpy(), largest_faces_wp.numpy())
+    assert np.array_equal(uncut_wp.numpy(), largest_wp.numpy())
 
 
 def test_make_solid_leaves_a_solid_alone(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -1845,12 +1838,6 @@ def test_remove_non_manifold_faces_meshlab_keeps_one_copy_and_drops_the_fin(devi
     )
     assert same_vertices_wp is vertices_wp
     assert same_faces_wp is faces_wp
-    with pytest.raises(ValueError, match="'all' or 'meshlab'"):
-        od.repair.remove_non_manifold_faces(
-            vertices_wp,
-            faces_wp,
-            method="smallest",  # pyright: ignore[reportArgumentType]
-        )
 
 
 # --------------------------------------------------------------------------------------
@@ -2734,39 +2721,24 @@ def test_face_nondegenerate_mask_matches_trimesh_on_planted_slivers(
     assert np.array_equal(kept_corners_np, planted_np[planted_faces_np[keep_tm]])
 
 
-def test_collapse_small_triangles_removes_sliver(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    mesh_tm, mesh_wp = sphere_irregular
-    vertices_np = mesh_tm.vertices.astype(np.float32)
+def _sliver_on_sphere_np() -> tuple[np.ndarray, np.ndarray, float]:
+    """``sphere_irregular`` plus one sliver whose apex sits almost on the edge it spans."""
+    vertices_np, faces_np = sphere_irregular_arrays()
+    vertices_np = vertices_np.astype(np.float32)
     a, b = vertices_np[0], vertices_np[1]
     near_edge = a + 0.5 * (b - a) + 1e-6 * (b - a)  # almost on segment a->b
     vertices_np = np.vstack([vertices_np, near_edge]).astype(np.float32)
-    faces_np = np.vstack([mesh_tm.faces, [0, 1, vertices_np.shape[0] - 1]]).astype(np.int32)
-
-    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, mesh_wp.device)
-    epsilon = 1e-6
-    out_vertices_wp, out_faces_wp = od.repair.collapse_small_triangles(
-        vertices_wp, faces_wp, epsilon=epsilon
-    )
-
-    # Sliver is gone.
-    assert out_faces_wp.size // 3 < faces_np.shape[0]
-    # Invariant (libigl fixpoint guarantee): no surviving triangle is below threshold.
-    bbd = od.bounds.enclosing_diagonal(out_vertices_wp)
-    _, areas_wp = od.triangles.face_normals_and_areas(out_vertices_wp, out_faces_wp)
-    assert (2.0 * areas_wp.numpy()).min() >= epsilon * bbd * bbd * (1.0 - 1e-3)
-    # Surviving triangle geometry matches the CPU reference.
-    ref = _collapse_small_triangles_ref(vertices_np.astype(np.float64), faces_np, epsilon)
-    collapsed_np = _sorted_triangle_positions(
-        out_vertices_wp.numpy().astype(np.float64), out_faces_wp.numpy().reshape(-1, 3)
-    )
-    assert _triangle_set_close(collapsed_np, ref, atol=1e-4)
+    faces_np = np.vstack([faces_np, [0, 1, vertices_np.shape[0] - 1]]).astype(np.int32)
+    return vertices_np, faces_np, 1e-6
 
 
-def test_collapse_small_triangles_fan_chain(device: str) -> None:
-    # A row of stacked slivers sharing a spine: several become small only after neighbours
-    # collapse, exercising the fixpoint loop.
+def _sliver_fan_chain_np() -> tuple[np.ndarray, np.ndarray, float]:
+    """
+    Build a row of stacked slivers sharing a spine, plus one well-shaped triangle far away.
+
+    Several slivers become small only after their neighbours collapse, exercising the fixpoint
+    loop; the far triangle keeps the mesh from collapsing entirely.
+    """
     xs = np.linspace(0.0, 1.0, 6)
     top = np.stack([xs, np.full_like(xs, 1e-5), np.zeros_like(xs)], axis=1)
     bottom = np.stack([xs, np.zeros_like(xs), np.zeros_like(xs)], axis=1)
@@ -2776,19 +2748,38 @@ def test_collapse_small_triangles_fan_chain(device: str) -> None:
     for i in range(n - 1):
         faces.append([i, i + 1, n + i])  # thin triangles
         faces.append([i + 1, n + i + 1, n + i])
-    # Add one well-shaped triangle far away so the mesh is not entirely collapsed.
     big_triangle = [[5.0, 0.0, 0.0], [6.0, 0.0, 0.0], [5.5, 1.0, 0.0]]
     vertices_np = np.vstack([vertices_np, big_triangle]).astype(np.float32)
     big = vertices_np.shape[0]
     faces.append([big - 3, big - 2, big - 1])
-    faces_np = np.asarray(faces, dtype=np.int32)
+    return vertices_np, np.asarray(faces, dtype=np.int32), 1e-3
 
+
+@pytest.mark.parametrize(
+    ("build", "atol"),
+    [
+        pytest.param(_sliver_on_sphere_np, 1e-4, id="sliver"),
+        pytest.param(_sliver_fan_chain_np, 1e-3, id="fan_chain"),
+    ],
+)
+def test_collapse_small_triangles_matches_a_numpy_transcription(
+    device: str, build: Callable[[], tuple[np.ndarray, np.ndarray, float]], atol: float
+) -> None:
+    """
+    Class A against a NumPy transcription of igl's algorithm, as sorted triangle positions.
+
+    ``sliver``: a near-zero-area face planted on ``sphere_irregular`` must go. ``fan_chain``: a row
+    of stacked slivers sharing a spine, where several become small only after their neighbours
+    collapse, exercising the fixpoint loop. On both, the libigl fixpoint guarantee holds -- no
+    surviving triangle is below the threshold -- and the survivors match the transcription.
+    """
+    vertices_np, faces_np, epsilon = build()
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    epsilon = 1e-3
     out_vertices_wp, out_faces_wp = od.repair.collapse_small_triangles(
         vertices_wp, faces_wp, epsilon=epsilon
     )
 
+    assert out_faces_wp.size // 3 < faces_np.shape[0]  # something collapsed
     bbd = od.bounds.enclosing_diagonal(out_vertices_wp)
     _, areas_wp = od.triangles.face_normals_and_areas(out_vertices_wp, out_faces_wp)
     assert (2.0 * areas_wp.numpy()).min() >= epsilon * bbd * bbd * (1.0 - 1e-3)
@@ -2796,7 +2787,7 @@ def test_collapse_small_triangles_fan_chain(device: str) -> None:
     collapsed_np = _sorted_triangle_positions(
         out_vertices_wp.numpy().astype(np.float64), out_faces_wp.numpy().reshape(-1, 3)
     )
-    assert _triangle_set_close(collapsed_np, ref, atol=1e-3)
+    assert _triangle_set_close(collapsed_np, ref, atol=atol)
 
 
 # ``icosphere_coarse``, not ``sphere_irregular``: the comparison rests on "small triangle" and
@@ -2806,7 +2797,7 @@ def test_collapse_small_triangles_fan_chain(device: str) -> None:
 # so the two sets overlap at every ``epsilon`` (at 1e-5 ordito collapses 39 edges where MeshLib,
 # below the mesh's shortest natural edge, collapses the 20; at 1e-7 ordito collapses 3). The area
 # rule itself is checked on ``sphere_irregular`` against the transcription of igl's algorithm,
-# ``test_collapse_small_triangles_removes_sliver``.
+# ``test_collapse_small_triangles_matches_a_numpy_transcription``.
 @pytest.mark.parity("collapse_small_triangles", "meshlib")
 def test_collapse_small_triangles_matches_meshlib(
     icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], device: str
@@ -3092,16 +3083,6 @@ def test_remove_folded_faces_mates_change_no_answer(
     assert np.array_equal(given[1].numpy(), plain[1].numpy())
 
 
-@pytest.mark.parametrize("angle", [0.0, 180.5])
-def test_remove_folded_faces_rejects_an_angle_outside_its_range(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], angle: float
-) -> None:
-    """Not a library comparison: an argument check. Both ends of ``(0, 180]`` are refused."""
-    _, mesh_wp = icosahedron
-    with pytest.raises(ValueError, match="angle must be in"):
-        od.repair.remove_folded_faces(mesh_wp.points, mesh_wp.indices, angle=angle)
-
-
 def _self_intersecting_count_ml(
     vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]
 ) -> int:
@@ -3287,7 +3268,7 @@ def test_fix_self_intersections_leaves_a_clean_mesh_alone(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Not a library comparison: a clean input is returned unchanged, and the three value guards.
+    Not a library comparison: a clean input is returned unchanged.
 
     The identity case matters more than it looks: the local method's loop reads its own detector to
     decide whether to run at all, so a mesh with nothing wrong must come back with the same faces
@@ -3300,17 +3281,6 @@ def test_fix_self_intersections_leaves_a_clean_mesh_alone(
     same_vertices_wp, same_faces_wp = od.repair.fix_self_intersections(vertices_wp, faces_wp)
     assert np.array_equal(same_faces_wp.numpy(), faces_wp.numpy())
     assert np.allclose(same_vertices_wp.numpy(), vertices_wp.numpy())
-
-    with pytest.raises(ValueError, match="method must be"):
-        od.repair.fix_self_intersections(
-            vertices_wp,
-            faces_wp,
-            method="nonsense",  # pyright: ignore[reportArgumentType]  # the off-menu value under test
-        )
-    with pytest.raises(ValueError, match="max_expand"):
-        od.repair.fix_self_intersections(vertices_wp, faces_wp, max_expand=-1)
-    with pytest.raises(ValueError, match="max_iter"):
-        od.repair.fix_self_intersections(vertices_wp, faces_wp, max_iter=0)
 
 
 @pytest.mark.parametrize("hops", [0, 1, 2, 5])
@@ -3478,9 +3448,6 @@ def test_straighten_boundary_restores_the_grid(device: str) -> None:
     assert rejected == 0
     assert np.array_equal(rejected_wp.numpy(), ragged_faces_wp.numpy())
 
-    with pytest.raises(ValueError, match="iterations must be non-negative"):
-        od.repair.straighten_boundary(ragged_vertices_wp, ragged_faces_wp, iterations=-1)
-
 
 def test_straighten_boundary_closes_an_independent_set(device: str) -> None:
     """
@@ -3627,8 +3594,6 @@ def test_flatten_degree3_vertices_moves_an_independent_set(device: str) -> None:
     # One pass is one vertex here, which is what the loop exists for.
     once_np = od.repair.flatten_degree3_vertices(vertices_wp, faces_wp, max_iter=1).numpy()
     assert int((np.linalg.norm(once_np - vertices_np, axis=1) > 1e-6).sum()) == 1
-    with pytest.raises(ValueError, match="max_iter must be non-negative"):
-        od.repair.flatten_degree3_vertices(vertices_wp, faces_wp, max_iter=-1)
 
     before = tm.Trimesh(vertices_np, faces_np.reshape(-1, 3), process=False).volume
     after = tm.Trimesh(flattened_np, faces_np.reshape(-1, 3), process=False).volume
@@ -3759,9 +3724,6 @@ def test_remove_degree3_vertices_is_idempotent_and_area_preserving(device: str) 
     assert again_removed == 0
     assert np.array_equal(again_faces_wp.numpy(), out_faces_wp.numpy())
     assert np.array_equal(again_vertices_wp.numpy(), out_vertices_wp.numpy())
-
-    with pytest.raises(ValueError, match="max_iter must be non-negative"):
-        od.repair.remove_degree3_vertices(vertices_wp, faces_wp, max_iter=-1)
 
 
 def test_remove_degree3_vertices_reads_only_closed_fans(device: str) -> None:
@@ -3971,8 +3933,8 @@ def test_flatten_degree3_vertices_respects_its_region(device: str) -> None:
     Not a library comparison: the axis meshlib carries as a params field and this takes directly.
 
     An empty region has to be the identity and an all-true one has to reproduce the default, so
-    neither the mask nor its absence can be silently ignored. The guards are checked here too --
-    a wrong-length mask raises rather than reading past its end.
+    neither the mask nor its absence can be silently ignored. The wrong-length guard is in
+    ``test_repair_rejects_invalid_arguments``.
     """
     mesh_tm = _mesh_with_a_degree3_vertex(0.3)
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
@@ -3989,10 +3951,6 @@ def test_flatten_degree3_vertices_respects_its_region(device: str) -> None:
     assert np.array_equal(
         od.repair.flatten_degree3_vertices(vertices_wp, faces_wp, all_wp).numpy(), default_np
     )
-    with pytest.raises(ValueError, match="region must be a length-"):
-        od.repair.flatten_degree3_vertices(
-            vertices_wp, faces_wp, wp.zeros(3, dtype=wp.bool, device=device)
-        )
 
 
 def _genus(faces_wp: wp.array[wp.int32]) -> int:
@@ -4289,9 +4247,6 @@ def test_remove_tunnels_leaves_a_long_tunnel_and_a_sphere_alone(
     assert sphere_removed == 0
     assert np.array_equal(sphere_faces_wp.numpy(), sphere_wp.indices.numpy())
 
-    with pytest.raises(ValueError, match="max_length must be non-negative"):
-        od.repair.remove_tunnels(torus_wp.points, torus_wp.indices, -1.0)
-
 
 @pytest.mark.parametrize(
     ("mesh_kind", "threshold"),
@@ -4518,9 +4473,67 @@ _INVALID_ARGUMENT_CASES = [
         r"max_angle_change must be in \[0, 180\]",
     ),
     (
+        "remove_non_manifold_faces_method",
+        lambda v, f: od.repair.remove_non_manifold_faces(v, f, method="smallest"),  # pyright: ignore[reportArgumentType]
+        "'all' or 'meshlab'",
+    ),
+    (
+        "straighten_boundary_iterations",
+        lambda v, f: od.repair.straighten_boundary(v, f, iterations=-1),
+        "iterations must be non-negative",
+    ),
+    (
+        "remove_degree3_vertices_max_iter",
+        lambda v, f: od.repair.remove_degree3_vertices(v, f, max_iter=-1),
+        "max_iter must be non-negative",
+    ),
+    (
+        "flatten_degree3_vertices_max_iter",
+        lambda v, f: od.repair.flatten_degree3_vertices(v, f, max_iter=-1),
+        "max_iter must be non-negative",
+    ),
+    (
+        "flatten_degree3_vertices_region",
+        lambda v, f: od.repair.flatten_degree3_vertices(
+            v, f, wp.zeros(3, dtype=wp.bool, device=v.device)
+        ),
+        "region must be a length-",
+    ),
+    # Both ends of ``(0, 180]`` are refused.
+    (
+        "remove_folded_faces_angle_zero",
+        lambda v, f: od.repair.remove_folded_faces(v, f, angle=0.0),
+        "angle must be in",
+    ),
+    (
+        "remove_folded_faces_angle_reflex",
+        lambda v, f: od.repair.remove_folded_faces(v, f, angle=180.5),
+        "angle must be in",
+    ),
+    (
+        "fix_self_intersections_method",
+        lambda v, f: od.repair.fix_self_intersections(v, f, method="nonsense"),  # pyright: ignore[reportArgumentType]
+        "method must be",
+    ),
+    (
+        "fix_self_intersections_max_expand",
+        lambda v, f: od.repair.fix_self_intersections(v, f, max_expand=-1),
+        "max_expand",
+    ),
+    (
+        "fix_self_intersections_max_iter",
+        lambda v, f: od.repair.fix_self_intersections(v, f, max_iter=0),
+        "max_iter",
+    ),
+    (
         "flip_t_vertices_threshold",
         lambda v, f: od.repair.flip_t_vertices(v, f, threshold=0.0),
         "aspect_threshold must be positive",
+    ),
+    (
+        "remove_tunnels_max_length",
+        lambda v, f: od.repair.remove_tunnels(v, f, -1.0),
+        "max_length must be non-negative",
     ),
 ]
 

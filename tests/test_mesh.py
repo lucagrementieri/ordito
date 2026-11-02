@@ -131,18 +131,6 @@ def test_traced_mesh_traces_the_rays_warp_mesh_traces(
     assert np.array_equal(traced_diameter_wp.numpy(), diameter_wp.numpy(), equal_nan=True)
 
 
-def test_traced_mesh_is_warp_mesh_where_cubql_cannot_help(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """Not a library comparison: on the CPU the default tree is kept, so nothing builds twice."""
-    _mesh_tm, mesh_wp = sphere_irregular
-    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
-    if mesh.device.is_cpu or not wp.is_cubql_available():
-        assert mesh.traced_mesh is mesh.warp_mesh
-    else:
-        assert mesh.traced_mesh is not mesh.warp_mesh
-
-
 def test_mesh_for_rays_rents_then_buys(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -151,13 +139,15 @@ def test_mesh_for_rays_rents_then_buys(
 
     The budget is patched to 100 rays so the arithmetic is visible: two calls of 40 stay on
     `warp_mesh`, the third crosses the budget and builds `traced_mesh`, every later call keeps it,
-    `invalidate` clears the count, and a single call over the budget switches at once.
+    `invalidate` clears the count, and a single call over the budget switches at once. On the CPU
+    (or without cuBQL) `traced_mesh` is `warp_mesh` itself, so nothing builds twice.
     """
     monkeypatch.setattr("ordito.mesh._TRACED_MESH_FIXED_RAYS", 100)
     monkeypatch.setattr("ordito.mesh._TRACED_MESH_RAYS_PER_FACE", 0)
     _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
     if mesh.device.is_cpu or not wp.is_cubql_available():
+        assert mesh.traced_mesh is mesh.warp_mesh
         assert mesh.mesh_for_rays(10**9) is mesh.warp_mesh
         return
     assert mesh.mesh_for_rays(40) is mesh.warp_mesh
@@ -637,8 +627,14 @@ def test_operator_properties_match_the_free_functions(
 # ---------------------------------------------------------------------------
 
 
-def test_boundary_matches_free_functions(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = saddle_graded
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular"])
+def test_boundary_matches_free_functions(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Ordito against ordito: the boundary properties are the free functions' answers.
+
+    ``ordito.boundary`` carries the oracle. A closed mesh has no loop and no boundary vertex.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
     boundary_edges_ref = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
@@ -649,7 +645,11 @@ def test_boundary_matches_free_functions(saddle_graded: tuple[tm.Trimesh, wp.Mes
     )
     assert np.array_equal(mesh.boundary_vertex_indices.numpy(), boundary_vertex_indices_ref.numpy())
 
-    assert len(mesh.boundary_loops) > 0
+    if mesh_name == "sphere_irregular":
+        assert mesh.boundary_loops == []
+        assert mesh.boundary_vertex_indices.shape == (0,)
+    else:
+        assert len(mesh.boundary_loops) > 0
 
 
 @pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
@@ -676,13 +676,6 @@ def test_boundary_loops_matches_trimesh_outline(
     loops_tm = trimesh_outline_loops(mesh_tm)
     assert len(loops_tm) > 0  # non-vacuous: these fixtures have rims
     assert_same_loop_set([loop.numpy() for loop in mesh.boundary_loops], loops_tm)
-
-
-def test_boundary_loops_empty_for_closed_mesh(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = sphere_irregular
-    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
-    assert mesh.boundary_loops == []
-    assert mesh.boundary_vertex_indices.shape == (0,)
 
 
 # ---------------------------------------------------------------------------
@@ -894,22 +887,6 @@ def _translated(mesh: od.Trimesh) -> od.Trimesh:
     return mesh.with_vertices(points_to_warp(translated_np, mesh.device))
 
 
-def test_with_vertices_keeps_topology_drops_geometry(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    _mesh_tm, mesh_wp = sphere_irregular
-    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
-    edges_before = mesh.edges
-    _ = mesh.face_normals
-    _ = mesh.warp_mesh
-
-    moved = _translated(mesh)
-    assert moved.edges is edges_before
-    assert "face_normals" not in moved._cache
-    assert "warp_mesh" not in moved._cache
-    assert moved.faces is mesh.faces
-
-
 @pytest.mark.parametrize("key", sorted(_TOPOLOGY_KEYS))
 def test_with_vertices_carries_every_topology_key(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], key: str
@@ -1070,6 +1047,8 @@ def test_invert_carried_cache_matches_recomputation(
 # is the other side of the same rule, and it exists because the operator group below is the easiest
 # place to get it wrong -- an operator is assembled from the connectivity *and* the geometry.
 _GEOMETRY_KEYS = (
+    "face_normals",
+    "warp_mesh",
     "bounds",
     "enclosing_diagonal",
     "cotmatrix_entries",
@@ -1147,25 +1126,6 @@ def test_cached_property_reuses_its_dependencies(
     assert getattr(mesh, name) is value
 
 
-def test_vector_heat_operators_shares_its_two_sub_bundles(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    The vector bundle's second and third fields *are* the sibling properties, not equal copies.
-
-    Identity rather than equality is the claim: the three properties must be one assembly however
-    they are reached, since ``log_map``'s radius is asserted to be the ``heat_geodesic`` distance
-    and two bundles at two diffusion times would split that into two numbers.
-    """
-    _mesh_tm, mesh_wp = sphere_irregular
-    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
-    vector_system, scalar, frames, _preconditioner = mesh.vector_heat_operators
-
-    assert scalar is mesh.heat_operators
-    assert frames is mesh.vertex_tangent_frames
-    assert int(vector_system.nrow) == mesh.n_vertices
-
-
 def test_heat_bundles_share_the_cached_pattern_and_rings(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1180,7 +1140,9 @@ def test_heat_bundles_share_the_cached_pattern_and_rings(
     and a ``HeatSolver`` at another diffusion time then sort nothing, and the connection walks the
     rings the tangent frames cached, giving the function-level system byte for byte.
     ``with_vertices`` keeps the pattern, while ``invert`` and ``with_faces`` -- a new face buffer
-    -- each sort a new one.
+    -- each sort a new one. The vector bundle's scalar and frame fields *are* the sibling
+    properties, not equal copies: ``log_map``'s radius is asserted to be the ``heat_geodesic``
+    distance, and two bundles at two diffusion times would split that into two numbers.
     """
     _mesh_tm, mesh_wp = sphere_irregular
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
@@ -1201,11 +1163,13 @@ def test_heat_bundles_share_the_cached_pattern_and_rings(
 
     scalar = mesh.heat_operators
     assert calls == ["sort"]
-    vector_system, shared_scalar, _frames, _preconditioner = mesh.vector_heat_operators
+    vector_system, shared_scalar, frames, _preconditioner = mesh.vector_heat_operators
     solver_system = mesh.heat_solver(t=0.01).vector_operators[0]
     _ = mesh.cotmatrix
     assert calls == ["sort"]
     assert shared_scalar is scalar
+    assert frames is mesh.vertex_tangent_frames
+    assert int(vector_system.nrow) == mesh.n_vertices
     pattern = mesh.mesh_operator_pattern
     assert vector_system.offsets is pattern.offsets
     assert scalar[0].offsets is pattern.offsets

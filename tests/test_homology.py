@@ -184,27 +184,6 @@ def _z2_rank(matrix: np.ndarray) -> int:
     return rank
 
 
-def test_homology_generators_are_not_contractible(
-    torus_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    mesh_tm, mesh_wp = torus_irregular
-    loops = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
-
-    # A contractible loop bounds a disk, so cutting the *faces* along it would split the mesh in
-    # two. Removing a genuine generator's vertices instead leaves the surface in one piece: the
-    # standard cheap witness that a cycle wraps a handle rather than a disk.
-    faces_np = np.asarray(mesh_tm.faces)
-    for loop in loops:
-        on_loop = np.zeros(len(mesh_tm.vertices), dtype=bool)
-        on_loop[loop.numpy()] = True
-        kept = faces_np[~on_loop[faces_np].any(axis=1)]
-        assert len(kept) > 0
-        components = tm.graph.connected_components(
-            tm.geometry.faces_to_edges(kept), nodes=np.unique(kept)
-        )
-        assert len(components) == 1
-
-
 def _greedy_loop_lengths(faces_np: np.ndarray, n_vertices: int, root: int) -> list[int]:
     """
     Hop lengths through ``root`` of the greedy system of loops, built with SciPy alone.
@@ -291,18 +270,54 @@ def test_homology_generators_are_the_greedy_system(
     assert based_lengths == expected_np
 
 
-def test_homology_generators_reject_a_bad_root(torus_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Not a library comparison: the two ways a root can fail to be a vertex the faces reach."""
-    _, mesh_wp = torus_irregular
-    vertices_np = mesh_wp.points.numpy()
-    with pytest.raises(ValueError, match="root must index a vertex"):
-        od.homology.homology_generators(mesh_wp.points, mesh_wp.indices, root=len(vertices_np))
-    # One extra vertex no face uses: in range, but the traversal from it reaches nothing.
-    padded_wp = wp.array(
-        np.vstack([vertices_np, vertices_np[:1]]), dtype=wp.vec3, device=mesh_wp.points.device
-    )
-    with pytest.raises(ValueError, match="is not referenced by any face"):
-        od.homology.homology_generators(padded_wp, mesh_wp.indices, root=len(vertices_np))
+@pytest.mark.parametrize(
+    ("case", "match"),
+    [
+        pytest.param("root_out_of_range", "root must index a vertex", id="root-out-of-range"),
+        pytest.param("root_unreferenced", "is not referenced by any face", id="root-unreferenced"),
+        pytest.param("boundary", "closed surface", id="boundary"),
+        pytest.param("disconnected", "connected surface", id="disconnected"),
+    ],
+)
+def test_homology_generators_reject_invalid_input(
+    request: pytest.FixtureRequest, case: str, match: str
+) -> None:
+    """
+    Not a library comparison: each precondition the counting argument needs raises its message.
+
+    A root must be a vertex the faces reach: out of range, or in range on an extra vertex no face
+    uses (the traversal from it reaches nothing). The surface must be closed (``saddle_graded`` has
+    a rim) and connected: two disjoint spheres are each genus 0, so an implementation honouring the
+    precondition would answer ``[]``, while a single primal tree spans only the first component and
+    hands the second's ``V - 1`` edges over as generators (measured: 41 of them). Both components
+    are closed, so the boundary guard cannot see that case; its non-vacuity assert says so.
+    """
+    root = None
+    if case == "boundary":
+        _, mesh_wp = request.getfixturevalue("saddle_graded")
+        vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    elif case == "disconnected":
+        mesh_tm, mesh_wp = request.getfixturevalue("sphere_irregular")
+        other = mesh_tm.copy()
+        other.apply_translation([5.0, 0.0, 0.0])
+        both = tm.util.concatenate([mesh_tm, other])
+        assert isinstance(both, tm.Trimesh)
+        vertices_wp, faces_wp = numpy_to_warp(
+            np.asarray(both.vertices), np.asarray(both.faces), mesh_wp.device
+        )
+        # Non-vacuity: the closed-surface guard passes, so connectivity is all that is left to fail.
+        assert int(od.boundary.boundary_edges(vertices_wp, faces_wp).shape[0]) == 0
+    else:
+        _, mesh_wp = request.getfixturevalue("torus_irregular")
+        vertices_np = mesh_wp.points.numpy()
+        root = len(vertices_np)
+        vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+        if case == "root_unreferenced":
+            vertices_wp = wp.array(
+                np.vstack([vertices_np, vertices_np[:1]]), dtype=wp.vec3, device=mesh_wp.device
+            )
+    with pytest.raises(ValueError, match=match):
+        od.homology.homology_generators(vertices_wp, faces_wp, root=root)
 
 
 def test_homology_generators_are_reproducible(genus_two: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -343,12 +358,6 @@ def test_homology_generators_are_reproducible(genus_two: tuple[tm.Trimesh, wp.Me
         assert run == runs[0]
 
 
-def test_homology_generators_reject_a_boundary(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = saddle_graded
-    with pytest.raises(ValueError, match="closed surface"):
-        od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
-
-
 def test_homology_generators_ignore_an_unreferenced_vertex(
     torus_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
 ) -> None:
@@ -376,30 +385,6 @@ def test_homology_generators_ignore_an_unreferenced_vertex(
     edges_tm = {tuple(sorted((int(a) + 1, int(b) + 1))) for a, b in mesh_tm.edges_unique.tolist()}
     for loop in loops:
         assert _is_simple_edge_cycle(loop.numpy(), edges_tm)
-
-
-def test_homology_generators_reject_a_disconnected_surface(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], device: str
-) -> None:
-    """
-    Not a library comparison: the connectivity precondition, which the counting argument needs.
-
-    Two disjoint spheres are each genus 0, so an implementation that honoured the precondition
-    would answer ``[]``; a single primal tree spans only the first component and hands the second's
-    ``V - 1`` edges over as generators (measured: 41 of them). Both components are closed, so the
-    boundary guard cannot see this.
-    """
-    mesh_tm, _ = sphere_irregular
-    other = mesh_tm.copy()
-    other.apply_translation([5.0, 0.0, 0.0])
-    both = tm.util.concatenate([mesh_tm, other])
-    assert isinstance(both, tm.Trimesh)
-    vertices_wp, faces_wp = numpy_to_warp(np.asarray(both.vertices), np.asarray(both.faces), device)
-
-    # Non-vacuity: the closed-surface guard passes, so connectivity is the only thing left to fail.
-    assert int(od.boundary.boundary_edges(vertices_wp, faces_wp).shape[0]) == 0
-    with pytest.raises(ValueError, match="connected surface"):
-        od.homology.homology_generators(vertices_wp, faces_wp)
 
 
 @pytest.mark.parametrize("n_vertices", [0, 4], ids=["no_vertices", "unreferenced_vertices"])

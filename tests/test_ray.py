@@ -328,36 +328,40 @@ def test_intersects_rejects_mismatched_shapes(
             query(mesh_wp, origins_wp, directions_wp)
 
 
-@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.parametrize(
+    ("mesh_name", "origins"),
+    [
+        ("sphere_irregular", "box"),
+        ("saddle_graded", "box"),
+        ("sphere_irregular", "surface_normals"),
+    ],
+)
 @pytest.mark.parity("longest_ray", "trimesh")
-def test_longest_ray(request: pytest.FixtureRequest, mesh_name: str):
+def test_longest_ray(request: pytest.FixtureRequest, mesh_name: str, origins: str):
+    """
+    Class A: the distance to the farthest hit along each ray, as ``trimesh.proximity`` reports it.
+
+    ``box`` fires random directions from a box at the mesh's lower corner (hits and misses, the
+    infinite answer included); ``surface_normals`` starts each ray on the surface and fires it
+    along its face normal (origins lying on the surface itself).
+    """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    rng = np.random.default_rng(3)
-    n = 128
-    origins_np = (rng.random((n, 3)).astype(np.float32) * 2.0 + mesh_tm.bounds[0]).astype(
-        np.float32
-    )
-    directions_np = rng.normal(size=(n, 3)).astype(np.float32)
+    if origins == "box":
+        rng = np.random.default_rng(3)
+        n = 128
+        origins_np = (rng.random((n, 3)).astype(np.float32) * 2.0 + mesh_tm.bounds[0]).astype(
+            np.float32
+        )
+        directions_np = rng.normal(size=(n, 3)).astype(np.float32)
+    else:
+        query_np = np.random.default_rng(11).random((64, 3)).astype(np.float64)
+        origins_np, _distance_np, triangle_id_np = tm.proximity.closest_point(mesh_tm, query_np)
+        directions_np = mesh_tm.face_normals[triangle_id_np].astype(np.float32)
 
     origins_wp = points_to_warp(origins_np, mesh_wp.device)
     directions_wp = points_to_warp(directions_np, mesh_wp.device)
     distances_wp_np = od.ray.longest_ray(mesh_wp, origins_wp, directions_wp).numpy()
     distances_tm_np = tm.proximity.longest_ray(mesh_tm, origins_np, directions_np)
-    _assert_longest_ray_allclose(distances_wp_np, distances_tm_np)
-
-
-def test_longest_ray_surface_normals(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
-    mesh_tm, mesh_wp = sphere_irregular
-    rng = np.random.default_rng(11)
-    n = 64
-    query_np = rng.random((n, 3)).astype(np.float64)
-    closest_np, _distance_np, triangle_id_np = tm.proximity.closest_point(mesh_tm, query_np)
-    normals_np = mesh_tm.face_normals[triangle_id_np].astype(np.float32)
-
-    origins_wp = points_to_warp(closest_np, mesh_wp.device)
-    directions_wp = points_to_warp(normals_np, mesh_wp.device)
-    distances_wp_np = od.ray.longest_ray(mesh_wp, origins_wp, directions_wp).numpy()
-    distances_tm_np = tm.proximity.longest_ray(mesh_tm, closest_np, normals_np)
     _assert_longest_ray_allclose(distances_wp_np, distances_tm_np)
 
 

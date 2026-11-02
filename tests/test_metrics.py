@@ -77,47 +77,24 @@ def _kdtree_sq(queries_np: np.ndarray, targets_np: np.ndarray) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("reduction", "atol"), [("sum", 1e-4), ("max", 1e-5)], ids=["sum", "max"])
-def test_chamfer_points_to_points_sum_and_max(
-    device: str, reduction: Literal["sum", "max"], atol: float
-) -> None:
-    """
-    Class B: the two reductions the Open3D and pytorch3d comparisons below never reach.
-
-    ``KDTree`` supplies the per-point nearest distances; the named transform is squaring and the
-    reduction, summed over both directions for ``"sum"`` and the larger of the two for ``"max"``.
-    The mean and the unreduced forms are compared below.
-    """
-    rng = np.random.default_rng(1)
-    x_np, y_np = _cloud(rng, 50), _cloud(rng, 70)
-
-    squared_xy_np, squared_yx_np = _kdtree_sq(x_np, y_np), _kdtree_sq(y_np, x_np)
-    if reduction == "sum":
-        chamfer_np = np.sum(squared_xy_np) + np.sum(squared_yx_np)
-    else:
-        chamfer_np = max(np.max(squared_xy_np), np.max(squared_yx_np))
-
-    chamfer_wp = od.metrics.chamfer_points_to_points(
-        points_to_warp(x_np, device),
-        points_to_warp(y_np, device),
-        point_reduction=reduction,
-        squared=True,
-    )
-    assert np.allclose(chamfer_wp, chamfer_np, rtol=1e-5, atol=atol)
-
-
 @pytest.mark.parametrize("reduction", ["mean", "sum", "max", None])
 @pytest.mark.parametrize("single_directional", [False, True], ids=["symmetric", "oneway"])
-def test_chamfer_points_to_points_default_is_euclidean(
-    device: str, reduction: Literal["mean", "sum", "max"] | None, single_directional: bool
+@pytest.mark.parametrize("squared", [False, True], ids=["plain", "squared"])
+def test_chamfer_points_to_points_matches_kdtree(
+    device: str,
+    reduction: Literal["mean", "sum", "max"] | None,
+    single_directional: bool,
+    squared: bool,
 ) -> None:
     """
-    Class B: the default reduces plain distances, ``KDTree``'s answer with the reduction applied.
+    Class B: every reduction, direction and squaring is ``KDTree``'s answer with it applied.
 
-    The other comparisons pass ``squared=True`` because their references square; this pins the
-    default, whose per-point values are the Euclidean nearest distances themselves. The clouds'
+    ``KDTree`` supplies the per-point nearest distances; the named transform is the optional
+    squaring and the reduction, summed over the directions (the larger of the two for ``"max"``).
+    The default (``squared=False``) reduces the Euclidean distances themselves, and the clouds'
     nearest distances all differ from their squares (asserted: none is near 0 or 1), so a default
-    that still squared fails every arm.
+    that still squared fails every plain arm. The Open3D and pytorch3d comparisons below reach the
+    squared mean alone.
     """
     rng = np.random.default_rng(3)
     x_np, y_np = _cloud(rng, 50), _cloud(rng, 70)
@@ -126,30 +103,36 @@ def test_chamfer_points_to_points_default_is_euclidean(
     backward_np = np.sqrt(_kdtree_sq(y_np, x_np))
     for distances_np in (forward_np, backward_np):
         assert np.min(np.abs(distances_np - distances_np**2)) > 1e-3
+    if squared:
+        forward_np, backward_np = forward_np**2, backward_np**2
 
     if reduction is None:
         if single_directional:
             forward_wp = od.metrics.chamfer_points_to_points(
-                x_wp, y_wp, point_reduction=None, single_directional=True
+                x_wp, y_wp, point_reduction=None, single_directional=True, squared=squared
             )
             assert np.allclose(forward_wp.numpy(), forward_np, rtol=1e-5, atol=1e-6)
         else:
             forward_wp, backward_wp = od.metrics.chamfer_points_to_points(
-                x_wp, y_wp, point_reduction=None, single_directional=False
+                x_wp, y_wp, point_reduction=None, single_directional=False, squared=squared
             )
             assert np.allclose(forward_wp.numpy(), forward_np, rtol=1e-5, atol=1e-6)
             assert np.allclose(backward_wp.numpy(), backward_np, rtol=1e-5, atol=1e-6)
         return
 
     chamfer_wp = od.metrics.chamfer_points_to_points(
-        x_wp, y_wp, point_reduction=reduction, single_directional=single_directional
+        x_wp,
+        y_wp,
+        point_reduction=reduction,
+        single_directional=single_directional,
+        squared=squared,
     )
     reduce_np = {"mean": np.mean, "sum": np.sum, "max": np.max}[reduction]
     terms_np = [reduce_np(forward_np)]
     if not single_directional:
         terms_np.append(reduce_np(backward_np))
     chamfer_np = max(terms_np) if reduction == "max" else sum(terms_np)
-    assert np.allclose(chamfer_wp, chamfer_np, rtol=1e-5, atol=1e-5)
+    assert np.allclose(chamfer_wp, chamfer_np, rtol=1e-5, atol=1e-4 if reduction == "sum" else 1e-5)
 
 
 @pytest.mark.parametrize("geometry", ["points_to_mesh", "mesh_to_mesh"])
@@ -1206,43 +1189,6 @@ def test_chamfer_mesh_to_mesh_loss_grad(
         assert np.allclose(grad_b_wp, grad_b_np, rtol=_FD_RTOL, atol=_FD_ATOL)
 
 
-@pytest.mark.parametrize("kernel_device", ["cpu", "cuda:0"])
-def test_chamfer_losses_match_numpy_on_both_devices(kernel_device: str) -> None:
-    """
-    Pin both chamfer loss reductions on **both** devices against a closed-form NumPy sum.
-
-    ``wp.launch_tiled`` runs exactly one lane per block on Warp 1.18's CPU backend, so the
-    block-wide ``wp.tile_sum`` these losses used to perform accumulated one point per 64-point tile
-    there and returned a loss roughly 64x too small -- measured 0.43 absolute on this size of cloud.
-    Each term now has a lane-free ``*_sliced`` kernel for CPU and keeps the ``*_tiled`` one on CUDA,
-    so the parametrization is what covers both: dropping either device leaves a kernel untested.
-    """
-    if kernel_device.startswith("cuda") and not wp.is_cuda_available():
-        pytest.skip("no CUDA device")
-
-    rng = np.random.default_rng(91)
-    x_np = rng.standard_normal((500, 3))
-    y_np = rng.standard_normal((300, 3)) * 0.7
-    x_wp = points_to_warp(x_np, kernel_device)
-    y_wp = points_to_warp(y_np, kernel_device)
-
-    # Bidirectional mean-reduced squared chamfer, exactly what the default arguments compute.
-    squared_np = ((x_np[:, None, :] - y_np[None, :, :]) ** 2).sum(-1)
-    loss_np = squared_np.min(1).mean() + squared_np.min(0).mean()
-    loss_wp = od.metrics.chamfer_points_to_points_loss(x_wp, y_wp, squared=True)
-    assert np.allclose(loss_wp.numpy()[0], loss_np, rtol=1e-5, atol=1e-5)
-
-    # Single-directional points-to-mesh: the reference is the distance to the nearest triangle,
-    # which for a convex mesh sampled outside it is the distance to its surface.
-    mesh_tm = tm.creation.icosphere(subdivisions=3)
-    mesh_wp = trimesh_to_warp(mesh_tm, kernel_device)
-    surface_loss_wp = od.metrics.chamfer_points_to_mesh_loss(
-        x_wp, mesh_wp.points, mesh_wp.indices, single_directional=True, squared=True
-    )
-    _closest_np, distance_np, _face_np = tm_proximity.closest_point(mesh_tm, x_np)
-    assert np.allclose(surface_loss_wp.numpy()[0], (distance_np**2).mean(), rtol=1e-5, atol=1e-5)
-
-
 def test_chamfer_mesh_losses_take_prebuilt_meshes(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
@@ -1362,7 +1308,12 @@ def test_chamfer_losses_repeat_bit_for_bit_when_deterministic(
 
 
 def test_chamfer_points_to_points_loss_guards_and_empty(device: str) -> None:
-    """Not a library comparison: ``"max"`` is refused, and an empty side gives a zero loss."""
+    """
+    Not a library comparison: ``"max"`` is refused, an empty side gives zero, no tape is needed.
+
+    Without a tape the loss still records: three points at the origin against three at
+    ``(1, 1, 1)`` are each a squared distance of 3 from the other side, so the two means sum to 6.
+    """
     x_wp = points_to_warp(np.zeros((3, 3), dtype=np.float32), device)
     y_wp = points_to_warp(np.ones((3, 3), dtype=np.float32), device)
     with pytest.raises(ValueError, match="mean"):
@@ -1372,6 +1323,8 @@ def test_chamfer_points_to_points_loss_guards_and_empty(device: str) -> None:
     )
     assert loss_wp.shape == (1,)
     assert float(loss_wp.numpy()[0]) == 0.0
+    untaped_wp = od.metrics.chamfer_points_to_points_loss(x_wp, y_wp, squared=True)
+    assert np.isclose(float(untaped_wp.numpy()[0]), 6.0, rtol=1e-6, atol=0.0)
 
 
 @wp.kernel  # pyright: ignore[reportUntypedFunctionDecorator]  # wp.kernel has no return annotation

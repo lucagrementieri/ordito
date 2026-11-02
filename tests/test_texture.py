@@ -498,38 +498,33 @@ def test_remap_discrete_attribute_matches_scipy(device: str, n_labels: int) -> N
 # --------------------------------------------------------------------------------------------
 # Round-trip identity
 # --------------------------------------------------------------------------------------------
-def test_rasterize_remap_roundtrip_linear(device: str):
+def test_rasterize_remap_roundtrip(device: str):
+    """
+    Not a library comparison: rasterizing and sampling back recovers the vertex values.
+
+    A globally linear field is recovered by bilinear sampling at interior vertices to the pixel
+    grid's resolution, and a per-vertex label exactly by the discrete pair.
+    """
+    rng = np.random.default_rng(11)
     n = 10
+    resolution = 128
     uv_np, faces_np = _grid_uv_mesh(n=n)
-    # Globally-linear field -> bilinear sampling recovers it exactly at interior vertices.
+    uv_wp, faces_wp = _upload_uv_mesh(uv_np, faces_np, device)
+    interior = _interior_mask(n)
+
     u = uv_np[:, 0]
     v = uv_np[:, 1]
     attribute_np = np.stack([u, v, u + v], axis=1).astype(np.float32)
-    resolution = 128
-
-    uv_wp, faces_wp = _upload_uv_mesh(uv_np, faces_np, device)
     attribute_wp = _float_rows(attribute_np, device)
     image = od.texture.rasterize_attribute(uv_wp, faces_wp, attribute_wp, resolution)
     recovered = od.texture.remap_attribute_from_uv(uv_wp, image, order=1).numpy()
-
-    interior = _interior_mask(n)
     assert np.allclose(recovered[interior], attribute_np[interior], rtol=1e-2, atol=1e-2)
 
-
-def test_rasterize_remap_roundtrip_discrete(device: str):
-    rng = np.random.default_rng(11)
-    n = 10
-    uv_np, faces_np = _grid_uv_mesh(n=n)
     labels_np = rng.integers(0, 5, size=uv_np.shape[0]).astype(np.int32)
-    resolution = 128
-
-    uv_wp, faces_wp = _upload_uv_mesh(uv_np, faces_np, device)
     labels_wp = wp.array(labels_np, dtype=wp.int32, device=device)
     class_image = od.texture.rasterize_discrete_attribute(uv_wp, faces_wp, labels_wp, resolution)
-    recovered = od.texture.remap_discrete_attribute_from_uv(uv_wp, class_image).numpy()
-
-    interior = _interior_mask(n)
-    assert np.array_equal(recovered[interior], labels_np[interior])
+    recovered_labels = od.texture.remap_discrete_attribute_from_uv(uv_wp, class_image).numpy()
+    assert np.array_equal(recovered_labels[interior], labels_np[interior])
 
 
 # --------------------------------------------------------------------------------------------
@@ -657,6 +652,18 @@ _VALIDATION_CASES: list[tuple[str, Callable[[str], object], str]] = [
         ),
         r"\[0, 1\]",
     ),
+    *(
+        (
+            f"remap_order_{order}",
+            lambda device, order=order: od.texture.remap_attribute_from_uv(
+                _point_uv(device, [[0.25, 0.25], [0.6, 0.7]]),
+                odt.as_array2d(wp.zeros((4, 4), dtype=wp.float32, device=device), wp.float32),
+                order=order,  # pyright: ignore[reportArgumentType]  # the off-menu value under test
+            ),
+            "order must be 0",
+        )
+        for order in (2, -1, 0.5)
+    ),
 ]
 
 
@@ -673,30 +680,11 @@ def test_rejects_invalid_arguments(device: str, call: Callable[[str], object], m
     on the cpu device is host-heap corruption rather than a wrong answer.
     ``remap_discrete_attribute_from_uv`` reaches its ``[0, 1]`` guard only *indirectly*, through
     its ``remap_attribute_from_uv`` call, so its documented ``Raises`` entry is a claim about a
-    guard it does not itself run -- the kind that goes stale unnoticed.
+    guard it does not itself run -- the kind that goes stale unnoticed. ``order`` was read as
+    ``SAMPLE_BILINEAR if order == 1 else SAMPLE_NEAREST``, so every value other than ``1`` sampled
+    nearest-neighbour and returned a plausible image -- the failure mode a ``Literal`` annotation
+    hides from a caller whose value arrives through a variable; both documented orders still run
+    against their own references in ``test_remap_attribute_matches_scipy``.
     """
     with pytest.raises(ValueError, match=match):
         call(device)
-
-
-def test_remap_rejects_an_off_menu_order(device: str):
-    """
-    Not a library comparison: the ``order`` menu's own guard.
-
-    ``order`` was read as ``SAMPLE_BILINEAR if order == 1 else SAMPLE_NEAREST``, so every value
-    other than ``1`` sampled nearest-neighbour and returned a plausible image -- the failure mode
-    a ``Literal`` annotation hides from a caller whose value arrives through a variable rather
-    than a literal. Both documented orders still run, and they must disagree on this image, or
-    the test would pass against a function that ignored ``order`` entirely.
-    """
-    uv_wp = points_to_warp_uv(np.array([[0.25, 0.25], [0.6, 0.7]], dtype=np.float32), device)
-    image_np = np.arange(16, dtype=np.float32).reshape(4, 4)
-    image_wp = odt.as_array2d(wp.array(image_np, dtype=wp.float32, device=device), wp.float32)
-    for order in (2, -1, 0.5):
-        with pytest.raises(ValueError, match="order must be 0"):
-            od.texture.remap_attribute_from_uv(uv_wp, image_wp, order=order)  # pyright: ignore[reportArgumentType]
-    bilinear_np = od.texture.remap_attribute_from_uv(uv_wp, image_wp, order=1).numpy()
-    nearest_np = od.texture.remap_attribute_from_uv(uv_wp, image_wp, order=0).numpy()
-    assert np.isfinite(bilinear_np).all()
-    assert np.isfinite(nearest_np).all()
-    assert not np.allclose(bilinear_np, nearest_np)

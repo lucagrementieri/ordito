@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Literal
 
 import igl
@@ -276,24 +277,6 @@ def test_corner_normals_ccw_first_step_crease_does_not_skip_clockwise_walk(devic
     # the single crease.
     corners_at_v = normals_wp[:, 0, :]
     assert np.allclose(corners_at_v, np.array([0.0, 0.0, 1.0]), rtol=1e-5, atol=1e-5)
-
-
-def test_corner_normals_edge_cases(device: str, unit_box: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Not a library comparison: an empty mesh, and the two argument errors."""
-    empty_vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
-    empty_faces_wp = warp_empty(0, wp.int32, device)
-    assert od.triangles.corner_normals(empty_vertices_wp, empty_faces_wp).shape == (0, 3)
-
-    _mesh_tm, mesh_wp = unit_box
-    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    with pytest.raises(ValueError, match=r"shape \(k, 2\)"):
-        od.triangles.corner_normals(
-            vertices_wp,
-            faces_wp,
-            odt.as_array2d(wp.zeros((2, 3), dtype=wp.int32, device=device), wp.int32),
-        )
-    with pytest.raises(ValueError, match="weighting must be"):
-        od.triangles.corner_normals(vertices_wp, faces_wp, weighting="sine")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
@@ -662,12 +645,6 @@ def test_face_quality_degenerate(
         assert quality_wp.numpy()[0] < 1e-5
 
 
-def test_face_quality_unknown_metric(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
-    _mesh_tm, mesh_wp = sphere_irregular
-    with pytest.raises(ValueError, match="unknown metric"):
-        od.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric="skewness")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
-
-
 @pytest.mark.parity("face_nondegenerate_mask", "trimesh")
 @pytest.mark.parametrize("with_degenerate", [False, True], ids=["clean", "with_degenerate"])
 def test_face_nondegenerate_mask(saddle_graded: tuple[tm.Trimesh, wp.Mesh], with_degenerate: bool):
@@ -970,23 +947,39 @@ def test_face_centroids(request: pytest.FixtureRequest, mesh_name: str):
 @pytest.mark.parity("face_signed_volumes", "numpy")
 def test_face_signed_volumes(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
     """
-    Class A against the NumPy oracle, element-wise, plus Class B on the sum.
+    Class A against the NumPy oracle, element-wise at both precisions, plus Class B on the sum.
 
     ``dot(v0, cross(v1, v2)) / 6`` per face, which is a one-liner in NumPy and therefore an exact
     oracle rather than an approximate one. The class-B half is that the sum over a closed mesh is
     ``mesh_tm.volume`` -- the transform being the reduction -- and it is the assert that would catch
     a per-face sign error the element-wise comparison could only catch if the oracle had the same
     bug.
+
+    The output follows the input dtype: ``vec3d`` in, ``float64`` out, as the volume constraint
+    needs. The ``float64`` path is exact against NumPy's ``float64`` triple products (1.1e-16). The
+    ``float32`` one is bounded relative to each face's ``|a| |b| |c| / 6``, not to its volume: a
+    tetrahedron from the origin to a face of an off-origin mesh is a difference of large products,
+    so its error scales with them (measured 2.5e-08 of that on ``sphere_irregular``; 1e-6 is the
+    bar).
     """
     mesh_tm, mesh_wp = sphere_irregular
-    triangles_np = np.asarray(mesh_tm.triangles, dtype=np.float64)
-    v0, v1, v2 = triangles_np[:, 0], triangles_np[:, 1], triangles_np[:, 2]
+    corners_np = np.asarray(mesh_tm.vertices, dtype=np.float64)[np.asarray(mesh_tm.faces)]
+    v0, v1, v2 = corners_np[:, 0], corners_np[:, 1], corners_np[:, 2]
     volumes_np = np.einsum("ij,ij->i", v0, np.cross(v1, v2)) / 6.0
+    vertices_f64_wp = wp.array(
+        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
+        dtype=wp.vec3d,
+        device=mesh_wp.points.device,
+    )
 
     volumes_wp = od.triangles.face_signed_volumes(mesh_wp.points, mesh_wp.indices)
+    volumes_f64_wp = od.triangles.face_signed_volumes(vertices_f64_wp, mesh_wp.indices)
 
-    scale = float(np.abs(volumes_np).max())
-    assert np.allclose(volumes_wp.numpy(), volumes_np, rtol=1e-5, atol=1e-5 * scale)
+    assert volumes_wp.dtype is wp.float32
+    assert volumes_f64_wp.dtype is wp.float64
+    scale_np = np.prod(np.linalg.norm(corners_np, axis=2), axis=1) / 6.0
+    assert np.all(np.abs(volumes_wp.numpy() - volumes_np) <= 1e-6 * scale_np)
+    assert np.allclose(volumes_f64_wp.numpy(), volumes_np, rtol=1e-12, atol=1e-15)
     assert mesh_tm.is_watertight
     assert np.isclose(volumes_wp.numpy().sum(), mesh_tm.volume, rtol=1e-5, atol=1e-5)
 
@@ -1014,39 +1007,48 @@ def test_face_signed_volumes_apex_shifts_each_face_but_not_the_sum(
     assert np.isclose(at_origin_np.sum(), shifted_np.sum(), rtol=1e-4)
 
 
-def test_face_signed_volumes_follows_the_input_dtype(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]):
-    """
-    Not a library comparison: ``vec3d`` in, ``float64`` out, as the volume constraint needs.
-
-    The ``float64`` path is exact against NumPy's ``float64`` triple products (1.1e-16). The
-    ``float32`` one is bounded relative to each face's ``|a| |b| |c| / 6``, not to its volume: a
-    tetrahedron from the origin to a face of an off-origin mesh is a difference of large products,
-    so its error scales with them (measured 2.5e-08 of that on ``sphere_irregular``; 1e-6 is the
-    bar).
-    """
-    mesh_tm, mesh_wp = sphere_irregular
-    faces_wp, vertices_f32_wp = mesh_wp.indices, mesh_wp.points
-    vertices_f64_wp = wp.array(
-        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
-        dtype=wp.vec3d,
-        device=mesh_wp.points.device,
+def _unit_box_mesh(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return numpy_to_warp(
+        np.asarray(tm.creation.box().vertices), np.asarray(tm.creation.box().faces), device
     )
 
-    volumes_f64_wp = od.triangles.face_signed_volumes(vertices_f64_wp, faces_wp)
-    volumes_f32_wp = od.triangles.face_signed_volumes(vertices_f32_wp, faces_wp)
 
-    assert volumes_f64_wp.dtype is wp.float64
-    assert volumes_f32_wp.dtype is wp.float32
-    corners_np = np.asarray(mesh_tm.vertices, dtype=np.float64)[np.asarray(mesh_tm.faces)]
-    exact_np = (
-        np.einsum("ij,ij->i", corners_np[:, 0], np.cross(corners_np[:, 1], corners_np[:, 2])) / 6.0
-    )
-    scale_np = np.prod(np.linalg.norm(corners_np, axis=2), axis=1) / 6.0
-    assert np.allclose(volumes_f64_wp.numpy(), exact_np, rtol=1e-12, atol=1e-15)
-    assert np.all(np.abs(volumes_f32_wp.numpy() - exact_np) <= 1e-6 * scale_np)
+_INVALID_CALLS: dict[str, tuple[Callable[[str], object], str]] = {
+    "corner_normals_creases_not_pairs": (
+        lambda device: od.triangles.corner_normals(
+            *_unit_box_mesh(device),
+            odt.as_array2d(wp.zeros((2, 3), dtype=wp.int32, device=device), wp.int32),
+        ),
+        r"shape \(k, 2\)",
+    ),
+    "corner_normals_weighting_off_menu": (
+        lambda device: od.triangles.corner_normals(
+            *_unit_box_mesh(device),
+            weighting="sine",  # pyright: ignore[reportArgumentType]  # deliberately off-menu
+        ),
+        "weighting must be",
+    ),
+    "face_quality_metric_off_menu": (
+        lambda device: od.triangles.face_quality(
+            *_unit_box_mesh(device),
+            metric="skewness",  # pyright: ignore[reportArgumentType]  # deliberately off-menu
+        ),
+        "unknown metric",
+    ),
+}
 
 
-def test_face_signed_volumes_empty(device: str):
+@pytest.mark.parametrize("case", list(_INVALID_CALLS))
+def test_invalid_arguments_raise(device: str, case: str) -> None:
+    """Not a library comparison: each documented ``ValueError``, with its message."""
+    call, message = _INVALID_CALLS[case]
+    with pytest.raises(ValueError, match=message):
+        call(device)
+
+
+def test_empty_mesh(device: str) -> None:
+    """Not a library comparison: a face-less mesh gives empty per-face and per-corner buffers."""
     vertices_wp = wp.zeros(1, dtype=wp.vec3, device=device)
-    faces_wp = wp.array([], dtype=wp.int32, device=device)
+    faces_wp = warp_empty(0, wp.int32, device)
+    assert od.triangles.corner_normals(vertices_wp, faces_wp).shape == (0, 3)
     assert od.triangles.face_signed_volumes(vertices_wp, faces_wp).shape == (0,)

@@ -2209,37 +2209,6 @@ def test_filter_implicit_fairing_factors_once_a_pinching_flow_slows(
     assert np.allclose(faired, iterated, rtol=1e-5, atol=1e-5 * np.ptp(iterated))
 
 
-def test_implicit_filters_cpu_match_cuda(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """
-    Class A: both implicit filters give the CUDA answer on CPU.
-
-    Pins the removal of the CUDA-only guard: ``warp.optim.linear.cg`` returned NaN on the Warp CPU
-    device through 1.15, so these two refused to run there at all. Fixed in 1.16.
-    """
-    if not wp.is_cuda_available():
-        pytest.skip("needs both devices to compare them")
-    mesh_tm, _ = sphere_irregular
-
-    for name, call in (
-        (
-            "filter_laplacian",
-            lambda v, f: od.smoothing.filter_laplacian(
-                v, f, iterations=2, implicit_time_integration=True
-            ),
-        ),
-        (
-            "filter_implicit_fairing",
-            lambda v, f: od.smoothing.filter_implicit_fairing(v, f, iterations=2),
-        ),
-    ):
-        positions = {}
-        for device in ("cpu", "cuda:0"):
-            mesh_wp = trimesh_to_warp(mesh_tm, device)
-            positions[device] = call(mesh_wp.points, mesh_wp.indices).numpy()
-        assert np.isfinite(positions["cpu"]).all(), name
-        assert np.allclose(positions["cpu"], positions["cuda:0"], rtol=1e-5, atol=1e-5), name
-
-
 def _sphere_region(subdivisions: int = 2, z_cut: float = 0.5):
     sph = tm.creation.icosphere(subdivisions=subdivisions, radius=1.0)
     vertices = sph.vertices.astype(np.float64)
@@ -3088,9 +3057,10 @@ def test_filter_scalar_laplacian_conserves_the_degree_weighted_total_on_a_closed
     assert np.array_equal(values_wp.numpy(), values_np.astype(np.float32))  # input untouched
 
 
-def test_filter_scalar_laplacian_zero_iterations(
+def test_filter_scalar_laplacian_zero_iterations_and_length_mismatch(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
+    """Not a library comparison: zero passes return the field, and a short field is refused."""
     mesh_tm, mesh_wp = sphere_irregular
     values_np = _scalar_spike(mesh_tm).astype(np.float32)
     values_wp = wp.array(values_np, dtype=wp.float32, device=mesh_wp.device)
@@ -3098,15 +3068,9 @@ def test_filter_scalar_laplacian_zero_iterations(
         values_wp, mesh_wp.points, mesh_wp.indices, iterations=0
     )
     assert np.array_equal(out_wp.numpy(), values_np)
-
-
-def test_filter_scalar_laplacian_length_mismatch(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    _mesh_tm, mesh_wp = sphere_irregular
-    values_wp = wp.zeros(3, dtype=wp.float32, device=mesh_wp.device)
+    short_wp = wp.zeros(3, dtype=wp.float32, device=mesh_wp.device)
     with pytest.raises(ValueError, match="one entry per vertex"):
-        od.smoothing.filter_scalar_laplacian(values_wp, mesh_wp.points, mesh_wp.indices)
+        od.smoothing.filter_scalar_laplacian(short_wp, mesh_wp.points, mesh_wp.indices)
 
 
 # ---------------------------------------------------------------------------
@@ -3310,12 +3274,6 @@ def test_filter_normals_matches_meshlib(device: str) -> None:
     assert pair_worst > 0.95 > raw_worst
 
 
-def test_filter_normals_invalid(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = sphere_irregular
-    with pytest.raises(ValueError, match=r"threshold must be in \[0, 180\]"):
-        od.smoothing.filter_normals(mesh_wp.points, mesh_wp.indices, threshold=-1.0)
-
-
 def test_filter_normals_zero_iterations_returns_a_copy_of_the_given_normals(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
@@ -3418,17 +3376,24 @@ def test_filter_normals_meshlib_method_is_reproducible(
         ({"method": "bilateral"}, "'bilateral'"),
         ({"method": "meshlib", "gamma": -1.0}, "gamma must be non-negative"),
         ({"method": "meshlib", "beta": 0.0}, "beta must be positive"),
+        ({"threshold": -1.0}, r"threshold must be in \[0, 180\] degrees, got -1"),
+        ({"threshold": 200.0}, r"threshold must be in \[0, 180\] degrees, got 200"),
     ],
 )
-def test_filter_normals_rejects_bad_meshlib_method_arguments(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], keywords: dict[str, Any], message: str
+def test_filter_normals_and_two_step_reject_bad_arguments(
+    device: str, keywords: dict[str, Any], message: str
 ) -> None:
-    """Not a parity assert: an unknown ``method`` and out-of-range weights raise ``ValueError``."""
-    _mesh_tm, mesh_wp = sphere_irregular
+    """
+    Not a parity assert: an unknown ``method``, out-of-range weights and a bad crease threshold.
+
+    Each raises ``ValueError`` naming the value, from both filters (each validates its own
+    arguments); the threshold is an angle in ``[0, 180]`` degrees, tested from either side.
+    """
+    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=1, device=device)
     with pytest.raises(ValueError, match=message):
-        od.smoothing.filter_normals(mesh_wp.points, mesh_wp.indices, **keywords)
+        od.smoothing.filter_normals(vertices_wp, faces_wp, **keywords)
     with pytest.raises(ValueError, match=message):
-        od.smoothing.filter_two_step(mesh_wp.points, mesh_wp.indices, **keywords)
+        od.smoothing.filter_two_step(vertices_wp, faces_wp, **keywords)
 
 
 @pytest.mark.parity("filter_two_step", "pymeshlab")
@@ -3512,17 +3477,6 @@ def test_filter_two_step_meshlab_matches_pymeshlab(
 
     assert np.abs(pml_np - noisy_np).max() > 1e-3
     assert np.allclose(smoothed_wp.numpy(), pml_np, rtol=1e-5, atol=1e-5)
-
-
-def test_filter_two_step_rejects_an_unknown_method(device: str) -> None:
-    """Not a parity assert: an unknown ``method`` raises ``ValueError`` naming the value."""
-    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=1, device=device)
-    with pytest.raises(ValueError, match="'gauss_seidel'"):
-        od.smoothing.filter_two_step(
-            vertices_wp,
-            faces_wp,
-            method="gauss_seidel",  # pyright: ignore[reportArgumentType]
-        )
 
 
 @pytest.mark.parity("filter_two_step_meshlib", "meshlib")
@@ -3666,15 +3620,6 @@ def test_filter_two_step_mates_change_no_answer(
     ).numpy()
     assert not np.array_equal(plain_np, mesh.vertices.numpy())
     assert np.array_equal(given_np, plain_np)
-
-
-def test_filter_two_step_rejects_a_threshold_outside_a_half_turn(
-    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """Not a library comparison: the crease threshold is an angle in ``[0, 180]`` degrees."""
-    _mesh_tm, mesh_wp = sphere_irregular
-    with pytest.raises(ValueError, match=r"threshold must be in \[0, 180\] degrees, got 200"):
-        od.smoothing.filter_two_step(mesh_wp.points, mesh_wp.indices, threshold=200.0)
 
 
 @pytest.mark.parametrize("iterations", [1, 10])

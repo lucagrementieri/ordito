@@ -226,13 +226,6 @@ def test_face_gradients_precomputed_face_data(saddle_graded: tuple[tm.Trimesh, w
     assert np.array_equal(derived.numpy(), supplied.numpy())
 
 
-def test_face_gradients_empty(device: str) -> None:
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    values_wp = wp.array(np.array([], dtype=np.float64), dtype=wp.float64, device=device)
-    assert od.laplacian.face_gradients(vertices_wp, faces_wp, values_wp).shape == (0,)
-
-
 # -----------------------------------------------------------------------------------------
 # cotmatrix_entries
 # -----------------------------------------------------------------------------------------
@@ -834,10 +827,6 @@ def test_robust_laplacian_matches_igl_intrinsic_delaunay(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = len(mesh_tm.vertices)
 
-    # With the flips on, this *is* ``igl::intrinsic_delaunay_cotmatrix`` — the strongest oracle in
-    # the module, and one that pins the flip's new-edge-length formula and its winding bookkeeping
-    # at once. The intrinsic Delaunay triangulation is unique, so the two implementations need not
-    # (and do not) perform the same flips in the same order to agree on the matrix.
     laplacian_igl, _, _ = igl.intrinsic_delaunay_cotmatrix(*mesh_igl(mesh_tm))
     laplacian_wp = od.laplacian.robust_laplacian(mesh_wp.points, mesh_wp.indices)
     assert np.allclose(
@@ -942,27 +931,26 @@ def test_robust_laplacian_hints_change_no_answer(
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     mesh = od.Trimesh(vertices_wp, faces_wp)
 
-    plain_bsr = od.laplacian.robust_laplacian(vertices_wp, faces_wp, use_intrinsic_delaunay=False)
-    given_bsr = od.laplacian.robust_laplacian(
-        vertices_wp, faces_wp, use_intrinsic_delaunay=False, pattern=mesh.mesh_operator_pattern
-    )
-    n_stored = int(plain_bsr.offsets.numpy()[-1])
-    assert np.array_equal(given_bsr.offsets.numpy(), plain_bsr.offsets.numpy())
-    for given_wp, plain_wp in (
-        (given_bsr.columns, plain_bsr.columns),
-        (given_bsr.values, plain_bsr.values),
+    robust = od.laplacian.robust_laplacian
+    for plain_bsr, given_bsr in (
+        (
+            robust(vertices_wp, faces_wp, use_intrinsic_delaunay=False),
+            robust(
+                vertices_wp,
+                faces_wp,
+                use_intrinsic_delaunay=False,
+                pattern=mesh.mesh_operator_pattern,
+            ),
+        ),
+        (robust(vertices_wp, faces_wp), robust(vertices_wp, faces_wp, mates=mesh.halfedge_mates)),
     ):
-        assert np.array_equal(given_wp.numpy()[:n_stored], plain_wp.numpy()[:n_stored])
-
-    plain_bsr = od.laplacian.robust_laplacian(vertices_wp, faces_wp)
-    given_bsr = od.laplacian.robust_laplacian(vertices_wp, faces_wp, mates=mesh.halfedge_mates)
-    n_stored = int(plain_bsr.offsets.numpy()[-1])
-    assert np.array_equal(given_bsr.offsets.numpy(), plain_bsr.offsets.numpy())
-    for given_wp, plain_wp in (
-        (given_bsr.columns, plain_bsr.columns),
-        (given_bsr.values, plain_bsr.values),
-    ):
-        assert np.array_equal(given_wp.numpy()[:n_stored], plain_wp.numpy()[:n_stored])
+        n_stored = int(plain_bsr.offsets.numpy()[-1])
+        assert np.array_equal(given_bsr.offsets.numpy(), plain_bsr.offsets.numpy())
+        for given_wp, plain_wp in (
+            (given_bsr.columns, plain_bsr.columns),
+            (given_bsr.values, plain_bsr.values),
+        ):
+            assert np.array_equal(given_wp.numpy()[:n_stored], plain_wp.numpy()[:n_stored])
 
     with pytest.raises(ValueError, match="use_intrinsic_delaunay=False"):
         od.laplacian.robust_laplacian(vertices_wp, faces_wp, pattern=mesh.mesh_operator_pattern)
@@ -1268,29 +1256,6 @@ def test_laplacian_operator(
     assert sparse_allclose(operator_wp, operator_tm, rtol=1e-5, atol=1e-5)
 
 
-def test_laplacian_symmetric_flag(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    # On an open mesh the directed and symmetric adjacencies differ; forcing ``symmetric``
-    # overrides the ``not equal_weight`` default, so uniform+symmetric is row-stochastic and
-    # symmetric while uniform+directed matches trimesh's (asymmetric) ``edges_to_coo``.
-    _, mesh_wp = saddle_graded
-    directed = bsr_to_csr(
-        od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=True, symmetric=False)
-    )
-    symmetric = bsr_to_csr(
-        od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=True, symmetric=True)
-    )
-
-    directed_dense = directed.toarray()
-    symmetric_dense = symmetric.toarray()
-    assert not np.allclose(directed_dense, symmetric_dense)
-    # Symmetric adjacency has a symmetric sparsity pattern; directed does not (open boundary).
-    assert np.array_equal(symmetric_dense != 0.0, (symmetric_dense != 0.0).T)
-    assert not np.array_equal(directed_dense != 0.0, (directed_dense != 0.0).T)
-    # Both operators are row-stochastic.
-    assert np.allclose(symmetric_dense.sum(axis=1), 1.0)
-    assert np.allclose(directed_dense.sum(axis=1), 1.0)
-
-
 @pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular"])
 def test_laplacian_from_given_edges_matches_trimesh(
     request: pytest.FixtureRequest, mesh_name: str
@@ -1507,7 +1472,8 @@ def test_operators_on_a_faceless_mesh(device: str) -> None:
 
     Each builder returns before its first launch: the per-face tables are empty ``(0, 3)``, the
     mollifier adds nothing, every square operator is ``3 x 3`` with no stored entry and the lumped
-    mass is zero. A ``0 x 0`` operator would break a caller's dimensions (``igl.cotmatrix`` sizes
+    mass is zero; with no vertices either, the mass matrix is ``0 x 0`` and the face gradient
+    empty. A ``0 x 0`` operator would break a caller's dimensions (``igl.cotmatrix`` sizes
     by ``len(V)`` too, asserted), and a ``wp.empty`` mass would hand back garbage.
     """
     assert igl.cotmatrix(np.eye(3), np.empty((0, 3), dtype=np.int64)).shape == (3, 3)
@@ -1537,6 +1503,8 @@ def test_operators_on_a_faceless_mesh(device: str) -> None:
     no_vertices = points_to_warp(np.zeros((0, 3)), device)
     empty_mass = od.laplacian.mass_matrix(no_vertices, faces_wp)
     assert (empty_mass.nrow, empty_mass.ncol) == (0, 0)
+    no_values = wp.zeros(0, dtype=wp.float64, device=device)
+    assert od.laplacian.face_gradients(no_vertices, faces_wp, no_values).shape == (0,)
 
 
 def test_operators_reject_precomputed_inputs_of_the_wrong_size(

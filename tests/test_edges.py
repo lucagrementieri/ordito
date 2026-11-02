@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
@@ -213,15 +214,6 @@ def test_unique_edge_count(request: pytest.FixtureRequest, mesh_name: str, bound
     assert count_wp == od.edges.edges_unique(mesh_wp.indices, n_vertices=n_vertices)[0].shape[0]
 
 
-def test_unique_edge_count_validates(device: str) -> None:
-    """Not a parity assert: the range check and the empty mesh."""
-    faces_wp = wp.array([0, 1, 2, 2, 1, 3], dtype=wp.int32, device=device)
-    assert od.edges.unique_edge_count(faces_wp) == 5
-    with pytest.raises(ValueError, match="less than n_vertices"):
-        od.edges.unique_edge_count(faces_wp, 3)
-    assert od.edges.unique_edge_count(wp.zeros(0, dtype=wp.int32, device=device)) == 0
-
-
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
 @pytest.mark.parity("edges_unique_inverse", "trimesh")
 def test_edges_unique_inverse(request: pytest.FixtureRequest, mesh_name: str) -> None:
@@ -401,59 +393,34 @@ def test_edges_unique_and_inverse_match_pytorch3d(
 
 
 @pytest.mark.parametrize("mesh_name", ["saddle_graded"])
-def test_edges_unique_radix_is_invariant_to_an_oversized_base(
+def test_edges_unique_options_change_no_answer(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class A: the unique-edge table and its inverse are unchanged by any base above ``max(faces)``.
+    Ordito against ordito: every radix, ``validate`` and ``edges_sorted`` form returns one answer.
 
-    A caller holding ``vertices`` passes ``vertices.shape[0]`` to skip the inference readback, and
-    that count exceeds ``max(faces) + 1`` whenever the mesh carries unreferenced vertices.
-    """
-    _, mesh_wp = request.getfixturevalue(mesh_name)
-    tight = od.array.index_bound(mesh_wp.indices)
-    edges_tight_wp, inverse_tight_wp = od.edges.edges_unique(mesh_wp.indices, n_vertices=tight)
-
-    for base in (tight + 1, tight + 1000):
-        edges_wp, inverse_wp = od.edges.edges_unique(mesh_wp.indices, n_vertices=base)
-        assert np.array_equal(edges_wp.numpy(), edges_tight_wp.numpy())
-        assert np.array_equal(inverse_wp.numpy(), inverse_tight_wp.numpy())
-
-
-@pytest.mark.parametrize("mesh_name", ["saddle_graded"])
-def test_edges_unique_from_precomputed_sorted_edges(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Ordito against ordito: the ``edges_sorted`` path returns the face path's table and inverse.
-
-    The face path carries the library comparisons above; this pins the precomputed-rows entry
-    point, which packs its own keys and unpacks each unique row from its key, at every radix it
-    can pack against -- inferred (validated), supplied (validated and not), and the unbounded pair
-    radix -- and its range check.
+    The face path with a vertex count carries the library comparisons above; this pins the rest
+    to it, table and inverse. A caller holding ``vertices`` passes ``vertices.shape[0]``, which
+    exceeds ``max(faces) + 1`` whenever the mesh carries unreferenced vertices, so any base above
+    the tight one must change nothing. ``validate=False`` skips a range check, not any of the work
+    that produces the answer (every internal caller passes it); with no ``n_vertices`` it packs at
+    the unbounded pair radix. The precomputed-rows entry point packs its own keys and unpacks each
+    unique row from its key, at every radix it can pack against.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     faces = mesh_wp.indices
+    tight = od.array.index_bound(faces)
+    edges_ref_wp, inverse_ref_wp = od.edges.edges_unique(faces, n_vertices=tight)
+    assert edges_ref_wp.shape[0] > 0
     edges_sorted_wp = od.edges.faces_to_edges(faces, sorted=True)
-    n_vertices = mesh_wp.points.shape[0]
-    edges_ref_wp, inverse_ref_wp = od.edges.edges_unique(faces, n_vertices=n_vertices)
-    for n_vertices_arg, validate in (
-        (None, True),
-        (n_vertices, True),
-        (n_vertices, False),
-        (None, False),
+    for edges_sorted, n_vertices, validate in itertools.product(
+        (None, edges_sorted_wp), (None, tight, tight + 1, tight + 1000), (True, False)
     ):
         edges_wp, inverse_wp = od.edges.edges_unique(
-            faces, edges_sorted=edges_sorted_wp, n_vertices=n_vertices_arg, validate=validate
+            faces, edges_sorted=edges_sorted, n_vertices=n_vertices, validate=validate
         )
         assert np.array_equal(edges_wp.numpy(), edges_ref_wp.numpy())
         assert np.array_equal(inverse_wp.numpy(), inverse_ref_wp.numpy())
-
-    tight = od.array.index_bound(faces)
-    with pytest.raises(ValueError, match="must be less than n_vertices"):
-        od.edges.edges_unique(faces, edges_sorted=edges_sorted_wp, n_vertices=tight - 1)
-    with pytest.raises(ValueError, match="must be positive"):
-        od.edges.edges_unique(faces, edges_sorted=edges_sorted_wp, n_vertices=0)
 
 
 # ---------------------------------------------------------------------------
@@ -531,34 +498,20 @@ def test_edges_length(request: pytest.FixtureRequest, mesh_name: str) -> None:
     assert np.allclose(lengths_wp.numpy(), lengths_tm, rtol=1e-5, atol=1e-5)
 
 
-def test_precomputed_edge_tables_must_be_pairs(device: str) -> None:
+def test_precomputed_edge_tables_give_the_derived_lengths(device: str) -> None:
     """
-    Not a library comparison: the shape guard on every precomputed edge-table keyword here.
+    Not a library comparison: a precomputed edge table gives the lengths derived from ``faces``.
 
-    ``_edge_lengths``' kernel reads columns 0 and 1 out of whatever rank-2 table it is handed, so a
-    wider one is accepted and its remaining columns silently ignored -- an ``(m, 3)`` *face* buffer
-    passed where an edge list belongs returned plausible lengths rather than raising. A rank-1
-    buffer already failed at launch, so only the wide case ever needed catching, and it needed
-    catching on all three keywords.
-
-    The happy path is asserted alongside so the guard cannot be satisfied by rejecting everything,
-    and on it a precomputed table must give exactly the lengths the function derives itself.
+    Bit for bit and row for row for the unique lengths, which are written at the unique edges'
+    ranks off the sort; the shape guard on these keywords is in
+    ``test_edges_rejects_invalid_arguments``.
     """
     rng = np.random.default_rng(11)
     verts_np = rng.random((30, 3), dtype=np.float32)
     faces_np = rng.integers(0, 30, size=(10, 3), dtype=np.int32)
     faces_wp = _faces_np_to_wp(faces_np, device)
     vertices_wp = points_to_warp(verts_np, device)
-    triples_wp = odt.as_array2d(wp.array(faces_np, dtype=wp.int32, ndim=2, device=device), wp.int32)
 
-    with pytest.raises(ValueError, match=r"unique_edges must have shape \(k, 2\)"):
-        od.edges.edges_unique_length(vertices_wp, faces_wp, unique_edges=triples_wp)
-    with pytest.raises(ValueError, match=r"edges_in must have shape \(k, 2\)"):
-        od.edges.edges_length(vertices_wp, faces_wp, edges_in=triples_wp)
-    with pytest.raises(ValueError, match=r"edges_sorted must have shape \(k, 2\)"):
-        od.edges.edges_unique(faces_wp, edges_sorted=triples_wp)
-
-    # Non-vacuity: the same three keywords still accept the tables they are meant to take.
     pairs_wp = od.edges.faces_to_edges(faces_wp, sorted=True)
     unique_wp, _inverse = od.edges.edges_unique(faces_wp, edges_sorted=pairs_wp)
     assert od.edges.edges_length(vertices_wp, faces_wp, edges_in=pairs_wp).size == 30
@@ -566,9 +519,6 @@ def test_precomputed_edge_tables_must_be_pairs(device: str) -> None:
         od.edges.edges_unique_length(vertices_wp, faces_wp, unique_edges=unique_wp).size
         == unique_wp.shape[0]
     )
-
-    # A precomputed table gives the lengths the function derives from ``faces`` itself, bit for bit
-    # and row for row: the derived lengths are written at the unique edges' ranks off the sort.
     unique_fresh_wp, _ = od.edges.edges_unique(faces_wp)
     assert np.array_equal(
         od.edges.edges_unique_length(vertices_wp, faces_wp, unique_edges=unique_fresh_wp).numpy(),
@@ -698,52 +648,121 @@ def test_face_edge_lengths_are_the_opposite_edges(
     assert np.allclose(lengths, lengths_igl, rtol=1e-5, atol=1e-5)
 
 
-def test_edges_unique_unvalidated_matches_the_validated_answer(device: str) -> None:
-    """
-    ``validate=False`` skips a range check, not any of the work that produces the answer.
-
-    Ordito against ordito: the oracle for the row set itself is
-    [`test_edges_unique`], and what this pins is that the keyword every internal
-    caller now passes cannot change what those callers see. It also pins the guard the default
-    still provides, on an out-of-range index that would otherwise pack into a colliding key and
-    silently merge two distinct edges.
-    """
-    mesh_tm = tm.creation.icosphere(subdivisions=2)
-    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
-    faces_np = np.asarray(mesh_tm.faces, dtype=np.int32).ravel()
-    _vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    n_vertices = int(vertices_np.shape[0])
-
-    validated, validated_inverse = od.edges.edges_unique(faces_wp, n_vertices=n_vertices)
-    unvalidated, unvalidated_inverse = od.edges.edges_unique(
-        faces_wp, n_vertices=n_vertices, validate=False
+def _two_triangles(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """Return two triangles sharing an edge: four vertices, five unique edges."""
+    vertices_np = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [1.5, 1.7, 0.4]], dtype=np.float32
     )
-    assert validated.shape[0] > 0
-    assert np.array_equal(unvalidated.numpy(), validated.numpy())
-    assert np.array_equal(unvalidated_inverse.numpy(), validated_inverse.numpy())
+    return numpy_to_warp(vertices_np, np.array([0, 1, 2, 2, 1, 3], dtype=np.int32), device)
 
-    # The default still catches a face index outside ``[0, n_vertices)``.
-    broken_np = faces_np.copy()
-    broken_np[0] = n_vertices + 5
-    broken_wp = wp.array(broken_np, dtype=wp.int32, device=device)
-    with pytest.raises(ValueError, match="must be less than n_vertices"):
-        _ = od.edges.edges_unique(broken_wp, n_vertices=n_vertices)
 
-    # And the inferred-bound path checks the half it can: a negative index.
-    negative_np = faces_np.copy()
-    negative_np[0] = -3
-    negative_wp = wp.array(negative_np, dtype=wp.int32, device=device)
-    with pytest.raises(ValueError, match="non-negative"):
-        _ = od.edges.edges_unique(negative_wp)
+def _faces_with(device: str, index: int) -> wp.array[wp.int32]:
+    """Return ``_two_triangles``' faces with the first index replaced."""
+    return wp.array([index, 1, 2, 2, 1, 3], dtype=wp.int32, device=device)
 
+
+def _wide_table(device: str) -> odt.Array2dInt32:
+    """Return an ``(m, 3)`` face table, passed where an ``(m, 2)`` edge table belongs."""
+    return odt.as_array2d(wp.array([[0, 1, 2], [2, 1, 3]], dtype=wp.int32, device=device), wp.int32)
+
+
+def _rows(device: str, rows: list[list[int]]) -> odt.Array2dInt32:
+    return odt.as_array2d(wp.array(rows, dtype=wp.int32, device=device), wp.int32)
+
+
+_INVALID_EDGE_CASES: list[tuple[str, Callable[[str], object], str]] = [
+    # A face index at or above ``n_vertices`` would pack into a colliding key and silently merge
+    # two distinct edges; the inferred-bound path checks the half it can, a negative index.
+    (
+        "faces-past-n_vertices",
+        lambda d: od.edges.edges_unique(_faces_with(d, 9), n_vertices=4),
+        "must be less than n_vertices",
+    ),
+    ("negative-face-inferred", lambda d: od.edges.edges_unique(_faces_with(d, -3)), "non-negative"),
+    (
+        "negative-face-with-n_vertices",
+        lambda d: od.edges.edges_unique(_faces_with(d, -3), n_vertices=4),
+        "non-negative",
+    ),
+    (
+        "zero-n_vertices",
+        lambda d: od.edges.edges_unique(_two_triangles(d)[1], n_vertices=0),
+        "n_vertices must be positive, got 0",
+    ),
+    (
+        "edges_sorted-past-n_vertices",
+        lambda d: od.edges.edges_unique(
+            _two_triangles(d)[1], edges_sorted=_rows(d, [[0, 3], [1, 2]]), n_vertices=3
+        ),
+        "must be less than n_vertices",
+    ),
+    (
+        "edges_sorted-zero-n_vertices",
+        lambda d: od.edges.edges_unique(
+            _two_triangles(d)[1], edges_sorted=_rows(d, [[0, 1]]), n_vertices=0
+        ),
+        "must be positive",
+    ),
+    (
+        "edges_sorted-negative",
+        lambda d: od.edges.edges_unique(
+            _two_triangles(d)[1], edges_sorted=_rows(d, [[-1, 2], [0, 1]]), n_vertices=4
+        ),
+        "non-negative, got a minimum of -1",
+    ),
     # The unique-edge mean reads its range flag in the same copy as its total.
-    vertices_wp = wp.array(vertices_np, dtype=wp.vec3, device=device)
-    with pytest.raises(ValueError, match="must be less than n_vertices"):
-        _ = od.edges.mean_unique_edge_length(vertices_wp, broken_wp)
-    with pytest.raises(ValueError, match="non-negative"):
-        _ = od.edges.mean_unique_edge_length(vertices_wp, negative_wp)
-    with pytest.raises(ValueError, match="non-negative"):
-        _ = od.edges.edges_unique(negative_wp, n_vertices=n_vertices)
+    (
+        "mean-past-n_vertices",
+        lambda d: od.edges.mean_unique_edge_length(_two_triangles(d)[0], _faces_with(d, 9)),
+        "must be less than n_vertices",
+    ),
+    (
+        "mean-negative",
+        lambda d: od.edges.mean_unique_edge_length(_two_triangles(d)[0], _faces_with(d, -3)),
+        "non-negative",
+    ),
+    (
+        "count-past-n_vertices",
+        lambda d: od.edges.unique_edge_count(_two_triangles(d)[1], 3),
+        "less than n_vertices",
+    ),
+    # ``_edge_lengths``' kernel reads columns 0 and 1 out of whatever rank-2 table it is handed,
+    # so an ``(m, 3)`` *face* buffer passed where an edge list belongs returned plausible lengths
+    # rather than raising; a rank-1 buffer already failed at launch.
+    (
+        "unique_edges-wide",
+        lambda d: od.edges.edges_unique_length(*_two_triangles(d), unique_edges=_wide_table(d)),
+        r"unique_edges must have shape \(k, 2\)",
+    ),
+    (
+        "edges_in-wide",
+        lambda d: od.edges.edges_length(*_two_triangles(d), edges_in=_wide_table(d)),
+        r"edges_in must have shape \(k, 2\)",
+    ),
+    (
+        "edges_sorted-wide",
+        lambda d: od.edges.edges_unique(_two_triangles(d)[1], edges_sorted=_wide_table(d)),
+        r"edges_sorted must have shape \(k, 2\)",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "match"),
+    [pytest.param(call, match, id=name) for name, call, match in _INVALID_EDGE_CASES],
+)
+def test_edges_rejects_invalid_arguments(
+    device: str, call: Callable[[str], object], match: str
+) -> None:
+    """
+    Not a library comparison: each documented ``ValueError``, raised with its message.
+
+    The accepting calls on the same inputs are ``test_edge_entry_points_on_their_less_travelled_
+    paths`` and ``test_precomputed_edge_tables_give_the_derived_lengths``, so no guard passes by
+    rejecting everything.
+    """
+    with pytest.raises(ValueError, match=match):
+        call(device)
 
 
 _EMPTY_CASES: dict[
@@ -778,9 +797,9 @@ def test_edge_entry_points_on_their_less_travelled_paths(device: str) -> None:
     Two triangles sharing an edge (five unique edges, all lengths distinct). The unvalidated
     ``edges_unique`` with no ``n_vertices`` packs at the pair radix rather than reducing the
     faces, and must return the validated rows exactly; ``edges_unique_length`` with an explicit
-    count and ``mean_unique_edge_length(validate=False)`` must equal trimesh's unique lengths. The
-    guards raise the documented messages, and every empty table (no faces, no supplied rows)
-    answers empty or ``0.0`` rather than launching.
+    count and ``mean_unique_edge_length(validate=False)`` must equal trimesh's unique lengths, and
+    ``unique_edge_count`` reads five. Every empty table (no faces, no supplied rows) answers
+    empty or ``0`` rather than launching.
     """
     vertices_np = np.array(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [1.5, 1.7, 0.4]], dtype=np.float32
@@ -803,13 +822,7 @@ def test_edge_entry_points_on_their_less_travelled_paths(device: str) -> None:
     mean_wp = od.edges.mean_unique_edge_length(vertices_wp, faces_wp, validate=False)
     assert np.isclose(mean_wp, lengths_tm.mean(), rtol=1e-5, atol=1e-5)
 
-    negative_rows_wp = odt.as_array2d(
-        wp.array([[-1, 2], [0, 1]], dtype=wp.int32, device=device), wp.int32
-    )
-    with pytest.raises(ValueError, match="non-negative, got a minimum of -1"):
-        od.edges.edges_unique(faces_wp, edges_sorted=negative_rows_wp, n_vertices=4)
-    with pytest.raises(ValueError, match="n_vertices must be positive, got 0"):
-        od.edges.edges_unique(faces_wp, n_vertices=0)
+    assert od.edges.unique_edge_count(faces_wp) == 5
 
     no_rows_wp = odt.empty_2d((0, 2), wp.int32, device=device)
     no_edges_wp, no_inverse_wp = od.edges.edges_unique(
@@ -823,6 +836,7 @@ def test_edge_entry_points_on_their_less_travelled_paths(device: str) -> None:
     assert od.edges.edges_unique_length(vertices_wp, no_faces_wp).shape == (0,)
     assert od.edges.face_edge_lengths(vertices_wp, no_faces_wp).shape == (0, 3)
     assert od.edges.mean_unique_edge_length(vertices_wp, no_faces_wp) == 0.0
+    assert od.edges.unique_edge_count(no_faces_wp) == 0
 
 
 def test_mean_edge_length_arrival_order_agrees_with_the_default(device: str) -> None:
