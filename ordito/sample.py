@@ -41,6 +41,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
 from ordito.array import flatnonzero
+from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
@@ -443,6 +444,10 @@ def sample_surface_poisson_disk(
     # the identity payload in their leading halves, and the upper halves are sort scratch.
     keys_buffer = _launch.empty(2 * init_count, dtype=wp.float32, device=device)
     order_buffer = _launch.empty(2 * init_count, dtype=wp.int32, device=device)
+    # The survivors' weights subtract their deleted neighbours in row order rather than by float
+    # atomics in arrival order; the CPU device runs the scatter's threads one after another, so its
+    # order is fixed already.
+    gather = is_deterministic() and device.is_cuda
 
     while alive_count > count:
         # Only a point at least as heavy as the ``excess``-th heaviest alive one may go this round,
@@ -482,7 +487,7 @@ def sample_surface_poisson_disk(
             n_max = excess
 
         _launch.launch(
-            kernel_sample.apply_deletions,
+            kernel_sample.gather_deletions if gather else kernel_sample.apply_deletions,
             dim=init_count,
             inputs=[deleted_mask, nbr_idx, nbr_dists, offsets, r_max, r_min, alpha, alive, weights],
             outputs=[max_count],

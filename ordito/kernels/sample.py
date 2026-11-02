@@ -375,6 +375,48 @@ def apply_deletions(
 
 
 @wp.kernel
+def gather_deletions(
+    deleted_mask: wp.array[wp.int32],
+    nbr_indices: wp.array[wp.int32],
+    nbr_dists: wp.array[wp.float32],
+    offsets: wp.array[wp.int32],
+    r_max: wp.float32,
+    r_min: wp.float32,
+    alpha: wp.float32,
+    alive: wp.array[wp.int32],
+    weights: wp.array[wp.float32],
+    out_max_count: wp.array[wp.int32],
+) -> None:
+    # ``apply_deletions`` under the deterministic setting: the same deletions and contributions,
+    # gathered by each survivor over its own row rather than scattered by the deleted points. Two
+    # maxima deleted in one round can share a neighbour (each is within ``r_max`` of it but not of
+    # the other), and the scatter's float atomics then subtract in arrival order, which on a large
+    # pool (lucy at 2 M samples) changed the samples run to run. The rows are symmetric (one ball
+    # query of the pool against itself, ``|p - q| == |q - p|``), so a survivor's row holds exactly
+    # the deleted points that would have scattered to it, and it subtracts them in row order. Only
+    # a survivor writes its own weight and only a deleted point its own ``alive`` slot, and the
+    # skip reads ``deleted_mask`` alone, so nothing races. The kernels differ only in who loops.
+    # Every survivor walks its row each round, which the scatter's deleted points alone did: the
+    # call takes 1.10-1.27x on CUDA (bunny 20 k, dragon 200 k, lucy 2 M samples); the CPU device
+    # keeps the scatter, whose threads run in a fixed order there.
+    i = wp.int32(wp.tid())
+    if i == 0:
+        out_max_count[0] = 0
+    if deleted_mask[i] != 0:
+        alive[i] = 0
+        return
+    if alive[i] == 0:
+        return
+    w = weights[i]
+    for k in range(offsets[i], offsets[i + 1]):
+        j = nbr_indices[k]
+        if j == i or deleted_mask[j] == 0:
+            continue
+        w -= _poisson_edge_weight(nbr_dists[k], r_max, r_min, alpha)
+    weights[i] = w
+
+
+@wp.kernel
 def emit_kept_samples(
     inclusive: wp.array[wp.int32],
     points: wp.array[wp.vec3],
