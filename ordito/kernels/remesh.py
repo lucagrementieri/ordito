@@ -15,6 +15,7 @@ from ordito.kernels.array import (
     LOOP_ROUND,
     binary_search_index_left,
     binary_search_sorted_contains,
+    bit_rank,
     divide_if_positive,
     lowbias32,
     next_row_entry,
@@ -25,6 +26,7 @@ from ordito.kernels.array import (
     scanned_slot,
     sort_segment,
     sorted_run_start,
+    store_counted_ballot_bit,
     to_vec2d,
     to_vec3,
     to_vec3d,
@@ -446,17 +448,50 @@ def hysteresis_bands(sizing: wp.float32) -> tuple[wp.float32, wp.float32]:
     return 4.0 / 5.0 * sizing, 4.0 / 3.0 * sizing
 
 
+@wp.kernel
+def mark_split_bits(
+    split_mask: wp.array[wp.bool],
+    out_words: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
+) -> None:
+    # ``split_edges``' ranks as a bitmask: bit ``e`` for a split edge, each word's population added
+    # into the zeroed counts the caller scans in place (``store_counted_ballot_bit``), a 32nd of
+    # ``array.mask_to_compact_ranks``' ``(m + 1,)`` offsets and of their scan, which on ``lucy``'s
+    # 42 M edges were 14 % of ``split_edges``' pool and its time. The refinement loops keep
+    # their offsets: their flags come off the corner sort (``emit_long_edges``), not an edge-
+    # ordered launch a ballot could follow.
+    e = wp.int32(wp.tid())
+    store_counted_ballot_bit(out_words, out_word_counts, e, split_mask[e])
+
+
+@wp.func
+def split_edge_rank(
+    offsets: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    e: wp.int32,
+) -> wp.int32:
+    # Split edge ``e``'s rank among the split edges: ``offsets[e]``, the exclusive ranks of
+    # ``array.mask_to_compact_ranks``, or with ``words`` (``mark_split_bits``, else empty) its
+    # bit's rank.
+    if words.shape[0] > 0:
+        return bit_rank(words, word_ranks, e)
+    return offsets[e]
+
+
 @wp.func
 def split_corner_midpoints(
     corner_edge: wp.array[wp.int32],
     split_mask: wp.array[wp.bool],
     offsets: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
     vertex_offset: wp.int32,
     f: wp.int32,
 ) -> wp.vec3i:
     # The new-vertex index on each of face ``f``'s three edges, ``-1`` where the edge is not split.
     # Corner ``k`` spans the edge ``corner_edge[3f + k]``, and a split edge's new vertex is appended
-    # at ``vertex_offset`` plus its rank among the split edges, which is ``offsets[e]``.
+    # at ``vertex_offset`` plus its rank among the split edges (``split_edge_rank``).
     #
     # Read per corner rather than tabulated per edge and gathered: the table would be one launch
     # over the edges plus a ``3 * n_faces`` gather, both only to hand ``emit_size_faces`` three
@@ -465,7 +500,7 @@ def split_corner_midpoints(
     for k in range(3):
         e = corner_edge[f * 3 + k]
         if split_mask[e]:
-            mv[k] = vertex_offset + offsets[e]
+            mv[k] = vertex_offset + split_edge_rank(offsets, words, word_ranks, e)
     return mv
 
 
@@ -476,6 +511,8 @@ def split_child_counts_and_midpoints(
     vertices: wp.array[wp.vec3],
     unique_edges: wp.array2d[wp.int32],
     offsets: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
     split_positions: wp.array[wp.vec3],
     out_offsets: wp.array[wp.int32],
     out_vertices: wp.array[wp.vec3],
@@ -509,7 +546,9 @@ def split_child_counts_and_midpoints(
         if t < split_positions.shape[0]:
             out_vertices[n_vertices + t] = split_positions[t]
     elif t < split_mask.shape[0] and split_mask[t]:
-        out_vertices[n_vertices + offsets[t]] = edge_midpoint(vertices, unique_edges, t)
+        out_vertices[n_vertices + split_edge_rank(offsets, words, word_ranks, t)] = edge_midpoint(
+            vertices, unique_edges, t
+        )
 
 
 @wp.func
@@ -759,6 +798,8 @@ def emit_size_faces(
     corner_edge: wp.array[wp.int32],
     split_mask: wp.array[wp.bool],
     offsets: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
     vertex_offset: wp.int32,
     vertices: wp.array[wp.vec3],
     index_in: wp.array[wp.int32],
@@ -782,7 +823,9 @@ def emit_size_faces(
         src = index_in[f]
 
     fv = wp.vec3i(faces[f * 3 + 0], faces[f * 3 + 1], faces[f * 3 + 2])
-    mv = split_corner_midpoints(corner_edge, split_mask, offsets, vertex_offset, f)
+    mv = split_corner_midpoints(
+        corner_edge, split_mask, offsets, words, word_ranks, vertex_offset, f
+    )
 
     write_split_children(fv, mv, vertices, face_offsets[f], src, out_faces, out_index)
 

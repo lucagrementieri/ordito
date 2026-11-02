@@ -6122,6 +6122,7 @@
   "counts": {
    "launch": 3,
    "alloc": 4,
+   "memset": 1,
    "d2h": 2,
    "scan": 2
   }
@@ -6130,6 +6131,7 @@
   "counts": {
    "launch": 3,
    "alloc": 4,
+   "memset": 1,
    "d2h": 2,
    "scan": 2
   }

@@ -5848,14 +5848,27 @@ def split_edges(
         else od.array.arange(n_faces, device=device)
     )
 
-    # The exclusive scan both counts the split edges and assigns each one its new vertex slot, which
-    # is the indexing ``split_positions`` is documented against.
-    offsets, n_split = od.array.mask_to_compact_ranks(split_mask)
+    # A bit a split edge, ranked: the scan both counts the split edges and assigns each one its new
+    # vertex slot (its bit's rank), which is the indexing ``split_positions`` is documented against.
+    n_words = (n_edges + 31) // 32
+    bits = _launch.zeros(2 * n_words, dtype=wp.int32, device=device)
+    words = _launch.view_as(_launch.view(bits, 0, n_words), wp.uint32)
+    word_ranks = _launch.view(bits, n_words, 2 * n_words)
+    if n_edges > 0:
+        _launch.launch(
+            kernel_remesh.mark_split_bits,
+            dim=n_edges,
+            inputs=[split_mask, words, word_ranks],
+            device=device,
+        )
+        _launch.array_scan(word_ranks, word_ranks, inclusive=True)
+    # Sizes the new vertices.
+    n_split = int(read_scalar(word_ranks)) if n_edges > 0 else 0
     new_vertices, new_faces, new_index = _split_ranked_edges(
         vertices,
         faces,
         split_mask,
-        offsets,
+        None,
         n_split,
         edges,
         corner_edge,
@@ -5863,6 +5876,7 @@ def split_edges(
         index,
         split_positions,
         return_index,
+        split_bits=(words, word_ranks),
     )
     if return_index:
         assert new_index is not None  # ``carried`` is an array whenever ``return_index`` is set
@@ -5875,7 +5889,7 @@ def _split_ranked_edges(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     split_mask: wp.array[wp.bool],
-    offsets: wp.array[wp.int32],
+    offsets: wp.array[wp.int32] | None,
     n_split: int,
     edges: odt.Array2dInt32,
     corner_edge: wp.array[wp.int32],
@@ -5883,13 +5897,15 @@ def _split_ranked_edges(
     index: wp.array[wp.int32] | None,
     split_positions: wp.array[wp.vec3] | None,
     return_index: bool,
+    *,
+    split_bits: tuple[wp.array[wp.uint32], wp.array[wp.int32]] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]: ...
 @overload
 def _split_ranked_edges(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     split_mask: wp.array[wp.bool],
-    offsets: wp.array[wp.int32],
+    offsets: wp.array[wp.int32] | None,
     n_split: int,
     edges: odt.Array2dInt32,
     corner_edge: wp.array[wp.int32],
@@ -5897,13 +5913,15 @@ def _split_ranked_edges(
     index: None,
     split_positions: wp.array[wp.vec3] | None,
     return_index: bool,
+    *,
+    split_bits: tuple[wp.array[wp.uint32], wp.array[wp.int32]] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], None]: ...
 @overload
 def _split_ranked_edges(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     split_mask: wp.array[wp.bool],
-    offsets: wp.array[wp.int32],
+    offsets: wp.array[wp.int32] | None,
     n_split: int,
     edges: odt.Array2dInt32,
     corner_edge: wp.array[wp.int32],
@@ -5911,12 +5929,14 @@ def _split_ranked_edges(
     index: wp.array[wp.int32] | None,
     split_positions: wp.array[wp.vec3] | None,
     return_index: bool,
+    *,
+    split_bits: tuple[wp.array[wp.uint32], wp.array[wp.int32]] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32] | None]: ...
 def _split_ranked_edges(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     split_mask: wp.array[wp.bool],
-    offsets: wp.array[wp.int32],
+    offsets: wp.array[wp.int32] | None,
     n_split: int,
     edges: odt.Array2dInt32,
     corner_edge: wp.array[wp.int32],
@@ -5924,15 +5944,19 @@ def _split_ranked_edges(
     index: wp.array[wp.int32] | None,
     split_positions: wp.array[wp.vec3] | None,
     return_index: bool,
+    *,
+    split_bits: tuple[wp.array[wp.uint32], wp.array[wp.int32]] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32] | None]:
     """
     Split the ranked edges: the body of [`split_edges`][ordito.remesh.split_edges] past its scan.
 
     ``offsets`` / ``n_split`` are ``mask_to_compact_ranks(split_mask)``; the two refinement loops
     already hold them for their own bookkeeping, so they hand them in rather than have the scan and
-    its count readback run twice per pass. ``carried`` is the provenance to thread through
-    (``index`` or a fresh ``arange``); the no-split path copies it when it is the caller's ``index``
-    and ``return_index`` asks for it back. The provenance is always the third element;
+    its count readback run twice per pass. ``split_bits`` is the ranked bitmask of the same split
+    edges (``kernels/remesh.mark_split_bits``), which ``split_edges`` passes with
+    ``offsets=None``. ``carried`` is the provenance to thread through (``index`` or a fresh
+    ``arange``); the no-split path copies it when it is the caller's ``index`` and
+    ``return_index`` asks for it back. The provenance is always the third element;
     ``split_edges`` drops it when not asked. ``carried=None`` threads none and returns ``None``.
     """
     device = vertices.device
@@ -5962,13 +5986,22 @@ def _split_ranked_edges(
     # and the provenance with it, rather than four fixed slots per face and a compaction of both.
     # The same launch fills the vertex buffer: the prefix copy, and the caller's positions or else
     # the midpoints.
+    words_and_ranks = (None, None) if split_bits is None else split_bits
     new_vertices = _launch.empty(n_vertices + n_split, dtype=wp.vec3, device=device)
     # ``array.counts_to_offsets``' total-terminated form, the counts written straight into its tail.
     face_offsets = _launch.empty(n_faces + 1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_remesh.split_child_counts_and_midpoints,
         dim=max(n_faces, n_edges, n_vertices),
-        inputs=[corner_edge, split_mask, vertices, edges, offsets, split_positions],
+        inputs=[
+            corner_edge,
+            split_mask,
+            vertices,
+            edges,
+            offsets,
+            *words_and_ranks,
+            split_positions,
+        ],
         outputs=[face_offsets, new_vertices],
         device=device,
     )
@@ -5989,6 +6022,7 @@ def _split_ranked_edges(
             corner_edge,
             split_mask,
             offsets,
+            *words_and_ranks,
             wp.int32(n_vertices),
             new_vertices,
             carried,

@@ -973,8 +973,9 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   - `_csr_from_coo_keys` sizes `columns` / `values` by contributions, not entries: public returns
     (`energies` sandwich products, `laplacian`'s keyed path) keep that capacity; only a caller
     that already syncs can cut it (§3.7).
-  - `remesh`'s split passes rank their edges through `array.mask_to_compact_ranks`' `(m + 1)`
-    `int32` offsets (`:5853`, and the budget trim's `_keep_longest_edges`), which every split
-    kernel reads: a bitset (`kernels/array.store_counted_ballot_bit` and `bit_slot`, as
-    `boundary`, `seams` and `selection` now flag) needs those readers reworked together.
-    Unmeasured.
+  - `remesh`'s refinement loops (`subdivide_to_size`, `refine_region_to_density`) rank their long
+    edges in `(m + 1)` `int32` offsets written off the corner sort (`emit_long_edges`, the published
+    count, `_keep_longest_edges`, `_extend_sizing_field`). `split_edges` now ranks a bitset and the
+    split kernels read either form (`kernels/remesh.split_edge_rank`); the loops' flags are not
+    written in edge order, so a bit there takes an `atomic_or` and a word count rather than the
+    ballot. On `lucy` the offsets were about a seventh of `split_edges`' time and pool.
