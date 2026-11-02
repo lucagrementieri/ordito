@@ -4891,7 +4891,7 @@ class SquaredLaplacianPreconditioner:
         (``_ChebyshevApply``).
         """
         if self._multigrid is not None:
-            return _SquaredMultigridApply(self._multigrid, self._n, n_columns, stride)
+            return _SquaredMultigridApply(self._multigrid, self._n, n_columns, stride, free)
         return _SquaredLaplacianApply(self, n_columns, stride, free)
 
     def _is_polynomial(self) -> bool:
@@ -5152,7 +5152,14 @@ class _SquaredMultigrid(NamedTuple):
 class _SquaredMultigridApply:
     """``z = C D² C r`` over the padded column blocks of one conjugate-gradient state."""
 
-    def __init__(self, owner: _SquaredMultigrid, n: int, n_columns: int, stride: int) -> None:
+    def __init__(
+        self,
+        owner: _SquaredMultigrid,
+        n: int,
+        n_columns: int,
+        stride: int,
+        free: tuple[wp.array[wp.float64], wp.array[wp.float64]] | None = None,
+    ) -> None:
         self._n = n
         self._stride = stride
         self._squares = owner.squares
@@ -5172,13 +5179,18 @@ class _SquaredMultigridApply:
         # The intermediate vectors, zeroed once: the pad between a column's ``n`` live rows and
         # ``stride`` is never written by the cycle, the scaling or the Chebyshev steps, and the
         # cycle's top level reads its right-hand side's pad as zero (``scaled_diagonal_apply``).
-        count = 5
+        # The scaling is elementwise, so it runs in place over ``middle``; the iteration's working
+        # residual is ``free[0]`` when a conjugate-gradient state lends its ``w`` (zero in its pad
+        # too, and dead while an apply runs; ``_ChebyshevApply``).
+        count = 3 if free is not None else 4
         if dofs > 0:
             vectors = _launch.zeros(count * dofs, dtype=wp.float64, device=device)
             views = [_launch.view(vectors, k * dofs, (k + 1) * dofs) for k in range(count)]
         else:
             views = [_launch.zeros(0, dtype=wp.float64, device=device) for _ in range(count)]
-        self._middle, self._scaled, self._residual, self._cycled, self._direction = views
+        self._middle, self._cycled, self._direction = views[:3]
+        self._scaled = self._middle
+        self._residual = free[0] if free is not None else views[3]
         # The iteration's coefficients, fixed by the interval and the degree: ``(momentum, step)``
         # per step, the first step's momentum unused.
         lower = _SQUARED_MULTIGRID_LOWER
