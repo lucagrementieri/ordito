@@ -6283,7 +6283,10 @@ class _MultigridCycle:
             level.stride = stride if depth == 0 else level.n
             level.dim = n_columns * level.stride
             level.matvec_dim = n_columns * level.n
-        counts = [2 if depth == 0 else 4 for depth in range(len(levels))]
+        # The residual is formed elementwise in place over the mat-vec's ``ax`` (``kernel_mg
+        # .residual``), which no launch reads again before the post-smoothing rewrites it: a level
+        # holds ``ax`` (also its residual), and below the top its right-hand side and iterate.
+        counts = [1 if depth == 0 else 3 for depth in range(len(levels))]
         total = sum(count * level.dim for count, level in zip(counts, levels, strict=True))
         vectors = _launch.empty(total, dtype=wp.float64, device=self._device)
         start = 0
@@ -6296,9 +6299,9 @@ class _MultigridCycle:
                     _launch.view(vectors, start, start + level.dim) if level.dim else vectors
                 )
                 start += level.dim
-            level.ax, level.r = views[0], views[1]
-            if count == 4:
-                level.b, level.x = views[2], views[3]
+            level.ax = level.r = views[0]
+            if count == 3:
+                level.b, level.x = views[1], views[2]
         for depth, level in enumerate(levels[:-1]):
             child = levels[depth + 1]
             level.restrict_dim = n_columns * child.n
