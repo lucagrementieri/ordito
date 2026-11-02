@@ -447,7 +447,7 @@ def sample_surface_poisson_disk(
     # The survivors' weights subtract their deleted neighbours in row order rather than by float
     # atomics in arrival order; the CPU device runs the scatter's threads one after another, so its
     # order is fixed already.
-    gather = is_deterministic() and device.is_cuda
+    gather = is_deterministic() and wp.get_device(device).is_cuda
 
     while alive_count > count:
         # Only a point at least as heavy as the ``excess``-th heaviest alive one may go this round,
