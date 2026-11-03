@@ -2179,6 +2179,22 @@
    "sort": 19
   }
  },
+ "benchmarks/test_heat.py::test_heat_geodesic_potpourri3d[sphere_small-ordito-cpu-plain]": {
+  "counts": {
+   "launch": 18,
+   "alloc": 10,
+   "readback": 6,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_geodesic_potpourri3d[sphere_small-ordito-cpu-robust]": {
+  "counts": {
+   "launch": 28,
+   "alloc": 26,
+   "readback": 8,
+   "sort": 3
+  }
+ },
  "benchmarks/test_heat.py::test_heat_signed_distance[sphere_med-ordito-cpu-band]": {
   "counts": {
    "launch": 25,

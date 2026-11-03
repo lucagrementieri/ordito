@@ -2329,6 +2329,28 @@
    "sort": 19
   }
  },
+ "benchmarks/test_heat.py::test_heat_geodesic_potpourri3d[sphere_small-ordito-cuda-plain]": {
+  "counts": {
+   "launch": 19,
+   "alloc": 10,
+   "memset": 6,
+   "d2d": 2,
+   "d2h": 5,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_heat.py::test_heat_geodesic_potpourri3d[sphere_small-ordito-cuda-robust]": {
+  "counts": {
+   "launch": 30,
+   "alloc": 26,
+   "memset": 13,
+   "d2d": 2,
+   "d2h": 7,
+   "scan": 2,
+   "sort": 3
+  }
+ },
  "benchmarks/test_heat.py::test_heat_signed_distance[sphere_med-ordito-cuda-band]": {
   "counts": {
    "launch": 28,

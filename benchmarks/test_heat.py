@@ -226,8 +226,10 @@ def _run_case(bench_case: BenchCase, *, amortized: bool = False) -> None:
     faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int32)
 
     if bench_case.kind == "potpourri3d":
-        # ``use_robust=False`` matches ordito's discretization: potpourri3d otherwise mollifies and
-        # flips to an intrinsic Delaunay triangulation first (that path arrives with the plan's P5).
+        # ``use_robust=False`` matches ordito's default discretization: potpourri3d otherwise
+        # mollifies and flips to an intrinsic Delaunay triangulation first, which
+        # ``heat_geodesic(method="potpourri3d", use_robust=True)`` reproduces
+        # (``test_heat_geodesic_potpourri3d``).
         if amortized:
             solver = pp3d.MeshHeatMethodDistanceSolver(vertices_np, faces_np, use_robust=False)
             solve_pp = lambda: solver.compute_distance(0)  # noqa: E731
@@ -299,6 +301,42 @@ def test_heat_geodesic_igl(bench_case: BenchCase) -> None:
         assert distance.shape == (bench_case.n_vertices,)
         return
     _run_case(bench_case)
+
+
+@pytest.mark.benchmark(group="heat_geodesic_potpourri3d")
+@pytest.mark.benchaxis("scale")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
+@pytest.mark.parametrize("use_robust", [False, True], ids=["plain", "robust"])
+def test_heat_geodesic_potpourri3d(bench_case: BenchCase, use_robust: bool) -> None:
+    """
+    ``heat_geodesic(method="potpourri3d")`` against ``MeshHeatMethodDistanceSolver`` itself.
+
+    The same field on both rows (``tests/test_heat.py::
+    test_heat_geodesic_potpourri3d_method_matches_potpourri3d``), setup inside the timed callable.
+    ``robust`` is potpourri3d's default: both sides build the tufted cover and flip it to intrinsic
+    Delaunay, ordito in parallel rounds of independent flips where geometry-central walks a queue.
+    """
+    if bench_case.kind == "ordito":
+        vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+        sources = _sources_wp(bench_case)
+        distance = bench_case.run(
+            lambda: od.heat.heat_geodesic(
+                vertices, faces, sources, use_robust=use_robust, method="potpourri3d"
+            ),
+            rounds=_GEODESIC_ROUNDS,
+        )
+        assert distance.shape == (bench_case.n_vertices,)
+        return
+    vertices_np = bench_case.vertices_np
+    faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int32)
+
+    def solve_pp() -> np.ndarray:
+        solver = pp3d.MeshHeatMethodDistanceSolver(vertices_np, faces_np, use_robust=use_robust)
+        return np.asarray(solver.compute_distance(0))
+
+    assert np.asarray(bench_case.run(solve_pp, rounds=_GEODESIC_ROUNDS)).shape == (
+        bench_case.n_vertices,
+    )
 
 
 _mesh_ml_cache: dict[str, mm.Mesh] = {}

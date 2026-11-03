@@ -312,11 +312,12 @@ def test_heat_geodesic_rejects_unknown_options(device: str) -> None:
     """
     Not a library comparison: ``method`` is a menu, guarded at every entry.
 
-    ``heat_geodesic`` takes two of the three names and says so; ``heat_operators`` and
+    ``heat_geodesic`` takes its three names and says so; ``heat_operators`` and
     ``Trimesh.heat_solver`` share the three-name guard; a solver off ``"potpourri3d"`` has no
-    vector operators. ``heat_operators`` also refuses ``cot_entries`` with ``use_robust``: the two
-    ask for different half-cotangent tables, and honouring one silently would let ``use_robust``
-    look honoured while the extrinsic table was used.
+    vector operators, and the ``"potpourri3d"`` solver with ``use_robust`` no rim-pinned
+    diffusion (its intrinsic cover has no rim). ``heat_operators`` also refuses ``cot_entries``
+    with ``use_robust``: the two ask for different half-cotangent tables, and honouring one
+    silently would let ``use_robust`` look honoured while the extrinsic table was used.
     """
     mesh_wp = trimesh_to_warp(tm.creation.icosphere(subdivisions=1), device)
     sources_wp = wp.array([0], dtype=wp.int32, device=device)
@@ -325,7 +326,7 @@ def test_heat_geodesic_rejects_unknown_options(device: str) -> None:
         od.heat.heat_operators(
             mesh_wp.points, mesh_wp.indices, cot_entries=cot_entries_wp, use_robust=True
         )
-    with pytest.raises(ValueError, match="method must be 'meshlab' or 'igl'"):
+    with pytest.raises(ValueError, match="method must be 'meshlab', 'igl' or 'potpourri3d'"):
         od.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, sources_wp, method="geometry")  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="method must be 'potpourri3d', 'meshlab' or 'igl'"):
         od.heat.heat_operators(mesh_wp.points, mesh_wp.indices, method="lumped")  # pyright: ignore[reportArgumentType]
@@ -337,6 +338,9 @@ def test_heat_geodesic_rejects_unknown_options(device: str) -> None:
             _ = mesh.heat_solver(method=method).vector_operators
     assert mesh.heat_solver(method="igl") is mesh.heat_solver(method="igl")
     assert mesh.heat_solver(method="igl") is not mesh.heat_solver()
+    field_wp = wp.zeros(mesh_wp.points.size, dtype=wp.float64, device=device)
+    with pytest.raises(ValueError, match="no use_robust variant at method='potpourri3d'"):
+        mesh.heat_solver(use_robust=True).diffuse_pinned(field_wp, wp.zeros_like(field_wp))
 
 
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
@@ -791,38 +795,135 @@ def test_heat_geodesic_is_bounded_by_the_graph_distance(
         assert euclidean_np <= heat_np[farthest]
 
 
-# --- the heat method's robust path (potpourri3d use_robust=True reference) -------------
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_robust_heat_geodesic_matches_potpourri3d(
-    request: pytest.FixtureRequest, mesh_name: str
+# --- method="potpourri3d": geometry-central's heat method, plain and on its intrinsic cover ---
+@pytest.mark.parametrize("use_robust", [False, True], ids=["plain", "robust"])
+@pytest.mark.parametrize("mesh_name", [*MESHES, "torus_irregular_holes", "mobius"])
+@pytest.mark.parity("heat_geodesic_potpourri3d", "potpourri3d")
+def test_heat_geodesic_potpourri3d_method_matches_potpourri3d(
+    request: pytest.FixtureRequest, mesh_name: str, use_robust: bool
 ) -> None:
     """
-    Class A on the ``use_robust=True`` path, against potpourri3d's identically-named flag.
+    Class A: ``method="potpourri3d"`` equals ``potpourri3d.MeshHeatMethodDistanceSolver``.
 
-    The two flags are *not* the same operation and the module docstring says so: geometry-
-    central's includes an intrinsic Delaunay retriangulation that ordito's deliberately omits.
-    On a clean mesh mollification changes nothing, so the comparison holds there -- which is
-    why the fixtures are clean ones and the degenerate case is a separate invariant test.
+    Per vertex, from two sources, with the flag on both sides. ``plain`` is geometry-central's
+    method on the mesh, its Poisson solve regularized by ``1e-6 I``; ``robust`` (potpourri3d's
+    default) runs it on the mollified tufted cover flipped to intrinsic Delaunay, which ordito
+    flips in parallel rounds where geometry-central walks a queue. Measured worst gap 5.7e-7 of
+    the range (``plain`` on ``sphere_irregular``, the settled solves' accuracy); ``robust`` 3.6e-11
+    to 5.0e-8. ``torus_irregular_holes`` flips rim edges, which on the cover makes faces with a
+    repeated vertex (asserted below); ``mobius`` glues a non-orientable pair front to back.
+
+    Non-vacuity: each flag's answer is not the other configuration's -- the regularization and the
+    flips each move the field past the tolerance (asserted against ordito's unregularized method and
+    potpourri3d's other flag).
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=mesh_wp.device)
-
+    vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
+    faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
+    sources_np = np.array([0, len(vertices_np) // 2], dtype=np.int32)
+    sources_wp = wp.array(sources_np, dtype=wp.int32, device=mesh_wp.device)
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
     distance_wp = od.heat.heat_geodesic(
-        mesh_wp.points, mesh_wp.indices, sources_wp, use_robust=True
-    )
+        mesh, sources_wp, use_robust=use_robust, method="potpourri3d"
+    ).numpy()
     distance_pp = np.asarray(
         pp3d.MeshHeatMethodDistanceSolver(
-            np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
-            np.ascontiguousarray(mesh_tm.faces, dtype=np.int32),
-            use_robust=True,
-        ).compute_distance(0)
+            vertices_np, faces_np, use_robust=use_robust
+        ).compute_distance_multisource(sources_np.astype(np.int64))
     )
+    other_pp = np.asarray(
+        pp3d.MeshHeatMethodDistanceSolver(
+            vertices_np, faces_np, use_robust=not use_robust
+        ).compute_distance_multisource(sources_np.astype(np.int64))
+    )
+    assert np.ptp(distance_pp) > 1.0
+    assert np.allclose(distance_wp, distance_pp, rtol=1e-5, atol=1e-5)
+    assert not np.allclose(other_pp, distance_pp, rtol=1e-5, atol=1e-5)
+    if use_robust:
+        solver = mesh.heat_solver(use_robust=True, method="potpourri3d")
+        cover = solver._cover  # pyright: ignore[reportPrivateUsage]
+        assert cover is not None
+        rows = cover[0].numpy().reshape(-1, 3)
+        repeated = np.count_nonzero(
+            (rows[:, 0] == rows[:, 1]) | (rows[:, 1] == rows[:, 2]) | (rows[:, 2] == rows[:, 0])
+        )
+        assert (repeated > 0) == (mesh_name == "torus_irregular_holes")
+    else:
+        mean_unique = float(np.mean(mesh_tm.edges_unique_length))
+        unregularized_wp = od.heat.heat_geodesic(
+            mesh_wp.points, mesh_wp.indices, sources_wp, t=mean_unique**2
+        ).numpy()
+        assert not np.allclose(unregularized_wp, distance_pp, rtol=1e-5, atol=1e-5)
 
-    # potpourri3d's robust path also flips to an intrinsic Delaunay triangulation, which this does
-    # not (see the module docstring), so the two agree to the heat method's own accuracy rather than
-    # tightly. The comparison is still worth making: it is the configuration potpourri3d ships.
-    scale = float(np.linalg.norm(mesh_tm.vertices.max(axis=0) - mesh_tm.vertices.min(axis=0)))
-    assert np.abs(distance_wp.numpy() - distance_pp).mean() < 0.1 * scale
+
+def _three_page_book(width: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Three 6 x 6 grid pages of ``width`` sharing their spine: five edges of three faces each.
+
+    A narrow page makes the faces along the spine obtuse there, so the tufted cover's flips cross
+    the non-manifold edges and the cover's gluing of their three faces decides the answer.
+    """
+    n = 6
+    index: dict[tuple[int, ...], int] = {}
+    vertices: list[list[float]] = []
+    faces: list[list[int]] = []
+
+    def vertex(page: int, i: int, j: int) -> int:
+        key = (-1, j) if i == 0 else (page, i, j)
+        if key not in index:
+            angle = 2.0 * np.pi * page / 3 + 0.3 * page
+            r = width * i / (n - 1)
+            index[key] = len(vertices)
+            vertices.append(
+                [
+                    r * np.cos(angle),
+                    r * np.sin(angle) + 0.05 * np.sin(3.0 * r) * (page - 1),
+                    j / (n - 1) + 0.03 * i * j * (page % 2),
+                ]
+            )
+        return index[key]
+
+    for page in range(3):
+        for i in range(n - 1):
+            for j in range(n - 1):
+                a, b = vertex(page, i, j), vertex(page, i + 1, j)
+                c, d = vertex(page, i + 1, j + 1), vertex(page, i, j + 1)
+                quad = [[a, b, c], [a, c, d]] if (i + j + page) % 2 else [[a, b, d], [b, c, d]]
+                faces += quad
+    vertices_np = np.array(vertices, dtype=np.float32).astype(np.float64)
+    return vertices_np, np.array(faces, dtype=np.int32)
+
+
+@pytest.mark.parametrize("use_robust", [False, True], ids=["plain", "robust"])
+def test_heat_geodesic_potpourri3d_method_matches_potpourri3d_on_a_nonmanifold_edge(
+    device: str, use_robust: bool
+) -> None:
+    """
+    Class A: three pages on one spine, where geometry-central chains the spine's faces.
+
+    ``buildIntrinsicTuftedCover`` glues an edge of three faces into one cycle of copies in its
+    halfedge order; gluing each face to its own back copy instead (a rim's gluing) measured 0.4 %
+    to 1.5 % of the range off potpourri3d here, the chain 2e-8 to 4e-8. The spine's obtuse faces
+    flip across it, so the gluing decides the answer. ``plain`` is the summed non-manifold
+    Laplacian both sides assemble.
+    """
+    vertices_np, faces_np = _three_page_book(0.15)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np.ravel(), device)
+    for source in (0, 7):
+        distance_wp = od.heat.heat_geodesic(
+            vertices_wp,
+            faces_wp,
+            wp.array([source], dtype=wp.int32, device=device),
+            use_robust=use_robust,
+            method="potpourri3d",
+        ).numpy()
+        distance_pp = np.asarray(
+            pp3d.MeshHeatMethodDistanceSolver(
+                vertices_np, faces_np, use_robust=use_robust
+            ).compute_distance(source)
+        )
+        assert np.ptp(distance_pp) > 0.5
+        assert np.allclose(distance_wp, distance_pp, rtol=1e-5, atol=1e-5)
 
 
 def test_robust_heat_geodesic_survives_a_degenerate_triangle(

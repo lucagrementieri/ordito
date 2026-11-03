@@ -644,6 +644,10 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("heat", "shift_and_orient"): frozenset({"phi"}),
     # The edge-based signed heat method's ``none`` constraint shifts its field the same way.
     ("heat", "shift_by_mean"): frozenset({"phi"}),
+    # ``heat_geodesic(method="potpourri3d", use_robust=True)``'s intrinsic cover: mollified in
+    # place, then flipped in place round by round (each commit owns the two faces it rewrites).
+    ("heat", "mollify_cover_lengths"): frozenset({"lengths"}),
+    ("heat", "cover_flip_commit"): frozenset({"faces", "lengths"}),
     ("holes", "fill_dp_span_tiled"): frozenset({"tables"}),
     # ``quadric_decimate``'s hub sums are added in place to the boundary planes the gather left in
     # each hub's quadric, so the array is read and written, not an output.

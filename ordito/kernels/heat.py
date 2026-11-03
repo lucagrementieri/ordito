@@ -17,7 +17,7 @@ import math
 
 import warp as wp
 
-from ordito.constants import TOLERANCE_ZERO_CONSTANT
+from ordito.constants import INT32_MAX_CONSTANT, TOLERANCE_ZERO_CONSTANT
 from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_PROGRESS,
@@ -508,6 +508,507 @@ def unit_gradient_divergence(
     f = wp.int32(wp.tid())
     x = face_unit_gradient(vertices, faces, normals, areas, values, f)
     accumulate_face_divergence(vertices, faces, cot_entries, f, x, out_div, out_corner_div)
+
+
+@wp.kernel
+def add_to_diagonal(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    shift: wp.float64,
+    out_values: wp.array[wp.float64],
+) -> None:
+    # ``values + shift * I`` over a CSR pattern that stores every row's diagonal, one thread per
+    # row: geometry-central's Poisson system ``L + 1e-6 I``, which
+    # ``heat_geodesic(method="potpourri3d")`` solves, formed over the Poisson operator's own
+    # pattern so it shares the heat system's analysis.
+    i = wp.int32(wp.tid())
+    for k in range(offsets[i], offsets[i + 1]):
+        value = values[k]
+        if columns[k] == i:
+            value += shift
+        out_values[k] = value
+
+
+# --------------------------------------------------------------------------------------
+# The heat method on geometry-central's intrinsic tufted cover
+#
+# ``heat_geodesic(method="potpourri3d", use_robust=True)``: what
+# ``geometrycentral::surface::HeatMethodDistanceSolver`` builds with ``useRobustLaplacian``, and
+# so ``potpourri3d.MeshHeatMethodDistanceSolver``'s default. Every face is doubled into a front
+# copy and a reversed back copy over the same vertices (Sharp & Crane 2020's tufted cover), each
+# edge glued front to front or front to back as its two faces wind it, and a rim edge glued to its
+# own face's back copy, so the cover is a closed surface. Its lengths are mollified
+# (``TOLERANCE_MOLLIFY`` of the mean edge length) and flipped to intrinsic Delaunay, and every
+# operator -- mass, Laplacian, gradient, divergence, the timestep's mean edge length -- is formed
+# on the cover from its lengths alone, in ``float64``.
+#
+# A cover halfedge is a slot ``h = 3 * f + e``: the edge of cover face ``f`` opposite its corner
+# ``e``, running from corner ``e + 1`` to corner ``e + 2``; ``lengths[f, e]`` is its length and
+# ``twin[h]`` the slot on the other side. Nothing here looks a halfedge up by its vertex labels,
+# because flipping a rim edge's quad -- a face and its own back copy -- makes an edge from the apex
+# to itself, and a face with a repeated vertex, which geometry-central allows
+# (``SurfaceMesh::flip(e, false)``) and which then contributes nothing to the Laplacian. That is
+# what separates these flips from ``kernels/remesh.intrinsic_delaunay_candidates``', which find a
+# quad's corners by label, decline a flip onto one vertex, test the angle sum in ``float32`` and
+# carry ``float32`` lengths: the two differ in the triangulation they reach.
+# --------------------------------------------------------------------------------------
+
+
+@wp.func
+def cover_back_corner(e: wp.int32) -> wp.int32:
+    # The back copy of a face ``(c0, c1, c2)`` is ``(c0, c2, c1)``: its edge opposite corner
+    # ``cover_back_corner(e)`` is the front copy's edge opposite corner ``e``, run the other way.
+    return wp.where(e == 0, wp.int32(0), 3 - e)
+
+
+@wp.func
+def cover_slot_of_halfedge(halfedge: wp.int32) -> wp.int32:
+    # The cover slot of a mesh halfedge ``3 * f + k`` (corner ``k`` to corner ``k + 1``, the
+    # ``halfedge.halfedge_mates`` convention): the front copy's edge opposite corner ``k + 2``.
+    return 3 * (halfedge // 3) + (halfedge % 3 + 2) % 3
+
+
+@wp.kernel
+def tufted_cover(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    out_cover_faces: wp.array[wp.int32],
+    out_lengths: wp.array2d[wp.float64],
+    out_twin: wp.array[wp.int32],
+    out_nonmanifold: wp.array[wp.int32],
+) -> None:
+    # One thread per mesh halfedge slot (face ``f``, the edge opposite corner ``e``): its corner
+    # in both copies, its length in ``float64`` from the widened positions (geometry-central's
+    # ``edgeLengths``, formed from the same ``double`` coordinates), and the twins of its front
+    # and back cover slots. The front copy of face ``f`` is cover face ``f``, its back copy cover
+    # face ``n_faces + f``.
+    #
+    # The gluing is ``buildIntrinsicTuftedCover``'s for an edge of one or two faces: two faces
+    # winding the edge opposite ways glue front to front and back to back, two winding it the
+    # same way (a non-orientable pair) front to back, and a rim edge glues its front slot to its
+    # own back slot. An edge of three or more faces (``mates`` codes ``-2 - lowest``) raises
+    # ``out_nonmanifold[0]`` and leaves its twins to ``glue_nonmanifold_cover_edges``.
+    h = wp.int32(wp.tid())
+    n_faces = faces.shape[0] // 3
+    f = h // 3
+    e = h % 3
+    back = 3 * (n_faces + f) + cover_back_corner(e)
+    out_cover_faces[h] = faces[h]
+    out_cover_faces[3 * (n_faces + f) + cover_back_corner(e)] = faces[h]
+    tail = faces[3 * f + (e + 1) % 3]
+    tip = faces[3 * f + (e + 2) % 3]
+    length = wp.length(wp.vec3d(vertices[tip]) - wp.vec3d(vertices[tail]))
+    out_lengths[f, e] = length
+    out_lengths[n_faces + f, cover_back_corner(e)] = length
+    mate = mates[3 * f + (e + 1) % 3]
+    if mate <= -2:
+        out_nonmanifold[0] = 1
+        return
+    if mate < 0:
+        out_twin[h] = back
+        out_twin[back] = h
+        return
+    front_mate = cover_slot_of_halfedge(mate)
+    g = front_mate // 3
+    back_mate = 3 * (n_faces + g) + cover_back_corner(front_mate % 3)
+    if faces[mate] == tail:
+        out_twin[h] = back_mate
+        out_twin[back] = front_mate
+    else:
+        out_twin[h] = front_mate
+        out_twin[back] = back_mate
+
+
+@wp.kernel
+def nonmanifold_cover_keys(
+    mates: wp.array[wp.int32],
+    sentinel: wp.uint64,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # The sort keys that line up each edge of three or more faces' halfedges in index order:
+    # ``(lowest << 32) | h`` from the ``-2 - lowest`` mate code, ``sentinel`` (past every edge's)
+    # for any other halfedge; the identity payload beside them
+    # (``array.sort_and_argsort_in_place``).
+    h = wp.int32(wp.tid())
+    mate = mates[h]
+    key = sentinel
+    if mate <= -2:
+        key = (wp.uint64(-2 - mate) << wp.uint64(32)) | wp.uint64(h)
+    out_keys[h] = key
+    out_order[h] = h
+
+
+@wp.func
+def same_cover_edge(keys: wp.array[wp.uint64], p: wp.int32, q: wp.int32) -> wp.bool:
+    # Whether sorted positions ``p`` and ``q`` hold halfedges of one edge
+    # (``nonmanifold_cover_keys``).
+    return (keys[p] >> wp.uint64(32)) == (keys[q] >> wp.uint64(32))
+
+
+@wp.func
+def cover_copy_of_halfedge(
+    faces: wp.array[wp.int32], halfedge: wp.int32, forward: wp.bool
+) -> wp.int32:
+    # The cover slot of mesh halfedge ``halfedge``'s copy that runs its edge in the direction
+    # ``forward`` names -- the halfedge's own direction (the front copy) or against it (the back).
+    n_faces = faces.shape[0] // 3
+    front = cover_slot_of_halfedge(halfedge)
+    if forward:
+        return front
+    return 3 * (n_faces + halfedge // 3) + cover_back_corner(front % 3)
+
+
+@wp.kernel
+def glue_nonmanifold_cover_edges(
+    faces: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    sentinel: wp.uint64,
+    out_twin: wp.array[wp.int32],
+) -> None:
+    # ``buildIntrinsicTuftedCover``'s chain around an edge of three or more faces, one sorted
+    # position per thread. geometry-central lists an edge's halfedges from its lowest one ``h0``
+    # along ``sibling``, each halfedge's predecessor in index order (the lowest's is the highest),
+    # and glues each face's copy running the edge against ``h0`` to the next face's copy running
+    # it along ``h0``: halfedge ``h``'s backward copy to its sibling's forward copy. Every slot is
+    # written once, by the halfedge whose copy it is or by the one whose sibling owns it. For one
+    # or two faces the rule is ``tufted_cover``'s gluing.
+    p = wp.int32(wp.tid())
+    if keys[p] == sentinel:
+        return
+    start = p
+    while start > 0 and same_cover_edge(keys, start - 1, p):
+        start -= 1
+    sibling = p - 1
+    if p == start:
+        sibling = p
+        while sibling + 1 < keys.shape[0] and same_cover_edge(keys, sibling + 1, p):
+            sibling += 1
+    h = order[p]
+    s = order[sibling]
+    tail = faces[order[start]]
+    backward = cover_copy_of_halfedge(faces, h, faces[h] != tail)
+    forward = cover_copy_of_halfedge(faces, s, faces[s] == tail)
+    out_twin[backward] = forward
+    out_twin[forward] = backward
+
+
+@wp.kernel
+def length_sum_and_violation(
+    lengths: wp.array2d[wp.float64],
+    stride: wp.int32,
+    out_sum_and_count: wp.array[wp.float64],
+    out_violation: wp.array[wp.float64],
+) -> None:
+    # The sum and count of a length table's entries (``store_sum_and_count``, a fixed-order fold)
+    # and its largest triangle-inequality violation ``c - a - b`` over every face and side, into
+    # ``out_violation[0]`` (seeded ``-inf``; a maximum is exact in any order, so one
+    # ``atomic_max`` per block commits it). Over a cover face table every cover edge has two
+    # slots, so the mean entry is the mean cover edge: geometry-central's ``meanEdgeLength``, the
+    # mollification's scale and the timestep's.
+    block, lane = wp.tid()
+    base, remaining = block_chunk_1d(lengths.shape[0], block)
+    total = wp.float64(0.0)
+    count = wp.float64(0.0)
+    worst = wp.float64(-wp.inf)
+    for k in range(lane, remaining, wp.block_dim()):
+        row = base + k
+        a = lengths[row, 0]
+        b = lengths[row, 1]
+        c = lengths[row, 2]
+        total += a + b + c
+        count += wp.float64(3.0)
+        worst = wp.max(worst, wp.max(a - b - c, wp.max(b - c - a, c - a - b)))
+    store_sum_and_count(block, lane, total, count, out_sum_and_count, stride)
+    worst = block_max(worst)
+    if lane == 0 and remaining > 0:
+        wp.atomic_max(out_violation, 0, worst)
+
+
+@wp.kernel
+def mollify_cover_lengths(
+    sum_and_count: wp.array[wp.float64],
+    violation: wp.array[wp.float64],
+    epsilon: wp.float64,
+    lengths: wp.array[wp.float64],
+) -> None:
+    # ``mollifyIntrinsic(mesh, lengths, epsilon)``: every length grows by the smallest constant
+    # that leaves each triangle inequality a margin of ``epsilon`` times the mean length, ``0``
+    # where every one already has it -- read from ``length_sum_and_violation``'s sums on the
+    # device. Over the flattened table, in place.
+    i = wp.int32(wp.tid())
+    delta = epsilon * sum_and_count[0] / sum_and_count[1]
+    lengths[i] = lengths[i] + wp.max(wp.float64(0.0), violation[0] + delta)
+
+
+@wp.func
+def heron_area_float64(a: wp.float64, b: wp.float64, c: wp.float64) -> wp.float64:
+    # ``geometrycentral::triangleArea``: Heron's formula, a negative radicand read as zero.
+    s = (a + b + c) / wp.float64(2.0)
+    return wp.sqrt(wp.max(wp.float64(0.0), s * (s - a) * (s - b) * (s - c)))
+
+
+@wp.func
+def cover_half_cotangent(
+    lengths: wp.array2d[wp.float64], f: wp.int32, e: wp.int32, area: wp.float64
+) -> wp.float64:
+    # Half the cotangent of cover face ``f``'s angle at corner ``e`` from its lengths alone,
+    # ``(b**2 + c**2 - a**2) / (8 A)``: geometry-central's ``halfedgeCotanWeights`` (and the flip
+    # test's ``halfedgeCotanWeight``) for the slot opposite that corner.
+    a = lengths[f, e]
+    b = lengths[f, (e + 1) % 3]
+    c = lengths[f, (e + 2) % 3]
+    return (b * b + c * c - a * a) / (wp.float64(8.0) * area)
+
+
+@wp.func
+def cover_slot_half_cotangent(lengths: wp.array2d[wp.float64], h: wp.int32) -> wp.float64:
+    # ``cover_half_cotangent`` of slot ``h``, the area formed for it.
+    f = h // 3
+    area = heron_area_float64(lengths[f, 0], lengths[f, 1], lengths[f, 2])
+    return cover_half_cotangent(lengths, f, h % 3, area)
+
+
+@wp.func
+def unfolded_diagonal(
+    ab: wp.float64, bc: wp.float64, ca: wp.float64, bd: wp.float64, dc: wp.float64
+) -> wp.float64:
+    # The other diagonal ``|ad|`` of the quad of triangles ``abc`` and ``dcb`` unfolded about
+    # their shared edge ``bc``: ``b`` at the origin, ``c`` on the x axis, ``a`` above and ``d``
+    # below (``layoutTriangleVertex``'s construction, as geometry-central's Euclidean flip
+    # measures it).
+    ax = (ab * ab + bc * bc - ca * ca) / (wp.float64(2.0) * bc)
+    ay = wp.sqrt(wp.max(wp.float64(0.0), ab * ab - ax * ax))
+    dx = (bd * bd + bc * bc - dc * dc) / (wp.float64(2.0) * bc)
+    dy = -wp.sqrt(wp.max(wp.float64(0.0), bd * bd - dx * dx))
+    return wp.length(wp.vec2d(ax - dx, ay - dy))
+
+
+@wp.kernel
+def cover_flip_candidates(
+    lengths: wp.array2d[wp.float64],
+    twin: wp.array[wp.int32],
+    delaunay_epsilon: wp.float64,
+    out_flip: wp.array[wp.int32],
+    out_new_length: wp.array[wp.float64],
+    out_face_claim: wp.array[wp.int32],
+    out_remap: wp.array[wp.int32],
+    out_flipped_face: wp.array[wp.int32],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # One cover slot per thread: whether its edge fails ``flipToDelaunay``'s Euclidean test -- its
+    # cotangent weight, the two half-cotangents facing it, below ``-delaunay_epsilon`` -- the
+    # length of the diagonal it would flip to, and a claim on both of its faces for the
+    # independent set ``cover_flip_commit`` takes (``atomic_min`` of the slot, so the lowest
+    # candidate on a face owns it and the lowest candidate overall always flips). The edge is
+    # tested once, by its lower slot. A flip never changes another edge's length, and the
+    # intrinsic Delaunay triangulation does not depend on the order the edges are flipped in
+    # (random serial orders reached potpourri3d's field to 1e-11 on the test fixtures), so rounds
+    # of independent sets reach geometry-central's serial queue.
+    #
+    # Also clears what the commit writes for this slot and its face, and the round's flip count,
+    # before the commit reads them.
+    h = wp.int32(wp.tid())
+    out_flip[h] = 0
+    out_remap[h] = -1
+    if h % 3 == 0:
+        out_flipped_face[h // 3] = 0
+    if h == 0:
+        out_count[0] = 0
+    t = twin[h]
+    if t <= h:
+        return
+    f0 = h // 3
+    f1 = t // 3
+    if f0 == f1:
+        return  # two edges of one face glued together (``SurfaceMesh::flip``'s degree-1 vertex)
+    weight = cover_slot_half_cotangent(lengths, h) + cover_slot_half_cotangent(lengths, t)
+    if not (weight < -delaunay_epsilon):
+        return
+    e0 = h % 3
+    e1 = t % 3
+    # Face ``f0`` is ``(a, b, c)`` from corner ``e0`` and its slot ``h`` runs ``b -> c``; face
+    # ``f1`` is ``(d, c, b)`` from corner ``e1``.
+    new_length = unfolded_diagonal(
+        lengths[f0, (e0 + 2) % 3],
+        lengths[f0, e0],
+        lengths[f0, (e0 + 1) % 3],
+        lengths[f1, (e1 + 1) % 3],
+        lengths[f1, (e1 + 2) % 3],
+    )
+    if not wp.isfinite(new_length):
+        return
+    out_flip[h] = 1
+    out_new_length[h] = new_length
+    wp.atomic_min(out_face_claim, f0, h)
+    wp.atomic_min(out_face_claim, f1, h)
+
+
+@wp.func
+def move_cover_slot(
+    twin: wp.array[wp.int32],
+    old: wp.int32,
+    new: wp.int32,
+    out_pending: wp.array[wp.int32],
+    out_remap: wp.array[wp.int32],
+):
+    # Record that the halfedge in slot ``old`` now sits in slot ``new``: its twin (still an old
+    # slot, which ``cover_flip_fixup`` remaps) and the move itself.
+    out_pending[new] = twin[old]
+    out_remap[old] = new
+
+
+@wp.kernel
+def cover_flip_commit(
+    flip: wp.array[wp.int32],
+    new_length: wp.array[wp.float64],
+    face_claim: wp.array[wp.int32],
+    twin: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    lengths: wp.array2d[wp.float64],
+    out_pending: wp.array[wp.int32],
+    out_remap: wp.array[wp.int32],
+    out_flipped_face: wp.array[wp.int32],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # Flip slot ``h``'s edge when it owns both of its faces. ``(a, b, c)`` and ``(d, c, b)``
+    # become ``(a, b, d)`` and ``(d, c, a)`` in place, written from corner 0, and every slot that
+    # moved records its old twin and its move for ``cover_flip_fixup``; the new diagonal's two
+    # slots are each other's twins already (``-2 - slot`` marks a final twin). Only this thread
+    # touches the two faces, and ``twin`` is read only, so the commits of one round never race.
+    h = wp.int32(wp.tid())
+    if flip[h] == 0:
+        return
+    t = twin[h]
+    f0 = h // 3
+    f1 = t // 3
+    if face_claim[f0] != h or face_claim[f1] != h:
+        return
+    e0 = h % 3
+    e1 = t % 3
+    a = faces[3 * f0 + e0]
+    b = faces[3 * f0 + (e0 + 1) % 3]
+    c = faces[3 * f0 + (e0 + 2) % 3]
+    d = faces[3 * f1 + e1]
+    ca = lengths[f0, (e0 + 1) % 3]
+    ab = lengths[f0, (e0 + 2) % 3]
+    bd = lengths[f1, (e1 + 1) % 3]
+    dc = lengths[f1, (e1 + 2) % 3]
+    ad = new_length[h]
+    # Old slots: ``c -> a`` opposite ``b`` and ``a -> b`` opposite ``c`` in ``f0``; ``b -> d``
+    # opposite ``c`` and ``d -> c`` opposite ``b`` in ``f1``.
+    move_cover_slot(twin, 3 * f1 + (e1 + 1) % 3, 3 * f0, out_pending, out_remap)
+    move_cover_slot(twin, 3 * f0 + (e0 + 2) % 3, 3 * f0 + 2, out_pending, out_remap)
+    move_cover_slot(twin, 3 * f0 + (e0 + 1) % 3, 3 * f1, out_pending, out_remap)
+    move_cover_slot(twin, 3 * f1 + (e1 + 2) % 3, 3 * f1 + 2, out_pending, out_remap)
+    out_pending[3 * f0 + 1] = -2 - (3 * f1 + 1)
+    out_pending[3 * f1 + 1] = -2 - (3 * f0 + 1)
+    faces[3 * f0] = a
+    faces[3 * f0 + 1] = b
+    faces[3 * f0 + 2] = d
+    faces[3 * f1] = d
+    faces[3 * f1 + 1] = c
+    faces[3 * f1 + 2] = a
+    lengths[f0, 0] = bd
+    lengths[f0, 1] = ad
+    lengths[f0, 2] = ab
+    lengths[f1, 0] = ca
+    lengths[f1, 1] = ad
+    lengths[f1, 2] = dc
+    out_flipped_face[f0] = 1
+    out_flipped_face[f1] = 1
+    wp.atomic_add(out_count, 0, 1)
+
+
+@wp.kernel
+def cover_flip_fixup(
+    twin: wp.array[wp.int32],
+    pending: wp.array[wp.int32],
+    remap: wp.array[wp.int32],
+    flipped_face: wp.array[wp.int32],
+    out_twin: wp.array[wp.int32],
+    out_face_claim: wp.array[wp.int32],
+) -> None:
+    # Every slot's twin after the round, into the other twin buffer: a slot of a flipped face
+    # takes the twin its halfedge carried in (``pending``), any other keeps its own, and either is
+    # moved to where that halfedge now sits (``remap``); a new diagonal's twin is final. Also
+    # re-arms the face claims for the next round.
+    h = wp.int32(wp.tid())
+    f = h // 3
+    other = twin[h]
+    if flipped_face[f] != 0:
+        other = pending[h]
+    if other <= -2:
+        other = -2 - other
+    elif remap[other] >= 0:
+        other = remap[other]
+    out_twin[h] = other
+    if h % 3 == 0:
+        out_face_claim[f] = INT32_MAX_CONSTANT
+
+
+@wp.kernel
+def cover_face_terms(
+    faces: wp.array[wp.int32],
+    lengths: wp.array2d[wp.float64],
+    out_cot: wp.array2d[wp.float64],
+    out_area_sums: wp.array[wp.float64],
+    out_corner_areas: wp.array2d[wp.float64],
+) -> None:
+    # ``heat_face_terms`` on the cover, from its lengths: each face's three half-cotangents into
+    # ``out_cot`` (``heat_system_rows``' table) and its area to each corner for the lumped mass
+    # (``vertexLumpedMassMatrix``, a third of each face's area per corner once the rows divide;
+    # a face's repeated vertex takes two thirds), atomically or, under the deterministic mode,
+    # stored per corner (``add_or_store_corner_triple``).
+    f = wp.int32(wp.tid())
+    area = heron_area_float64(lengths[f, 0], lengths[f, 1], lengths[f, 2])
+    out_cot[f, 0] = cover_half_cotangent(lengths, f, 0, area)
+    out_cot[f, 1] = cover_half_cotangent(lengths, f, 1, area)
+    out_cot[f, 2] = cover_half_cotangent(lengths, f, 2, area)
+    add_or_store_corner_triple(out_area_sums, out_corner_areas, faces, f, area, area, area)
+
+
+@wp.kernel
+def cover_unit_gradient_divergence(
+    faces: wp.array[wp.int32],
+    lengths: wp.array2d[wp.float64],
+    cot: wp.array2d[wp.float64],
+    values: wp.array[wp.float64],
+    out_div: wp.array[wp.float64],
+    out_corner_div: wp.array2d[wp.float64],
+) -> None:
+    # ``unit_gradient_divergence`` on a cover face, from its lengths: the face laid out in the
+    # plane (``halfedgeVectorsInFace``), the gradient's direction there (geometry-central's
+    # ``gradUDir``, the edges' perpendiculars weighted by the field, normalized as
+    # ``stable_normalize`` does -- where its squared length underflows, geometry-central's
+    # ``normalizeCutoff`` loses the direction and this keeps it), and each slot's term
+    # ``cot * dot(edge, x)`` added to its tail and taken from its tip. Positive divergence, the
+    # right-hand side of ``L phi = div x`` with geometry-central's positive-semi-definite ``L``
+    # (the Poisson operator here); the sign is the field's direction toward the sources, which
+    # the shift that follows orients either way.
+    f = wp.int32(wp.tid())
+    l0 = lengths[f, 0]
+    l1 = lengths[f, 1]
+    l2 = lengths[f, 2]
+    p0 = wp.vec2d(wp.float64(0.0), wp.float64(0.0))
+    p1 = wp.vec2d(l2, wp.float64(0.0))
+    x2 = (l2 * l2 + l1 * l1 - l0 * l0) / (wp.float64(2.0) * l2)
+    p2 = wp.vec2d(x2, wp.sqrt(wp.max(wp.float64(0.0), l1 * l1 - x2 * x2)))
+    e0 = p2 - p1
+    e1 = p0 - p2
+    e2 = p1 - p0
+    u0 = values[faces[3 * f]]
+    u1 = values[faces[3 * f + 1]]
+    u2 = values[faces[3 * f + 2]]
+    g = wp.vec2d(-e0[1], e0[0]) * u0 + wp.vec2d(-e1[1], e1[0]) * u1 + wp.vec2d(-e2[1], e2[0]) * u2
+    x = stable_normalize(g)
+    t0 = cot[f, 0] * wp.dot(e0, x)
+    t1 = cot[f, 1] * wp.dot(e1, x)
+    t2 = cot[f, 2] * wp.dot(e2, x)
+    add_or_store_corner_triple(out_div, out_corner_div, faces, f, t2 - t1, t0 - t2, t1 - t0)
 
 
 # --------------------------------------------------------------------------------------

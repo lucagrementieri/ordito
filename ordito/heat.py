@@ -9,7 +9,9 @@ it diffuses and how it reads the result back:
 
 - **Geodesic distance.** [`heat_geodesic`][ordito.heat.heat_geodesic] diffuses a scalar indicator
   from source vertices, normalizes its gradient, and integrates that unit field back with a Poisson
-  solve. The heat method of Crane et al., as MeshLab or ``igl::heat_geodesics`` discretize it.
+  solve. The heat method of Crane et al., as MeshLab, ``igl::heat_geodesics`` or geometry-central
+  (``potpourri3d.MeshHeatMethodDistanceSolver``, its intrinsic Delaunay variant included)
+  discretize it.
 - **Signed distance to curves.** [`heat_signed_distance`][ordito.heat.heat_signed_distance]
   diffuses the normals of a set of oriented curves, then solves a Poisson problem against that field
   to get a *signed* distance whose zero set is the curves (``potpourri3d.MeshSignedHeatSolver``).
@@ -64,7 +66,7 @@ from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device, run_device_loop
 from ordito.cholesky import SparseCholesky, held_nbytes
 from ordito.config import is_deterministic
-from ordito.constants import TILE_1D
+from ordito.constants import INT32_MAX, TILE_1D, TOLERANCE_MOLLIFY
 from ordito.halfedge import vertex_one_rings
 from ordito.kernels import array as kernel_array
 from ordito.kernels import heat as kernel_heat
@@ -164,6 +166,19 @@ solves."""
 HeatMethod = Literal["potpourri3d", "meshlab", "igl"]
 """The heat method discretizations ordito assembles, named for the library each reproduces."""
 
+GeodesicHeatMethod = Literal["meshlab", "igl", "potpourri3d"]
+"""The heat methods [`heat_geodesic`][ordito.heat.heat_geodesic] runs, named for the library each
+reproduces."""
+
+# geometry-central's ``HeatMethodDistanceSolver``, which ``heat_geodesic(method="potpourri3d")``
+# reproduces: the identity multiple it adds to the Poisson system ``L`` before factoring it, and
+# the cotangent weight below which ``flipToDelaunay`` flips an edge of the intrinsic cover.
+_GEOMETRY_CENTRAL_POISSON_SHIFT = 1e-6
+_GEOMETRY_CENTRAL_DELAUNAY_EPSILON = 1e-6
+# A cap on the cover's parallel flip rounds, far past any mesh measured (a few dozen rounds); a
+# serial flip queue has none, and a cycle of flips rounding back and forth would never end.
+_COVER_FLIP_ROUNDS = 4096
+
 
 def heat_operators(
     vertices: wp.array[wp.vec3],
@@ -202,7 +217,8 @@ def heat_operators(
 
         This is mollification **only**, not the intrinsic Delaunay retriangulation that
         [`robust_laplacian`][ordito.laplacian.robust_laplacian] also does by default (and that
-        ``potpourri3d``'s identically-named flag includes). The reason is structural rather than a
+        ``potpourri3d``'s identically-named flag includes; ``heat_geodesic(method="potpourri3d",
+        use_robust=True)`` runs that fully intrinsic method). The reason is structural rather than a
         shortcut: flipping changes which faces exist, and the gradient and divergence stages below
         integrate over faces. Swapping in an operator built on a different triangulation while those
         stages still use the original one is not a cheap approximation, it is inconsistent — so a
@@ -342,7 +358,7 @@ def heat_geodesic(
     *,
     t: float | None = None,
     use_robust: bool = False,
-    method: Literal["meshlab", "igl"] = "meshlab",
+    method: GeodesicHeatMethod = "meshlab",
 ) -> wp.array[wp.float64]: ...
 @overload
 def heat_geodesic(
@@ -353,7 +369,7 @@ def heat_geodesic(
     t: float | None = None,
     *,
     use_robust: bool = False,
-    method: Literal["meshlab", "igl"] = "meshlab",
+    method: GeodesicHeatMethod = "meshlab",
 ) -> wp.array[wp.float64]: ...
 def heat_geodesic(
     mesh: Trimesh | wp.array[wp.vec3] | None = None,
@@ -363,7 +379,7 @@ def heat_geodesic(
     *,
     vertices: wp.array[wp.vec3] | None = None,
     use_robust: bool = False,
-    method: Literal["meshlab", "igl"] = "meshlab",
+    method: GeodesicHeatMethod = "meshlab",
 ) -> wp.array[wp.float64]:
     """
     Approximate geodesic distance to the nearest source vertex (Crane et al. heat method).
@@ -377,7 +393,7 @@ def heat_geodesic(
     heat solve's iterate fails its accuracy check. The result is an *approximation* of the true
     geodesic distance (typically a few percent error).
 
-    The method leaves three discretization choices open, and ``method`` makes them as one of two
+    The method leaves its discretization choices open, and ``method`` makes them as one of three
     libraries does, so the field is that library's up to its direct solves' rounding:
 
     - ``"meshlab"`` (default), MeshLab's ``compute_scalar_by_heat_geodesic_distance_from_selection
@@ -386,12 +402,22 @@ def heat_geodesic(
     - ``"igl"``, ``igl::heat_geodesics``: the Voronoi lumped mass, the mean of the Neumann heat and
       the heat pinned to zero on the rim (a second heat solve on a mesh with a rim), and ``h`` the
       mean over the unique edges.
+    - ``"potpourri3d"``, geometry-central's ``HeatMethodDistanceSolver``
+      (``potpourri3d.MeshHeatMethodDistanceSolver``): MeshLab's mass and boundary, ``h`` the mean
+      over the unique edges, and a Poisson solve regularized with ``1e-6`` times the identity.
+      With ``use_robust`` the whole method runs on geometry-central's intrinsic triangulation:
+      every face doubled into a front and a back copy (the tufted cover, which also takes
+      non-manifold and non-orientable edges), the lengths mollified, the edges flipped to
+      intrinsic Delaunay, and the mass, Laplacian, gradient and divergence formed from the
+      flipped lengths. The vertices are the mesh's, so the field is per vertex as the others are.
 
-    Against exact polyhedral geodesics MeshLab's Neumann boundary is the more accurate of the two:
-    equal on a hemisphere, and 0.93 % against 1.15 % mean error (3.1 % against 4.9 % worst) of the
-    distance range on a half torus. geometry-central (``potpourri3d``) makes MeshLab's mass and
-    boundary choices but regularizes its Poisson solve with ``1e-6`` times the identity, which
-    stops the method converging on fine meshes; ordito leaves that out.
+    Against exact polyhedral geodesics MeshLab's Neumann boundary is the more accurate of the
+    first two: equal on a hemisphere, and 0.93 % against 1.15 % mean error (3.1 % against 4.9 %
+    worst) of the distance range on a half torus. geometry-central's regularization is an absolute
+    shift of an operator whose smallest non-zero eigenvalue falls with resolution, so at
+    ``"potpourri3d"`` the method stops converging on fine meshes: on a 164 k-vertex unit
+    icosphere its error against the exact great-circle distance is about 2.5 times the
+    unregularized method's.
 
     The computation runs in ``float64``: the diffused heat decays exponentially away from the
     source and would underflow ``float32``, collapsing the far field.
@@ -419,15 +445,16 @@ def heat_geodesic(
         Diffusion time. When ``None``, the squared mean edge length ``method`` names, which
         balances accuracy and smoothing.
     use_robust
-        Forwarded to [`heat_operators`][ordito.heat.heat_operators]: build the Laplacian
-        from mollified edge lengths, which is what makes the solves survive degenerate triangles.
-        On a mesh with none it changes nothing. ``potpourri3d.MeshHeatMethodDistanceSolver``'s
-        flag of the same name does more -- it also solves on an intrinsic Delaunay triangulation
-        -- and defaults to ``True``; this defaults to ``False``.
+        At ``"meshlab"`` and ``"igl"``, forwarded to
+        [`heat_operators`][ordito.heat.heat_operators]: build the Laplacian from mollified edge
+        lengths, which is what makes the solves survive degenerate triangles. On a mesh with none
+        it changes nothing. At ``"potpourri3d"``, run on geometry-central's intrinsic Delaunay
+        tufted cover (above), what ``potpourri3d.MeshHeatMethodDistanceSolver``'s flag of the same
+        name does; that flag defaults to ``True``, this to ``False``.
     method
-        ``"meshlab"`` (default) or ``"igl"``: whose discretization to reproduce (above). The two
-        part most on obtuse triangles (the mass) and from a source inside an open mesh (the
-        boundary).
+        ``"meshlab"`` (default), ``"igl"`` or ``"potpourri3d"``: whose discretization to
+        reproduce (above). They part most on obtuse triangles (the mass, and at ``"potpourri3d"``
+        with ``use_robust`` the flips) and from a source inside an open mesh (the boundary).
 
     Returns
     -------
@@ -438,12 +465,17 @@ def heat_geodesic(
     ------
     ValueError
         If an entry of ``sources`` is not a vertex index in ``[0, n_vertices)``, or ``method`` is
-        not ``"meshlab"`` or ``"igl"``.
+        not ``"meshlab"``, ``"igl"`` or ``"potpourri3d"``.
     RuntimeError
         If ``vertices``, ``faces`` and ``sources`` are not all on one device.
 
     Notes
     -----
+    At ``"potpourri3d"`` the default time is the solver's, which on a mesh more than about 400
+    mean edges across is longer than geometry-central's (see
+    [`HeatSolver`][ordito.heat.HeatSolver]): there geometry-central's far field falls below the
+    ``float64`` range and its distance is wrong far from the sources.
+
     The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
     factorization it is about to drop (the heat solve's verification failed on an ill-conditioned
     mesh), since the `Trimesh` form would have kept it for the next call. That form runs on
@@ -477,8 +509,8 @@ def heat_geodesic(
     print(f"{distance.numpy()[south]:.2f}")  # 3.09
     ```
     """
-    if method not in ("meshlab", "igl"):
-        raise ValueError(f"method must be 'meshlab' or 'igl', got {method!r}")
+    if method not in ("meshlab", "igl", "potpourri3d"):
+        raise ValueError(f"method must be 'meshlab', 'igl' or 'potpourri3d', got {method!r}")
     bound, owned, arguments = mesh_arguments(
         "heat_geodesic", mesh, vertices, faces, (sources, t), 1
     )
@@ -498,7 +530,7 @@ def _heat_geodesic(
     sources: wp.array[wp.int32],
     t: float | None,
     use_robust: bool,
-    method: Literal["meshlab", "igl"],
+    method: GeodesicHeatMethod,
 ) -> wp.array[wp.float64]:
     """``heat_geodesic`` on a `Trimesh`; ``owned`` is whether the caller passed it."""
     vertices, faces = mesh.vertices, mesh.faces
@@ -539,7 +571,14 @@ def _heat_geodesic(
         if solver.diffuse_pinned(u0, pinned):
             _launch.map(kernel_heat.average_heat, heat, pinned, out=heat)
     distance = _distance_from_heat(
-        mesh, solver, sources, heat, _corner_order(mesh, solver), scratch, means
+        mesh,
+        solver,
+        sources,
+        heat,
+        _corner_order(mesh, solver),
+        scratch,
+        means,
+        geometry_central=method == "potpourri3d",
     )
     _log_discarded("heat_geodesic", owned, solver)
     return distance
@@ -2766,6 +2805,8 @@ def _distance_from_heat(
     scratch: wp.array[wp.float64],
     means: wp.array[wp.float64],
     phi: wp.array[wp.float64] | None = None,
+    *,
+    geometry_central: bool = False,
 ) -> wp.array[wp.float64]:
     """
     ``heat_geodesic`` from the diffused heat on: the divergence, the Poisson solve and the shift.
@@ -2774,11 +2815,38 @@ def _distance_from_heat(
     `_corner_order`'s choice of how per-face terms reach the vertices; ``scratch`` is a zeroed
     ``(n_vertices,)`` buffer the divergence is summed into, ``means`` a zeroed one of
     `_source_means_size` the shift's two means are reduced into, and ``phi``, when given, a zeroed
-    one the distance is solved into (allocated here otherwise).
+    one the distance is solved into (allocated here otherwise). ``geometry_central`` solves
+    geometry-central's regularized Poisson system (``HeatSolver._solve_regularized_poisson``).
+    The divergence is formed on the solver's intrinsic cover when it has one.
     """
     vertices, faces = mesh.vertices, mesh.faces
     device = vertices.device
     n_vertices = vertices.size
+    if phi is None:
+        phi = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    cover = solver._cover  # pyright: ignore[reportPrivateUsage]
+    if cover is not None:
+        # The divergence on the cover, from its lengths (``kernels/heat.cover_unit_gradient_
+        # divergence``): positive, where the extrinsic kernel below accumulates its negation.
+        cover_faces, lengths, cot = cover
+        n_cover = cover_faces.size // 3
+        divergence, corner_divergence = _corner_outputs(
+            order, n_vertices, n_cover, wp.float64, device, sums=scratch
+        )
+        _launch.launch(
+            kernel_heat.cover_unit_gradient_divergence,
+            dim=n_cover,
+            inputs=[cover_faces, lengths, cot, heat],
+            outputs=[divergence, corner_divergence],
+            device=device,
+        )
+        _sum_corner_outputs(order, corner_divergence, divergence)
+        if geometry_central:
+            solver._solve_regularized_poisson(divergence, phi)  # pyright: ignore[reportPrivateUsage]
+        else:
+            solver.solve_poisson(divergence, phi)
+        _shift_to_sources(phi, sources, means)
+        return phi
     n_faces = faces.size // 3
     _, _, _, _, _, cot_entries, normals, areas = solver.operators
 
@@ -2800,14 +2868,29 @@ def _distance_from_heat(
     )
     _sum_corner_outputs(order, corner_divergence, neg_divergence)
 
-    if phi is None:
-        phi = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-    solver.solve_poisson(neg_divergence, phi)
+    if geometry_central:
+        # The regularized system is linear, so the negated right-hand side gives the negated
+        # field, which the shift below orients back.
+        solver._solve_regularized_poisson(neg_divergence, phi)  # pyright: ignore[reportPrivateUsage]
+    else:
+        solver.solve_poisson(neg_divergence, phi)
+    _shift_to_sources(phi, sources, means)
+    return phi
 
-    # Shift so the field's mean over the sources is zero, and orient it positive -- the
-    # ``igl::heat_geodesics_solve`` convention, which makes a single source's distance exactly
-    # zero. Both means from one reduction launch, applied by a second that reads them on the
-    # device, so nothing is read back.
+
+def _shift_to_sources(
+    phi: wp.array[wp.float64], sources: wp.array[wp.int32], means: wp.array[wp.float64]
+) -> None:
+    """
+    Shift ``phi`` in place so its mean over the sources is zero, and orient it positive.
+
+    The ``igl::heat_geodesics_solve`` convention, which makes a single source's distance exactly
+    zero, and geometry-central's shift for vertex sources. Both means from one reduction launch
+    into the zeroed ``means`` (`_source_means_size`), applied by a second that reads them on the
+    device, so nothing is read back.
+    """
+    device = phi.device
+    n_vertices = phi.size
     n_sources = sources.size
     blocks = kernel_reduce.blocks_1d(max(n_vertices, n_sources))
     _launch.launch_tiled(
@@ -2824,7 +2907,6 @@ def _distance_from_heat(
         inputs=[means, wp.int32(n_sources), wp.int32(1), phi],
         device=device,
     )
-    return phi
 
 
 def _source_means_size(n_vertices: int, n_sources: int) -> int:
@@ -2840,13 +2922,14 @@ def _corner_order(mesh: Trimesh, solver: HeatSolver) -> _CornerOrder:
     ``kernels/scatter.sum_sorted_corner_values`` adds each vertex's corner terms over in ascending
     corner order, so a call returns the same bits on every run; otherwise ``None``, which selects
     the kernels' atomic per-face scatter. Kept for ``solver``'s lifetime once built, like its
-    operators: it depends on the faces alone.
+    operators: it depends on the faces alone -- the solver's intrinsic cover's, when it has one.
     """
     if not is_deterministic():
         return None
     order = _CORNER_ORDERS.get(solver)
     if order is None:
-        faces = mesh.faces
+        cover_faces = solver._cover_faces  # pyright: ignore[reportPrivateUsage]
+        faces = mesh.faces if cover_faces is None else cover_faces
         order = _CORNER_ORDERS[solver] = od.array.sort_and_argsort(
             faces, end_bit=max(1, (mesh.vertices.size - 1).bit_length())
         )
@@ -3180,7 +3263,9 @@ class HeatSolver:
         (lengthened on a mesh too fine for it, see Notes).
     use_robust : bool
         Whether the scalar operators are built from mollified edge lengths (see
-        [`heat_operators`][ordito.heat.heat_operators]).
+        [`heat_operators`][ordito.heat.heat_operators]) -- at ``method="potpourri3d"``, on
+        geometry-central's intrinsic Delaunay tufted cover instead (see
+        [`heat_geodesic`][ordito.heat.heat_geodesic]), which has no rim-pinned diffusion.
     method : str
         Whose discretization the operators follow, ``"potpourri3d"``, ``"meshlab"`` or
         ``"igl"`` (see [`heat_operators`][ordito.heat.heat_operators]).
@@ -3192,11 +3277,12 @@ class HeatSolver:
     mesh fine enough -- about a million faces for a source on one side of a sphere -- puts its far
     side below the smallest ``float64``, and every direction and ratio computed there is lost.
     With ``t`` left ``None`` and the ``"potpourri3d"`` discretization (the vector heat method's,
-    without ``use_robust``), the time is therefore at least ``(diagonal / 400) ** 2``, the
-    bounding-box diagonal standing in for the farthest distance from a source: meshes up to about
-    400 mean edges across keep the squared mean edge length, and finer ones get the longest time
-    the field can span in range. [`heat_signed_distance`][ordito.heat.heat_signed_distance]'s
-    edge discretization does the same from its own default. The operators are then this
+    and with ``use_robust`` its intrinsic cover's), the time is therefore at least
+    ``(diagonal / 400) ** 2``, the bounding-box diagonal standing in for the farthest distance
+    from a source: meshes up to about 400 mean edges across keep the squared mean edge length,
+    and finer ones get the longest time the field can span in range.
+    [`heat_signed_distance`][ordito.heat.heat_signed_distance]'s edge discretization does the
+    same from its own default. The operators are then this
     solver's own rather than the mesh's cached
     [`heat_operators`][ordito.mesh.Trimesh.heat_operators] and
     [`vector_heat_operators`][ordito.mesh.Trimesh.vector_heat_operators], which keep the squared
@@ -3285,15 +3371,31 @@ class HeatSolver:
         # vertex systems are built at with their settle window, once resolved (``_vertex_time``).
         self._mean_length: float | None = None
         self._resolved: tuple[float | None, int] | None = None
+        # ``method="potpourri3d"`` with ``use_robust``: the intrinsic tufted cover the scalar
+        # operators are built on (``_cover_operators``) -- its faces, as soon as they exist, and
+        # then its faces, ``float64`` lengths and half-cotangents.
+        self._cover_faces: wp.array[wp.int32] | None = None
+        self._cover: tuple[wp.array[wp.int32], odt.Array2dFloat64, odt.Array2dFloat64] | None = None
+        # geometry-central's regularized Poisson system and its preconditioner, once built
+        # (``_solve_regularized_poisson``).
+        self._regularized: tuple[odt.SparseMatrix, wpl.LinearOperator] | None = None
 
     @property
     def operators(self) -> HeatOperators:
-        """[`heat_operators`][ordito.heat.heat_operators] for the mesh at ``t``."""
+        """
+        [`heat_operators`][ordito.heat.heat_operators] for the mesh at ``t``.
+
+        At ``method="potpourri3d"`` with ``use_robust``, the same systems on the mesh's intrinsic
+        tufted cover instead (see [`heat_geodesic`][ordito.heat.heat_geodesic]), whose per-face
+        tables are empty: the cover's faces are not the mesh's.
+        """
         if self._operators is None:
             mesh = self._bound_mesh()
             if self._is_default():
                 # The mesh's own cached bundle, so the property and this solver share one assembly.
                 self._operators = mesh.heat_operators
+            elif self.method == "potpourri3d" and self.use_robust:
+                self._operators = self._cover_operators()
             else:
                 self._operators = heat_operators(
                     mesh.vertices,
@@ -3349,12 +3451,13 @@ class HeatSolver:
         Return the time the vertex systems are built at and the settle window their solves take.
 
         The time is ``t``, or ``None`` for the default the device forms, ``h ** 2``; a
-        ``"potpourri3d"`` solver without ``use_robust`` raises an unset ``t`` to the
-        ``_DIFFUSION_DECAY`` floor where that is longer and scales its window to its time.
+        ``"potpourri3d"`` solver raises an unset ``t`` to the ``_DIFFUSION_DECAY`` floor where that
+        is longer than the mesh's own ``h ** 2`` (the cover's, with ``use_robust``, is within the
+        flips' change of it) and scales its window to its time.
         """
         if self._resolved is None:
             t, rounds = self.t, _HEAT_SETTLE_ROUNDS
-            if self.method == "potpourri3d" and not self.use_robust:
+            if self.method == "potpourri3d":
                 default = self._mean_edge_length() ** 2
                 if t is None:
                     floor = _diffusion_floor(self._bound_mesh())
@@ -3373,6 +3476,89 @@ class HeatSolver:
             total, count = read_values(sums, 0, 2)
             self._mean_length = float(total) / float(count) if count > 0 else 0.0
         return self._mean_length
+
+    def _cover_operators(self) -> HeatOperators:
+        """
+        Assemble the scalar operators on the mesh's intrinsic tufted cover.
+
+        geometry-central's ``HeatMethodDistanceSolver`` with ``useRobustLaplacian``: the lumped
+        mass, the cotangent Laplacian and the default time's mean edge length all formed on the
+        cover's intrinsic Delaunay triangulation (`_tufted_intrinsic_delaunay`), from its
+        ``float64`` lengths. The cover keeps every vertex, so the systems are ``n_vertices``
+        square as the extrinsic ones are, and on a closed orientable mesh, whose cover is two
+        copies of it, every entry is twice the copy's. The returned bundle's face tables (half-
+        cotangents, normals, areas) are empty: the divergence reads the cover's own, kept in
+        ``_cover``.
+        """
+        mesh = self._bound_mesh()
+        vertices = mesh.vertices
+        device = vertices.device
+        n_vertices = vertices.size
+        cover_faces, lengths = _tufted_intrinsic_delaunay(vertices, mesh.faces, mesh.halfedge_mates)
+        self._cover_faces = cover_faces
+        n_cover = cover_faces.size // 3
+        order = _corner_order(mesh, self)
+        cot = odt.empty_2d((n_cover, 3), wp.float64, device=device)
+        mass, corner_areas = _corner_outputs(order, n_vertices, n_cover, wp.float64, device)
+        _launch.launch(
+            kernel_heat.cover_face_terms,
+            dim=n_cover,
+            inputs=[cover_faces, lengths],
+            outputs=[cot, mass, corner_areas],
+            device=device,
+        )
+        _sum_corner_outputs(order, corner_areas, mass)
+        t = self._vertex_time()[0]
+        # The default time's mean edge length is the cover's, after the flips.
+        edge_sums = _cover_length_sums(lengths)[0] if t is None else None
+        _, _, offsets, columns, run_start, keys, count, sorted_slots = mesh_operator_pattern(
+            cover_faces, n_vertices
+        )
+        n_slots = columns.size
+        values = _launch.empty(3 * n_slots, dtype=wp.float64, device=device)
+        laplacian_values = _launch.view(values, 0, n_slots)
+        heat_values = _launch.view(values, n_slots, 2 * n_slots)
+        poisson_values = _launch.view(values, 2 * n_slots, 3 * n_slots)
+        _launch.launch(
+            kernel_heat.HEAT_SYSTEM_ROWS[wp.float64],
+            dim=n_vertices,
+            inputs=[
+                offsets,
+                columns,
+                run_start,
+                keys,
+                wp.int32(count),
+                sorted_slots,
+                cot,
+                wp.float64(-1.0 if t is None else -t),
+                edge_sums,
+                wp.int32(1 if t is None else 0),
+                mass,
+                wp.float64(3.0),
+                cover_faces,
+                None,
+                None,
+            ],
+            # The lumped mass over its own area sums, in place.
+            outputs=[laplacian_values, heat_values, poisson_values, mass, None],
+            device=device,
+        )
+        laplacian = od.array.bsr_from_csr(
+            n_vertices, n_vertices, offsets, columns, laplacian_values
+        )
+        heat_system = od.array.bsr_with_values(laplacian, heat_values)
+        poisson_system = od.array.bsr_with_values(laplacian, poisson_values)
+        self._cover = (cover_faces, lengths, cot)
+        return (
+            heat_system,
+            twl.jacobi_preconditioner(heat_system),
+            laplacian,
+            poisson_system,
+            twl.chebyshev_preconditioner(poisson_system),
+            odt.empty_2d((0, 3), wp.float32, device=device),
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.empty(0, dtype=wp.float32, device=device),
+        )
 
     @property
     def ill_conditioned(self) -> bool:
@@ -3590,7 +3776,50 @@ class HeatSolver:
         """
         self._require_fields("HeatSolver.solve_poisson", rhs, solution, rhs.size, 1)
         operators = self.operators
-        kept = self._kept("poisson", operators[3])
+        self._solve_poisson_system("poisson", operators[3], operators[4], rhs, solution)
+
+    def _solve_regularized_poisson(
+        self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64]
+    ) -> None:
+        """
+        Solve geometry-central's Poisson system ``(-L + 1e-6 I) phi = rhs``, kept as its own role.
+
+        ``HeatMethodDistanceSolver`` factors ``L + 1e-6 I`` for its Poisson step, and
+        ``heat_geodesic(method="potpourri3d")`` reproduces it; the identity term moves the answer by
+        far more than the solves' tolerance (most on fine meshes, where the method then stops
+        converging), so it is a system of its own beside ``solve_poisson``'s. Built over the Poisson
+        operator's pattern on first use, so its factorization shares the heat system's analysis.
+        """
+        if self._regularized is None:
+            poisson = self.operators[3]
+            values = _launch.empty_like(poisson.values)
+            _launch.launch(
+                kernel_heat.add_to_diagonal,
+                dim=poisson.nrow,
+                inputs=[
+                    poisson.offsets,
+                    poisson.columns,
+                    poisson.values,
+                    wp.float64(_GEOMETRY_CENTRAL_POISSON_SHIFT),
+                ],
+                outputs=[values],
+                device=poisson.device,
+            )
+            system = od.array.bsr_with_values(poisson, values)
+            self._regularized = (system, twl.chebyshev_preconditioner(system))
+        system, preconditioner = self._regularized
+        self._solve_poisson_system("poisson_regularized", system, preconditioner, rhs, solution)
+
+    def _solve_poisson_system(
+        self,
+        role: str,
+        matrix: odt.SparseMatrix,
+        preconditioner: wpl.LinearOperator,
+        rhs: wp.array[wp.float64],
+        solution: wp.array[wp.float64],
+    ) -> None:
+        """Solve ``role``'s Poisson-type system, factored when that pays (see `solve_poisson`)."""
+        kept = self._kept(role, matrix)
         heat = self._systems.get("heat")
         if heat is not None and heat.factorization.factorization is not None:
             # The heat system is factored (its settled iterate failed, or it is solved again), and
@@ -3604,7 +3833,7 @@ class HeatSolver:
         if kept.factorization.factorization is not None:
             kept.factorization.solve(rhs, solution, tol=_CG_TOLERANCE)
             return
-        twl.solve_spd(operators[3], rhs, solution, tol=_CG_TOLERANCE, preconditioner=operators[4])
+        twl.solve_spd(matrix, rhs, solution, tol=_CG_TOLERANCE, preconditioner=preconditioner)
 
     def diffuse_pinned(self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64]) -> bool:
         """
@@ -3638,6 +3867,11 @@ class HeatSolver:
             If ``rhs``, ``solution`` and the mesh are not all on one device.
         """
         self._require_fields("HeatSolver.diffuse_pinned", rhs, solution, rhs.shape[-1], 1)
+        if self.method == "potpourri3d" and self.use_robust:
+            raise ValueError(
+                "HeatSolver.diffuse_pinned: no use_robust variant at method='potpourri3d', whose "
+                "intrinsic cover has no rim"
+            )
         if self._pinned is None:
             self._pinned = self._pinned_system()
         if not self._pinned:
@@ -3861,7 +4095,8 @@ class HeatSolver:
         The vector system, stored over its pattern by blocks, derives its analysis from it.
         """
         heat = self._systems.get("heat")
-        return heat.factorization if role in ("poisson", "vector") and heat is not None else None
+        sharing = role in ("poisson", "poisson_regularized", "vector")
+        return heat.factorization if sharing and heat is not None else None
 
     def _require_fields(
         self, caller: str, rhs: odt.ArrayNd, solution: odt.ArrayNd, rows: int, per_vertex: int
@@ -3894,6 +4129,147 @@ class HeatSolver:
         if mesh is None:
             raise RuntimeError("HeatSolver: its Trimesh no longer exists")
         return mesh
+
+
+def _tufted_intrinsic_delaunay(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], mates: wp.array[wp.int32]
+) -> tuple[wp.array[wp.int32], odt.Array2dFloat64]:
+    """
+    Return the mesh's mollified tufted cover flipped to intrinsic Delaunay: its faces and lengths.
+
+    geometry-central's robust heat method's triangulation (``buildIntrinsicTuftedCover``,
+    ``mollifyIntrinsic(.., 1e-5)``, ``flipToDelaunay``), flipped in parallel rounds of independent
+    sets rather than a serial queue: ``(6 * n_faces,)`` cover faces over the same vertices, the
+    front copies first, and their ``(2 * n_faces, 3)`` ``float64`` lengths, column ``e`` opposite
+    corner ``e``. ``mates`` is [`halfedge_mates`][ordito.halfedge.halfedge_mates] of ``faces``.
+    See ``kernels/heat.py``'s section on the cover.
+    """
+    device = vertices.device
+    n_faces = faces.size // 3
+    n_cover = 2 * n_faces
+    n_slots = 3 * n_cover
+    cover_faces = _launch.empty(n_slots, dtype=wp.int32, device=device)
+    lengths = odt.empty_2d((n_cover, 3), wp.float64, device=device)
+    # The two twin buffers the rounds ping-pong between, the commit's moved twins and moves, the
+    # flip marks and flipped faces, and the round's flip count: every one written before it is
+    # read, one allocation.
+    tables = _launch.empty(5 * n_slots + n_cover + 1, dtype=wp.int32, device=device)
+    twin, twin_next, pending, remap, flip = (
+        _launch.view(tables, k * n_slots, (k + 1) * n_slots) for k in range(5)
+    )
+    flipped_face = _launch.view(tables, 5 * n_slots, 5 * n_slots + n_cover)
+    count = _launch.view(tables, 5 * n_slots + n_cover, 5 * n_slots + n_cover + 1)
+    face_claim = _launch.full(n_cover, INT32_MAX, dtype=wp.int32, device=device)
+    new_length = _launch.empty(n_slots, dtype=wp.float64, device=device)
+    nonmanifold = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_heat.tufted_cover,
+        dim=3 * n_faces,
+        inputs=[vertices, faces, mates],
+        outputs=[cover_faces, lengths, twin, nonmanifold],
+        device=device,
+    )
+    # Readback: an edge of three or more faces takes a sort to chain its faces, which a manifold
+    # mesh, the common case, skips.
+    if int(read_scalar(nonmanifold, 0)) != 0:
+        _glue_nonmanifold_cover_edges(faces, mates, twin)
+    # The mollification's mean length and worst triangle over the front copies, which are every
+    # cover face's lengths once; its constant is formed and added on the device.
+    sums, violation = _cover_length_sums(
+        odt.as_array2d(odt.as_dense(lengths[:n_faces]), wp.float64)
+    )
+    _launch.launch(
+        kernel_heat.mollify_cover_lengths,
+        dim=n_slots,
+        inputs=[sums, violation, wp.float64(TOLERANCE_MOLLIFY), lengths.flatten()],
+        device=device,
+    )
+    for _ in range(_COVER_FLIP_ROUNDS):
+        _launch.launch(
+            kernel_heat.cover_flip_candidates,
+            dim=n_slots,
+            inputs=[lengths, twin, wp.float64(_GEOMETRY_CENTRAL_DELAUNAY_EPSILON)],
+            outputs=[flip, new_length, face_claim, remap, flipped_face, count],
+            device=device,
+        )
+        _launch.launch(
+            kernel_heat.cover_flip_commit,
+            dim=n_slots,
+            inputs=[flip, new_length, face_claim, twin, cover_faces, lengths],
+            outputs=[pending, remap, flipped_face, count],
+            device=device,
+        )
+        _launch.launch(
+            kernel_heat.cover_flip_fixup,
+            dim=n_slots,
+            inputs=[twin, pending, remap, flipped_face],
+            outputs=[twin_next, face_claim],
+            device=device,
+        )
+        twin, twin_next = twin_next, twin
+        # Readback: the rounds run until one flips nothing.
+        if int(read_scalar(count, 0)) == 0:
+            break
+    return cover_faces, lengths
+
+
+def _glue_nonmanifold_cover_edges(
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], twin: wp.array[wp.int32]
+) -> None:
+    """
+    Write the cover twins of every edge of three or more faces into ``twin``.
+
+    Sorts those edges' halfedges by edge and index (``kernels/heat.nonmanifold_cover_keys``), the
+    order geometry-central chains their faces in, and glues each chain
+    (``kernels/heat.glue_nonmanifold_cover_edges``).
+    """
+    device = faces.device
+    n_halfedges = faces.size
+    sentinel = n_halfedges << 32
+    keys = _launch.empty(2 * n_halfedges, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * n_halfedges, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_heat.nonmanifold_cover_keys,
+        dim=n_halfedges,
+        inputs=[mates, wp.uint64(sentinel)],
+        outputs=[keys, order],
+        device=device,
+    )
+    sorted_keys, sorted_order = od.array.sort_and_argsort_in_place(
+        keys, order, end_bit=sentinel.bit_length()
+    )
+    _launch.launch(
+        kernel_heat.glue_nonmanifold_cover_edges,
+        dim=n_halfedges,
+        inputs=[faces, sorted_keys, sorted_order, wp.uint64(sentinel)],
+        outputs=[twin],
+        device=device,
+    )
+
+
+def _cover_length_sums(
+    lengths: odt.Array2dFloat64,
+) -> tuple[wp.array[wp.float64], wp.array[wp.float64]]:
+    """
+    Reduce a cover length table's sum and count, and its worst triangle-inequality violation.
+
+    ``kernels/heat.length_sum_and_violation`` into a block-partials buffer, whose first two slots
+    then hold the sum and count ``kernels/linalg.shift_factor`` squares the mean of, and a
+    one-entry buffer seeded ``-inf``.
+    """
+    device = lengths.device
+    blocks = kernel_reduce.blocks_1d(int(lengths.shape[0]))
+    sums, stride = _launch.block_partials(blocks, 2, wp.float64, device)
+    violation = _launch.full(1, -math.inf, dtype=wp.float64, device=device)
+    _launch.launch_tiled(
+        kernel_heat.length_sum_and_violation,
+        dim=[blocks],
+        inputs=[lengths, stride],
+        outputs=[sums, violation],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    return sums, violation
 
 
 def _diffusion_floor(mesh: Trimesh) -> float:

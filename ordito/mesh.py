@@ -1978,7 +1978,9 @@ class Trimesh:
             too fine for it (see [`HeatSolver`][ordito.heat.HeatSolver]).
         use_robust
             Build the scalar operators from mollified edge lengths (see
-            [`heat_operators`][ordito.heat.heat_operators]).
+            [`heat_operators`][ordito.heat.heat_operators]), or at ``method="potpourri3d"`` on
+            geometry-central's intrinsic Delaunay tufted cover (see
+            [`heat_geodesic`][ordito.heat.heat_geodesic]).
         method
             Whose discretization the operators follow (see
             [`heat_operators`][ordito.heat.heat_operators]): ``"potpourri3d"`` (default, the
