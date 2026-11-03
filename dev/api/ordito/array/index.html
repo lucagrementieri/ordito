@@ -18884,7 +18884,7 @@ copy on <code>data.device</code>.</p>
     <span class="n">target</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">int64</span> <span class="k">if</span> <span class="n">n_bits</span> <span class="o">&gt;</span> <span class="mi">32</span> <span class="k">else</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span>
 
     <span class="c1"># ``count=0`` reaches ``wp.copy`` as *"copy the whole source"* -- a documented</span>
-    <span class="c1"># back-compatibility rule in Warp 1.18 (``if count == 0: count = src.size``), so the zero that</span>
+    <span class="c1"># back-compatibility rule in Warp 1.19 (``if count == 0: count = src.size``), so the zero that</span>
     <span class="c1"># means "nothing" and the zero that means "everything" are the same argument. Into a length-0</span>
     <span class="c1"># destination that is not even a clean refusal: it raises ``TypeError: unsupported operand</span>
     <span class="c1"># type(s) for +: 'NoneType' and 'int'`` from inside the copy. Returning the empty allocation</span>
