@@ -33,13 +33,9 @@ from typing import Any
 
 import warp as wp
 
-from ordito.kernels.algorithms.multigrid import (
-    chebyshev_polynomial_column,
-    chebyshev_update,
-    csr_row_dot,
-)
+from ordito.kernels.algorithms.multigrid import chebyshev_polynomial_column, chebyshev_update
 from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, OverloadTable
-from ordito.kernels.linalg import jacobi_row
+from ordito.kernels.linalg import csr_row_dot, jacobi_row
 from ordito.kernels.reduce import block_barrier, block_chunk_1d, block_max, block_sum
 
 wp.set_module_options({"enable_backward": False})
@@ -1285,11 +1281,11 @@ def cg_one_block(
 # count at the previous check plus one -- so a zeroed state never matches a real count and the
 # first check always reads as "newly reached" -- the check at which that count last changed, and
 # the checks so far.
-SETTLE_CHANGE = wp.constant(0)
-SETTLE_REACHED = wp.constant(1)
-SETTLE_PREVIOUS = wp.constant(2)
-SETTLE_REACH_CHECK = wp.constant(3)
-SETTLE_CHECKS = wp.constant(4)
+SETTLE_CHANGE = wp.int32(0)
+SETTLE_REACHED = wp.int32(1)
+SETTLE_PREVIOUS = wp.int32(2)
+SETTLE_REACH_CHECK = wp.int32(3)
+SETTLE_CHECKS = wp.int32(4)
 SETTLE_STATE_SIZE = 5
 
 

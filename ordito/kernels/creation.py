@@ -6,18 +6,18 @@ from ordito.constants import TILE_1D, TOLERANCE_ZERO_CONSTANT
 from ordito.kernels.array import lift_vec2
 from ordito.kernels.polyline import fan_face, segment_displacement
 from ordito.kernels.predicates import orient2d
-from ordito.kernels.reduce import block_chunk, commit_block_total
+from ordito.kernels.reduce import block_chunk, last_ticket, store_block_total
 from ordito.kernels.triangles import corner_triple, face_vertices, write_corner_triple_reversible
 
 wp.set_module_options({"enable_backward": False})
 
-SQRT3 = wp.constant(wp.float32(math.sqrt(3.0)))
-PI_F = wp.constant(wp.float32(math.pi))
+SQRT3 = wp.float32(math.sqrt(3.0))
+PI_F = wp.float32(math.pi)
 
 # Below this magnitude a normal component is snapped to zero before the spherical conversion in
 # ``sweep_transforms``, matching trimesh's ``vector_to_spherical``. Without it a Z+ normal whose
 # x/y are float noise gets a meaningless azimuth.
-SPHERICAL_SNAP = wp.constant(wp.float32(1e-8))
+SPHERICAL_SNAP = wp.float32(1e-8)
 
 
 @wp.func
@@ -111,8 +111,8 @@ def grid_mesh(
 # Vertex and edge counts of the base icosahedron, which set the two block boundaries of the
 # icosphere's closed-form vertex numbering: the 12 corners, then 30 blocks of ``n - 1`` base-edge
 # points, then 20 blocks of face-interior points.
-ICOSAHEDRON_VERTICES = wp.constant(wp.int32(12))
-ICOSAHEDRON_EDGES = wp.constant(wp.int32(30))
+ICOSAHEDRON_VERTICES = wp.int32(12)
+ICOSAHEDRON_EDGES = wp.int32(30)
 
 
 @wp.func
@@ -872,6 +872,7 @@ def lift_layers_and_signed_area(
     height: wp.float32,
     matrix: wp.mat44,
     transform_mode: wp.int32,
+    stride: wp.int32,
     out_vertices: wp.array[wp.vec3],
     out_area: wp.array[wp.float32],
 ) -> None:
@@ -879,14 +880,15 @@ def lift_layers_and_signed_area(
     # triangulation's total signed area into ``out_area[0]``, whose sign decides on the device
     # whether ``extrude_faces`` re-winds the triangulation to agree with the sign of the extrusion.
     # One element per lane over ``max(n, n_faces)``: the kernel writes per vertex, so it keeps one
-    # tile per block (the fold would collapse the grid) and commits one atomic per block.
-    # Lane-strided by ``wp.block_dim()`` so the CPU device's single lane covers the chunk.
+    # tile per block (the fold would collapse the grid) and commits each block's sum through
+    # ``store_block_total`` into a ``_launch.block_partials`` buffer (one atomic per block, or the
+    # fixed-order fold with the deterministic setting on). Every block reaches the commit, which is
+    # block-collective; a block past the end sums nothing. Lane-strided by ``wp.block_dim()`` so
+    # the CPU device's single lane covers the chunk.
     chunk, lane = wp.tid()
     n = vertices.shape[0]
     n_faces = faces.shape[0] // 3
     offset, remaining = block_chunk(wp.max(n, n_faces), chunk, TILE_1D)
-    if remaining <= 0:
-        return
     area = wp.float32(0.0)
     for k in range(lane, remaining, wp.block_dim()):
         i = offset + k
@@ -895,7 +897,7 @@ def lift_layers_and_signed_area(
         if i < n_faces:
             p0, p1, p2 = face_vertices(vertices, faces, i)
             area += orient2d(p0, p1, p2)
-    commit_block_total(lane, area, out_area, 0)
+    store_block_total(chunk, lane, area, out_area, 0, stride, last_ticket)
 
 
 @wp.func
@@ -1199,28 +1201,28 @@ def random_soup_mesh(
 # ``wp.launch`` cannot take a ``wp.Function`` argument, and a kernel factory per surface would build
 # eighteen kernels for one ``Literal``.
 
-SURFACE_BOHEMIAN_DOME = wp.constant(wp.int32(0))
-SURFACE_BOUR = wp.constant(wp.int32(1))
-SURFACE_BOY = wp.constant(wp.int32(2))
-SURFACE_CATALAN_MINIMAL = wp.constant(wp.int32(3))
-SURFACE_CONIC_SPIRAL = wp.constant(wp.int32(4))
-SURFACE_CROSS_CAP = wp.constant(wp.int32(5))
-SURFACE_DINI = wp.constant(wp.int32(6))
-SURFACE_ENNEPER = wp.constant(wp.int32(7))
-SURFACE_FIGURE8_KLEIN = wp.constant(wp.int32(8))
-SURFACE_HENNEBERG = wp.constant(wp.int32(9))
-SURFACE_KLEIN = wp.constant(wp.int32(10))
-SURFACE_KUEN = wp.constant(wp.int32(11))
-SURFACE_MOBIUS = wp.constant(wp.int32(12))
-SURFACE_PLUCKER_CONOID = wp.constant(wp.int32(13))
-SURFACE_PSEUDOSPHERE = wp.constant(wp.int32(14))
-SURFACE_ROMAN = wp.constant(wp.int32(15))
-SURFACE_SUPER_ELLIPSOID = wp.constant(wp.int32(16))
-SURFACE_SUPER_TOROID = wp.constant(wp.int32(17))
+SURFACE_BOHEMIAN_DOME = wp.int32(0)
+SURFACE_BOUR = wp.int32(1)
+SURFACE_BOY = wp.int32(2)
+SURFACE_CATALAN_MINIMAL = wp.int32(3)
+SURFACE_CONIC_SPIRAL = wp.int32(4)
+SURFACE_CROSS_CAP = wp.int32(5)
+SURFACE_DINI = wp.int32(6)
+SURFACE_ENNEPER = wp.int32(7)
+SURFACE_FIGURE8_KLEIN = wp.int32(8)
+SURFACE_HENNEBERG = wp.int32(9)
+SURFACE_KLEIN = wp.int32(10)
+SURFACE_KUEN = wp.int32(11)
+SURFACE_MOBIUS = wp.int32(12)
+SURFACE_PLUCKER_CONOID = wp.int32(13)
+SURFACE_PSEUDOSPHERE = wp.int32(14)
+SURFACE_ROMAN = wp.int32(15)
+SURFACE_SUPER_ELLIPSOID = wp.int32(16)
+SURFACE_SUPER_TOROID = wp.int32(17)
 
 # ``vtkParametricKuen::DeltaV0``: the v it substitutes for the v = 0 row, where ``log(tan(v / 2))``
 # is -inf. Its default, and the value the surface "has the best appearance with".
-KUEN_DELTA_V0 = wp.constant(wp.float32(0.05))
+KUEN_DELTA_V0 = wp.float32(0.05)
 
 
 @wp.func
@@ -1429,14 +1431,14 @@ def surface_super_toroid(u: wp.float32, v: wp.float32, n1: wp.float32, n2: wp.fl
 
 # The gluing rule of one parametric surface as a warp-uniform bitmask, so one kernel serves all
 # sixteen surfaces with one launch argument rather than eight.
-GLUE_U_WRAP = wp.constant(wp.int32(1))
-GLUE_U_TWIST = wp.constant(wp.int32(2))
-GLUE_V_WRAP = wp.constant(wp.int32(4))
-GLUE_V_TWIST = wp.constant(wp.int32(8))
-GLUE_POLE_J_LO = wp.constant(wp.int32(16))
-GLUE_POLE_J_HI = wp.constant(wp.int32(32))
-GLUE_POLE_I_LO = wp.constant(wp.int32(64))
-GLUE_POLE_I_HI = wp.constant(wp.int32(128))
+GLUE_U_WRAP = wp.int32(1)
+GLUE_U_TWIST = wp.int32(2)
+GLUE_V_WRAP = wp.int32(4)
+GLUE_V_TWIST = wp.int32(8)
+GLUE_POLE_J_LO = wp.int32(16)
+GLUE_POLE_J_HI = wp.int32(32)
+GLUE_POLE_I_LO = wp.int32(64)
+GLUE_POLE_I_HI = wp.int32(128)
 
 
 @wp.func

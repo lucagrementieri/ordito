@@ -71,8 +71,17 @@ from ordito.kernels.array import (
     binary_search_index_left,
     bit_is_set,
     bit_rank,
+    cube_corner_offset,
+    native_popcount32,
+    or_counted_bit,
     popcount32,
+    popcount_below,
+    ravel_cube,
+    set_bit,
+    store_counted_ballot_bit,
+    store_counted_bit,
     trilinear_cell,
+    unravel_cube,
 )
 from ordito.kernels.reconstruction import (
     poisson_grid_index,
@@ -114,9 +123,9 @@ def octree_cell_of_point(p: wp.vec3, depth: wp.int32) -> wp.vec3i:
 
 
 @wp.func
-def cell_flat(n: wp.int32, c: wp.vec3i) -> wp.int32:
-    # Row-major index of cell ``c`` in an ``n**3`` cell lattice.
-    return (c[0] * n + c[1]) * n + c[2]
+def ancestor(c: wp.vec3i, shift: wp.int32) -> wp.vec3i:
+    # The cell ``shift`` depths above cell (or node) ``c``.
+    return wp.vec3i(c[0] >> shift, c[1] >> shift, c[2] >> shift)
 
 
 @wp.func
@@ -148,10 +157,19 @@ def splat_target(d: wp.int32, o: wp.vec3i) -> wp.vec2i:
     target = wp.vec2i(-1, 0)
     if lowest >= 0:
         if highest < n:
-            target = wp.vec2i(d, cell_flat(n, o))
+            target = wp.vec2i(d, ravel_cube(o, n))
         elif highest == n:
-            target = wp.vec2i(d + 1, cell_flat(2 * n, o))
+            target = wp.vec2i(d + 1, ravel_cube(o, 2 * n))
     return target
+
+
+@wp.func
+def splat_target_depth(d: wp.int32, depth: wp.int32, o: wp.vec3i) -> wp.int32:
+    # ``splat_target``'s depth when it is a stored one (up to ``depth``), else -1: the one decision
+    # the target marking (``octree_sample_cells``, ``mark_splat_targets``) and the normal splat
+    # (``splat_normal_at``) must share.
+    target = splat_target(d, o)
+    return wp.where(target[0] <= depth, target[0], -1)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -198,20 +216,6 @@ BRICK_CELLS = 64
 # to 10, and a constant, so a lookup reads no header word to place its pair.
 BRICK_HEAD = 32
 
-# The set bits of a word in one instruction (``popcount32``'s SWAR sequence costs the sweeps, which
-# rank eight cells a row).
-_NATIVE_POPCOUNT = """
-#if defined(__CUDA_ARCH__)
-return __popc(x);
-#else
-return __builtin_popcount(x);
-#endif
-"""
-
-
-@wp.func_native(_NATIVE_POPCOUNT)
-def native_popcount32(x: wp.uint32) -> wp.int32: ...
-
 
 @wp.func
 def brick_pair(bricks: wp.array[wp.int32], at: wp.int32) -> wp.int32:
@@ -240,8 +244,7 @@ def mark_brick(bricks: wp.array[wp.int32], at: wp.int32):
 def brick_rank_before(bricks: wp.array[wp.int32], at: wp.int32) -> wp.int32:
     # The stored bricks before table position ``at`` (``at`` up to the tables' end).
     pair = brick_pair(bricks, at)
-    below = (wp.uint32(1) << wp.uint32((at - BRICK_HEAD) & 31)) - wp.uint32(1)
-    return bricks[pair + 1] + native_popcount32(wp.uint32(bricks[pair]) & below)
+    return bricks[pair + 1] + popcount_below(wp.uint32(bricks[pair]), (at - BRICK_HEAD) & 31)
 
 
 @wp.func
@@ -251,10 +254,10 @@ def brick_number_at(bricks: wp.array[wp.int32], at: wp.int32) -> wp.int32:
     pair = brick_pair(bricks, at)
     bits = wp.uint32(bricks[pair])
     rank = bricks[pair + 1]
-    bit = wp.uint32((at - BRICK_HEAD) & 31)
-    if (bits >> bit) & wp.uint32(1) == wp.uint32(0):
+    bit = (at - BRICK_HEAD) & 31
+    if (bits >> wp.uint32(bit)) & wp.uint32(1) == wp.uint32(0):
         return -1
-    return rank + native_popcount32(bits & ((wp.uint32(1) << bit) - wp.uint32(1)))
+    return rank + popcount_below(bits, bit)
 
 
 @wp.func
@@ -273,7 +276,7 @@ def level_of(
 def brick_local(q: wp.vec3i) -> wp.int32:
     # Brick-local index of brick coordinates ``q`` (cell ``c + 1`` or node).
     mask = (1 << BRICK_SHIFT) - 1
-    return cell_flat(1 << BRICK_SHIFT, wp.vec3i(q[0] & mask, q[1] & mask, q[2] & mask))
+    return ravel_cube(wp.vec3i(q[0] & mask, q[1] & mask, q[2] & mask), 1 << BRICK_SHIFT)
 
 
 @wp.func
@@ -289,7 +292,7 @@ def cell_bricks_per_axis(d: wp.int32) -> wp.int32:
 
 @wp.func
 def cell_brick_flat(cells: wp.array[wp.int32], d: wp.int32, b: wp.vec3i) -> wp.int32:
-    return cells[d] + cell_flat(cell_bricks_per_axis(d), b)
+    return cells[d] + ravel_cube(b, cell_bricks_per_axis(d))
 
 
 @wp.func
@@ -356,8 +359,7 @@ def occupancy_word_rank(packed: wp.uint64, bit: wp.int32) -> wp.int32:
     # Rank of bit ``bit`` (0-31) of a packed occupancy word: the set bits before its word (high
     # half) and below it in the word (low half).
     word = wp.uint32(packed & wp.uint64(0xFFFFFFFF))
-    below = (wp.uint32(1) << wp.uint32(bit)) - wp.uint32(1)
-    return wp.int32(packed >> wp.uint64(32)) + native_popcount32(word & below)
+    return wp.int32(packed >> wp.uint64(32)) + popcount_below(word, bit)
 
 
 @wp.func
@@ -404,12 +406,8 @@ def stored_brick(
     local = slot - bricks[d]
     side = 1 << BRICK_SHIFT
     within = entry % BRICK_CELLS
-    return wp.vec4i(
-        d,
-        (local // (nb * nb)) * side + within // (side * side),
-        ((local // nb) % nb) * side + (within // side) % side,
-        (local % nb) * side + within % side,
-    )
+    c = unravel_cube(local, nb) * side + unravel_cube(within, side)
+    return wp.vec4i(d, c[0], c[1], c[2])
 
 
 @wp.func
@@ -435,7 +433,7 @@ def node_bricks_per_axis(d: wp.int32) -> wp.int32:
 @wp.func
 def node_brick_flat(node_bricks: wp.array[wp.int32], d: wp.int32, b: wp.vec3i) -> wp.int32:
     # Depth ``d``'s node brick ``b`` in ``node_bricks``.
-    return node_bricks[d] + cell_flat(node_bricks_per_axis(d), b)
+    return node_bricks[d] + ravel_cube(b, node_bricks_per_axis(d))
 
 
 @wp.func
@@ -507,16 +505,17 @@ def flag_bit(cells: wp.array[wp.int32], d: wp.int32, c: wp.vec3i) -> wp.int32:
 
 
 @wp.func
-def set_flag(flags: wp.array[wp.uint32], bit: wp.int32):
-    wp.atomic_or(flags, bit >> 5, wp.uint32(1) << wp.uint32(bit & 31))
-
-
-@wp.func
 def children_active(
     flags: wp.array[wp.uint32], cells: wp.array[wp.int32], d: wp.int32, c: wp.vec3i
 ) -> wp.bool:
     # Whether depth ``d`` cell ``c``'s children exist and are active (``c`` may be a padding cell).
     return bit_is_set(flags, flag_bit(cells, d, c))
+
+
+@wp.func
+def sample_cell(sample_keys: wp.array[wp.int32], depth: wp.int32, s: wp.int32) -> wp.vec3i:
+    # Sample ``s``'s finest cell, from its row-major key (``octree_point_keys``).
+    return unravel_cube(sample_keys[s], 1 << depth)
 
 
 @wp.kernel
@@ -528,21 +527,17 @@ def octree_sample_cells(
     # every cell its point count reaches, every density or normal splat target it can make
     # (whatever its depth estimate) and every density read at its position.
     s = wp.int32(wp.tid())
-    n = 1 << depth
-    k = sample_keys[s]
-    cell = wp.vec3i(k // (n * n), (k // n) % n, k % n)
+    cell = sample_cell(sample_keys, depth, s)
     for d in range(depth + 1):
         shift = depth - d
-        node = wp.vec3i(cell[0] >> shift, cell[1] >> shift, cell[2] >> shift)
+        node = ancestor(cell, shift)
         for a in range(3):
             for b in range(3):
                 for c in range(3):
                     o = node + wp.vec3i(a - 1, b - 1, c - 1)
-                    target = splat_target(d, o)
-                    if target[0] >= 0 and target[0] <= depth:
-                        mark_brick(
-                            out_marks, cell_brick_flat(out_marks, target[0], brick_of(padded(o)))
-                        )
+                    t = splat_target_depth(d, depth, o)
+                    if t >= 0:
+                        mark_brick(out_marks, cell_brick_flat(out_marks, t, brick_of(padded(o))))
 
 
 @wp.kernel
@@ -555,7 +550,7 @@ def octree_flag_cells(
     # or a flag. Run finest first.
     flat = wp.int32(wp.tid())
     nb = cell_bricks_per_axis(d)
-    b = wp.vec3i(flat // (nb * nb), (flat // nb) % nb, flat % nb)
+    b = unravel_cube(flat, nb)
     slot = marks[d] + flat
     keep = d < full_depth
     if not keep:
@@ -583,9 +578,7 @@ def octree_sample_node_bricks(
     # Mark the finest node bricks holding a sample cell's eight corners, which the iso-value
     # interpolates.
     s = wp.int32(wp.tid())
-    n = 1 << depth
-    k = sample_keys[s]
-    cell = wp.vec3i(k // (n * n), (k // n) % n, k % n)
+    cell = sample_cell(sample_keys, depth, s)
     for a in range(2):
         for b in range(2):
             for c in range(2):
@@ -609,7 +602,7 @@ def octree_node_bricks(
     # Run finest first.
     flat = wp.int32(wp.tid())
     nb = node_bricks_per_axis(d)
-    b = wp.vec3i(flat // (nb * nb), (flat // nb) % nb, flat % nb)
+    b = unravel_cube(flat, nb)
     slot = marks[d] + flat
     keep = brick_is_marked(marks, slot) or d <= full_depth
     if not keep:
@@ -654,7 +647,7 @@ def octree_carried_cells(
     # 2``). Run finest first, from the numbered node bricks.
     flat = wp.int32(wp.tid())
     nb = cell_bricks_per_axis(d)
-    b = wp.vec3i(flat // (nb * nb), (flat // nb) % nb, flat % nb)
+    b = unravel_cube(flat, nb)
     slot = marks[d] + flat
     keep = wp.bool(False)
     nn = node_bricks_per_axis(d + 1)
@@ -815,7 +808,7 @@ def octree_point_keys(
     key = wp.int32(1 << (3 * depth))
     unit = wp.vec3(0.0, 0.0, 0.0)
     if length > 0.0 and wp.isfinite(length):
-        key = cell_flat(1 << depth, octree_cell_of_point(u, depth))
+        key = ravel_cube(octree_cell_of_point(u, depth), 1 << depth)
         unit = n / length
     out_keys[i] = key
     out_positions[i] = u
@@ -828,16 +821,18 @@ def octree_occupied_cells(
     depth: wp.int32,
     cells: wp.array[wp.int32],
     out_occupied: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
 ) -> None:
-    # Mark a sample's cell and every ancestor of it: the cells with a point count.
+    # Mark a sample's cell and every ancestor of it: the cells with a point count. Each word's new
+    # bits are counted into ``out_word_counts`` (zeroed) for the caller to scan in place into the
+    # ranks; a coarse ancestor is marked by many samples, so the set is ``or_counted_bit``'s, which
+    # counts a bit once however often it is set.
     s = wp.int32(wp.tid())
-    n = 1 << depth
-    k = sample_keys[s]
-    cell = wp.vec3i(k // (n * n), (k // n) % n, k % n)
+    cell = sample_cell(sample_keys, depth, s)
     for d in range(depth + 1):
         shift = depth - d
-        entry = cell_entry(cells, d, wp.vec3i(cell[0] >> shift, cell[1] >> shift, cell[2] >> shift))
-        wp.atomic_or(out_occupied, entry >> 5, wp.uint32(1) << wp.uint32(entry & 31))
+        entry = cell_entry(cells, d, ancestor(cell, shift))
+        or_counted_bit(out_occupied, out_word_counts, entry, True)
 
 
 @wp.kernel
@@ -864,9 +859,7 @@ def octree_sample_aggregates(
 ) -> None:
     # A finest cell's point count and summed position: its sample's.
     s = wp.int32(wp.tid())
-    n = 1 << depth
-    k = sample_keys[s]
-    cell = wp.vec3i(k // (n * n), (k // n) % n, k % n)
+    cell = sample_cell(sample_keys, depth, s)
     r = occupied_rank(occupancy, cells, depth, cell)
     out_counts[r] = wp.float32(sample_counts[s])
     out_position_sums[r] = sample_positions[s]
@@ -894,7 +887,7 @@ def octree_child_aggregates(
     total = wp.float32(0.0)
     position = wp.vec3(0.0, 0.0, 0.0)
     for child in range(8):
-        cc = 2 * c + wp.vec3i(child >> 2, (child >> 1) & 1, child & 1)
+        cc = 2 * c + cube_corner_offset(child)
         r = occupied_rank(occupancy, cells, d + 1, cc)
         if r >= 0:
             total += counts[r]
@@ -929,7 +922,7 @@ def octree_density_splat(
     child_depth = at[0]
     d = child_depth - 1
     child = wp.vec3i(at[1], at[2], at[3])
-    parent = wp.vec3i(child[0] >> 1, child[1] >> 1, child[2] >> 1)
+    parent = ancestor(child, 1)
     p = position_sums[r] / count
     scale = wp.float32(1 << d)
     vx = quadratic_bspline_values(p[0] * scale - wp.float32(parent[0]))
@@ -1000,17 +993,22 @@ def mark_splat_targets(
     cell: wp.vec3i,
     cells: wp.array[wp.int32],
     out_targets: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
 ):
-    # ``splat_normal_at``'s 27 targets at depth ``d``, one bit each in ``out_targets``.
-    node = wp.vec3i(cell[0] >> (depth - d), cell[1] >> (depth - d), cell[2] >> (depth - d))
+    # ``splat_normal_at``'s 27 targets at depth ``d``, one bit each in ``out_targets``, each word's
+    # new bits counted into ``out_word_counts`` (``or_counted_bit``: neighbouring samples share
+    # targets). Every lane takes the set, a target off the stored depths with ``bit`` false, so
+    # that a warp's lanes stay converged.
+    node = ancestor(cell, depth - d)
     for a in range(3):
         for b in range(3):
             for c in range(3):
                 o = node + wp.vec3i(a - 1, b - 1, c - 1)
-                target = splat_target(d, o)
-                if target[0] >= 0 and target[0] <= depth:
-                    entry = cell_entry(cells, target[0], o)
-                    wp.atomic_or(out_targets, entry >> 5, wp.uint32(1) << wp.uint32(entry & 31))
+                t = splat_target_depth(d, depth, o)
+                entry = wp.int32(0)
+                if t >= 0:
+                    entry = cell_entry(cells, t, o)
+                or_counted_bit(out_targets, out_word_counts, entry, t >= 0)
 
 
 @wp.func
@@ -1032,7 +1030,7 @@ def splat_normal_at(
     # integer offset at whichever depth ``splat_target`` puts it, in a brick
     # ``octree_sample_cells`` marked. With ``targets`` (one bit a stored cell, the cells
     # ``octree_splat_targets`` marked), a cell's sum is the target's rank among them.
-    node = wp.vec3i(cell[0] >> (depth - d), cell[1] >> (depth - d), cell[2] >> (depth - d))
+    node = ancestor(cell, depth - d)
     scale = wp.float32(1 << d)
     vx = quadratic_bspline_values(p[0] * scale - wp.float32(node[0]))
     vy = quadratic_bspline_values(p[1] * scale - wp.float32(node[1]))
@@ -1041,9 +1039,9 @@ def splat_normal_at(
         for b in range(3):
             for c in range(3):
                 o = node + wp.vec3i(a - 1, b - 1, c - 1)
-                target = splat_target(d, o)
-                if target[0] >= 0 and target[0] <= depth:
-                    entry = cell_entry(cells, target[0], o)
+                t = splat_target_depth(d, depth, o)
+                if t >= 0:
+                    entry = cell_entry(cells, t, o)
                     if targets.shape[0] > 0:
                         entry = bit_rank(targets, target_ranks, entry)
                     scatter_add_vector(out_normals, sums, entry, amount * (vx[a] * vy[b] * vz[c]))
@@ -1077,9 +1075,7 @@ def octree_normal_splat(
     estimate = depths[s]
     weight = wp.pow(wp.float32(4.0), -estimate)
     top, fraction = normal_splat_depths(estimate, depth)
-    n = 1 << depth
-    k = sample_keys[s]
-    cell = wp.vec3i(k // (n * n), (k // n) % n, k % n)
+    cell = sample_cell(sample_keys, depth, s)
     base = (count * weight / length) * normal_sum
     splat_normal_at(
         top,
@@ -1116,19 +1112,19 @@ def octree_splat_targets(
     cells: wp.array[wp.int32],
     depth: wp.int32,
     out_targets: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
 ) -> None:
     # The stored cells ``octree_normal_splat`` adds to, one bit each: an exact group sum need only
-    # hold those (its other cells stay zero).
+    # hold those (its other cells stay zero). Each word's new bits are counted into
+    # ``out_word_counts`` (zeroed) for the caller to scan in place into the ranks.
     s = wp.int32(wp.tid())
     if wp.length(sample_normals[s]) <= 0.0:
         return
     top, fraction = normal_splat_depths(depths[s], depth)
-    n = 1 << depth
-    k = sample_keys[s]
-    cell = wp.vec3i(k // (n * n), (k // n) % n, k % n)
-    mark_splat_targets(top, depth, cell, cells, out_targets)
+    cell = sample_cell(sample_keys, depth, s)
+    mark_splat_targets(top, depth, cell, cells, out_targets, out_word_counts)
     if normal_splat_split(fraction):
-        mark_splat_targets(top - 1, depth, cell, cells, out_targets)
+        mark_splat_targets(top - 1, depth, cell, cells, out_targets, out_word_counts)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1148,7 +1144,7 @@ def node_active(
     # when its parent's children are.
     if d <= full_depth:
         return True
-    return children_active(flags, cells, d - 1, wp.vec3i(o[0] >> 1, o[1] >> 1, o[2] >> 1))
+    return children_active(flags, cells, d - 1, ancestor(o, 1))
 
 
 @wp.kernel
@@ -1176,7 +1172,7 @@ def octree_clip_flags(
         active = 1
     elif octree_inside(d, c):
         for child in range(8):
-            cc = 2 * c + wp.vec3i(child >> 2, (child >> 1) & 1, child & 1)
+            cc = 2 * c + cube_corner_offset(child)
             v = own_normal(compact, targets, target_ranks, cell_entry(cells, d + 1, cc))
             if v[0] != 0.0 or v[1] != 0.0 or v[2] != 0.0:
                 active = 1
@@ -1184,7 +1180,7 @@ def octree_clip_flags(
                 if children_active(flags, cells, d + 1, cc):
                     active = 1
     if active != 0:
-        set_flag(flags, flag_bit(cells, d, c))
+        set_bit(flags, flag_bit(cells, d, c))
 
 
 @wp.kernel
@@ -1213,7 +1209,7 @@ def octree_dilate_flags(
                 if q[0] >= -1 and q[1] >= -1 and q[2] >= -1:
                     if q[0] <= fine and q[1] <= fine and q[2] <= fine:
                         if children_active(flags, cells, d, q):
-                            set_flag(flags, own)
+                            set_bit(flags, own)
                             return
 
 
@@ -1299,16 +1295,14 @@ def octree_axis_integrals(depth: wp.int32, out_integrals: wp.array[wp.vec2d]) ->
 
 
 @wp.func
-def window_bricks(
-    cells: wp.array[wp.int32], d: wp.int32, first: wp.vec3i
+def brick_window(
+    bricks: wp.array[wp.int32], table: wp.int32, nb: wp.int32, lo: wp.vec3i, check_low: wp.bool
 ) -> tuple[wp.vec4i, wp.vec4i]:
-    # The numbers of the at most eight bricks holding depth ``d``'s cells ``first + [0, 4)**3``
-    # (-1 for none): four consecutive cells span two bricks an axis at most, from ``lo``. The
-    # brick ``lo + (x, y, z)`` is entry ``2 y + z`` of the first vector for ``x = 0``, else of the
-    # second. Read once a window, so a cell's coefficient costs no brick table read.
-    lo = brick_of(padded(first))
-    nb = cell_bricks_per_axis(d)
-    table = cells[d]
+    # The numbers of the bricks ``lo + (x, y, z)``, ``x, y, z`` in ``{0, 1}``, of the brick table
+    # starting at ``table`` with ``nb`` bricks an axis (-1 for none): ``2 y + z`` of the first
+    # vector for ``x = 0``, else of the second. The shared body of ``window_bricks``,
+    # ``node_window_bricks`` and ``cell_window_bricks``, which differ by the table and by
+    # ``check_low`` (a literal at each caller): ``cell_window_bricks``' ``lo`` is never negative.
     low = wp.vec4i(-1, -1, -1, -1)
     high = wp.vec4i(-1, -1, -1, -1)
     for x in range(2):
@@ -1316,13 +1310,27 @@ def window_bricks(
             for z in range(2):
                 b = lo + wp.vec3i(x, y, z)
                 brick = wp.int32(-1)
-                if wp.min(wp.min(b[0], b[1]), b[2]) >= 0 and wp.max(wp.max(b[0], b[1]), b[2]) < nb:
-                    brick = brick_number_at(cells, table + cell_flat(nb, b))
+                inside = wp.max(wp.max(b[0], b[1]), b[2]) < nb
+                if check_low:
+                    inside = inside and wp.min(wp.min(b[0], b[1]), b[2]) >= 0
+                if inside:
+                    brick = brick_number_at(bricks, table + ravel_cube(b, nb))
                 if x == 0:
                     low[2 * y + z] = brick
                 else:
                     high[2 * y + z] = brick
     return low, high
+
+
+@wp.func
+def window_bricks(
+    cells: wp.array[wp.int32], d: wp.int32, first: wp.vec3i
+) -> tuple[wp.vec4i, wp.vec4i]:
+    # The numbers of the at most eight bricks holding depth ``d``'s cells ``first + [0, 4)**3``
+    # (-1 for none): four consecutive cells span two bricks an axis at most, from ``lo``. The
+    # brick ``lo + (x, y, z)`` is entry ``2 y + z`` of the first vector for ``x = 0``, else of the
+    # second. Read once a window, so a cell's coefficient costs no brick table read.
+    return brick_window(cells, cells[d], cell_bricks_per_axis(d), brick_of(padded(first)), True)
 
 
 @wp.func
@@ -1378,7 +1386,7 @@ def divergence_term(
     # overlap a hat at either depth.
     m = 1 << data_depth
     shift = d - data_depth
-    first = wp.vec3i((node[0] >> shift) - 2, (node[1] >> shift) - 2, (node[2] >> shift) - 2)
+    first = ancestor(node, shift) - wp.vec3i(2, 2, 2)
     # The data is a band around the surface, so most of a window's cells hold zero, and the whole
     # window does for most nodes. A zero cell's term is a signed zero and the running sum is never
     # ``-0.0``, so skipping those cells, and the axis integrals only they would read, leaves the
@@ -1680,7 +1688,7 @@ def octree_screen_records(
     out_records[base] = scale * sample[3]
     p = wp.vec3(sample[0], sample[1], sample[2])
     for q in range(8):
-        corner = c + wp.vec3i(q >> 2, (q >> 1) & 1, q & 1)
+        corner = c + cube_corner_offset(q)
         out_records[base + 1 + q] = hat_value(d, corner, p)
 
 
@@ -1692,21 +1700,7 @@ def node_window_bricks(
     # for none): ``2 y + z`` of the first vector for ``x = 0``, else of the second. Three
     # consecutive nodes along an axis span two bricks at most, so a row's 27 neighbours are in
     # these eight, each looked up once.
-    nb = node_bricks_per_axis(d)
-    low = wp.vec4i(-1, -1, -1, -1)
-    high = wp.vec4i(-1, -1, -1, -1)
-    for x in range(2):
-        for y in range(2):
-            for z in range(2):
-                b = lo + wp.vec3i(x, y, z)
-                brick = wp.int32(-1)
-                if wp.min(wp.min(b[0], b[1]), b[2]) >= 0 and wp.max(wp.max(b[0], b[1]), b[2]) < nb:
-                    brick = brick_number_at(node_bricks, node_brick_flat(node_bricks, d, b))
-                if x == 0:
-                    low[2 * y + z] = brick
-                else:
-                    high[2 * y + z] = brick
-    return low, high
+    return brick_window(node_bricks, node_bricks[d], node_bricks_per_axis(d), lo, True)
 
 
 @wp.func
@@ -1726,21 +1720,7 @@ def cell_window_bricks(
     # ``node_window_bricks`` of depth ``d``'s cell bricks: the padded cells ``node - corner + 1``
     # of a node's eight cells lie in ``node .. node + 1``, so they are in the cell bricks
     # ``brick_of(node) + (x, y, z)``, ``lo = brick_of(node)``.
-    nb = cell_bricks_per_axis(d)
-    low = wp.vec4i(-1, -1, -1, -1)
-    high = wp.vec4i(-1, -1, -1, -1)
-    for x in range(2):
-        for y in range(2):
-            for z in range(2):
-                b = lo + wp.vec3i(x, y, z)
-                brick = wp.int32(-1)
-                if wp.max(wp.max(b[0], b[1]), b[2]) < nb:
-                    brick = brick_number_at(cells, cell_brick_flat(cells, d, b))
-                if x == 0:
-                    low[2 * y + z] = brick
-                else:
-                    high[2 * y + z] = brick
-    return low, high
+    return brick_window(cells, cells[d], cell_bricks_per_axis(d), lo, False)
 
 
 @wp.func
@@ -1835,7 +1815,7 @@ def octree_row(
     # the loads of one cell do not wait on another's.
     records = _Corners8i()
     for corner in range(8):
-        cell = node - wp.vec3i(corner >> 2, (corner >> 1) & 1, corner & 1)
+        cell = node - cube_corner_offset(corner)
         records[corner] = window_record(
             d, depth, cell, brick_of(node), cell_low, cell_high, cells, record_index
         )
@@ -1883,7 +1863,7 @@ def screening_term(
     scale = 0.5 * alpha * wp.float32(1 << d)
     total = wp.float32(0.0)
     for corner in range(8):
-        cell = node - wp.vec3i(corner >> 2, (corner >> 1) & 1, corner & 1)
+        cell = node - cube_corner_offset(corner)
         sample = cell_screen(
             d, depth, full_depth, cell, flags, cells, counts, position_sums, occupancy
         )
@@ -2152,7 +2132,7 @@ def octree_sweep_brick_keys(
     side = 1 << BRICK_SHIFT
     key = n_layers
     for q in range(BRICK_CELLS):
-        node = wp.vec3i(at[1] + q // (side * side), at[2] + (q // side) % side, at[3] + q % side)
+        node = wp.vec3i(at[1], at[2], at[3]) + unravel_cube(q, side)
         if node[0] <= n and node[1] <= n and node[2] <= n:
             if node_active(flags, cells, full_depth, d, node):
                 key = at[3] >> BRICK_SHIFT
@@ -2225,7 +2205,7 @@ def octree_sweep_brick_rows(
         mask = wp.int32(0)
         for bit in range(32):
             q = 32 * word + bit
-            node = brick * side + wp.vec3i(q // (side * side), (q // side) % side, q % side)
+            node = brick * side + unravel_cube(q, side)
             if node[0] <= n and node[1] <= n and node[2] <= n:
                 if node_active(flags, cells, full_depth, d, node):
                     mask = mask | (wp.int32(1) << wp.int32(bit))
@@ -2985,40 +2965,47 @@ def classify_edges(
     node_slots: wp.array[wp.int32],
     holds: wp.array[wp.uint32],
     created: wp.array[wp.uint32],
+    created_counts: wp.array[wp.int32],
 ) -> None:
     # Depth ``d``'s edge from a stored node along ``axis``: whether it holds a vertex (bit ``slot``
     # of ``holds``; ``edge_owner`` names it). An edge of a refined cell takes over the vertex of
     # the one finer half that has one (two halves with one each are paired by
     # ``pair_edge_vertices``); an edge still without one gets its own (bit ``slot`` of
     # ``created``) when a leaf's corners straddle the iso-value along it. Every edge of a leaf or
-    # of a refined cell, and every finer half of one, has a stored node. Run finest first.
+    # of a refined cell, and every finer half of one, has a stored node. Run finest first. The
+    # created bits' words are counted into ``created_counts`` (zeroed) as they are set, for the
+    # caller to scan in place into their ranks; a slot is one thread's, set once, so the set is
+    # ``store_counted_bit``'s (the slots start at ``3 * first``, not on a word, so not a ballot).
+    # Every lane takes it, ``bit`` false where it creates none, so that a warp's lanes stay
+    # converged.
     t = wp.int32(wp.tid())
     first = node_first(node_bricks, depth, d)
     at = stored_edge(node_bricks, node_slots, depth, first, t)
-    if at[0] < 0:
-        return
-    axis = t % 3
     slot = 3 * first + t
-    node = wp.vec3i(at[1], at[2], at[3])
-    end = wp.vec3i(at[1], at[2], at[3])
-    end[axis] = end[axis] + 1
-    around = edge_cells(flags, cells, depth, full_depth, d, axis, node)
     held = wp.int32(0)
-    if around[0] != 0:
-        step = wp.vec3i(0, 0, 0)
-        step[axis] = 1
-        lower = edge_bit_set(holds, edge_bit(node_bricks, d + 1, axis, 2 * node))
-        upper = edge_bit_set(holds, edge_bit(node_bricks, d + 1, axis, 2 * node + step))
-        if lower != upper:
-            held = 1
-    if held == 0 and around[1] != 0:
-        here = corner_below(fields, node_bricks, sources, iso, d, node)
-        there = corner_below(fields, node_bricks, sources, iso, d, end)
-        if here != there:
-            held = 1
-            wp.atomic_or(created, slot >> 5, wp.uint32(1) << wp.uint32(slot & 31))
+    create = wp.bool(False)
+    if at[0] >= 0:
+        axis = t % 3
+        node = wp.vec3i(at[1], at[2], at[3])
+        end = wp.vec3i(at[1], at[2], at[3])
+        end[axis] = end[axis] + 1
+        around = edge_cells(flags, cells, depth, full_depth, d, axis, node)
+        if around[0] != 0:
+            step = wp.vec3i(0, 0, 0)
+            step[axis] = 1
+            lower = edge_bit_set(holds, edge_bit(node_bricks, d + 1, axis, 2 * node))
+            upper = edge_bit_set(holds, edge_bit(node_bricks, d + 1, axis, 2 * node + step))
+            if lower != upper:
+                held = 1
+        if held == 0 and around[1] != 0:
+            here = corner_below(fields, node_bricks, sources, iso, d, node)
+            there = corner_below(fields, node_bricks, sources, iso, d, end)
+            if here != there:
+                held = 1
+                create = True
+    store_counted_bit(created, created_counts, slot, create)
     if held != 0:
-        wp.atomic_or(holds, slot >> 5, wp.uint32(1) << wp.uint32(slot & 31))
+        set_bit(holds, slot)
 
 
 @wp.kernel
@@ -3171,7 +3158,8 @@ def unpack_cell(
     d = level_of(cell_offsets, first, last, flat)
     n = 1 << d
     local = flat - cell_offsets[d]
-    return wp.vec4i(local // (n * n), (local // n) % n, local % n, d)
+    c = unravel_cube(local, n)
+    return wp.vec4i(c[0], c[1], c[2], d)
 
 
 @wp.func
@@ -3219,24 +3207,29 @@ def extraction_band(
     cells: wp.array[wp.int32],
     cell_slots: wp.array[wp.int32],
     out_band: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
 ) -> None:
     # Bit ``t`` (``band_child``) set for the leaves that can have segments (``cell_segments``'
     # test): corners straddling the iso-value, or a refined cell across a face, whose finer faces
     # it takes over. A borrowed face is a straddling leaf's, so it is in the band too. The
-    # extraction's per-cell passes run over these alone, in cell order (``band_cells``).
+    # extraction's per-cell passes run over these alone, in cell order (``band_cells``). Thread
+    # ``t`` holds bit ``t``, so the set is a ballot that also counts each word's bits into
+    # ``out_word_counts`` (zeroed) for the caller to scan in place into the ranks
+    # (``store_counted_ballot_bit``); every thread reaches it, one off the band with ``keep``
+    # false.
     t = wp.int32(wp.tid())
     cell = band_child(cells, cell_slots, depth, first_depth, t)
     d = cell[3]
     c = wp.vec3i(cell[0], cell[1], cell[2])
-    if d < 0 or not leaf_cell(flags, cells, depth, full_depth, d, c):
-        return
-    code = cell_case(fields, node_bricks, sources, iso, d, c)
-    keep = code != 0 and code != 255
-    for f in range(6):
-        if not keep and refined_cell(flags, cells, depth, full_depth, d, face_across(c, f)):
-            keep = True
-    if keep:
-        wp.atomic_or(out_band, t >> 5, wp.uint32(1) << wp.uint32(t & 31))
+    keep = wp.bool(False)
+    if d >= 0:
+        if leaf_cell(flags, cells, depth, full_depth, d, c):
+            code = cell_case(fields, node_bricks, sources, iso, d, c)
+            keep = code != 0 and code != 255
+            for f in range(6):
+                if not keep and refined_cell(flags, cells, depth, full_depth, d, face_across(c, f)):
+                    keep = True
+    store_counted_ballot_bit(out_band, out_word_counts, t, keep)
 
 
 @wp.kernel
@@ -3263,7 +3256,7 @@ def band_cells(
             cell = band_child(cells, cell_slots, depth, first_depth, 32 * w + b)
             d = cell[3]
             c = wp.vec3i(cell[0], cell[1], cell[2])
-            out_cells[rank] = cell_offsets[d] + cell_flat(1 << d, c) - base
+            out_cells[rank] = cell_offsets[d] + ravel_cube(c, 1 << d) - base
             rank += 1
 
 
@@ -3288,9 +3281,9 @@ def borrowed_face_key(
     key = wp.uint64(0)
     for step in range(1, d - full_depth + 1):
         j = d - step
-        coarse = wp.vec3i(across[0] >> step, across[1] >> step, across[2] >> step)
+        coarse = ancestor(across, step)
         if node_active(flags, cells, full_depth, j, coarse):
-            mine = wp.vec3i(c[0] >> step, c[1] >> step, c[2] >> step)
+            mine = ancestor(c, step)
             if leaf_cell(flags, cells, depth, full_depth, j, coarse) and refined_cell(
                 flags, cells, depth, full_depth, j, mine
             ):
@@ -3303,7 +3296,7 @@ def borrowed_face_key(
                 if face_axis(f) != 2:
                     slab_end = wp.uint64(((c[2] + 1) << (depth - d)) - 1)
                     order = order | (slab_end << wp.uint64(18))
-                flat = cell_offsets[j] + cell_flat(1 << j, coarse)
+                flat = cell_offsets[j] + ravel_cube(coarse, 1 << j)
                 key = (
                     (wp.uint64(flat) << wp.uint64(35)) | (wp.uint64(5 - f) << wp.uint64(32)) | order
                 )

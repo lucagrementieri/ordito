@@ -2232,8 +2232,8 @@
  "benchmarks/test_heat.py::test_diffuse_tangent_field[saddle_graded-ordito-cuda]": {
   "counts": {
    "launch": 469,
-   "alloc": 38,
-   "memset": 23,
+   "alloc": 37,
+   "memset": 22,
    "d2d": 1,
    "d2h": 6,
    "sync": 2,
@@ -3375,8 +3375,8 @@
  },
  "benchmarks/test_intersection.py::test_mesh_collision_pairs[sphere_small-ordito-cuda-amortized-deep]": {
   "counts": {
-   "launch": 5,
-   "alloc": 8,
+   "launch": 4,
+   "alloc": 7,
    "memset": 2,
    "d2h": 2,
    "scan": 1
@@ -3384,8 +3384,8 @@
  },
  "benchmarks/test_intersection.py::test_mesh_collision_pairs[sphere_small-ordito-cuda-amortized-grazing]": {
   "counts": {
-   "launch": 4,
-   "alloc": 7,
+   "launch": 3,
+   "alloc": 6,
    "memset": 2,
    "d2h": 2,
    "scan": 1
@@ -3393,8 +3393,8 @@
  },
  "benchmarks/test_intersection.py::test_mesh_collision_pairs[sphere_small-ordito-cuda-full-deep]": {
   "counts": {
-   "launch": 5,
-   "alloc": 8,
+   "launch": 4,
+   "alloc": 7,
    "memset": 2,
    "d2h": 2,
    "scan": 1
@@ -3402,8 +3402,8 @@
  },
  "benchmarks/test_intersection.py::test_mesh_collision_pairs[sphere_small-ordito-cuda-full-grazing]": {
   "counts": {
-   "launch": 4,
-   "alloc": 7,
+   "launch": 3,
+   "alloc": 6,
    "memset": 2,
    "d2h": 2,
    "scan": 1
@@ -3411,8 +3411,8 @@
  },
  "benchmarks/test_intersection.py::test_mesh_with_mesh[sphere_small-ordito-cuda-deep]": {
   "counts": {
-   "launch": 5,
-   "alloc": 8,
+   "launch": 4,
+   "alloc": 7,
    "memset": 2,
    "d2h": 2,
    "scan": 1
@@ -3420,8 +3420,8 @@
  },
  "benchmarks/test_intersection.py::test_mesh_with_mesh[sphere_small-ordito-cuda-grazing]": {
   "counts": {
-   "launch": 4,
-   "alloc": 7,
+   "launch": 3,
+   "alloc": 6,
    "memset": 2,
    "d2h": 2,
    "scan": 1
@@ -3844,8 +3844,8 @@
  "benchmarks/test_linalg.py::test_min_quad_with_fixed[saddle_graded-ordito-cuda-pin1pct]": {
   "counts": {
    "launch": 397,
-   "alloc": 52,
-   "memset": 31,
+   "alloc": 51,
+   "memset": 30,
    "d2d": 2,
    "d2h": 8,
    "sync": 2,
@@ -4048,8 +4048,8 @@
  "benchmarks/test_linalg.py::test_solve_spd_settled[saddle_graded-ordito-cuda]": {
   "counts": {
    "launch": 360,
-   "alloc": 37,
-   "memset": 23,
+   "alloc": 36,
+   "memset": 22,
    "d2d": 1,
    "d2h": 6,
    "sync": 2,
@@ -5760,8 +5760,8 @@
  },
  "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cuda-octree-7]": {
   "counts": {
-   "launch": 304,
-   "alloc": 70,
+   "launch": 300,
+   "alloc": 66,
    "memset": 21,
    "d2d": 5,
    "h2d": 5,
@@ -6869,7 +6869,7 @@
   "counts": {
    "launch": 6,
    "alloc": 7,
-   "memset": 1,
+   "memset": 2,
    "d2h": 2,
    "scan": 2
   }

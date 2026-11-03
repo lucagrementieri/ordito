@@ -285,7 +285,7 @@ def upsample_gather(
     out_points[j] = wp.lerp(polyline[segment], polyline[loop_point(segment + 1, n)], weight)
 
 
-CURVATURE_EPS = wp.constant(wp.float32(1.0e-6))
+CURVATURE_EPS = wp.float32(1.0e-6)
 
 
 @wp.func
@@ -633,8 +633,8 @@ def gather_kept_points(
             out_indices[start] = i
 
 
-RDP_LINE_EPS = wp.constant(wp.float32(1.0e-7))  # libigl FLOAT_EPS: degenerate-segment threshold
-RDP_SETTLED = wp.constant(wp.int32(-1))  # ``span_lo`` sentinel: this point's fate is decided
+RDP_LINE_EPS = wp.float32(1.0e-7)  # libigl FLOAT_EPS: degenerate-segment threshold
+RDP_SETTLED = wp.int32(-1)  # ``span_lo`` sentinel: this point's fate is decided
 
 
 @wp.func
@@ -1032,8 +1032,8 @@ def radius_segment_distances(
 # Slot layout of ``accumulate_radius_frame``'s buffer: the length-weighted midpoint sums
 # ``polyline_centroid`` divides -- ``sum(midpoint * length)`` in slots 0..2, ``sum(length)`` in slot
 # 3 -- then Newell's normal.
-RADIUS_FRAME_LENGTH = wp.constant(wp.int32(3))
-RADIUS_FRAME_NORMAL = wp.constant(wp.int32(4))
+RADIUS_FRAME_LENGTH = wp.int32(3)
+RADIUS_FRAME_NORMAL = wp.int32(4)
 RADIUS_FRAME_SIZE = 7
 RadiusFrame = wp.types.vector(length=RADIUS_FRAME_SIZE, dtype=wp.float32)
 
@@ -1162,9 +1162,9 @@ def radius_distances(
 
 
 # ``radius_reduce``'s reductions.
-RADIUS_MIN = wp.constant(wp.int32(0))
-RADIUS_MAX = wp.constant(wp.int32(1))
-RADIUS_SUM = wp.constant(wp.int32(2))
+RADIUS_MIN = wp.int32(0)
+RADIUS_MAX = wp.int32(1)
+RADIUS_SUM = wp.int32(2)
 
 
 @wp.func
@@ -1329,11 +1329,11 @@ def ring_point(points2d: wp.array[wp.vec2], k: wp.int32, mirror: wp.int32) -> wp
 # ``dragon`` / ``happy_buddha`` / ``lucy``): 1 ulp left 8 / 6 / 91, **4 left 0 / 1 / 10**, 16 left
 # 0 / 1 / 17 and 64 left 1 / 3 / 70 (deferring too much forces thin ears later); the min-weight
 # fill leaves 1 / 2 / 40 on the same loops.
-EAR_NONE = wp.constant(wp.int32(0))
-EAR_THIN = wp.constant(wp.int32(1))
-EAR_GOOD = wp.constant(wp.int32(2))
-EAR_THIN_ULPS = wp.constant(wp.float32(4.0))
-FLOAT32_EPS = wp.constant(wp.float32(1.1920929e-07))  # numpy.finfo(numpy.float32).eps
+EAR_NONE = wp.int32(0)
+EAR_THIN = wp.int32(1)
+EAR_GOOD = wp.int32(2)
+EAR_THIN_ULPS = wp.float32(4.0)
+FLOAT32_EPS = wp.float32(1.1920929e-07)  # numpy.finfo(numpy.float32).eps
 
 
 @wp.func
@@ -1355,8 +1355,8 @@ def corner_is_thin(pa: wp.vec2, pi: wp.vec2, pb: wp.vec2, twice_area: wp.float32
 
 # ``ear_corner``'s two answers that still need the containment test (``ear_grade`` /
 # ``ear_grade_grid`` resolve them to ``EAR_GOOD`` / ``EAR_THIN`` or ``EAR_NONE``).
-EAR_TEST_THIN = wp.constant(wp.int32(3))
-EAR_TEST_GOOD = wp.constant(wp.int32(4))
+EAR_TEST_THIN = wp.int32(3)
+EAR_TEST_GOOD = wp.int32(4)
 
 
 @wp.func
@@ -1475,12 +1475,12 @@ def ear_grade(
 # the input's last point repeats its first and the ring is one point shorter, then the ring's box
 # relative to its first point (``accumulate_turning_angle``), which sizes the ear grid. The flag
 # rides in a float slot so the whole prologue is one readback; a 0/1 value is exact in float32.
-FRAME_NORMAL = wp.constant(wp.int32(0))
-FRAME_CENTER = wp.constant(wp.int32(3))
-FRAME_LENGTH = wp.constant(wp.int32(6))
-RING_TURNING = wp.constant(wp.int32(7))
-RING_CLOSING = wp.constant(wp.int32(10))
-RING_EXTENT = wp.constant(wp.int32(11))
+FRAME_NORMAL = wp.int32(0)
+FRAME_CENTER = wp.int32(3)
+FRAME_LENGTH = wp.int32(6)
+RING_TURNING = wp.int32(7)
+RING_CLOSING = wp.int32(10)
+RING_EXTENT = wp.int32(11)
 RING_SUMS_SIZE = 15
 
 
@@ -1820,9 +1820,9 @@ def fan_triangulate(out_faces: wp.array2d[wp.int32]) -> None:
 # after a round with no good ear; see ``ear_grade``). One buffer, seeded by ``init_ear_clip``, so
 # the loop needs no host upload and no zero-fill of its own and the final count is a read of one
 # slot.
-EAR_COUNT = wp.constant(wp.int32(2))
-EAR_ANY_GOOD = wp.constant(wp.int32(3))
-EAR_CHECK_THIN = wp.constant(wp.int32(4))
+EAR_COUNT = wp.int32(2)
+EAR_ANY_GOOD = wp.int32(3)
+EAR_CHECK_THIN = wp.int32(4)
 EAR_STATE_SIZE = 5
 
 
@@ -1853,7 +1853,7 @@ def init_ring_slot(
 # ring length; ``EAR_GRID_PAD_ULPS`` pads a triangle's box by float32 ulps of its coordinates, the
 # margin by which a rounded ``point_in_triangle`` can accept a point outside the exact triangle.
 EAR_GRID_CELLS_PER_POINT = 2
-EAR_GRID_PAD_ULPS = wp.constant(wp.float32(64.0))
+EAR_GRID_PAD_ULPS = wp.float32(64.0)
 
 
 @wp.func
@@ -2442,21 +2442,21 @@ def ear_clip_block(
 # one-ring loop is taken per loop on the same values, and a loop's rounds stop where its own loop
 # stops, so each loop gets the faces, in the order, that its alone call gives.
 RINGS_HEADER = 2
-RING_ROUND = wp.constant(wp.int32(0))
-RING_ANY_GOOD = wp.constant(wp.int32(1))
-RING_CHECK_THIN = wp.constant(wp.int32(2))
-RING_LIVE = wp.constant(wp.int32(3))
-RING_MIRROR = wp.constant(wp.int32(4))
-RING_N_RING = wp.constant(wp.int32(5))
-RING_DIMS = wp.constant(wp.int32(6))
-RING_FACE_BASE = wp.constant(wp.int32(8))
-RING_FACE_END = wp.constant(wp.int32(9))
+RING_ROUND = wp.int32(0)
+RING_ANY_GOOD = wp.int32(1)
+RING_CHECK_THIN = wp.int32(2)
+RING_LIVE = wp.int32(3)
+RING_MIRROR = wp.int32(4)
+RING_N_RING = wp.int32(5)
+RING_DIMS = wp.int32(6)
+RING_FACE_BASE = wp.int32(8)
+RING_FACE_END = wp.int32(9)
 RING_STATE_SIZE = 10
 # The ``grid`` row: the grid's ``shift`` (two slots), then ``inv_cell``.
 RING_GRID_SIZE = 3
 # Row ``RING_LOOP_ROW`` of the ``(RING_SCRATCH_ROWS, n_points)`` ring scratch holds each point's
 # round-loop loop (``-1`` for a point no round-loop loop owns); rows 0-4 are ``ear_clip_ring``'s.
-RING_LOOP_ROW = wp.constant(wp.int32(5))
+RING_LOOP_ROW = wp.int32(5)
 RING_SCRATCH_ROWS = 6
 # Cells a loop's grid may take, per point and per loop: ``ear_grid_shape``'s two dimensions are
 # each at most ``target = EAR_GRID_CELLS_PER_POINT * n_ring`` and multiply to at most

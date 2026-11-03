@@ -26,10 +26,7 @@ def write_face_edge_keys(
     # ``pack_edge_key`` is byte-identical to what ``pack_indices`` produces for the sorted edge row
     # ``[min, max]``, which is what keeps the radix sort's key order -- and so the adjacency row
     # order -- the same as the composed ``faces_to_edges`` + ``pack_indices`` path.
-    c = f * 3
-    i0 = faces[c + 0]
-    i1 = faces[c + 1]
-    i2 = faces[c + 2]
+    i0, i1, i2 = corner_triple(faces, f)
     out_keys[slot + 0] = pack_edge_key(i0, i1, base)
     out_keys[slot + 1] = pack_edge_key(i1, i2, base)
     out_keys[slot + 2] = pack_edge_key(i2, i0, base)
@@ -275,12 +272,12 @@ def face_adjacency_unshared(
     out_unshared: wp.array2d[wp.int32],
 ) -> None:
     tid = wp.int32(wp.tid())
-    f0 = face_adjacency[tid, 0] * 3
-    f1 = face_adjacency[tid, 1] * 3
+    a0, a1, a2 = corner_triple(faces, face_adjacency[tid, 0])
+    b0, b1, b2 = corner_triple(faces, face_adjacency[tid, 1])
     e0 = face_adjacency_edges[tid, 0]
     e1 = face_adjacency_edges[tid, 1]
-    out_unshared[tid, 0] = unshared_vertex(faces[f0 + 0], faces[f0 + 1], faces[f0 + 2], e0, e1)
-    out_unshared[tid, 1] = unshared_vertex(faces[f1 + 0], faces[f1 + 1], faces[f1 + 2], e0, e1)
+    out_unshared[tid, 0] = unshared_vertex(a0, a1, a2, e0, e1)
+    out_unshared[tid, 1] = unshared_vertex(b0, b1, b2, e0, e1)
 
 
 @wp.func

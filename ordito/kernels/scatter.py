@@ -13,6 +13,7 @@ from ordito.kernels.array import (
     trilinear_weight,
     unpack_edge_key,
 )
+from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next
 from ordito.kernels.reduce import (
     GroupSumPass,
     add_group_sum_term,
@@ -25,7 +26,7 @@ from ordito.kernels.reduce import (
     warp_lanes_sum_float,
     warp_uniform_lanes,
 )
-from ordito.kernels.triangles import face_normals_and_area
+from ordito.kernels.triangles import corner_triple, face_normals_and_area
 
 wp.set_module_options({"enable_backward": False})
 
@@ -108,6 +109,43 @@ def group_sum_vector_term(sums: GroupSumPass, group: wp.int32, value: Any):
 
 
 @wp.func
+def arrival_order_add_matrix(out_sums: wp.array[Any], group: wp.int32, value: Any):
+    # ``arrival_order_add`` for a matrix, componentwise (``arrival_order_add_vector``'s twin).
+    lanes = warp_uniform_lanes(group)
+    if lanes == 0:
+        atomic_add_at(out_sums, group, value)
+    else:
+        total = type(value)()
+        for r in range(len(value)):
+            for c in range(len(value[0])):
+                total[r, c] = type(value[r, c])(
+                    warp_lanes_sum_float(lanes, wp.float64(value[r, c]))
+                )
+        if warp_lane_leads(lanes) != 0:
+            atomic_add_at(out_sums, group, total)
+
+
+@wp.func
+def group_sum_matrix_term(sums: GroupSumPass, group: wp.int32, value: Any):
+    # ``reduce.group_sum_term`` for a matrix: its components' bound (pass 0) or words (pass 1), in
+    # row-major slots (``group_sum_vector_term``'s twin).
+    rows = len(value)
+    cols = len(value[0])
+    if sums.phase == 0:
+        field = wp.int32(0)
+        for r in range(rows):
+            for c in range(cols):
+                field = wp.max(field, group_sum_field(wp.float64(value[r, c])))
+        raise_group_sum_field(sums, group, field)
+    else:
+        field = group_sum_group_field(sums, group)
+        for r in range(rows):
+            for c in range(cols):
+                slot = (group * rows + r) * cols + c
+                add_group_sum_term(sums, group, slot, field, wp.float64(value[r, c]))
+
+
+@wp.func
 def scatter_add(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: wp.Float):
     # ``out_sums[group] += value`` for a scalar.
     if sums.words.shape[0] == 0:
@@ -128,34 +166,10 @@ def scatter_add_vector(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.in
 @wp.func
 def scatter_add_matrix(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any):
     # ``out_sums[group] += value`` for a matrix, componentwise.
-    rows = len(value)
-    cols = len(value[0])
     if sums.words.shape[0] == 0:
-        lanes = warp_uniform_lanes(group)
-        if lanes == 0:
-            atomic_add_at(out_sums, group, value)
-        else:
-            total = type(value)()
-            for r in range(rows):
-                for c in range(cols):
-                    total[r, c] = type(value[r, c])(
-                        warp_lanes_sum_float(lanes, wp.float64(value[r, c]))
-                    )
-            if warp_lane_leads(lanes) != 0:
-                atomic_add_at(out_sums, group, total)
-        return
-    if sums.phase == 0:
-        field = wp.int32(0)
-        for r in range(rows):
-            for c in range(cols):
-                field = wp.max(field, group_sum_field(wp.float64(value[r, c])))
-        raise_group_sum_field(sums, group, field)
+        arrival_order_add_matrix(out_sums, group, value)
     else:
-        field = group_sum_group_field(sums, group)
-        for r in range(rows):
-            for c in range(cols):
-                slot = (group * rows + r) * cols + c
-                add_group_sum_term(sums, group, slot, field, wp.float64(value[r, c]))
+        group_sum_matrix_term(sums, group, value)
 
 
 # ``scatter_add`` and ``scatter_add_vector`` for a kernel whose body is little more than the scatter
@@ -365,9 +379,10 @@ def scatter_weighted_sum_vec(
 def add_corner_triple(
     out_sum: wp.array[Any], indices: wp.array[wp.int32], row: wp.int32, a: Any, b: Any, c: Any
 ) -> None:
-    wp.atomic_add(out_sum, indices[row * 3 + 0], a)
-    wp.atomic_add(out_sum, indices[row * 3 + 1], b)
-    wp.atomic_add(out_sum, indices[row * 3 + 2], c)
+    i0, i1, i2 = corner_triple(indices, row)
+    wp.atomic_add(out_sum, i0, a)
+    wp.atomic_add(out_sum, i1, b)
+    wp.atomic_add(out_sum, i2, c)
 
 
 @wp.func
@@ -586,13 +601,8 @@ def scatter_edges_sum_and_valence(
     for j in range(3):
         if edges_orientation[f, j] < 0:
             continue
-        accumulate_endpoint_value(
-            faces[f * 3 + (j + 1) % 3],
-            faces[f * 3 + (j + 2) % 3],
-            edge_values[edges[f, j]],
-            out_sum,
-            out_valence,
-        )
+        u, v = halfedge_endpoints(faces, halfedge_next(f * 3 + j))
+        accumulate_endpoint_value(u, v, edge_values[edges[f, j]], out_sum, out_valence)
 
 
 @wp.func

@@ -61,7 +61,7 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch, laplacian
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._device import offsets_buffer, read_scalar, read_values, require_same_device, scan_count
 from ordito.cholesky import SparseCholesky, sparse_cholesky
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
@@ -1114,7 +1114,7 @@ def _flatten_few_spikes(
         # Every spike is unreferenced: an empty 1-ring leaves a vertex where it is.
         return
     _launch.radix_sort_pairs(
-        keys, order, count=n_keys, end_bit=max(1, (n_vertices * n_vertices - 1).bit_length())
+        keys, order, count=n_keys, end_bit=_launch.key_bits(n_vertices * n_vertices)
     )
     rows = _launch.empty(n_keys, dtype=wp.int32, device=device)
     averaged = _launch.empty(n_keys, dtype=wp.vec3, device=device)
@@ -3878,8 +3878,9 @@ def _edge_weights(
     Unit weights need no array: the row walks read ``1`` instead
     (``kernels/smoothing.edge_weight``). The cotangent weights are summed per edge and clamped as
     they are read. Under [`is_deterministic`][ordito.config.is_deterministic] they are summed
-    exactly in ``float64`` and narrowed once (``edge_cotan_add_exact``), so a non-manifold edge's
-    weight is the same on every run; otherwise ``float32`` atomics sum them in arrival order.
+    exactly in ``float64`` and narrowed once (``edge_cotan_add``'s ``float64`` overload), so a
+    non-manifold edge's weight is the same on every run; otherwise ``float32`` atomics sum them in
+    arrival order.
     """
     if edge_weights == "unit":
         return None, 1
@@ -3890,7 +3891,7 @@ def _edge_weights(
     if is_deterministic():
         exact = _launch.zeros(n_edges, dtype=wp.float64, device=device)
         _launch.launch(
-            kernel_smoothing.edge_cotan_add_exact,
+            kernel_smoothing.EDGE_COTAN_ADD[wp.float64],
             dim=faces.size // 3,
             inputs=[vertices, faces, region.inverse, exact],
             device=device,
@@ -3900,7 +3901,7 @@ def _edge_weights(
         return weights, 0
     weights = _launch.zeros(n_edges, dtype=wp.float32, device=device)
     _launch.launch(
-        kernel_smoothing.edge_cotan_add,
+        kernel_smoothing.EDGE_COTAN_ADD[wp.float32],
         dim=faces.size // 3,
         inputs=[vertices, faces, region.inverse, weights],
         device=device,
@@ -4105,8 +4106,7 @@ def _band_pattern(
     n_vertices = fixed_mask.size
     vf_indices, offsets = vertex_faces
     ring = [fixed_mask, free_map, offsets, vf_indices, faces]
-    pattern_offsets = _launch.zeros(n_free + 1, dtype=wp.int32, device=device)
-    pattern_counts = odt.as_dense(pattern_offsets[1:])
+    pattern_offsets, pattern_counts = offsets_buffer(n_free, device)
     _launch.launch(
         kernel_smoothing.band_pattern,
         dim=n_vertices,
@@ -4114,9 +4114,8 @@ def _band_pattern(
         outputs=[pattern_counts, None],
         device=device,
     )
-    _launch.array_scan(pattern_counts, pattern_counts, inclusive=True)
     # The one readback of the assembly: the entry count, which sizes the columns.
-    nnz = int(read_scalar(pattern_offsets, n_free))
+    nnz = scan_count(pattern_counts)
     columns = _launch.empty(nnz, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_smoothing.band_pattern,

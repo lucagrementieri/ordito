@@ -719,10 +719,12 @@ def _pack_vec3_np(vectors_np: np.ndarray) -> np.ndarray:
     bits = vectors_np.view(np.uint32)
     # IEEE-754's two zeros compare equal, so -0.0 folds onto +0.0 rather than keeping its sign bit.
     bits = np.where(vectors_np == 0.0, np.uint32(0), bits)
-    ix = bits[:, 0].astype(np.uint64) >> VEC3_PACK_SHIFT.value
-    iy = bits[:, 1].astype(np.uint64) >> VEC3_PACK_SHIFT.value
-    iz = bits[:, 2].astype(np.uint64) >> VEC3_PACK_SHIFT.value
-    return ix | (iy << VEC3_PACK_PRECISION.value) | (iz << (2 * VEC3_PACK_PRECISION.value))
+    ix = bits[:, 0].astype(np.uint64) >> int(VEC3_PACK_SHIFT.value)
+    iy = bits[:, 1].astype(np.uint64) >> int(VEC3_PACK_SHIFT.value)
+    iz = bits[:, 2].astype(np.uint64) >> int(VEC3_PACK_SHIFT.value)
+    return (
+        ix | (iy << int(VEC3_PACK_PRECISION.value)) | (iz << (2 * int(VEC3_PACK_PRECISION.value)))
+    )
 
 
 def _pack_indices_rows_np(indices_np: np.ndarray, max_index: int | None = None) -> np.ndarray:

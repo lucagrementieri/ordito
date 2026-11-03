@@ -186,7 +186,10 @@ def procrustes(
     # allocation and a host sync for the reduction. Its NaN output is discarded by the raise.
     if not return_cost:
         matrix = cast(wp.array[wp.mat44], result)
-        if weighted and float(read_scalar(workspace["acc"], kernel_registration.ACC_W_SUM)) == 0.0:
+        if (
+            weighted
+            and float(read_scalar(workspace["acc"], int(kernel_registration.ACC_W_SUM))) == 0.0
+        ):
             raise ValueError("weights sum to zero: no point carries any weight")
         return matrix
     matrix, transformed, cost, weight_sum = cast(
@@ -490,7 +493,7 @@ def icp(
     acc, _ = _launch.block_partials(blocks, stride, wp.float32, device)
     fitted = _launch.empty(1, dtype=wp.mat44, device=device)
     # The loop state, then the integer ticket that elects the fit's last block to close the round
-    # under the atomic commit (``kernel_registration.last_atomic_block``): one zeroed allocation.
+    # under the atomic commit (``kernel_reduce.last_atomic_block``): one zeroed allocation.
     words = kernel_array.LOOP_STATE_SIZE
     state_and_ticket = _launch.zeros(words + 1, dtype=wp.int32, device=device)
     state = _launch.view(state_and_ticket, 0, words)
@@ -885,7 +888,7 @@ def icp_point_to_plane(
     step = _launch.empty(1, dtype=wp.mat44, device=device)
     total = initial_matrix
     # The loop state, then the integer ticket that elects the accumulation's last block to close
-    # the round under the atomic commit (``kernel_registration.last_atomic_block``), then the
+    # the round under the atomic commit (``kernel_reduce.last_atomic_block``), then the
     # matched faces, which the searches write before any read: one zeroed allocation.
     state, ticket, triangle_id = _launch.carve(
         wp.int32, [kernel_array.LOOP_STATE_SIZE, 1, n], device, zeroed=True
@@ -1106,9 +1109,9 @@ def _robust_scale_from_residuals(
     )
     # The estimate's one readback: the in-range count and the scale.
     stats_values = read_values(stats, 0, kernel_registration.MAD_STATS_SIZE)
-    if int(stats_values[kernel_registration.MAD_STATS_COUNT]) == 0:
+    if int(stats_values[int(kernel_registration.MAD_STATS_COUNT)]) == 0:
         return 0.0
-    sigma = float(stats_values[kernel_registration.MAD_STATS_VALUE])
+    sigma = float(stats_values[int(kernel_registration.MAD_STATS_VALUE)])
     if sigma <= 0.0:
         sigma = _residual_standard_deviation(
             current, closest, normals, distance, triangle_id, max_distance

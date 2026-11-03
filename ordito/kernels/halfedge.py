@@ -158,7 +158,7 @@ def scatter_edge_buckets(
 # boundary). A mate ``>= 0`` is the other halfedge of an edge carrying exactly two, whichever way
 # each runs; a code ``<= -2`` marks an edge carrying three or more, as ``-2 - lowest`` with
 # ``lowest`` the smallest halfedge on that edge, so a kernel can act on such an edge once.
-HALFEDGE_MATE_BOUNDARY = wp.constant(wp.int32(-1))
+HALFEDGE_MATE_BOUNDARY = wp.int32(-1)
 
 
 @wp.func
@@ -170,6 +170,16 @@ def mate_from_run(length: wp.int32, other: wp.int32, lowest: wp.int32) -> wp.int
     if length == 2:
         return other
     return wp.int32(-2) - lowest
+
+
+@wp.func
+def mate_halfedge(mate: wp.int32) -> wp.int32:
+    # The halfedge a mate code names: the other halfedge of a two-halfedge edge, the edge's lowest
+    # halfedge for a ``-2 - lowest`` code (three or more), and ``-1`` for a boundary. The decode of
+    # ``mate_from_run``'s encoding.
+    if mate <= wp.int32(-2):
+        return wp.int32(-2) - mate
+    return mate
 
 
 @wp.func
@@ -318,9 +328,9 @@ def sorted_halfedge_mates(
 
 
 # ``mate_twin_defect``'s defect slots, those of ``halfedge_twins``' two rejections.
-HALFEDGE_DEFECT_NONE = wp.constant(wp.int32(-1))
-HALFEDGE_DEFECT_NON_MANIFOLD = wp.constant(wp.int32(0))
-HALFEDGE_DEFECT_SAME_DIRECTION = wp.constant(wp.int32(1))
+HALFEDGE_DEFECT_NONE = wp.int32(-1)
+HALFEDGE_DEFECT_NON_MANIFOLD = wp.int32(0)
+HALFEDGE_DEFECT_SAME_DIRECTION = wp.int32(1)
 
 
 @wp.func
@@ -353,7 +363,7 @@ def mate_twin_defect(
     # direction to find; a lone self-edge is a boundary halfedge. The wrapper's message says "the
     # same direction", which is true of all three.
     if mate <= wp.int32(-2):
-        if wp.int32(-2) - mate == h:
+        if mate_halfedge(mate) == h:
             return wp.int32(-1), HALFEDGE_DEFECT_NON_MANIFOLD
         return wp.int32(-1), HALFEDGE_DEFECT_NONE
     if mate < 0:

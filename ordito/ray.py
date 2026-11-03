@@ -8,7 +8,7 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, require_same_device, scan_count
 from ordito.config import is_deterministic
 from ordito.constants import TOLERANCE_PLANAR
 from ordito.kernels import proximity as kernel_proximity
@@ -152,9 +152,8 @@ def _intersects_location_ordered(
         outputs=[faces, hit_locations, inclusive],
         device=device,
     )
-    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     # The hit count sizes the outputs.
-    n_hits = int(read_scalar(inclusive))
+    n_hits = scan_count(inclusive)
     locations = _launch.empty(n_hits, dtype=wp.vec3, device=device)
     index_ray = _launch.empty(n_hits, dtype=wp.int32, device=device)
     index_tri = _launch.empty(n_hits, dtype=wp.int32, device=device)

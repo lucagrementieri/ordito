@@ -770,7 +770,7 @@ class _Plan:
         self.component_rows = component_rows
         n_sn, n_levels = s.n_sn, s.n_levels
         self.n_levels = n_levels
-        panel = int(kernel_cholesky.PANEL)
+        panel = kernel_cholesky.PANEL
 
         # The schedule, on the device: each supernode's front size and prefix-summed terms (front
         # and solve-block offsets, chunk bases, task totals), the level order (one sort by height),
@@ -778,8 +778,8 @@ class _Plan:
         # by parent, then by ``(height, slot)``) and every level's panel work.
         sn_bits = _bits(n_sn * (n_sn + 1) * (n_levels + 1))
         sentinel = wp.uint64((1 << sn_bits) - 1)
-        header = int(kernel_cholesky.SCHEDULE_HEADER)
-        fields = int(kernel_cholesky.LEVEL_FIELDS)
+        header = kernel_cholesky.SCHEDULE_HEADER
+        fields = kernel_cholesky.LEVEL_FIELDS
         work_base = header + (n_levels + 1) * fields
         # Kept: each supernode's front size and clamped parent, the level order and the extend-add
         # members (both at their sorts' width), and the front and solve-block offsets. Scratch: the
@@ -889,7 +889,7 @@ class _Plan:
         n_f, n_r, n_b, n_c = (int(value) for value in last_terms[5:9])
         widest = max(int(levels[h][1]) for h in range(n_levels))
         n_components = s.n_components
-        self.chunk_bound = n_components + n // int(kernel_cholesky.NULL_SPACE_CHUNK)
+        self.chunk_bound = n_components + n // kernel_cholesky.NULL_SPACE_CHUNK
         self.n_components = n_components
         self.nbytes = _analysis_nbytes(
             n=n,
@@ -1211,7 +1211,7 @@ class _Plan:
         )  # fmt: skip
         tables = [self.front_offset, self.ncol, self.front_size]
         cuda = wp.get_device(device).is_cuda
-        panel = int(kernel_cholesky.PANEL)
+        panel = kernel_cholesky.PANEL
         for h in range(self.n_levels):
             big = self.big[h]
             if big is not None and not cuda:
@@ -1381,7 +1381,7 @@ def _analysis_nbytes(
     # The row structure; the parents' local rows; the forward gather's pairs and offsets.
     structure = 4 * row_capacity + 4 * (n_rows + 1) + 8 * n_rows + 4 * (n + 1)
     task_maps = 24 * n_f + 16 * n_r + 32 * n_b + 20 * n_c
-    panels = 2 * 8 * widest * int(kernel_cholesky.PANEL) ** 2
+    panels = 2 * 8 * widest * kernel_cholesky.PANEL**2
     # Each component's label, last row and diagonal slot; its offsets and its chunks' offsets.
     components = (4 + 4 + 8) * n_components + 2 * 4 * (n_components + 1)
     return per_row + per_supernode + structure + 20 * n_entries + task_maps + panels + components
@@ -2159,13 +2159,8 @@ def _landmark_coordinates(
         return coordinates
     axes = coordinates.view(wp.float32)
     size = _launch.zeros(n, dtype=wp.int32, device=device)
-    first = _launch.full(n, n, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_cholesky.component_sizes,
-        dim=n,
-        inputs=[labels],
-        outputs=[size, first],
-        device=device,
+        kernel_cholesky.component_sizes, dim=n, inputs=[labels], outputs=[size], device=device
     )
     distance = _launch.empty(n, dtype=wp.int32, device=device)
     state = _launch.empty(3, dtype=wp.int32, device=device)
@@ -2174,7 +2169,7 @@ def _landmark_coordinates(
     offsets, columns = matrix.offsets, matrix.columns
 
     def level_round() -> None:
-        for step in range(int(kernel_cholesky.BFS_LEVELS_PER_ROUND)):
+        for step in range(kernel_cholesky.BFS_LEVELS_PER_ROUND):
             _launch.launch(
                 kernel_cholesky.breadth_first_level,
                 dim=n,
@@ -2191,7 +2186,7 @@ def _landmark_coordinates(
     # seed (``farthest_rows``), and the last search's in one of their own after the loop.
     for axis, (a, b) in enumerate(((None, None), (0, 0), (0, 0), (0, 1))):
         if a is None or b is None:
-            seed_inputs = [key, size, first, wp.int32(CHOLESKY_LEAF_ROWS), wp.int32(1)]
+            seed_inputs = [key, size, wp.int32(CHOLESKY_LEAF_ROWS), wp.int32(1)]
         else:
             _launch.zero_(key)
             _launch.launch(
@@ -2201,7 +2196,7 @@ def _landmark_coordinates(
                 outputs=[axes[:, max(axis - 2, 0)], key],
                 device=device,
             )
-            seed_inputs = [key, size, first, wp.int32(CHOLESKY_LEAF_ROWS), wp.int32(0)]
+            seed_inputs = [key, size, wp.int32(CHOLESKY_LEAF_ROWS), wp.int32(0)]
         _launch.launch(
             kernel_cholesky.farthest_seeds,
             dim=n,

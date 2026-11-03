@@ -66,6 +66,7 @@ from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import points as kernel_points
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import reduce as kernel_reduce
+from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels.algorithms import convex_hull as kernel_hull
 
 # Relative slack, against the support extent along a direction, for recognizing a point as that
@@ -75,7 +76,7 @@ from ordito.kernels.algorithms import convex_hull as kernel_hull
 # stay small -- a wide slack lets the lowest-index *near*-support point win, pulling shell vertices
 # inward and costing selectivity. This is a float32 epsilon question, not a tuning knob, so it is
 # not exposed.
-SUPPORT_TIE_SLACK = wp.constant(wp.float32(1e-6))
+SUPPORT_TIE_SLACK = wp.float32(1e-6)
 
 # Point count from which the support sweeps after ``hull_support_extremes`` walk only the slices
 # whose extremes reach a threshold (``_support_extremes``), instead of testing every point. Below
@@ -89,7 +90,7 @@ SUPPORT_SLICE_FILTER_FROM = 1 << 17
 # is the one that can cost the superset guarantee. Chosen well above ``TOLERANCE_PLANAR`` for that
 # reason, and paired with ``convex_superset_mask``'s ``margin`` default -- dropping this to 1e-9
 # makes every margin in the useful range unsafe.
-TETRAHEDRON_FLATNESS = wp.constant(wp.float32(1e-3))
+TETRAHEDRON_FLATNESS = wp.float32(1e-3)
 
 # Point count from which ``convex_hull`` runs ``convex_superset_mask`` (at this subdivision level)
 # before growing: one pass that certifies most of a very large cloud interior, cheaper than the
@@ -1327,7 +1328,7 @@ def cluster_outlier_mask(
     labels = od.graph.connected_component_labels_from_edges(edges, n, validate=False)
     sizes = _launch.zeros(n, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_points.component_size_counts, dim=n, inputs=[labels], outputs=[sizes], device=device
+        kernel_scatter.count_occurrences, dim=n, inputs=[labels], outputs=[sizes], device=device
     )
     out_mask = _launch.empty(n, dtype=wp.bool, device=device)
     _launch.launch(
@@ -2835,7 +2836,7 @@ def radial_sort(
     # are a single O(1) setup shared by every point.
     if start is None:
         # Cross with whichever of x/y `normal` is *less* aligned with, so the cross product is
-        # never near-degenerate (the same construction as `kernels.tangent_space.any_perpendicular`
+        # never near-degenerate (the same construction as `kernels.predicates.any_perpendicular`
         # -- but that one returns a specific unit chirality this needs to preserve exactly at
         # `normal = +z`, so it's spelled out here rather than called).
         #

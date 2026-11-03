@@ -46,8 +46,9 @@ from warp.geometry import sparse_marching_cubes
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, require_same_device, scan_count
 from ordito.kernels import array as kernel_array
+from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import levelset as kernel_levelset
 from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import scatter as kernel_scatter
@@ -311,9 +312,8 @@ def marching_cubes(
             inputs=[field, wp.float32(iso), table, words, word_ranks],
             device=device,
         )
-        _launch.array_scan(word_ranks, word_ranks, inclusive=True)
         # Sizes the active nodes' counts.
-        n_active = int(read_scalar(word_ranks))
+        n_active = scan_count(word_ranks)
         if n_active == 0:
             return (
                 _launch.empty(0, dtype=wp.vec3, device=device),
@@ -958,9 +958,8 @@ def _boundary_chain(faces: wp.array[wp.int32], n_vertices: int) -> odt.Array2dIn
     _launch.launch(
         kernel_levelset.boundary_chain_counts, dim=n_halfedges, inputs=[net, tail], device=device
     )
-    _launch.array_scan(tail, out_array=tail, inclusive=True)
     # The chain's length sizes it.
-    total = int(read_scalar(offsets))
+    total = scan_count(tail)
     chain = odt.empty_2d((total, 2), wp.int32, device=device)
     if total > 0:
         _launch.launch(
@@ -1015,16 +1014,18 @@ def _cone_components(
         device=device,
     )
     sorted_keys, order = od.array.sort_and_argsort_in_place(
-        keys_buffer, order_buffer, end_bit=max(1, (vertices.size - 1).bit_length())
+        keys_buffer, order_buffer, end_bit=_launch.key_bits(vertices.size)
     )
     flags = odt.as_dense(order_buffer[m:])
     _launch.launch(
-        kernel_levelset.mark_run_starts, dim=m, inputs=[sorted_keys, flags], device=device
+        kernel_grouping.MARK_SORTED_RUN_STARTS[wp.int32],
+        dim=m,
+        inputs=[sorted_keys, flags],
+        device=device,
     )
     # The run starts are compacted straight into the offsets they begin: the flags are scanned in
     # place (sort scratch, as above), and their total, the component count, sizes the cone tables.
-    _launch.array_scan(flags, out_array=flags, inclusive=True)
-    n_components = int(read_scalar(flags))
+    n_components = scan_count(flags)
     starts = _launch.full(n_components + 1, m, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_scatter.scatter_index_where_scanned, dim=m, inputs=[flags, starts], device=device

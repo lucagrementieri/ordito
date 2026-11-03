@@ -3,6 +3,7 @@ from warp.geometry import IsoSurfaceMarchingCubes
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE, TOLERANCE_MERGE_CONSTANT
 from ordito.kernels.array import (
+    append_slot,
     bit_rank,
     lattice_position,
     nth_bit_position,
@@ -10,6 +11,8 @@ from ordito.kernels.array import (
     store_counted_ballot_bit,
     unravel_index,
 )
+from ordito.kernels.halfedge import halfedge_endpoints, mate_halfedge
+from ordito.kernels.triangles import corner_triple, face_vertices
 from ordito.kernels.vertices import normalized_accumulated_row
 
 
@@ -69,28 +72,21 @@ wp.set_module_options({"enable_backward": False})
 
 # A rasterised crossing within this many cells (along its column) of a node leaves that node's
 # integer winding in doubt.
-AMBIGUOUS_CROSSING = wp.constant(wp.float32(1.0e-3))
+AMBIGUOUS_CROSSING = wp.float32(1.0e-3)
 # Cone components seen from farther than this many bounding radii are bounded rather than summed.
-CONE_NEAR_RADII = wp.constant(wp.float32(4.0))
-INV_FOUR_PI = wp.constant(wp.float32(0.07957747154594767))
-
-
-@wp.func
-def halfedge_endpoints(faces: wp.array[wp.int32], h: wp.int32) -> wp.vec2i:
-    f = h // 3
-    corner = h - 3 * f
-    return wp.vec2i(faces[h], faces[3 * f + (corner + 1) % 3])
+CONE_NEAR_RADII = wp.float32(4.0)
+INV_FOUR_PI = wp.float32(0.07957747154594767)
 
 
 @wp.func
 def halfedge_orientation(faces: wp.array[wp.int32], h: wp.int32) -> wp.int32:
     # +1 for a halfedge running from its lower vertex index to its higher, -1 the other way, 0 for
     # a degenerate one: its cone triangle would be degenerate too and contributes nothing.
-    ends = halfedge_endpoints(faces, h)
+    origin, destination = halfedge_endpoints(faces, h)
     orientation = wp.int32(0)
-    if ends[0] < ends[1]:
+    if origin < destination:
         orientation = 1
-    elif ends[0] > ends[1]:
+    elif origin > destination:
         orientation = -1
     return orientation
 
@@ -111,7 +107,7 @@ def boundary_chain_multiplicity(
         if h < mate:
             out_net[h] = halfedge_orientation(faces, h) + halfedge_orientation(faces, mate)
     else:
-        wp.atomic_add(out_net, -2 - mate, halfedge_orientation(faces, h))
+        wp.atomic_add(out_net, mate_halfedge(mate), halfedge_orientation(faces, h))
 
 
 @wp.kernel
@@ -132,9 +128,9 @@ def emit_boundary_chain(
     multiplicity = net[h]
     if multiplicity == 0:
         return
-    ends = halfedge_endpoints(faces, h)
-    low = wp.min(ends[0], ends[1])
-    high = wp.max(ends[0], ends[1])
+    origin, destination = halfedge_endpoints(faces, h)
+    low = wp.min(origin, destination)
+    high = wp.max(origin, destination)
     start = wp.where(multiplicity > 0, low, high)
     end = wp.where(multiplicity > 0, high, low)
     base = offsets[h]
@@ -155,12 +151,6 @@ def cone_component_keys(
     e = wp.int32(wp.tid())
     out_keys[e] = labels[chain[e, 0]]
     out_order[e] = e
-
-
-@wp.kernel
-def mark_run_starts(sorted_keys: wp.array[wp.int32], out_flags: wp.array[wp.int32]) -> None:
-    t = wp.int32(wp.tid())
-    out_flags[t] = wp.where(t == 0 or sorted_keys[t] != sorted_keys[t - 1], 1, 0)
 
 
 @wp.kernel
@@ -343,9 +333,7 @@ def rasterize_face_crossings(
 ) -> None:
     # Thread ``(axis, f)``: face ``f`` into the columns along ``axis``, both directions at once.
     axis, f = wp.tid()
-    ia = faces[3 * f]
-    ib = faces[3 * f + 1]
-    ic = faces[3 * f + 2]
+    ia, ib, ic = corner_triple(faces, f)
     rasterize_crossings(
         ia,
         ib,
@@ -566,7 +554,7 @@ def lattice_winding_numbers(
     )
     slot = wp.int32(0)
     if doubtful and d > TOLERANCE_MERGE_CONSTANT:
-        slot = wp.atomic_add(out_count, 0, 1) + 1
+        slot = append_slot(out_count, 0) + 1
         if slot <= out_undecided.shape[0]:
             out_undecided[slot - 1] = p
     out_slots[i, j, k] = slot
@@ -587,9 +575,8 @@ def exact_winding_slices(
     n_faces = faces.shape[0] // 3
     angle = wp.float32(0.0)
     for f in range(s, n_faces, n_slices):
-        angle = angle + warp_solid_angle(
-            vertices[faces[3 * f]], vertices[faces[3 * f + 1]], vertices[faces[3 * f + 2]], p
-        )
+        v0, v1, v2 = face_vertices(vertices, faces, f)
+        angle = angle + warp_solid_angle(v0, v1, v2, p)
     wp.atomic_add(out_winding, q, angle * INV_FOUR_PI)
 
 
@@ -613,7 +600,7 @@ def take_exact_winding(
         return
     value = exact[slot - 1]
     if wp.abs(value - 0.5) < delta:
-        wp.atomic_add(out_count, 0, 1)
+        append_slot(out_count, 0)
     else:
         winding[i, j, k] = value
         slots[i, j, k] = 0
@@ -1170,9 +1157,7 @@ def shell_face(
     # ``n_vertices`` and **wound backwards**, because it faces into the shell rather than out of it.
     # Corners 0 and 1 are swapped.
     n_faces = faces.shape[0] // 3
-    corner0 = faces[3 * f]
-    corner1 = faces[3 * f + 1]
-    corner2 = faces[3 * f + 2]
+    corner0, corner1, corner2 = corner_triple(faces, f)
     out_faces[3 * f] = corner0
     out_faces[3 * f + 1] = corner1
     out_faces[3 * f + 2] = corner2

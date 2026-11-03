@@ -63,7 +63,13 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device, run_device_loop
+from ordito._device import (
+    offsets_buffer,
+    read_scalar,
+    read_values,
+    require_same_device,
+    run_device_loop,
+)
 from ordito.cholesky import SparseCholesky, held_nbytes
 from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX, TILE_1D, TOLERANCE_MOLLIFY
@@ -790,9 +796,7 @@ def _unfolding_front(
     )
     # Each vertex's corners in ascending order (one stable sort of the face buffer), which the
     # pops walk backwards: vcg's vertex-face lists hold a vertex's faces newest first.
-    _, corner_order = od.array.sort_and_argsort(
-        faces, end_bit=max(1, (n_vertices - 1).bit_length())
-    )
+    _, corner_order = od.array.sort_and_argsort(faces, end_bit=_launch.key_bits(n_vertices))
     corner_records = _launch.empty(3 * n_faces, dtype=wp.vec4i, device=device)
     _launch.launch(
         kernel_heat.ordered_corner_records,
@@ -801,8 +805,7 @@ def _unfolding_front(
         outputs=[corner_records],
         device=device,
     )
-    corner_offsets = _launch.zeros(n_vertices + 1, dtype=wp.int32, device=device)
-    corner_counts = _launch.view(corner_offsets, 1, n_vertices + 1)
+    corner_offsets, corner_counts = offsets_buffer(n_vertices, device)
     _launch.launch(
         kernel_scatter.count_occurrences,
         dim=3 * n_faces,
@@ -2931,7 +2934,7 @@ def _corner_order(mesh: Trimesh, solver: HeatSolver) -> _CornerOrder:
         cover_faces = solver._cover_faces  # pyright: ignore[reportPrivateUsage]
         faces = mesh.faces if cover_faces is None else cover_faces
         order = _CORNER_ORDERS[solver] = od.array.sort_and_argsort(
-            faces, end_bit=max(1, (mesh.vertices.size - 1).bit_length())
+            faces, end_bit=_launch.key_bits(mesh.vertices.size)
         )
     return order
 

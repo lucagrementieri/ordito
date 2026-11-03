@@ -23,6 +23,7 @@ from ordito.kernels.laplacian import (
     umbrella_entry,
 )
 from ordito.kernels.linalg import (
+    csr_row_dot,
     free_row,
     selected_row,
     shifted_scalar_entry,
@@ -43,7 +44,7 @@ wp.set_module_options({"enable_backward": False})
 # DBL_EPSILON, the relative accuracy of a float64. The area-equalizing solve compares its system's
 # determinant against this times the trace's power, which is the scale-free way to ask whether the
 # 1-ring is degenerate enough that the solution cannot be trusted.
-DOUBLE_EPSILON = wp.constant(wp.float64(2.220446049250313e-16))
+DOUBLE_EPSILON = wp.float64(2.220446049250313e-16)
 
 vec6d = wp.types.vector(length=6, dtype=wp.float64)
 mat66d = wp.types.matrix(shape=(6, 6), dtype=wp.float64)
@@ -59,7 +60,7 @@ def edge_cotan_add(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     inverse: wp.array[wp.int32],
-    out_w: wp.array[wp.float32],
+    out_w: wp.array[wp.Float],
 ) -> None:
     # Accumulate each face corner's cotangent into its opposite unique edge; the two incident faces
     # sum to the cotangent edge weight cot(alpha) + cot(beta).
@@ -72,25 +73,13 @@ def edge_cotan_add(
     # of edge ``(v_k, v_{k+1})`` (``edges.faces_to_edges``'s convention), whose cotangent
     # contribution from this triangle is the angle *opposite* that edge -- i.e. the angle at the
     # corner not on it -- which is why the three half-cotangents land rotated by one slot below.
-    f = wp.int32(wp.tid())
-    half_cotan0, half_cotan1, half_cotan2 = face_half_cotangents(vertices, faces, f)
-    two = wp.float32(2.0)
-    add_corner_triple(out_w, inverse, f, two * half_cotan2, two * half_cotan0, two * half_cotan1)
-
-
-@wp.kernel
-def edge_cotan_add_exact(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    inverse: wp.array[wp.int32],
-    out_w: wp.array[wp.float64],
-) -> None:
-    # ``edge_cotan_add`` under the deterministic setting, differing only in the accumulator: the
-    # same ``float32`` cotangents go into ``float64`` sums unscaled (``scatter_face_areas_exact``'s
-    # device). A sum of a few ``float32`` values is exact in ``float64`` while their exponents span
-    # under ``29 - log2(count)`` bits, so the commit order changes no bit, and the caller's one
-    # narrowing to ``float32`` is the ``float32`` sum a manifold edge's two adds give. The
-    # ``float32`` atomics are exact only for those two adds onto zero: on a non-manifold edge
+    #
+    # ``float32`` sums in arrival order, or under the deterministic setting ``float64`` sums of the
+    # same ``float32`` cotangents (``scatter_face_areas_exact``'s device), the overloads in
+    # ``EDGE_COTAN_ADD``. A sum of a few ``float32`` values is exact in ``float64`` while their
+    # exponents span under ``29 - log2(count)`` bits, so the commit order changes no bit, and the
+    # caller's one narrowing to ``float32`` is the ``float32`` sum a manifold edge's two adds give.
+    # The ``float32`` atomics are exact only for those two adds onto zero: on a non-manifold edge
     # (three or more faces, which a refilled self-intersection leaves) they commit in arrival order.
     f = wp.int32(wp.tid())
     half_cotan0, half_cotan1, half_cotan2 = face_half_cotangents(vertices, faces, f)
@@ -99,9 +88,9 @@ def edge_cotan_add_exact(
         out_w,
         inverse,
         f,
-        wp.float64(two * half_cotan2),
-        wp.float64(two * half_cotan0),
-        wp.float64(two * half_cotan1),
+        out_w.dtype(two * half_cotan2),
+        out_w.dtype(two * half_cotan0),
+        out_w.dtype(two * half_cotan1),
     )
 
 
@@ -1119,6 +1108,13 @@ def diffused_row(
 
 
 @wp.func
+def closed_ring_average(position: wp.vec3d, ring_average: wp.vec3d, deg: wp.float64) -> wp.vec3d:
+    # The closed 1-ring average ``(v + deg * L.v) / (deg + 1)`` of a vertex of degree ``deg``
+    # whose neighbours average ``ring_average``; ``deg = 0`` gives ``v``.
+    return (position + deg * ring_average) / (deg + wp.float64(1.0))
+
+
+@wp.func
 def neighborhood_averaged_row(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
@@ -1129,7 +1125,7 @@ def neighborhood_averaged_row(
     # Row ``i`` of a ``neighborhood_average_pass``, before the store's narrowing.
     lv = operator_row(offsets, columns, values, positions, i)
     deg = wp.float64(offsets[i + 1] - offsets[i])
-    return (wp.vec3d(positions[i]) + deg * lv) / (deg + wp.float64(1.0))
+    return closed_ring_average(wp.vec3d(positions[i]), lv, deg)
 
 
 @wp.func
@@ -1148,9 +1144,9 @@ def graph_sharpened_row(
 
 # ``vec3_passes_serial``'s pass kinds: the row of ``diffuse_vec3_pass``,
 # ``neighborhood_average_pass`` or ``graph_sharpen_pass``.
-PASS_DIFFUSE = wp.constant(0)
-PASS_NEIGHBORHOOD_AVERAGE = wp.constant(1)
-PASS_GRAPH_SHARPEN = wp.constant(2)
+PASS_DIFFUSE = 0
+PASS_NEIGHBORHOOD_AVERAGE = 1
+PASS_GRAPH_SHARPEN = 2
 
 
 @wp.func
@@ -1169,6 +1165,33 @@ def vec3_pass_row(
     if kind == PASS_GRAPH_SHARPEN:
         return graph_sharpened_row(offsets, columns, values, positions, coeff, i)
     return diffused_row(offsets, columns, values, positions, coeff, i)
+
+
+# The ``_serial`` kernels below run every pass of a ping-pong loop in one launch of one thread, in
+# the host loop's rotation: pass 0 reads the input, pass ``k`` writes ``buffer_{k % 2}`` and pass
+# ``k + 1`` reads it. Each pass picks its two arrays once, so its rows run one call.
+
+
+@wp.func
+def rotation_buffer(
+    buffer_0: wp.array[Any], buffer_1: wp.array[Any], index: wp.int32
+) -> wp.array[Any]:
+    # ``buffer_{index % 2}``: the buffer pass ``index`` writes and pass ``index + 1`` reads.
+    if index % 2 == 0:
+        return buffer_0
+    return buffer_1
+
+
+@wp.func
+def rotation_input(
+    first: wp.array[Any], buffer_0: wp.array[Any], buffer_1: wp.array[Any], index: wp.int32
+) -> wp.array[Any]:
+    # The array pass ``index`` reads: ``first`` at pass 0, then the buffer pass ``index - 1`` wrote.
+    # A kernel whose input is not the buffers' dtype keeps its pass-0 branch and reads
+    # ``rotation_buffer(..., index - 1)`` after it.
+    if index == 0:
+        return first
+    return rotation_buffer(buffer_0, buffer_1, index - 1)
 
 
 @wp.kernel
@@ -1195,20 +1218,18 @@ def vec3_passes_serial(
     n = vertices.shape[0]
     for index in range(passes):
         coeff = wp.where(index % 2 == 0, coeff_even, coeff_odd)
+        source = rotation_buffer(out_scratch_0, out_scratch_1, index - 1)
+        target = rotation_buffer(out_scratch_0, out_scratch_1, index)
         for i in range(n):
             value = wp.vec3d()
             if index == 0:
                 value = vec3_pass_row(kind, offsets, columns, values, vertices, coeff, i)
-            elif index % 2 == 1:
-                value = vec3_pass_row(kind, offsets, columns, values, out_scratch_0, coeff, i)
             else:
-                value = vec3_pass_row(kind, offsets, columns, values, out_scratch_1, coeff, i)
+                value = vec3_pass_row(kind, offsets, columns, values, source, coeff, i)
             if index == passes - 1:
                 out_x[i] = wp.vec3(value)
-            elif index % 2 == 0:
-                out_scratch_0[i] = value
             else:
-                out_scratch_1[i] = value
+                target[i] = value
 
 
 @wp.kernel
@@ -1301,7 +1322,7 @@ def mark_spikes(
     angle_sums[v] = wp.float32(0.0)
     out_spikes[v] = spike
     if spike:
-        wp.atomic_add(out_count, slot, 1)
+        append_slot(out_count, slot)
 
 
 @wp.kernel
@@ -1321,9 +1342,7 @@ def flatten_spikes_pass(
     if not spikes[i]:
         out_next[i] = positions[i]
         return
-    lv = operator_row(offsets, columns, values, positions, i)
-    deg = wp.float64(offsets[i + 1] - offsets[i])
-    out_next[i] = to_vec3((to_vec3d(positions[i]) + deg * lv) / (deg + wp.float64(1.0)))
+    out_next[i] = to_vec3(neighborhood_averaged_row(offsets, columns, values, positions, i))
 
 
 @wp.kernel
@@ -1404,9 +1423,8 @@ def average_spike_rows(
             acc += wp.float64(weight / total) * to_vec3d(positions[column])
             previous = sorted_keys[j]
     v = wp.int32(row)
-    deg = wp.float64(degree)
     out_rows[i] = v
-    out_positions[i] = to_vec3((to_vec3d(positions[v]) + deg * acc) / (deg + wp.float64(1.0)))
+    out_positions[i] = to_vec3(closed_ring_average(to_vec3d(positions[v]), acc, wp.float64(degree)))
 
 
 @wp.kernel
@@ -1516,18 +1534,16 @@ def humphrey_passes_serial(
     # passes, where it is unused.
     n = original.shape[0]
     for index in range(passes):
+        source = rotation_buffer(out_scratch_0, out_scratch_1, index - 1)
+        target = rotation_buffer(out_scratch_0, out_scratch_1, index)
         for i in range(n):
             if index == 0:
                 humphrey_residual_row(
                     offsets, columns, values, original, original, alpha, out_lv, out_b, i
                 )
-            elif index % 2 == 1:
-                humphrey_residual_row(
-                    offsets, columns, values, out_scratch_0, original, alpha, out_lv, out_b, i
-                )
             else:
                 humphrey_residual_row(
-                    offsets, columns, values, out_scratch_1, original, alpha, out_lv, out_b, i
+                    offsets, columns, values, source, original, alpha, out_lv, out_b, i
                 )
         for i in range(n):
             value = humphrey_update_row(
@@ -1535,10 +1551,8 @@ def humphrey_passes_serial(
             )
             if index == passes - 1:
                 out_x[i] = wp.vec3(value)
-            elif index % 2 == 0:
-                out_scratch_0[i] = value
             else:
-                out_scratch_1[i] = value
+                target[i] = value
 
 
 @wp.func
@@ -1550,7 +1564,7 @@ def mut_dif_adil(normal: wp.vec3, position: wp.vec3d, lv: wp.vec3d) -> wp.float6
     return wp.float64(1.0) / wp.max(wp.float64(1e-12), residual)
 
 
-MUT_DIF_ROWS_PER_BLOCK = wp.constant(256)
+MUT_DIF_ROWS_PER_BLOCK = 256
 
 # ``float32``'s unit roundoff relative to a coordinate: the rounding a ``float32`` input carries.
 FLOAT32_ROUNDING = wp.float64(1.1920929e-07)
@@ -1855,24 +1869,17 @@ def implicit_laplacian_steps_serial(
     # sequence's to the bit; ``out_x`` may alias ``rhs`` as there (read at its own row only).
     n = out_x.shape[0]
     for step in range(steps):
+        source = rotation_buffer(out_scratch_0, out_scratch_1, step - 1)
+        target = rotation_buffer(out_scratch_0, out_scratch_1, step)
+        if step == steps - 1:
+            target = out_x
         for i in range(n):
             value = wp.vec3d()
             if step == 0:
                 value = implicit_laplacian_row(offsets, columns, values, lamb, rhs, rhs, i)
-            elif step % 2 == 1:
-                value = implicit_laplacian_row(
-                    offsets, columns, values, lamb, rhs, out_scratch_0, i
-                )
             else:
-                value = implicit_laplacian_row(
-                    offsets, columns, values, lamb, rhs, out_scratch_1, i
-                )
-            if step == steps - 1:
-                out_x[i] = value
-            elif step % 2 == 0:
-                out_scratch_0[i] = value
-            else:
-                out_scratch_1[i] = value
+                value = implicit_laplacian_row(offsets, columns, values, lamb, rhs, source, i)
+            target[i] = value
 
 
 @wp.kernel
@@ -1917,10 +1924,7 @@ def diffused_scalar(
     end = offsets[i + 1]
     average = value
     if end > start:
-        total = wp.float32(0.0)
-        for k in range(start, end):
-            total += values[k] * field[columns[k]]
-        average = total
+        average = csr_row_dot(i, 0, offsets, columns, values, field)
     return wp.lerp(value, average, lamb)
 
 
@@ -1971,18 +1975,10 @@ def diffuse_scalar_passes_serial(
     # alias ``out_next_0`` at one pass, where it is unused.
     n = field.shape[0]
     for index in range(passes):
+        source = rotation_input(field, out_next_0, out_next_1, index)
+        target = rotation_buffer(out_next_0, out_next_1, index)
         for i in range(n):
-            value = wp.float32(0.0)
-            if index == 0:
-                value = diffused_scalar(offsets, columns, values, field, lamb, i)
-            elif index % 2 == 1:
-                value = diffused_scalar(offsets, columns, values, out_next_0, lamb, i)
-            else:
-                value = diffused_scalar(offsets, columns, values, out_next_1, lamb, i)
-            if index % 2 == 0:
-                out_next_0[i] = value
-            else:
-                out_next_1[i] = value
+            target[i] = diffused_scalar(offsets, columns, values, source, lamb, i)
 
 
 @wp.kernel
@@ -2089,27 +2085,12 @@ def smooth_face_normals_serial(
     # bit. ``out_normals_1`` may alias ``face_normals``, which only pass 0 reads.
     n = face_normals.shape[0]
     for index in range(passes):
+        source = rotation_input(face_normals, out_normals_0, out_normals_1, index)
+        target = rotation_buffer(out_normals_0, out_normals_1, index)
         for f in range(n):
-            value = wp.vec3()
-            if index == 0:
-                value = smoothed_normal_over_pairs(
-                    face_normals, face_areas, face_adjacency, pair_offsets, face_pairs,
-                    threshold_cos, f,
-                )  # fmt: skip
-            elif index % 2 == 1:
-                value = smoothed_normal_over_pairs(
-                    out_normals_0, face_areas, face_adjacency, pair_offsets, face_pairs,
-                    threshold_cos, f,
-                )  # fmt: skip
-            else:
-                value = smoothed_normal_over_pairs(
-                    out_normals_1, face_areas, face_adjacency, pair_offsets, face_pairs,
-                    threshold_cos, f,
-                )  # fmt: skip
-            if index % 2 == 0:
-                out_normals_0[f] = value
-            else:
-                out_normals_1[f] = value
+            target[f] = smoothed_normal_over_pairs(
+                source, face_areas, face_adjacency, pair_offsets, face_pairs, threshold_cos, f
+            )
 
 
 @wp.func
@@ -2161,24 +2142,10 @@ def smooth_face_normals_over_mates_serial(
     # thread, each face ``smoothed_normal_over_mates``, the same rotation and aliasing.
     n = face_normals.shape[0]
     for index in range(passes):
+        source = rotation_input(face_normals, out_normals_0, out_normals_1, index)
+        target = rotation_buffer(out_normals_0, out_normals_1, index)
         for f in range(n):
-            value = wp.vec3()
-            if index == 0:
-                value = smoothed_normal_over_mates(
-                    face_normals, face_areas, mates, threshold_cos, f
-                )
-            elif index % 2 == 1:
-                value = smoothed_normal_over_mates(
-                    out_normals_0, face_areas, mates, threshold_cos, f
-                )
-            else:
-                value = smoothed_normal_over_mates(
-                    out_normals_1, face_areas, mates, threshold_cos, f
-                )
-            if index % 2 == 0:
-                out_normals_0[f] = value
-            else:
-                out_normals_1[f] = value
+            target[f] = smoothed_normal_over_mates(source, face_areas, mates, threshold_cos, f)
 
 
 @wp.kernel
@@ -2270,24 +2237,12 @@ def smooth_face_normals_meshlab_serial(
     # each face ``smoothed_normal_meshlab``, the same rotation and aliasing.
     n = face_normals.shape[0]
     for index in range(passes):
+        source = rotation_input(face_normals, out_normals_0, out_normals_1, index)
+        target = rotation_buffer(out_normals_0, out_normals_1, index)
         for f in range(n):
-            value = face_normals[f]
-            if index == 0:
-                value = smoothed_normal_meshlab(
-                    face_normals, faces, vertex_faces, vf_offsets, threshold_cos, f
-                )
-            elif index % 2 == 1:
-                value = smoothed_normal_meshlab(
-                    out_normals_0, faces, vertex_faces, vf_offsets, threshold_cos, f
-                )
-            else:
-                value = smoothed_normal_meshlab(
-                    out_normals_1, faces, vertex_faces, vf_offsets, threshold_cos, f
-                )
-            if index % 2 == 0:
-                out_normals_0[f] = value
-            else:
-                out_normals_1[f] = value
+            target[f] = smoothed_normal_meshlab(
+                source, faces, vertex_faces, vf_offsets, threshold_cos, f
+            )
 
 
 @wp.func
@@ -2356,22 +2311,10 @@ def fit_vertices_to_normals_serial(
     # ``vertices``, which only step 0 reads.
     n = vertices.shape[0]
     for index in range(steps):
+        source = rotation_input(vertices, out_positions_0, out_positions_1, index)
+        target = rotation_buffer(out_positions_0, out_positions_1, index)
         for v in range(n):
-            value = vertices[v]
-            if index == 0:
-                value = fitted_vertex(vertices, faces, face_normals, vertex_faces, vf_offsets, v)
-            elif index % 2 == 1:
-                value = fitted_vertex(
-                    out_positions_0, faces, face_normals, vertex_faces, vf_offsets, v
-                )
-            else:
-                value = fitted_vertex(
-                    out_positions_1, faces, face_normals, vertex_faces, vf_offsets, v
-                )
-            if index % 2 == 0:
-                out_positions_0[v] = value
-            else:
-                out_positions_1[v] = value
+            target[v] = fitted_vertex(source, faces, face_normals, vertex_faces, vf_offsets, v)
 
 
 # The Mumford-Shah normal denoiser of Zhang et al. (2015), "Mesh Denoising via a Novel
@@ -2436,11 +2379,15 @@ def mumford_shah_face_geometry(
 
 
 @wp.func
+def column_vec3(columns: wp.array2d[wp.float64], i: wp.int32) -> wp.vec3:
+    # Entry ``i`` of three ``float64`` solution columns, each rounded to ``float32``.
+    return wp.vec3(wp.float32(columns[0, i]), wp.float32(columns[1, i]), wp.float32(columns[2, i]))
+
+
+@wp.func
 def solved_normal(solution: wp.array2d[wp.float64], f: wp.int32) -> wp.vec3:
     # Face ``f``'s unit normal from the face system's ``float64`` solution columns.
-    return wp.normalize(
-        wp.vec3(wp.float32(solution[0, f]), wp.float32(solution[1, f]), wp.float32(solution[2, f]))
-    )
+    return wp.normalize(column_vec3(solution, f))
 
 
 @wp.func
@@ -2575,9 +2522,7 @@ def vec3_to_columns(values: wp.array[wp.vec3], out_columns: wp.array2d[wp.float6
 def columns_to_vec3(columns: wp.array2d[wp.float64], out_values: wp.array[wp.vec3]) -> None:
     # The inverse of ``vec3_to_columns``, rounding each entry to ``float32``.
     i = wp.int32(wp.tid())
-    out_values[i] = wp.vec3(
-        wp.float32(columns[0, i]), wp.float32(columns[1, i]), wp.float32(columns[2, i])
-    )
+    out_values[i] = column_vec3(columns, i)
 
 
 @wp.func
@@ -2611,15 +2556,9 @@ def project_to_target_normals(
     # ``G^T (d0, d1)``, written per corner for ``normals_to_points_rhs`` to gather.
     f = wp.int32(wp.tid())
     i0, i1, i2 = corner_triple(faces, f)
-    p0 = wp.vec3(
-        wp.float32(solution[0, i0]), wp.float32(solution[1, i0]), wp.float32(solution[2, i0])
-    )
-    p1 = wp.vec3(
-        wp.float32(solution[0, i1]), wp.float32(solution[1, i1]), wp.float32(solution[2, i1])
-    )
-    p2 = wp.vec3(
-        wp.float32(solution[0, i2]), wp.float32(solution[1, i2]), wp.float32(solution[2, i2])
-    )
+    p0 = column_vec3(solution, i0)
+    p1 = column_vec3(solution, i1)
+    p2 = column_vec3(solution, i2)
     n = normals[f]
     c = (p0 + p1 + p2) / wp.float32(3.0)
     q0 = p0 - n * wp.dot(n, p0 - c)
@@ -2764,6 +2703,22 @@ def _rotate_corner_to_front(
 
 
 @wp.func
+def restrict_to_plane(matrix: wp.mat33d, normal: wp.vec3) -> tuple[wp.vec3d, wp.vec3d, wp.mat22d]:
+    # The tangent plane ``plane_basis(normal)`` spans, widened to ``float64``, and the symmetric
+    # ``matrix`` restricted to it: the area-equalizing solves' ``no_shrinkage`` system.
+    axis_x, axis_y = plane_basis(normal)
+    basis_x = to_vec3d(axis_x)
+    basis_y = to_vec3d(axis_y)
+    mapped_x = matrix * basis_x
+    mapped_y = matrix * basis_y
+    off_diagonal = wp.dot(mapped_x, basis_y)
+    planar = wp.mat22d(
+        wp.dot(mapped_x, basis_x), off_diagonal, off_diagonal, wp.dot(mapped_y, basis_y)
+    )
+    return basis_x, basis_y, planar
+
+
+@wp.func
 def equal_area_position_f64(
     positions: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -2804,15 +2759,7 @@ def equal_area_position_f64(
         # projection below must use that same unit vector, since it is only a projection onto the
         # normal axis when its argument has unit length.
         unit_normal = wp.normalize(normal)
-        axis_x, axis_y = plane_basis(normal)
-        basis_x = to_vec3d(axis_x)
-        basis_y = to_vec3d(axis_y)
-        mapped_x = matrix * basis_x
-        mapped_y = matrix * basis_y
-        off_diagonal = wp.dot(mapped_x, basis_y)
-        planar = wp.mat22d(
-            wp.dot(mapped_x, basis_x), off_diagonal, off_diagonal, wp.dot(mapped_y, basis_y)
-        )
+        basis_x, basis_y, planar = restrict_to_plane(matrix, normal)
         determinant = wp.determinant(planar)
         trace = planar[0, 0] + planar[1, 1]
         if DOUBLE_EPSILON * wp.abs(trace * trace) >= wp.abs(determinant):
@@ -2841,7 +2788,7 @@ def equal_area_position_f64(
 # 0.01 in ten passes (chaotic, differing run to run and between devices) were boundary vertices,
 # whose open fan has no area-preserving motion; the wrapper holds the boundary, and none moves that
 # far now.
-EQUAL_AREA_F32_CONDITION = wp.constant(wp.float64(1.0e-4))
+EQUAL_AREA_F32_CONDITION = wp.float64(1.0e-4)
 
 
 @wp.func
@@ -2892,15 +2839,7 @@ def equal_area_position(
     wide_rhs = to_vec3d(rhs)
     if no_shrinkage:
         # The tangent plane through the current position: the displacement has no normal part.
-        axis_x, axis_y = plane_basis(normal)
-        basis_x = to_vec3d(axis_x)
-        basis_y = to_vec3d(axis_y)
-        mapped_x = wide * basis_x
-        mapped_y = wide * basis_y
-        off_diagonal = wp.dot(mapped_x, basis_y)
-        planar = wp.mat22d(
-            wp.dot(mapped_x, basis_x), off_diagonal, off_diagonal, wp.dot(mapped_y, basis_y)
-        )
+        basis_x, basis_y, planar = restrict_to_plane(wide, normal)
         trace = planar[0, 0] + planar[1, 1]
         if wp.abs(wp.determinant(planar)) >= EQUAL_AREA_F32_CONDITION * trace * trace:
             solution = wp.inverse(planar) * wp.vec2d(
@@ -2996,27 +2935,13 @@ def equalize_area_steps_serial(
     # pass, where it is unused.
     n = initial.shape[0]
     for index in range(passes):
+        source = rotation_input(initial, out_positions_0, out_positions_1, index)
+        target = rotation_buffer(out_positions_0, out_positions_1, index)
         for vertex in range(n):
-            value = wp.vec3()
-            if index == 0:
-                value = equalized_vertex(
-                    initial, faces, offsets, vertex_faces, region, initial, force, no_shrinkage,
-                    max_displacement, vertex,
-                )  # fmt: skip
-            elif index % 2 == 1:
-                value = equalized_vertex(
-                    out_positions_0, faces, offsets, vertex_faces, region, initial, force,
-                    no_shrinkage, max_displacement, vertex,
-                )  # fmt: skip
-            else:
-                value = equalized_vertex(
-                    out_positions_1, faces, offsets, vertex_faces, region, initial, force,
-                    no_shrinkage, max_displacement, vertex,
-                )  # fmt: skip
-            if index % 2 == 0:
-                out_positions_0[vertex] = value
-            else:
-                out_positions_1[vertex] = value
+            target[vertex] = equalized_vertex(
+                source, faces, offsets, vertex_faces, region, initial, force, no_shrinkage,
+                max_displacement, vertex,
+            )  # fmt: skip
 
 
 @wp.func
@@ -3122,67 +3047,49 @@ def relax_keeping_volume_serial(
     # ``equalize_area_steps_serial``, so the result is the launches' to the bit.
     n = initial.shape[0]
     for index in range(passes):
+        source = rotation_input(initial, out_positions_0, out_positions_1, index)
+        target = rotation_buffer(out_positions_0, out_positions_1, index)
         for vertex in range(n):
-            if index == 0:
-                out_push[vertex] = ring_push(initial, offsets, columns, region, force, vertex)
-            elif index % 2 == 1:
-                out_push[vertex] = ring_push(
-                    out_positions_0, offsets, columns, region, force, vertex
-                )
-            else:
-                out_push[vertex] = ring_push(
-                    out_positions_1, offsets, columns, region, force, vertex
-                )
+            out_push[vertex] = ring_push(source, offsets, columns, region, force, vertex)
         for vertex in range(n):
-            value = wp.vec3()
-            if index == 0:
-                value = pushed_keeping_volume(
-                    initial, offsets, columns, region, out_push, initial, max_displacement, vertex
-                )
-            elif index % 2 == 1:
-                value = pushed_keeping_volume(
-                    out_positions_0, offsets, columns, region, out_push, initial,
-                    max_displacement, vertex,
-                )  # fmt: skip
-            else:
-                value = pushed_keeping_volume(
-                    out_positions_1, offsets, columns, region, out_push, initial,
-                    max_displacement, vertex,
-                )  # fmt: skip
-            if index % 2 == 0:
-                out_positions_0[vertex] = value
-            else:
-                out_positions_1[vertex] = value
+            target[vertex] = pushed_keeping_volume(
+                source, offsets, columns, region, out_push, initial, max_displacement, vertex
+            )
 
 
 @wp.func
 def _neighborhood_frame(
-    positions: wp.array[wp.vec3], neighbors: wp.array[wp.int32], begin: wp.int32, end: wp.int32
-) -> tuple[wp.vec3, wp.vec3, wp.vec3, wp.vec3, wp.float32]:
+    positions: wp.array[wp.vec3],
+    neighbors: wp.array[wp.int32],
+    begin: wp.int32,
+    end: wp.int32,
+    zero: Any,
+):
     # Principal frame of the neighbourhood point set: its centroid, then the two directions of
     # greatest spread and the one of least. The least-spread direction is the fitted plane's normal,
-    # so the same decomposition serves both the planar and the quadric fit.
+    # so the same decomposition serves both the planar and the quadric fit. Formed in ``zero``'s
+    # precision (``wp.vec3()`` or ``wp.vec3d()``), each position widened exactly as it is read.
     #
     # The radius comes back with it because the covariance pass already holds every offset whose
     # length it is, and the quadric fit divides its local coordinates by it -- see the comment at
     # that fit for why a scale-free fit is a correctness requirement and not a nicety.
-    count = wp.float32(end - begin)
-    centroid = wp.vec3()
+    count = type(zero[0])(end - begin)
+    centroid = zero
     for slot in range(begin, end):
-        centroid += positions[neighbors[slot]]
+        centroid += type(zero)(positions[neighbors[slot]])
     centroid /= count
-    covariance = wp.mat33()
-    radius = wp.float32(0.0)
+    covariance = wp.outer(zero, zero)
+    radius = type(zero[0])(0.0)
     for slot in range(begin, end):
-        offset = positions[neighbors[slot]] - centroid
+        offset = type(zero)(positions[neighbors[slot]]) - centroid
         covariance += wp.outer(offset, offset)
         radius = wp.max(radius, wp.length(offset))
     _left, _singular, basis = wp.svd3(covariance / count)
     # ``wp.svd3`` orders the singular values descending, so the last column spans the least. Its
     # sign is arbitrary and irrelevant: every use below is a projection along the axis, not a side.
-    axis_u = wp.vec3(basis[0, 0], basis[1, 0], basis[2, 0])
-    axis_v = wp.vec3(basis[0, 1], basis[1, 1], basis[2, 1])
-    axis_w = wp.vec3(basis[0, 2], basis[1, 2], basis[2, 2])
+    axis_u = type(zero)(basis[0, 0], basis[1, 0], basis[2, 0])
+    axis_v = type(zero)(basis[0, 1], basis[1, 1], basis[2, 1])
+    axis_w = type(zero)(basis[0, 2], basis[1, 2], basis[2, 2])
     return centroid, axis_u, axis_v, axis_w, radius
 
 
@@ -3216,7 +3123,9 @@ def _neighborhood_target(
 ) -> wp.vec3:
     # The point above ``current`` of the plane or quadric fitted to the neighbourhood, its frame
     # formed in float32 and the quadric solved in float64.
-    centroid, axis_u, axis_v, axis_w, radius = _neighborhood_frame(positions, neighbors, begin, end)
+    centroid, axis_u, axis_v, axis_w, radius = _neighborhood_frame(
+        positions, neighbors, begin, end, wp.vec3()
+    )
     offset = current - centroid
     # Initialized before the branch, per the kernel-scope scoping rule; the planar fit's answer is
     # exactly this, since the plane passes through the neighbourhood centroid.
@@ -3270,21 +3179,9 @@ def _neighborhood_target_d(
     # covariance can tilt the normal by ~4e-4, which a vertex ~0.03 off the centroid turns into a
     # 1e-5 move; in float64 the normal is the covariance's to ~1e-8. Same fit, same frame, same
     # scale-free quadric coordinates -- the two differ by precision alone.
-    count = wp.float64(end - begin)
-    centroid = wp.vec3d()
-    for slot in range(begin, end):
-        centroid += to_vec3d(positions[neighbors[slot]])
-    centroid /= count
-    covariance = wp.mat33d()
-    radius = wp.float64(0.0)
-    for slot in range(begin, end):
-        offset = to_vec3d(positions[neighbors[slot]]) - centroid
-        covariance += wp.outer(offset, offset)
-        radius = wp.max(radius, wp.length(offset))
-    _left, _singular, basis = wp.svd3(covariance / count)
-    axis_u = wp.vec3d(basis[0, 0], basis[1, 0], basis[2, 0])
-    axis_v = wp.vec3d(basis[0, 1], basis[1, 1], basis[2, 1])
-    axis_w = wp.vec3d(basis[0, 2], basis[1, 2], basis[2, 2])
+    centroid, axis_u, axis_v, axis_w, radius = _neighborhood_frame(
+        positions, neighbors, begin, end, wp.vec3d()
+    )
     offset = to_vec3d(current) - centroid
     height = wp.float64(0.0)
     if quadric and radius > wp.float64(0.0):
@@ -3304,70 +3201,50 @@ def _neighborhood_target_d(
     return to_vec3(to_vec3d(current) + axis_w * (height - wp.dot(offset, axis_w)))
 
 
-@wp.kernel
-def relax_approx_step(
-    positions: wp.array[wp.vec3],
-    neighbor_indices: wp.array[wp.int32],
-    neighbor_offsets: wp.array[wp.int32],
-    row_stride: wp.int32,
-    chunk_start: wp.int32,
-    region: wp.array[wp.bool],
-    initial: wp.array[wp.vec3],
-    force: wp.float32,
-    quadric: wp.bool,
-    max_displacement: wp.float32,
-    out_positions: wp.array[wp.vec3],
-) -> None:
-    # Fit a local surface to the vertex's neighbourhood and step toward the point of that surface
-    # above the vertex. The floor below is a uniform 6 for both the planar and the quadric fit --
-    # not 3, even though a plane alone needs only that many -- so an under-populated neighbourhood
-    # is left alone rather than fitted to whatever it has; ``smoothing.relax_approx``'s docstring
-    # states this uniform floor as the intended behavior.
-    #
-    # The neighbourhoods arrive in either of ``ball_row_bounds``' layouts: the packed list over
-    # every vertex at ``chunk_start = 0``, or one chunk of the walk's queue rows, thread ``t``
-    # fitting vertex ``chunk_start + t``.
-    t = wp.int32(wp.tid())
-    vertex = chunk_start + t
-    current = positions[vertex]
-    begin, end = ball_row_bounds(neighbor_offsets, row_stride, vertex, t)
-    if not in_region(region, vertex) or end - begin < 6:
-        out_positions[vertex] = current
-        return
+def _relax_approx_kernel(name: str, fit: wp.Function) -> wp.Kernel:
+    # ``relax_approx_step`` / ``relax_approx_step_d``: one body over the fit ``fit`` names
+    # (``_neighborhood_target``, or ``_neighborhood_target_d`` with the fit formed in float64); the
+    # guard and the step are the same. Two kernels rather than a precision selector in one: a
+    # selector moved the float32 kernel's CUDA rounding at the displacement clamp by an ulp.
+    def _k(
+        positions: wp.array[wp.vec3],
+        neighbor_indices: wp.array[wp.int32],
+        neighbor_offsets: wp.array[wp.int32],
+        row_stride: wp.int32,
+        chunk_start: wp.int32,
+        region: wp.array[wp.bool],
+        initial: wp.array[wp.vec3],
+        force: wp.float32,
+        quadric: wp.bool,
+        max_displacement: wp.float32,
+        out_positions: wp.array[wp.vec3],
+    ) -> None:
+        # Fit a local surface to the vertex's neighbourhood and step toward the point of that
+        # surface above the vertex. The floor below is a uniform 6 for both the planar and the
+        # quadric fit -- not 3, even though a plane alone needs only that many -- so an
+        # under-populated neighbourhood is left alone rather than fitted to whatever it has;
+        # ``smoothing.relax_approx``'s docstring states this uniform floor as the intended behavior.
+        #
+        # The neighbourhoods arrive in either of ``ball_row_bounds``' layouts: the packed list over
+        # every vertex at ``chunk_start = 0``, or one chunk of the walk's queue rows, thread ``t``
+        # fitting vertex ``chunk_start + t``.
+        t = wp.int32(wp.tid())
+        vertex = chunk_start + t
+        current = positions[vertex]
+        begin, end = ball_row_bounds(neighbor_offsets, row_stride, vertex, t)
+        if not in_region(region, vertex) or end - begin < 6:
+            out_positions[vertex] = current
+            return
 
-    target = _neighborhood_target(positions, neighbor_indices, begin, end, current, quadric)
-    moved = current + (target - current) * force
-    out_positions[vertex] = limit_near_initial(moved, initial[vertex], max_displacement)
+        target = fit(positions, neighbor_indices, begin, end, current, quadric)
+        moved = current + (target - current) * force
+        out_positions[vertex] = limit_near_initial(moved, initial[vertex], max_displacement)
+
+    return wp.kernel(_k, name=name)
 
 
-@wp.kernel
-def relax_approx_step_d(
-    positions: wp.array[wp.vec3],
-    neighbor_indices: wp.array[wp.int32],
-    neighbor_offsets: wp.array[wp.int32],
-    row_stride: wp.int32,
-    chunk_start: wp.int32,
-    region: wp.array[wp.bool],
-    initial: wp.array[wp.vec3],
-    force: wp.float32,
-    quadric: wp.bool,
-    max_displacement: wp.float32,
-    out_positions: wp.array[wp.vec3],
-) -> None:
-    # ``relax_approx_step`` with the fit formed in float64 (``_neighborhood_target_d``); the guard
-    # and the step are the same. Two kernels rather than a precision selector in one: a selector
-    # moved the float32 kernel's CUDA rounding at the displacement clamp by an ulp.
-    t = wp.int32(wp.tid())
-    vertex = chunk_start + t
-    current = positions[vertex]
-    begin, end = ball_row_bounds(neighbor_offsets, row_stride, vertex, t)
-    if not in_region(region, vertex) or end - begin < 6:
-        out_positions[vertex] = current
-        return
-
-    target = _neighborhood_target_d(positions, neighbor_indices, begin, end, current, quadric)
-    moved = current + (target - current) * force
-    out_positions[vertex] = limit_near_initial(moved, initial[vertex], max_displacement)
+relax_approx_step = _relax_approx_kernel("relax_approx_step", _neighborhood_target)
+relax_approx_step_d = _relax_approx_kernel("relax_approx_step_d", _neighborhood_target_d)
 
 
 @wp.func
@@ -3975,8 +3852,10 @@ def gauss_seidel_wave_counted(
 
 
 # The concrete handles of the generic pass kernels above, keyed by the dtype of the positions read
-# and of the positions written (``humphrey_*``: the one generic side); see
+# and of the positions written (``humphrey_*``: the one generic side; ``EDGE_COTAN_ADD``: the
+# accumulator's); see
 # [`OverloadTable`][ordito.kernels.array.OverloadTable]. Filled in by ``_register_overloads``.
+EDGE_COTAN_ADD: OverloadTable
 DIFFUSE_VEC3_PASS: OverloadTable
 UMBRELLA_DIFFUSE_PASS: OverloadTable
 SHARPEN_PASS: OverloadTable
@@ -3997,6 +3876,7 @@ IMPLICIT_LAPLACIAN_STEPS_SERIAL: OverloadTable
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
+    global EDGE_COTAN_ADD
     global \
         DIFFUSE_VEC3_PASS, \
         UMBRELLA_DIFFUSE_PASS, \
@@ -4010,6 +3890,13 @@ def _register_overloads() -> None:
     vectors = (wp.vec3, wp.vec3d)
     scalars = {wp.vec3: wp.float32, wp.vec3d: wp.float64}
     indices = wp.array[wp.int32]
+    EDGE_COTAN_ADD = OverloadTable(
+        edge_cotan_add,
+        {
+            dtype: [wp.array[wp.vec3], indices, indices, wp.array[dtype]]
+            for dtype in (wp.float32, wp.float64)
+        },
+    )
     CORNER_CROSS_NORMALS = OverloadTable(
         corner_cross_normals, {vec: [wp.array[vec], indices, wp.array[vec]] for vec in (wp.vec3d,)}
     )

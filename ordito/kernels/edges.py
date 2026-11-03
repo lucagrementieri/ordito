@@ -6,6 +6,7 @@ from ordito.kernels.grouping import add_sorted_run_length
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import segment_aabb, side_lengths
 from ordito.kernels.reduce import block_chunk_1d, block_sum, term_sum_1d
+from ordito.kernels.triangles import corner_triple, face_vertices
 
 wp.set_module_options({"enable_backward": False})
 
@@ -29,9 +30,7 @@ def faces_to_edges(
     # Three directed edges per face; ``sort`` puts the smaller vertex index first per row.
     tid = wp.int32(wp.tid())
     f = tid * 3
-    i0 = faces[f + 0]
-    i1 = faces[f + 1]
-    i2 = faces[f + 2]
+    i0, i1, i2 = corner_triple(faces, tid)
     _write_edge(out_edges, f, i0, i1, sort)
     _write_edge(out_edges, f + 1, i1, i2, sort)
     _write_edge(out_edges, f + 2, i2, i0, sort)
@@ -313,9 +312,8 @@ def face_edge_lengths(
     # Column ``e`` is the edge *opposite* corner ``e``, the igl intrinsic convention that
     # ``laplacian.cotmatrix_entries_intrinsic`` reads.
     f = wp.int32(wp.tid())
-    l0, l1, l2 = side_lengths(
-        vertices[faces[f * 3 + 0]], vertices[faces[f * 3 + 1]], vertices[faces[f * 3 + 2]]
-    )
+    v0, v1, v2 = face_vertices(vertices, faces, f)
+    l0, l1, l2 = side_lengths(v0, v1, v2)
     out_lengths[f, 0] = l0
     out_lengths[f, 1] = l1
     out_lengths[f, 2] = l2

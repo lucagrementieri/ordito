@@ -19,10 +19,10 @@ from ordito.kernels.array import (
     scanned_count,
     store_counted_ballot_bit,
 )
-from ordito.kernels.halfedge import halfedge_endpoints, key_ordered_halfedge
+from ordito.kernels.halfedge import halfedge_endpoints, key_ordered_halfedge, mate_halfedge
 from ordito.kernels.reduce import GroupSumPass, read_group_sum
 from ordito.kernels.scatter import mark_corners, scatter_add
-from ordito.kernels.triangles import corner_triple, face_normals_and_area
+from ordito.kernels.triangles import corner_triple, face_normals_and_area, write_corner_triple
 
 wp.set_module_options({"enable_backward": False})
 
@@ -57,9 +57,7 @@ def compact_indexed_submesh(
     t = wp.int32(wp.tid())
     if t < face_indices.shape[0]:
         a, b, c = corner_triple(faces, face_indices[t])
-        out_faces[3 * t] = inclusive[a] - 1
-        out_faces[3 * t + 1] = inclusive[b] - 1
-        out_faces[3 * t + 2] = inclusive[c] - 1
+        write_corner_triple(out_faces, t, inclusive[a] - 1, inclusive[b] - 1, inclusive[c] - 1)
     if t < vertices.shape[0]:
         start, count = scanned_count(inclusive, t)
         if count != 0:
@@ -650,10 +648,8 @@ def region_partner(faces: wp.array[wp.int32], mates: wp.array[wp.int32], h: wp.i
     mate = mates[h]
     if tail == tip:
         return f
-    if mate >= 0:
-        return mate // 3
-    if mate <= -2:
-        return (wp.int32(-2) - mate) // 3
+    if mate != -1:
+        return mate_halfedge(mate) // 3
     return f
 
 

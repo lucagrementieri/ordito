@@ -28,7 +28,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import require_same_device, scan_count
 from ordito.config import is_deterministic
 from ordito.constants import INDEX_RADIX_PAIR, TOLERANCE_MERGE_CONSTANT
 from ordito.kernels import adjacency as kernel_adjacency
@@ -285,9 +285,8 @@ def _sorted_pair_scan(
         inputs=[keys, n, 2, inclusive],
         device=faces.device,
     )
-    _launch.array_scan(inclusive, inclusive, inclusive=True)
     # The pair count sizes the output, so it has to come back to the host.
-    return order, inclusive, int(read_scalar(inclusive))
+    return order, inclusive, scan_count(inclusive)
 
 
 def vertex_face_adjacency(
@@ -482,7 +481,7 @@ def _fill_sorted_vertex_faces(
     rows in ascending face order: the same on every run, where the atomic scatter fills each row
     in the order its atomics commit.
     """
-    _, corner_order = od.array.sort_and_argsort(faces, end_bit=max(1, (row_count - 1).bit_length()))
+    _, corner_order = od.array.sort_and_argsort(faces, end_bit=_launch.key_bits(row_count))
     _launch.map(kernel_adjacency.corner_face, corner_order, out=out_vertex_faces)
 
 
@@ -1232,9 +1231,7 @@ def _sorted_face_edge_buffers(
         inputs=[faces, wp.uint64(radix), keys, order],
         device=device,
     )
-    _launch.radix_sort_pairs(
-        keys, order, count=n, end_bit=min(64, max(1, (radix * radix - 1).bit_length()))
-    )
+    _launch.radix_sort_pairs(keys, order, count=n, end_bit=_launch.key_bits(radix * radix))
     return keys, order, n
 
 

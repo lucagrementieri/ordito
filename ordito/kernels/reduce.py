@@ -39,13 +39,13 @@ def tile_chunk(n: wp.int32, chunk: wp.int32, width: wp.int32) -> tuple[wp.int32,
     return offset, n - offset
 
 
-# Elements one block of a 1-D global reduction owns. It is a ``wp.constant`` because both halves
+# Elements one block of a 1-D global reduction owns. It is one shared name because both halves
 # of the contract read it and they must read the *same* number: [`blocks_1d`] derives the launch
 # width from it at Python scope, and a kernel-scope ``tile_chunk(n, chunk, ITEMS_PER_BLOCK_1D)``
 # derives each block's slice from it. A launch and a kernel that disagree here do not fail -- they
 # fold some elements twice and drop others, which for a sum is a wrong answer and for an extremum
 # looks right. See [`blocks_1d`] for the same hazard stated from the launch side.
-ITEMS_PER_BLOCK_1D = wp.constant(TILE_1D * TILES_PER_BLOCK_1D)
+ITEMS_PER_BLOCK_1D = TILE_1D * TILES_PER_BLOCK_1D
 
 
 @wp.func
@@ -276,6 +276,24 @@ def block_last_ticket(
     if lane == 0:
         last = is_last(take_ticket(out, counter, unit), n_rows)
     return block_max(last)
+
+
+@wp.func
+def last_atomic_block(
+    lane: wp.int32, out_ticket: wp.array[wp.int32], n_blocks: wp.int32
+) -> wp.int32:
+    # The last block of a launch whose blocks committed by ``atomic_add`` (``ordito.config``'s
+    # deterministic setting off): non-zero, in every lane, for the block drawing the last of
+    # ``n_blocks`` integer tickets on ``out_ticket[0]``, whose reads then see every block's adds
+    # (each block fenced before its ticket). That block resets the counter, so a loop's next round
+    # needs no clearing. The reproducible commit has its last block already, the one that folds.
+    # Shared by ``registration``'s round-closing blocks and ``points``' fused fit.
+    last = block_last_ticket(lane, out_ticket, 0, wp.int32(0), n_blocks, last_ticket)
+    if last != 0:
+        thread_fence()
+        if lane == 0:
+            out_ticket[0] = wp.int32(0)
+    return last
 
 
 @wp.func

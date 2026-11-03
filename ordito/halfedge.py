@@ -769,10 +769,7 @@ def key_ordered_halfedges(
         device=device,
     )
     _launch.radix_sort_pairs(
-        keys,
-        order,
-        count=count,
-        end_bit=min(64, max(1, (n_classes * n_vertices * n_vertices - 1).bit_length())),
+        keys, order, count=count, end_bit=_launch.key_bits(n_classes * n_vertices * n_vertices)
     )
     return _launch.view(order, 0, count)
 

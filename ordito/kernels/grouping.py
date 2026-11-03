@@ -68,13 +68,13 @@ def emit_groups(
         out_groups[g, j] = indices[i + j]
 
 
-HASH_MULT_U64 = wp.constant(wp.uint64(11400714819323198485))  # 0x9e3779b97f4a7c15
+HASH_MULT_U64 = wp.uint64(11400714819323198485)  # 0x9e3779b97f4a7c15
 
 # Folds the multiplicative hash's high half onto its low half; see ``hash_slot``.
-HASH_FOLD_SHIFT = wp.constant(wp.uint64(32))
+HASH_FOLD_SHIFT = wp.uint64(32)
 
-VEC3_PACK_PRECISION = wp.constant(wp.uint64(64 // 3))
-VEC3_PACK_SHIFT = wp.constant(wp.uint32(11))
+VEC3_PACK_PRECISION = wp.uint64(64 // 3)
+VEC3_PACK_SHIFT = wp.uint32(11)
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +215,7 @@ def hash_find(key: wp.Int, slot_key: wp.array[wp.Int], mask: wp.int32) -> wp.int
 # stays below it. ``hash_find`` probes past it and ``hash_find_or_insert`` claims only empty slots,
 # so an insert racing a removal in one launch is safe; the cost is that tombstones only accumulate,
 # and the owner rebuilds the table before they fill it.
-KEY_SET_TOMBSTONE = wp.constant(wp.uint64(0xFFFFFFFFFFFFFFFF))
+KEY_SET_TOMBSTONE = wp.uint64(0xFFFFFFFFFFFFFFFF)
 
 
 @wp.func

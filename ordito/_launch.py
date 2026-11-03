@@ -1117,6 +1117,15 @@ def _float_scan_fixed_order(in_array: Any, out_array: Any, size: int) -> None:
                  block_dim=block_dim, device=device)  # fmt: skip
 
 
+def key_bits(bound: int) -> int:
+    """
+    Radix-sort ``end_bit`` for keys in ``[0, bound)``: the bits of ``bound - 1``, in ``[1, 64]``.
+
+    One bit at least, since a sort of zero bits is no sort, and at most the 64 of a ``uint64`` key.
+    """
+    return min(64, max(1, (bound - 1).bit_length()))
+
+
 def radix_sort_pairs(
     keys: Any, values: Any, count: int, begin_bit: int = 0, end_bit: int | None = None
 ) -> None:

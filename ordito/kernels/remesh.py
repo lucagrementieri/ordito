@@ -13,6 +13,7 @@ from ordito.kernels.adjacency import (
 from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_ROUND,
+    append_slot,
     binary_search_index_left,
     binary_search_sorted_contains,
     bit_rank,
@@ -23,9 +24,12 @@ from ordito.kernels.array import (
     or_counted_bit,
     pack_edge_key,
     pack_index_triple,
+    pack_nearest_key,
     popcount32,
+    popcount_below,
     rotate_min_first,
     scanned_slot,
+    set_bit,
     sort_segment,
     sorted_run_start,
     store_counted_ballot_bit,
@@ -35,6 +39,7 @@ from ordito.kernels.array import (
     to_vec3d,
     unique_edge_row,
     unpack_edge_key,
+    unpack_nearest_index,
 )
 from ordito.kernels.edges import emit_sorted_unique_edge
 from ordito.kernels.grouping import (
@@ -46,6 +51,7 @@ from ordito.kernels.grouping import (
     next_slot,
     sorted_run_of_length,
 )
+from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next, halfedge_prev
 from ordito.kernels.predicates import (
     delone_metrics,
     dihedral_angle,
@@ -60,14 +66,12 @@ from ordito.kernels.predicates import (
 )
 from ordito.kernels.reduce import (
     GROUP_SUM_NONFINITE,
-    block_last_ticket,
     block_max,
     block_sum,
     group_sum_field,
     group_sum_from_words,
     group_sum_words,
-    last_ticket,
-    thread_fence,
+    last_atomic_block,
 )
 from ordito.kernels.scatter import (
     accumulate_endpoint_value,
@@ -101,8 +105,8 @@ wp.set_module_options({"enable_backward": False})
 # ``LOOP_CONDITION`` so the shared two keep their numbers: the total commits as of the end of the
 # previous round, which is how ``end_collapse_round`` decides whether a round progressed, and the
 # faces those commits removed, which is what the next round's face budget is measured against.
-COLLAPSE_COMMITS = wp.constant(wp.int32(2))
-COLLAPSE_REMOVED_FACES = wp.constant(wp.int32(3))
+COLLAPSE_COMMITS = wp.int32(2)
+COLLAPSE_REMOVED_FACES = wp.int32(3)
 COLLAPSE_STATE_SIZE = 4
 
 # The flip loop's round state: the running total of committed flips (the commit's count), whether
@@ -112,9 +116,9 @@ COLLAPSE_STATE_SIZE = 4
 # launches return at their first statement (``flip_round_idle``), while its claim and commit find
 # the flags the last candidate launch cleared. That is what lets the host replay several recorded
 # rounds a readback without the rounds past the fixpoint costing a round's work each.
-FLIP_TOTAL = wp.constant(wp.int32(0))
-FLIP_IDLE = wp.constant(wp.int32(1))
-FLIP_SNAPSHOT = wp.constant(wp.int32(2))
+FLIP_TOTAL = wp.int32(0)
+FLIP_IDLE = wp.int32(1)
+FLIP_SNAPSHOT = wp.int32(2)
 FLIP_ROUND_STATE_SIZE = 3
 
 
@@ -127,26 +131,26 @@ def flip_round_idle(round_state: wp.array[wp.int32]) -> wp.bool:
 # Delaunay / Delone edge-flip constants. The flip predicate runs in float64 deliberately:
 # circumcircle diameters of near-degenerate triangles round too coarsely in float32, which sends
 # the flip loop non-terminating.
-DELONE_CRITICAL_DOT = wp.constant(wp.float64(-0.9))
-DELONE_EPS = wp.constant(wp.float64(1e-7))
-NO_ANGLE_CHANGE_LIMIT = wp.constant(wp.float64(6.283185307179586))  # 2*pi (NoAngleChangeLimit)
-F32_LARGE = wp.constant(wp.float32(3.0e38))  # "disabled gate" sentinel (~FLT_MAX)
+DELONE_CRITICAL_DOT = wp.float64(-0.9)
+DELONE_EPS = wp.float64(1e-7)
+NO_ANGLE_CHANGE_LIMIT = wp.float64(6.283185307179586)  # 2*pi (NoAngleChangeLimit)
+F32_LARGE = wp.float32(3.0e38)  # "disabled gate" sentinel (~FLT_MAX)
 
 # Loop subdivision stencil weights. The even-vertex relaxation uses Warren's beta rather than Loop's
 # original trigonometric weight, which is the choice ``igl::loop`` makes; see `loop_even_positions`.
-LOOP_ODD_ENDPOINT = wp.constant(wp.float32(3.0 / 8.0))
-LOOP_ODD_OPPOSITE = wp.constant(wp.float32(1.0 / 8.0))
-LOOP_BOUNDARY_SELF = wp.constant(wp.float32(3.0 / 4.0))
-LOOP_BOUNDARY_NEIGHBOR = wp.constant(wp.float32(1.0 / 8.0))
-LOOP_BETA_VALENCE_3 = wp.constant(wp.float32(3.0 / 16.0))
-LOOP_BETA_NUMERATOR = wp.constant(wp.float32(3.0 / 8.0))
+LOOP_ODD_ENDPOINT = wp.float32(3.0 / 8.0)
+LOOP_ODD_OPPOSITE = wp.float32(1.0 / 8.0)
+LOOP_BOUNDARY_SELF = wp.float32(3.0 / 4.0)
+LOOP_BOUNDARY_NEIGHBOR = wp.float32(1.0 / 8.0)
+LOOP_BETA_VALENCE_3 = wp.float32(3.0 / 16.0)
+LOOP_BETA_NUMERATOR = wp.float32(3.0 / 8.0)
 
 # Which of Loop's three even-vertex rules applies, as returned by ``loop_even_weights``. The mode is
 # what a caller needs beyond the two weights, because the neighbour weight lands on a *different*
 # neighbour set in each case: none, the boundary neighbours only, or the whole 1-ring.
-LOOP_EVEN_KEEP = wp.constant(wp.int32(0))
-LOOP_EVEN_BOUNDARY = wp.constant(wp.int32(1))
-LOOP_EVEN_INTERIOR = wp.constant(wp.int32(2))
+LOOP_EVEN_KEEP = wp.int32(0)
+LOOP_EVEN_BOUNDARY = wp.int32(1)
+LOOP_EVEN_INTERIOR = wp.int32(2)
 
 
 @wp.func
@@ -182,7 +186,8 @@ def write_four_children(
     # ``3 * n_faces`` index buffer by a separate pass that the split would read straight back.
     # Shared by ``subdivide_mesh`` (``subdivide``) and ``loop_edge_opposites``
     # (``subdivide_loop``), which writes the faces in its own pass over them.
-    fv = wp.vec3i(faces[f * 3 + 0], faces[f * 3 + 1], faces[f * 3 + 2])
+    c0, c1, c2 = corner_triple(faces, f)
+    fv = wp.vec3i(c0, c1, c2)
     mv = wp.vec3i(
         vertex_offset + corner_edge[f * 3 + 0],
         vertex_offset + corner_edge[f * 3 + 1],
@@ -245,7 +250,7 @@ def loop_edge_opposites(
     f = wp.int32(wp.tid())
     for j in range(3):
         e = edge_of_corner[f * 3 + j]
-        wp.atomic_add(out_opposite_sum, e, vertices[faces[f * 3 + (j + 2) % 3]])
+        wp.atomic_add(out_opposite_sum, e, vertices[faces[halfedge_prev(f * 3 + j)]])
         wp.atomic_add(out_face_count, e, 1)
     write_four_children(faces, edge_of_corner, vertex_offset, f, out_faces)
 
@@ -439,7 +444,7 @@ def loop_opposite_triplets(
         _endpoint_weight, opposite_weight = loop_odd_weights(edge_face_count[e])
         slot = base + 3 * f + j
         out_rows[slot] = n_vertices + e
-        out_cols[slot] = faces[f * 3 + (j + 2) % 3]
+        out_cols[slot] = faces[halfedge_prev(f * 3 + j)]
         out_values[slot] = opposite_weight
 
 
@@ -635,7 +640,9 @@ def mark_long_edges(
     # branch rather than two kernels, since the two differ by a parameter; ``sizing`` is not read
     # (and may be a null array) when ``use_sizing`` is false. The verdict is written twice: as the
     # mask the split reads, and as bit ``e`` of the zeroed bitmask whose word counts the caller
-    # scans in place into its ranks (``store_counted_bit``).
+    # scans in place into its ranks. Thread ``e`` holds bit ``e``, so the store is one ballot a
+    # warp (``store_counted_ballot_bit``); ``emit_long_edges``, whose thread is a corner, takes
+    # ``store_counted_bit``.
     #
     # **Declined: marking per face instead**, counting each face's children in the same launch
     # (a slot counter beside the flags) so the split and face counts come back in one copy and the
@@ -645,7 +652,7 @@ def mark_long_edges(
     # of this per-edge form, and the zeroed counter adds a memset to the pass that splits nothing.
     e = wp.int32(wp.tid())
     is_long = mark_long_edge(vertices, unique_edges, e, max_edge, sizing, use_sizing, out_long)
-    store_counted_bit(out_words, out_word_counts, e, is_long)
+    store_counted_ballot_bit(out_words, out_word_counts, e, is_long)
 
 
 @wp.func
@@ -817,7 +824,8 @@ def emit_size_faces(
     if index_in.shape[0] > 0:
         src = index_in[f]
 
-    fv = wp.vec3i(faces[f * 3 + 0], faces[f * 3 + 1], faces[f * 3 + 2])
+    c0, c1, c2 = corner_triple(faces, f)
+    fv = wp.vec3i(c0, c1, c2)
     mv = split_corner_midpoints(
         corner_edge, split_mask, offsets, words, word_ranks, vertex_offset, f
     )
@@ -1473,11 +1481,8 @@ def adopt_flip_edge_set(
     h = wp.int32(wp.tid())
     row = halfedge_row[h]
     if row < 0 or row_halfedges[row, 0] == h:
-        f = h // 3
-        j = h - 3 * f
-        hash_find_or_insert(
-            pack_edge_key(faces[h], faces[3 * f + (j + 1) % 3], base), edge_set, edge_set_mask
-        )
+        u, v = halfedge_endpoints(faces, h)
+        hash_find_or_insert(pack_edge_key(u, v, base), edge_set, edge_set_mask)
     refresh_flip_row(
         faces,
         row_halfedges,
@@ -1500,8 +1505,7 @@ def _resolve_flip_quad(
     a = wp.int32(-1)
     c = wp.int32(-1)
     for k in range(3):
-        va = faces[f0 * 3 + k]
-        vb = faces[f0 * 3 + (k + 1) % 3]
+        va, vb = halfedge_endpoints(faces, f0 * 3 + k)
         if va == u and vb == v:
             a = u
             c = v
@@ -1850,7 +1854,8 @@ def local_directed_edge(
     # next corner is ``v``), or ``-1``.
     j = wp.int32(-1)
     for k in range(3):
-        if faces[f * 3 + k] == u and faces[f * 3 + (k + 1) % 3] == v:
+        a, b = halfedge_endpoints(faces, f * 3 + k)
+        if a == u and b == v:
             j = k
     return j
 
@@ -1916,7 +1921,7 @@ def commit_flips_at(
     if halfedge_row.shape[0] == 0:
         # No halfedge maps to keep: the caller regroups.
         write_flipped_quad(out_faces, f0, f1, a, b, c, d)
-        wp.atomic_add(out_count, 0, 1)
+        append_slot(out_count, 0)
         return
     j = local_directed_edge(out_faces, f0, a, c)
     i = local_directed_edge(out_faces, f1, c, a)
@@ -1953,7 +1958,7 @@ def commit_flips_at(
         wp.atomic_sub(valence, c, 1)
         wp.atomic_add(valence, b, 1)
         wp.atomic_add(valence, d, 1)
-    wp.atomic_add(out_count, 0, 1)
+    append_slot(out_count, 0)
 
 
 @wp.kernel
@@ -2060,14 +2065,14 @@ def claim_and_commit_flips(
 # locking + link-condition guard, valence-driven edge flips, tangential Laplacian smoothing, and
 # reprojection of free vertices onto the original surface.
 # ===========================================================================
-FREE_VERTEX = wp.constant(wp.int32(0))
-CREASE_VERTEX = wp.constant(wp.int32(1))
-CORNER_VERTEX = wp.constant(wp.int32(2))
+FREE_VERTEX = wp.int32(0)
+CREASE_VERTEX = wp.int32(1)
+CORNER_VERTEX = wp.int32(2)
 
 # What ``collapse_survivor`` decided about where the merged vertex may go.
-COLLAPSE_REJECTED = wp.constant(wp.int32(0))  # the edge must not collapse at all
-COLLAPSE_PINNED = wp.constant(wp.int32(1))  # the survivor keeps its own position
-COLLAPSE_FREE = wp.constant(wp.int32(2))  # the caller places it -- midpoint, or a quadric optimum
+COLLAPSE_REJECTED = wp.int32(0)  # the edge must not collapse at all
+COLLAPSE_PINNED = wp.int32(1)  # the survivor keeps its own position
+COLLAPSE_FREE = wp.int32(2)  # the caller places it -- midpoint, or a quadric optimum
 
 
 @wp.func
@@ -2663,16 +2668,16 @@ def collapse_folds_a_face(
 # slot** at index ``n_edges_capacity``, reached only if the edge capacity were ever exceeded.
 # ---------------------------------------------------------------------------
 
-DECIMATION_FACES = wp.constant(wp.int32(0))
-DECIMATION_VERTICES = wp.constant(wp.int32(1))
-DECIMATION_EDGES = wp.constant(wp.int32(2))
-DECIMATION_COMMITS = wp.constant(wp.int32(3))
-DECIMATION_REMOVED_FACES = wp.constant(wp.int32(4))
+DECIMATION_FACES = wp.int32(0)
+DECIMATION_VERTICES = wp.int32(1)
+DECIMATION_EDGES = wp.int32(2)
+DECIMATION_COMMITS = wp.int32(3)
+DECIMATION_REMOVED_FACES = wp.int32(4)
 
 # The claim table's value at a vertex no candidate has claimed yet: above every ``scramble_index``.
-UNCLAIMED_KEY = wp.constant(wp.int64(2**63 - 1))
+UNCLAIMED_KEY = wp.int64(2**63 - 1)
 
-EDGE_KEY_PAD = wp.constant(wp.uint64(0xFFFFFFFFFFFFFFFF))
+EDGE_KEY_PAD = wp.uint64(0xFFFFFFFFFFFFFFFF)
 
 
 @wp.func
@@ -2985,7 +2990,7 @@ def scramble_index(index: wp.int32) -> wp.int64:
 
 # Cost buckets of the quadric pass's lock key (``bucketed_lock_key``): one per halving of the cost
 # below the most expensive candidate in the pool, the rest sharing the cheapest bucket.
-LOCK_KEY_COST_BUCKETS = wp.constant(wp.int32(24))
+LOCK_KEY_COST_BUCKETS = wp.int32(24)
 
 
 @wp.func
@@ -3090,7 +3095,7 @@ def commit_collapses_at(
         return
     out_remap[r] = s
     out_positions[s] = pos[k]
-    wp.atomic_add(out_count, 0, 1)
+    append_slot(out_count, 0)
     if out_locked.shape[0] > 0:
         survivor[k] = -1
         stamp_two_rings(offsets, columns, s, r, wp.int32(1), out_locked)
@@ -3515,8 +3520,7 @@ def intrinsic_delaunay_candidates(
     e1 = h1 % 3
     apex0 = faces[f0 * 3 + e0]
     apex1 = faces[f1 * 3 + e1]
-    u = faces[f0 * 3 + (e0 + 1) % 3]
-    v = faces[f0 * 3 + (e0 + 2) % 3]
+    u, v = halfedge_endpoints(faces, halfedge_next(h))
     quad = _resolve_flip_quad(faces, f0, u, v, apex0, apex1)
     first = quad[0]
     if first < wp.int32(0) or quad[1] == quad[3]:
@@ -3696,7 +3700,7 @@ def commit_intrinsic_flips(
     # also flipped this round.
     out_no_remap[h_f0_diagonal] = True
     out_no_remap[h_f1_diagonal] = True
-    wp.atomic_add(out_count, 0, 1)
+    append_slot(out_count, 0)
 
 
 @wp.kernel
@@ -3832,7 +3836,7 @@ def claim_kept_cluster(
     if cell_state[cell] != wp.int32(-1):
         return
     if wp.atomic_exch(cell_state, cell, wp.int32(0)) == wp.int32(-1):
-        p = wp.atomic_add(counters, 0, wp.int32(1))
+        p = append_slot(counters, 0)
         out_keys[p] = cluster_cell_key(
             vertices[cell_table[cell]], origin, inverse_size, cell_max, cell_bound
         )
@@ -3919,7 +3923,7 @@ def cluster_mark_faces(
         if prev == wp.int32(-1):
             prev = wp.atomic_cas(out_face_table, h, wp.int32(-1), f)
             if prev == wp.int32(-1):
-                out_face_slots[wp.atomic_add(out_counters, 1, wp.int32(1))] = h
+                out_face_slots[append_slot(out_counters, 1)] = h
                 break
         t0, t1, t2, _distinct = oriented_cluster_triple(faces, vertex_cell, prev)
         if t0 == s0 and t1 == s1 and t2 == s2:
@@ -3956,9 +3960,9 @@ def vertex_cluster_rank(
 # (``unfused_cell_center_distance_sq``), the box-fitted grid's: ties at the centre, which a
 # symmetric mesh has many of, then break as a serial single-precision evaluation breaks them, on
 # both devices.
-CLUSTER_AVERAGE = wp.constant(wp.int32(0))
-CLUSTER_CLOSEST = wp.constant(wp.int32(1))
-CLUSTER_AVERAGE_SORTED = wp.constant(wp.int32(2))
+CLUSTER_AVERAGE = wp.int32(0)
+CLUSTER_CLOSEST = wp.int32(1)
+CLUSTER_AVERAGE_SORTED = wp.int32(2)
 CLUSTER_CLOSEST_UNFUSED = wp.int32(3)
 
 
@@ -4054,13 +4058,13 @@ def pick_closest_cluster_vertex(
     voxel_size: wp.vec3,
     unfused: wp.bool,
     v: wp.int32,
-    out_closest: wp.array[wp.uint64],
+    out_closest: wp.array[wp.int64],
 ) -> None:
     # Vertex ``v`` as a candidate for the "closest to the cell centre" representative of its kept
-    # cluster, in one ``uint64`` ``atomic_min``: the squared distance's bits above the vertex index.
-    # A non-negative ``float32`` orders as its bit pattern does, so the minimum is the winning
-    # distance and, among the vertices tying for it, the lowest index -- a deterministic pick
-    # whatever the arrival order. ``out_closest`` arrives holding ``UINT64_MAX``.
+    # cluster, in one ``atomic_min`` of ``pack_nearest_key``: the squared distance's bits above the
+    # vertex index. A non-negative ``float32`` orders as its bit pattern does, so the minimum is the
+    # winning distance and, among the vertices tying for it, the lowest index -- a deterministic
+    # pick whatever the arrival order. ``out_closest`` arrives holding ``INT64_MAX``.
     r = vertex_cluster_rank(vertex_cell, cell_rank, v)
     if r >= 0:
         # The centre of the cell ``v`` was binned into, clamp included, so a vertex on the
@@ -4072,8 +4076,7 @@ def pick_closest_cluster_vertex(
             unfused_cell_center_distance_sq(vertices[v], origin, voxel_size, cell),
             wp.length_sq(vertices[v] - voxel_cell_center(cell, origin, voxel_size)),
         )
-        key = (wp.uint64(wp.cast(d, wp.uint32)) << wp.uint64(32)) | wp.uint64(wp.uint32(v))
-        wp.atomic_min(out_closest, r, key)
+        wp.atomic_min(out_closest, r, pack_nearest_key(d, v))
 
 
 @wp.func
@@ -4110,7 +4113,7 @@ def cluster_gather_and_face_keys(
     n_kept: wp.uint64,
     out_sum: wp.array[wp.vec3],
     out_count: wp.array[wp.int32],
-    out_closest: wp.array[wp.uint64],
+    out_closest: wp.array[wp.int64],
     out_keys: wp.array[wp.uint64],
     out_faces: wp.array[wp.int32],
 ) -> None:
@@ -4166,7 +4169,7 @@ def cluster_emit(
     contraction: wp.int32,
     sums: wp.array[wp.vec3],
     counts: wp.array[wp.int32],
-    closest: wp.array[wp.uint64],
+    closest: wp.array[wp.int64],
     out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
@@ -4181,7 +4184,7 @@ def cluster_emit(
         if contraction == CLUSTER_AVERAGE:
             out_vertices[t] = mean_from_sum(sums[t], counts[t])
         elif contraction == CLUSTER_CLOSEST or contraction == CLUSTER_CLOSEST_UNFUSED:
-            out_vertices[t] = vertices[wp.int32(closest[t] & wp.uint64(0xFFFFFFFF))]
+            out_vertices[t] = vertices[unpack_nearest_index(closest[t])]
     if t < sorted_faces.shape[0]:
         r0, r1, r2 = ranked_face_corners(faces, vertex_cell, cell_rank, sorted_faces[t])
         s0, s1, s2 = rotate_min_first(r0, r1, r2)
@@ -4253,7 +4256,7 @@ def cluster_sorted_means(
     r = wp.int32(wp.tid())
     start, stop = cluster_run(sorted_clusters, r)
     if stop - start > serial_max:
-        out_heavy[wp.atomic_add(out_heavy_count, 0, wp.int32(1))] = r
+        out_heavy[append_slot(out_heavy_count, 0)] = r
         return
     total = strided_run_sum(vertices, sorted_vertices, start, stop, wp.int32(1))
     out_vertices[r] = mean_from_sum(total, stop - start)
@@ -4643,12 +4646,12 @@ def collapse_pass(
 
 # Objective for ``objective_flip_candidates``. A warp-uniform kernel argument rather than a
 # ``wp.Function``, so both predicates share one compiled module.
-OBJECTIVE_PLANARITY = wp.constant(wp.int32(0))  # improve triangle shape on a near-planar quad
-OBJECTIVE_T_VERTEX = wp.constant(wp.int32(2))  # break up a sliver whose apex sits on the far edge
+OBJECTIVE_PLANARITY = wp.int32(0)  # improve triangle shape on a near-planar quad
+OBJECTIVE_T_VERTEX = wp.int32(2)  # break up a sliver whose apex sits on the far edge
 
 # Relative margin a flip must beat the current diagonal by. Without it a quad whose two diagonals
 # score equally (every quad of a regular grid) flips back and forth forever, one pass each way.
-OBJECTIVE_EPS = wp.constant(wp.float32(1e-6))
+OBJECTIVE_EPS = wp.float32(1e-6)
 
 
 @wp.kernel
@@ -4752,11 +4755,11 @@ def objective_flip_candidates(
 # Below this determinant (relative to the quadric's own scale) the 3x3 system is treated as singular
 # and the optimum falls back to the edge midpoint: a planar neighbourhood has a whole plane of
 # equally good positions and picking one by inversion amplifies noise.
-QUADRIC_SINGULAR_EPS = wp.constant(wp.float64(1e-12))
+QUADRIC_SINGULAR_EPS = wp.float64(1e-12)
 
 # Weight of a boundary edge's constraint plane relative to its squared length
 # (``add_boundary_quadric``).
-BOUNDARY_QUADRIC_WEIGHT = wp.constant(wp.float64(1.0))
+BOUNDARY_QUADRIC_WEIGHT = wp.float64(1.0)
 
 # A collapse -- and a smoothing move -- is rejected when it would turn an incident face's normal by
 # more than this. 0.5 is 60 degrees per step.
@@ -4768,7 +4771,7 @@ BOUNDARY_QUADRIC_WEIGHT = wp.constant(wp.float64(1.0))
 # more per pass; at 0.5 neither decimator stops sooner on any mesh measured, and the quadric one's
 # Hausdorff distance fell. **Not exposed as a keyword**: nothing measured binds on it, and loosening
 # it is what lets inverted, self-intersecting triangles through.
-COLLAPSE_MIN_NORMAL_DOT = wp.constant(wp.float32(0.5))
+COLLAPSE_MIN_NORMAL_DOT = wp.float32(0.5)
 
 # ``collapse_joins_opposite_sheets`` lets a collapse weld two opposing sheets when it removes a face
 # below this mean ratio. Measured over the 15-cell decimation set (five meshes x 0.5 / 0.1 / 0.01,
@@ -5017,7 +5020,7 @@ def begin_decimation_pass(
 #
 # 512 x 256 lanes is the best of a sweep over chunks of 256 to 4096 and 128 to 512 lanes: 1.05x
 # over 2048 on a 35k-face decimation pass, flat on 870k faces, where 512 lanes lost 1.18x.
-SCAN_CHUNK = wp.constant(512)
+SCAN_CHUNK = 512
 SCAN_BLOCK_DIM = 256
 
 
@@ -5057,11 +5060,8 @@ def finish_chunk_scan(
     # device the blocks run in turn and the fences compile to nothing).
     if lane == 0:
         out_chunk_totals[chunk] = total
-    if block_last_ticket(lane, ticket, 0, wp.int32(0), out_chunk_totals.shape[0], last_ticket):
-        thread_fence()
+    if last_atomic_block(lane, ticket, out_chunk_totals.shape[0]) != 0:
         scan_chunk_totals(lane, out_chunk_totals, out_chunk_offsets)
-        if lane == 0:
-            ticket[0] = 0
 
 
 @wp.kernel
@@ -5109,15 +5109,23 @@ def scanned_prefix(
 
 
 @wp.func
+def chunk_count_value(x: wp.int32) -> wp.int32:
+    # ``scan_chunks_serial``'s ``count`` over plain counts: the entry itself.
+    return x
+
+
+@wp.func
 def scan_chunks_serial(
-    values: wp.array[wp.int32],
+    values: wp.array[Any],
+    count: wp.Function,
     out_prefix: wp.array[wp.int32],
     out_chunk_totals: wp.array[wp.int32],
     out_chunk_offsets: wp.array[wp.int32],
 ):
-    # ``scan_chunks_exclusive`` by one thread: the same three tables ``scanned_prefix`` reads (each
-    # chunk's own exclusive scan, the chunk totals and their exclusive scan). ``scan_word_counts_
-    # serial`` is the same walk over a bitmask's set-bit counts.
+    # ``scan_chunks_exclusive`` (``count = chunk_count_value``) or ``scan_word_counts_exclusive``
+    # (``count = popcount32`` over a bitmask) by one thread: the same three tables
+    # ``scanned_prefix`` reads (each chunk's own exclusive scan, the chunk totals and their
+    # exclusive scan), and no ticket drawn, which the tiled scans leave re-armed anyway.
     n = values.shape[0]
     running = wp.int32(0)
     for chunk in range(out_chunk_totals.shape[0]):
@@ -5127,7 +5135,7 @@ def scan_chunks_serial(
         total = wp.int32(0)
         for w in range(lo, hi):
             out_prefix[w] = total
-            total += values[w]
+            total += count(values[w])
         out_chunk_totals[chunk] = total
         running += total
 
@@ -5143,8 +5151,7 @@ def set_bits_before(
     # Set bits ahead of bit ``p`` of the bitmask starting at word ``base``, counting from the start
     # of ``words``: the word scan to that word, plus the word's own bits below ``p``.
     w = base + (p >> 5)
-    below = (wp.uint32(1) << wp.uint32(p & 31)) - wp.uint32(1)
-    return scanned_prefix(prefix, chunk_offsets, w) + popcount32(words[w] & below)
+    return scanned_prefix(prefix, chunk_offsets, w) + popcount_below(words[w], p & 31)
 
 
 @wp.func
@@ -5461,7 +5468,7 @@ def scatter_pass_adjacency(
 # ``gather_vertex_quadrics`` finds each next face by a rescan of the row (``array.next_row_entry``),
 # quadratic in its length, which a hub vertex (a cone apex with tens of thousands of faces) cannot
 # afford. Under the deterministic setting ``gather_hub_quadrics`` sums such a row exactly instead.
-QUADRIC_ORDERED_ROW_MAX = wp.constant(64)
+QUADRIC_ORDERED_ROW_MAX = wp.int32(64)
 
 
 @wp.func
@@ -5648,7 +5655,7 @@ def gather_vertex_quadrics_exact(
     hi = vertex_face_offsets[v + 1]
     q = SymmetricQuadric()
     if hi - lo > QUADRIC_ORDERED_ROW_MAX:
-        out_hubs[wp.atomic_add(out_hub_count, 0, 1)] = v
+        out_hubs[append_slot(out_hub_count, 0)] = v
     else:
         q = ordered_face_quadric_sum(face_quadrics, vertex_faces, lo, hi)
     count = boundary_flags[v]
@@ -5947,7 +5954,9 @@ def quadric_pass_head(
     n = starts.shape[0]
     for i in range(n):
         mark_unique_edge_start_at(sorted_keys, state, i, starts)
-    scan_chunks_serial(starts, start_prefix, start_chunk_totals, start_chunk_offsets)
+    scan_chunks_serial(
+        starts, chunk_count_value, start_prefix, start_chunk_totals, start_chunk_offsets
+    )
     for i in range(n):
         emit_pass_edges_at(
             faces,
@@ -5984,7 +5993,9 @@ def quadric_pass_head(
             boundary_quadrics,
             boundary_flags,
         )
-    scan_chunks_serial(adjacency_counts, count_prefix, count_chunk_totals, count_chunk_offsets)
+    scan_chunks_serial(
+        adjacency_counts, chunk_count_value, count_prefix, count_chunk_totals, count_chunk_offsets
+    )
     for t in range(scatter_width):
         scatter_pass_adjacency_at(
             faces,
@@ -6189,10 +6200,9 @@ def mark_collapse_winners_at(
         out_survivor[k] = -1
         return
     p = rank[k]
-    bit = wp.uint32(1) << wp.uint32(p & 31)
-    wp.atomic_or(out_winner_words, p >> 5, bit)
+    set_bit(out_winner_words, p)
     if edge_face_count[k] == 1:
-        wp.atomic_or(out_winner_words, out_winner_words.shape[0] // 2 + (p >> 5), bit)
+        set_bit(out_winner_words, (out_winner_words.shape[0] // 2) * 32 + p)
 
 
 @wp.kernel(enable_backward=False)
@@ -6291,7 +6301,7 @@ def commit_budgeted_collapses_at(
     r = removed[k]
     out_remap[r] = s
     out_positions[s] = target_pos[k]
-    wp.atomic_add(out_count, 0, 1)
+    append_slot(out_count, 0)
     wp.atomic_add(out_count, 1, own)
     stamp_two_rings(offsets, columns, s, r, 1, out_locked)
 
@@ -6368,30 +6378,6 @@ def end_collapse_round(
     # dim=1, ``end_collapse_round_at``: the last launch of a round.
     _ = wp.int32(wp.tid())
     end_collapse_round_at(max_rounds, count, out_state)
-
-
-@wp.func
-def scan_word_counts_serial(
-    words: wp.array[wp.uint32],
-    out_prefix: wp.array[wp.int32],
-    out_chunk_totals: wp.array[wp.int32],
-    out_chunk_offsets: wp.array[wp.int32],
-):
-    # ``scan_word_counts_exclusive`` by one thread: the same three tables ``scanned_prefix`` reads
-    # (each chunk's own exclusive scan, the chunk totals and their exclusive scan), and no ticket
-    # drawn, which the tiled scan leaves re-armed anyway.
-    n = words.shape[0]
-    running = wp.int32(0)
-    for chunk in range(out_chunk_totals.shape[0]):
-        out_chunk_offsets[chunk] = running
-        lo = chunk * SCAN_CHUNK
-        hi = wp.min(lo + SCAN_CHUNK, n)
-        total = wp.int32(0)
-        for w in range(lo, hi):
-            out_prefix[w] = total
-            total += popcount32(words[w])
-        out_chunk_totals[chunk] = total
-        running += total
 
 
 @wp.kernel
@@ -6620,8 +6606,8 @@ def quadric_pass_tail(
                 survivor,
                 winner_words,
             )
-        scan_word_counts_serial(
-            winner_words, winner_prefix, winner_chunk_totals, winner_chunk_offsets
+        scan_chunks_serial(
+            winner_words, popcount32, winner_prefix, winner_chunk_totals, winner_chunk_offsets
         )
         for k in range(commit_width):
             commit_budgeted_collapses_at(
@@ -6649,7 +6635,13 @@ def quadric_pass_tail(
     for f in range(faces.shape[0] // 3):
         i0, i1, i2, _distinct = mark_surviving_face(faces, collapse_remap, f, compact_flags)
         write_corner_triple(remapped, f, i0, i1, i2)
-    scan_chunks_serial(compact_flags, compact_prefix, compact_chunk_totals, compact_chunk_offsets)
+    scan_chunks_serial(
+        compact_flags,
+        chunk_count_value,
+        compact_prefix,
+        compact_chunk_totals,
+        compact_chunk_offsets,
+    )
     for t in range(compact_width):
         compact_decimation_pass_at(
             remapped,

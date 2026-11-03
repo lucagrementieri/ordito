@@ -54,7 +54,15 @@ from ordito.kernels.algorithms.conjugate_gradient import (
     cg_update_block,
     cg_widen,
 )
-from ordito.kernels.array import LOOP_CONDITION, trilinear_cell, trilinear_corner, trilinear_weight
+from ordito.kernels.array import (
+    LOOP_CONDITION,
+    cube_corner_offset,
+    ravel_index,
+    trilinear_cell,
+    trilinear_corner,
+    trilinear_weight,
+    unravel_cube,
+)
 from ordito.kernels.levelset import (
     MC_CORNERS,
     mc_case_corner,
@@ -66,13 +74,11 @@ from ordito.kernels.levelset import (
 )
 from ordito.kernels.reconstruction import (
     normalized_field_component,
-    poisson_grid_coordinates,
     poisson_grid_index,
     poisson_prolong_node,
     screened_laplacian_row,
     screened_laplacian_scaled_inverse_diagonal,
     splat_cell,
-    splat_corner_offset,
     splat_sample,
 )
 from ordito.kernels.reduce import block_sum, term_sum_1d
@@ -92,7 +98,7 @@ BRICK_NODES = 512
 @wp.func
 def brick_index(i: wp.int32, j: wp.int32, k: wp.int32, nbk: wp.int32) -> wp.int32:
     # Flat index into the ``nbk**3`` brick map of the brick holding node ``(i, j, k)``.
-    return ((i >> BRICK_SHIFT) * nbk + (j >> BRICK_SHIFT)) * nbk + (k >> BRICK_SHIFT)
+    return ravel_index(i >> BRICK_SHIFT, j >> BRICK_SHIFT, k >> BRICK_SHIFT, nbk, nbk)
 
 
 @wp.func
@@ -151,7 +157,7 @@ def mark_sample_bricks(
     for bi in range(lo[0] >> BRICK_SHIFT, (hi[0] >> BRICK_SHIFT) + 1):
         for bj in range(lo[1] >> BRICK_SHIFT, (hi[1] >> BRICK_SHIFT) + 1):
             for bk in range(lo[2] >> BRICK_SHIFT, (hi[2] >> BRICK_SHIFT) + 1):
-                out_flags[(bi * nbk + bj) * nbk + bk] = 1
+                out_flags[ravel_index(bi, bj, bk, nbk, nbk)] = 1
 
 
 @wp.kernel
@@ -192,7 +198,7 @@ def mark_crossing_bricks(
                 for bk in range(
                     (ck * scale) >> BRICK_SHIFT, (wp.min((ck + 1) * scale, last) >> BRICK_SHIFT) + 1
                 ):
-                    out_flags[(bi * nbk + bj) * nbk + bk] = 1
+                    out_flags[ravel_index(bi, bj, bk, nbk, nbk)] = 1
 
 
 @wp.kernel
@@ -207,9 +213,9 @@ def dilate_bricks(flags: wp.array[wp.int32], nbk: wp.int32, out_flags: wp.array[
                 b = j + dj
                 c = k + dk
                 if a >= 0 and a < nbk and b >= 0 and b < nbk and c >= 0 and c < nbk:
-                    if flags[(a * nbk + b) * nbk + c] != 0:
+                    if flags[ravel_index(a, b, c, nbk, nbk)] != 0:
                         hit = 1
-    out_flags[(i * nbk + j) * nbk + k] = hit
+    out_flags[ravel_index(i, j, k, nbk, nbk)] = hit
 
 
 @wp.kernel
@@ -219,8 +225,8 @@ def project_bricks(
     # A fine brick marks the coarse brick covering it (a coarse brick covers two fine ones a side);
     # ``out_flags`` is zeroed by the caller.
     i, j, k = wp.tid()
-    if flags[(i * nbk + j) * nbk + k] != 0:
-        out_flags[((i >> 1) * nbk_c + (j >> 1)) * nbk_c + (k >> 1)] = 1
+    if flags[ravel_index(i, j, k, nbk, nbk)] != 0:
+        out_flags[ravel_index(i >> 1, j >> 1, k >> 1, nbk_c, nbk_c)] = 1
 
 
 @wp.kernel
@@ -241,7 +247,7 @@ def compact_bricks(
         out_brick_map[b] = -1
         return
     out_brick_map[b] = rank - 1
-    out_brick_coords[rank - 1] = wp.vec3i(b // (nbk * nbk), (b // nbk) % nbk, b % nbk)
+    out_brick_coords[rank - 1] = unravel_cube(b, nbk)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -301,7 +307,7 @@ def band_splat_keys(
     s = wp.int32(wp.tid())
     base, next_corner, _fractions = splat_cell(points, lower, inv_cell, res, s)
     for c in range(8):
-        corner = trilinear_corner(base, next_corner, splat_corner_offset(c))
+        corner = trilinear_corner(base, next_corner, cube_corner_offset(c))
         idx = band_node(brick_map, nbk, corner[0], corner[1], corner[2])
         out_keys[8 * s + c] = wp.where(idx < 0, n_nodes, idx)
         out_order[8 * s + c] = 8 * s + c
@@ -519,7 +525,7 @@ def restrict_band_ordered(
         if not node_live(c, res_c):
             return
     else:
-        c = poisson_grid_coordinates(tid, res_c)
+        c = unravel_cube(tid, res_c)
     total_b = wp.float32(0.0)
     total_w = wp.float32(0.0)
     for sx in range(2):
@@ -844,7 +850,7 @@ def level_coordinates(brick_coords: wp.array[wp.vec3i], res: wp.int32, n: wp.int
     # or the dense ``res**3`` grid.
     if brick_coords.shape[0] > 0:
         return band_coordinates(brick_coords, n)
-    return poisson_grid_coordinates(n, res)
+    return unravel_cube(n, res)
 
 
 @wp.func

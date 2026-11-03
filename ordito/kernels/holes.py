@@ -13,7 +13,7 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.array import wrap_index as _wrap
 from ordito.kernels.boundary import add_rim_edge_length, loop_newell_lanes, loop_perimeter_lanes
-from ordito.kernels.halfedge import halfedge_endpoints, halfedge_prev
+from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next, halfedge_prev
 from ordito.kernels.predicates import (
     circumcircle_diameter,
     dihedral_angle,
@@ -39,25 +39,25 @@ wp.set_module_options({"enable_backward": False})
 # Big-but-finite penalty for a triangulation the metric rejects: lets the DP keep a bad
 # triangulation rather than break entirely, while staying below ``float`` precision limits
 # when summed.
-BAD_METRIC = wp.constant(wp.float32(1e10))
+BAD_METRIC = wp.float32(1e10)
 
 # Fill-metric selectors for ``triangle_fill_metric`` / ``fill_edge_term`` / ``fill_dp_span``.
-METRIC_PLANE_NORMALIZED = wp.constant(wp.int32(0))
-METRIC_MIN_AREA = wp.constant(wp.int32(1))
-METRIC_CIRCUMSCRIBED = wp.constant(wp.int32(2))
-METRIC_PLANE = wp.constant(wp.int32(3))
-METRIC_MIN_TRI_ANGLE = wp.constant(wp.int32(4))
-METRIC_EDGE_LENGTH = wp.constant(wp.int32(5))
-METRIC_UNIVERSAL = wp.constant(wp.int32(6))
-METRIC_MAX_DIHEDRAL = wp.constant(wp.int32(7))
-METRIC_COMPLEX_FILL = wp.constant(wp.int32(8))
+METRIC_PLANE_NORMALIZED = wp.int32(0)
+METRIC_MIN_AREA = wp.int32(1)
+METRIC_CIRCUMSCRIBED = wp.int32(2)
+METRIC_PLANE = wp.int32(3)
+METRIC_MIN_TRI_ANGLE = wp.int32(4)
+METRIC_EDGE_LENGTH = wp.int32(5)
+METRIC_UNIVERSAL = wp.int32(6)
+METRIC_MAX_DIHEDRAL = wp.int32(7)
+METRIC_COMPLEX_FILL = wp.int32(8)
 
 # How per-triangle / per-edge terms accumulate across the triangulation.
-COMBINE_SUM = wp.constant(wp.int32(0))
-COMBINE_MAX = wp.constant(wp.int32(1))
+COMBINE_SUM = wp.int32(0)
+COMBINE_MAX = wp.int32(1)
 
 # sin of 60 degrees = sqrt(3)/2, the maximal possible minimal-angle sine (equilateral triangle).
-MAX_MIN_ANGLE_SIN = wp.constant(wp.float32(0.86602540378443864676))
+MAX_MIN_ANGLE_SIN = wp.float32(0.86602540378443864676)
 
 
 # One convention for a loop's extent, and this is it: the package's total-terminated
@@ -394,8 +394,8 @@ def init_dp_base(
 # range flag (``probe_rim_edges``, ``mark_forbidden_chords``) sits beside the shortfall and comes
 # back in its read. The last two slots are the two DP sweeps' ``HoleFillTables.span_base``, laid
 # down zeroed with the rest. Python-scope only: kernels reach these slots through views.
-FILL_STATE_RETRY = wp.constant(0)
-FILL_STATE_SHORTFALL = wp.constant(1)
+FILL_STATE_RETRY = 0
+FILL_STATE_SHORTFALL = 1
 FILL_STATE_BAD_INDEX = 2
 FILL_STATE_SPAN_BASE = 3
 FILL_STATE_RETRY_SPAN_BASE = 4
@@ -1030,8 +1030,8 @@ def flag_bad_triangulations(
 
 
 # ``probe_rim_edges``' two non-vertex answers: a rim edge no face contains, and one several do.
-RIM_NO_FACE = wp.constant(-1)
-RIM_MANY_FACES = wp.constant(-2)
+RIM_NO_FACE = -1
+RIM_MANY_FACES = -2
 
 
 @wp.func
@@ -1071,10 +1071,11 @@ def probe_rim_edges(
     f = wp.int32(wp.tid())
     n = sorted_rim_keys.shape[0]
     n_vertices = wp.int32(base)
+    v0, v1, v2 = corner_triple(faces, f)
     if (
-        corner_in_range(faces[3 * f], n_vertices)
-        + corner_in_range(faces[3 * f + 1], n_vertices)
-        + corner_in_range(faces[3 * f + 2], n_vertices)
+        corner_in_range(v0, n_vertices)
+        + corner_in_range(v1, n_vertices)
+        + corner_in_range(v2, n_vertices)
         < 3
     ):
         out_flag[0] = 1
@@ -1084,7 +1085,7 @@ def probe_rim_edges(
         # previous halfedge, which is ``halfedge_prev`` rather than a second spelling of the cycle.
         h = 3 * f + k
         a = faces[h]
-        b = faces[3 * f + (k + 1) % 3]
+        b = faces[halfedge_next(h)]
         third = faces[halfedge_prev(h)]
         key = kernel_array.pack_edge_key(a, b, base)
         index = kernel_array.binary_search_index_left(sorted_rim_keys, key)
@@ -1255,8 +1256,8 @@ def stitch_rolled_rims(
 
 
 # The two costs ``row_argmin`` minimises, selected per launch (warp-uniform).
-LOOP_PAIR_PERIMETER = wp.constant(0)
-LOOP_PAIR_SQ_DISTANCE = wp.constant(1)
+LOOP_PAIR_PERIMETER = wp.int32(0)
+LOOP_PAIR_SQ_DISTANCE = wp.int32(1)
 
 
 @wp.func
@@ -1418,14 +1419,14 @@ def bridge_faces(
 # --- Metric-based two-hole stitching (the same DP over a grid rather than an interval) ---------
 
 # Stitch-metric selectors for ``stitch_triangle_metric`` / ``stitch_edge_metric`` / stitch DP.
-METRIC_COMPLEX_STITCH = wp.constant(wp.int32(0))
-METRIC_EDGE_LENGTH_STITCH = wp.constant(wp.int32(1))
-METRIC_VERTICAL_STITCH = wp.constant(wp.int32(2))
+METRIC_COMPLEX_STITCH = wp.int32(0)
+METRIC_EDGE_LENGTH_STITCH = wp.int32(1)
+METRIC_VERTICAL_STITCH = wp.int32(2)
 
 # came-from directions stored per grid cell.
-CAME_NONE = wp.constant(wp.int32(-1))
-CAME_A = wp.constant(wp.int32(0))  # reached (i, j) by advancing loop A: from (i-1, j)
-CAME_B = wp.constant(wp.int32(1))  # reached (i, j) by advancing loop B: from (i, j-1)
+CAME_NONE = wp.int32(-1)
+CAME_A = wp.int32(0)  # reached (i, j) by advancing loop A: from (i-1, j)
+CAME_B = wp.int32(1)  # reached (i, j) by advancing loop B: from (i, j-1)
 
 
 @wp.func
@@ -2053,8 +2054,9 @@ JOIN_NO_KEY = wp.int64(INT64_MAX)
 @wp.func
 def rim_edge_key(u: wp.int32, v: wp.int32, radix: wp.int64) -> wp.int64:
     # The undirected key ``boundary.oriented_boundary_edges`` orders its rows by: ``(min, max)``
-    # with the larger index as the high digit.
-    return wp.int64(wp.max(u, v)) * radix + wp.int64(wp.min(u, v))
+    # with the larger index as the high digit: ``array.pack_edge_key``'s value for these
+    # non-negative indices.
+    return wp.int64(kernel_array.pack_edge_key(u, v, wp.uint64(radix)))
 
 
 @wp.func

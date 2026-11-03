@@ -3,11 +3,17 @@ import warp as wp
 from ordito.constants import TOLERANCE_MERGE_CONSTANT, TOLERANCE_ZERO_CONSTANT
 from ordito.kernels.adjacency import unshared_projection, unshared_vertex
 from ordito.kernels.algorithms.bfs import ball_row_bounds
+from ordito.kernels.halfedge import halfedge_destination, halfedge_prev
 from ordito.kernels.linalg import solve_normal_equations
 from ordito.kernels.neighbors import in_ball
-from ordito.kernels.predicates import angle_defect, segment_aabb, unit_tangent, vector_angle
-from ordito.kernels.tangent_space import any_perpendicular
-from ordito.kernels.triangles import corner_triple, face_normals_and_area, local_corner
+from ordito.kernels.predicates import (
+    angle_defect,
+    any_perpendicular,
+    reference_tangent,
+    segment_aabb,
+    vector_angle,
+)
+from ordito.kernels.triangles import face_normals_and_area, face_vertices_vec3d, local_corner
 
 wp.set_module_options({"enable_backward": False})
 
@@ -29,10 +35,7 @@ def _build_reference_frame(
     # The reference direction is the neighbour projected into the tangent plane, falling back to an
     # arbitrary perpendicular when that projection vanishes (the neighbour sits on the normal line
     # through the vertex).
-    t1 = any_perpendicular(normal)
-    tangential, length = unit_tangent(first_neighbor - vertex, normal, TOLERANCE_ZERO_CONSTANT)
-    if length > TOLERANCE_ZERO_CONSTANT:
-        t1 = tangential
+    t1, _length = reference_tangent(first_neighbor - vertex, normal, TOLERANCE_ZERO_CONSTANT)
     # The ``normalize`` is *not* redundant, though the arithmetic says it is: ``normal`` is unit
     # and ``t1`` is orthogonal to it, so the cross product is unit in exact arithmetic and 1 +- an
     # ULP or so in float32. Dropping it was measured and reverted -- that residual is enough to flip
@@ -372,14 +375,9 @@ def fit_point_principal_curvature(
     out_pv2[i] = pv2
 
 
-@wp.func
-def corner_positions_d(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], f: wp.int32
-) -> tuple[wp.vec3d, wp.vec3d, wp.vec3d]:
-    # A face's corners in ``float64``, for the 1-ring estimators below: their cotangents and
-    # dihedrals lose every digit of a needle in ``float32``.
-    a, b, c = corner_triple(faces, f)
-    return wp.vec3d(vertices[a]), wp.vec3d(vertices[b]), wp.vec3d(vertices[c])
+# The 1-ring estimators below load a face's corners in ``float64``
+# (``triangles.face_vertices_vec3d``): their cotangents and dihedrals lose every digit of a needle
+# in ``float32``.
 
 
 @wp.func
@@ -466,7 +464,7 @@ def vtk_principal_curvatures(
     for slot in range(vf_offsets[v], vf_offsets[v + 1]):
         f = vertex_faces[slot]
         k = local_corner(faces, f, v)
-        p0, p1, p2 = corner_positions_d(vertices, faces, f)
+        p0, p1, p2 = face_vertices_vec3d(vertices, faces, f)
         here = corner_at(p0, p1, p2, k)
         after = corner_at(p0, p1, p2, k + 1)
         before = corner_at(p0, p1, p2, k + 2)
@@ -480,7 +478,7 @@ def vtk_principal_curvatures(
             mate = mates[3 * f + local]
             if mate >= 0 and mate // 3 > f:
                 g = mate // 3
-                q0, q1, q2 = corner_positions_d(vertices, faces, g)
+                q0, q1, q2 = face_vertices_vec3d(vertices, faces, g)
                 cross_g = wp.cross(q1 - q0, q2 - q0)
                 tail = corner_at(p0, p1, p2, local)
                 head = corner_at(p0, p1, p2, local + 1)
@@ -568,18 +566,19 @@ def meyer_curvatures(
     for slot in range(vf_offsets[v], vf_offsets[v + 1]):
         f = vertex_faces[slot]
         k = local_corner(faces, f, v)
-        p0, p1, p2 = corner_positions_d(vertices, faces, f)
+        p0, p1, p2 = face_vertices_vec3d(vertices, faces, f)
         corner_area, corner_laplacian, angle, degenerate = meyer_corner_terms(p0, p1, p2, k)
         area += corner_area
         normal += wp.cross(p1 - p0, p2 - p0)
         if not degenerate:
             laplacian += corner_laplacian
             gaussian -= angle
-            if mates[3 * f + k] == -1:
-                rim_out = faces[3 * f + (k + 1) % 3]
+            h = 3 * f + k
+            if mates[h] == -1:
+                rim_out = halfedge_destination(faces, h)
                 rim_outs += 1
-            if mates[3 * f + (k + 2) % 3] == -1:
-                rim_in = faces[3 * f + (k + 2) % 3]
+            if mates[halfedge_prev(h)] == -1:
+                rim_in = faces[halfedge_prev(h)]
     if rim_outs == 1 and rim_in >= 0:
         here = wp.vec3d(vertices[v])
         gaussian -= unsigned_angle_d(
@@ -743,12 +742,12 @@ def normal_cycle_principal_curvatures(
     for slot in range(vf_offsets[v], vf_offsets[v + 1]):
         f = vertex_faces[slot]
         k = local_corner(faces, f, v)
-        p0, p1, p2 = corner_positions_d(vertices, faces, f)
+        p0, p1, p2 = face_vertices_vec3d(vertices, faces, f)
         cross_f = wp.cross(p1 - p0, p2 - p0)
         ring_area += wp.float64(0.5) * wp.length(cross_f)
         mate = mates[3 * f + k]
         if mate >= 0:
-            q0, q1, q2 = corner_positions_d(vertices, faces, mate // 3)
+            q0, q1, q2 = face_vertices_vec3d(vertices, faces, mate // 3)
             direction = corner_at(p0, p1, p2, k + 1) - corner_at(p0, p1, p2, k)
             length = wp.length(direction)
             if length > wp.float64(0.0):
@@ -1130,16 +1129,6 @@ def apss_project(
 
 
 @wp.func
-def any_perpendicular_d(normal: wp.vec3d) -> wp.vec3d:
-    # ``tangent_space.any_perpendicular`` in ``float64``: the normal crossed with whichever of x and
-    # y it is less aligned with.
-    axis = wp.vec3d(wp.float64(1.0), wp.float64(0.0), wp.float64(0.0))
-    if wp.abs(normal[0]) > wp.abs(normal[1]):
-        axis = wp.vec3d(wp.float64(0.0), wp.float64(1.0), wp.float64(0.0))
-    return wp.normalize(wp.cross(normal, axis))
-
-
-@wp.func
 def implicit_principal_curvatures(
     gradient: wp.vec3d, hessian: wp.mat33d
 ) -> tuple[wp.vec3, wp.vec3, wp.float32, wp.float32]:
@@ -1151,7 +1140,7 @@ def implicit_principal_curvatures(
     # trace and determinant give the same pair, which it orders by magnitude.
     length = wp.length(gradient)
     normal = gradient / length
-    t1 = any_perpendicular_d(normal)
+    t1 = any_perpendicular(normal)
     t2 = wp.cross(normal, t1)
     symmetric = (hessian + wp.transpose(hessian)) * wp.float64(0.5)
     m00 = wp.dot(t1, symmetric * t1) / length

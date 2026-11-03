@@ -21,9 +21,9 @@ def snap_uv(uv: wp.vec2, scale: wp.float32) -> wp.vec2:
 
 
 # NaN payload for vertices whose UV is non-finite (never sampled) and out-of-bounds reads.
-NAN_F32 = wp.constant(wp.float32(float("nan")))
+NAN_F32 = wp.float32(float("nan"))
 # Inclusive coverage tolerance so shared triangle edges are not dropped (avoids seam gaps).
-COVERAGE_EPS = wp.constant(wp.float32(1e-6))
+COVERAGE_EPS = wp.float32(1e-6)
 
 
 @wp.func
@@ -227,8 +227,8 @@ def rasterize_label_pixels(
     out_labels[row, col] = best_label
 
 
-SAMPLE_NEAREST = wp.constant(wp.int32(0))
-SAMPLE_BILINEAR = wp.constant(wp.int32(1))
+SAMPLE_NEAREST = wp.int32(0)
+SAMPLE_BILINEAR = wp.int32(1)
 
 
 @wp.func

@@ -10,14 +10,15 @@ from ordito.kernels.algorithms.connected_components import (
 from ordito.kernels.array import (
     OverloadTable,
     binary_search_sorted_contains,
+    bit_slot,
     cross2,
     mark_at,
     pack_edge_key,
-    scanned_count,
     store_counted_ballot_bit,
 )
 from ordito.kernels.halfedge import (
     HALFEDGE_MATE_BOUNDARY,
+    halfedge_endpoints,
     halfedge_next,
     halfedge_prev,
     key_ordered_halfedge,
@@ -114,11 +115,10 @@ def corner_union(
     twin = twins[h]
     if twin < 0:
         return h, h
-    if binary_search_sorted_contains(
-        marked_keys, pack_edge_key(faces[h], faces[halfedge_next(h)], key_base)
-    ):
+    u, v = halfedge_endpoints(faces, h)
+    if binary_search_sorted_contains(marked_keys, pack_edge_key(u, v, key_base)):
         return h, h
-    if faces[twin] != faces[h]:
+    if faces[twin] != u:
         return h, halfedge_next(twin)
     if h < twin:
         return h, twin
@@ -194,10 +194,10 @@ def texcoords_differ(
 
 # The class ``classify_uv_halfedge`` assigns a halfedge. Only the canonical (lower-index) half of an
 # interior edge carries a seam or foldover verdict, so every undirected edge is decided once.
-UV_EDGE_NONE = wp.constant(wp.int32(0))
-UV_EDGE_SEAM = wp.constant(wp.int32(1))
-UV_EDGE_BOUNDARY = wp.constant(wp.int32(2))
-UV_EDGE_FOLDOVER = wp.constant(wp.int32(3))
+UV_EDGE_NONE = wp.int32(0)
+UV_EDGE_SEAM = wp.int32(1)
+UV_EDGE_BOUNDARY = wp.int32(2)
+UV_EDGE_FOLDOVER = wp.int32(3)
 
 
 @wp.func
@@ -219,7 +219,8 @@ def canonical_edge_halfedges(
     # igl's canonical direction: the halfedge running from the smaller vertex index to the larger.
     # A degenerate edge (both endpoints equal) has no such direction; keeping ``h`` forwards is
     # arbitrary but deterministic.
-    if faces[h] > faces[halfedge_next(h)]:
+    u, v = halfedge_endpoints(faces, h)
+    if u > v:
         return twin, h
     return h, twin
 
@@ -304,32 +305,40 @@ def classify_uv_halfedges(
     texcoords: wp.array[wp.vec2],
     match_uv: wp.bool,
     tolerance_sq: wp.float32,
-    out_flags: wp.array2d[wp.int32],
+    row_bits: wp.int32,
+    out_words: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
 ) -> None:
-    # One thread per halfedge. Row ``k`` of ``out_flags`` is the 0/1 selection of class ``k + 1``
-    # (seam, boundary, foldover), laid out so one inclusive scan of the flattened buffer, in place,
-    # numbers all three blocks at once and leaves each block's running total in its last column.
-    # Every flag is written on every path, so the caller may allocate ``out_flags`` with
-    # ``wp.empty``.
+    # One thread per halfedge, setting bits of the zeroed ``out_words`` as ``crease_flags`` does:
+    # row ``k``, ``row_bits`` (a whole number of words) after row ``k - 1``, selects class
+    # ``k + 1`` (seam, boundary, foldover), bit ``h`` of a row standing for halfedge ``h``. Each
+    # word's population goes into the zeroed ``out_word_counts``, which the caller scans in place
+    # into the words' ranks, so the three rows number on from each other and each row's last word
+    # holds the running total through it. Every thread reaches each ballot.
     h = wp.int32(wp.tid())
     kind = classify_uv_halfedge(
         faces, twins, face_texcoords, has_face_texcoords, texcoords, match_uv, tolerance_sq, h
     )
     for k in range(3):
-        out_flags[k, h] = wp.where(kind == k + 1, wp.int32(1), wp.int32(0))
+        store_counted_ballot_bit(out_words, out_word_counts, k * row_bits + h, kind == k + 1)
 
 
 @wp.func
-def scanned_block_row(inclusive: wp.array[wp.int32], n: wp.int32, k: wp.int32, h: wp.int32):
-    # Row of entry ``h`` within block ``k`` of a ``(3, n)`` flag table scanned in place as one flat
-    # buffer, and that entry's flag. Block ``k``'s positions run on from the totals of the blocks
-    # before it, which sit in the flat entry just ahead of the block; subtracting it makes each
-    # block zero-based.
-    start, flag = scanned_count(inclusive, k * n + h)
+def ranked_row_slot(
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    row_bits: wp.int32,
+    k: wp.int32,
+    h: wp.int32,
+) -> tuple[wp.int32, wp.bool]:
+    # Slot of halfedge ``h`` within row ``k`` of ``classify_uv_halfedges``' ranked bitmask, and its
+    # bit. Row ``k``'s ranks run on from the totals of the rows before it, which sit in the rank of
+    # the word just ahead of the row; subtracting it makes each row zero-based.
+    slot, flag = bit_slot(words, word_ranks, k * row_bits + h)
     base = wp.int32(0)
     if k > 0:
-        base = inclusive[k * n - 1]
-    return start - base, flag
+        base = word_ranks[(k * row_bits >> 5) - 1]
+    return slot - base, flag
 
 
 @wp.func
@@ -348,29 +357,31 @@ def write_canonical_pair_row(
 def scatter_uv_halfedges(
     faces: wp.array[wp.int32],
     twins: wp.array[wp.int32],
-    inclusive: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    row_bits: wp.int32,
     out_seams: wp.array2d[wp.int32],
     out_boundaries: wp.array2d[wp.int32],
     out_foldovers: wp.array2d[wp.int32],
 ) -> None:
-    # Compact the three classes into their rows in ascending halfedge order. ``inclusive`` is
-    # ``classify_uv_halfedges``' flags scanned in place as one flat buffer, so each flag is
-    # recovered as a step of the scan. A seam or foldover row is the ``(face, corner)`` pair of
-    # both canonical halfedges; a boundary row is this halfedge's own ``(face, corner)``, under the
-    # ``h = 3 * f + k`` convention. A halfedge carries at most one class.
+    # Compact the three classes into their rows in ascending halfedge order. ``words`` and
+    # ``word_ranks`` are ``classify_uv_halfedges``' bitmask and its word counts scanned in place,
+    # so each flag is a bit and its slot that bit's rank within its row. A seam or foldover row is
+    # the ``(face, corner)`` pair of both canonical halfedges; a boundary row is this halfedge's
+    # own ``(face, corner)``, under the ``h = 3 * f + k`` convention. A halfedge carries at most one
+    # class.
     h = wp.int32(wp.tid())
-    n = inclusive.shape[0] // 3
-    row, is_boundary = scanned_block_row(inclusive, n, 1, h)
-    if is_boundary != 0:
+    row, is_boundary = ranked_row_slot(words, word_ranks, row_bits, 1, h)
+    if is_boundary:
         out_boundaries[row, 0] = h // 3
         out_boundaries[row, 1] = h % 3
         return
-    seam_row, is_seam = scanned_block_row(inclusive, n, 0, h)
-    foldover_row, is_foldover = scanned_block_row(inclusive, n, 2, h)
-    if is_seam == 0 and is_foldover == 0:
+    seam_row, is_seam = ranked_row_slot(words, word_ranks, row_bits, 0, h)
+    foldover_row, is_foldover = ranked_row_slot(words, word_ranks, row_bits, 2, h)
+    if not is_seam and not is_foldover:
         return
     forwards, backwards = canonical_edge_halfedges(faces, h, twins[h])
-    if is_seam != 0:
+    if is_seam:
         write_canonical_pair_row(forwards, backwards, seam_row, out_seams)
     else:
         write_canonical_pair_row(forwards, backwards, foldover_row, out_foldovers)
@@ -398,8 +409,9 @@ def mark_uv_seam_vertices(
         faces, twins, face_texcoords, has_face_texcoords, texcoords, match_uv, tolerance_sq, h
     )
     if kind == UV_EDGE_SEAM or (include_boundary and kind == UV_EDGE_BOUNDARY):
-        mark_at(out_mask, faces[h])
-        mark_at(out_mask, faces[halfedge_next(h)])
+        u, v = halfedge_endpoints(faces, h)
+        mark_at(out_mask, u)
+        mark_at(out_mask, v)
 
 
 @wp.kernel
@@ -411,8 +423,9 @@ def face_corner_edge_vertices(
     # three blocks.
     i = wp.int32(wp.tid())
     h = 3 * face_corners[i, 0] + face_corners[i, 1]
-    out_edges[i, 0] = faces[h]
-    out_edges[i, 1] = faces[halfedge_next(h)]
+    u, v = halfedge_endpoints(faces, h)
+    out_edges[i, 0] = u
+    out_edges[i, 1] = v
 
 
 # Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``.

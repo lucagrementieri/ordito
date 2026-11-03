@@ -1622,7 +1622,7 @@ def _ordered_chamfer_terms(
     for term, count in zip(terms, counts, strict=True):
         if isinstance(term, _NnTerm):
             sorted_keys, order = od.array.sort_and_argsort(
-                term.nearest, end_bit=max(1, (term.y.size - 1).bit_length())
+                term.nearest, end_bit=_launch.key_bits(term.y.size)
             )
             nearest, pull = _pull_gather(term.y, sorted_keys, order, count)
             launches += [

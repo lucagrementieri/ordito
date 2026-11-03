@@ -39,11 +39,12 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import (
+    offsets_buffer,
     prefers_tiled_reduction,
-    read_scalar,
     read_values,
     require_nonempty_mesh,
     require_same_device,
+    scan_count,
 )
 from ordito.constants import INT32_MAX, INT64_MAX, TILE_1D
 from ordito.kernels import array as kernel_array
@@ -1455,10 +1456,8 @@ def _winding_number_tree(
         inputs=[wp.int32(n_leaves), perimeter, count, cap_offsets],
         device=device,
     )
-    cap_sizes = cap_offsets[1:]
-    _launch.array_scan(cap_sizes, cap_sizes, inclusive=True)
     # One readback: the cap edges' total sizes their buffers, and only the device knows it.
-    n_cap_edges = int(read_scalar(cap_offsets))
+    n_cap_edges = scan_count(_launch.view(cap_offsets, 1, cap_offsets.size))
     cap_start, cap_end = _launch.carve(wp.vec3, [max(n_cap_edges, 1), max(n_cap_edges, 1)], device)
     _launch.launch(
         kernel_proximity.fill_cap_edges,
@@ -1586,17 +1585,15 @@ def query_mesh_aabb_with_offsets(
     # The counts are written behind the leading zero of the ``m + 1`` offsets buffer and scanned
     # there in place, so no separate count buffer is allocated; an all-zero count scans to all-zero
     # offsets, which is exactly what the empty case wants to return.
-    offsets = _launch.zeros(m + 1, dtype=wp.int32, device=device)
-    hit_counts = odt.as_dense(offsets[1:])
+    offsets, hit_counts = offsets_buffer(m, device)
     _launch.launch(
         kernel_proximity.query_mesh_aabb_count,
         dim=m,
         inputs=[query_lower, query_upper, mesh.id, wp.int32(max_hits), hit_counts],
         device=device,
     )
-    _launch.array_scan(hit_counts, out_array=hit_counts, inclusive=True)
     # One 4-byte read of the total sizes the candidate buffer.
-    total_hits = int(read_scalar(offsets))
+    total_hits = scan_count(hit_counts)
     if total_hits == 0:
         return _launch.empty(0, dtype=wp.int32, device=device), offsets
 

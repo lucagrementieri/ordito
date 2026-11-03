@@ -10,15 +10,14 @@ from ordito.kernels.proximity import closest_point_query
 from ordito.kernels.reduce import (
     ITEMS_PER_BLOCK_1D,
     block_chunk_1d,
-    block_last_ticket,
     block_sum,
     finish_block_total,
+    last_atomic_block,
     last_ticket,
     stage_block_fold,
     store_block_sum,
     store_block_total,
     store_sum_and_count,
-    thread_fence,
 )
 from ordito.kernels.transform import transform_point_mat44
 
@@ -38,38 +37,38 @@ wp.set_module_options({"enable_backward": False})
 # ``E[x^2] - E[x]^2`` scale as ``(|centroid| / spread)^2`` — unbounded for a cloud far from the
 # origin. Shifting by a sample point bounds it at ``(diameter / spread)^2``, a handful of bits.
 # ---------------------------------------------------------------------------
-ACC_W_SUM = wp.constant(0)  # sum w
-ACC_A_SUM = wp.constant(1)  # vec3, slots 1..3:   sum w (a - p)
-ACC_B_SUM = wp.constant(4)  # vec3, slots 4..6:   sum w (b - q)
-ACC_A_SQ = wp.constant(7)  # sum w |a - p|^2
-ACC_B_SQ = wp.constant(8)  # sum w |b - q|^2
-ACC_COV = wp.constant(9)  # mat33, slots 9..17: sum_{w>0} outer(b - q, a - p), row-major
-ACC_MASK_A = wp.constant(18)  # vec3, slots 18..20: sum_{w>0} (a - p)
-ACC_MASK_B = wp.constant(21)  # vec3, slots 21..23: sum_{w>0} (b - q)
-ACC_MASK_N = wp.constant(24)  # count of w > 0
+ACC_W_SUM = wp.int32(0)  # sum w
+ACC_A_SUM = wp.int32(1)  # vec3, slots 1..3:   sum w (a - p)
+ACC_B_SUM = wp.int32(4)  # vec3, slots 4..6:   sum w (b - q)
+ACC_A_SQ = wp.int32(7)  # sum w |a - p|^2
+ACC_B_SQ = wp.int32(8)  # sum w |b - q|^2
+ACC_COV = wp.int32(9)  # mat33, slots 9..17: sum_{w>0} outer(b - q, a - p), row-major
+ACC_MASK_A = wp.int32(18)  # vec3, slots 18..20: sum_{w>0} (a - p)
+ACC_MASK_B = wp.int32(21)  # vec3, slots 21..23: sum_{w>0} (b - q)
+ACC_MASK_N = wp.int32(24)  # count of w > 0
 # The moment slots, ``ACC_W_SUM`` through ``ACC_MASK_N``: what one block of
 # ``accumulate_procrustes_moments`` folds. A plain constant, since a vector length must be one.
-PROCRUSTES_MOMENT_SLOTS = wp.constant(25)
-ACC_COST = wp.constant(25)  # weighted mean squared residual
+PROCRUSTES_MOMENT_SLOTS = 25
+ACC_COST = wp.int32(25)  # weighted mean squared residual
 PROCRUSTES_ACC_SIZE = 26
 # ``icp``'s loop carries one slot more: the cost of the fit it has kept so far, which
 # ``point_to_point_round`` writes and never zeroes (``inf`` if round 0 was weightless).
-ACC_KEPT_COST = wp.constant(26)
+ACC_KEPT_COST = wp.int32(26)
 ICP_POINT_ACC_SIZE = 27
 
 # Point-to-plane accumulator, one ``float32`` buffer for the same reason the moments above share
 # one: the normal matrix, its right-hand side and the two scalars ``accumulate_point_to_plane``
 # folds as **one** packed block reduction and commits, then the previous kept cost the round's
 # convergence test reads. One allocation and one zero-fill for the whole loop state.
-ICP_JTJ = wp.constant(0)  # spatial_matrix, slots 0..35, row-major
-ICP_JTR = wp.constant(36)  # spatial_vector, slots 36..41
-ICP_COST = wp.constant(42)  # sum robust_loss(r); see ``robust_weight_and_loss``
-ICP_WEIGHT_SUM = wp.constant(43)  # sum w
+ICP_JTJ = wp.int32(0)  # spatial_matrix, slots 0..35, row-major
+ICP_JTR = wp.int32(36)  # spatial_vector, slots 36..41
+ICP_COST = wp.int32(42)  # sum robust_loss(r); see ``robust_weight_and_loss``
+ICP_WEIGHT_SUM = wp.int32(43)  # sum w
 # What one block of ``accumulate_point_to_plane`` folds, ``ICP_JTJ`` through ``ICP_WEIGHT_SUM``.
-ICP_MOMENT_SLOTS = wp.constant(44)
+ICP_MOMENT_SLOTS = 44
 # The previous kept fit's cost, the ``float32`` it was read from. Never zeroed and never read before
 # the first kept fit: ``point_to_plane_round`` reads ``inf`` while the round counter is 0.
-ICP_OLD_COST = wp.constant(44)
+ICP_OLD_COST = wp.int32(44)
 ICP_ACC_SIZE = 45
 
 
@@ -405,23 +404,6 @@ def close_point_to_point_round(
     out_total[0] = fitted
     out_acc[ACC_KEPT_COST] = cost
     continue_icp_loop(old_cost, wp.float64(cost), threshold, max_iterations, out_state)
-
-
-@wp.func
-def last_atomic_block(
-    lane: wp.int32, out_ticket: wp.array[wp.int32], n_blocks: wp.int32
-) -> wp.int32:
-    # The last block of a launch whose blocks committed by ``atomic_add`` (``ordito.config``'s
-    # deterministic setting off): non-zero, in every lane, for the block drawing the last of
-    # ``n_blocks`` integer tickets on ``out_ticket[0]``, whose reads then see every block's adds
-    # (each block fenced before its ticket). That block resets the counter, so a loop's next round
-    # needs no clearing. The reproducible commit has its last block already, the one that folds.
-    last = block_last_ticket(lane, out_ticket, 0, wp.int32(0), n_blocks, last_ticket)
-    if last != 0:
-        thread_fence()
-        if lane == 0:
-            out_ticket[0] = wp.int32(0)
-    return last
 
 
 @wp.func
@@ -985,8 +967,8 @@ def abs_deviation(value: wp.float32, center: wp.float32) -> wp.float32:
 # medians are formed in ``float64`` exactly as the host formed them from the ``float32`` values it
 # read back -- the middle value, or the mean of the two middle values -- so the scale is the same
 # double; ``MAD_STATS`` is ``(center, then sigma; in-range count)``.
-MAD_STATS_VALUE = wp.constant(0)
-MAD_STATS_COUNT = wp.constant(1)
+MAD_STATS_VALUE = wp.int32(0)
+MAD_STATS_COUNT = wp.int32(1)
 MAD_STATS_SIZE = 2
 
 

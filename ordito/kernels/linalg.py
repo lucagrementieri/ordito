@@ -226,6 +226,43 @@ def interior_row_counts(
     )
 
 
+@wp.func
+def mapped_rank(free_map: wp.array[wp.int32], j: wp.int32) -> wp.int32:
+    # ``emit_interior_row``'s ``rank_of`` from a free map handed in (``interior_system_csr``).
+    return free_map[j]
+
+
+@wp.func
+def scanned_rank(ranks: wp.array[wp.vec2i], j: wp.int32) -> wp.int32:
+    # ``emit_interior_row``'s ``rank_of`` from the scanned ``(free, kept)`` pairs
+    # (``interior_partition_system``).
+    return ranks[j][0]
+
+
+@wp.func
+def emit_interior_row(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    fixed_mask: wp.array[wp.bool],
+    scale: wp.float64,
+    i: wp.int32,
+    slot: wp.int32,
+    rank_table: wp.array[Any],
+    rank_of: wp.Function,
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+):
+    # Row ``i``'s surviving (unpinned-column) entries of ``Q``, scaled, from ``slot`` on, each
+    # column renumbered to ``rank_of(rank_table, j)``: the emit both extractions share.
+    for e in range(offsets[i], offsets[i + 1]):
+        j = columns[e]
+        if not fixed_mask[j]:
+            out_columns[slot] = rank_of(rank_table, j)
+            out_values[slot] = scale * values[e]
+            slot += 1
+
+
 @wp.kernel
 def interior_system_csr(
     offsets: wp.array[wp.int32],
@@ -248,13 +285,19 @@ def interior_system_csr(
     ri = free_row(fixed_mask, free_map, i)
     if ri < 0:
         return
-    slot = row_offsets[ri]
-    for e in range(offsets[i], offsets[i + 1]):
-        j = columns[e]
-        if not fixed_mask[j]:
-            out_columns[slot] = free_map[j]
-            out_values[slot] = scale * values[e]
-            slot += 1
+    emit_interior_row(
+        offsets,
+        columns,
+        values,
+        fixed_mask,
+        scale,
+        i,
+        row_offsets[ri],
+        free_map,
+        mapped_rank,
+        out_columns,
+        out_values,
+    )
 
 
 @wp.kernel
@@ -297,7 +340,8 @@ def interior_partition_system(
     # rank (``free_partition``'s map, defined at pinned rows too), and for a free row its CSR
     # offset, its surviving entries -- columns renumbered by the scan, so no map is read back --
     # and its right-hand-side column (``interior_rhs_row``). ``interior_system_csr`` emits the same
-    # entries from a map it is handed; the two differ only in where a column's rank comes from.
+    # entries from a map it is handed; the two differ only in where a column's rank comes from
+    # (``emit_interior_row``'s ``rank_of``).
     i = wp.int32(wp.tid())
     n = fixed_mask.shape[0]
     rank = ranks[i][0]
@@ -307,13 +351,19 @@ def interior_partition_system(
     if fixed_mask[i]:
         return
     out_row_offsets[rank] = ranks[i][1]
-    slot = ranks[i][1]
-    for e in range(offsets[i], offsets[i + 1]):
-        j = columns[e]
-        if not fixed_mask[j]:
-            out_columns[slot] = ranks[j][0]
-            out_values[slot] = scale * values[e]
-            slot += 1
+    emit_interior_row(
+        offsets,
+        columns,
+        values,
+        fixed_mask,
+        scale,
+        i,
+        ranks[i][1],
+        ranks,
+        scanned_rank,
+        out_columns,
+        out_values,
+    )
     interior_rhs_row(
         offsets, columns, values, fixed_mask, fixed_values, scale, load, i, rank, out_rhs
     )
@@ -367,6 +417,32 @@ def stacked_positions(
     out_positions[2 * v + 1] = position
     for k in range(n_scalars):
         out_positions[2 * n + k * n + v] = position
+
+
+@wp.func
+def csr_row_dot(
+    row: wp.int32,
+    x_offset: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.Float],
+    x: wp.array[wp.Float],
+) -> wp.Float:
+    # One CSR row against one column of ``x``: the multigrid cycle's mat-vec and power iteration,
+    # the conjugate-gradient rounds and ``smoothing.diffused_scalar``, which differ only in what
+    # they do with the result -- and the row bound comes from ``offsets`` alone, so none depends on
+    # the matrix's ``nnz`` field being fresh.
+    #
+    # Generic over the storage precision, and accumulated at ``x``'s: the conjugate-gradient
+    # mat-vec also runs on ``float32`` systems, whose rows ``warp.fem`` assembles a hundred entries
+    # long, where a ``float64`` accumulator measured well behind ``warp.sparse.bsr_mv``'s own. The
+    # values may be narrower than ``x`` -- the heat diffusions' ``float32`` copy of their operator
+    # (``linalg._BatchedCg``'s ``narrow_values``) -- and are widened as they are read; at one
+    # precision the cast is the identity and the arithmetic is unchanged.
+    total = x.dtype(0.0)
+    for k in range(offsets[row], offsets[row + 1]):
+        total += x.dtype(values[k]) * x[x_offset + columns[k]]
+    return total
 
 
 @wp.func

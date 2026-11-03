@@ -555,13 +555,16 @@ def closed_cycle_windows_serial(
 
 
 @wp.kernel
-def mark_tail_bits(tails: wp.array[wp.int32], out_bits: wp.array[wp.uint32]) -> None:
-    # A bit a node of a successor table, set on the nodes ``tails`` lists (``out_bits`` zeroed).
-    v = tails[wp.tid()]
-    if v >= 0:
-        mask = wp.uint32(1) << wp.uint32(v & 31)
-        if out_bits[v >> 5] & mask == wp.uint32(0):
-            wp.atomic_or(out_bits, v >> 5, mask)
+def mark_tail_bits(
+    tails: wp.array[wp.int32], out_bits: wp.array[wp.uint32], out_word_counts: wp.array[wp.int32]
+) -> None:
+    # A bit a node of a successor table, set on the nodes ``tails`` lists (``out_bits`` zeroed),
+    # each word's new bits counted into ``out_word_counts`` (zeroed) for the caller to scan in place
+    # into ``bit_rank``'s table. A node may be listed more than once, so the set is
+    # ``or_counted_bit``'s, which counts a bit once however often it is set; every lane calls it,
+    # an unlisted one with ``bit`` false, so that a warp's lanes stay converged.
+    v = tails[wp.int32(wp.tid())]
+    kernel_array.or_counted_bit(out_bits, out_word_counts, wp.max(v, 0), v >= 0)
 
 
 @wp.kernel

@@ -50,7 +50,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device, scan_count
 from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX
 from ordito.edges import edges_unique, edges_unique_length
@@ -1423,11 +1423,10 @@ def lscm_hessian(
         outputs=[laplacian_values, area_offsets],
         device=device,
     )
-    _launch.array_scan(area_offsets, out_array=area_offsets, inclusive=True)
     # Sizes the entry buffers: the one readback, of the boundary entry count, which the triplet
     # build of ``A`` read as its boundary edge count. Capacities, not counts: ``L``'s columns may
     # be longer than its stored entries.
-    capacity = 2 * lap_columns.size + 2 * int(read_scalar(area_offsets))
+    capacity = 2 * lap_columns.size + 2 * scan_count(area_offsets)
     offsets = _launch.empty(2 * n + 1, dtype=wp.int32, device=device)
     columns = _launch.empty(capacity, dtype=wp.int32, device=device)
     values = _launch.empty(capacity, dtype=wp.float64, device=device)
@@ -1573,7 +1572,7 @@ def _sorted_vertex_corner_sums(
     """
     device = faces.device
     sorted_vertices, corner_order = od.array.sort_and_argsort(
-        faces, end_bit=max(1, (n_vertices - 1).bit_length())
+        faces, end_bit=_launch.key_bits(n_vertices)
     )
     sums = _launch.empty(n_vertices, dtype=wp.float64, device=device)
     offsets = _launch.empty(n_vertices + 1 if with_rows else 0, dtype=wp.int32, device=device)

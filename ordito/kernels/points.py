@@ -20,10 +20,10 @@ from ordito.kernels.predicates import point_plane_dot, triangle_normal
 from ordito.kernels.reduce import (
     block_chunk,
     block_chunk_1d,
-    block_last_ticket,
     block_max,
     block_sum,
     fold_block_totals,
+    last_atomic_block,
     last_ticket,
     last_ticket_matrix,
     last_ticket_vector,
@@ -32,7 +32,6 @@ from ordito.kernels.reduce import (
     store_block_total,
     store_block_total_divided,
     store_sum_and_count,
-    thread_fence,
     write_block_value,
 )
 
@@ -87,10 +86,10 @@ def point_sum(
 
 # What ``centered_covariance``'s last block does with the summed matrix: nothing (the matrix is the
 # answer), or one of the three fits, whose ``wp.svd3`` used to be a ``dim=1`` launch of its own.
-SCATTER_ONLY = wp.constant(wp.int32(0))
-SCATTER_FIT_LINE = wp.constant(wp.int32(1))
-SCATTER_FIT_PLANE = wp.constant(wp.int32(2))
-SCATTER_PRINCIPAL_AXES = wp.constant(wp.int32(3))
+SCATTER_ONLY = wp.int32(0)
+SCATTER_FIT_LINE = wp.int32(1)
+SCATTER_FIT_PLANE = wp.int32(2)
+SCATTER_PRINCIPAL_AXES = wp.int32(3)
 
 
 @wp.func
@@ -249,8 +248,7 @@ def centered_covariance(
     if ticket.shape[0] > 0:
         if lane == 0:
             wp.atomic_add(out_cov, 0, folded)
-        if block_last_ticket(lane, ticket, 0, wp.int32(0), n_blocks, last_ticket) != 0:
-            thread_fence()
+        if last_atomic_block(lane, ticket, n_blocks) != 0:
             if lane == 0:
                 write_scatter_fit(finish, out_cov[0], center, center_divisor, out_frame)
         return
@@ -265,10 +263,10 @@ def centered_covariance(
 
 
 # Orientation modes for estimate_point_normals (mirror Open3D's orient methods).
-ORIENT_CENTROID = wp.constant(wp.int32(0))  # outward from the cloud centroid (the default)
-ORIENT_DIRECTION = wp.constant(wp.int32(1))  # align with a fixed direction
-ORIENT_CAMERA = wp.constant(wp.int32(2))  # point toward a camera location
-ORIENT_NEIGHBORS = wp.constant(wp.int32(3))  # toward at least half the neighbours (SHOT)
+ORIENT_CENTROID = wp.int32(0)  # outward from the cloud centroid (the default)
+ORIENT_DIRECTION = wp.int32(1)  # align with a fixed direction
+ORIENT_CAMERA = wp.int32(2)  # point toward a camera location
+ORIENT_NEIGHBORS = wp.int32(3)  # toward at least half the neighbours (SHOT)
 
 
 @wp.kernel
@@ -364,7 +362,7 @@ def estimate_point_normals(
 # rows on the two accumulator slots, and at a million rows that contention made the fused kernel
 # 1.4x the unfused pair it replaced; 1024 starves the grid below ~100 k rows (2.6x slower at 41 k).
 # 256 measured at or below the unfused pair at both ends (0.54x at 41 k rows, 0.93x at 1 M, k = 16).
-MOMENT_ROWS_PER_BLOCK = wp.constant(256)
+MOMENT_ROWS_PER_BLOCK = 256
 
 
 @wp.kernel
@@ -495,7 +493,7 @@ def outlier_probability(plof: wp.float32, inverse_normalizer: wp.float32) -> wp.
     return wp.max(wp.float32(0.0), wp.erf(plof * inverse_normalizer))
 
 
-SQRT2_F64 = wp.constant(wp.float64(1.4142135623730951))
+SQRT2_F64 = wp.float64(1.4142135623730951)
 
 
 @wp.kernel
@@ -638,14 +636,6 @@ def ball_graph_edges(
     for e in range(offsets[i], offsets[i + 1]):
         out_edges[e, 0] = i
         out_edges[e, 1] = neighbors[e]
-
-
-@wp.kernel
-def component_size_counts(labels: wp.array[wp.int32], out_sizes: wp.array[wp.int32]) -> None:
-    # Each point counted into its component's label (``out_sizes`` arrives zeroed): an integer
-    # histogram, exact under any arrival order.
-    i = wp.int32(wp.tid())
-    wp.atomic_add(out_sizes, labels[i], 1)
 
 
 @wp.kernel
@@ -1181,7 +1171,8 @@ def support_indices(
     for i in range(j, points.shape[0], stride):
         if wp.dot(direction, points[i]) >= upper:
             # Lowest attaining index wins, so the shell is identical across launches even when
-            # several points tie for the support along a direction.
+            # several points tie for the support along a direction. A read before the atomic
+            # (``atomic_min_unless_below``) measured 0.99-1.00x on dragon ``convex_superset_mask``.
             wp.atomic_min(out_support, k, i)
             break
 

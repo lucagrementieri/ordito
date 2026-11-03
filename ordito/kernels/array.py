@@ -31,11 +31,11 @@ wp.set_module_options({"enable_backward": False})
 # both of ``kernels/homology.py``'s (the breadth-first level loop and the Boruvka forest rounds).
 # ``kernels/algorithms/bfs.py`` deliberately shares neither: its seven slots are a frontier window
 # (``start``, ``tail``) rather than a round counter, so slot 0 does not mean the same thing.
-LOOP_ROUND = wp.constant(wp.int32(0))
-LOOP_CONDITION = wp.constant(wp.int32(1))
+LOOP_ROUND = wp.int32(0)
+LOOP_CONDITION = wp.int32(1)
 LOOP_STATE_SIZE = 2
 # Appended by the publish-at-the-back shape, so the shared two keep their numbers.
-LOOP_PROGRESS = wp.constant(wp.int32(2))
+LOOP_PROGRESS = wp.int32(2)
 LOOP_ADVANCE_STATE_SIZE = 3
 
 # The length-1 slot views the wrappers take, as **plain** slices, which is a measured cost rather
@@ -181,6 +181,27 @@ def unravel_index(
     # ``ravel_index``' inverse: the ``(i, j, k)`` of row-major flat index ``flat``.
     row = flat // nz
     return row // ny, row % ny, flat % nz
+
+
+@wp.func
+def ravel_cube(c: wp.vec3i, n: wp.int32) -> wp.int32:
+    # ``ravel_index`` over an ``n**3`` cube lattice, the cell given as one vector.
+    return ravel_index(c[0], c[1], c[2], n, n)
+
+
+@wp.func
+def unravel_cube(flat: wp.int32, n: wp.int32) -> wp.vec3i:
+    # ``ravel_cube``'s inverse: row-major, the last axis fastest.
+    i, j, k = unravel_index(flat, n, n)
+    return wp.vec3i(i, j, k)
+
+
+@wp.func
+def cube_corner_offset(corner: wp.int32) -> wp.vec3i:
+    # The 0/1 offsets of a cell's ``corner``-th corner, ``corner = 4 di + 2 dj + dk``: the order
+    # three nested 0/1 loops over ``(di, dj, dk)`` visit the corners in (not marching cubes'
+    # Lorensen order).
+    return wp.vec3i(corner >> 2, (corner >> 1) & 1, corner & 1)
 
 
 @wp.func
@@ -1787,14 +1808,32 @@ def _register_overloads() -> None:
 _register_overloads()
 
 
+# The set bits of a word in one instruction: the SWAR sequence it replaced cost the octree sweeps,
+# which rank eight cells a row (``wp.bit_count`` arrived in Warp 1.19, above the supported floor).
+_NATIVE_POPCOUNT = """
+#if defined(__CUDA_ARCH__)
+return __popc(x);
+#else
+return __builtin_popcount(x);
+#endif
+"""
+
+
+@wp.func_native(_NATIVE_POPCOUNT)
+def native_popcount32(x: wp.uint32) -> wp.int32: ...
+
+
 @wp.func
 def popcount32(x: wp.uint32) -> wp.int32:
-    # Set bits of ``x`` (the SWAR reduction; ``wp.bit_count`` arrived in Warp 1.19, above the
-    # supported floor).
-    v = x - ((x >> wp.uint32(1)) & wp.uint32(0x55555555))
-    v = (v & wp.uint32(0x33333333)) + ((v >> wp.uint32(2)) & wp.uint32(0x33333333))
-    v = (v + (v >> wp.uint32(4))) & wp.uint32(0x0F0F0F0F)
-    return wp.int32((v * wp.uint32(0x01010101)) >> wp.uint32(24))
+    # Set bits of ``x``: a ``wp.func`` over the native, so ``wp.map`` and ``wp.tile_map`` take it.
+    return native_popcount32(x)
+
+
+@wp.func
+def popcount_below(word: wp.uint32, bit: wp.int32) -> wp.int32:
+    # Set bits of ``word`` below bit ``bit`` (0-31): a position's rank within its word, the step
+    # every ranked-bitmask lookup adds to its word's rank.
+    return native_popcount32(word & ((wp.uint32(1) << wp.uint32(bit)) - wp.uint32(1)))
 
 
 @wp.func
@@ -1804,13 +1843,29 @@ def bit_is_set(words: wp.array[wp.uint32], p: wp.int32) -> wp.bool:
 
 
 @wp.func
+def set_bit(words: wp.array[wp.uint32], p: wp.int32):
+    # Set bit ``p`` of a bitmask by one ``atomic_or``, for scattered bits mostly on distinct words;
+    # ``set_bit_if_clear`` where many threads hit few words, ``store_ballot_bit`` where thread ``p``
+    # owns bit ``p``.
+    wp.atomic_or(words, p >> 5, wp.uint32(1) << wp.uint32(p & 31))
+
+
+@wp.func
+def set_bit_if_clear(words: wp.array[wp.uint32], p: wp.int32):
+    # ``set_bit`` taking the atomic only when the bit reads clear: marks that fall on few words (the
+    # coarse octree depths, a frontier's revisits) serialized the launch an atomic each (11x).
+    mask = wp.uint32(1) << wp.uint32(p & 31)
+    if words[p >> 5] & mask == wp.uint32(0):
+        wp.atomic_or(words, p >> 5, mask)
+
+
+@wp.func
 def bit_rank(words: wp.array[wp.uint32], word_ranks: wp.array[wp.int32], p: wp.int32) -> wp.int32:
     # Set bits ahead of bit ``p``: ``word_ranks`` is the inclusive scan of the words' set-bit
     # counts (``popcount32`` mapped over ``words``), so this is the exclusive scan of the bits a
     # 0/1 ``int32`` table would hold, at a 32nd of its memory.
     word = words[p >> 5]
-    below = (wp.uint32(1) << wp.uint32(p & 31)) - wp.uint32(1)
-    return word_ranks[p >> 5] - popcount32(word) + popcount32(word & below)
+    return word_ranks[p >> 5] - native_popcount32(word) + popcount_below(word, p & 31)
 
 
 @wp.func
@@ -1820,9 +1875,8 @@ def bit_slot(
     # ``scanned_count`` over a ranked bitmask: bit ``p``'s compacted slot (``bit_rank``) and whether
     # it is set, from one load of its word.
     word = words[p >> 5]
-    bit = wp.uint32(1) << wp.uint32(p & 31)
-    below = word_ranks[p >> 5] - popcount32(word) + popcount32(word & (bit - wp.uint32(1)))
-    return below, (word & bit) != wp.uint32(0)
+    below = word_ranks[p >> 5] - native_popcount32(word) + popcount_below(word, p & 31)
+    return below, (word >> wp.uint32(p & 31)) & wp.uint32(1) != wp.uint32(0)
 
 
 # ``wp.map`` has the same lazy-instantiation property ``_register_overloads`` exists for, and the
@@ -2053,6 +2107,32 @@ def complement_rank_index(index: wp.int32) -> wp.uint32:
     return wp.uint32(INT32_MAX_CONSTANT - index)
 
 
+# ``wp.atomic_min`` / ``wp.atomic_max`` behind a plain read: a value the slot already beats
+# strictly cannot change it, so it takes no atomic. Many threads lowering one address otherwise
+# serialize on it even when nearly every bid loses. Within a launch whose only writes to the slot
+# are these atomics the slot moves one way, so a stale read holds a value the slot has since
+# beaten or met, and costs at most an atomic that loses; the result is the bare atomic's. The test
+# is "already strictly better", not "the value improves": a float atomic is an ``fmin`` / ``fmax``,
+# which replaces a stored NaN and may swap ``+0.0`` and ``-0.0``, and neither passes a strict
+# comparison, so those still take the atomic and keep its bits. Returns whether the atomic was
+# taken, for a caller whose follow-up work is gated on the same test.
+@wp.func
+def atomic_min_unless_below(values: wp.array[Any], index: wp.int32, value: Any) -> wp.bool:
+    if values[index] < value:
+        return False
+    wp.atomic_min(values, index, value)
+    return True
+
+
+@wp.func
+def atomic_max_unless_above(values: wp.array[Any], index: wp.int32, value: Any) -> wp.bool:
+    # ``atomic_min_unless_below`` mirrored.
+    if values[index] > value:
+        return False
+    wp.atomic_max(values, index, value)
+    return True
+
+
 # A slot in an append-only list whose length is ``counter[index]``: on CUDA one ``atomicAdd`` per
 # warp reserves every converged lane's slot (the lowest active lane adds the lane count, and each
 # lane takes its rank among the active ones), the CPU device takes one atomic per call. Slots come
@@ -2208,7 +2288,7 @@ def nth_bit_position(
     # The position of the ``n``-th set bit of a bitmask (from 0, in position order): the first word
     # whose inclusive rank (``word_ranks``, ``bit_rank``'s) passes ``n``, then the bit within it.
     w = wp.lower_bound(word_ranks, n + 1)
-    before = word_ranks[w] - popcount32(words[w])
+    before = word_ranks[w] - native_popcount32(words[w])
     return (w << 5) + nth_set_bit(words[w], n - before)
 
 
@@ -2279,6 +2359,12 @@ def pack_nearest_key(distance: wp.float32, index: wp.int32) -> wp.int64:
     # sentinel.
     distance_bits = float_order_bits(distance)
     return wp.int64((distance_bits << wp.uint64(32)) | wp.uint64(wp.uint32(index)))
+
+
+@wp.func
+def unpack_nearest_index(key: wp.int64) -> wp.int32:
+    # ``pack_nearest_key``'s index: its low word.
+    return wp.int32(key & wp.int64(0xFFFFFFFF))
 
 
 @wp.func
@@ -2490,7 +2576,7 @@ def unpack_segment_words(
 # deterministic, and a tiled launch there runs one lane per block (``wp.block_dim()`` reads 1, so
 # the lane runs below would still be correct). ``float32`` only: ``wp.tile_scan_*`` takes
 # ``float32``, ``int32`` and ``uint32`` tiles, and no ordito ``float64`` scan exists to need one.
-FLOAT_SCAN_CHUNK = wp.constant(2048)
+FLOAT_SCAN_CHUNK = 2048
 FLOAT_SCAN_BLOCK_DIM = 256
 
 

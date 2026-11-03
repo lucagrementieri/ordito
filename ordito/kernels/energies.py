@@ -7,7 +7,7 @@ from ordito.kernels.array import (
     store_coo_key,
     to_vec3d,
 )
-from ordito.kernels.halfedge import halfedge_endpoints, halfedge_prev
+from ordito.kernels.halfedge import halfedge_destination, halfedge_endpoints, halfedge_prev
 from ordito.kernels.laplacian import cotmatrix_row, store_half_cotangents
 from ordito.kernels.predicates import (
     angle_defect,
@@ -17,7 +17,7 @@ from ordito.kernels.predicates import (
 )
 from ordito.kernels.reduce import term_sum_1d
 from ordito.kernels.scatter import add_corner_triple, add_or_store_corner_triple, append_to_pair
-from ordito.kernels.triangles import face_vertices_vec3d
+from ordito.kernels.triangles import face_vertices_vec3d, known_local_corner
 
 wp.set_module_options({"enable_backward": False})
 
@@ -52,9 +52,9 @@ def scaled_angle_defect(angle_sum: wp.float64) -> wp.float64:
 
 # ``smoothing_norm``'s warp-uniform method selector, one per
 # ``energies.laplacian_smoothing_loss`` method.
-SMOOTHING_UNIFORM = wp.constant(0)
-SMOOTHING_COT = wp.constant(1)
-SMOOTHING_COTCURV = wp.constant(2)
+SMOOTHING_UNIFORM = wp.int32(0)
+SMOOTHING_COT = wp.int32(1)
+SMOOTHING_COTCURV = wp.int32(2)
 
 
 @wp.struct
@@ -385,6 +385,8 @@ def hessian_face_terms(
     # The ``igl::massmatrix`` MASSMATRIX_TYPE_VORONOI lumping: true Voronoi quad areas on
     # non-obtuse triangles, the 1/2 : 1/4 : 1/4 split on obtuse ones (the obtuse corner gets the
     # half). A degenerate face contributes nothing (igl would emit NaN).
+    # ``triangles.face_voronoi_areas`` is the same lumping in different arithmetic (cosines from
+    # lengths, an even split on a degenerate face, rounded to ``float32``), so the two stay apart.
     # ``dbl_area`` above is ``wp.length(wp.cross(v1 - v0, v2 - v0))``, which is exactly what
     # ``triangle_double_area`` computes, so the mass half reuses it rather than re-deriving the
     # face's geometry -- that shared preamble is the second thing the fusion removes, after the
@@ -455,8 +457,7 @@ def row_edge_weight(
         g = vf_indices[t]
         matches = wp.int32(0)
         for q in range(3):
-            c = faces[3 * g + q]
-            d = faces[3 * g + (q + 1) % 3]
+            c, d = halfedge_endpoints(faces, 3 * g + q)
             if wp.min(c, d) == lo and wp.max(c, d) == hi:
                 matches += 1
         if matches > 0:
@@ -479,8 +480,7 @@ def row_vertex_on_boundary(
     for s in range(vf_offsets[vertex], vf_offsets[vertex + 1]):
         f = vf_indices[s]
         for k in range(3):
-            a = faces[3 * f + k]
-            b = faces[3 * f + (k + 1) % 3]
+            a, b = halfedge_endpoints(faces, 3 * f + k)
             if a == vertex or b == vertex:
                 weight = row_edge_weight(
                     faces, vf_offsets, vf_indices, vertex, wp.min(a, b), wp.max(a, b)
@@ -552,15 +552,6 @@ def hessian_energy_counts(
         out_counts[k] = unique * wp.where(corners <= HESSIAN_MASK_CORNERS, unique, corners)
     else:
         out_counts[k] = 0
-
-
-@wp.func
-def face_corner_of_vertex(faces: wp.array[wp.int32], face: wp.int32, vertex: wp.int32) -> wp.int32:
-    if faces[face * 3 + 0] == vertex:
-        return wp.int32(0)
-    if faces[face * 3 + 1] == vertex:
-        return wp.int32(1)
-    return wp.int32(2)
 
 
 @wp.kernel
@@ -651,14 +642,14 @@ def hessian_energy_rows(
             f = vertex_faces[a]
             if faces[f * 3] != i and faces[f * 3 + 1] != i and faces[f * 3 + 2] != i:
                 continue
-            gradient_fk = gradients[f * 3 + face_corner_of_vertex(faces, f, k)]
+            gradient_fk = gradients[f * 3 + known_local_corner(faces, f, k)]
             left = weight * areas[f]
             for b in range(start, end):
                 g = vertex_faces[b]
                 pair = (
                     left
                     * areas[g]
-                    * wp.dot(gradient_fk, gradients[g * 3 + face_corner_of_vertex(faces, g, k)])
+                    * wp.dot(gradient_fk, gradients[g * 3 + known_local_corner(faces, g, k)])
                 )
                 for ci in range(3):
                     if faces[f * 3 + ci] == i:
@@ -802,11 +793,8 @@ def cr_gradient_rows(
         h = edge_halfedges[u, t]
         if h < 0:
             continue
-        f = h // 3
-        s = h % 3
-        i = faces[f * 3 + s]
-        j = faces[f * 3 + (s + 1) % 3]
-        k = faces[f * 3 + (s + 2) % 3]
+        i, j = halfedge_endpoints(faces, h)
+        k = faces[halfedge_prev(h)]
         vi = to_vec3d(vertices[i])
         vj = to_vec3d(vertices[j])
         vk = to_vec3d(vertices[k])
@@ -832,17 +820,6 @@ def cr_gradient_rows(
         out_perp[u, slot_j] = out_perp[u, slot_j] - orientation * (eij - ejk + eki) / twelve_sqrt
         out_vertex_slots[u, 2 + t] = k
         out_perp[u, 2 + t] = orientation * sqrt_eij / wp.float64(6.0)
-
-
-@wp.func
-def select3(value0: wp.Scalar, value1: wp.Scalar, value2: wp.Scalar, index: wp.int32) -> wp.Scalar:
-    # Index into three loose values. Generic over the scalar type, so the int32 edge ids and the
-    # float64 matrix entries of the curved-Hessian assembly share one definition.
-    if index == 0:
-        return value0
-    if index == 1:
-        return value1
-    return value2
 
 
 @wp.func
@@ -1288,7 +1265,7 @@ def lscm_boundary_side(
         if keys[p + 1] == keys[p]:
             return 0
     corner = order[p]
-    tail = faces[(corner // 3) * 3 + (corner % 3 + 1) % 3]
+    tail = halfedge_destination(faces, corner)
     return wp.where(tail == r, 1, -1)
 
 

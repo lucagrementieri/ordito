@@ -31,7 +31,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_nonempty_mesh, require_same_device
+from ordito._device import read_scalar, require_nonempty_mesh, require_same_device, scan_count
 from ordito.constants import TILE_1D, TOLERANCE_MERGE
 from ordito.kernels import graph as kernel_graph
 from ordito.kernels import grouping as kernel_grouping
@@ -623,7 +623,7 @@ def _link_on_device(
         device=device,
     )
     # Every key packs two vertex indices below ``key_base``, so only its low bits need sorting.
-    end_bit = max(1, (key_base * key_base - 1).bit_length())
+    end_bit = _launch.key_bits(key_base * key_base)
     _launch.radix_sort_pairs(keys, endpoints, m, end_bit=end_bit)
 
     # The link, the ranking's two state buffers and the tail heads die here: one allocation.
@@ -1132,15 +1132,18 @@ def _compact_crossing_candidates(candidates: _Candidates, *, segments: bool) -> 
     n_slots = candidates.targets.size + n_tail
     # A verdict bit a slot, and each word's inclusive rank: a 32nd of a flag a slot.
     n_words = (n_slots + 31) // 32
-    bits = _launch.zeros(n_words, dtype=wp.uint32, device=device)
+    bits, word_ranks = _launch.carve_typed(
+        ((wp.uint32, n_words), (wp.int32, n_words)), device, zeroed=True
+    )
     _launch.launch(
         kernel_intersections.crossing_slot_flags,
         dim=n_slots,
         inputs=[*candidates.narrow_phase_inputs(), *tail, segments],
-        outputs=[bits],
+        outputs=[bits, word_ranks],
         device=device,
     )
-    word_ranks = od.array.bit_ranks(bits)
+    # The kept bits' word counts, scanned in place into the words' ranks.
+    _launch.array_scan(word_ranks, word_ranks, inclusive=True)
     n_hit = int(read_scalar(word_ranks))
     if n_hit == 0:
         return None
@@ -1841,7 +1844,7 @@ def split_mesh_with_plane(
             device=device,
         )
         _launch.radix_sort_pairs(
-            keys, halfedges, n_halfedges, end_bit=max(1, (n_vertices * n_vertices).bit_length())
+            keys, halfedges, n_halfedges, end_bit=_launch.key_bits(n_vertices * n_vertices + 1)
         )
         _launch.launch(
             kernel_intersections.split_crossed_edge_flags,
@@ -2059,9 +2062,8 @@ def clip_mesh_with_field(
         inputs=[new_faces, source, shifted, scanned],
         device=device,
     )
-    _launch.array_scan(scanned, scanned, inclusive=True)
     # Readback: the touching-face count sizes their buffer.
-    n_touching = int(read_scalar(scanned, n_faces - 1))
+    n_touching = scan_count(scanned)
     if n_touching == 0:
         return new_vertices, new_faces
     touching = _launch.empty(3 * n_touching, dtype=wp.int32, device=device)
@@ -2394,7 +2396,7 @@ def _split_with_vertex_field(
     )
     # Every key is below ``n_vertices ** 2`` or the not-crossed marker equal to it.
     _launch.radix_sort_pairs(
-        keys, halfedges, n_halfedges, end_bit=max(1, (n_vertices * n_vertices).bit_length())
+        keys, halfedges, n_halfedges, end_bit=_launch.key_bits(n_vertices * n_vertices + 1)
     )
     _launch.launch(
         kernel_intersections.split_crossed_edge_flags,
@@ -2589,6 +2591,5 @@ def _scan_cut_flags(cut: wp.array[wp.int32]) -> int:
     """Scan ``0`` / ``1`` flags in place into an inclusive scan and return their total."""
     if cut.size == 0:
         return 0
-    _launch.array_scan(cut, out_array=cut, inclusive=True)
     # The kept count sizes every compacted output.
-    return int(read_scalar(cut))
+    return scan_count(cut)

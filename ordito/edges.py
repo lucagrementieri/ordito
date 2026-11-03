@@ -450,9 +450,7 @@ def _sorted_face_edge_keys(
             inputs=[faces, wp.uint64(radix), bound, 2 * n, keys, order],
             device=device,
         )
-    _launch.radix_sort_pairs(
-        keys, order, count=n, end_bit=min(64, max(1, (radix * radix - 1).bit_length()))
-    )
+    _launch.radix_sort_pairs(keys, order, count=n, end_bit=_launch.key_bits(radix * radix))
     return keys, order
 
 
@@ -482,7 +480,7 @@ def _unique_edges_from_sorted_rows(
         device=device,
     )
     _launch.radix_sort_pairs(
-        keys, order, count=n, end_bit=min(64, max(1, (n_vertices * n_vertices - 1).bit_length()))
+        keys, order, count=n, end_bit=_launch.key_bits(n_vertices * n_vertices)
     )
     ranks, n_edges = _sorted_run_ranks(keys, order, n, None)
     unique_edges = odt.empty_2d((n_edges, 2), wp.int32, device=device)

@@ -1344,15 +1344,19 @@ def _screened_poisson_octree(
     n_coarse_cells = cells.firsts[depth]
     # The cells holding a sample (a sample's cell and its ancestors), one bit a stored cell: their
     # ranks index the point counts, the position sums and the screening records.
-    occupied = _launch.zeros((cells.firsts[depth + 1] + 31) // 32, dtype=wp.uint32, device=device)
+    n_occupied_words = (cells.firsts[depth + 1] + 31) // 32
+    occupied, occupied_ranks = _launch.carve_typed(
+        ((wp.uint32, n_occupied_words), (wp.int32, n_occupied_words)), device, zeroed=True
+    )
     _launch.launch(
         kernel_octree.octree_occupied_cells,
         dim=n_samples,
         inputs=[sample_keys, depth, cells.bricks],
-        outputs=[occupied],
+        outputs=[occupied, occupied_ranks],
         device=device,
     )
-    occupied_ranks = od.array.bit_ranks(occupied)
+    # The marked bits' word counts, scanned in place into the ranks.
+    _launch.array_scan(occupied_ranks, occupied_ranks, inclusive=True)
     # One read sizes the occupied cells' tables.
     n_occupied = int(read_scalar(occupied_ranks))
     # Each word of the bits beside the rank before it: a rank is one read (``occupied_rank``).
@@ -1558,15 +1562,19 @@ def _octree_normal_splat(
     # One depth estimate a sample (the merged groups may end in the dropped points' sentinel).
     n_samples = sample_depths.size
     n_cells = cells.firsts[depth + 1]
-    targets = _launch.zeros((n_cells + 31) // 32, dtype=wp.uint32, device=device)
+    n_words = (n_cells + 31) // 32
+    targets, ranks = _launch.carve_typed(
+        ((wp.uint32, n_words), (wp.int32, n_words)), device, zeroed=True
+    )
     _launch.launch(
         kernel_octree.octree_splat_targets,
         dim=n_samples,
         inputs=[sample_keys, sample_normals, sample_depths, cells.bricks, depth],
-        outputs=[targets],
+        outputs=[targets, ranks],
         device=device,
     )
-    ranks = od.array.bit_ranks(targets)
+    # The marked bits' word counts, scanned in place into the ranks.
+    _launch.array_scan(ranks, ranks, inclusive=True)
     # One read sizes the sums.
     n_targets = int(read_scalar(ranks))
     sums = _launch.group_sums(max(n_targets, 1), wp.vec3, 2 * n_samples, device)
@@ -2218,7 +2226,10 @@ def _octree_segments(
     # One bit an edge each, three edges a stored node: whether it holds a vertex (``edge_owner``
     # names it), and whether it creates one.
     n_words = (3 * firsts[-1] + 31) // 32
-    holds, created = _launch.carve(wp.uint32, [n_words, n_words], device, zeroed=True)
+    # The created bits' word counts beside them, scanned in place into their ranks below.
+    holds, created, ranks = _launch.carve_typed(
+        ((wp.uint32, n_words), (wp.uint32, n_words), (wp.int32, n_words)), device, zeroed=True
+    )
     activity = [flags, cells.bricks]
     for d in range(depth, first - 1, -1):
         n_stored = firsts[d + 1] - firsts[d]
@@ -2243,10 +2254,10 @@ def _octree_segments(
                 *activity,
                 nodes.slots,
             ],
-            outputs=[holds, created],
+            outputs=[holds, created, ranks],
             device=device,
         )
-    ranks = od.array.bit_ranks(created)
+    _launch.array_scan(ranks, ranks, inclusive=True)
     # One read sizes the vertices.
     n_vertices = int(read_scalar(ranks))
     # The vertices' numbers: each created edge's rank in the dense edge order, by its bit's rank.
@@ -2317,15 +2328,19 @@ def _octree_segments(
     # a stored coarser cell (``band_child``): found from those, then sorted.
     n_candidates = 8 * (cells.firsts[depth] - cells.firsts[first - 1])
     common = [first, depth, full_depth, iso32, fields, node_bricks, sources, *activity]
-    band_bits = _launch.zeros((n_candidates + 31) // 32, dtype=wp.uint32, device=device)
+    n_band_words = (n_candidates + 31) // 32
+    band_bits, band_ranks = _launch.carve_typed(
+        ((wp.uint32, n_band_words), (wp.int32, n_band_words)), device, zeroed=True
+    )
     _launch.launch(
         kernel_octree.extraction_band,
         dim=n_candidates,
         inputs=[*common, cells.slots],
-        outputs=[band_bits],
+        outputs=[band_bits, band_ranks],
         device=device,
     )
-    band_ranks = od.array.bit_ranks(band_bits)
+    # The band bits' word counts, scanned in place into the ranks.
+    _launch.array_scan(band_ranks, band_ranks, inclusive=True)
     # One read sizes the band.
     n_band = int(read_scalar(band_ranks))
     # Twice the band: the sort's room.

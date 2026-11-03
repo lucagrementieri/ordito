@@ -10,13 +10,19 @@ from ordito.kernels.algorithms.connected_components import (
     find_representative_parity,
     parity_root_word,
 )
-from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next, mate_twin_defect
+from ordito.kernels.halfedge import (
+    halfedge_destination,
+    halfedge_endpoints,
+    halfedge_next,
+    mate_twin_defect,
+)
 from ordito.kernels.predicates import vector_angle
 from ordito.kernels.reduce import block_chunk_1d, last_ticket_vector, store_block_total
 from ordito.kernels.triangles import (
     face_normals_and_area,
     face_signed_volume,
     face_vertices,
+    known_local_corner,
     triangle_radius_ratio,
 )
 
@@ -137,23 +143,11 @@ def closed_signed_volume(
 
 
 @wp.func
-def local_index(faces: wp.array[wp.int32], f: wp.int32, v: wp.int32) -> wp.int32:
-    """Position (0, 1, 2) of vertex ``v`` within face ``f``."""
-    base = f * wp.int32(3)
-    if faces[base] == v:
-        return wp.int32(0)
-    if faces[base + wp.int32(1)] == v:
-        return wp.int32(1)
-    return wp.int32(2)
-
-
-@wp.func
 def edge_forward_in_face(
     faces: wp.array[wp.int32], f: wp.int32, a: wp.int32, b: wp.int32
 ) -> wp.int32:
     """1 if face ``f`` traverses the shared edge as ``a -> b``, else 0 (``b -> a``)."""
-    la = local_index(faces, f, a)
-    nxt = faces[f * wp.int32(3) + (la + wp.int32(1)) % wp.int32(3)]
+    nxt = halfedge_destination(faces, f * wp.int32(3) + known_local_corner(faces, f, a))
     if nxt == b:
         return wp.int32(1)
     return wp.int32(0)
@@ -281,9 +275,9 @@ def corner_link(
     faces: wp.array[wp.int32], f0: wp.int32, f1: wp.int32, v: wp.int32
 ) -> tuple[wp.int32, wp.int32]:
     """Link the ``v`` corners of edge-adjacent faces ``f0`` and ``f1`` in the corner graph."""
-    return wp.int32(3) * f0 + local_index(faces, f0, v), wp.int32(3) * f1 + local_index(
-        faces, f1, v
-    )
+    return wp.int32(3) * f0 + known_local_corner(faces, f0, v), wp.int32(
+        3
+    ) * f1 + known_local_corner(faces, f1, v)
 
 
 @wp.func

@@ -50,7 +50,7 @@ import warp as wp
 
 from ordito.constants import TILE_1D
 from ordito.kernels.array import csr_key_nonzero, element_priority, inverse_or_one, sqrt_abs
-from ordito.kernels.linalg import csr_row_diagonal
+from ordito.kernels.linalg import csr_row_diagonal, csr_row_dot
 from ordito.kernels.reduce import block_chunk, block_sum
 
 wp.set_module_options({"enable_backward": False})
@@ -58,19 +58,19 @@ wp.set_module_options({"enable_backward": False})
 # Node states for the distance-2 maximal independent set. The encoding is ordered rather than
 # arbitrary: a root must win any maximum (it vetoes every node in its two-hop ball) and an excluded
 # node must lose to every undecided one (it can no longer veto anything).
-MG_EXCLUDED = wp.constant(wp.int32(0))
-MG_UNDECIDED = wp.constant(wp.int32(1))
-MG_ROOT = wp.constant(wp.int32(2))
+MG_EXCLUDED = wp.int32(0)
+MG_UNDECIDED = wp.int32(1)
+MG_ROOT = wp.int32(2)
 
 # Layout of the packed comparison key: state in bits 60-61, priority in bits 32-59, index in bits
 # 0-31. Two hops of a plain integer ``max`` then implement the lexicographic order, and the key
 # stays positive so a signed ``wp.int64`` compares correctly. 28 bits of priority is plenty -- the
 # index breaks any tie, which is what makes the aggregation independent of thread order.
-_MG_STATE_SHIFT = wp.constant(wp.int64(60))
-_MG_PRIORITY_SHIFT = wp.constant(wp.int64(32))
-_MG_PRIORITY_MASK = wp.constant(wp.uint32(0x0FFFFFFF))
+_MG_STATE_SHIFT = wp.int64(60)
+_MG_PRIORITY_SHIFT = wp.int64(32)
+_MG_PRIORITY_MASK = wp.uint32(0x0FFFFFFF)
 
-MG_UNAGGREGATED = wp.constant(wp.int32(-1))
+MG_UNAGGREGATED = wp.int32(-1)
 
 
 @wp.func
@@ -556,31 +556,6 @@ def galerkin_dense(
             wp.atomic_add(out_dense, row + ap_columns[b], weight * ap_values[b])
 
 
-@wp.func
-def csr_row_dot(
-    row: wp.int32,
-    x_offset: wp.int32,
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    values: wp.array[wp.Float],
-    x: wp.array[wp.Float],
-) -> wp.Float:
-    # One CSR row against one column of ``x``. Shared by the cycle's mat-vec and the power
-    # iteration's step below, which differ only in what they do with the result -- and the row bound
-    # comes from ``offsets`` alone, so neither depends on the matrix's ``nnz`` field being fresh.
-    #
-    # Generic over the storage precision, and accumulated at ``x``'s: the conjugate-gradient
-    # mat-vec also runs on ``float32`` systems, whose rows ``warp.fem`` assembles a hundred entries
-    # long, where a ``float64`` accumulator measured well behind ``warp.sparse.bsr_mv``'s own. The
-    # values may be narrower than ``x`` -- the heat diffusions' ``float32`` copy of their operator
-    # (``linalg._BatchedCg``'s ``narrow_values``) -- and are widened as they are read; at one
-    # precision the cast is the identity and the arithmetic is unchanged.
-    total = x.dtype(0.0)
-    for k in range(offsets[row], offsets[row + 1]):
-        total += x.dtype(values[k]) * x[x_offset + columns[k]]
-    return total
-
-
 @wp.kernel
 def csr_matvec(
     n_rows: wp.int32,
@@ -832,7 +807,7 @@ def cycle_chebyshev_update(
 # Every ``damped_inverse_diagonal`` block folds all the partials, so the wrapper pre-folds them with
 # ``reduce.SUM1D_PARTIALS`` past ``4 * ITEMS_PER_BLOCK_1D`` (about 1 M rows): folding 2 560 per
 # block at 655 k rows was 1.03x the old inner-product pass, one pre-fold launch 1.02x.
-POWER_ROWS_PER_BLOCK = wp.constant(4 * TILE_1D)
+POWER_ROWS_PER_BLOCK = 4 * TILE_1D
 
 
 @wp.func

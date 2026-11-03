@@ -337,84 +337,56 @@ def edge_entry(
 
 
 @wp.kernel
-def laplacian_triplets_directed(
+def laplacian_triplets(
     edges: wp.array2d[wp.int32],
     vertices: wp.array[wp.vec3],
     equal_weight: wp.int32,
+    symmetric: wp.int32,
     out_rows: wp.array[wp.int32],
     out_cols: wp.array[wp.int32],
     out_vals: wp.array[wp.Float],
 ) -> None:
-    # One triplet per directed triangle edge, matching trimesh's ``mesh.edges`` adjacency.
-    # ``out_vals`` is generic: the float32 edge weight is cast to the requested output dtype.
-    e = wp.int32(wp.tid())
-    a, b, w = edge_entry(edges, e, vertices, equal_weight)
-    out_rows[e] = a
-    out_cols[e] = b
-    out_vals[e] = type(out_vals[e])(w)
-
-
-@wp.kernel
-def laplacian_triplets_symmetric(
-    edges: wp.array2d[wp.int32],
-    vertices: wp.array[wp.vec3],
-    equal_weight: wp.int32,
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
-    out_vals: wp.array[wp.Float],
-) -> None:
-    # Emits both directed pairs (a, b) and (b, a) from each unique undirected edge so the
-    # adjacency is symmetric, matching trimesh's ``vertex_neighbors``. Duplicate multiplicity
-    # cancels under row-normalization. ``out_vals`` is generic (float32 or float64).
+    # One triplet per edge row, ``(a, b)``, matching trimesh's ``mesh.edges`` adjacency over the
+    # directed triangle edges; with ``symmetric`` (warp-uniform) both directed pairs ``(a, b)`` and
+    # ``(b, a)`` of each unique undirected edge, in slots ``2 e`` and ``2 e + 1``, so the adjacency
+    # is symmetric, matching trimesh's ``vertex_neighbors``. Duplicate multiplicity cancels under
+    # row-normalization. ``out_vals`` is generic: the float32 edge weight is cast to the requested
+    # output dtype.
     e = wp.int32(wp.tid())
     a, b, weight = edge_entry(edges, e, vertices, equal_weight)
-    w = type(out_vals[e * 2])(weight)
-    base = e * 2
-    out_rows[base + 0] = a
-    out_cols[base + 0] = b
-    out_vals[base + 0] = w
-    out_rows[base + 1] = b
-    out_cols[base + 1] = a
-    out_vals[base + 1] = w
+    w = out_vals.dtype(weight)
+    slot = e * (symmetric + 1)
+    out_rows[slot] = a
+    out_cols[slot] = b
+    out_vals[slot] = w
+    if symmetric != 0:
+        out_rows[slot + 1] = b
+        out_cols[slot + 1] = a
+        out_vals[slot + 1] = w
 
 
 @wp.kernel
-def laplacian_keys_directed(
+def laplacian_keys(
     edges: wp.array2d[wp.int32],
     vertices: wp.array[wp.vec3],
     equal_weight: wp.int32,
+    symmetric: wp.int32,
     n_vertices: wp.int32,
     out_keys: wp.array[wp.uint64],
     out_order: wp.array[wp.int32],
     out_vals: wp.array[wp.Float],
 ) -> None:
-    # ``laplacian_triplets_directed``'s entries as the sort keys ``array.csr_from_coo_keys`` reads,
-    # for ``laplacian.laplacian``, which assembles them and never returns the triplets.
-    e = wp.int32(wp.tid())
-    a, b, w = edge_entry(edges, e, vertices, equal_weight)
-    store_coo_key(e, a, b, n_vertices, n_vertices, out_keys, out_order)
-    out_vals[e] = type(out_vals[e])(w)
-
-
-@wp.kernel
-def laplacian_keys_symmetric(
-    edges: wp.array2d[wp.int32],
-    vertices: wp.array[wp.vec3],
-    equal_weight: wp.int32,
-    n_vertices: wp.int32,
-    out_keys: wp.array[wp.uint64],
-    out_order: wp.array[wp.int32],
-    out_vals: wp.array[wp.Float],
-) -> None:
-    # ``laplacian_triplets_symmetric``'s two entries per edge as sort keys, in the same slots.
+    # ``laplacian_triplets``' entries as the sort keys ``array.csr_from_coo_keys`` reads, in the
+    # same slots, for ``laplacian.laplacian``, which assembles them and never returns the triplets.
     e = wp.int32(wp.tid())
     a, b, weight = edge_entry(edges, e, vertices, equal_weight)
-    w = type(out_vals[e * 2])(weight)
-    base = e * 2
-    store_coo_key(base + 0, a, b, n_vertices, n_vertices, out_keys, out_order)
-    out_vals[base + 0] = w
-    store_coo_key(base + 1, b, a, n_vertices, n_vertices, out_keys, out_order)
-    out_vals[base + 1] = w
+    w = out_vals.dtype(weight)
+    slot = e * (symmetric + 1)
+    store_coo_key(slot, a, b, n_vertices, n_vertices, out_keys, out_order)
+    out_vals[slot] = w
+    if symmetric != 0:
+        store_coo_key(slot + 1, b, a, n_vertices, n_vertices, out_keys, out_order)
+        out_vals[slot + 1] = w
 
 
 @wp.kernel
@@ -730,7 +702,7 @@ def cotmatrix_offdiagonal(
 
 
 @wp.func
-def cotmatrix_row(
+def signed_cotmatrix_row(
     i: wp.int32,
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
@@ -739,16 +711,18 @@ def cotmatrix_row(
     count: wp.int32,
     order: wp.array[wp.int32],
     cot_entries: Any,
+    negate: wp.int32,
     out_values: Any,
 ) -> None:
     # Row ``i`` of the cotangent Laplacian over a mesh operator pattern
-    # (``laplacian._mesh_operator_pattern``), written into ``out_values``. An off-diagonal is
-    # ``cotmatrix_offdiagonal`` and the diagonal is minus the row's off-diagonal sum, in column
-    # order, so every row sums to zero up to that one sum's rounding. A degenerate face's self-edge
-    # never reaches a row: its four contributions ``w + w - w - w`` cancelled exactly in the
-    # 12-triplet form too. The half-cotangents may be float32 or float64 whatever the matrix
-    # precision; each is cast once. The body of ``cotmatrix_rows``, and of the kernels that form
-    # the Laplacian's row in the thread consuming it (``kernels/energies``).
+    # (``laplacian._mesh_operator_pattern``), written into ``out_values``, or with ``negate`` row
+    # ``i`` of ``-L``, each entry negated as it is written (exact, so the same bits with the sign
+    # flipped). An off-diagonal is ``cotmatrix_offdiagonal`` and the diagonal is minus the row's
+    # off-diagonal sum, in column order, so every row sums to zero up to that one sum's rounding. A
+    # degenerate face's self-edge never reaches a row: its four contributions ``w + w - w - w``
+    # cancelled exactly in the 12-triplet form too. The half-cotangents may be float32 or float64
+    # whatever the matrix precision; each is cast once. ``cotmatrix_row`` is the unnegated row;
+    # ``kernels/parametrization.negated_cotmatrix_rows`` the negated one.
     start = offsets[i]
     end = offsets[i + 1]
     if end == start:
@@ -762,10 +736,30 @@ def cotmatrix_row(
         value = cotmatrix_offdiagonal(
             k, run_start, keys, count, order, cot_entries, type(out_values[k])(0.0)
         )
-        out_values[k] = value
+        out_values[k] = wp.where(negate != 0, -value, value)
         total += value
     if slot >= 0:
-        out_values[slot] = -total
+        out_values[slot] = wp.where(negate != 0, total, -total)
+
+
+@wp.func
+def cotmatrix_row(
+    i: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    cot_entries: Any,
+    out_values: Any,
+) -> None:
+    # Row ``i`` of the cotangent Laplacian over a mesh operator pattern: ``signed_cotmatrix_row``
+    # unnegated. The body of ``cotmatrix_rows``, and of the kernels that form the Laplacian's row
+    # in the thread consuming it (``kernels/energies``).
+    signed_cotmatrix_row(
+        i, offsets, columns, run_start, keys, count, order, cot_entries, 0, out_values
+    )
 
 
 @wp.kernel
@@ -1103,10 +1097,8 @@ COTMATRIX_ENTRIES: OverloadTable
 COTMATRIX_ENTRIES_AND_OPERATOR_KEYS: OverloadTable
 COTMATRIX_ENTRIES_INTRINSIC: OverloadTable
 ROW_NORMALIZE: OverloadTable
-LAPLACIAN_TRIPLETS_SYMMETRIC: OverloadTable
-LAPLACIAN_TRIPLETS_DIRECTED: OverloadTable
-LAPLACIAN_KEYS_SYMMETRIC: OverloadTable
-LAPLACIAN_KEYS_DIRECTED: OverloadTable
+LAPLACIAN_TRIPLETS: OverloadTable
+LAPLACIAN_KEYS: OverloadTable
 COTMATRIX_ROWS: OverloadTable
 LAPLACIAN_ROWS: OverloadTable
 GRAPH_LAPLACIAN_ROWS: OverloadTable
@@ -1119,8 +1111,7 @@ def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global COTMATRIX_ENTRIES, COTMATRIX_ENTRIES_AND_OPERATOR_KEYS, COTMATRIX_ENTRIES_INTRINSIC
     global ROW_NORMALIZE
-    global LAPLACIAN_TRIPLETS_SYMMETRIC, LAPLACIAN_TRIPLETS_DIRECTED
-    global LAPLACIAN_KEYS_SYMMETRIC, LAPLACIAN_KEYS_DIRECTED
+    global LAPLACIAN_TRIPLETS, LAPLACIAN_KEYS
     global COTMATRIX_ROWS, CONNECTION_LAPLACIAN_ROWS, LAPLACIAN_ROWS, GRAPH_LAPLACIAN_ROWS
     global FACE_WEIGHTED_LAPLACIAN_ROWS
     global MASS_DIAGONAL_ROWS
@@ -1150,33 +1141,37 @@ def _register_overloads() -> None:
     ROW_NORMALIZE = OverloadTable(
         row_normalize, {d: [wp.array[wp.int32], wp.array[d]] for d in _MATRIX_DTYPES}
     )
-    triplet_signature = {
-        d: [
-            wp.array2d[wp.int32],
-            wp.array[wp.vec3],
-            wp.int32,
-            wp.array[wp.int32],
-            wp.array[wp.int32],
-            wp.array[d],
-        ]
-        for d in _MATRIX_DTYPES
-    }
-    LAPLACIAN_TRIPLETS_SYMMETRIC = OverloadTable(laplacian_triplets_symmetric, triplet_signature)
-    LAPLACIAN_TRIPLETS_DIRECTED = OverloadTable(laplacian_triplets_directed, triplet_signature)
-    key_signature = {
-        d: [
-            wp.array2d[wp.int32],
-            wp.array[wp.vec3],
-            wp.int32,
-            wp.int32,
-            wp.array[wp.uint64],
-            wp.array[wp.int32],
-            wp.array[d],
-        ]
-        for d in _MATRIX_DTYPES
-    }
-    LAPLACIAN_KEYS_SYMMETRIC = OverloadTable(laplacian_keys_symmetric, key_signature)
-    LAPLACIAN_KEYS_DIRECTED = OverloadTable(laplacian_keys_directed, key_signature)
+    LAPLACIAN_TRIPLETS = OverloadTable(
+        laplacian_triplets,
+        {
+            d: [
+                wp.array2d[wp.int32],
+                wp.array[wp.vec3],
+                wp.int32,
+                wp.int32,
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[d],
+            ]
+            for d in _MATRIX_DTYPES
+        },
+    )
+    LAPLACIAN_KEYS = OverloadTable(
+        laplacian_keys,
+        {
+            d: [
+                wp.array2d[wp.int32],
+                wp.array[wp.vec3],
+                wp.int32,
+                wp.int32,
+                wp.int32,
+                wp.array[wp.uint64],
+                wp.array[wp.int32],
+                wp.array[d],
+            ]
+            for d in _MATRIX_DTYPES
+        },
+    )
     # ``cot_entries`` and the matrix precision are *independent* templates: cotmatrix's
     # docstring says the entries "may be float32 or float64 regardless of dtype: the assembly
     # kernel casts them to the matrix precision", so this is a genuine 2x2, not a diagonal.

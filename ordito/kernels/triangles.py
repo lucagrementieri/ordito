@@ -26,11 +26,11 @@ wp.set_module_options({"enable_backward": False})
 
 # ``face_quality`` metric selectors. Passed as a warp-uniform kernel argument so all four share one
 # compiled module (a ``wp.Function`` cannot be a kernel argument).
-QUALITY_ASPECT_RATIO = wp.constant(wp.int32(0))  # circumradius / (2 * inradius), 1 .. +inf
-QUALITY_RADIUS_RATIO = wp.constant(wp.int32(1))  # VCG QualityRadii, 0 .. 1
-QUALITY_AREA_MAX_SIDE = wp.constant(wp.int32(2))  # 2 * area / longest_side^2, 0 .. sqrt(3)/2
-QUALITY_MEAN_RATIO = wp.constant(wp.int32(3))  # 4 * sqrt(3) * area / (a^2 + b^2 + c^2), 0 .. 1
-QUALITY_AREA = wp.constant(wp.int32(4))  # plain triangle area
+QUALITY_ASPECT_RATIO = wp.int32(0)  # circumradius / (2 * inradius), 1 .. +inf
+QUALITY_RADIUS_RATIO = wp.int32(1)  # VCG QualityRadii, 0 .. 1
+QUALITY_AREA_MAX_SIDE = wp.int32(2)  # 2 * area / longest_side^2, 0 .. sqrt(3)/2
+QUALITY_MEAN_RATIO = wp.int32(3)  # 4 * sqrt(3) * area / (a^2 + b^2 + c^2), 0 .. 1
+QUALITY_AREA = wp.int32(4)  # plain triangle area
 
 
 @wp.func
@@ -96,6 +96,23 @@ def local_corner(faces: wp.array[wp.int32], f: wp.int32, vertex: wp.int32) -> wp
         if faces[f * 3 + k] == vertex:
             return k
     return wp.int32(-1)
+
+
+@wp.func
+def known_local_corner(faces: wp.array[wp.int32], f: wp.int32, vertex: wp.int32) -> wp.int32:
+    """
+    Which corner (0, 1, 2) of face ``f`` holds ``vertex``, for a caller that knows one does.
+
+    [`local_corner`][ordito.kernels.triangles.local_corner] without the miss: corners 0 and 1 are
+    tested and corner 2 is taken otherwise, so a vertex the face does not hold reads ``2``.
+    First-match wins on a degenerate face, as there.
+    """
+    base = f * wp.int32(3)
+    if faces[base] == vertex:
+        return wp.int32(0)
+    if faces[base + wp.int32(1)] == vertex:
+        return wp.int32(1)
+    return wp.int32(2)
 
 
 @wp.func
@@ -241,12 +258,10 @@ def face_voronoi_areas(
     to each other. Formed in ``float64`` from the ``float32`` corners, since a needle's cosines lose
     every digit in ``float32``, and rounded once to ``float32``, so the three always sum to the
     face's area up to that rounding. A degenerate face (a zero-length edge, or circumcentre weights
-    summing to zero) splits evenly, where igl would divide by zero.
+    summing to zero) splits evenly, where igl would divide by zero. The Hessian energy's mass
+    (``energies.hessian_face_terms``) is the same lumping in different arithmetic, kept apart.
     """
-    i0, i1, i2 = corner_triple(faces, face_index)
-    p0 = wp.vec3d(vertices[i0])
-    p1 = wp.vec3d(vertices[i1])
-    p2 = wp.vec3d(vertices[i2])
+    p0, p1, p2 = face_vertices_vec3d(vertices, faces, face_index)
     l0 = wp.length(p1 - p2)
     l1 = wp.length(p2 - p0)
     l2 = wp.length(p0 - p1)

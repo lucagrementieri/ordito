@@ -67,7 +67,13 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device, require_valid_faces
+from ordito._device import (
+    read_scalar,
+    read_values,
+    require_same_device,
+    require_valid_faces,
+    scan_count,
+)
 from ordito.adjacency import _face_component_forest  # pyright: ignore[reportPrivateUsage]
 from ordito.constants import INDEX_RADIX_PAIR, TILE_1D
 from ordito.grouping import (
@@ -446,8 +452,8 @@ def remove_unreferenced_vertices(
                 inputs=[faces, inclusive],
                 device=device,
             )
-        _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
-        n_referenced = int(read_scalar(inclusive))
+        # The referenced count sizes the outputs.
+        n_referenced = scan_count(inclusive)
         new_vertices = _launch.empty(n_referenced, dtype=wp.vec3, device=device)
         inverse = _launch.empty(n_referenced, dtype=wp.int32, device=device)
         new_faces = _launch.empty(n_indices, dtype=wp.int32, device=device)
@@ -789,7 +795,7 @@ def resolve_duplicated_faces(
         inputs=[faces, wp.uint64(n_vertices), keys, order],
         device=device,
     )
-    end_bit = max(1, (min(n_vertices**3, 1 << 64) - 1).bit_length())
+    end_bit = _launch.key_bits(n_vertices**3)
     _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=end_bit)
     # The keep flags at the sorted positions; the decided face of each run start beside them, in
     # the payload's upper half, the sort's scratch until now.
@@ -841,7 +847,7 @@ def _first_occurrence_faces(
         inputs=[faces, wp.uint64(n_vertices), int(oriented), keys, order],
         device=device,
     )
-    end_bit = max(1, (min(n_vertices**3, 1 << 64) - 1).bit_length())
+    end_bit = _launch.key_bits(n_vertices**3)
     _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=end_bit)
     # The payload's upper half, the sort's scratch until now; every entry is written.
     ranks = _launch.view(order, n_faces, 2 * n_faces)
@@ -852,9 +858,8 @@ def _first_occurrence_faces(
         outputs=[ranks],
         device=device,
     )
-    _launch.array_scan(ranks, out_array=ranks, inclusive=True)
     # The kept count sizes both outputs.
-    n_kept = int(read_scalar(ranks, index=-1))
+    n_kept = scan_count(ranks)
     resolved = _launch.empty(3 * n_kept, dtype=wp.int32, device=device)
     kept = _launch.empty(n_kept, dtype=wp.int32, device=device)
     _launch.launch(
@@ -1267,7 +1272,7 @@ def _edge_manifold_survivors(
     if prefilter is not None:
         keep, keep_flags = prefilter
         # Readback: the kept count decides whether the prefilter dropped anything to compact out.
-        n_kept = _scan_kept_count(keep_flags)
+        n_kept = scan_count(keep_flags)
         if n_kept != faces.size // 3:
             tested = _compact_scanned_faces(faces, keep_flags, n_kept)
     n_faces = tested.size // 3
@@ -1294,21 +1299,15 @@ def _edge_manifold_survivors(
         device=tested.device,
     )
     # Readback: an edge-manifold input is returned as it came, uncompacted.
-    if _scan_kept_count(flags) == n_faces:
+    if scan_count(flags) == n_faces:
         return faces, None
     return tested, manifold
-
-
-def _scan_kept_count(flags: wp.array[wp.int32]) -> int:
-    """Scan ``0`` / ``1`` face flags in place and return how many are set (one tail readback)."""
-    _launch.array_scan(flags, out_array=flags, inclusive=True)
-    return int(read_scalar(flags))
 
 
 def _compact_scanned_faces(
     faces: wp.array[wp.int32], inclusive: wp.array[wp.int32], n_kept: int
 ) -> wp.array[wp.int32]:
-    """Return the ``n_kept`` faces whose flags ``_scan_kept_count`` scanned, in face order."""
+    """Return the ``n_kept`` faces whose flags ``scan_count`` scanned, in face order."""
     kept = _launch.empty(3 * n_kept, dtype=wp.int32, device=faces.device)
     if n_kept > 0:
         _launch.launch(
@@ -1733,8 +1732,7 @@ def _split_corners(
     # Scanned in place, a root's flag becomes its rank plus one among the roots in ascending order,
     # which numbers the new vertices by their smallest corner; the total is the last entry, read
     # back because it sizes the outputs.
-    _launch.array_scan(root_ranks, out_array=root_ranks, inclusive=True)
-    n_new = int(read_scalar(root_ranks))
+    n_new = scan_count(root_ranks)
     source = _launch.empty(n_new, dtype=wp.int32, device=device)
     new_vertices = _launch.empty(n_new, dtype=wp.vec3, device=device)
     # The union-find is done with ``parents``, so it takes the new face buffer: corner ``h`` of the
@@ -3121,7 +3119,7 @@ def _outward_faces(
 
     out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_repair.flip_all_faces, dim=n_faces, inputs=[faces, out_faces], device=device
+        kernel_repair.reverse_face_winding, dim=n_faces, inputs=[faces, out_faces], device=device
     )
     return out_faces
 

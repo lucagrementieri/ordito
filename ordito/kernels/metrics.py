@@ -30,11 +30,11 @@ from ordito.kernels.reduce import (
     sum_strided_rows,
     tile_chunk,
 )
-from ordito.kernels.triangles import face_vertices
+from ordito.kernels.triangles import corner_triple, face_vertices
 
 # Relative coplanarity tolerance for the triangle-interior test, matching
 # warp.fem's ``project_on_tri_at_origin``.
-_TRI_DET_TOLERANCE = wp.constant(wp.float32(1.0e-6))
+_TRI_DET_TOLERANCE = wp.float32(1.0e-6)
 
 
 @wp.func
@@ -425,9 +425,8 @@ def chamfer_surface_terms(
     i = wp.int32(wp.tid())
     term = wp.float32(0.0)
     if face_id[i] >= 0:
-        term = point_triangle_term(
-            points[i], corners[3 * i], corners[3 * i + 1], corners[3 * i + 2], scale, squared
-        )
+        a, b, c = corner_triple(corners, i)
+        term = point_triangle_term(points[i], a, b, c, scale, squared)
     out_terms[offset + i] = term
 
 

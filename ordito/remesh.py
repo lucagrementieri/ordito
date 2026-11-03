@@ -35,9 +35,15 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_nonempty_mesh, require_same_device
+from ordito._device import (
+    read_scalar,
+    read_values,
+    require_nonempty_mesh,
+    require_same_device,
+    scan_count,
+)
 from ordito.config import is_deterministic
-from ordito.constants import TOLERANCE_MOLLIFY, UINT64_MAX
+from ordito.constants import INT64_MAX, TOLERANCE_MOLLIFY, UINT64_MAX
 from ordito.kernels import adjacency as kernel_adjacency
 from ordito.kernels import array as kernel_array
 from ordito.kernels import edges as kernel_edges
@@ -807,7 +813,7 @@ class _CollapseBuffers:
         # The corner keys pack an edge as ``min + max * v_cap``, so the sort need only order the
         # bits below ``v_cap ** 2``.
         self._key_base = wp.uint64(v_cap)
-        self._key_bits = min(64, max(1, (v_cap * v_cap - 1).bit_length()))
+        self._key_bits = _launch.key_bits(v_cap * v_cap)
         # A uniform band reaches the kernels as its scalar and a null table, which they read in
         # place of the per-vertex one.
         self._low_uniform = wp.float32(0.0 if isinstance(low, wp.array) else low)
@@ -1776,7 +1782,7 @@ class _FlipTopology:
         # A key packs an edge as ``min + max * n_vertices``, so every key is below
         # ``n_vertices ** 2`` and the sort orders only that many low bits: the stable sort's
         # permutation is identical, and a 64-bit sort's fixed per-digit passes dominate a build.
-        self._key_bits = max(1, (n_vertices * n_vertices - 1).bit_length())
+        self._key_bits = _launch.key_bits(n_vertices * n_vertices)
         n = self._n_corners
         # ``radix_sort_pairs`` ping-pongs through the upper half of both buffers, so each is
         # double width and only ``[:n]`` is data. One allocation per dtype: the keys, the face
@@ -2337,10 +2343,7 @@ def cluster_decimate(
     # unique cell keys of a whole-mesh dedup would give them. The keys are distinct, so the
     # permutation does not depend on the order the claims arrived in.
     _launch.radix_sort_pairs(
-        sort_keys,
-        kept_cells,
-        count=n_kept,
-        end_bit=max(1, (min(radix**3, 1 << 64) - 1).bit_length()),
+        sort_keys, kept_cells, count=n_kept, end_bit=_launch.key_bits(radix**3)
     )
     _launch.launch(
         kernel_remesh.cluster_rank_cells, dim=n_kept, inputs=[kept_cells, cell_rank], device=device
@@ -2355,7 +2358,7 @@ def cluster_decimate(
         if ordered
         else _launch.zeros(n_kept if average else 0, dtype=wp.int32, device=device)
     )
-    closest = _launch.full(0 if average else n_kept, UINT64_MAX, dtype=wp.uint64, device=device)
+    closest = _launch.full(0 if average else n_kept, INT64_MAX, dtype=wp.int64, device=device)
     mode = (
         kernel_remesh.CLUSTER_AVERAGE_SORTED
         if ordered
@@ -2395,10 +2398,7 @@ def cluster_decimate(
     )
     # Three indices below ``n_kept`` pack below ``n_kept ** 3``.
     _launch.radix_sort_pairs(
-        sort_keys,
-        kept_cells,
-        count=n_unique,
-        end_bit=max(1, (min(n_kept**3, 1 << 64) - 1).bit_length()),
+        sort_keys, kept_cells, count=n_unique, end_bit=_launch.key_bits(n_kept**3)
     )
     kept_vertices = _launch.empty(n_kept, dtype=wp.vec3, device=device)
     out_faces = _launch.empty(3 * n_unique, dtype=wp.int32, device=device)
@@ -2525,7 +2525,7 @@ def _cluster_sorted_means(
         odt.as_dense(staged[: 2 * n_items]),
         odt.as_dense(staged[2 * n_items :]),
         count=n_items,
-        end_bit=max(1, n_kept.bit_length()),
+        end_bit=_launch.key_bits(n_kept + 1),
     )
     sorted_clusters = odt.as_dense(staged[:n_items])
     sorted_vertices = odt.as_dense(staged[2 * n_items : 3 * n_items])
@@ -2851,7 +2851,7 @@ class _DecimationBuffers:
         # all ones, so its truncation still sorts at or past every real key -- and a tie can only be
         # with a real key of lower corner index, which the stable sort keeps first either way.
         base = self.n_vertices + 1
-        self._key_bits = max(1, (base * base - 1).bit_length())
+        self._key_bits = _launch.key_bits(base * base)
 
         # The dummy vertex lives one past the capacity, so every per-vertex buffer is one longer.
         v_cap = self.n_vertices + 1
@@ -4537,7 +4537,7 @@ def subdivide_loop(
     )
     if ring_terms is not None:
         sorted_endpoints, endpoint_order = od.array.sort_and_argsort(
-            unique_edges.flatten(), end_bit=max(1, (n_vertices - 1).bit_length())
+            unique_edges.flatten(), end_bit=_launch.key_bits(n_vertices)
         )
         empty = _launch.empty(0, dtype=wp.int32, device=device)
         _launch.launch(
@@ -4934,9 +4934,7 @@ def _sorted_corner_edges(
     else:
         key_buffer, order, base = keys
     if not presorted:
-        _launch.radix_sort_pairs(
-            key_buffer, order, count=n, end_bit=min(64, max(1, (base * base - 1).bit_length()))
-        )
+        _launch.radix_sort_pairs(key_buffer, order, count=n, end_bit=_launch.key_bits(base * base))
     ranks = _launch.view(order, n, 2 * n)
     _launch.launch(
         kernel_grouping.MARK_SORTED_RUN_STARTS[wp.uint64],
@@ -5654,7 +5652,7 @@ def _vertex_scale_attribute(
         device=device,
     )
     _launch.radix_sort_pairs(
-        keys, order, count=n, end_bit=max(1, (2 * n_vertices * n_vertices - 1).bit_length())
+        keys, order, count=n, end_bit=_launch.key_bits(2 * n_vertices * n_vertices)
     )
     # The sum and the valence share one zeroed buffer.
     sums = _launch.zeros(2 * n_vertices, dtype=wp.float32, device=device)
@@ -6032,9 +6030,8 @@ def _split_ranked_edges(
         device=device,
     )
     tail = _launch.view(face_offsets, 1, n_faces + 1)
-    _launch.array_scan(tail, out_array=tail, inclusive=True)
     # The face total sizes the outputs.
-    n_out_faces = int(read_scalar(face_offsets, n_faces))
+    n_out_faces = scan_count(tail)
     out_faces = odt.empty_2d((n_out_faces, 3), wp.int32, device=device)
     # ``None`` reaches the kernel as an empty array, which ``write_split_children`` skips.
     out_index = (

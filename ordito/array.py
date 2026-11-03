@@ -14,7 +14,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device, scan_count
 from ordito.constants import ALLCLOSE_ATOL, ALLCLOSE_RTOL, TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import reduce as kernel_reduce
@@ -1753,7 +1753,7 @@ def csr_from_keys(
     offsets = _launch.empty(n_rows + 1, dtype=wp.int32, device=device)
     columns = _launch.empty(count, dtype=wp.int32, device=device)
     sentinel = n_rows * n_cols
-    _launch.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
+    _launch.radix_sort_pairs(keys, order, count=count, end_bit=_launch.key_bits(sentinel + 1))
     # The entries' sorted positions live in the key buffer's upper half, sort scratch too: its
     # ``count`` 8-byte slots hold ``count + 1`` 4-byte ones. ``keys`` and ``order`` are one
     # allocation, which every caller holds while it reads ``starts`` beside ``order``, so the alias
@@ -2105,7 +2105,7 @@ def _csr_from_coo_keys(
     columns = _launch.empty(count, dtype=wp.int32, device=device)
     summed = _launch.empty(count, dtype=values.dtype, device=device)
     sentinel = n_rows * n_cols
-    _launch.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
+    _launch.radix_sort_pairs(keys, order, count=count, end_bit=_launch.key_bits(sentinel + 1))
     # One pass flags the entries (pruning on each run's sum), one scan numbers the kept ones, and
     # one pass places them, summing each run where it lands; the flags and their scan live in the
     # payload buffer's upper half, which is sort scratch.
@@ -2669,8 +2669,7 @@ def _scan_selection(flags: wp.array[wp.int32]) -> int:
     # accepts aliased input and output. The total is the scan's last element, so one 4-byte tail
     # read sizes the output, and the scatter recovers each flag as the step between neighbouring
     # scan values.
-    _launch.array_scan(flags, out_array=flags, inclusive=True)
-    return int(read_scalar(flags))
+    return scan_count(flags)
 
 
 def gather(

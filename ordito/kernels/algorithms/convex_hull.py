@@ -255,12 +255,10 @@ def commit_beyond(
     out_live[kernel_array.append_slot(counters, slot)] = wp.vec2i(i, face)
     if not bid:
         return
-    # A bid below the face's current best changes nothing, so it skips the atomic: the first pass
-    # has four faces for the whole cloud, and every bid serialized on them. A stale read only costs
-    # an atomic that loses.
-    key = farthest_key(proxy, i)
-    if key > best[face]:
-        wp.atomic_max(best, face, key)
+    # A bid below the face's current best changes nothing, so it skips the atomic
+    # (``array.atomic_max_unless_above``): the first pass has four faces for the whole cloud, and
+    # every bid serialized on them.
+    kernel_array.atomic_max_unless_above(best, face, farthest_key(proxy, i))
     flags[face] = 1
 
 

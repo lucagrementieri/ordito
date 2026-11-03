@@ -3,20 +3,26 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D, TOLERANCE_PLANAR_CONSTANT
-from ordito.kernels.array import RegisterBlockedTable, morton_code_30, morton_frame, to_vec3d
-from ordito.kernels.predicates import point_triangle_offset
+from ordito.kernels.array import (
+    RegisterBlockedTable,
+    append_slot,
+    morton_code_30,
+    morton_frame,
+    to_vec3d,
+)
+from ordito.kernels.predicates import any_perpendicular, point_triangle_offset
 from ordito.kernels.proximity import box_diagonal_d, closest_face_normal, closest_point_query
 from ordito.kernels.ray import longest_ray_distance
 from ordito.kernels.reduce import block_sum, minmax_vec3_chunk
 from ordito.kernels.sample import fibonacci_direction
-from ordito.kernels.tangent_space import any_perpendicular
+from ordito.kernels.triangles import face_vertices
 
 wp.set_module_options({"enable_backward": False})
 
 # Weighting of a ray inside the bundle. Passed as a warp-uniform kernel argument so both schemes
 # share one compiled module.
-WEIGHT_COSINE = wp.constant(wp.int32(0))  # Lambert's cosine law: the physical ambient integral
-WEIGHT_UNIFORM = wp.constant(wp.int32(1))  # every direction counts once (libigl's convention)
+WEIGHT_COSINE = wp.int32(0)  # Lambert's cosine law: the physical ambient integral
+WEIGHT_UNIFORM = wp.int32(1)  # every direction counts once (libigl's convention)
 
 # Lanes per point for the bundle kernels below, which are launched with ``wp.launch_tiled`` -- one
 # *block* per point, its lanes striding the ray bundle. One *thread* per point was the natural
@@ -541,12 +547,8 @@ def sphere_shrink_step(
     gap = wp.abs(wp.float64(distance) - wp.length(center_d - point_d))
     if face >= 0:
         mesh = wp.mesh_get(mesh_id)
-        offset = point_triangle_offset(
-            center_d,
-            to_vec3d(mesh.points[mesh.indices[3 * face]]),
-            to_vec3d(mesh.points[mesh.indices[3 * face + 1]]),
-            to_vec3d(mesh.points[mesh.indices[3 * face + 2]]),
-        )
+        a, b, c = face_vertices(mesh.points, mesh.indices, face)
+        offset = point_triangle_offset(center_d, to_vec3d(a), to_vec3d(b), to_vec3d(c))
         touch = center_d - offset
         gap = wp.abs(wp.length(offset) - wp.length(center_d - point_d))
     new_radius = radius
@@ -607,9 +609,9 @@ def seed_tangent_spheres(
     # ``max_tangent_sphere``'s seed, one thread per query: the ray direction (``ray_direction``),
     # the longest ray along it (``ray.longest_ray``'s ``longest_ray_distance``) and the sphere it
     # seeds (``init_sphere_radii_finite``), each read only at this thread's own index. A deferred
-    # query (its ray escapes) takes a slot of ``out_support_indices`` by an atomic on
-    # ``out_n_support[0]``: arrival order, which nothing observes, since the support passes resolve
-    # each query on its own and scatter by its index.
+    # query (its ray escapes) takes a slot of ``out_support_indices`` from ``out_n_support[0]``
+    # (``append_slot``, one atomic a warp): arrival order, which nothing observes, since the
+    # support passes resolve each query on its own and scatter by its index.
     #
     # The shrink is ``shrink_tangent_spheres``, not this thread's continuation: run in one kernel
     # with the ray walk it cost 1.1-1.6x device time on 10 k-160 k queries (the two walks' register
@@ -625,7 +627,7 @@ def seed_tangent_spheres(
     out_centers[i] = center
     out_not_converged[i] = not needs_support
     if needs_support:
-        out_support_indices[wp.atomic_add(out_n_support, 0, wp.int32(1))] = i
+        out_support_indices[append_slot(out_n_support, 0)] = i
 
 
 @wp.kernel

@@ -9,7 +9,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar
+from ordito._device import read_scalar, scan_count
 from ordito.array import bitcast_from_int, bitcast_to_int, copyto, gather, sort_pair_indices
 from ordito.constants import INDEX_RADIX_PAIR
 from ordito.kernels import array as kernel_array
@@ -151,7 +151,7 @@ def group_int_rows(
         inputs=[rows, wp.uint64(radix), keys, order],
         device=device,
     )
-    end_bit = min(64, max(1, (radix ** int(rows.shape[1]) - 1).bit_length()))
+    end_bit = _launch.key_bits(radix ** int(rows.shape[1]))
     _launch.radix_sort_pairs(keys, order, count=n, end_bit=end_bit)
     return _group_sorted(keys, order, n, length)
 
@@ -180,9 +180,8 @@ def _group_sorted(
         inputs=[values_buffer, wp.int32(n), wp.int32(length), inclusive],
         device=device,
     )
-    _launch.array_scan(inclusive, inclusive, inclusive=True)
     # The group count sizes the output, so it has to come back to the host.
-    n_groups = int(read_scalar(inclusive))
+    n_groups = scan_count(inclusive)
     groups = odt.empty_2d((n_groups, length), wp.int32, device=device)
     if n_groups > 0:
         _launch.launch(
@@ -394,11 +393,10 @@ def _unique_hash(
 
     # Phase 2: prefix-scan the occupancy in place to get compact positions -- nothing reads the
     # flags afterwards except the compaction, which recovers each one as a step of the scan.
-    _launch.array_scan(occupied, occupied, inclusive=True)
     # An inclusive scan of 0/1 flags ends at the number set, so one 4-byte tail read sizes the
     # output where ``reduce.max`` would scan all ``cap`` (~2n) slots. The same idiom as
     # ``array.flatnonzero`` and ``array.counts_to_offsets``.
-    n_unique = int(read_scalar(occupied))
+    n_unique = scan_count(occupied)
 
     # Phase 3: compact unique keys, their occurrence counts, and the identity permutation the sort
     # below pairs with them -- all three in one pass over the table.
@@ -708,7 +706,7 @@ def unique_rows(
             inputs=[rows, wp.uint64(radix), keys, order],
             device=device,
         )
-        end_bit = min(64, max(1, (radix ** int(rows.shape[1]) - 1).bit_length()))
+        end_bit = _launch.key_bits(radix ** int(rows.shape[1]))
     else:
         row_keys = hash_rows(data)
         _launch.launch(
@@ -827,7 +825,7 @@ def unique_faces(
     # function has no use for -- the emit copies each class's first *unsorted* face instead, to keep
     # the representative's original winding. Three sorted indices below ``max_index`` pack below
     # ``max_index ** 3``.
-    end_bit = max(1, (min(max_index**3, 1 << 64) - 1).bit_length())
+    end_bit = _launch.key_bits(max_index**3)
     emitted = _unique_sorted_rows(
         keys, order, faces.reshape((-1, 3)), end_bit, return_inverse, False
     )
@@ -1417,7 +1415,7 @@ def sorted_undirected_edge_keys(edges: odt.Array2dInt32, n_vertices: int) -> wp.
         keys,
         _launch.empty(2 * n_edges, dtype=wp.int32, device=device),
         count=n_edges,
-        end_bit=max(1, (n_vertices * n_vertices - 1).bit_length()),
+        end_bit=_launch.key_bits(n_vertices * n_vertices),
     )
     return _launch.view(keys, 0, n_edges)
 

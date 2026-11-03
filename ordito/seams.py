@@ -34,7 +34,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import require_same_device, scan_count
 from ordito.kernels import seams as kernel_seams
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 
@@ -156,9 +156,8 @@ def crease_edges(
         ],
         device=device,
     )
-    _launch.array_scan(word_ranks, out_array=word_ranks, inclusive=True)
     # Sizes the output: the one host readback.
-    n_edges = int(read_scalar(word_ranks))
+    n_edges = scan_count(word_ranks)
     edges = odt.empty_2d((n_edges, 2), wp.int32, device=device)
     if n_edges > 0:
         halfedges = od.halfedge.key_ordered_halfedges(
@@ -316,8 +315,7 @@ def cut_along_edges(
     )
     # Scanned in place, a root's flag becomes its rank plus one among the roots in ascending order,
     # which numbers the output vertices by their smallest corner; the total is the last entry.
-    _launch.array_scan(root_ranks, out_array=root_ranks, inclusive=True)
-    out_vertices = _launch.empty(int(read_scalar(root_ranks)), dtype=vertices.dtype, device=device)
+    out_vertices = _launch.empty(scan_count(root_ranks), dtype=vertices.dtype, device=device)
     # The union-find is done with ``parents``, so it takes the new face buffer: corner ``h`` of the
     # flat layout is entry ``h``.
     corner_index = parents
@@ -468,10 +466,16 @@ def uv_seam_edges(
     if twins is None:
         twins = od.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
 
-    # Row ``k`` flags class ``k + 1`` (seam, boundary, foldover). One inclusive scan of the
-    # flattened table, in place, numbers all three blocks, and its last column holds the running
-    # totals that size them -- read back together in one copy.
-    flags = odt.empty_2d((3, n_halfedges), wp.int32, device=device)
+    # Row ``k`` of a bitmask flags class ``k + 1`` (seam, boundary, foldover), a bit a halfedge,
+    # rows a whole number of words apart. One inclusive scan of the words' populations, in place,
+    # ranks all three rows, and each row's last word holds the running total that sizes them --
+    # read back together in one copy.
+    row_words = (n_halfedges + 31) // 32
+    n_words = 3 * row_words
+    # The bits, then their words' populations, which the flagging launch adds and the scan ranks.
+    buffer = _launch.zeros(2 * n_words, dtype=wp.int32, device=device)
+    words = _launch.view_as(_launch.view(buffer, 0, n_words), wp.uint32)
+    word_ranks = _launch.view(buffer, n_words, 2 * n_words)
     _launch.launch(
         kernel_seams.classify_uv_halfedges,
         dim=n_halfedges,
@@ -483,13 +487,15 @@ def uv_seam_edges(
             texcoords,
             match_uv,
             wp.float32(tolerance * tolerance),
-            flags,
+            32 * row_words,
+            words,
+            word_ranks,
         ],
         device=device,
     )
-    inclusive = flags.flatten()
-    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
-    totals = flags[:, n_halfedges - 1].numpy()
+    _launch.array_scan(word_ranks, out_array=word_ranks, inclusive=True)
+    # Sizes the three outputs: the one host readback.
+    totals = word_ranks.reshape((3, row_words))[:, row_words - 1].numpy()
     n_seams = int(totals[0])
     n_boundaries = int(totals[1]) - n_seams
     n_foldovers = int(totals[2]) - int(totals[1])
@@ -500,7 +506,7 @@ def uv_seam_edges(
         _launch.launch(
             kernel_seams.scatter_uv_halfedges,
             dim=n_halfedges,
-            inputs=[faces, twins, inclusive, seams, boundaries, foldovers],
+            inputs=[faces, twins, words, word_ranks, 32 * row_words, seams, boundaries, foldovers],
             device=device,
         )
     return seams, boundaries, foldovers

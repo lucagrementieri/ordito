@@ -1,8 +1,8 @@
 import warp as wp
 
 from ordito.constants import PI, TOLERANCE_ZERO_CONSTANT, TWO_PI
-from ordito.kernels.halfedge import halfedge_destination
-from ordito.kernels.predicates import unit_tangent, world_to_tangent
+from ordito.kernels.halfedge import halfedge_destination, halfedge_prev
+from ordito.kernels.predicates import any_perpendicular, reference_tangent, world_to_tangent
 from ordito.kernels.triangles import (
     face_corner_angles_d,
     face_normals_and_area,
@@ -150,23 +150,6 @@ def ring_angle_total(
 
 
 @wp.func
-def any_perpendicular(normal: wp.vec3) -> wp.vec3:
-    # Tangent direction for a vertex with no ring to take one from. Crosses the normal with x or
-    # y -- whichever of those two the normal is *less* aligned with -- so the cross product is never
-    # degenerate: at most one of x and y can be nearly parallel to a unit vector.
-    #
-    # This never returns z, and that is deliberate rather than an oversight in the comparison. The
-    # contract is "some unit vector perpendicular to ``normal``", not "the most numerically
-    # comfortable one", and a three-way argmin would satisfy the contract while returning a
-    # *different* tangent for every z-dominant normal -- rotating the frames that
-    # ``vertex_tangent_frames`` builds and the hemisphere bundles ``visibility`` builds on them.
-    axis = wp.vec3(1.0, 0.0, 0.0)
-    if wp.abs(normal[0]) > wp.abs(normal[1]):
-        axis = wp.vec3(0.0, 1.0, 0.0)
-    return wp.normalize(wp.cross(normal, axis))
-
-
-@wp.func
 def fan_anchor(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -202,9 +185,7 @@ def fan_anchor(
         accumulated += halfedge_corner_angle(vertices, faces, h)
     if boundary:
         h = ring_halfedges[end - 1]
-        f = h // wp.int32(3)
-        k = h % wp.int32(3)
-        edge = world_to_tangent(vertices[faces[3 * f + (k + 2) % 3]] - origin, frame_x, frame_y)
+        edge = world_to_tangent(vertices[faces[halfedge_prev(h)]] - origin, frame_x, frame_y)
         anchor_x -= edge[0]
         anchor_y -= edge[1]
     return wp.vec2(anchor_x, anchor_y)
@@ -230,34 +211,33 @@ def vertex_tangent_basis(
         # An unreferenced vertex has no tangent plane at all. Emit a fixed unit frame rather than
         # zero vectors, which would surface downstream as NaN out of a normalization.
         return wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0)
-    basis_x = any_perpendicular(normal)
     begin = ring_offsets[v]
     end = ring_offsets[v + 1]
-    if end > begin:
-        start = ring_reference_slot(ring_halfedges, begin, end, boundary)
-        h = ring_halfedges[begin + start]
-        direction = vertices[halfedge_destination(faces, h)] - vertices[v]
-        tangential, length = unit_tangent(direction, normal, TOLERANCE_ZERO_CONSTANT)
-        if length > TOLERANCE_ZERO_CONSTANT:
-            basis_x = tangential
-        scale = ring_tangent_scale(total, boundary)
-        if scale > wp.float32(0.0):
-            frame_y = wp.cross(normal, basis_x)
-            anchor = fan_anchor(
-                vertices,
-                faces,
-                ring_offsets,
-                ring_halfedges,
-                boundary,
-                v,
-                scale,
-                start,
-                basis_x,
-                frame_y,
-            )
-            norm = wp.length(anchor)
-            if norm > TOLERANCE_ZERO_CONSTANT * length:
-                basis_x = wp.normalize(anchor[0] * basis_x + anchor[1] * frame_y)
+    if end <= begin:
+        basis_x = any_perpendicular(normal)
+        return basis_x, wp.cross(normal, basis_x)
+    start = ring_reference_slot(ring_halfedges, begin, end, boundary)
+    h = ring_halfedges[begin + start]
+    direction = vertices[halfedge_destination(faces, h)] - vertices[v]
+    basis_x, length = reference_tangent(direction, normal, TOLERANCE_ZERO_CONSTANT)
+    scale = ring_tangent_scale(total, boundary)
+    if scale > wp.float32(0.0):
+        frame_y = wp.cross(normal, basis_x)
+        anchor = fan_anchor(
+            vertices,
+            faces,
+            ring_offsets,
+            ring_halfedges,
+            boundary,
+            v,
+            scale,
+            start,
+            basis_x,
+            frame_y,
+        )
+        norm = wp.length(anchor)
+        if norm > TOLERANCE_ZERO_CONSTANT * length:
+            basis_x = wp.normalize(anchor[0] * basis_x + anchor[1] * frame_y)
     return basis_x, wp.cross(normal, basis_x)
 
 

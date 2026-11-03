@@ -31,7 +31,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device, scan_count
 from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX
 from ordito.graph import successor_cycles_from_table
@@ -1261,9 +1261,8 @@ def ears(
     # Flag, scan in place, and emit at the scan's steps: ascending face order, one readback.
     inclusive = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(kernel_boundary.mark_ears, dim=n_faces, inputs=[mates, inclusive], device=device)
-    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     # Sizes the output: the one host readback.
-    n_ears = int(read_scalar(inclusive))
+    n_ears = scan_count(inclusive)
     if n_ears == 0:
         return empty, empty
     # Both outputs in one allocation, every entry written by the emit.

@@ -1977,11 +1977,23 @@ def _extrude(
     assert faces is not None
 
     # Both layers, ``z = 0`` then ``z = height``, and the triangulation's signed area in one pass.
-    area = _launch.zeros(1, dtype=wp.float32, device=device)
+    # The blocks' area sums are added in a fixed order with the deterministic setting on, so the
+    # re-winding decision repeats on CUDA even for a triangulation whose signed area is near zero.
+    blocks = kernel_reduce.chunks_1d(max(n, n_faces))
+    area, stride = _launch.block_partials(blocks, 1, wp.float32, device)
     _launch.launch_tiled(
         kernel_creation.lift_layers_and_signed_area,
-        dim=kernel_reduce.chunks_1d(max(n, n_faces)),
-        inputs=[vertices, faces, wp.float32(height_f), matrix, transform_mode, layers, area],
+        dim=blocks,
+        inputs=[
+            vertices,
+            faces,
+            wp.float32(height_f),
+            matrix,
+            transform_mode,
+            stride,
+            layers,
+            area,
+        ],
         block_dim=TILE_1D,
         device=device,
     )

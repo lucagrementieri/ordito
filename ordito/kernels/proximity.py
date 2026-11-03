@@ -5,6 +5,7 @@ from ordito.kernels import triangles as kernel_triangles
 from ordito.kernels.array import (
     RegisterBlockedTable,
     atomic_min_packed_box,
+    atomic_min_unless_below,
     hilbert_code_30,
     lattice_position,
     lift_vec2,
@@ -12,6 +13,7 @@ from ordito.kernels.array import (
     to_vec3,
     to_vec3d,
 )
+from ordito.kernels.halfedge import halfedge_destination, halfedge_endpoints
 from ordito.kernels.neighbors import (
     MAX_SEARCH_ATTEMPTS,
     attempt_radius,
@@ -68,9 +70,9 @@ _MIN_POSITIVE_FLOAT32 = wp.float32(1.1754943508222875e-38)
 # reads), the brute-force corner seed that caps the sampled bound queries, and the sampled upper
 # bound itself, which grows every query face's broad-phase box. The bound stays on the device, so
 # the walk is issued behind the sampling with no readback in between.
-BEST_SQ_SLOT = wp.constant(wp.int32(0))
-SEED_SQ_SLOT = wp.constant(wp.int32(1))
-UPPER_BOUND_SLOT = wp.constant(wp.int32(2))
+BEST_SQ_SLOT = wp.int32(0)
+SEED_SQ_SLOT = wp.int32(1)
+UPPER_BOUND_SLOT = wp.int32(2)
 
 
 @wp.func
@@ -79,6 +81,8 @@ def publish_best_sq(global_best_sq: wp.array[wp.float32], distance_sq: wp.float3
     # ``_GLOBAL_BEST_RELAX`` and floored at ``_MIN_POSITIVE_FLOAT32`` for the reasons above. The
     # map is monotone in ``distance_sq``, so the minimum of the publications is the publication of
     # the minimum: the sampled bound phase seeds the limit with this rule too, one point at a time.
+    # A read before the atomic (``atomic_min_unless_below``) measured 1.00x on dragon
+    # ``mesh_to_mesh_distance``: the walkers publish rarely enough that the slot does not contend.
     wp.atomic_min(
         global_best_sq,
         BEST_SQ_SLOT,
@@ -412,8 +416,7 @@ def sampled_corner_gap_sq(
     for j in range(s, n_target_samples, SEED_SLICES):
         q = sampled_corner(target_vertices, target_faces, target_stride, j)
         best = wp.min(best, wp.length_sq(p - q))
-    if best < out_bounds[SEED_SQ_SLOT]:
-        wp.atomic_min(out_bounds, SEED_SQ_SLOT, best)
+    atomic_min_unless_below(out_bounds, SEED_SQ_SLOT, best)
 
 
 @wp.kernel
@@ -437,8 +440,9 @@ def sampled_corner_distance_min(
     # is still a valid upper bound; and the seed's own query point is a sample here too, so the
     # minimum never rests on a miss.
     #
-    # The ``<`` read before the atomics keeps the single-slot contention to the points that improve
-    # it; ``atomic_min`` is exact, so the minimum is the one a reduction would return.
+    # The read before the atomics (``atomic_min_unless_below``) keeps the single-slot contention to
+    # the points that can improve it; ``atomic_min`` is exact, so the minimum is the one a reduction
+    # would return.
     #
     # The ``n_samples`` leading threads are the samples; the trailing ``len(out_lower)`` write the
     # target's per-face boxes the walk prunes with (``triangles.face_aabb_bounds``), which depend
@@ -453,8 +457,7 @@ def sampled_corner_distance_min(
     _closest, distance, _face = closest_point_query(
         target_mesh, p, wp.sqrt(out_bounds[SEED_SQ_SLOT]) * _SEED_RELAX
     )
-    if distance < out_bounds[UPPER_BOUND_SLOT]:
-        wp.atomic_min(out_bounds, UPPER_BOUND_SLOT, distance)
+    if atomic_min_unless_below(out_bounds, UPPER_BOUND_SLOT, distance):
         publish_best_sq(out_bounds, distance * distance)
 
 
@@ -1741,7 +1744,7 @@ def halfedge_cap_levels(
     first_level = wp.int32(0)
     mate = mates[h]
     if mate >= 0:
-        if faces[mate] == faces[3 * f + (h - 3 * f + 1) % 3]:
+        if faces[mate] == halfedge_destination(faces, h):
             x = leaf ^ (rank[mate // 3] // leaf_faces)
             bits = wp.int32(0)
             while x > 0:
@@ -1817,9 +1820,9 @@ def fill_cap_edges(
     leaf, first_level = halfedge_cap_levels(h, faces, mates, rank, leaf_faces, depth)
     n_leaves = wp.int32(1) << depth
     if first_level < depth:
-        f = h // 3
-        a = vertices[faces[h]]
-        b = vertices[faces[3 * f + (h - 3 * f + 1) % 3]]
+        u, v = halfedge_endpoints(faces, h)
+        a = vertices[u]
+        b = vertices[v]
         for level in range(first_level, depth):
             k = (n_leaves + leaf) >> (depth - level)
             if keeps_cap(k, n_leaves, perimeter, count):
@@ -1918,10 +1921,9 @@ def winding_number_tree(
             elif outside or k >= n_leaves:
                 start = first[k]
                 for t in range(start + lane, start + c, block):
-                    v0 = corners[3 * t] - q
-                    detf, denom = solid_angle_terms(
-                        v0, wp.length(v0), corners[3 * t + 1], corners[3 * t + 2], q
-                    )
+                    c0, c1, c2 = kernel_triangles.corner_triple(corners, t)
+                    v0 = c0 - q
+                    detf, denom = solid_angle_terms(v0, wp.length(v0), c1, c2, q)
                     total += fixed_point_angle(detf, denom, fixed_point_scale)
             else:
                 descend = True

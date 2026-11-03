@@ -165,7 +165,7 @@ def moment_integrals(
     # of the family bakes in, because this body has a real crossover the family's single value sits
     # on the wrong side of: the integrand is ~80 ``float64`` flops per face, so a wide chunk starves
     # the device on a small mesh while a narrow one puts too many blocks on ten contended addresses
-    # on a large one. A runtime width measures identical to a ``wp.constant`` one; see
+    # on a large one. A runtime width measures identical to a module-constant one; see
     # ``measures._moment_chunk_faces``.
     #
     # Everything accumulates in float64: the second moments scale as length^5, so a float32 sum

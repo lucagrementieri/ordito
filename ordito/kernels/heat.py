@@ -36,6 +36,7 @@ from ordito.kernels.array import (
     to_vec3d,
     unique_edge_row,
 )
+from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next, halfedge_prev, mate_halfedge
 from ordito.kernels.laplacian import (
     connection_offdiagonal,
     cotmatrix_offdiagonal,
@@ -60,8 +61,10 @@ from ordito.kernels.reduce import (
 )
 from ordito.kernels.scatter import add_corner_triple, add_or_store_corner_triple, scatter_add_vector
 from ordito.kernels.triangles import (
+    corner_triple,
     face_normals_and_area,
     face_unit_gradient,
+    face_vertices,
     face_vertices_vec3d,
     face_voronoi_areas,
 )
@@ -319,7 +322,7 @@ def rim_vertices(
     rim = pattern_row_on_rim(offsets, columns, run_start, keys, count, i)
     out_rim[i] = wp.where(rim, 1, 0)
     if rim:
-        wp.atomic_add(out_n_rim, 0, 1)
+        append_slot(out_n_rim, 0)
 
 
 @wp.kernel
@@ -566,7 +569,7 @@ def cover_back_corner(e: wp.int32) -> wp.int32:
 def cover_slot_of_halfedge(halfedge: wp.int32) -> wp.int32:
     # The cover slot of a mesh halfedge ``3 * f + k`` (corner ``k`` to corner ``k + 1``, the
     # ``halfedge.halfedge_mates`` convention): the front copy's edge opposite corner ``k + 2``.
-    return 3 * (halfedge // 3) + (halfedge % 3 + 2) % 3
+    return halfedge_prev(halfedge)
 
 
 @wp.kernel
@@ -597,12 +600,12 @@ def tufted_cover(
     back = 3 * (n_faces + f) + cover_back_corner(e)
     out_cover_faces[h] = faces[h]
     out_cover_faces[3 * (n_faces + f) + cover_back_corner(e)] = faces[h]
-    tail = faces[3 * f + (e + 1) % 3]
-    tip = faces[3 * f + (e + 2) % 3]
+    tail = faces[halfedge_next(h)]
+    tip = faces[halfedge_prev(h)]
     length = wp.length(wp.vec3d(vertices[tip]) - wp.vec3d(vertices[tail]))
     out_lengths[f, e] = length
     out_lengths[n_faces + f, cover_back_corner(e)] = length
-    mate = mates[3 * f + (e + 1) % 3]
+    mate = mates[halfedge_next(h)]
     if mate <= -2:
         out_nonmanifold[0] = 1
         return
@@ -636,7 +639,7 @@ def nonmanifold_cover_keys(
     mate = mates[h]
     key = sentinel
     if mate <= -2:
-        key = (wp.uint64(-2 - mate) << wp.uint64(32)) | wp.uint64(h)
+        key = (wp.uint64(mate_halfedge(mate)) << wp.uint64(32)) | wp.uint64(h)
     out_keys[h] = key
     out_order[h] = h
 
@@ -889,10 +892,10 @@ def cover_flip_commit(
         return
     e0 = h % 3
     e1 = t % 3
-    a = faces[3 * f0 + e0]
-    b = faces[3 * f0 + (e0 + 1) % 3]
-    c = faces[3 * f0 + (e0 + 2) % 3]
-    d = faces[3 * f1 + e1]
+    a = faces[h]
+    b = faces[halfedge_next(h)]
+    c = faces[halfedge_prev(h)]
+    d = faces[t]
     ca = lengths[f0, (e0 + 1) % 3]
     ab = lengths[f0, (e0 + 2) % 3]
     bd = lengths[f1, (e1 + 1) % 3]
@@ -900,10 +903,10 @@ def cover_flip_commit(
     ad = new_length[h]
     # Old slots: ``c -> a`` opposite ``b`` and ``a -> b`` opposite ``c`` in ``f0``; ``b -> d``
     # opposite ``c`` and ``d -> c`` opposite ``b`` in ``f1``.
-    move_cover_slot(twin, 3 * f1 + (e1 + 1) % 3, 3 * f0, out_pending, out_remap)
-    move_cover_slot(twin, 3 * f0 + (e0 + 2) % 3, 3 * f0 + 2, out_pending, out_remap)
-    move_cover_slot(twin, 3 * f0 + (e0 + 1) % 3, 3 * f1, out_pending, out_remap)
-    move_cover_slot(twin, 3 * f1 + (e1 + 2) % 3, 3 * f1 + 2, out_pending, out_remap)
+    move_cover_slot(twin, halfedge_next(t), 3 * f0, out_pending, out_remap)
+    move_cover_slot(twin, halfedge_prev(h), 3 * f0 + 2, out_pending, out_remap)
+    move_cover_slot(twin, halfedge_next(h), 3 * f1, out_pending, out_remap)
+    move_cover_slot(twin, halfedge_prev(t), 3 * f1 + 2, out_pending, out_remap)
     out_pending[3 * f0 + 1] = -2 - (3 * f1 + 1)
     out_pending[3 * f1 + 1] = -2 - (3 * f0 + 1)
     faces[3 * f0] = a
@@ -920,7 +923,7 @@ def cover_flip_commit(
     lengths[f1, 2] = dc
     out_flipped_face[f0] = 1
     out_flipped_face[f1] = 1
-    wp.atomic_add(out_count, 0, 1)
+    append_slot(out_count, 0)
 
 
 @wp.kernel
@@ -1000,9 +1003,7 @@ def cover_unit_gradient_divergence(
     e0 = p2 - p1
     e1 = p0 - p2
     e2 = p1 - p0
-    u0 = values[faces[3 * f]]
-    u1 = values[faces[3 * f + 1]]
-    u2 = values[faces[3 * f + 2]]
+    u0, u1, u2 = face_vertices(values, faces, f)
     g = wp.vec2d(-e0[1], e0[0]) * u0 + wp.vec2d(-e1[1], e1[0]) * u1 + wp.vec2d(-e2[1], e2[0]) * u2
     x = stable_normalize(g)
     t0 = cot[f, 0] * wp.dot(e0, x)
@@ -1145,9 +1146,7 @@ def fast_marching_face(
     out_state: wp.array[wp.int32],
 ) -> None:
     # One thread of ``fast_marching_pass``: face ``f``'s offers to its three corners.
-    i0 = faces[3 * f]
-    i1 = faces[3 * f + 1]
-    i2 = faces[3 * f + 2]
+    i0, i1, i2 = corner_triple(faces, f)
     p0 = vertices[i0]
     p1 = vertices[i1]
     p2 = vertices[i2]
@@ -1235,6 +1234,19 @@ def heron_half_cosine(numerator: wp.Float, denominator: wp.Float) -> wp.Float:
 
 
 @wp.func
+def virtual_triangle_ratios(
+    d_origin: wp.Float, d_partner: wp.Float, ec_w1: wp.Float
+) -> tuple[wp.Float, wp.Float]:
+    # The virtual triangle's ``a = s / ec_w1`` and ``b = a s``, ``s`` its semi-perimeter, from
+    # which both half-angles' Heron ratios ``(b - a d_partner) / d_origin`` and
+    # ``(b - a d_origin) / d_partner`` are formed: the preamble ``unfolded_distance`` and
+    # ``vcg_unfolded_distance`` share, in the reference's operation order.
+    s = (d_origin + d_partner + ec_w1) / type(ec_w1)(2.0)
+    a = s / ec_w1
+    return a, a * s
+
+
+@wp.func
 def unfolded_distance(
     ew_c: wp.Float,
     ew_w1: wp.Float,
@@ -1266,9 +1278,7 @@ def unfolded_distance(
     one = type(ew_c)(1.0)
     two = type(ew_c)(2.0)
     alpha_defined = cos_alpha >= -one and cos_alpha <= one
-    s = (d_origin + d_partner + ec_w1) / two
-    a = s / ec_w1
-    b = a * s
+    a, b = virtual_triangle_ratios(d_origin, d_partner, ec_w1)
     q_alpha = heron_half_cosine(b - a * d_partner, d_origin)
     if alpha_defined and cos_alpha < one - two * q_alpha * q_alpha:
         return d_origin + ew_c
@@ -1355,11 +1365,9 @@ def vcg_acos(x: wp.float64) -> wp.float64:
 @wp.func
 def vcg_half_angle(numerator: wp.float64, denominator: wp.float64) -> wp.float64:
     # ``2 acos(std::min(1.0, sqrt(numerator / denominator)))``: ``std::min`` returns ``1`` for a
-    # NaN square root.
-    q = wp.sqrt(numerator / denominator)
-    if not (q < wp.float64(1.0)):
-        q = wp.float64(1.0)
-    return wp.float64(2.0) * wp.acos(q)
+    # NaN square root, which ``heron_half_cosine`` reproduces (it takes the root only of a ratio in
+    # ``[0, 1)``, whose root is below ``1``, so the two guards pick the same value).
+    return wp.float64(2.0) * wp.acos(heron_half_cosine(numerator, denominator))
 
 
 @wp.func
@@ -1392,9 +1400,7 @@ def vcg_unfolded_distance(
     # that it rounds as the reference does: which of two near-equal offers lowers a vertex decides
     # its label, and with it the unfolding downstream. ``unfolded_distance`` is the same line in
     # cosines, cheaper and equal to rounding; it remains the ``float32`` filter's.
-    s = (d_origin + d_partner + ec_w1) / wp.float64(2.0)
-    a = s / ec_w1
-    b = a * s
+    a, b = virtual_triangle_ratios(d_origin, d_partner, ec_w1)
     alpha_ = vcg_half_angle(b - a * d_partner, d_origin)
     if alpha + alpha_ > wp.float64(math.pi):
         return d_origin + ew_c
@@ -1482,9 +1488,7 @@ def unfolding_face_geometry(
     # face reads. The lengths are vcg's ``Distance`` bit for bit (no contraction):
     # the offers' tests compare them with distances to a relative tolerance.
     f = wp.int32(wp.tid())
-    p0 = wp.vec3d(vertices[faces[3 * f]])
-    p1 = wp.vec3d(vertices[faces[3 * f + 1]])
-    p2 = wp.vec3d(vertices[faces[3 * f + 2]])
+    p0, p1, p2 = face_vertices_vec3d(vertices, faces, f)
     e0 = p2 - p1
     e1 = p0 - p2
     e2 = p1 - p0
@@ -1595,7 +1599,7 @@ def ordered_corner_records(
     c = corner_order[e]
     f = c // 3
     z = c - 3 * f
-    out_records[e] = wp.vec4i(f, z, faces[3 * f + (z + 1) % 3], faces[3 * f + (z + 2) % 3])
+    out_records[e] = wp.vec4i(f, z, faces[halfedge_next(c)], faces[halfedge_prev(c)])
 
 
 @wp.func
@@ -2503,9 +2507,9 @@ def crouzeix_raviart_term(
     # of the face's area: each edge of a face is a diagonal term at two of its corners, so the face
     # gives it a third) and the stiffness as a complex number ``(re, im)``. Formed in ``float64``
     # from the positions; a face of exactly zero area gives nothing.
-    tail = faces[3 * f + corner]
-    tip = faces[3 * f + (corner + 1) % 3]
-    apex = faces[3 * f + (corner + 2) % 3]
+    h = 3 * f + corner
+    tail, tip = halfedge_endpoints(faces, h)
+    apex = faces[halfedge_prev(h)]
     p_apex = to_vec3d(vertices[apex])
     to_tail = to_vec3d(vertices[tail]) - p_apex
     to_tip = to_vec3d(vertices[tip]) - p_apex

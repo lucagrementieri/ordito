@@ -26,22 +26,22 @@ import warp as wp
 wp.set_module_options({"enable_backward": False})
 
 # ``add_face``'s answer: added, retry after other faces, or never.
-ADD_SUCCESS = wp.constant(0)
-ADD_TRY_LATER = wp.constant(1)
-ADD_FAIL = wp.constant(2)
+ADD_SUCCESS = wp.int32(0)
+ADD_TRY_LATER = wp.int32(1)
+ADD_FAIL = wp.int32(2)
 
 # A candidate's state: outside the current region, waiting to be added, added, deleted.
-FACE_OUTSIDE = wp.constant(0)
-FACE_PENDING = wp.constant(1)
-FACE_ADDED = wp.constant(2)
-FACE_DELETED = wp.constant(3)
+FACE_OUTSIDE = wp.int32(0)
+FACE_PENDING = wp.int32(1)
+FACE_ADDED = wp.int32(2)
+FACE_DELETED = wp.int32(3)
 
 # The triangulation runs at most this many delete-and-add rounds.
 COMPLICATING_ROUNDS = 3
 # ``vacant``'s codes in ``delete_marked_faces``: kept, vacated now, lone before.
-EDGE_KEPT = wp.constant(0)
-EDGE_VACATED = wp.constant(1)
-EDGE_LONE = wp.constant(2)
+EDGE_KEPT = wp.int32(0)
+EDGE_VACATED = wp.int32(1)
+EDGE_LONE = wp.int32(2)
 
 
 @wp.struct

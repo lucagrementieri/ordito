@@ -43,15 +43,15 @@ from ordito.kernels.reduce import block_barrier, block_sum, last_ticket, take_ti
 wp.set_module_options({"enable_backward": False})
 
 # Entries of a solve-block row (forward) or column (backward) one partial product covers.
-CHUNK = wp.constant(8)
+CHUNK = wp.int32(8)
 # Columns factored per panel launch pair in the multi-block path.
-PANEL = wp.constant(16)
-panel_vector = wp.types.vector(length=int(PANEL), dtype=wp.float64)
+PANEL = 16
+panel_vector = wp.types.vector(length=PANEL, dtype=wp.float64)
 
 # ``refine_state`` slots: loop condition, "some entry has not converged", round counter.
-REFINE_CONDITION = wp.constant(0)
-REFINE_PENDING = wp.constant(1)
-REFINE_ROUND = wp.constant(2)
+REFINE_CONDITION = wp.int32(0)
+REFINE_PENDING = wp.int32(1)
+REFINE_ROUND = wp.int32(2)
 
 
 # --------------------------------------------------------------------------------------
@@ -1054,7 +1054,7 @@ def refine_advance(cap: wp.int32, state: wp.array[wp.int32]) -> None:
 
 
 # Positions of a component's rows one block of ``null_space_partials`` sums.
-NULL_SPACE_CHUNK = wp.constant(1024)
+NULL_SPACE_CHUNK = 1024
 
 
 @wp.func
@@ -1292,8 +1292,8 @@ def live_count(segment_start: wp.array[wp.int32]) -> wp.int32:
 
 
 # ``dissection_state`` slots: the tree's node count, and the depth being split.
-DISSECTION_NODES = wp.constant(0)
-DISSECTION_DEPTH = wp.constant(1)
+DISSECTION_NODES = wp.int32(0)
+DISSECTION_DEPTH = wp.int32(1)
 
 
 @wp.func
@@ -1842,13 +1842,13 @@ def dissection_compact(
 # ``analysis_header`` slots, read back together at the analysis' first sync: the supernode and
 # level counts, the structure pairs, the operator's lower entries, the components, the stored
 # entries (``offsets[n]``) and whether some stored entry's transpose is not stored.
-HEADER_SUPERNODES = wp.constant(0)
-HEADER_LEVELS = wp.constant(1)
-HEADER_PAIRS = wp.constant(2)
-HEADER_ENTRIES = wp.constant(3)
-HEADER_COMPONENTS = wp.constant(4)
-HEADER_STORED = wp.constant(5)
-HEADER_ASYMMETRIC = wp.constant(6)
+HEADER_SUPERNODES = wp.int32(0)
+HEADER_LEVELS = wp.int32(1)
+HEADER_PAIRS = wp.int32(2)
+HEADER_ENTRIES = wp.int32(3)
+HEADER_COMPONENTS = wp.int32(4)
+HEADER_STORED = wp.int32(5)
+HEADER_ASYMMETRIC = wp.int32(6)
 HEADER_SLOTS = 7
 
 
@@ -2102,20 +2102,20 @@ def supernode_heights(
 # level-major counts the solve maps are laid out by (``level_terms``), so one scan forms both.
 front_terms = wp.types.vector(length=10, dtype=wp.int64)
 # The first of ``front_terms``' level-major counts.
-LEVEL_TERMS = wp.constant(6)
+LEVEL_TERMS = wp.int32(6)
 # ``analysis_schedule`` layout: a header (``SCHEDULE_ROWS``, ``SCHEDULE_GROUPS``,
 # ``SCHEDULE_PANELS``, the terms' totals from ``SCHEDULE_TERMS``), one row of ``LEVEL_FIELDS`` per
 # level and a closing row, every level's panel work, then four entries per extend-add group.
-SCHEDULE_ROWS = wp.constant(0)
-SCHEDULE_GROUPS = wp.constant(1)
-SCHEDULE_PANELS = wp.constant(2)
+SCHEDULE_ROWS = wp.int32(0)
+SCHEDULE_GROUPS = wp.int32(1)
+SCHEDULE_PANELS = wp.int32(2)
 # The supernode-order ``front_terms`` totals, each as two ``int32`` digits in base ``2^31`` (high,
 # then low).
-SCHEDULE_TERMS = wp.constant(3)
+SCHEDULE_TERMS = wp.int32(3)
 # Whether the analysed operator's leading diagonal sums below zero (``leading_diagonal_total``).
-SCHEDULE_LEADING_NEGATIVE = wp.constant(15)
-SCHEDULE_HEADER = wp.constant(16)
-LEVEL_FIELDS = wp.constant(10)
+SCHEDULE_LEADING_NEGATIVE = wp.int32(15)
+SCHEDULE_HEADER = 16
+LEVEL_FIELDS = 10
 
 
 @wp.func
@@ -3101,21 +3101,20 @@ def expanded_component_tables(
 # --------------------------------------------------------------------------------------
 
 # ``breadth_first_level`` launches per recorded round of the breadth-first loop.
-BFS_LEVELS_PER_ROUND = wp.constant(16)
+BFS_LEVELS_PER_ROUND = 16
 # ``bfs_state`` slots: loop condition, the round's first level, the last level that reached a row.
-BFS_CONDITION = wp.constant(0)
-BFS_LEVEL = wp.constant(1)
-BFS_REACHED = wp.constant(2)
+BFS_CONDITION = wp.int32(0)
+BFS_LEVEL = wp.int32(1)
+BFS_REACHED = wp.int32(2)
 
 
 @wp.kernel
-def component_sizes(
-    labels: wp.array[wp.int32], out_size: wp.array[wp.int32], out_first: wp.array[wp.int32]
-) -> None:
-    # Per label slot: the component's row count and its lowest row.
+def component_sizes(labels: wp.array[wp.int32], out_size: wp.array[wp.int32]) -> None:
+    # Per label slot: the component's row count. Its lowest row needs no table: the labels are
+    # ``graph.connected_component_labels``', each the smallest row of its component, so the lowest
+    # row of a component is its own label slot.
     v = wp.int32(wp.tid())
     wp.atomic_add(out_size, labels[v], 1)
-    wp.atomic_min(out_first, labels[v], v)
 
 
 @wp.kernel
@@ -3198,18 +3197,19 @@ def farthest_rows(
 def farthest_seeds(
     key: wp.array[wp.uint64],
     size: wp.array[wp.int32],
-    first: wp.array[wp.int32],
     min_size: wp.int32,
     use_first: wp.int32,
     out_seed: wp.array[wp.int32],
 ) -> None:
     # Each label slot's next seed: its lowest row on the first search, else its farthest row;
-    # ``-1`` for a component of at most ``min_size`` rows (it keeps zero coordinates).
+    # ``-1`` for a component of at most ``min_size`` rows (it keeps zero coordinates). A slot
+    # holding rows is a label, the smallest row of its component (``component_sizes``), so that
+    # lowest row is ``c`` itself.
     c = wp.int32(wp.tid())
     seed = wp.int32(-1)
     if size[c] > min_size:
         if use_first != 0:
-            seed = first[c]
+            seed = c
         else:
             seed = wp.int32(wp.uint32(0xFFFFFFFF) - wp.uint32(key[c] & wp.uint64(0xFFFFFFFF)))
     out_seed[c] = seed

@@ -16,8 +16,8 @@ wp.set_module_options({"enable_backward": False})
 # candidate set is bit-comparable with ``igl::super_fibonacci``'s. The full turn they scale is
 # ``kernels/predicates.TWO_PI_F64`` -- one definition, because a second spelling of 2*pi is a
 # second thing to keep in step for no gain.
-SUPER_FIBONACCI_RSQRT2 = wp.constant(wp.float64(1.0 / math.sqrt(2.0)))
-SUPER_FIBONACCI_RPSI = wp.constant(wp.float64(1.0 / 1.533751168755204288118041))
+SUPER_FIBONACCI_RSQRT2 = wp.float64(1.0 / math.sqrt(2.0))
+SUPER_FIBONACCI_RPSI = wp.float64(1.0 / 1.533751168755204288118041)
 
 
 @wp.func
@@ -207,9 +207,9 @@ OBB_EXTENTS = RegisterBlockedTable(
 )
 
 
-BOX_OBJECTIVE_VOLUME = wp.constant(wp.int32(0))
-BOX_OBJECTIVE_SURFACE_AREA = wp.constant(wp.int32(1))
-BOX_OBJECTIVE_DIAGONAL = wp.constant(wp.int32(2))
+BOX_OBJECTIVE_VOLUME = wp.int32(0)
+BOX_OBJECTIVE_SURFACE_AREA = wp.int32(1)
+BOX_OBJECTIVE_DIAGONAL = wp.int32(2)
 
 
 @wp.func
@@ -246,7 +246,7 @@ BOX_STATE_COLUMNS = 16
 # Two frames belong to the same basin when the rotation taking one to the other is under 0.2 rad.
 # Tested as a trace rather than an angle: ``wp.ddot`` of two rotations is ``1 + 2 cos(theta)`` and
 # ``acos`` is decreasing, so the comparison needs no inverse trig and no clamp.
-BOX_SEED_SAME_BASIN_TRACE = wp.constant(wp.float32(1.0 + 2.0 * math.cos(0.2)))
+BOX_SEED_SAME_BASIN_TRACE = wp.float32(1.0 + 2.0 * math.cos(0.2))
 
 
 @wp.func

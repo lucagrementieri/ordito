@@ -9,7 +9,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device, scan_count
 from ordito.constants import INDEX_RADIX_PAIR
 from ordito.grouping import _unique_sorted_runs  # pyright: ignore[reportPrivateUsage]
 from ordito.halfedge import halfedge_twins, require_matching_twins
@@ -121,9 +121,8 @@ def region_boundary_edges(
         inputs=[mates, key_order, face_mask, words, word_ranks],
         device=device,
     )
-    _launch.array_scan(word_ranks, out_array=word_ranks, inclusive=True)
     # Sizes the output: the one host readback.
-    n_seam = int(read_scalar(word_ranks))
+    n_seam = scan_count(word_ranks)
     out_edges = odt.empty_2d((n_seam, 2), wp.int32, device=device)
     if n_seam > 0 and key_order is not None:
         _launch.launch(
@@ -760,8 +759,8 @@ def submesh_from_face_indices(
         inputs=[faces, face_indices, inclusive],
         device=device,
     )
-    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
-    n_sub = int(read_scalar(inclusive))
+    # The kept vertex count sizes the outputs.
+    n_sub = scan_count(inclusive)
     sub_vertices = _launch.empty(n_sub, dtype=wp.vec3, device=device)
     sub_faces = _launch.empty(3 * k, dtype=wp.int32, device=device)
     vertex_index = _launch.empty(n_sub, dtype=wp.int32, device=device) if return_index else None
@@ -895,7 +894,7 @@ def submeshes_from_face_groups(
     # ``unique_1d(return_inverse=True)``'s sorted path over the keys already in the sort's buffers.
     # A key is ``group * radix + vertex``, below ``k * radix``: only those bits are sorted.
     unique_keys, inverse, _counts, _first = _unique_sorted_runs(
-        keys, order, n_corners, True, True, False, False, max(1, (k * radix - 1).bit_length())
+        keys, order, n_corners, True, True, False, False, _launch.key_bits(k * radix)
     )
     assert unique_keys is not None
     assert inverse is not None
@@ -1264,10 +1263,7 @@ def _delete_region_loops(
     # A key is ``min + max * n_vertices``, below ``n_vertices ** 2``: only those bits are sorted.
     n_vertices = vertices.size
     _launch.radix_sort_pairs(
-        key_buffer,
-        payload,
-        count=n_deleted_keys,
-        end_bit=max(1, (n_vertices * n_vertices - 1).bit_length()),
+        key_buffer, payload, count=n_deleted_keys, end_bit=_launch.key_bits(n_vertices * n_vertices)
     )
     deleted_keys = odt.as_dense(key_buffer[:n_deleted_keys])
 

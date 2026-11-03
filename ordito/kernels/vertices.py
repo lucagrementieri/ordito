@@ -1,7 +1,7 @@
 import warp as wp
 
 from ordito.kernels.array import OverloadTable
-from ordito.kernels.scatter import atomic_add_vec3
+from ordito.kernels.scatter import add_corner_triple, atomic_add_vec3
 from ordito.kernels.triangles import (
     corner_triple,
     face_corner_angles,
@@ -166,10 +166,10 @@ def add_to_face_corners(
     # first -- the order ``kernels.scatter.scatter_sum_vec`` / ``scatter_weighted_sum_vec`` add in,
     # which is what keeps the fused kernels below byte-identical to the scatter they replace on the
     # CPU device, where the atomics serialize.
-    base = f * 3
-    atomic_add_vec3(out_sums, faces[base], v0)
-    atomic_add_vec3(out_sums, faces[base + 1], v1)
-    atomic_add_vec3(out_sums, faces[base + 2], v2)
+    i0, i1, i2 = corner_triple(faces, f)
+    atomic_add_vec3(out_sums, i0, v0)
+    atomic_add_vec3(out_sums, i1, v1)
+    atomic_add_vec3(out_sums, i2, v2)
 
 
 @wp.kernel
@@ -222,9 +222,7 @@ def scatter_corner_angles(
     # ``scatter.scatter_sum_scalar``'s order, so no ``(n_faces, 3)`` angle table is written.
     f = wp.int32(wp.tid())
     a0, a1, a2 = face_corner_angles(vertices, faces, f)
-    wp.atomic_add(out_angle_sums, faces[3 * f + 0], a0)
-    wp.atomic_add(out_angle_sums, faces[3 * f + 1], a1)
-    wp.atomic_add(out_angle_sums, faces[3 * f + 2], a2)
+    add_corner_triple(out_angle_sums, faces, f, a0, a1, a2)
 
 
 @wp.kernel

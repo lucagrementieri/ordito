@@ -1568,6 +1568,40 @@ def test_extrude_triangulation_recovers_subdivided_boundary(device: str) -> None
     assert np.isclose(warp_to_trimesh(solid_v, solid_f).volume, 1.0, rtol=1e-4)
 
 
+@pytest.mark.parametrize("deterministic", [True, False], indirect=True)
+@pytest.mark.parametrize("clockwise", [False, True], ids=["ccw", "cw"])
+def test_extrude_triangulation_winds_a_many_block_triangulation(
+    device: str, deterministic: bool, clockwise: bool
+) -> None:
+    """
+    Not a library comparison: the signed-area sum deciding the winding is internal to the call.
+
+    That sum is formed per block and committed once per block, either in arrival order or
+    (deterministic setting on) folded in a fixed order; a 120 x 120 grid spans about 450 blocks,
+    so both commits fold many partial sums, which the small rings above never do. Both windings
+    of the input must come out closed with the grid's volume (a wrong re-winding decision gives a
+    negative volume), and the fixed-order arm must repeat bit for bit.
+    """
+    m = 120
+    xs, ys = np.meshgrid(np.linspace(0.0, 2.0, m), np.linspace(0.0, 1.0, m), indexing="ij")
+    vertices_np = np.column_stack((xs.ravel(), ys.ravel()))
+    corner = (np.arange(m - 1)[:, None] * m + np.arange(m - 1)[None, :]).ravel()
+    faces_np = np.column_stack(
+        (corner, corner + m, corner + m + 1, corner, corner + m + 1, corner + 1)
+    ).reshape(-1, 3)
+    if clockwise:
+        faces_np = faces_np[:, ::-1]
+    faces_wp = wp.array(faces_np.ravel().astype(np.int32), dtype=wp.int32, device=device)
+    vertices_wp = points_to_warp_uv(vertices_np, device)
+    solid_v, solid_f = od.creation.extrude_triangulation(vertices_wp, faces_wp, 0.5)
+    _assert_closed(solid_v, solid_f)
+    assert np.isclose(warp_to_trimesh(solid_v, solid_f).volume, 1.0, rtol=1e-4)
+    if deterministic:
+        again_v, again_f = od.creation.extrude_triangulation(vertices_wp, faces_wp, 0.5)
+        assert np.array_equal(again_v.numpy(), solid_v.numpy())
+        assert np.array_equal(again_f.numpy(), solid_f.numpy())
+
+
 _SWEEP_PATHS = {
     "straight": np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, 2.0]]),
     "bent": np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 2.0], [0.0, 2.0, 2.0]]),

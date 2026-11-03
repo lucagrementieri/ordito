@@ -28,6 +28,7 @@ from ordito.kernels.array import (
     append_slot,
     binary_search_index,
     binary_search_index_left,
+    cube_corner_offset,
     lattice_position,
     ravel_index,
 )
@@ -526,12 +527,12 @@ def insert_point_cells(
     # ``voxel_down_sample``'s voxel set without a ``wp.Volume``: one open-addressing table of point
     # indices, ``-1`` empty, keyed on the cell ``voxel_cell_indices`` would hand the builder. The
     # point that claims an empty slot appends the slot to ``out_unique`` through the cursor in
-    # ``table``'s last element -- one past the ``mask + 1`` hashed slots, seeded ``-1`` by the same
-    # fill, so it ends at the count minus one. The append order is arbitrary and is sorted away
-    # afterwards (``unique_cell_keys``). A slot is read before it is claimed: a held slot never
-    # changes again, so a non-empty read is final and the atomic is paid only on an apparently
-    # empty slot -- most points repeat a cell a neighbour already claimed. ``table`` is scratch
-    # state carried into ``assign_voxel_rows``.
+    # ``table``'s last element (``append_slot``) -- one past the ``mask + 1`` hashed slots, seeded
+    # ``-1`` by the same fill, so it ends at the count minus one. The append order is arbitrary and
+    # is sorted away afterwards (``unique_cell_keys``). A slot is read before it is claimed: a held
+    # slot never changes again, so a non-empty read is final and the atomic is paid only on an
+    # apparently empty slot -- most points repeat a cell a neighbour already claimed. ``table`` is
+    # scratch state carried into ``assign_voxel_rows``.
     i = wp.int32(wp.tid())
     cell = voxel_cell(points[i], origin, inverse_size)
     h = cell_hash_slot(cell, mask)
@@ -540,7 +541,7 @@ def insert_point_cells(
         if held == -1:
             held = wp.atomic_cas(table, h, wp.int32(-1), i)
             if held == -1:
-                out_unique[wp.atomic_add(table, mask + 1, 1) + 1] = h
+                out_unique[append_slot(table, mask + 1) + 1] = h
                 return
         if same_cell(voxel_cell(points[held], origin, inverse_size), cell):
             return
@@ -1095,13 +1096,13 @@ def resampled_cell_candidates(
 def cell_corner_indices(
     corner_volume: wp.uint64, voxels: wp.array2d[wp.int32], out_corners: wp.array2d[wp.int32]
 ) -> None:
-    # Corner ``c`` of a cell is ``cell + (c >> 2, (c >> 1) & 1, c & 1)`` -- x-major binary counting.
+    # Corner ``c`` of a cell is ``cell + cube_corner_offset(c)`` -- x-major binary counting.
     v = wp.int32(wp.tid())
     for c in range(8):
-        i = voxels[v, 0] + (c >> 2)
-        j = voxels[v, 1] + ((c >> 1) & 1)
-        k = voxels[v, 2] + (c & 1)
-        out_corners[v, c] = wp.volume_lookup_index(corner_volume, i, j, k)
+        o = cube_corner_offset(c)
+        out_corners[v, c] = wp.volume_lookup_index(
+            corner_volume, voxels[v, 0] + o[0], voxels[v, 1] + o[1], voxels[v, 2] + o[2]
+        )
 
 
 @wp.func

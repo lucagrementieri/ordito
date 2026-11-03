@@ -39,7 +39,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device, scan_count
 from ordito.array import flatnonzero
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
@@ -961,9 +961,8 @@ def _emit_kept_samples(
     """
     device = points.device
     n = points.size
-    _launch.array_scan(flags, out_array=flags, inclusive=True)
     # The kept count sizes the outputs.
-    n_kept = int(read_scalar(flags, n - 1))
+    n_kept = scan_count(flags)
     kept_points = _launch.empty(n_kept, dtype=wp.vec3, device=device)
     kept_faces = _launch.empty(n_kept, dtype=wp.int32, device=device)
     if n_kept > 0:

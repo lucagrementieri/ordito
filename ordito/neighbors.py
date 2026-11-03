@@ -45,7 +45,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._device import offsets_buffer, read_scalar, read_values, require_same_device, scan_count
 from ordito.constants import INT64_MAX, TILE_1D
 from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import reduce as kernel_reduce
@@ -363,8 +363,7 @@ def query_bvh_ball(
 
     # The counts land behind the leading zero of the ``m + 1`` offsets buffer and are scanned there
     # in place, so no separate count buffer is allocated.
-    offsets = _launch.zeros(m + 1, dtype=wp.int32, device=device)
-    hit_counts = odt.as_dense(offsets[1:])
+    offsets, hit_counts = offsets_buffer(m, device)
     # ``wp.uint64(bvh.id)`` explicitly: unlike ``wp.launch``, ``wp.map`` infers a bare Python int
     # scalar's dtype as ``wp.int32`` rather than matching the mapped @wp.func's declared parameter
     # type, and a mismatched dtype is a codegen-time TypeError, not a silent truncation.
@@ -376,8 +375,8 @@ def query_bvh_ball(
         out=hit_counts,
     )
 
-    _launch.array_scan(hit_counts, out_array=hit_counts, inclusive=True)
-    total_hits = int(read_scalar(offsets))
+    # The total sizes the candidate buffer.
+    total_hits = scan_count(hit_counts)
     if total_hits == 0:
         return _launch.empty(0, dtype=wp.int32, device=device), offsets
 
@@ -478,8 +477,7 @@ def query_bvh_box(
     if m == 0:
         return _launch.empty_packed(wp.int32, device)
 
-    offsets = _launch.zeros(m + 1, dtype=wp.int32, device=device)
-    hit_counts = odt.as_dense(offsets[1:])
+    offsets, hit_counts = offsets_buffer(m, device)
     # ``wp.uint64(bvh.id)`` explicitly -- see the same cast in ``query_bvh_ball``
     # above.
     _launch.map(
@@ -490,8 +488,8 @@ def query_bvh_box(
         out=hit_counts,
     )
 
-    _launch.array_scan(hit_counts, out_array=hit_counts, inclusive=True)
-    total_hits = int(read_scalar(offsets))
+    # The total sizes the candidate buffer.
+    total_hits = scan_count(hit_counts)
     if total_hits == 0:
         return _launch.empty(0, dtype=wp.int32, device=device), offsets
 
@@ -967,8 +965,7 @@ def _ball_with_offsets(
     accelerator = build_accelerator()
     # The total-terminated offsets are also the segment-bounds array ``segmented_sort_pairs``
     # wants below.
-    offsets = _launch.zeros(m + 1, dtype=wp.int32, device=device)
-    neighbor_counts = odt.as_dense(offsets[1:])
+    offsets, neighbor_counts = offsets_buffer(m, device)
     _launch.launch(
         kernel_neighbors.query_ball_count,
         dim=m,
@@ -2469,10 +2466,7 @@ def _sorted_vertex_adjacency(
         device=device,
     )
     _launch.radix_sort_pairs(
-        keys,
-        payload,
-        count=n_keys,
-        end_bit=min(64, max(1, (n_vertices * n_vertices - 1).bit_length())),
+        keys, payload, count=n_keys, end_bit=_launch.key_bits(n_vertices * n_vertices)
     )
     sorted_keys = odt.as_dense(keys[:n_keys])
     ranks = odt.as_dense(payload[n_keys:])

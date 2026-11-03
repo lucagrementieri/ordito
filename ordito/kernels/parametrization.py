@@ -2,7 +2,7 @@ import warp as wp
 
 from ordito import constants as twc
 from ordito.kernels.array import cross2, to_vec2d
-from ordito.kernels.laplacian import cotmatrix_offdiagonal
+from ordito.kernels.laplacian import signed_cotmatrix_row
 from ordito.kernels.linalg import free_row
 from ordito.kernels.predicates import squared_edge_lengths
 from ordito.kernels.triangles import corner_triple, face_vertices, row_triple
@@ -11,7 +11,7 @@ wp.set_module_options({"enable_backward": False})
 
 # Below this (float64) squared edge length the isometric rest-triangle flattening is treated as
 # degenerate: its rest edges are zeroed so the ARAP local step contributes nothing for that face.
-EPSILON_ARAP_EDGE_SQ = wp.constant(wp.float64(1.0e-20))
+EPSILON_ARAP_EDGE_SQ = wp.float64(1.0e-20)
 
 
 @wp.func
@@ -72,9 +72,10 @@ def scatter_fixed_uv(
 
 
 @wp.func
-def fixed_uv(fixed_values: wp.array2d[wp.float64], i: wp.int32) -> wp.vec2:
-    # The prescribed position of fixed vertex ``i``, narrowed from the ``(2, n_vertices)`` buffer.
-    return wp.vec2(wp.float32(fixed_values[0, i]), wp.float32(fixed_values[1, i]))
+def column_uv(columns: wp.array2d[wp.float64], i: wp.int32) -> wp.vec2:
+    # Entry ``i`` of a ``(2, n)`` ``float64`` buffer (rows u, v) narrowed to a ``float32`` UV: a
+    # fixed vertex's prescribed position, or a free one's solved value at its compact index.
+    return wp.vec2(wp.float32(columns[0, i]), wp.float32(columns[1, i]))
 
 
 @wp.kernel
@@ -90,27 +91,12 @@ def negated_cotmatrix_rows(
 ) -> None:
     # The ``k == 1`` harmonic system ``-L`` over a mesh operator pattern, one thread per row:
     # ``kernels/laplacian.cotmatrix_rows``' ``float64`` row with each entry negated as it is
-    # written -- every off-diagonal ``-cotmatrix_offdiagonal`` and the diagonal the off-diagonal
-    # sum itself, added in the same column order -- so ``L`` is never stored. Negation is exact, so
-    # the entries are ``energies.k_harmonic(L, k=1)``'s bit for bit.
+    # written (``signed_cotmatrix_row``), so ``L`` is never stored. Negation is exact, so the
+    # entries are ``energies.k_harmonic(L, k=1)``'s bit for bit.
     i = wp.int32(wp.tid())
-    start = offsets[i]
-    end = offsets[i + 1]
-    if end == start:
-        return
-    total = wp.float64(0.0)
-    slot = wp.int32(-1)
-    for k in range(start, end):
-        if columns[k] == i:
-            slot = k
-            continue
-        value = cotmatrix_offdiagonal(
-            k, run_start, keys, count, order, cot_entries, wp.float64(0.0)
-        )
-        out_values[k] = -value
-        total += value
-    if slot >= 0:
-        out_values[slot] = total
+    signed_cotmatrix_row(
+        i, offsets, columns, run_start, keys, count, order, cot_entries, 1, out_values
+    )
 
 
 @wp.kernel
@@ -142,9 +128,8 @@ def solved_uv(
     # value at its compact index, narrowed to ``float32``. ``scatter_solution`` writes it; ARAP's
     # local step reads it in place of a scattered UV field.
     if fixed_mask[i]:
-        return fixed_uv(fixed_values, i)
-    ri = free_map[i]
-    return wp.vec2(wp.float32(sol[0, ri]), wp.float32(sol[1, ri]))
+        return column_uv(fixed_values, i)
+    return column_uv(sol, free_map[i])
 
 
 @wp.kernel
@@ -221,6 +206,21 @@ def scatter_pinned_stacked(
     out_fixed_values[0, i + n_vertices] = wp.float64(uv[1])
 
 
+@wp.func
+def stacked_dof(
+    fixed_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    sol: wp.array[wp.float64],
+    fixed_values: wp.array[wp.float64],
+    j: wp.int32,
+) -> wp.float64:
+    # DOF ``j`` of a stacked ``[u; v]`` solution: its pinned value, or the solved free value at
+    # its compact index.
+    if fixed_mask[j]:
+        return fixed_values[j]
+    return sol[free_map[j]]
+
+
 @wp.kernel
 def scatter_solution_stacked(
     fixed_mask: wp.array[wp.bool],
@@ -231,20 +231,11 @@ def scatter_solution_stacked(
 ) -> None:
     # Unstack the solved ``[u; v]`` DOF vector into ``(n, 2)`` UV. DOF ``i`` holds u, DOF ``i + n``
     # holds v; each is either a pinned value (``fixed_values``) or a solved free value (``sol`` at
-    # the compact free index). Locals are initialized before the branch per Warp's branch-scope
-    # rule.
+    # the compact free index), ``stacked_dof``.
     i = wp.int32(wp.tid())
     n = out_uv.shape[0]
-    u = wp.float64(0.0)
-    v = wp.float64(0.0)
-    if fixed_mask[i]:
-        u = fixed_values[i]
-    else:
-        u = sol[free_map[i]]
-    if fixed_mask[i + n]:
-        v = fixed_values[i + n]
-    else:
-        v = sol[free_map[i + n]]
+    u = stacked_dof(fixed_mask, free_map, sol, fixed_values, i)
+    v = stacked_dof(fixed_mask, free_map, sol, fixed_values, i + n)
     out_uv[i] = wp.vec2(wp.float32(u), wp.float32(v))
 
 

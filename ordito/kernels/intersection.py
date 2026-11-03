@@ -12,21 +12,22 @@ from ordito.kernels.array import (
     map_probe,
     map_probe_single,
 )
+from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import point_plane_dot, triangles_intersect
 from ordito.kernels.reduce import block_sum
 from ordito.kernels.remesh import write_split_children
 
 wp.set_module_options({"enable_backward": False})
 
-SLICE_SIGN_INSIDE = wp.constant(wp.int32(-1))
-SLICE_SIGN_OUTSIDE = wp.constant(wp.int32(1))
-SLICE_SIGN_ON_PLANE = wp.constant(wp.int32(0))
-EDGE_DENOM_EPSILON = wp.constant(wp.float32(1e-12))
+SLICE_SIGN_INSIDE = wp.int32(-1)
+SLICE_SIGN_OUTSIDE = wp.int32(1)
+SLICE_SIGN_ON_PLANE = wp.int32(0)
+EDGE_DENOM_EPSILON = wp.float32(1e-12)
 
-CASE_NONE = wp.constant(wp.int32(0))
-CASE_BASIC = wp.constant(wp.int32(1))
-CASE_ONE_VERTEX = wp.constant(wp.int32(2))
-CASE_ONE_EDGE = wp.constant(wp.int32(3))
+CASE_NONE = wp.int32(0)
+CASE_BASIC = wp.int32(1)
+CASE_ONE_VERTEX = wp.int32(2)
+CASE_ONE_EDGE = wp.int32(3)
 
 
 @wp.func
@@ -182,9 +183,7 @@ def plane_face_segment(
     # here rather than read from a per-vertex buffer, which would be a map and an allocation for
     # the same value. ``mesh_with_plane_flags`` and ``compact_plane_segments`` both run it: the
     # second recomputes the few cut faces' segments rather than reading a segment pair a face.
-    i0 = faces[f * 3]
-    i1 = faces[f * 3 + 1]
-    i2 = faces[f * 3 + 2]
+    i0, i1, i2 = kernel_triangles.corner_triple(faces, f)
     v0 = vertices[i0]
     v1 = vertices[i1]
     v2 = vertices[i2]
@@ -692,9 +691,12 @@ def crossing_slot_flags(
     tail_targets: wp.array[wp.int32],
     with_segment: wp.bool,
     out_bits: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
 ) -> None:
     # The narrow-phase verdict of every broad-phase slot, the table's and the overflow tail's, as
-    # a bit a slot (``out_bits``, zeroed by the caller; ``kernel_array.store_ballot_bit``): the
+    # a bit a slot (``out_bits``, zeroed by the caller), each word's set bits counted into
+    # ``out_word_counts`` (zeroed) for the caller to scan in place into the words' ranks
+    # (``kernel_array.store_counted_ballot_bit``): the
     # table is ``max_hits`` slots a query face, mostly empty, and a 0 / 1 ``int32`` flag a slot was
     # the call's largest buffer. ``with_segment`` (warp-uniform) additionally rejects a pair whose
     # intersection segment is degenerate, which is ``mesh_with_mesh``'s question;
@@ -717,7 +719,7 @@ def crossing_slot_flags(
         if hit and with_segment:
             valid, p0, p1 = triangle_intersection_segment(qa, qb, qc, ta, tb, tc)
             hit = valid and wp.length(p1 - p0) > TOLERANCE_MERGE_CONSTANT
-    kernel_array.store_ballot_bit(out_bits, s, hit)
+    kernel_array.store_counted_ballot_bit(out_bits, out_word_counts, s, hit)
 
 
 @wp.kernel
@@ -780,11 +782,11 @@ def edge_level_crossing(
 # How a face meets the level set. The three kept classes are numbered in the order the fused
 # compaction below lays them out, so a class is also its block index plus one. ``ON_PLANE`` is a
 # provisional answer that ``resolve_on_plane_faces`` turns into ``INSIDE`` or ``DROP``.
-SLICE_CLASS_DROP = wp.constant(wp.int32(0))
-SLICE_CLASS_INSIDE = wp.constant(wp.int32(1))
-SLICE_CLASS_CUT_QUAD = wp.constant(wp.int32(2))
-SLICE_CLASS_CUT_TRI = wp.constant(wp.int32(3))
-SLICE_CLASS_ON_PLANE = wp.constant(wp.int32(4))
+SLICE_CLASS_DROP = wp.int32(0)
+SLICE_CLASS_INSIDE = wp.int32(1)
+SLICE_CLASS_CUT_QUAD = wp.int32(2)
+SLICE_CLASS_CUT_TRI = wp.int32(3)
+SLICE_CLASS_ON_PLANE = wp.int32(4)
 
 # Kept classes, i.e. the number of blocks the flag buffer carries.
 SLICE_CLASSES = 3
@@ -1226,10 +1228,10 @@ def emit_clip_faces(
 # Face classes for the both-sides split, numbered as the components of the one-hot ``wp.vec4i``
 # each face's class is written as: one inclusive scan of those ranks every face within its class
 # and ends in the four class counts, adjacent, so a single read sizes everything.
-SPLIT_CLASS_POSITIVE = wp.constant(wp.int32(0))
-SPLIT_CLASS_NEGATIVE = wp.constant(wp.int32(1))
-SPLIT_CLASS_CUT_EDGES = wp.constant(wp.int32(2))
-SPLIT_CLASS_CUT_CORNER = wp.constant(wp.int32(3))
+SPLIT_CLASS_POSITIVE = wp.int32(0)
+SPLIT_CLASS_NEGATIVE = wp.int32(1)
+SPLIT_CLASS_CUT_EDGES = wp.int32(2)
+SPLIT_CLASS_CUT_CORNER = wp.int32(3)
 
 
 @wp.func
@@ -1322,8 +1324,7 @@ def split_crossed_halfedge_keys(
     j = split_cut_slot(face_class, rank, n_edges)
     if j < 0:
         return
-    a = faces[3 * face_index + k]
-    b = faces[3 * face_index + (k + 1) % 3]
+    a, b = halfedge_endpoints(faces, 3 * face_index + k)
     key = key_base * key_base
     s0, s1, s2 = level_set_signs(faces, vertex_dots, face_index)
     signs = wp.vec3i(s0, s1, s2)
@@ -1537,8 +1538,7 @@ def plane_crossed_halfedge(
     # is computed once per *edge* (``split_crossed_edge_vertices``) and the split is crack-free.
     # The plane dots are formed per corner (``point_plane_dot``, as ``vertex_level`` forms them)
     # rather than read from a table a pass of its own would write.
-    a = faces[3 * f + k]
-    b = faces[3 * f + (k + 1) % 3]
+    a, b = halfedge_endpoints(faces, 3 * f + k)
     dot_a = point_plane_dot(vertices[a], plane_normal, plane_origin)
     dot_b = point_plane_dot(vertices[b], plane_normal, plane_origin)
     sign_a = kernel_array.sign_with_tolerance(dot_a, tolerance)
@@ -1586,8 +1586,7 @@ def plane_crossed_halfedge_keys(
     slot = face_offsets[f] - f
     for k in range(3):
         if plane_crossed_halfedge(vertices, faces, plane_normal, plane_origin, tolerance, f, k):
-            a = faces[3 * f + k]
-            b = faces[3 * f + (k + 1) % 3]
+            a, b = halfedge_endpoints(faces, 3 * f + k)
             out_keys[slot] = unique_edge_order_key(wp.int64(a), wp.int64(b), key_base)
             out_halfedges[slot] = slot
             slot += 1
@@ -1657,7 +1656,8 @@ def emit_plane_split_faces(
         if plane_crossed_halfedge(vertices, faces, plane_normal, plane_origin, tolerance, f, k):
             mv[k] = cut_vertices[slot]
             slot += 1
-    fv = wp.vec3i(faces[f * 3 + 0], faces[f * 3 + 1], faces[f * 3 + 2])
+    c0, c1, c2 = kernel_triangles.corner_triple(faces, f)
+    fv = wp.vec3i(c0, c1, c2)
     first = face_offsets[f]
     write_split_children(fv, mv, vertices, first, f, out_faces, out_index)
     for row in range(first, face_offsets[f + 1]):
@@ -1980,7 +1980,7 @@ def compact_cut_segment_keys(
 # window spans. Once the window is at least as long as the curve, an open curve's segments read
 # their hop count to its last segment off ``steps``, and a closed curve's read the index it is
 # entered at off ``lowest`` and their hop count to it off ``offset``.
-LINK_MALFORMED = wp.constant(wp.int32(1))
+LINK_MALFORMED = wp.int32(1)
 
 
 @wp.kernel

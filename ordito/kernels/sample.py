@@ -3,7 +3,7 @@ import math
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT
-from ordito.kernels.array import scanned_count
+from ordito.kernels.array import append_slot, scanned_count
 from ordito.kernels.reduce import (
     block_chunk_1d,
     block_sum,
@@ -30,7 +30,7 @@ wp.set_module_options({"enable_backward": False})
 # argument reduction has already thrown away the low digits that make the spiral
 # low-discrepancy. Same hazard, and the same fix, as
 # ``kernels/bounds.oriented_box_candidate_axes``.
-GOLDEN_ANGLE = wp.constant(wp.float64(math.pi * (3.0 - math.sqrt(5.0))))
+GOLDEN_ANGLE = wp.float64(math.pi * (3.0 - math.sqrt(5.0)))
 
 
 @wp.func
@@ -275,9 +275,9 @@ def find_local_maxima(
     out_count: wp.array[wp.int32],
 ) -> None:
     # ``out_count[0]`` accumulates the number of flagged points -- the round's one host-visible
-    # quantity -- as a conditional atomic on the flag this thread already holds, rather than a
-    # device reduction re-reading the whole ``out_is_max`` mask afterwards. The caller zeroes it
-    # before each round.
+    # quantity -- as a conditional append (``append_slot``, one atomic a warp) on the flag this
+    # thread already holds, rather than a device reduction re-reading the whole ``out_is_max``
+    # mask afterwards. The caller zeroes it before each round.
     #
     # ``weight_floor[0]`` is minus the weight of the round's ``excess``-th heaviest alive point,
     # and a point lighter than that is not flagged however it compares with its neighbours.
@@ -321,7 +321,7 @@ def find_local_maxima(
         is_max = 1
     out_is_max[i] = is_max
     if is_max != 0:
-        wp.atomic_add(out_count, 0, 1)
+        append_slot(out_count, 0)
 
 
 @wp.kernel

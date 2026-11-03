@@ -392,7 +392,7 @@ def euler_characteristic(faces: wp.array[wp.int32], *, n_vertices: int | None = 
         device=device,
     )
     _launch.radix_sort_pairs(
-        keys, payload, count=n, end_bit=min(64, max(1, (n_vertices * n_vertices - 1).bit_length()))
+        keys, payload, count=n, end_bit=_launch.key_bits(n_vertices * n_vertices)
     )
     sorted_keys = _launch.view(keys, 0, n)
     # The unique edges are the sorted halfedge keys' runs, so only their count is formed: no run

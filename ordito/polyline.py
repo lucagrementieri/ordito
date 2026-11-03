@@ -44,7 +44,13 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device, run_device_loop
+from ordito._device import (
+    read_scalar,
+    read_values,
+    require_same_device,
+    run_device_loop,
+    scan_count,
+)
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
@@ -1042,8 +1048,8 @@ def _gather_kept(
     first point again (``kernels/polyline.gather_kept_points``).
     """
     device = polyline.device
-    _launch.array_scan(flags, out_array=flags, inclusive=True)
-    n_kept = int(read_scalar(flags))
+    # The kept count sizes the outputs.
+    n_kept = scan_count(flags)
     out_points = _launch.empty(n_kept, dtype=wp.vec3, device=device)
     out_indices = _launch.empty(n_kept, dtype=wp.int32, device=device) if return_indices else None
     _launch.launch(
@@ -1646,9 +1652,8 @@ def polyline_triangulate_from_offsets(
     faces, ends = _triangulate_rings(
         polylines, offsets, bases, sums, n_reserved, face_offsets, n_long
     )
-    _launch.array_scan(face_offsets, out_array=face_offsets, inclusive=True)
     # Sizes the output: the faces the loops actually wrote.
-    n_rows = int(read_scalar(face_offsets))
+    n_rows = scan_count(face_offsets)
     out_faces = odt.empty_2d((n_rows, 3), wp.int32, device=device)
     if n_rows > 0:
         _launch.launch(
@@ -2016,7 +2021,7 @@ def _triangulate_ring(
         device=device,
     )
     _launch.radix_sort_pairs(
-        cell_keys, cell_points, count=n_ring, end_bit=max(1, (n_cells - 1).bit_length())
+        cell_keys, cell_points, count=n_ring, end_bit=_launch.key_bits(n_cells)
     )
     _launch.launch(
         kernel_polyline.init_ear_clip,
@@ -2124,7 +2129,7 @@ def _faces_in_tip_order(faces: odt.Array2dInt32, n_tips: int) -> odt.Array2dInt3
         outputs=[keys, rows],
         device=device,
     )
-    _launch.radix_sort_pairs(keys, rows, count=n_faces, end_bit=max(1, (n_tips - 1).bit_length()))
+    _launch.radix_sort_pairs(keys, rows, count=n_faces, end_bit=_launch.key_bits(n_tips))
     ordered = odt.empty_2d((n_faces, 3), wp.int32, device=device)
     _launch.copy(ordered, faces[odt.as_dense(rows[:n_faces])])
     return odt.as_array2d(ordered, wp.int32)

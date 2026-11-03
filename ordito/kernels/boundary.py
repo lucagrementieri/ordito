@@ -1,3 +1,5 @@
+from typing import Any
+
 import warp as wp
 
 from ordito.kernels.adjacency import edge_endpoints
@@ -475,6 +477,37 @@ def loop_perimeters(
 
 
 @wp.func
+def rim_edge_length(a: wp.vec3, c: wp.vec3, _origin: wp.vec3) -> wp.float32:
+    # ``loop_rim_lanes_sum``'s perimeter term: the rim edge's arc length (``origin`` unread).
+    return wp.length(c - a)
+
+
+@wp.func
+def loop_rim_lanes_sum(
+    flat_loops: wp.array[wp.int32],
+    loop_id: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    ell: wp.int32,
+    lane: wp.int32,
+    origin: wp.vec3,
+    local: Any,
+    term: wp.Function,
+):
+    # Loop ``ell``'s sum of ``term(a, c, origin)`` over its rim edges ``a -> c``, added onto
+    # ``local`` by the block's lanes in one fixed order: lane ``l`` folds the rim edges
+    # ``l, l + block_dim, ...`` and ``block_sum`` adds the lanes, so the bits are the same on every
+    # run. ``loop_perimeter_lanes`` and ``loop_newell_lanes`` differ only in the term.
+    slot = loop_offsets[ell] + lane
+    end = loop_offsets[ell + 1]
+    while slot < end:
+        _ell, a, c = loop_rim_edge(flat_loops, loop_id, loop_offsets, vertices, slot)
+        local += term(a, c, origin)
+        slot += wp.block_dim()
+    return block_sum(local)
+
+
+@wp.func
 def loop_perimeter_lanes(
     flat_loops: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],
@@ -483,18 +516,19 @@ def loop_perimeter_lanes(
     ell: wp.int32,
     lane: wp.int32,
 ) -> wp.float32:
-    # Loop ``ell``'s perimeter, summed by the block's lanes in one fixed order: lane ``l`` folds
-    # the rim edges ``l, l + block_dim, ...`` and ``block_sum`` adds the lanes, so the bits are the
-    # same on every run, where ``loop_perimeters``' atomics commit in arrival order. Every lane
-    # returns the total.
-    local = wp.float32(0.0)
-    slot = loop_offsets[ell] + lane
-    end = loop_offsets[ell + 1]
-    while slot < end:
-        _ell, a, c = loop_rim_edge(flat_loops, loop_id, loop_offsets, vertices, slot)
-        local += wp.length(c - a)
-        slot += wp.block_dim()
-    return block_sum(local)
+    # Loop ``ell``'s perimeter in ``loop_rim_lanes_sum``'s fixed lane order, where
+    # ``loop_perimeters``' atomics commit in arrival order. Every lane returns the total.
+    return loop_rim_lanes_sum(
+        flat_loops,
+        loop_id,
+        loop_offsets,
+        vertices,
+        ell,
+        lane,
+        wp.vec3(0.0),
+        wp.float32(0.0),
+        rim_edge_length,
+    )
 
 
 @wp.kernel
@@ -528,14 +562,9 @@ def loop_newell_lanes(
     # of it) and ``holes.finalize_rim_metrics_ordered`` (the hole plane), whose atomic forms
     # differ the same way: only in the scale. Every lane returns the total.
     origin = vertices[flat_loops[loop_offsets[ell]]]
-    local = wp.vec3(0.0)
-    slot = loop_offsets[ell] + lane
-    end = loop_offsets[ell + 1]
-    while slot < end:
-        _ell, a, c = loop_rim_edge(flat_loops, loop_id, loop_offsets, vertices, slot)
-        local += newell_term(a, c, origin)
-        slot += wp.block_dim()
-    return block_sum(local)
+    return loop_rim_lanes_sum(
+        flat_loops, loop_id, loop_offsets, vertices, ell, lane, origin, wp.vec3(0.0), newell_term
+    )
 
 
 @wp.kernel

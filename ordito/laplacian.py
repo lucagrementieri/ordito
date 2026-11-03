@@ -1143,7 +1143,7 @@ def _mesh_operator_pattern(
         inputs=[faces, wp.int32(n_vertices), wp.int32(mark), keys, order, referenced],
         device=device,
     )
-    _launch.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
+    _launch.radix_sort_pairs(keys, order, count=count, end_bit=_launch.key_bits(sentinel + 1))
     # Scratch in the first sort's upper halves, free once it has run: the edge flags in the
     # payload's, and the second sort's 32-bit keys in the key buffer's (``count`` 8-byte slots are
     # exactly ``2 * count`` 4-byte ones). ``keys`` holds the storage, so the alias cannot outlive
@@ -1175,7 +1175,7 @@ def _mesh_operator_pattern(
     before = _launch.empty((3, n_vertices), dtype=wp.int32, device=device)
     _launch.array_scan(tallies.flatten(), out_array=before.flatten(), inclusive=False)
     _launch.radix_sort_pairs(
-        second_keys, second_order, count=count, end_bit=max(1, n_vertices.bit_length())
+        second_keys, second_order, count=count, end_bit=_launch.key_bits(n_vertices + 1)
     )
     capacity = 2 * count + n_vertices
     offsets = _launch.empty(n_vertices + 1, dtype=wp.int32, device=device)
@@ -1340,15 +1340,18 @@ def laplacian_entries(
     m = int(edges.shape[0])
     rows, cols, vals = od.array.triplet_buffers(2 * m if symmetric else m, dtype, device)
     if m > 0:
-        kernels = (
-            kernel_laplacian.LAPLACIAN_TRIPLETS_SYMMETRIC
-            if symmetric
-            else kernel_laplacian.LAPLACIAN_TRIPLETS_DIRECTED
-        )
         _launch.launch(
-            kernels[dtype],
+            kernel_laplacian.LAPLACIAN_TRIPLETS[dtype],
             dim=m,
-            inputs=[edges, vertices, wp.int32(1 if equal_weight else 0), rows, cols, vals],
+            inputs=[
+                edges,
+                vertices,
+                wp.int32(1 if equal_weight else 0),
+                wp.int32(1 if symmetric else 0),
+                rows,
+                cols,
+                vals,
+            ],
             device=device,
         )
     return rows, cols, vals
@@ -1498,15 +1501,16 @@ def laplacian(
     keys, order = od.array.csr_key_buffers(count, device)
     vals = _launch.empty(count, dtype=dtype, device=device)
     if m > 0:
-        kernels = (
-            kernel_laplacian.LAPLACIAN_KEYS_SYMMETRIC
-            if symmetric
-            else kernel_laplacian.LAPLACIAN_KEYS_DIRECTED
-        )
         _launch.launch(
-            kernels[dtype],
+            kernel_laplacian.LAPLACIAN_KEYS[dtype],
             dim=m,
-            inputs=[edges, vertices, wp.int32(1 if equal_weight else 0), wp.int32(n_vertices)],
+            inputs=[
+                edges,
+                vertices,
+                wp.int32(1 if equal_weight else 0),
+                wp.int32(1 if symmetric else 0),
+                wp.int32(n_vertices),
+            ],
             outputs=[keys, order, vals],
             device=device,
         )
@@ -1823,7 +1827,7 @@ def mass_matrix_entries(
         assert face_areas is not None
         if is_deterministic():
             sorted_vertices, corner_order = od.array.sort_and_argsort(
-                faces, end_bit=max(1, (n_vertices - 1).bit_length())
+                faces, end_bit=_launch.key_bits(n_vertices)
             )
             mass = _launch.empty(n_vertices, dtype=dtype, device=device)
             _launch.launch(

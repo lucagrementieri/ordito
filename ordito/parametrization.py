@@ -882,7 +882,7 @@ def arap(
     rhs_rot_x = rhs_rot_y = None
     if edge_endpoints is not None and edge_slots is not None:
         sorted_endpoints, endpoint_order = od.array.sort_and_argsort_in_place(
-            edge_endpoints, edge_slots, end_bit=max(1, (n_vertices - 1).bit_length())
+            edge_endpoints, edge_slots, end_bit=_launch.key_bits(n_vertices)
         )
         edge_terms = odt.empty_2d((n_faces, 6), wp.vec2d, device=device)
         rhs_rot_sorted = _launch.empty(n_vertices, dtype=wp.vec2d, device=device)

@@ -65,26 +65,26 @@ from ordito.kernels.array import element_priority
 
 wp.set_module_options({"enable_backward": False})
 
-INVALID = wp.constant(wp.int32(-1))
+INVALID = wp.int32(-1)
 
 # Cells are ``r`` wide, so the ball of radius ``r`` around any point in a cell is contained in that
 # cell's 3x3x3 neighbourhood. Unlike the Bridson table, the centre slot points at the cell *itself*:
 # both sweeps below have to see the candidate's own bucket.
 DART_SHELL_W = 3
 DART_SHELL_CELLS = DART_SHELL_W * DART_SHELL_W * DART_SHELL_W
-_DART_SHELL_W = wp.constant(wp.int32(DART_SHELL_W))
+_DART_SHELL_W = wp.int32(DART_SHELL_W)
 
 # Pool-point states. ``ALIVE`` is still in play, ``ACCEPTED`` is in the output, ``COVERED`` is
 # within ``r`` of an accepted point and can never become either.
-DART_ALIVE = wp.constant(wp.int32(0))
-DART_ACCEPTED = wp.constant(wp.int32(1))
-DART_COVERED = wp.constant(wp.int32(2))
+DART_ALIVE = wp.int32(0)
+DART_ACCEPTED = wp.int32(1)
+DART_COVERED = wp.int32(2)
 
 # Empty-cell sentinel for the per-cell priority summary below. A drawn priority can legitimately
 # *equal* it, which costs nothing: a thread only skips a cell whose summary is *strictly* greater
 # than its own key, so a cell holding a real ``0xffffffff`` is never wrongly skipped -- the only
 # thread that could skip it holds a smaller key, and a larger-priority point can never veto it.
-DART_NO_PRIORITY = wp.constant(wp.uint32(0xFFFFFFFF))
+DART_NO_PRIORITY = wp.uint32(0xFFFFFFFF)
 
 
 @wp.func
@@ -191,7 +191,8 @@ def summarize_min_priority(
     # Fold one alive point into its cell's minimum-priority summary: ``dart_compact_alive`` builds
     # every later round's summary over the survivors it is compacting, as ``dart_point_setup``
     # builds the first round's; ``wp.atomic_min`` is order-independent, so the two give the same
-    # summary for the same alive set.
+    # summary for the same alive set. A read before the atomic (``atomic_min_unless_below``, here
+    # and in ``dart_point_setup``) measured 0.98-1.00x on dragon: a cell holds few points.
     wp.atomic_min(out_cell_min_priority, point_cell[i], priority[i])
 
 

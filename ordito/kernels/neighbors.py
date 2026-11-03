@@ -6,7 +6,8 @@ from ordito.constants import FLOAT32_INF_CONSTANT, INT64_MAX
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels.algorithms import bfs as kernel_bfs
-from ordito.kernels.array import declare_map_signatures, map_probe, map_probe_single
+from ordito.kernels.array import append_slot, declare_map_signatures, map_probe, map_probe_single
+from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.reduce import block_chunk_1d, block_min, thread_fence
 
 wp.set_module_options({"enable_backward": False})
@@ -25,8 +26,8 @@ wp.set_module_options({"enable_backward": False})
 # scan sum to less than that scan costs, so a spare attempt is nearly free — whereas running *out*
 # of attempts forces the complete scan, which is the whole-cloud brute force this change exists to
 # avoid. 16 doublings cover a query 3 x 10^4 spacings away from the cloud.
-MAX_SEARCH_ATTEMPTS = wp.constant(wp.int32(16))
-RADIUS_GROWTH = wp.constant(wp.float32(2.0))
+MAX_SEARCH_ATTEMPTS = wp.int32(16)
+RADIUS_GROWTH = wp.float32(2.0)
 
 # Indices a grid k-NN row carries when its search was handed to a tree rather than finished by a
 # linear scan; both are distinct from ``-1``, which is an answer (no point in range). The grid
@@ -52,8 +53,8 @@ RADIUS_GROWTH = wp.constant(wp.float32(2.0))
 # deferred only rows on the cloud, having measured the BVH's radius search lose to the scan off
 # it; that search grew its ball from the query by doubling, which overshoots a distant surface and
 # encloses a cap of it several times the answer's. The seeds remove that.
-DEFERRED_ROW = wp.constant(wp.int32(-2))
-DEFERRED_FAR_ROW = wp.constant(wp.int32(-3))
+DEFERRED_ROW = wp.int32(-2)
+DEFERRED_FAR_ROW = wp.int32(-3)
 
 # A deferring grid search hands a row over as ``DEFERRED_FAR_ROW`` as soon as this many cell walks
 # have all come back empty, rather than widening on to ``widest``: no point lies within twice the
@@ -111,8 +112,8 @@ SEED_ATTEMPTS = wp.int32(2 * int(MAX_SEARCH_ATTEMPTS))
 # the sample, starting small and deepening, cost a row's whole serial walk ahead of the main launch
 # (0.22x on ``bunny_decimated``, 0.9x on queries 1 % of the diagonal off ``lucy``, where the scale
 # stays 1). One walk at half the initial radius with no row to insert into is short.
-START_OFF = wp.constant(wp.int32(0))
-START_SCALED = wp.constant(wp.int32(1))
+START_OFF = wp.int32(0)
+START_SCALED = wp.int32(1)
 START_SAMPLE_ROWS = 1024
 # The sample's fractions of the initial radius, ``start_fraction(slot)`` for ``slot`` below
 # ``START_BEYOND``: 0.5, 0.35, 0.25, 0.18 and 0.125.
@@ -226,8 +227,8 @@ KNN_ROW_BUCKETS = (1, 4, 8, 16, 32, 64)
 # compile into this one module, and the merged kernels measure within noise of the two they replace
 # on the BVH side and slightly faster on the hash-grid side, where the counting pass no longer
 # allocates a throwaway per-thread distance slot.
-ACCEL_HASHGRID = wp.constant(wp.int32(0))
-ACCEL_BVH = wp.constant(wp.int32(1))
+ACCEL_HASHGRID = wp.int32(0)
+ACCEL_BVH = wp.int32(1)
 
 
 # The two BVH walk protocols, over a *query* rather than over a bvh id and bounds.
@@ -1146,10 +1147,10 @@ def _hashgrid_nearest_row_kernel(row_size: int, name: str):
                         walk_worst,
                         walked + SEED_MARGIN * initial_radius,
                     )
-                    wp.atomic_add(out_deferred, 1, 1)
+                    append_slot(out_deferred, 1)
             if far == 1:
                 out_indices[tid, 0] = DEFERRED_FAR_ROW
-                wp.atomic_add(out_deferred, 0, 1)
+                append_slot(out_deferred, 0)
             return
         if certified == 0:
             # Exact fallback once the radius outgrows the cell width or the attempt budget runs
@@ -1349,7 +1350,7 @@ def nearest_key_pair(
         if ticket == NO_NEAREST_KEY - wp.int64(n_blocks - 1):
             thread_fence()
             key = wp.atomic_min(out_result, 0, NO_NEAREST_KEY)
-            out_result[1] = wp.int64(partners[wp.int32(key & wp.int64(0xFFFFFFFF))])
+            out_result[1] = wp.int64(partners[kernel_array.unpack_nearest_index(key)])
 
 
 @wp.kernel
@@ -1362,8 +1363,9 @@ def directed_face_edge_keys(
     # leading half of the sort's double-width buffer; the payload is never read.
     f = wp.int32(wp.tid())
     for k in range(3):
-        a = wp.uint64(faces[3 * f + k])
-        b = wp.uint64(faces[3 * f + (k + 1) % 3])
+        u, v = halfedge_endpoints(faces, 3 * f + k)
+        a = wp.uint64(u)
+        b = wp.uint64(v)
         out_keys[6 * f + 2 * k] = a * base + b
         out_keys[6 * f + 2 * k + 1] = b * base + a
 

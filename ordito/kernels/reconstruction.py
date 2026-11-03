@@ -21,6 +21,7 @@ from ordito.kernels.algorithms.conjugate_gradient import (
 from ordito.kernels.array import (
     LOOP_CONDITION,
     append_slot,
+    cube_corner_offset,
     is_positive_finite,
     ordered_float_bits,
     pack_triangle_key,
@@ -32,6 +33,7 @@ from ordito.kernels.array import (
     trilinear_cell,
     trilinear_corner,
     trilinear_weight,
+    unravel_cube,
     update_argmax,
 )
 from ordito.kernels.predicates import (
@@ -73,14 +75,14 @@ GROWN_NEIGHBOURS_MIN = 100
 GROWN_NEIGHBOURS = 2 * MAX_NEIGHBOURS
 
 # Faces with aspect ratio above this are treated as degenerate and removed first.
-CRITICAL_ASPECT_RATIO = wp.constant(wp.float32(1e3))
+CRITICAL_ASPECT_RATIO = wp.float32(1e3)
 # Neighbour filter: drop a neighbour whose oriented normal opposes the center normal.
-NORMAL_FILTER_DOT = wp.constant(wp.float32(-0.3))
+NORMAL_FILTER_DOT = wp.float32(-0.3)
 
 # ``local_fan``'s cached-weight markers: a slot to recompute, and a stable one. A removal weight is
 # a finite sum of bounded terms or ``+inf``, so it is never ``-inf`` nor the lowest finite float.
-FAN_WEIGHT_DIRTY = wp.constant(wp.float32(-FLOAT32_INF_CONSTANT))
-FAN_WEIGHT_STABLE = wp.constant(wp.float32(-3.4028234663852886e38))
+FAN_WEIGHT_DIRTY = wp.float32(-FLOAT32_INF_CONSTANT)
+FAN_WEIGHT_STABLE = wp.float32(-3.4028234663852886e38)
 
 # ``build_local_triangulations``' selector: the normals are trusted (oriented) or carry an
 # arbitrary sign per point (unoriented).
@@ -909,11 +911,11 @@ def candidate_triangle_keys(
 # Oriented candidate classes and the contested regions of the serial builder
 # --------------------------------------------------------------------------------------
 # A triangle three fans agree on in one winding, or two; ``classify_oriented_repeats``' codes.
-REPEAT_NONE = wp.constant(0)
-REPEAT_THREE = wp.constant(1)
-REPEAT_TWO = wp.constant(2)
+REPEAT_NONE = wp.int32(0)
+REPEAT_THREE = wp.int32(1)
+REPEAT_TWO = wp.int32(2)
 # A vertex no seed reaches within the rings grown so far.
-FAR_FROM_SEEDS = wp.constant(2147483647)
+FAR_FROM_SEEDS = wp.int32(2147483647)
 
 
 @wp.func
@@ -1929,7 +1931,7 @@ def apply_builder_state(
 # diagonal is strictly positive at occupied nodes, so the operator is SPD (no constant null space).
 # Everything is index-space (grid spacing 1); the world scale is reapplied by marching cubes.
 # ======================================================================================
-POISSON_WEIGHT_EPS = wp.constant(wp.float32(1e-8))
+POISSON_WEIGHT_EPS = wp.float32(1e-8)
 
 
 @wp.func
@@ -2024,13 +2026,6 @@ def splat_sample(
     return base, next_corner, fractions, n, weight
 
 
-@wp.func
-def splat_corner_offset(corner: wp.int32) -> wp.vec3i:
-    # The 0/1 offsets of a cell's ``corner``-th corner, ``corner = 4 di + 2 dj + dk``: the order the
-    # arrival-order splats' three nested loops visit them in.
-    return wp.vec3i(corner >> 2, (corner >> 1) & 1, corner & 1)
-
-
 @wp.kernel(enable_backward=False)
 def splat_normals(
     points: wp.array[wp.vec3],
@@ -2078,7 +2073,7 @@ def splat_corner_keys(
     s = wp.int32(wp.tid())
     base, next_corner, _fractions = splat_cell(points, cube_lower, inv_cell, res, s)
     for c in range(8):
-        corner = trilinear_corner(base, next_corner, splat_corner_offset(c))
+        corner = trilinear_corner(base, next_corner, cube_corner_offset(c))
         out_keys[8 * s + c] = poisson_grid_index(corner[0], corner[1], corner[2], res)
         out_order[8 * s + c] = 8 * s + c
 
@@ -2098,7 +2093,7 @@ def splat_term(
     _base, _next, fractions, n, weight = splat_sample(
         points, normals, lower, inv_cell, res, confidence, term >> 3
     )
-    offset = splat_corner_offset(term & 7)
+    offset = cube_corner_offset(term & 7)
     w = trilinear_weight(fractions, offset[0], offset[1], offset[2]) * weight
     return wp.vec4(w * n[0], w * n[1], w * n[2], w)
 
@@ -2305,12 +2300,6 @@ def screened_laplacian_row(
     return lap * (deg * xc - acc) + screen * weights[idx] * xc
 
 
-@wp.func
-def poisson_grid_coordinates(index: wp.int32, res: wp.int32) -> wp.vec3i:
-    # The inverse of ``poisson_grid_index``: row-major, ``k`` fastest.
-    return wp.vec3i(index // (res * res), (index // res) % res, index % res)
-
-
 @wp.kernel(enable_backward=False)
 def poisson_cg_initial(
     n: wp.int32,
@@ -2346,7 +2335,7 @@ def poisson_cg_initial(
         b = wp.float64(0.0)
         r = wp.float32(0.0)
         if local < n:
-            g = poisson_grid_coordinates(local, res)
+            g = unravel_cube(local, res)
             b = wp.float64(rhs[local])
             r = wp.float32(
                 b
@@ -2393,7 +2382,7 @@ def poisson_cg_matvec_dots_block(
         local = blk * span + kk
         wl = wp.float32(0.0)
         if local < n:
-            g = poisson_grid_coordinates(local, res)
+            g = unravel_cube(local, res)
             wl = screened_laplacian_row(wp.float32(1.0), u, weights, screen, res, g[0], g[1], g[2])
         w[local] = wl
         acc += cg_round_terms(r[local], u[local], wl)

@@ -138,7 +138,7 @@ import warp.optim.linear as wpl
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device, scan_count
 from ordito.cholesky import NotPositiveDefiniteError, SparseCholesky, sparse_cholesky
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
@@ -1127,8 +1127,7 @@ def assemble_interior_system(
     # sizes ``columns`` / ``values`` for their final use at allocation time.
     nnz_uu = 0
     if n_free > 0:
-        _launch.array_scan(counts, counts, inclusive=True)
-        nnz_uu = int(read_scalar(row_offsets, n_free))
+        nnz_uu = scan_count(counts)
     columns = _launch.empty(nnz_uu, dtype=wp.int32, device=device)
     values = _launch.empty(nnz_uu, dtype=wp.float64, device=device)
     _launch.launch(
@@ -3265,7 +3264,7 @@ class _BatchedCg:
         self._dofs = self._n_columns * self._stride
         # The values the fused mat-vec reads: the operator's own, or -- ``narrow_values``, taken by
         # the heat diffusions (``solve_spd_settled``) -- a ``float32`` copy of a ``float64``
-        # operator's, widened as each is read (``multigrid.csr_row_dot``). Past a few tens of
+        # operator's, widened as each is read (``kernels/linalg.csr_row_dot``). Past a few tens of
         # thousands of rows a round is bound by its bytes, and the values are the largest stream;
         # the operator it then solves differs by one rounding per entry, which moved the heat
         # method's distance by 2e-8 of its range and its transported directions by 1e-4 degrees.

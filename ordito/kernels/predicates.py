@@ -39,7 +39,7 @@ wp.set_module_options({"enable_backward": False})
 
 # Full turn in ``float64``; ``type(x)(TWO_PI_F64)`` narrows it to the caller's precision, and at
 # ``float32`` that is bit-identical to ``2 * wp.PI`` (verified on both devices, Warp 1.19).
-TWO_PI_F64 = wp.constant(wp.float64(2.0 * math.pi))
+TWO_PI_F64 = wp.float64(2.0 * math.pi)
 
 # Relative rounding allowance of a float64 plane distance ``dot(n, p - a)`` over float32 corners,
 # in units of ``|n| * |p - a|``: 64 float64 ulps. The exact distance of a float32 point to the plane
@@ -123,6 +123,29 @@ def plane_basis(normal: wp.vec3) -> tuple[wp.vec3, wp.vec3]:
     u = wp.normalize(wp.cross(axis, unit_normal))
     v = wp.cross(unit_normal, u)
     return u, v
+
+
+@wp.func
+def any_perpendicular(normal: Any):
+    # A unit vector perpendicular to ``normal`` with no other direction to take it from (a vertex
+    # with no ring, a point with no reference neighbour). Crosses the normal with x or y --
+    # whichever of those two the normal is *less* aligned with -- so the cross product is never
+    # degenerate: at most one of x and y can be nearly parallel to a unit vector. Generic over the
+    # precision, ``float32`` and ``float64`` alike.
+    #
+    # This never returns z, and that is deliberate rather than an oversight in the comparison. The
+    # contract is "some unit vector perpendicular to ``normal``", not "the most numerically
+    # comfortable one", and a three-way argmin would satisfy the contract while returning a
+    # *different* tangent for every z-dominant normal -- rotating the frames that
+    # ``tangent_space.vertex_tangent_basis`` builds and the hemisphere bundles ``visibility`` builds
+    # on them. ``plane_basis`` above is a different rule (it crosses x first and switches at
+    # ``0.9``), so the two are not interchangeable.
+    zero = type(normal[0])(0.0)
+    one = type(normal[0])(1.0)
+    axis = type(normal)(one, zero, zero)
+    if wp.abs(normal[0]) > wp.abs(normal[1]):
+        axis = type(normal)(zero, one, zero)
+    return wp.normalize(wp.cross(normal, axis))
 
 
 @wp.func
@@ -581,6 +604,19 @@ def unit_tangent(vector: Any, normal: Any, tolerance: Any) -> tuple[Any, wp.Floa
     if length > tolerance:
         return tangential / length, length
     return tangential, length
+
+
+@wp.func
+def reference_tangent(direction: Any, normal: Any, tolerance: Any) -> tuple[Any, wp.Float]:
+    # A tangent frame's first axis: ``direction`` projected into the plane orthogonal to unit
+    # ``normal`` and normalized, or ``any_perpendicular(normal)`` where that projection's length
+    # is not above ``tolerance`` (the reference point sits on the normal line). The projection's
+    # length is returned alongside, as ``unit_tangent`` returns it.
+    axis = any_perpendicular(normal)
+    tangential, length = unit_tangent(direction, normal, tolerance)
+    if length > tolerance:
+        axis = tangential
+    return axis, length
 
 
 @wp.func
@@ -1115,12 +1151,10 @@ def orient3d_exact(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d, d: wp.vec3d) -> wp.int
 
 
 @wp.func
-def orient3d_filtered(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d, d: wp.vec3d) -> wp.vec2d:
-    # ``(det(b - a, c - a, d - a), bound)``: the determinant's sign is certain when its magnitude
-    # exceeds ``bound``. The value doubles as a distance proxy, six times the signed volume.
-    u = b - a
-    v = c - a
-    w = d - a
+def determinant_and_permanent(u: Any, v: Any, w: Any) -> tuple[wp.Float, wp.Float]:
+    # ``det(u, v, w)`` expanded along ``u`` over the six 2x2 minor products, and its permanent: the
+    # same expansion over the products' magnitudes, which scales the rounding error the filters
+    # bound. One operation order for the ``float64`` filter and the ``float32`` stage alike.
     m1 = v[1] * w[2]
     m2 = v[2] * w[1]
     m3 = v[2] * w[0]
@@ -1133,6 +1167,17 @@ def orient3d_filtered(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d, d: wp.vec3d) -> wp.
         + wp.abs(u[1]) * (wp.abs(m3) + wp.abs(m4))
         + wp.abs(u[2]) * (wp.abs(m5) + wp.abs(m6))
     )
+    return det, permanent
+
+
+@wp.func
+def orient3d_filtered(a: wp.vec3d, b: wp.vec3d, c: wp.vec3d, d: wp.vec3d) -> wp.vec2d:
+    # ``(det(b - a, c - a, d - a), bound)``: the determinant's sign is certain when its magnitude
+    # exceeds ``bound``. The value doubles as a distance proxy, six times the signed volume.
+    u = b - a
+    v = c - a
+    w = d - a
+    det, permanent = determinant_and_permanent(u, v, w)
     return wp.vec2d(det, ORIENT3D_FILTER_BOUND * permanent)
 
 
@@ -1171,18 +1216,7 @@ def _orient3d_f32(a: wp.vec3, b: wp.vec3, c: wp.vec3, d: wp.vec3) -> wp.vec4:
     u = b - a
     v = c - a
     w = d - a
-    m1 = v[1] * w[2]
-    m2 = v[2] * w[1]
-    m3 = v[2] * w[0]
-    m4 = v[0] * w[2]
-    m5 = v[0] * w[1]
-    m6 = v[1] * w[0]
-    det = u[0] * (m1 - m2) + u[1] * (m3 - m4) + u[2] * (m5 - m6)
-    permanent = (
-        wp.abs(u[0]) * (wp.abs(m1) + wp.abs(m2))
-        + wp.abs(u[1]) * (wp.abs(m3) + wp.abs(m4))
-        + wp.abs(u[2]) * (wp.abs(m5) + wp.abs(m6))
-    )
+    det, permanent = determinant_and_permanent(u, v, w)
     nu = wp.abs(u[0]) + wp.abs(u[1]) + wp.abs(u[2])
     nv = wp.abs(v[0]) + wp.abs(v[1]) + wp.abs(v[2])
     nw = wp.abs(w[0]) + wp.abs(w[1]) + wp.abs(w[2])

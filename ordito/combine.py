@@ -286,7 +286,7 @@ def split_with_offsets(
 
     # Every label is a face id, below ``n_faces``, so the radix sort stops at that bit width instead
     # of running all 32 bits.
-    end_bit = max(1, (n_faces - 1).bit_length())
+    end_bit = _launch.key_bits(n_faces)
     if labels is None:
         # The labelling's flatten writes the labels and the identity payload straight into the
         # sort's double-width buffers.

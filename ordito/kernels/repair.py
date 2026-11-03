@@ -6,6 +6,7 @@ from ordito.kernels.algorithms.connected_components import (
     write_corner_component_rank,
 )
 from ordito.kernels.array import (
+    append_slot,
     binary_search_index,
     binary_search_sorted_contains,
     declare_map_signatures,
@@ -17,6 +18,8 @@ from ordito.kernels.array import (
     rotate_min_first,
     scanned_count,
     sort3,
+    sorted_run_end,
+    sorted_run_start,
     update_argmin_pair,
 )
 from ordito.kernels.bounds import packed_box_diagonal
@@ -25,6 +28,7 @@ from ordito.kernels.halfedge import (
     HALFEDGE_DEFECT_NONE,
     halfedge_destination,
     halfedge_next,
+    mate_halfedge,
     mate_twin_defect,
     next_boundary_halfedge,
 )
@@ -220,20 +224,16 @@ def resolve_duplicate_runs(
     # ``drop_unorientable`` set it is dropped instead, as libigl's release build does. Launched over
     # the sorted positions; ``out_keep`` is written at run starts only.
     i = wp.int32(wp.tid())
-    if i > 0:
-        if sorted_keys[i] == sorted_keys[i - 1]:
-            out_flags[i] = 0
-            return
+    if not sorted_run_start(sorted_keys, i):
+        out_flags[i] = 0
+        return
     representative = order[i]
     r0, r1, r2 = corner_triple(faces, representative)
     member_count = wp.int32(0)
     signed_count = wp.int32(0)
     first_positive = wp.int32(-1)
     first_negative = wp.int32(-1)
-    j = i
-    while j < n_faces:
-        if sorted_keys[j] != sorted_keys[i]:
-            break
+    for j in range(i, sorted_run_end(sorted_keys, i, n_faces)):
         f = order[j]
         a, b, c = corner_triple(faces, f)
         member_count += 1
@@ -245,7 +245,6 @@ def resolve_duplicate_runs(
             signed_count -= 1
             if first_negative < 0:
                 first_negative = f
-        j += 1
     keep = duplicate_group_keep(
         member_count, signed_count, representative, first_positive, first_negative
     )
@@ -275,8 +274,8 @@ def compact_kept_duplicate_runs(
         return
     f = keep[i]
     out_kept[row] = f
-    for k in range(3):
-        out_faces[3 * row + k] = faces[3 * f + k]
+    a, b, c = corner_triple(faces, f)
+    write_corner_triple(out_faces, row, a, b, c)
 
 
 @wp.kernel
@@ -310,10 +309,25 @@ def flag_first_sorted_members(
     # writes every entry once, so ``out_flags`` needs no zeroing. Indexed by input face, so its
     # inclusive scan numbers the kept faces in input order.
     i = wp.int32(wp.tid())
-    first = i == 0
-    if not first:
-        first = sorted_keys[i] != sorted_keys[i - 1]
-    out_flags[order[i]] = wp.where(first, wp.int32(1), wp.int32(0))
+    out_flags[order[i]] = wp.where(sorted_run_start(sorted_keys, i), wp.int32(1), wp.int32(0))
+
+
+@wp.func
+def compact_scanned_face(
+    inclusive: wp.array[wp.int32],
+    f: wp.int32,
+    faces: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+) -> wp.int32:
+    # Face ``f`` moved to its compact row when its ``0`` / ``1`` flag, scanned in place into
+    # ``inclusive``, is set; returns that row, or ``-1`` for a dropped face. The body
+    # ``compact_scanned_faces`` and ``compact_scanned_faces_and_indices`` share.
+    row, count = scanned_count(inclusive, f)
+    if count == 0:
+        return wp.int32(-1)
+    a, b, c = corner_triple(faces, f)
+    write_corner_triple(out_faces, row, a, b, c)
+    return row
 
 
 @wp.kernel
@@ -326,10 +340,8 @@ def compact_scanned_faces_and_indices(
     # ``compact_scanned_faces`` that also writes each kept face's input index, the second output of
     # ``resolve_duplicated_faces``; the two differ by that one store.
     f = wp.int32(wp.tid())
-    row, count = scanned_count(inclusive, f)
-    if count != 0:
-        a, b, c = corner_triple(faces, f)
-        write_corner_triple(out_faces, row, a, b, c)
+    row = compact_scanned_face(inclusive, f, faces, out_faces)
+    if row >= 0:
         out_kept[row] = f
 
 
@@ -387,7 +399,7 @@ def mark_degeneracy_seeds(
     out_vertex_mask[i0] = True
     out_vertex_mask[i1] = True
     out_vertex_mask[i2] = True
-    wp.atomic_add(out_count, 0, 1)
+    append_slot(out_count, 0)
 
 
 @wp.func
@@ -435,8 +447,9 @@ def small_triangle_collapse_edges(
 ) -> None:
     """Emit the shortest edge of each face with double-area below ``min_dbl_area`` (libigl)."""
     # ``out_count`` is how many faces were small, which is all the caller's loop reads: one
-    # *conditional* atomic per small face -- contention scales with the (rare) hits, not with the
-    # launch -- in place of a per-face flag buffer the caller would reduce and read back.
+    # *conditional* append per small face (``append_slot``, one atomic a warp) -- contention
+    # scales with the (rare) hits, not with the launch -- in place of a per-face flag buffer the
+    # caller would reduce and read back.
     f = wp.int32(wp.tid())
     i0, i1, i2 = corner_triple(faces, f)
     v0 = vertices[i0]
@@ -451,7 +464,7 @@ def small_triangle_collapse_edges(
         update_argmin_pair(best, a, b, wp.length_sq(v0 - v2), i2, i0)
         out_pairs[f, 0] = a
         out_pairs[f, 1] = b
-        wp.atomic_add(out_count, 0, 1)
+        append_slot(out_count, 0)
     else:
         out_pairs[f, 0] = i0
         out_pairs[f, 1] = i0
@@ -665,11 +678,7 @@ def compact_scanned_faces(
     # The faces whose ``0`` / ``1`` flag the caller scanned in place, at their compact rows: the
     # ``scatter.scatter_index_where_scanned`` pass and the row gather it would feed, in one launch
     # with no index buffer between them.
-    f = wp.int32(wp.tid())
-    row, count = scanned_count(inclusive, f)
-    if count != 0:
-        a, b, c = corner_triple(faces, f)
-        write_corner_triple(out_faces, row, a, b, c)
+    compact_scanned_face(inclusive, wp.int32(wp.tid()), faces, out_faces)
 
 
 @wp.kernel
@@ -794,11 +803,9 @@ def mate_code_face(mate: wp.int32) -> wp.int32:
     # The face whose flip moves halfedge mate code ``mate`` (``flipped_mate_code``): the mate's own,
     # or a ``-2 - lowest`` code's lowest halfedge's. Face 0 for a boundary ``-1``, which no flip
     # moves, so a caller reads that face's flip unguarded and ``flipped_mate_code`` ignores it.
-    if mate >= 0:
-        return mate // 3
-    if mate <= -2:
-        return (-2 - mate) // 3
-    return 0
+    if mate == -1:
+        return 0
+    return mate_halfedge(mate) // 3
 
 
 @wp.func
@@ -833,15 +840,6 @@ def flip_faces_and_mates_by_parity(
         mate = mates[h]
         mate_flip = face_parity_flip(words, mate_code_face(mate))
         out_mates[flipped_halfedge(h, flip)] = flipped_mate_code(mate, mate_flip)
-
-
-@wp.kernel
-def flip_all_faces(faces: wp.array[wp.int32], out_faces: wp.array[wp.int32]) -> None:
-    """Copy ``faces`` to ``out_faces`` with every winding reversed (corners 1 and 2 swapped)."""
-    # ``flip_faces_by_parity``' convention with the flip constant, so the whole-mesh flip needs no
-    # all-ones flag buffer allocated only to be read back as ``True`` at every face.
-    f = wp.int32(wp.tid())
-    write_face_winding(faces, f, True, out_faces)
 
 
 # The per-face measure a component sums (``face_group_measure``): ``remove_small_components``'

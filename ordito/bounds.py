@@ -27,7 +27,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import require_same_device, scan_count
 from ordito.kernels import array as kernel_array
 from ordito.kernels import bounds as kernel_bounds
 from ordito.kernels import predicates as kernel_predicates
@@ -705,9 +705,8 @@ def _scanned_box_flags(
     inclusive = _box_flags(points, min_bound, max_bound, rotation)
     if inclusive.size == 0:
         return inclusive, 0
-    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     # One 4-byte tail read: the count sizes every output.
-    return inclusive, int(read_scalar(inclusive))
+    return inclusive, scan_count(inclusive)
 
 
 def _box_flags(
@@ -1000,9 +999,8 @@ def _compact_masked_points(points: wp.array[wp.vec3], mask: wp.array[wp.bool]) -
     n = points.size
     inclusive = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.launch(kernel_array.bool_flags, dim=n, inputs=[mask, inclusive], device=device)
-    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     # The kept count sizes the output.
-    n_kept = int(read_scalar(inclusive))
+    n_kept = scan_count(inclusive)
     kept = _launch.empty(n_kept, dtype=wp.vec3, device=device)
     if n_kept > 0:
         _launch.launch(

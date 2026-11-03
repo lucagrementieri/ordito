@@ -496,3 +496,28 @@ _VALUES_SCRATCH: dict[tuple[type, int], tuple[wp.array[Any], np.ndarray[Any, Any
 def _detached(value: T) -> T:
     """Copy ``value`` when it is a view, so a vector or matrix element outlives the next read."""
     return value.copy() if isinstance(value, np.ndarray) else value
+
+
+def scan_count(flags: wp.array[Any]) -> int:
+    """
+    Scan integer ``flags`` inclusively in place and return their total: one tail readback.
+
+    An inclusive scan of ``0`` / ``1`` flags (or counts) ends at their sum, so the one 4-byte read
+    of [`read_scalar`][ordito._device.read_scalar] sizes the outputs where a reduction would read
+    the whole array. Applied to the ``tail`` of [`offsets_buffer`][ordito._device.offsets_buffer]
+    it turns the counts written there into total-terminated offsets and returns the total.
+    """
+    _launch.array_scan(flags, out_array=flags, inclusive=True)
+    return int(read_scalar(flags))
+
+
+def offsets_buffer(n: int, device: wp.DeviceLike) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Allocate zeroed ``(n + 1,)`` offsets and return them with their tail view ``offsets[1:]``.
+
+    A producer writes its ``n`` counts into the tail; scanning the tail in place
+    ([`scan_count`][ordito._device.scan_count]) then leaves the total-terminated offsets, the
+    leading zero being the first one, with no separate count buffer. ``n`` must be positive.
+    """
+    offsets = _launch.zeros(n + 1, dtype=wp.int32, device=device)
+    return offsets, _launch.view(offsets, 1, n + 1)

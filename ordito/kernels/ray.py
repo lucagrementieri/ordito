@@ -1,6 +1,6 @@
 import warp as wp
 
-from ordito.kernels.array import declare_map_signatures, map_probe, map_probe_single
+from ordito.kernels.array import append_slot, declare_map_signatures, map_probe, map_probe_single
 
 wp.set_module_options({"enable_backward": False})
 
@@ -33,12 +33,12 @@ def first_hit_append(
     out_locations: wp.array[wp.vec3],
     out_count: wp.array[wp.int32],
 ) -> None:
-    # Single-pass compaction: each ray that hits atomically claims one output slot, in arrival
-    # order; the deterministic setting takes ``first_hit_flags`` instead.
+    # Single-pass compaction: each ray that hits claims one output slot, in arrival order (one
+    # atomic a warp, ``append_slot``); the deterministic setting takes ``first_hit_flags`` instead.
     i = wp.int32(wp.tid())
     face, location = first_hit(mesh_id, ray_origins[i], ray_directions[i], max_t)
     if face >= 0:
-        slot = wp.atomic_add(out_count, 0, 1)
+        slot = append_slot(out_count, 0)
         out_index_ray[slot] = i
         out_index_tri[slot] = face
         out_locations[slot] = location

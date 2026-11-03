@@ -84,7 +84,7 @@ FOREST_NO_PROPOSAL = UINT64_MAX_CONSTANT
 # larger than every vertex index rather than the ``-1`` a sequential traversal would write. It
 # never collides with a real index, which is what lets ``dual_candidate_mask`` test parenthood
 # without a special case for the root.
-NO_PARENT = wp.constant(wp.int32(INT32_MAX))
+NO_PARENT = wp.int32(INT32_MAX)
 
 # Slots of the one buffer that carries every host-visible count out of the decomposition, read back
 # once. Slot 0 is filled over the edges and slots 1-2 over the vertices, by two different kernels,

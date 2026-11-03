@@ -99,8 +99,8 @@ wp.set_module_options({"enable_backward": False})
 MAX_SEED_NEIGHBORS = 64
 # ``seed_triangles``' per-point cache: a neighbour index is the orphan the point last deferred to,
 # ``SEED_UNKNOWN`` nothing yet, and ``SEED_EXHAUSTED`` a point that can never seed (see there).
-SEED_UNKNOWN = wp.constant(wp.int32(-1))
-SEED_EXHAUSTED = wp.constant(wp.int32(-2))
+SEED_UNKNOWN = wp.int32(-1)
+SEED_EXHAUSTED = wp.int32(-2)
 # Half-width of the band around the ball's sphere, in float32 rounding units of the ball centre's
 # largest coordinate (``sphere_band_width``), inside which float32 cannot be trusted to say which
 # side of the sphere a point is on, so ``band_point_inside`` decides it in float64. A co-circular
@@ -122,19 +122,19 @@ PIVOT_ANGLE_MAX = wp.float32(6.283185)
 
 # ``counters`` slots. Keeping the wave loop's whole control state on device is what lets the loop
 # body run without a host synchronisation, and ultimately inside a captured CUDA graph.
-CNT_FACE = wp.constant(0)  # committed triangles so far
-CNT_PREV_FACE = wp.constant(1)  # ... as of the start of this wave (the progress test)
-CNT_FRONT = wp.constant(2)  # entries in the incoming front list
-CNT_NEXT_FRONT = wp.constant(3)  # entries written to the outgoing front list
-CNT_LIVE = wp.constant(4)  # of those, how many were live (drives host-side compaction)
-CNT_PROPOSAL = wp.constant(5)  # triangles proposed this wave
-CNT_SEEDING = wp.constant(6)  # this wave seeds orphans instead of pivoting
-CNT_CONTINUE = wp.constant(7)  # the wave loop's condition
-CNT_DONE = wp.constant(8)  # the loop finished for good (as opposed to pausing to grow)
-CNT_WAVE = wp.constant(9)  # waves executed
-CNT_GROW = wp.constant(10)  # the triangle budget is exhausted; hand back to the host
-CNT_SEED_FAILED = wp.constant(11)  # orphans marked "cannot seed" so far (see seed_triangles)
-CNT_PREV_SEED_FAILED = wp.constant(12)  # ... as of the start of this wave (the other progress test)
+CNT_FACE = 0  # committed triangles so far
+CNT_PREV_FACE = 1  # ... as of the start of this wave (the progress test)
+CNT_FRONT = 2  # entries in the incoming front list
+CNT_NEXT_FRONT = 3  # entries written to the outgoing front list
+CNT_LIVE = 4  # of those, how many were live (drives host-side compaction)
+CNT_PROPOSAL = 5  # triangles proposed this wave
+CNT_SEEDING = 6  # this wave seeds orphans instead of pivoting
+CNT_CONTINUE = 7  # the wave loop's condition
+CNT_DONE = 8  # the loop finished for good (as opposed to pausing to grow)
+CNT_WAVE = 9  # waves executed
+CNT_GROW = 10  # the triangle budget is exhausted; hand back to the host
+CNT_SEED_FAILED = 11  # orphans marked "cannot seed" so far (see seed_triangles)
+CNT_PREV_SEED_FAILED = 12  # ... as of the start of this wave (the other progress test)
 BPA_COUNTERS = 13
 
 # Lanes per front edge in the cooperative pivot search. One warp: the block-cooperative BVH walk
@@ -142,8 +142,8 @@ BPA_COUNTERS = 13
 # three steps while keeping the tile reductions on Warp's single-warp fast path.
 BPA_PIVOT_BLOCK = 32
 
-EDGE_LIVE = wp.constant(0)
-EDGE_RETIRED = wp.constant(1)
+EDGE_LIVE = wp.int32(0)
+EDGE_RETIRED = wp.int32(1)
 
 
 @wp.struct
@@ -1223,6 +1223,8 @@ def claim_triangle_vertices_from(
     salt = wave_salt(counters[CNT_WAVE])
     for t in range(thread, proposals, grid_stride):
         key = proposal_key(tri_a[t], tri_b[t], salt)
+        # A read before each atomic (``atomic_min_unless_below``) measured 1.00x on bunny: few
+        # proposals share a vertex.
         wp.atomic_min(out_owner, tri_a[t], key)
         wp.atomic_min(out_owner, tri_b[t], key)
         wp.atomic_min(out_owner, tri_c[t], key)

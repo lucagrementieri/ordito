@@ -454,7 +454,7 @@ def _canonical_order(
     n_faces = faces.size // 3
     base = max(n_vertices, 1)
     whole_row = base**3 <= 1 << 64
-    index_bits = max(1, (base - 1).bit_length())
+    index_bits = _launch.key_bits(base)
     keys, order = (
         buffers if buffers is not None else _launch.sort_buffers(n_faces, wp.uint64, device)
     )
@@ -465,7 +465,7 @@ def _canonical_order(
         device=device,
     )
     if whole_row:
-        end_bit = max(1, (base**3 - 1).bit_length())
+        end_bit = _launch.key_bits(base**3)
         _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=end_bit)
         return order
     _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=32 + index_bits)
