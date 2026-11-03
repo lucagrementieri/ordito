@@ -20,8 +20,8 @@ url: "https://lucagrementieri.github.io/ordito/"
 license:
   - MIT
   - Apache-2.0
-version: "0.1.0"
-date-released: "2026-10-27"
+version: "0.2.0"
+date-released: "2026-11-03"
 keywords:
   - mesh
   - triangle-mesh

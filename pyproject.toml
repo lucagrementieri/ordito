@@ -13,7 +13,7 @@ license-files = ["LICENSE-APACHE", "LICENSE-MIT"]
 name = "ordito"
 readme = "README.md"
 requires-python = ">=3.11"
-version = "0.1.0"
+version = "0.2.0"
 
 # ``Operating System :: POSIX :: Linux`` is the *tested* claim, not a technical limit: the wheel is
 # ``py3-none-any`` and warp-lang ships macOS and Windows builds, so ordito very likely runs there.

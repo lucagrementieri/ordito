@@ -22,6 +22,8 @@ from the one matching its tag — so prose sections do not belong between them.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-03
+
 ### Added
 
 - `heat.fast_marching_distance`: geodesic distance by a front marched across the faces, as
@@ -60,6 +62,28 @@ from the one matching its tag — so prose sections do not belong between them.
 - `halfedge.key_ordered_halfedges` takes its flags as a bitmask and the bitmask's word ranks
   (`words, word_ranks`, from `array.bit_ranks`), a bit a halfedge and each class row padded to
   whole words, in place of an `int32` inclusive scan: a 32nd of the memory.
+- `reconstruction.screened_poisson(method="octree")` runs to depth 10, matching open3d's
+  reconstruction there, and is faster and leaner at every depth: its sweeps visit only bricks
+  holding an active node, its index tables are rank-packed bitsets, and it shares its solve buffers
+  with the dense and adaptive methods.
+- Lower peak memory across `reconstruction`, `voxels`, `levelset`, `visibility`, `intersection`,
+  `linalg` and `smoothing`; `triangulate_point_cloud` and `ball_pivoting` size their buffers for
+  what a run holds.
+- `energies.hessian_energy` / `curved_hessian_energy` build their sparsity pattern first, with far
+  lower peak memory.
+- On the CPU device, iterative loops (CG, Poisson V-cycle, fan flood, ear clipping and others) run
+  as one launch, with identical results.
+
+### Fixed
+
+- `energies.hessian_energy` / `curved_hessian_energy` refuse a triplet count that overflows `int32`
+  instead of faulting on very large meshes.
+- `reconstruction.ball_pivoting` seeding reads only the failures of earlier waves.
+- `sample.sample_surface_poisson_disk` is reproducible under the deterministic setting.
+- The lazy submodule import no longer keeps the calling frame's arrays alive.
+- `heat`: the vector heat solvers and `heat_signed_distance(method="potpourri3d")` lengthen their
+  default time on fine meshes.
+- `cholesky`: a solve into a caller's buffer no longer replays a stale recording.
 
 ## [0.1.0] - 2026-10-27
 
@@ -82,5 +106,6 @@ The first public release.
 - Runs on CUDA when available and on Warp's CPU backend otherwise; see
   [Platform support](https://lucagrementieri.github.io/ordito/getting-started/#platform-support).
 
-[Unreleased]: https://github.com/lucagrementieri/ordito/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/lucagrementieri/ordito/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/lucagrementieri/ordito/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lucagrementieri/ordito/releases/tag/v0.1.0
