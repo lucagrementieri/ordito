@@ -32,19 +32,28 @@ from __future__ import annotations
 import math
 import warnings
 from collections.abc import Sequence
-from typing import cast, overload
+from typing import Any, Literal, cast, overload
 
 import warp as wp
+
+# ``@wp.struct`` rebinds the decorated name to a ``Struct`` value, so a helper passing one around
+# names the instance's base instead (as ``holes`` does).
+from warp._src.codegen import StructInstance
 
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device, run_device_loop
 from ordito.halfedge import halfedge_twins, vertex_one_rings
+from ordito.kernels import array as kernel_array
 from ordito.kernels import geodesic_walk as kernel_geodesic_walk
+from ordito.kernels.algorithms import flip_geodesics as kernel_flip_geodesics
 from ordito.mesh import Trimesh, mesh_arguments
 
 _DEFAULT_MAX_STEPS = 4096
+
+GeodesicPathMethod = Literal["heat", "potpourri3d"]
+"""The ways [`geodesic_path`][ordito.geodesic_walk.geodesic_path] finds a path."""
 
 
 def trace_from_vertex(
@@ -453,6 +462,7 @@ def geodesic_path(
     targets: wp.array[wp.int32],
     /,
     *,
+    method: GeodesicPathMethod = "heat",
     t: float | None = None,
     max_steps: int = _DEFAULT_MAX_STEPS,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
@@ -464,6 +474,7 @@ def geodesic_path(
     targets: wp.array[wp.int32],
     /,
     *,
+    method: GeodesicPathMethod = "heat",
     t: float | None = None,
     max_steps: int = _DEFAULT_MAX_STEPS,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
@@ -474,6 +485,7 @@ def geodesic_path(
     targets: wp.array[wp.int32] | None = None,
     *,
     vertices: wp.array[wp.vec3] | None = None,
+    method: GeodesicPathMethod = "heat",
     t: float | None = None,
     max_steps: int = _DEFAULT_MAX_STEPS,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
@@ -481,11 +493,19 @@ def geodesic_path(
     Trace a path across the surface from each target vertex back to a source set.
 
     The **point-to-point** geodesic, as against this module's straightest walks and
-    [`heat_geodesic`][ordito.heat.heat_geodesic]'s distance *field*: one heat solve gives
-    the distance to the source everywhere, and descending it from a target follows that geodesic
-    back. Every target shares the one solve, so a thousand paths to one source cost one system and a
-    thousand independent walks -- which is why the signature is one source and many targets rather
-    than a list of pairs.
+    [`heat_geodesic`][ordito.heat.heat_geodesic]'s distance *field*. ``method`` picks how:
+
+    - ``"heat"`` (the default): one heat solve gives the distance to the source everywhere, and
+      descending it from a target follows that geodesic back. Every target shares the one solve,
+      so a thousand paths to one source cost one system and a thousand independent walks -- which
+      is why the signature is one source and many targets rather than a list of pairs. The path is
+      approximate (see Notes).
+    - ``"potpourri3d"``: ``potpourri3d``'s ``EdgeFlipGeodesicSolver.find_geodesic_path`` (Sharp
+      and Crane's edge-flip geodesics, from geometry-central). Each path starts as the shortest
+      mesh-edge path from the nearest source and is straightened by flipping the edges of an
+      intrinsic triangulation until it is a *locally shortest* path: exact for the polyhedral
+      surface, within the homotopy class of the edge path it started from. The answer is the
+      reference's point for point.
 
     Takes the mesh as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh], which keeps the heat
     method's operators and factorizations for the next call (several sources traced on one mesh),
@@ -505,11 +525,14 @@ def geodesic_path(
         since the field is the distance to the *set*.
     targets
         ``(n_paths,)`` vertices to trace from.
+    method
+        ``"heat"`` or ``"potpourri3d"``, the two ways above.
     t
         Heat diffusion time, forwarded to
-        [`heat_geodesic`][ordito.heat.heat_geodesic]. ``None`` uses its default.
+        [`heat_geodesic`][ordito.heat.heat_geodesic]. ``None`` uses its default. Read by
+        ``"heat"`` only.
     max_steps
-        Cap on steps per path.
+        Cap on steps per path. Read by ``"heat"`` only.
 
     Returns
     -------
@@ -520,14 +543,22 @@ def geodesic_path(
 
     Raises
     ------
+    ValueError
+        If ``method`` is not one of the two; with ``"potpourri3d"``, if an entry of ``source`` or
+        ``targets`` is not a vertex index in ``[0, n_vertices)`` or a vertex's faces do not form a
+        single fan. ``"potpourri3d"`` also takes
+        [`halfedge_twins`][ordito.halfedge.halfedge_twins]' refusals: an edge of three or more
+        faces, or two faces wound against each other.
     RuntimeError
         If ``vertices``, ``faces``, ``source`` and ``targets`` are not all on one device.
 
     Warns
     -----
     UserWarning
-        When paths stopped short of the source on the heat distance and were finished along mesh
-        edges (see Notes); the message counts the paths so finished.
+        With ``"heat"``, when paths stopped short of the source on the heat distance and were
+        finished along mesh edges (see Notes); the message counts the paths so finished. With
+        ``"potpourri3d"``, when paths stopped shortening at the step bound (a numerically stuck
+        flip sequence), counting them.
 
     Notes
     -----
@@ -549,6 +580,17 @@ def geodesic_path(
     [`descend_field`][ordito.geodesic_walk.descend_field] keeps the plain behaviour: a descent of
     any other field stops where that field does.
 
+    **``"potpourri3d"`` is exact, but local.** Its path is a geodesic of the polyhedral surface:
+    straight across every face and edge, and through a vertex only where the angle on both sides
+    is at least ``pi``. It is the shortest path near the one it started from, not necessarily the
+    shortest overall: on a surface with handles or holes it keeps the side of each one the
+    starting edge path took, so it can be longer than the shortest path there. With several
+    sources it runs from the source nearest along mesh edges. A target that is
+    a source, or that no source reaches, gets a path of the one point (``potpourri3d`` raises on
+    both). The mesh's tables, the edge paths and the traces of the result run on the mesh's
+    device; the flips of each path depend on the ones before them, so they run path after path in
+    one thread on the CPU device, whatever the mesh's device.
+
     See Also
     --------
     [`descend_field`][ordito.geodesic_walk.descend_field]
@@ -558,7 +600,9 @@ def geodesic_path(
 
     Examples
     --------
-    Pole to pole on a unit sphere, whose true geodesic is half a great circle, of length ``pi``:
+    Pole to pole on a unit sphere, whose true geodesic is half a great circle, of length ``pi``.
+    The edge-flip path is the exact geodesic of the polyhedron, a little shorter than the heat
+    method's descent:
 
     ```python
     import numpy as np
@@ -571,7 +615,11 @@ def geodesic_path(
     source = wp.array([np.argmax(heights)], dtype=wp.int32)
     targets = wp.array([np.argmin(heights)], dtype=wp.int32)
     points, offsets = od.geodesic_walk.geodesic_path(vertices, faces, source, targets)
-    print(f"{od.polyline.polyline_length(points):.2f}")  # 3.14
+    print(f"{od.polyline.polyline_length(points):.3f}")  # 3.137
+    points, offsets = od.geodesic_walk.geodesic_path(
+        vertices, faces, source, targets, method="potpourri3d"
+    )
+    print(f"{od.polyline.polyline_length(points):.3f}")  # 3.133
     ```
     """
     bound, owned, arguments = mesh_arguments(
@@ -580,6 +628,17 @@ def geodesic_path(
     source = cast("wp.array[wp.int32]", arguments[0])
     targets = cast("wp.array[wp.int32]", arguments[1])
     require_same_device(vertices=bound.vertices, faces=bound.faces, source=source, targets=targets)
+    if method not in ("heat", "potpourri3d"):
+        raise ValueError(f"method must be 'heat' or 'potpourri3d', got {method!r}")
+    if method == "potpourri3d":
+        points, offsets, n_unconverged = _flip_geodesic_paths(bound, source, targets)
+        if n_unconverged > 0:
+            warnings.warn(
+                f"geodesic_path: {n_unconverged} of {targets.size} paths stopped shortening at "
+                "the step bound and are returned as they stood.",
+                stacklevel=2,
+            )
+        return points, offsets
     # The ``vertices, faces`` form hands them on, so ``heat_geodesic`` builds and drops the mesh
     # (and logs a factorization it drops); a `Trimesh` keeps its heat solver for the next source.
     distance = (
@@ -747,6 +806,382 @@ def _edge_graph_distance(mesh: Trimesh, sources: wp.array[wp.int32]) -> wp.array
         device=device,
     )
     return od.graph.shortest_path_envelope(adjacency, seed)
+
+
+# ``geodesic_path(method="potpourri3d")``'s pools for the shortening: the wedge queue's entries
+# beyond two an edge, the segment slots beyond one an edge, the output entries a path (a geodesic
+# through no vertex is one). Each regrows and the shortening reruns when one runs out; the flip
+# log restores every table instead.
+_FLIP_HEAP_SLACK = 1 << 14
+_FLIP_SEGMENT_SLACK = 64
+_FLIP_ENTRIES_PER_PATH = 8
+_FLIP_TOUCHED_SLACK = 1 << 12
+# ``traceIntrinsicHalfedgeAlongInput``'s step bound, in faces crossed per face.
+_FLIP_TRACE_STEPS_PER_FACE = 10
+
+
+def _flip_geodesic_paths(
+    mesh: Trimesh, source: wp.array[wp.int32], targets: wp.array[wp.int32]
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], int]:
+    """
+    ``geodesic_path(method="potpourri3d")``: geometry-central's edge-flip geodesics.
+
+    ``kernels/algorithms/flip_geodesics``: the mesh tables, the shortest-edge tree and the traces on
+    the mesh's device, one thread an element; the shortening, whose flip order is the algorithm,
+    in one thread on the CPU device. Returns the packed paths and how many paths the step bound
+    cut off.
+    """
+    device = mesh.device
+    n_paths = targets.size
+    if n_paths == 0:
+        points, offsets = _launch.empty_packed(wp.vec3, device)
+        return points, offsets, 0
+    n_vertices = mesh.n_vertices
+    input_mesh, flags, n_edges = _flip_input_mesh(mesh)
+    _launch.launch(
+        kernel_flip_geodesics.check_targets,
+        dim=n_paths,
+        inputs=[targets, wp.int32(n_vertices)],
+        outputs=[flags],
+        device=device,
+    )
+    incoming = _flip_shortest_edge_tree(input_mesh, n_vertices, 2 * n_edges, source, targets, flags)
+    # Host readback: whether the mesh or an index was refused decides whether the call raises,
+    # before any path is shortened.
+    flag_values = [int(v) for v in read_values(flags, 0, kernel_flip_geodesics.FLAG_SIZE)]
+    nonmanifold = flag_values[kernel_flip_geodesics.FLAG_NONMANIFOLD_VERTEX]
+    invalid = flag_values[kernel_flip_geodesics.FLAG_INVALID_INDEX]
+    if nonmanifold:
+        raise ValueError(
+            "geodesic_path(method='potpourri3d') requires a manifold mesh: a vertex's faces do not "
+            "form a single fan."
+        )
+    if invalid:
+        raise ValueError(
+            f"geodesic_path: every entry of source and targets must be a vertex index in "
+            f"[0, {n_vertices})"
+        )
+
+    entries, n_entries, n_unconverged = _flip_shorten_on_host(
+        input_mesh, n_edges, incoming, targets
+    )
+    path_offsets, entry_path, entry_kind, entry_tail, entry_tip, entry_vector = (
+        entry if entry.device == device else _launch.clone(entry, device=device)
+        for entry in entries
+    )
+
+    limits = _launch.empty(n_entries, dtype=wp.int32, device=device)
+    point_offsets = _launch.zeros(n_entries + 1, dtype=wp.int32, device=device)
+    max_iterations = wp.int32(_FLIP_TRACE_STEPS_PER_FACE * (mesh.faces.size // 3))
+    traced = [
+        input_mesh,
+        path_offsets,
+        entry_path,
+        entry_kind,
+        entry_tail,
+        entry_tip,
+        entry_vector,
+        max_iterations,
+    ]
+    _launch.launch(
+        kernel_flip_geodesics.count_traced_points,
+        dim=n_entries,
+        inputs=[*traced, _launch.empty(0, dtype=wp.vec3, device=device)],
+        outputs=[limits, _launch.view(point_offsets, 1, n_entries + 1)],
+        device=device,
+    )
+    _launch.array_scan(point_offsets, out_array=point_offsets, inclusive=True)
+    # Host readback: the point total sizes the polyline buffer.
+    total = int(read_scalar(point_offsets, n_entries))
+    points = _launch.empty(total, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_flip_geodesics.write_traced_points,
+        dim=n_entries,
+        inputs=[*traced, limits, point_offsets],
+        outputs=[points],
+        device=device,
+    )
+    offsets = cast("wp.array[wp.int32]", od.array.gather(point_offsets, path_offsets))
+    return points, offsets, n_unconverged
+
+
+def _flip_input_mesh(mesh: Trimesh) -> tuple[StructInstance, wp.array[wp.int32], int]:
+    """Build the mesh in ``ManifoldSurfaceMesh`` numbering with its geometry; flags, edge count."""
+    device = mesh.device
+    faces = mesh.faces
+    twins = mesh.halfedge_twins
+    n_vertices = mesh.n_vertices
+    n_corners = faces.size
+    n_faces = n_corners // 3
+    first_offsets = _launch.zeros(n_corners + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_flip_geodesics.flag_first_corners,
+        dim=n_corners,
+        inputs=[twins],
+        outputs=[_launch.view(first_offsets, 1, n_corners + 1)],
+        device=device,
+    )
+    _launch.array_scan(first_offsets, out_array=first_offsets, inclusive=True)
+    # Host readback: the edge count sizes every halfedge and edge table.
+    n_edges = int(read_scalar(first_offsets, n_corners))
+    n_halfedges = 2 * n_edges
+
+    input_mesh = kernel_flip_geodesics.InputMesh()
+    input_mesh.position = od.array.astype(mesh.vertices, wp.vec3d)
+    input_mesh.next, input_mesh.vertex, input_mesh.face, input_mesh.face_halfedge = _launch.carve(
+        wp.int32, (n_halfedges, n_halfedges, n_halfedges, n_faces), device
+    )
+    (input_mesh.vertex_halfedge, input_mesh.boundary_out, last_corner, boundary_corner) = (
+        _launch.carve(wp.int32, (n_vertices,) * 4, device)
+    )
+    _launch.fill_(input_mesh.boundary_out, -1)
+    _launch.fill_(last_corner, -1)
+    _launch.fill_(boundary_corner, -1)
+    degree, flags = _launch.carve(
+        wp.int32, (n_vertices, kernel_flip_geodesics.FLAG_SIZE), device, zeroed=True
+    )
+    (
+        input_mesh.length,
+        input_mesh.angle_sum,
+        input_mesh.intrinsic_angle_sum,
+        input_mesh.signpost,
+        corner_angle,
+        intrinsic_corner_angle,
+    ) = _launch.carve(
+        wp.float64, (n_edges, n_vertices, n_vertices, n_halfedges, n_halfedges, n_halfedges), device
+    )
+    input_mesh.vector_in_face, input_mesh.vector_in_vertex = _launch.carve(
+        wp.vec2d, (n_halfedges, n_halfedges), device
+    )
+    _launch.launch(
+        kernel_flip_geodesics.number_corners,
+        dim=n_corners,
+        inputs=[faces, twins, first_offsets],
+        outputs=[input_mesh, last_corner, degree, boundary_corner, flags],
+        device=device,
+    )
+    _launch.launch(
+        kernel_flip_geodesics.face_geometry,
+        dim=n_faces,
+        inputs=[],
+        outputs=[corner_angle, intrinsic_corner_angle, input_mesh],
+        device=device,
+    )
+    _launch.launch(
+        kernel_flip_geodesics.vertex_geometry,
+        dim=n_vertices,
+        inputs=[
+            twins,
+            first_offsets,
+            last_corner,
+            degree,
+            boundary_corner,
+            corner_angle,
+            intrinsic_corner_angle,
+        ],
+        outputs=[input_mesh, flags],
+        device=device,
+    )
+    return input_mesh, flags, n_edges
+
+
+def _flip_shortest_edge_tree(
+    input_mesh: StructInstance,
+    n_vertices: int,
+    n_halfedges: int,
+    source: wp.array[wp.int32],
+    targets: wp.array[wp.int32],
+    flags: wp.array[wp.int32],
+) -> wp.array[wp.int32]:
+    """Each vertex's halfedge in geometry-central's shortest-edge-path tree from the sources."""
+    device = wp.get_device(flags.device)
+    distance = _launch.full(n_vertices, math.inf, dtype=wp.float64, device=device)
+    source_mask = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+    if source.size > 0:
+        _launch.launch(
+            kernel_flip_geodesics.seed_sources,
+            dim=source.size,
+            inputs=[source],
+            outputs=[distance, source_mask, flags],
+            device=device,
+        )
+    if device.is_cuda:
+        # The relaxation passes as one conditional graph; a pass that moves nothing ends it.
+        state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
+        n_vertices_i32 = wp.int32(n_vertices)
+
+        def relaxation_pass() -> None:
+            _launch.launch(
+                kernel_flip_geodesics.relax_distances,
+                dim=n_vertices,
+                inputs=[input_mesh, distance],
+                outputs=[state],
+                device=device,
+            )
+            _launch.launch(
+                kernel_array.loop_advance, dim=1, inputs=[n_vertices_i32, state], device=device
+            )
+
+        run_device_loop(
+            device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), relaxation_pass
+        )
+    else:
+        # The CPU device runs a launch's threads one after another, so the relaxation's passes
+        # would each sweep every vertex: the lazy Dijkstra builds the same tree in one pass.
+        incoming = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+        state, wanted = _launch.carve(wp.int32, (1, n_vertices), device)
+        _launch.launch(
+            kernel_flip_geodesics.shortest_edge_tree_serial,
+            dim=1,
+            inputs=[
+                input_mesh,
+                source_mask,
+                targets,
+                _launch.empty(n_halfedges, dtype=wp.float64, device=device),
+                _launch.empty(n_halfedges, dtype=wp.int32, device=device),
+                wanted,
+                state,
+            ],
+            outputs=[incoming],
+            device=device,
+        )
+        return incoming
+    incoming = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_flip_geodesics.settle_incoming,
+        dim=n_vertices,
+        inputs=[input_mesh, distance, source_mask],
+        outputs=[incoming],
+        device=device,
+    )
+    return incoming
+
+
+def _flip_shorten_on_host(
+    input_mesh: StructInstance,
+    n_edges: int,
+    incoming: wp.array[wp.int32],
+    targets: wp.array[wp.int32],
+) -> tuple[tuple[wp.array[Any], ...], int, int]:
+    """
+    Shorten every path in one thread on the CPU device, each from the input triangulation.
+
+    Returns the path offsets and the entries (path, kind, tail, tip, trace vector) on the CPU
+    device, the entry count and how many paths the step bound cut off.
+    """
+    host = wp.get_device("cpu")
+    n_paths = targets.size
+    n_halfedges = 2 * n_edges
+
+    def on_host(array: wp.array[Any]) -> wp.array[Any]:
+        return array if array.device == host else _launch.clone(array, device=host)
+
+    host_mesh = kernel_flip_geodesics.InputMesh()
+    for name in (
+        "next",
+        "vertex",
+        "face",
+        "boundary_out",
+        "length",
+        "intrinsic_angle_sum",
+        "signpost",
+    ):
+        setattr(host_mesh, name, on_host(getattr(input_mesh, name)))
+    incoming_host = on_host(incoming)
+    targets_host = on_host(targets)
+    tri = kernel_flip_geodesics.Intrinsic()
+    tri.next = _launch.clone(host_mesh.next, device=host)
+    tri.vertex = _launch.clone(host_mesh.vertex, device=host)
+    tri.length = _launch.clone(host_mesh.length, device=host)
+    tri.signpost = _launch.clone(host_mesh.signpost, device=host)
+    tri.original = _launch.full(n_edges, 1, dtype=wp.int32, device=host)
+
+    status = _launch.zeros(kernel_flip_geodesics.STATUS_SIZE, dtype=wp.int32, device=host)
+    path_offsets = _launch.empty(n_paths + 1, dtype=wp.int32, device=host)
+    heap_capacity = 2 * n_edges + _FLIP_HEAP_SLACK
+    segment_capacity = n_edges + _FLIP_SEGMENT_SLACK
+    entry_capacity = _FLIP_ENTRIES_PER_PATH * n_paths
+    while True:
+        net = kernel_flip_geodesics.Network()
+        (
+            net.segment_halfedge,
+            net.segment_prev,
+            net.segment_next,
+            net.segment_id,
+            net.stack_prev,
+            net.stack_next,
+            net.free,
+        ) = _launch.carve(wp.int32, (segment_capacity,) * 7, host)
+        net.heap_angle = _launch.empty(heap_capacity, dtype=wp.float64, device=host)
+        (
+            net.heap_turn,
+            net.heap_id,
+            net.heap_slot,
+            net.edge_front,
+            net.edge_back,
+            net.touched,
+            net.scratch,
+            net.state,
+        ) = _launch.carve(
+            wp.int32,
+            (
+                heap_capacity,
+                heap_capacity,
+                heap_capacity,
+                n_edges,
+                n_edges,
+                5 * n_edges + _FLIP_TOUCHED_SLACK,
+                n_halfedges,
+                kernel_flip_geodesics.STATE_SIZE,
+            ),
+            host,
+        )
+        entry_path, entry_kind, entry_tail, entry_tip = _launch.carve(
+            wp.int32, (entry_capacity,) * 4, host
+        )
+        entry_vector = _launch.empty(entry_capacity, dtype=wp.vec2d, device=host)
+        _launch.launch(
+            kernel_flip_geodesics.shorten_paths,
+            dim=1,
+            inputs=[host_mesh, tri, net, incoming_host, targets_host],
+            outputs=[
+                path_offsets,
+                entry_path,
+                entry_kind,
+                entry_tail,
+                entry_tip,
+                entry_vector,
+                status,
+            ],
+            device=host,
+        )
+        # Host readback, one copy: the entry count sizes the trace, and the flags say whether a
+        # pool ran out (the shortening then reruns with it grown).
+        n_entries, heap_overflow, segment_overflow, n_unconverged = (
+            int(v) for v in read_values(status, 0, kernel_flip_geodesics.STATUS_SIZE)
+        )
+        grow = False
+        if heap_overflow:
+            heap_capacity *= 4
+            grow = True
+        if segment_overflow:
+            segment_capacity *= 4
+            grow = True
+        if not grow and n_entries > entry_capacity:
+            entry_capacity = n_entries
+            grow = True
+        if not grow:
+            break
+        _launch.zero_(status)
+    entries = (
+        path_offsets,
+        _launch.view(entry_path, 0, n_entries),
+        _launch.view(entry_kind, 0, n_entries),
+        _launch.view(entry_tail, 0, n_entries),
+        _launch.view(entry_tip, 0, n_entries),
+        _launch.view(entry_vector, 0, n_entries),
+    )
+    return entries, n_entries, n_unconverged
 
 
 def shorten_loop(

@@ -18,6 +18,8 @@ import igl
 import numpy as np
 import potpourri3d as pp3d
 import pytest
+import scipy.sparse
+import scipy.sparse.csgraph
 import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
@@ -864,6 +866,192 @@ def test_geodesic_path_matches_potpourri3d_on_a_sphere(
     assert ratio_np.min() > 0.999
     assert np.median(ratio_np) < 1.035  # 3x the measured median excess
     assert ratio_np.max() < 1.2
+
+
+# --- method="potpourri3d": geometry-central's edge-flip geodesics ---
+# ``unit_box`` for the exact distance ties of a grid, which Dijkstra breaks by halfedge number;
+# ``torus_irregular_holes`` for rims and a homotopy class the short way round need not be in.
+_FLIP_MESHES = [*MESHES, "torus_irregular_holes", "unit_box"]
+
+
+def _potpourri3d_paths(
+    mesh_wp: wp.Mesh, sources_np: np.ndarray, targets_np: np.ndarray
+) -> list[np.ndarray]:
+    """Run ``geodesic_path(method="potpourri3d")`` and return each path as a NumPy polyline."""
+    device = mesh_wp.points.device
+    points_wp, offsets_wp = od.geodesic_walk.geodesic_path(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.array(sources_np, dtype=wp.int32, device=device),
+        wp.array(targets_np, dtype=wp.int32, device=device),
+        method="potpourri3d",
+    )
+    return [path_wp.numpy() for path_wp in od.array.split(points_wp, offsets_wp)]
+
+
+@pytest.mark.parametrize("mesh_name", _FLIP_MESHES)
+@pytest.mark.parity("geodesic_path_potpourri3d", "potpourri3d")
+def test_geodesic_path_potpourri3d_method_matches_potpourri3d(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class A: ``method="potpourri3d"`` equals ``EdgeFlipGeodesicSolver.find_geodesic_path``.
+
+    Point for point, reversed (ordito runs each path from its target to the source): the same
+    Dijkstra start, the same flips in the same queue order and the same trace of the shortened
+    intrinsic edges across the mesh. Measured worst gap 2.3e-7 (``torus_irregular_holes``), the
+    ``float32`` rounding of the returned points, with every point count equal; ``unit_box``
+    1e-16. On ``torus_irregular_holes`` paths go round the handle the way the Dijkstra path did,
+    which a heat descent does not reproduce (see the Class C sphere test above).
+
+    Non-vacuity: most paths cross edges rather than follow them (points off every vertex), so the
+    flips and the trace both decide the answer.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np = mesh_wp.points.numpy().astype(np.float64)
+    faces_np = mesh_wp.indices.numpy().reshape(-1, 3)
+    rng = np.random.default_rng(1)
+    targets_np = rng.choice(
+        np.arange(1, vertices_np.shape[0]), min(40, vertices_np.shape[0] - 1), replace=False
+    ).astype(np.int32)
+    paths_np = _potpourri3d_paths(mesh_wp, np.array([0], dtype=np.int32), targets_np)
+
+    solver_pp = pp3d.EdgeFlipGeodesicSolver(vertices_np, faces_np)
+    crossing = 0
+    for target, path_np in zip(targets_np, paths_np, strict=True):
+        path_pp = solver_pp.find_geodesic_path(v_start=0, v_end=int(target))[::-1]
+        assert path_np.shape == path_pp.shape
+        assert np.allclose(path_np, path_pp, rtol=1e-5, atol=1e-5)
+        off_vertex = np.linalg.norm(path_pp[:, None, :] - vertices_np[None, :, :], axis=2).min(
+            axis=1
+        )
+        crossing += bool(np.any(off_vertex > 1e-6))
+    assert crossing >= len(targets_np) // 2
+
+
+def test_geodesic_path_potpourri3d_method_arrives_at_the_nearest_source(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class A: with two sources each path is potpourri3d's from the source it arrives at.
+
+    potpourri3d's solver takes one source, so the reference runs from whichever source a path ends
+    on; that source must be the nearest along mesh edges (``scipy``'s Dijkstra on the edge graph),
+    since the edge-flip path starts as a Dijkstra path from the source set. A ``Trimesh`` is
+    passed, the form that keeps the mesh's tables.
+
+    Non-vacuity: both sources are reached.
+    """
+    _, mesh_wp = sphere_irregular
+    device = mesh_wp.points.device
+    vertices_np = mesh_wp.points.numpy().astype(np.float64)
+    faces_np = mesh_wp.indices.numpy().reshape(-1, 3)
+    n_vertices = len(vertices_np)
+    sources_np = np.array([0, n_vertices // 2], dtype=np.int32)
+    rng = np.random.default_rng(2)
+    targets_np = rng.choice(np.arange(1, n_vertices), 30, replace=False).astype(np.int32)
+    targets_np = targets_np[targets_np != sources_np[1]]
+
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    points_wp, offsets_wp = od.geodesic_walk.geodesic_path(
+        mesh,
+        wp.array(sources_np, dtype=wp.int32, device=device),
+        wp.array(targets_np, dtype=wp.int32, device=device),
+        method="potpourri3d",
+    )
+    edges_np = np.concatenate([faces_np[:, [0, 1]], faces_np[:, [1, 2]], faces_np[:, [2, 0]]])
+    lengths_np = np.linalg.norm(vertices_np[edges_np[:, 0]] - vertices_np[edges_np[:, 1]], axis=1)
+    graph_np = scipy.sparse.coo_matrix(
+        (lengths_np, (edges_np[:, 0], edges_np[:, 1])), shape=(n_vertices, n_vertices)
+    ).tocsr()
+    graph_distance_np = scipy.sparse.csgraph.dijkstra(graph_np, directed=False, indices=sources_np)
+
+    solver_pp = pp3d.EdgeFlipGeodesicSolver(vertices_np, faces_np)
+    arrivals: set[int] = set()
+    for target, path_wp in zip(targets_np, od.array.split(points_wp, offsets_wp), strict=True):
+        path_np = path_wp.numpy()
+        source = int(np.argmin(np.linalg.norm(vertices_np[sources_np] - path_np[-1], axis=1)))
+        arrivals.add(source)
+        assert source == int(np.argmin(graph_distance_np[:, target]))
+        path_pp = solver_pp.find_geodesic_path(v_start=int(sources_np[source]), v_end=int(target))
+        assert np.allclose(path_np, path_pp[::-1], rtol=1e-5, atol=1e-5)
+    assert arrivals == {0, 1}
+
+
+def test_geodesic_path_potpourri3d_method_degenerate_targets(
+    cave_cube: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: potpourri3d raises on both cases, where ordito returns the target.
+
+    A target that is a source, and one on a component no source reaches (``cave_cube``'s inner
+    shell), each get a path of one point at the target; a reachable target in the same call still
+    gets its full path.
+    """
+    mesh_tm, mesh_wp = cave_cube
+    labels_np = np.asarray(tm.graph.connected_component_labels(mesh_tm.face_adjacency))
+    vertex_labels_np = np.empty(len(mesh_tm.vertices), dtype=np.int64)
+    vertex_labels_np[mesh_tm.faces.ravel()] = np.repeat(labels_np, 3)
+    other = int(np.flatnonzero(vertex_labels_np != vertex_labels_np[0])[0])
+    same = int(np.flatnonzero(vertex_labels_np == vertex_labels_np[0])[-1])
+    vertices_np = mesh_wp.points.numpy()
+    paths_np = _potpourri3d_paths(
+        mesh_wp, np.array([0], dtype=np.int32), np.array([0, other, same], dtype=np.int32)
+    )
+    assert np.array_equal(paths_np[0], vertices_np[[0]])
+    assert np.array_equal(paths_np[1], vertices_np[[other]])
+    assert paths_np[2].shape[0] >= 2
+    assert np.allclose(paths_np[2][0], vertices_np[same])
+    assert np.allclose(paths_np[2][-1], vertices_np[0])
+
+
+def test_geodesic_path_potpourri3d_method_guards(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """Not a parity assert: the refusals, and no targets."""
+    _, mesh_wp = icosahedron
+    device = mesh_wp.points.device
+    source_wp = wp.array([0], dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="method must be"):
+        od.geodesic_walk.geodesic_path(
+            mesh_wp.points,
+            mesh_wp.indices,
+            source_wp,
+            source_wp,
+            method="exact",  # pyright: ignore[reportArgumentType]
+        )
+    with pytest.raises(ValueError, match="vertex index"):
+        od.geodesic_walk.geodesic_path(
+            mesh_wp.points,
+            mesh_wp.indices,
+            source_wp,
+            wp.array([12], dtype=wp.int32, device=device),
+            method="potpourri3d",
+        )
+    points_wp, offsets_wp = od.geodesic_walk.geodesic_path(
+        mesh_wp.points,
+        mesh_wp.indices,
+        source_wp,
+        wp.array([], dtype=wp.int32, device=device),
+        method="potpourri3d",
+    )
+    assert points_wp.shape == (0,)
+    assert offsets_wp.numpy().tolist() == [0]
+
+    # Two tetrahedra sharing vertex 0: every edge has two faces, but vertex 0's faces form two fans.
+    tetrahedron_np = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]], dtype=np.int32)
+    bowtie_faces_np = np.concatenate(
+        [tetrahedron_np, np.where(tetrahedron_np == 0, 0, tetrahedron_np + 3)]
+    )
+    rng = np.random.default_rng(3)
+    bowtie_vertices_np = rng.normal(size=(7, 3))
+    vertices_wp, faces_wp = numpy_to_warp(bowtie_vertices_np, bowtie_faces_np.ravel(), device)
+    with pytest.raises(ValueError, match="manifold"):
+        od.geodesic_walk.geodesic_path(
+            vertices_wp,
+            faces_wp,
+            wp.array([1], dtype=wp.int32, device=device),
+            wp.array([5], dtype=wp.int32, device=device),
+            method="potpourri3d",
+        )
 
 
 def test_descend_field_stops_at_a_local_minimum_and_at_a_boundary(

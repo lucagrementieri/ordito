@@ -726,6 +726,12 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # The serial builder's half-edge records and its per-round marks are its working state across
     # the whole assembly; the answer is ``out_state``.
     ("algorithms.mesh_builder", "build_candidate_mesh"): frozenset({"t", "marked"}),
+    # The edge-flip geodesics' CPU-device Dijkstra: its queue size and the per-vertex marks of the
+    # targets still to settle; the answer is ``out_incoming``.
+    ("algorithms.flip_geodesics", "shortest_edge_tree_serial"): frozenset({"state", "wanted"}),
+    # The serial path loop's working state across every path: segment pools, edge stacks, the
+    # wedge queue and the flip log, reset per path; the answer is the ``out_`` entries.
+    ("algorithms.flip_geodesics", "shorten_paths"): frozenset({"net"}),
     # ``table`` is ``voxels._VoxelTable``'s open-addressing cell table: filled with point indices
     # by the insert, rewritten to voxel rows by the ordering pass, then probed by the pooling
     # kernels. Neither an input nor the answer, so it keeps the name of what it holds.

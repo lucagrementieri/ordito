@@ -33,6 +33,9 @@ amortized across up to 4 096 rays.
 geodesic needs an unfolding walk across edges, and none of them exposes one. ``igl`` does join
 the ``geodesic_path`` group through ``exact_geodesic``, whose *distance* bounds any path length.
 
+``geodesic_path_potpourri3d`` times ``geodesic_path(method="potpourri3d")``, the port of
+potpourri3d's ``EdgeFlipGeodesicSolver``, against that solver on the same path-count axis.
+
 ``shorten_loop`` runs on a third axis, **genus**, against potpourri3d's
 ``EdgeFlipGeodesicSolver.find_geodesic_loop``. It is the only axis in either registry with a
 genus, and it is shared with ``benchmarks/test_homology.py``, which produces this group's input.
@@ -286,6 +289,54 @@ def test_geodesic_path(bench_case: BenchCase, n_paths: int) -> None:
     targets = wp.array(targets_np, dtype=wp.int32, device=device)
     _points, offsets = bench_case.run(
         lambda: od.geodesic_walk.geodesic_path(vertices, faces, source, targets), rounds=_ROUNDS
+    )
+    assert offsets.shape == (n_paths + 1,)
+
+
+@pytest.mark.benchmark(group="geodesic_path_potpourri3d")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
+@pytest.mark.parametrize("n_paths", _PATH_COUNTS[:2])
+def test_geodesic_path_potpourri3d(bench_case: BenchCase, n_paths: int) -> None:
+    """
+    ``geodesic_path(method="potpourri3d")`` against ``EdgeFlipGeodesicSolver`` itself.
+
+    The same answer on both sides, point for point
+    (``tests/test_geodesic_walk.py::test_geodesic_path_potpourri3d_method_matches_potpourri3d``),
+    each side building its halfedge mesh inside the timed callable. Both shorten one path at a
+    time from the input triangulation, so both are linear in the path count; ordito builds its
+    tables and one shortest-edge tree for all of them on the device, where potpourri3d searches
+    once a path. The flips run on the CPU device either way (their order is the algorithm), so the
+    CUDA row adds the copies to and from the host. 4 096 paths are left out: a serial walk a path,
+    in seconds on both sides.
+    """
+    device = bench_case.device
+    rng = np.random.default_rng(4)
+    targets_np = rng.integers(1, bench_case.n_vertices, n_paths).astype(np.int32)
+
+    if bench_case.kind == "potpourri3d":
+        skip_larger_than(bench_case, "sphere_med", "one path per call")
+        vertices_np = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64)
+        faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int32)
+
+        def paths_pp() -> int:
+            solver = pp3d.EdgeFlipGeodesicSolver(vertices_np, faces_np)
+            return sum(
+                len(solver.find_geodesic_path(v_start=0, v_end=int(target)))
+                for target in targets_np
+            )
+
+        assert bench_case.run(paths_pp, rounds=_ROUNDS) > 0
+        return
+
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    source = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
+    targets = wp.array(targets_np, dtype=wp.int32, device=device)
+    _points, offsets = bench_case.run(
+        lambda: od.geodesic_walk.geodesic_path(
+            vertices, faces, source, targets, method="potpourri3d"
+        ),
+        rounds=_ROUNDS,
     )
     assert offsets.shape == (n_paths + 1,)
 

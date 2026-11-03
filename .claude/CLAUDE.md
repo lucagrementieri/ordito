@@ -963,7 +963,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   opt-in `float64` path through the whole extraction (`bounds`, node positions, distances,
   `marching_cubes` interpolation), priced first (`float64` runs at 1/64 rate, §13.2).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
-  `geodesic_path` with an edge-flip shortening;
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
   `levelset.marching_cubes(method="lewiner")` is MeshLab's extraction); MeshLib's "nice"

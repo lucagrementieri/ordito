@@ -1778,6 +1778,28 @@
    "sort": 1
   }
  },
+ "benchmarks/test_geodesic_walk.py::test_geodesic_path_potpourri3d[sphere_med-ordito-cuda-1]": {
+  "counts": {
+   "launch": 17,
+   "alloc": 45,
+   "memset": 9,
+   "h2d": 7,
+   "d2h": 13,
+   "h2h": 4,
+   "scan": 3
+  }
+ },
+ "benchmarks/test_geodesic_walk.py::test_geodesic_path_potpourri3d[sphere_med-ordito-cuda-64]": {
+  "counts": {
+   "launch": 17,
+   "alloc": 45,
+   "memset": 9,
+   "h2d": 7,
+   "d2h": 13,
+   "h2h": 4,
+   "scan": 3
+  }
+ },
  "benchmarks/test_geodesic_walk.py::test_shorten_loop[handles_1-ordito-cuda]": {
   "counts": {
    "launch": 30,
