@@ -971,7 +971,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
 - **`smooth_region` is not flat in `n`** with the squared V-cycle: 1 885 iterations, 43 s on `lucy`.
 - **Unoriented `triangulate_point_cloud`** costs 1.8x the old mesh-level winding (still 3.5x faster
-  than MeshLib's): the flood, 2 832 rounds of six launches on dragon, latency-bound at about
-  3.4 us a launch. Weighing is already incremental; list-driven passes (0.99-1.04x) and four fused
-  launches a round (1.10-1.33x) were tried and reverted. Only fewer rounds would pay
-  (`reference/component-status.md`).
+  than MeshLib's): the flood, 3 226 rounds of six launches on dragon, 61.9 of the call's 166 ms,
+  3.2 us a launch. Not launch-bound (2026-11-03): the same recorded loop of empty kernels at the
+  same dims runs 0.92 us a launch, so ~2.3 us a launch is the kernels' own work, led by
+  `count_flood_votes` and `spread_flood_visits`; the octree's graph-replay lever does not
+  transfer (the loop already replays). Weighing is already incremental; list-driven passes
+  (0.99-1.04x) and four fused launches a round (1.10-1.33x) were tried and reverted. Only fewer
+  rounds or cheaper vote and spread rows would pay (`reference/component-status.md`).
