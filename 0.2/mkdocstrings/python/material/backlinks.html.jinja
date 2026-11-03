@@ -1,0 +1,36 @@
+{#- Backlinks as one collapsed line per object, instead of mkdocstrings' expanded breadcrumb tree.
+
+The stock "tree" layout spends one indented row per breadcrumb, so a hub function referenced from
+twenty pages rendered a block taller than its own documentation. Here the links stay, grouped by
+the top-level section that holds them (API Reference, Examples, ...), each named by its last two
+breadcrumbs, inside a closed `<details>` that says how many there are.
+-#}
+
+{% macro crumb_link(crumb) -%}
+  {%- if crumb.url and crumb.title -%}
+    <a href="{{ crumb.url }}">{{ crumb.title | safe }}</a>
+  {%- elif crumb.title -%}
+    {{ crumb.title | safe }}
+  {%- endif -%}
+{%- endmacro %}
+
+{% if config.backlinks %}
+  {% for backlink_type, backlink_list in backlinks | dictsort %}
+    {% set items = backlink_list | sort(attribute="crumbs") | list %}
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>{{ verbose_type[backlink_type] }} {{ items | length }}
+        {{- " place" if items | length == 1 else " places" }}</summary>
+      {% for section, group in items | groupby("crumbs.0.title") %}
+        <p><span class="ordito-backlinks-section">{{ section | safe }}</span>
+        {% for backlink in group -%}
+          {%- set crumbs = backlink.crumbs | list -%}
+          <span class="ordito-backlink">
+            {%- if crumbs | length > 2 and crumbs[-2].url -%}{{ crumb_link(crumbs[-2]) }} › {% endif -%}
+            {{- crumb_link(crumbs[-1]) -}}
+          </span>
+          {%- if not loop.last %} · {% endif %}
+        {% endfor %}</p>
+      {% endfor %}
+    </details>
+  {% endfor %}
+{% endif %}
