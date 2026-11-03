@@ -5105,6 +5105,19 @@ class _ChebyshevApply:
         if last >= 1 and any(spare is destination for spare in spares):
             other = spares[1] if spares[0] is destination else spares[0]
             spares[last % 2], spares[(last - 1) % 2] = destination, other
+        # A row's every column off one walk of it where that kernel exists and the rows are many
+        # enough for the shorter walks to pay (``kernels/algorithms/multigrid``), else a thread a
+        # row and column.
+        rows_kernel = (
+            kernel_mg.CHEBYSHEV_STEP_ROWS.get(self._n_columns)
+            if self._n >= kernel_mg.CHEBYSHEV_STEP_ROWS_FROM
+            else None
+        )
+        kernel, dim, leading = (
+            (kernel_mg.chebyshev_step, self._dim, [wp.int32(self._n)])
+            if rows_kernel is None
+            else (rows_kernel, self._n, [])
+        )
         for index in range(n_steps):
             if index == last:
                 target = destination
@@ -5113,10 +5126,10 @@ class _ChebyshevApply:
             else:
                 target = previous
             _launch.launch(
-                kernel_mg.chebyshev_step,
-                dim=self._dim,
+                kernel,
+                dim=dim,
                 inputs=[
-                    wp.int32(self._n),
+                    *leading,
                     wp.int32(self._stride),
                     steps,
                     wp.int32(index),

@@ -916,12 +916,18 @@ def test_smooth_region_fixed_rim(bench_case: BenchCase) -> None:
     meshlib's ``positionVertsSmoothlySharpBd`` is the matching variant and takes the region through
     ``PositionVertsSmoothlyParams``; it agrees with ordito to 1e-5 (``tests/test_smoothing.py``).
     Same in-place mutation, so same rebuild inside the timed callable.
+
+    **Two preconditioners, switched by size.** From ``smoothing._FIXED_RIM_CHEBYSHEV_FROM`` free
+    vertices the three coordinate columns take the Jacobi-Chebyshev polynomial
+    (``preconditioner="chebyshev"``), below it Jacobi; ``sphere_small``'s region sits below the
+    gate and every scan row above it (0.39-0.65x against Jacobi on bunny to lucy). From
+    ``kernels/algorithms/multigrid.CHEBYSHEV_STEP_ROWS_FROM`` rows each polynomial step walks a
+    row once for all three columns, which is what the dragon to lucy rows ride on.
     """
     skip_larger_than(
         bench_case,
-        "bunny",
-        "the Dirichlet solve over a quarter of the mesh runs into tens of seconds past bunny "
-        "(15.8 s on dragon, 24.9 s on happy_buddha for one ordito round)",
+        "happy_buddha",
+        "lucy's region is 3.5 M free vertices: one ordito round costs about 160x happy_buddha's",
     )
     n_vertices = bench_case.n_vertices
     free_np = _free_mask_np(bench_case)

@@ -610,6 +610,28 @@ def chebyshev_update(
 
 
 @wp.func
+def chebyshev_scaled_update(
+    row: wp.int32,
+    slot: wp.int32,
+    step: wp.vec4d,
+    ax: wp.float64,
+    row_scaled: wp.int32,
+    row_scale: wp.array[wp.float64],
+    source: wp.array[wp.float64],
+    x: wp.array[wp.float64],
+    x_previous: wp.array[wp.float64],
+) -> wp.float64:
+    # What a Chebyshev step does with row ``row``'s product ``ax`` at ``slot``: scale it by
+    # ``row_scale`` under a nonzero ``row_scaled``, then the three-term update. Shared by
+    # ``chebyshev_row`` (one column a thread) and ``chebyshev_step_rows`` (every column a thread),
+    # which differ only in how many columns one walk of the row feeds.
+    scaled = ax
+    if row_scaled != wp.int32(0):
+        scaled = ax * row_scale[row]
+    return chebyshev_update(step, x[slot], x_previous[slot], source[slot], scaled)
+
+
+@wp.func
 def chebyshev_row(
     row: wp.int32,
     base: wp.int32,
@@ -626,10 +648,10 @@ def chebyshev_row(
     # One row's entry of a Chebyshev step over the column at ``base``: the row dot of ``x``,
     # scaled by ``row_scale`` under a nonzero ``row_scaled``, then the three-term update.
     slot = base + row
-    ax = csr_row_dot(row, base, offsets, columns, values, x)
-    if row_scaled != wp.int32(0):
-        ax = ax * row_scale[row]
-    return chebyshev_update(step, x[slot], x_previous[slot], source[slot], ax)
+    return chebyshev_scaled_update(
+        row, slot, step, csr_row_dot(row, base, offsets, columns, values, x), row_scaled,
+        row_scale, source, x, x_previous,
+    )  # fmt: skip
 
 
 @wp.kernel
@@ -675,6 +697,64 @@ def chebyshev_step(
         row, base, steps[index], offsets, columns, values, row_scaled, row_scale, source, x,
         x_previous,
     )  # fmt: skip
+
+
+# Row count from which a Chebyshev step over several columns runs one thread a row
+# (``chebyshev_step_rows``) rather than one a row and column (``chebyshev_step``). The thread-a-slot
+# form walks each row once per column; at a few columns and enough rows the extra walks of
+# ``offsets`` / ``columns`` / ``values`` are the step. CUDA, per step, rows/slots at three
+# (two) columns: 1.38-1.47x (1.08x) at 4-9 k rows, 1.13x (1.06x) at 22 k, 0.82-1.09x (0.90-0.98x)
+# at 36-43 k, then 0.48-0.69x (0.60-0.67x) from 109 k to 5.6 M, bit-identical everywhere.
+# The CPU device runs ``chebyshev_polynomial_serial`` instead.
+CHEBYSHEV_STEP_ROWS_FROM = 1 << 16
+
+# The column counts with a ``chebyshev_step_rows`` kernel: the solvers' coordinate columns (three)
+# and the parametrizations' UV pair. Any other count keeps ``chebyshev_step``.
+CHEBYSHEV_STEP_ROWS_COLUMNS = (2, 3)
+
+
+def _chebyshev_step_rows(n_columns: int) -> wp.Kernel:
+    """``chebyshev_step`` over ``n_columns`` columns, one thread a row walking it once."""
+    column_values = wp.types.vector(length=n_columns, dtype=wp.float64)
+
+    def _kernel(
+        stride: wp.int32,
+        steps: wp.array[wp.vec4d],
+        index: wp.int32,
+        offsets: wp.array[wp.int32],
+        columns: wp.array[wp.int32],
+        values: wp.array[wp.float64],
+        row_scaled: wp.int32,
+        row_scale: wp.array[wp.float64],
+        source: wp.array[wp.float64],
+        x: wp.array[wp.float64],
+        x_previous: wp.array[wp.float64],
+        out_x: wp.array[wp.float64],
+    ) -> None:
+        # ``chebyshev_step``'s contract and aliasing rules, with every column's product of the row
+        # summed off one walk of it into registers (a constant ``n_columns``, so the column loops
+        # unroll and the vector is never indexed at run time). Each column's sum adds the row's
+        # entries in ``csr_row_dot``'s order, so the result is ``chebyshev_step``'s to the bit.
+        row = wp.int32(wp.tid())
+        ax = column_values()
+        for k in range(offsets[row], offsets[row + 1]):
+            value = values[k]
+            entry = columns[k]
+            for column in range(n_columns):
+                ax[column] += value * x[column * stride + entry]
+        step = steps[index]
+        for column in range(n_columns):
+            slot = column * stride + row
+            out_x[slot] = chebyshev_scaled_update(
+                row, slot, step, ax[column], row_scaled, row_scale, source, x, x_previous
+            )
+
+    return wp.kernel(_kernel, name=f"chebyshev_step_rows{n_columns}")
+
+
+CHEBYSHEV_STEP_ROWS = {
+    n_columns: _chebyshev_step_rows(n_columns) for n_columns in CHEBYSHEV_STEP_ROWS_COLUMNS
+}
 
 
 @wp.func

@@ -101,6 +101,13 @@ _SMOOTH_REGION_MULTIGRID_SHIFT = 5.0
 _SMOOTH_REGION_CHEBYSHEV_FROM_COTAN = 500_000
 _SMOOTH_REGION_CHEBYSHEV_FROM_UNIT = 2_500_000
 
+# Free-vertex count from which ``smooth_region_fixed_rim`` preconditions its Dirichlet solve with
+# the Jacobi-Chebyshev polynomial instead of Jacobi. On a cap region (the top of a jittered
+# icosphere, bunny, dragon), CUDA, Chebyshev/Jacobi wall: 1.31-1.61x at 300-600 free vertices,
+# 0.82-0.90x at 1 000, 0.47-0.62x at 1 500 and 0.38-0.50x from 5 000. The hole fills' refined
+# patches (1 000 free vertices) lost 1.03-1.11x under it, so the gate sits above them.
+_FIXED_RIM_CHEBYSHEV_FROM = 1_500
+
 # Fraction of the way to the level set each ``smooth_region_boundary`` pass moves. A full step
 # overshoots, because the field is rebuilt from the moved positions and the level set moves too.
 _ISOLINE_DAMPING = wp.float32(0.75)
@@ -3625,6 +3632,7 @@ def _solve_region_fixed_rim(
         odt.as_array2d(sol, wp.float64),
         tol=twl.CG_TOLERANCE,
         maxiter=10 * n_free,
+        preconditioner="chebyshev" if n_free >= _FIXED_RIM_CHEBYSHEV_FROM else "diag",
     )
     out = _launch.empty(n, dtype=wp.vec3, device=device)
     _launch.launch(

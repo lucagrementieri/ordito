@@ -19,6 +19,7 @@ from warp._src.sparse import make_bsr_mv_kernel, make_bsr_mv_tiled_kernel
 import ordito as od
 import ordito.typing as odt
 from ordito.kernels import linalg as kernel_linalg
+from ordito.kernels.algorithms import multigrid as kernel_mg
 from tests.comparisons import assert_nonconstant
 from tests.conversions import bsr_to_dense, scipy_to_bsr, trimesh_to_pymeshlab
 
@@ -2219,6 +2220,64 @@ def test_chebyshev_preconditioner_solves_the_same_system(
         preconditioner=od.linalg.chebyshev_preconditioner(laplacian_wp),
     )
     assert np.allclose(single.numpy(), reference_np[0], rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("n_columns", [2, 3])
+@pytest.mark.parametrize("kind", ["chebyshev", "squared"])
+@pytest.mark.usefixtures("batched_engine")
+def test_chebyshev_row_step_matches_the_slot_step(
+    device: str, monkeypatch: pytest.MonkeyPatch, n_columns: int, kind: str
+) -> None:
+    """
+    Ordito against ordito: a row's every column off one walk of it is the slot step to the bit.
+
+    The two Chebyshev step kernels (``kernels/algorithms/multigrid.chebyshev_step`` and
+    ``chebyshev_step_rows``) apply one polynomial, so a solve is run with the row kernel's row gate
+    lowered to zero and again with it out of reach, and the answers must be byte-identical. Both
+    polynomial forms ride on it: the Jacobi-scaled one (``"chebyshev"``, which scales each row's
+    product) and the squared-Laplacian factors (which do not). Each arm builds its own system and
+    starts from an empty solver pool, or the second would replay the graph the first recorded and
+    never choose a kernel. The library comparison is
+    ``test_chebyshev_preconditioner_solves_the_same_system``. The CPU device runs neither kernel
+    (``chebyshev_polynomial_serial``), so there both arms take the same path.
+    """
+    picked: list[int] = []
+    tables = kernel_mg.CHEBYSHEV_STEP_ROWS
+
+    class _Recording(dict[int, Any]):
+        def get(self, key: int, default: Any = None) -> Any:
+            picked.append(key)
+            return tables.get(key, default)
+
+    monkeypatch.setattr(kernel_mg, "CHEBYSHEV_STEP_ROWS", _Recording(tables))
+
+    def solve(rows_from: int) -> np.ndarray:
+        monkeypatch.setattr(kernel_mg, "CHEBYSHEV_STEP_ROWS_FROM", rows_from)
+        monkeypatch.setattr(od.linalg, "_SOLVER_POOL", {})
+        monkeypatch.setattr(od.linalg, "_SHAPES_SEEN", set())
+        system_wp, rhs_wp, laplacian_wp, sums_wp, _system_np, _rhs_np = _normal_equations_system(
+            device, negative=False, n_rhs=n_columns
+        )
+        if kind == "chebyshev":
+            system_wp, preconditioner = laplacian_wp, "chebyshev"
+        else:
+            preconditioner = od.linalg.squared_laplacian_preconditioner(laplacian_wp, sums_wp)
+        solution_wp = wp.zeros_like(rhs_wp)
+        od.linalg.solve_spd_columns(
+            system_wp,
+            rhs_wp,
+            odt.as_array2d(solution_wp, wp.float64),
+            preconditioner=preconditioner,
+        )
+        return solution_wp.numpy()
+
+    slots_np = solve(1 << 62)
+    assert not picked
+    rows_np = solve(0)
+    assert picked == [n_columns] * len(picked)
+    assert picked or wp.get_device(device).is_cpu
+    assert np.array_equal(rows_np, slots_np)
+    assert np.ptp(slots_np) > 1e-3  # non-vacuity: a zero solve would pass trivially
 
 
 @pytest.mark.parametrize("n_columns", [1, 3])
