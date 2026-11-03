@@ -16,9 +16,11 @@ from ordito.kernels.array import (
     binary_search_index_left,
     binary_search_sorted_contains,
     bit_rank,
+    bit_slot,
     divide_if_positive,
     lowbias32,
     next_row_entry,
+    or_counted_bit,
     pack_edge_key,
     pack_index_triple,
     popcount32,
@@ -27,6 +29,7 @@ from ordito.kernels.array import (
     sort_segment,
     sorted_run_start,
     store_counted_ballot_bit,
+    store_counted_bit,
     to_vec2d,
     to_vec3,
     to_vec3d,
@@ -457,9 +460,9 @@ def mark_split_bits(
     # ``split_edges``' ranks as a bitmask: bit ``e`` for a split edge, each word's population added
     # into the zeroed counts the caller scans in place (``store_counted_ballot_bit``), a 32nd of
     # ``array.mask_to_compact_ranks``' ``(m + 1,)`` offsets and of their scan, which on ``lucy``'s
-    # 42 M edges were 14 % of ``split_edges``' pool and its time. The refinement loops keep
-    # their offsets: their flags come off the corner sort (``emit_long_edges``), not an edge-
-    # ordered launch a ballot could follow.
+    # 42 M edges were 14 % of ``split_edges``' pool and its time. The refinement loops' flags come
+    # off the corner sort (``emit_long_edges``), not an edge-ordered launch a ballot could follow,
+    # and take ``store_counted_bit`` instead.
     e = wp.int32(wp.tid())
     store_counted_ballot_bit(out_words, out_word_counts, e, split_mask[e])
 
@@ -567,7 +570,8 @@ def extend_edge_mean_sizing(
     sizing: wp.array[wp.float32],
     unique_edges: wp.array2d[wp.int32],
     split_mask: wp.array[wp.bool],
-    offsets: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
     out_sizing: wp.array[wp.float32],
 ) -> None:
     # ``split_child_counts_and_midpoints``' midpoint for the sizing field rather than the position:
@@ -580,7 +584,9 @@ def extend_edge_mean_sizing(
         out_sizing[t] = sizing[t]
     if t < split_mask.shape[0]:
         if split_mask[t]:
-            out_sizing[n_vertices + offsets[t]] = edge_mean_sizing(sizing, unique_edges, t)
+            out_sizing[n_vertices + bit_rank(words, word_ranks, t)] = edge_mean_sizing(
+                sizing, unique_edges, t
+            )
 
 
 @wp.func
@@ -601,18 +607,15 @@ def mark_long_edge(
     sizing: wp.array[wp.float32],
     use_sizing: wp.bool,
     out_long: wp.array[wp.bool],
-    out_flags: wp.array[wp.int32],
-) -> None:
-    # Unique edge ``e``'s verdict, written as ``mark_long_edges`` describes; edge 0 writes the rank
-    # buffer's leading zero.
+) -> wp.bool:
+    # Unique edge ``e``'s verdict, written into the mask the split reads and returned for the
+    # caller's ranked bit (``store_counted_bit``).
     target = max_edge
     if use_sizing:
         target = edge_mean_sizing(sizing, unique_edges, e)
     is_long = unique_edge_length(vertices, unique_edges, e) > target
     out_long[e] = is_long
-    out_flags[e + 1] = wp.where(is_long, wp.int32(1), wp.int32(0))
-    if e == 0:
-        out_flags[0] = wp.int32(0)
+    return is_long
 
 
 @wp.kernel
@@ -623,16 +626,16 @@ def mark_long_edges(
     sizing: wp.array[wp.float32],
     use_sizing: wp.bool,
     out_long: wp.array[wp.bool],
-    out_flags: wp.array[wp.int32],
+    out_words: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
 ) -> None:
     # ``length > target`` per unique edge, with the length computed here rather than read from a
     # separate length pass whose only consumer this is. The target is ``max_edge`` or, against a
     # per-vertex sizing field, ``edge_mean_sizing``. One warp-uniform
     # branch rather than two kernels, since the two differ by a parameter; ``sizing`` is not read
     # (and may be a null array) when ``use_sizing`` is false. The verdict is written twice: as the
-    # mask the split reads, and as the ``int32`` flag the caller scans in place into its ranks.
-    # ``out_flags`` is that ``n_edges + 1`` rank buffer whole: edge ``e``'s flag goes to entry
-    # ``e + 1``, behind the leading zero thread 0 writes, so the buffer needs no zero-fill.
+    # mask the split reads, and as bit ``e`` of the zeroed bitmask whose word counts the caller
+    # scans in place into its ranks (``store_counted_bit``).
     #
     # **Declined: marking per face instead**, counting each face's children in the same launch
     # (a slot counter beside the flags) so the split and face counts come back in one copy and the
@@ -640,33 +643,21 @@ def mark_long_edges(
     # mark (three gathered edges, scattered duplicate flag stores) plus an emit that also writes
     # the vertices took the whole pass 1.24x (``subdivide_to_size``) and 1.19x (``split_edges``)
     # of this per-edge form, and the zeroed counter adds a memset to the pass that splits nothing.
-    mark_long_edge(
-        vertices,
-        unique_edges,
-        wp.int32(wp.tid()),
-        max_edge,
-        sizing,
-        use_sizing,
-        out_long,
-        out_flags,
-    )
+    e = wp.int32(wp.tid())
+    is_long = mark_long_edge(vertices, unique_edges, e, max_edge, sizing, use_sizing, out_long)
+    store_counted_bit(out_words, out_word_counts, e, is_long)
 
 
 @wp.func
 def publish_unique_edge_count(
-    ranks: wp.array[wp.int32], i: wp.int32, zero_tail: wp.bool, out_flags: wp.array[wp.int32]
+    ranks: wp.array[wp.int32], i: wp.int32, out_counts: wp.array[wp.int32]
 ) -> None:
-    # Sorted position ``i``'s share of a rank buffer sized for the ``n`` sorted corners, which
+    # Sorted position ``i``'s share of a ranked bitmask sized for the ``n`` sorted corners, which
     # bound the ``m`` unique edges: the last position writes ``m`` (its run rank) into the last
-    # entry of ``out_flags``, and with ``zero_tail`` (``out_flags`` the whole ``n + 2`` buffer,
-    # edge ``e``'s flag at ``e + 1``) the flag slots past the unique edges are written zero, so a
-    # scan over all ``n`` ends in the flagged count.
+    # entry of ``out_counts``, past the word counts, to come back with their scanned total.
     n = ranks.shape[0]
-    m = ranks[n - 1]
-    if zero_tail and i >= m:
-        out_flags[i + 1] = wp.int32(0)
     if i == n - 1:
-        out_flags[out_flags.shape[0] - 1] = m
+        out_counts[out_counts.shape[0] - 1] = ranks[n - 1]
 
 
 @wp.kernel
@@ -682,25 +673,29 @@ def emit_long_edges(
     out_unique_edges: wp.array2d[wp.int32],
     out_inverse: wp.array[wp.int32],
     out_long: wp.array[wp.bool],
-    out_flags: wp.array[wp.int32],
+    out_words: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
 ) -> None:
     # ``edges.emit_sorted_unique_edges`` and ``mark_long_edges`` in one pass over the sorted
     # corners: the position starting an edge's run writes its row and tests it, reading back the
     # row it wrote, so the verdict is ``mark_long_edges``' over the same table bit for bit.
     #
     # The tables are sized for the ``n`` corners, which bound the ``m`` unique edges, so the host
-    # need not read ``m`` back before allocating them: ``out_flags`` is ``n + 2`` long, the flags
-    # past edge ``m - 1`` are written zero here (``publish_unique_edge_count``), and ``m`` goes in
-    # its last entry, to come back in the split count's readback.
+    # need not read ``m`` back before allocating them: the bitmask has a word a 32 corners, and
+    # ``m`` goes in the last entry of ``out_word_counts``, past the counts, to come back in the
+    # split count's readback (``publish_unique_edge_count``). Every position takes the bit store,
+    # its run's edge and the verdict where it starts the run, so a warp's lanes stay converged.
     i = wp.int32(wp.tid())
     _corner, e, start = emit_sorted_unique_edge(
         faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse
     )
+    is_long = wp.bool(False)
     if start:
-        mark_long_edge(
-            vertices, out_unique_edges, e, max_edge, sizing, use_sizing, out_long, out_flags
+        is_long = mark_long_edge(
+            vertices, out_unique_edges, e, max_edge, sizing, use_sizing, out_long
         )
-    publish_unique_edge_count(ranks, i, wp.bool(True), out_flags)
+    store_counted_bit(out_words, out_word_counts, e, is_long)
+    publish_unique_edge_count(ranks, i, out_word_counts)
 
 
 @wp.func
@@ -837,12 +832,18 @@ def emit_size_faces(
 
 @wp.func
 def mark_long_region_edge(
-    e: wp.int32, out_long: wp.array[wp.bool], out_flags: wp.array[wp.int32]
+    e: wp.int32,
+    is_long: wp.bool,
+    out_long: wp.array[wp.bool],
+    out_words: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
 ) -> None:
-    # Mark unique edge ``e`` long, in the mask and the zeroed ``int32`` flags; every racing write
-    # is the same value.
-    out_long[e] = wp.bool(True)
-    out_flags[e] = wp.int32(1)
+    # Mark unique edge ``e`` long when ``is_long``, in the zeroed mask and the zeroed ranked
+    # bitmask (``or_counted_bit``, which counts a bit set from several corners once); every racing
+    # mask write is the same value. Every lane calls it, so that a warp stays converged.
+    if is_long:
+        out_long[e] = wp.bool(True)
+    or_counted_bit(out_words, out_word_counts, e, is_long)
 
 
 @wp.kernel
@@ -853,20 +854,22 @@ def mark_long_region_edges(
     inverse: wp.array[wp.int32],
     max_edge: wp.float32,
     out_long: wp.array[wp.bool],
-    out_flags: wp.array[wp.int32],
+    out_words: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
 ) -> None:
     # ``mark_long_edges``' uniform test restricted to the edges with at least one incident face in
     # the region -- region-border edges included. One thread per face corner, over a zeroed mask:
     # the region test and the length test in one launch, where a per-edge pass would first need the
     # region membership scattered into an edge mask of its own. An edge is tested once per region
     # face holding it, at most twice on a manifold, and every write is the same ``True``, so the
-    # race is benign. ``out_flags`` (zeroed too) carries the same marks as ``int32``, for the
-    # caller to scan in place into the split's ranks.
+    # race is benign. ``out_words`` (zeroed too) carries the same marks as a ranked bitmask, for
+    # the caller to scan its word counts in place into the split's ranks.
     i = wp.int32(wp.tid())
+    e = inverse[i]
+    is_long = wp.bool(False)
     if region_flags[i // 3] != 0:
-        e = inverse[i]
-        if unique_edge_length(vertices, unique_edges, e) > max_edge:
-            mark_long_region_edge(e, out_long, out_flags)
+        is_long = unique_edge_length(vertices, unique_edges, e) > max_edge
+    mark_long_region_edge(e, is_long, out_long, out_words, out_word_counts)
 
 
 @wp.kernel
@@ -881,40 +884,43 @@ def emit_long_region_edges(
     out_unique_edges: wp.array2d[wp.int32],
     out_inverse: wp.array[wp.int32],
     out_long: wp.array[wp.bool],
-    out_flags: wp.array[wp.int32],
+    out_words: wp.array[wp.uint32],
+    out_word_counts: wp.array[wp.int32],
 ) -> None:
     # ``edges.emit_sorted_unique_edges`` and ``mark_long_region_edges`` in one pass over the sorted
     # corners. A corner measures its edge from its own endpoints, the row the run's first position
     # writes (``adjacency.edge_endpoints``), in ``unique_edge_length``'s subtraction order, so the
     # test is ``mark_long_region_edges``' bit for bit without waiting on that row.
     #
-    # ``out_flags`` is the zeroed rank buffer past its leading zero, sized for the corners as
-    # ``emit_long_edges``' is, with the unique-edge count published in its last entry.
+    # The ranked bitmask is sized for the corners as ``emit_long_edges``' is, with the unique-edge
+    # count published past its word counts.
     i = wp.int32(wp.tid())
     corner, e, _start = emit_sorted_unique_edge(
         faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse
     )
+    is_long = wp.bool(False)
     if region_flags[corner // 3] != 0:
         a, b = edge_endpoints(faces, corner)
-        if wp.length(vertices[b] - vertices[a]) > max_edge:
-            mark_long_region_edge(e, out_long, out_flags)
-    publish_unique_edge_count(ranks, i, wp.bool(False), out_flags)
+        is_long = wp.length(vertices[b] - vertices[a]) > max_edge
+    mark_long_region_edge(e, is_long, out_long, out_words, out_word_counts)
+    publish_unique_edge_count(ranks, i, out_word_counts)
 
 
 @wp.kernel
 def longest_edge_sort_keys(
     vertices: wp.array[wp.vec3],
     unique_edges: wp.array2d[wp.int32],
-    offsets: wp.array[wp.int32],
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
     out_keys: wp.array[wp.float32],
     out_edges: wp.array[wp.int32],
 ) -> None:
     # A budget-trimmed refinement pass's sort input, one thread per unique edge: each flagged edge
-    # (``offsets`` is the ``n_edges + 1`` scan of the flags, so it steps there) writes its negated
-    # length -- ascending on it is descending on the length -- and its own index at its rank, the
-    # flagged edges in ascending order, straight into the radix sort's double-width buffers.
+    # (a set bit of the ranked bitmask) writes its negated length -- ascending on it is descending
+    # on the length -- and its own index at its rank, the flagged edges in ascending order,
+    # straight into the radix sort's double-width buffers.
     e = wp.int32(wp.tid())
-    slot, flagged = scanned_slot(offsets, e)
+    slot, flagged = bit_slot(words, word_ranks, e)
     if flagged:
         out_keys[slot] = -unique_edge_length(vertices, unique_edges, e)
         out_edges[slot] = e

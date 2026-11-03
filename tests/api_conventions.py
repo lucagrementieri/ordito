@@ -694,6 +694,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # through ``octree_prolong_at``, likewise unfollowed.)
     ("algorithms.poisson_octree", "octree_brick_word_ranks"): frozenset({"bricks"}),
     ("algorithms.poisson_octree", "octree_restrict_add"): frozenset({"b"}),
+    # in-place: a depth's wave counter, moved on by each replay of its recorded group of waves.
+    ("algorithms.poisson_octree", "octree_advance_waves"): frozenset({"wave_base"}),
     # The extraction's per-depth tables, each depth's launch reading the finer depth's entries
     # (corner sources) or adding to one buffer every depth shares (pairs); counts written by a
     # kernel's count pass and read back by its emit pass; a leaf's segments consumed by its own

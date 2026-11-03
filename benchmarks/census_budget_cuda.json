@@ -2899,7 +2899,7 @@
   "counts": {
    "launch": 121,
    "alloc": 57,
-   "memset": 26,
+   "memset": 27,
    "d2d": 1,
    "h2d": 1,
    "d2h": 46,
@@ -2911,7 +2911,7 @@
   "counts": {
    "launch": 64,
    "alloc": 57,
-   "memset": 25,
+   "memset": 26,
    "d2d": 1,
    "h2d": 1,
    "d2h": 15,
@@ -2923,7 +2923,7 @@
   "counts": {
    "launch": 64,
    "alloc": 56,
-   "memset": 25,
+   "memset": 26,
    "d2d": 1,
    "h2d": 1,
    "d2h": 14,
@@ -3015,7 +3015,7 @@
   "counts": {
    "launch": 174,
    "alloc": 102,
-   "memset": 43,
+   "memset": 44,
    "d2d": 1,
    "h2d": 2,
    "d2h": 44,
@@ -3069,7 +3069,7 @@
   "counts": {
    "launch": 112,
    "alloc": 65,
-   "memset": 29,
+   "memset": 30,
    "d2d": 3,
    "d2h": 16,
    "scan": 17,
@@ -5716,14 +5716,14 @@
  },
  "benchmarks/test_reconstruction.py::test_screened_poisson[sphere_small-ordito-cuda-octree-7]": {
   "counts": {
-   "launch": 1556,
-   "alloc": 66,
-   "memset": 19,
+   "launch": 304,
+   "alloc": 70,
+   "memset": 21,
    "d2d": 5,
    "h2d": 5,
-   "d2h": 16,
+   "d2h": 17,
    "scan": 11,
-   "sort": 3
+   "sort": 10
   }
  },
  "benchmarks/test_reconstruction.py::test_triangulate_point_cloud[sphere_small-ordito-cuda]": {
@@ -6069,7 +6069,7 @@
   "counts": {
    "launch": 205,
    "alloc": 81,
-   "memset": 46,
+   "memset": 52,
    "h2d": 3,
    "d2h": 41,
    "scan": 64,
@@ -6080,7 +6080,7 @@
   "counts": {
    "launch": 240,
    "alloc": 87,
-   "memset": 46,
+   "memset": 53,
    "h2d": 3,
    "d2h": 52,
    "scan": 67,
@@ -6195,7 +6195,7 @@
   "counts": {
    "launch": 30,
    "alloc": 21,
-   "memset": 11,
+   "memset": 12,
    "d2h": 8,
    "scan": 7,
    "sort": 4
@@ -6215,6 +6215,7 @@
   "counts": {
    "launch": 13,
    "alloc": 15,
+   "memset": 3,
    "d2h": 5,
    "scan": 8,
    "sort": 3
@@ -6224,6 +6225,7 @@
   "counts": {
    "launch": 8,
    "alloc": 9,
+   "memset": 2,
    "d2h": 3,
    "scan": 5,
    "sort": 2
@@ -6289,7 +6291,7 @@
   "counts": {
    "launch": 249,
    "alloc": 170,
-   "memset": 70,
+   "memset": 71,
    "d2d": 2,
    "h2d": 4,
    "d2h": 60,
@@ -7285,7 +7287,7 @@
   "counts": {
    "launch": 123,
    "alloc": 58,
-   "memset": 23,
+   "memset": 24,
    "d2h": 41,
    "scan": 17,
    "sort": 7
@@ -7295,7 +7297,7 @@
   "counts": {
    "launch": 155,
    "alloc": 70,
-   "memset": 29,
+   "memset": 30,
    "d2h": 49,
    "scan": 21,
    "sort": 9

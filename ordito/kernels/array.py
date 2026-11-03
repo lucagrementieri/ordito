@@ -2128,6 +2128,64 @@ def store_counted_ballot_bit(
 ): ...
 
 
+# ``store_counted_ballot_bit`` for a launch whose threads do not hold their slots lane by lane (a
+# pass over sorted items, where the ``index`` of a run's item is the run's): on CUDA the converged
+# lanes holding one word (``__match_any_sync``) or their bits into it with one ``atomicOr`` and add
+# their population to its count with one ``atomicAdd``; the CPU device takes the two atomics a set
+# bit. Each bit is set by one lane at most (a run's first item), so every set bit counts; the
+# ``or_counted_bit`` form takes a bit set more than once. Before ``sm_80`` (no
+# ``__reduce_or_sync``) every lane takes its own atomics. Every lane passes its ``index``, ``bit``
+# false where it sets none, so that a warp's lanes stay converged.
+_COUNTED_BIT_TEMPLATE = """
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+const unsigned active = __activemask();
+const unsigned peers = __match_any_sync(active, (unsigned)(index >> 5));
+const unsigned word = __reduce_or_sync(peers, bit ? (1u << (index & 31)) : 0u);
+if ((int)(threadIdx.x & 31u) == __ffs(peers) - 1 && word != 0u) {
+    const unsigned old = atomicOr(
+        (unsigned int*)wp::data_at_byte_offset(words, wp::byte_offset(words, index >> 5)), word);
+    const unsigned added = ADDED_CUDA;
+    if (added != 0u) {
+        atomicAdd((int*)wp::data_at_byte_offset(word_counts,
+            wp::byte_offset(word_counts, index >> 5)), __popc(added));
+    }
+}
+#else
+if (bit) {
+    const wp::uint32 mine = (wp::uint32)(1u << (index & 31));
+    const wp::uint32 old = wp::atomic_or(
+        wp::data_at_byte_offset(words, wp::byte_offset(words, index >> 5)), mine);
+    if (ADDED_CPU) {
+        wp::atomic_add(
+            wp::data_at_byte_offset(word_counts, wp::byte_offset(word_counts, index >> 5)), 1);
+    }
+}
+#endif
+"""
+# The count of a bit set once does not wait for the ``atomicOr``'s old value; a repeated bit's does.
+_STORE_COUNTED_BIT = (
+    _COUNTED_BIT_TEMPLATE.replace("ADDED_CUDA", "word")
+    .replace("ADDED_CPU", "true")
+    .replace("const unsigned old = atomicOr", "atomicOr")
+    .replace("const wp::uint32 old = wp::atomic_or", "wp::atomic_or")
+)
+_OR_COUNTED_BIT = _COUNTED_BIT_TEMPLATE.replace("ADDED_CUDA", "word & ~old").replace(
+    "ADDED_CPU", "(old & mine) == 0u"
+)
+
+
+@wp.func_native(_STORE_COUNTED_BIT)
+def store_counted_bit(
+    words: wp.array[wp.uint32], word_counts: wp.array[wp.int32], index: wp.int32, bit: wp.bool
+): ...
+
+
+@wp.func_native(_OR_COUNTED_BIT)
+def or_counted_bit(
+    words: wp.array[wp.uint32], word_counts: wp.array[wp.int32], index: wp.int32, bit: wp.bool
+): ...
+
+
 @wp.func
 def nth_set_bit(word: wp.uint32, n: wp.int32) -> wp.int32:
     # The position of ``word``'s ``n``-th set bit (from 0, lowest first); ``word`` holds more than

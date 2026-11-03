@@ -919,6 +919,13 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
 - **Gather-form fusion** (recomputing a neighbour's per-face value from positions instead of reading a table) wins below ~100 k faces and on grid-ordered meshes but loses 1.7-2.1x on scrambled ~1 M-face meshes (`cotmatrix`, `filter_normals`). Price it on a scrambled large mesh.
 - **Independent per-item iterations collapse into one in-thread loop:** a per-round launch plus convergence readback over items that converge independently (`max_tangent_sphere`) became one kernel, 1.1-1.2x device time and no per-round sync. Keep that loop out of a kernel holding another long walk (1.1-1.6x, registers).
 - **Occupancy for pointer-chasing tree walks:** a thread-per-query BVH descent that chases nodes through L1 runs faster with fewer warps resident. The `k = 1` point-tree descent (40 registers) at 1024-thread blocks was 0.75-0.87x its 256-wide launch from about two blocks per SM, and 1.04-1.67x below one (too few blocks), so its width is gated on the query count (`kernels/neighbors.DESCENT_WIDE_BLOCK_DIM`). Fewer registers do not make a walk faster by themselves: at 256 the same descent lost 1.1-1.2x to Warp's 53-register mesh query on the same tree, and a line-for-line port of that query lost the same. Check a new walk at two widths before reading its per-node code.
+- **A latency-bound row loads branch-free:** a load behind a divergent branch waits for the one
+  before it, so a one-thread dependent chain (a Gauss-Seidel row's 27 window values and screening
+  records) issues every load at a clamped address and selects the value after (`wp.where`):
+  0.65-0.86x wave device time (`kernels/algorithms/poisson_octree.octree_row`). Price a
+  latency-bound launch against a do-nothing kernel at the same dims first: the octree waves cost
+  5-9 us against a 0.6 us floor, yet the call was launch-bound (no-op waves 0.96x), so the
+  shorter row paid only with the waves replayed from a device counter.
 - **Shapes that lose:** a line-per-thread lattice pass absorbing a cell-per-thread one (`fill_orthographic`, 0.4-0.85x); a single-thread serial walk storing gathered values instead of computed indices (1.5-3x, polyline downsample); a per-face edge marker instead of a per-edge one plus a child-count launch (1.2x, remesh split).
 - **Rasterization:** one `atomic_min` owner pass per face, then one thread per pixel to resolve, beats a pre-filled image plus a per-face scatter 1.5-4.9x.
 - **Per-class compaction:** scan a one-hot `wp.vec{K}i` per item; the last entry holds all K counts (one read) and each item's in-class rank is the step from the previous entry. A compaction folds into its emit when the emit follows the size readback anyway. A `vec2i` scan of `(flag, count)` gives a compaction rank and CSR offsets with both totals in one read.
@@ -950,14 +957,6 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **`screened_poisson(method="octree")` sweep latency.** A Gauss-Seidel wave is latency-bound at
-  8-9 us of device time (one thread's row is a chain of dependent brick-table loads), and a depth
-  takes `4 (2**d + 15)` of them in open3d's order: about 72 of `dragon`'s 95 ms at depth 10.
-  Unpriced: replaying the waves as a graph (declined 2026-10-26 when each wave cost 14 us over
-  the dense slice). A row already looks its eight neighbour bricks up once
-  (`node_window_bricks`), and taking one more dependent read off the chain (the screening values
-  loaded before the weight test) bought 0.99x wave time, so a link of the chain is worth ~1 %:
-  the launch count, not the row, sets the cost.
 - **`signed_distance_level_set` against `igl.offset_surface` at `iso = 0.1`.** One vertex 4.8e-5
   off on a near-tangent lattice edge; only igl's `float64` lattice reproduces it. Proposed: an
   opt-in `float64` path through the whole extraction (`bounds`, node positions, distances,
@@ -976,17 +975,3 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   3.4 us a launch. Weighing is already incremental; list-driven passes (0.99-1.04x) and four fused
   launches a round (1.10-1.33x) were tried and reverted. Only fewer rounds would pay
   (`reference/component-status.md`).
-- **The reconstruction's memory techniques, applied elsewhere** (2026-11-01 sweep, unmeasured
-  estimates; measure, A/B byte for byte and re-record the census before each). The techniques:
-  brick-sparse storage, rank-packed bitset indices (`brick_number_at`, `occupancy`), rank
-  compaction (`_bit_ranks`), lifetime aliasing into dead solver vectors (`_poisson_solve_level`),
-  early release, emit early-out (`mc_node_emits`), test before atomic (`mark_brick`), per-row
-  lookup dedup (`node_window_bricks`). Per-function context (structure, sizes, proposal,
-  constraints, what to verify) is `reference/component-status.md` §16.3c; read it before working
-  on any of these. Candidates, largest first:
-  - `remesh`'s refinement loops (`subdivide_to_size`, `refine_region_to_density`) rank their long
-    edges in `(m + 1)` `int32` offsets written off the corner sort (`emit_long_edges`, the published
-    count, `_keep_longest_edges`, `_extend_sizing_field`). `split_edges` now ranks a bitset and the
-    split kernels read either form (`kernels/remesh.split_edge_rank`); the loops' flags are not
-    written in edge order, so a bit there takes an `atomic_or` and a word count rather than the
-    ballot. On `lucy` the offsets were about a seventh of `split_edges`' time and pool.

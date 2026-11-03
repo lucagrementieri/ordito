@@ -4800,22 +4800,16 @@ def _subdivide_to_size(
             unique_edges, inverse = grouping
             m = int(unique_edges.shape[0])
             long_mask = _launch.empty(m, dtype=wp.bool, device=device)
-            rank_buffer = _launch.empty(m + 1, dtype=wp.int32, device=device)
+            bits = _launch.empty(_long_edge_bits_size(m), dtype=wp.int32, device=device)
+            words, counts, word_ranks = _long_edge_bits(bits)
             _launch.launch(
                 kernel_remesh.mark_long_edges,
                 dim=m,
-                inputs=[
-                    current_vertices,
-                    unique_edges,
-                    max_edge_f,
-                    sizing,
-                    use_sizing,
-                    long_mask,
-                    rank_buffer,
-                ],
+                inputs=[current_vertices, unique_edges, max_edge_f, sizing, use_sizing],
+                outputs=[long_mask, words, counts],
                 device=device,
             )
-            offsets, n_split = _ranks_from_flags(rank_buffer)
+            split_bits, n_split, _m = _rank_long_edge_bits(bits, words, word_ranks)
         else:
             # The tables are sized for the corners, which bound the unique edges, so the edge
             # count comes back with the split count rather than in a readback of its own.
@@ -4823,11 +4817,13 @@ def _subdivide_to_size(
             key_buffer, order, ranks, _m = _sorted_corner_edges(
                 current_faces, n_vertices, read_count=False
             )
-            unique_rows, inverse, rank_buffer = _split_buffer(
-                _launch.empty(4 * n + 2, dtype=wp.int32, device=device), 2 * n, n, n + 2
+            size = _long_edge_bits_size(n)
+            unique_rows, inverse, bits = _split_buffer(
+                _launch.empty(3 * n + size, dtype=wp.int32, device=device), 2 * n, n, size
             )
             unique_edges = odt.as_array2d(unique_rows.reshape((n, 2)), wp.int32)
             long_mask = _launch.empty(n, dtype=wp.bool, device=device)
+            words, counts, word_ranks = _long_edge_bits(bits)
             _launch.launch(
                 kernel_remesh.emit_long_edges,
                 dim=n,
@@ -4841,15 +4837,14 @@ def _subdivide_to_size(
                     sizing,
                     use_sizing,
                 ],
-                outputs=[unique_edges, inverse, long_mask, rank_buffer],
+                outputs=[unique_edges, inverse, long_mask, words, counts],
                 device=device,
             )
-            n_split, m = _corner_bounded_ranks(rank_buffer)
+            split_bits, n_split, m = _rank_long_edge_bits(bits, words, word_ranks)
             unique_edges = odt.as_array2d(
                 _launch.view(unique_rows, 0, 2 * m).reshape((m, 2)), wp.int32
             )
             long_mask = _launch.view(long_mask, 0, m)
-            offsets = _launch.view(rank_buffer, 0, m)
         grouping = None
 
         # A sizing field must grow with the vertex buffer, and it is *extended* rather than
@@ -4868,7 +4863,7 @@ def _subdivide_to_size(
         next_sizing = (
             None
             if sizing is None
-            else _extend_sizing_field(sizing, unique_edges, long_mask, offsets, n_split)
+            else _extend_sizing_field(sizing, unique_edges, long_mask, split_bits, n_split)
         )
 
         # ``index`` rides through the split rather than being gathered afterwards.
@@ -4876,7 +4871,7 @@ def _subdivide_to_size(
             current_vertices,
             current_faces,
             long_mask,
-            offsets,
+            None,
             n_split,
             unique_edges,
             inverse,
@@ -4884,6 +4879,7 @@ def _subdivide_to_size(
             face_index,
             None,
             True,
+            split_bits=split_bits,
         )
         current_vertices, current_faces, face_index, sizing = (
             new_vertices,
@@ -4922,7 +4918,7 @@ def _sorted_corner_edges(
     sorts the corners as ``n_vertices`` does. ``presorted`` says they are sorted already (a flip
     loop's current sort), which skips the sort too. ``read_count=False`` reads nothing back and
     returns ``-1`` for ``m``, for a caller sizing its tables by the corners and reading ``m``
-    later with another value (``_corner_bounded_ranks``).
+    later with another value (``_rank_long_edge_bits``).
     """
     device = faces.device
     n = faces.size
@@ -4955,21 +4951,47 @@ def _sorted_corner_edges(
     return key_buffer, order, ranks, int(read_scalar(ranks, n - 1))
 
 
-def _corner_bounded_ranks(rank_buffer: wp.array[wp.int32]) -> tuple[int, int]:
-    """
-    Scan a corner-bounded rank buffer's flags in place; return the flagged and unique-edge counts.
+def _long_edge_bits_size(n: int) -> int:
+    """Return the ``int32`` entries of ``_long_edge_bits``' buffer over ``n`` slots."""
+    return 2 * ((n + 31) // 32) + 1
 
-    ``rank_buffer`` is ``n + 2`` long for ``n`` sorted corners: a leading zero, a 0/1 flag per
-    unique edge padded with zeros to ``n``, and the unique-edge count ``m`` the emit published
-    (``kernels/remesh.publish_unique_edge_count``). After the scan ``rank_buffer[:m + 1]`` is
-    ``_ranks_from_flags``' ranks, and both counts come back in one copy.
+
+def _long_edge_bits(
+    buffer: wp.array[wp.int32],
+) -> tuple[wp.array[wp.uint32], wp.array[wp.int32], wp.array[wp.int32]]:
     """
-    n = rank_buffer.size - 2
-    flags = _launch.view(rank_buffer, 1, n + 1)
-    _launch.array_scan(flags, flags, inclusive=True)
+    Zero a long-edge pass's ranked bitmask in place; return its ``(words, counts, word_ranks)``.
+
+    ``buffer`` (``_long_edge_bits_size`` entries, carved from the pass's other tables, so that
+    the pass allocates no more often than its ``int32`` flags did) holds the ``uint32`` words (a
+    bit a slot), their set-bit counts and one entry past them, where a corner-bounded emit
+    publishes the unique-edge count (``kernels/remesh.publish_unique_edge_count``); ``counts``
+    spans the counts and that entry, ``word_ranks`` the counts alone (scanned into the ranks by
+    ``_rank_long_edge_bits``). The slots are the unique edges, or the sorted corners that bound
+    them.
+    """
+    n_words = (buffer.size - 1) // 2
+    _launch.zero_(buffer)
+    words = _launch.view_as(_launch.view(buffer, 0, n_words), wp.uint32)
+    counts = _launch.view(buffer, n_words, 2 * n_words + 1)
+    return words, counts, _launch.view(counts, 0, n_words)
+
+
+def _rank_long_edge_bits(
+    buffer: wp.array[wp.int32], words: wp.array[wp.uint32], word_ranks: wp.array[wp.int32]
+) -> tuple[tuple[wp.array[wp.uint32], wp.array[wp.int32]], int, int]:
+    """
+    Scan a ``_long_edge_bits`` buffer's word counts in place; return its ranks and two counts.
+
+    The ranks are ``(words, word_ranks)``, the ranked bitmask the split, the sizing extension and
+    the budget read (``kernels/remesh.split_edge_rank``), at a 32nd of the ``int32`` flags a slot
+    and of their scan; the counts are the set bits and the published unique-edge count (0 when
+    nothing published one), both in one copy.
+    """
+    _launch.array_scan(word_ranks, word_ranks, inclusive=True)
     # The flagged count sizes the split and decides the loop; the edge count cuts the tables.
-    n_flagged, m = read_values(rank_buffer, n, 2)
-    return int(n_flagged), int(m)
+    n_flagged, m = read_values(buffer, 2 * word_ranks.size - 1, 2)
+    return (words, word_ranks), int(n_flagged), int(m)
 
 
 def _edges_unique(
@@ -5003,7 +5025,7 @@ def _extend_sizing_field(
     sizing: wp.array[wp.float32],
     unique_edges: odt.Array2dInt32,
     split_mask: wp.array[wp.bool],
-    offsets: wp.array[wp.int32],
+    split_bits: tuple[wp.array[wp.uint32], wp.array[wp.int32]],
     n_split: int,
 ) -> wp.array[wp.float32]:
     """
@@ -5023,7 +5045,7 @@ def _extend_sizing_field(
     _launch.launch(
         kernel_remesh.extend_edge_mean_sizing,
         dim=max(n_vertices, int(unique_edges.shape[0])),
-        inputs=[sizing, unique_edges, split_mask, offsets],
+        inputs=[sizing, unique_edges, split_mask, *split_bits],
         outputs=[extended],
         device=device,
     )
@@ -5204,8 +5226,8 @@ def subdivide_region_to_size(
         n_vertices = current_vertices.size
 
         # The pass's edge grouping, from the flip loop's sort when one is held (it is of these
-        # faces), and the region's long edges marked in its emit; the zeroed rank buffer, the
-        # unique edges and the corner map in one allocation.
+        # faces), and the region's long edges marked in its emit; the unique edges, the corner map
+        # and the ranked bitmask in one allocation.
         held = (
             (*topology.sorted_corner_keys(), n_vertices)
             if topology is not None and topology.built
@@ -5217,11 +5239,13 @@ def subdivide_region_to_size(
         key_buffer, order, ranks, _m = _sorted_corner_edges(
             current_faces, n_vertices, held, presorted=held is not None, read_count=False
         )
-        rank_buffer, unique_rows, inverse = _split_buffer(
-            _launch.zeros(4 * n + 2, dtype=wp.int32, device=device), n + 2, 2 * n, n
+        size = _long_edge_bits_size(n)
+        unique_rows, inverse, bits = _split_buffer(
+            _launch.empty(3 * n + size, dtype=wp.int32, device=device), 2 * n, n, size
         )
         unique_edges = odt.as_array2d(unique_rows.reshape((n, 2)), wp.int32)
         long_mask = _launch.zeros(n, dtype=wp.bool, device=device)
+        words, counts, word_ranks = _long_edge_bits(bits)
         _launch.launch(
             kernel_remesh.emit_long_region_edges,
             dim=3 * n_faces,
@@ -5234,18 +5258,16 @@ def subdivide_region_to_size(
                 region_flags,
                 max_edge_f,
             ],
-            outputs=[unique_edges, inverse, long_mask, rank_buffer[1:]],
+            outputs=[unique_edges, inverse, long_mask, words, counts],
             device=device,
         )
 
         # The count drives the stopping test, the budget and the running total. The ranks are the
         # split's own and their scan total is the count, so the split below reuses them rather than
         # scanning the mask a second time; a budget-trimmed mask re-ranks.
-        n_long, m = _corner_bounded_ranks(rank_buffer)
+        split_bits, n_long, m = _rank_long_edge_bits(bits, words, word_ranks)
         unique_edges = odt.as_array2d(_launch.view(unique_rows, 0, 2 * m).reshape((m, 2)), wp.int32)
         long_mask = _launch.view(long_mask, 0, m)
-        rank_buffer = _launch.view(rank_buffer, 0, m + 1)
-        offsets = _launch.view(rank_buffer, 0, m)
 
         if n_long == 0:
             break
@@ -5261,8 +5283,8 @@ def subdivide_region_to_size(
             if n_long > remaining:
                 # It keeps exactly ``remaining`` of the flagged edges, by construction, so the
                 # new count needs no readback.
-                offsets = _keep_longest_edges(
-                    current_vertices, unique_edges, long_mask, rank_buffer, n_long, remaining
+                split_bits = _keep_longest_edges(
+                    current_vertices, unique_edges, long_mask, split_bits, n_long, remaining
                 )
                 n_long = remaining
 
@@ -5274,7 +5296,7 @@ def subdivide_region_to_size(
             current_vertices,
             current_faces,
             long_mask,
-            offsets,
+            None,
             n_long,
             unique_edges,
             inverse,
@@ -5282,6 +5304,7 @@ def subdivide_region_to_size(
             region_flags,
             None,
             True,
+            split_bits=split_bits,
         )
         splits_done += n_long
 
@@ -5338,21 +5361,22 @@ def _keep_longest_edges(
     vertices: wp.array[wp.vec3],
     unique_edges: odt.Array2dInt32,
     long_mask: wp.array[wp.bool],
-    ranks: wp.array[wp.int32],
+    split_bits: tuple[wp.array[wp.uint32], wp.array[wp.int32]],
     n_long: int,
     remaining: int,
-) -> wp.array[wp.int32]:
+) -> tuple[wp.array[wp.uint32], wp.array[wp.int32]]:
     """
     Keep only the ``remaining`` longest edges flagged in ``long_mask``, in place, and rank them.
 
-    ``ranks`` is the ``n_edges + 1`` exclusive scan of the flags, ending in their count ``n_long``.
+    ``split_bits`` is the flags' ranked bitmask (``_rank_long_edge_bits``), ``n_long`` set bits.
     The flagged edges are sorted by length on the device rather than read back to pick the top
     ``remaining`` with ``numpy.argsort``, the spelling
     [`sample_surface_poisson_disk`][ordito.sample.sample_surface_poisson_disk]'s final round uses:
     one launch writes each flagged edge's negated length and index at its rank, straight into the
     sort's buffers, with the length measured there -- only on the pass the budget actually trims --
     and one launch over the sorted edges clears all but the first ``remaining``. The returned ranks
-    are the trimmed mask's ``array.mask_to_compact_ranks``, without its count readback.
+    are the trimmed mask's ranked bitmask (``kernels/remesh.mark_split_bits``), without its count
+    readback.
 
     Ties are not ordered by contract on either path -- ``numpy.argsort``'s introsort is unstable and
     the radix sort is stable, and the budget is documented as soft and as keeping "the longest
@@ -5365,7 +5389,7 @@ def _keep_longest_edges(
     _launch.launch(
         kernel_remesh.longest_edge_sort_keys,
         dim=m,
-        inputs=[vertices, unique_edges, ranks],
+        inputs=[vertices, unique_edges, *split_bits],
         outputs=[keys_buffer, edges_buffer],
         device=device,
     )
@@ -5377,13 +5401,15 @@ def _keep_longest_edges(
         outputs=[long_mask],
         device=device,
     )
-    kept_ranks = _launch.empty(m + 1, dtype=wp.int32, device=device)
+    n_words = (m + 31) // 32
+    kept = _launch.zeros(2 * n_words, dtype=wp.int32, device=device)
+    words = _launch.view_as(_launch.view(kept, 0, n_words), wp.uint32)
+    word_ranks = _launch.view(kept, n_words, 2 * n_words)
     _launch.launch(
-        kernel_array.mask_rank_flags, dim=m, inputs=[long_mask, False, kept_ranks], device=device
+        kernel_remesh.mark_split_bits, dim=m, inputs=[long_mask, words, word_ranks], device=device
     )
-    flags = odt.as_dense(kept_ranks[1:])
-    _launch.array_scan(flags, flags, inclusive=True)
-    return odt.as_dense(kept_ranks[:m])
+    _launch.array_scan(word_ranks, word_ranks, inclusive=True)
+    return words, word_ranks
 
 
 def refine_region_to_density(
@@ -5950,11 +5976,11 @@ def _split_ranked_edges(
     """
     Split the ranked edges: the body of [`split_edges`][ordito.remesh.split_edges] past its scan.
 
-    ``offsets`` / ``n_split`` are ``mask_to_compact_ranks(split_mask)``; the two refinement loops
-    already hold them for their own bookkeeping, so they hand them in rather than have the scan and
-    its count readback run twice per pass. ``split_bits`` is the ranked bitmask of the same split
-    edges (``kernels/remesh.mark_split_bits``), which ``split_edges`` passes with
-    ``offsets=None``. ``carried`` is the provenance to thread through (``index`` or a fresh
+    ``offsets`` / ``n_split`` are ``mask_to_compact_ranks(split_mask)``, or with ``offsets=None``
+    ``split_bits`` is the ranked bitmask of the same split edges: ``split_edges`` passes
+    ``kernels/remesh.mark_split_bits``', and the two refinement loops ``_rank_long_edge_bits``',
+    which they already hold for their own bookkeeping, so the scan and its count readback do not
+    run twice per pass. ``carried`` is the provenance to thread through (``index`` or a fresh
     ``arange``); the no-split path copies it when it is the caller's ``index`` and
     ``return_index`` asks for it back. The provenance is always the third element;
     ``split_edges`` drops it when not asked. ``carried=None`` threads none and returns ``None``.
