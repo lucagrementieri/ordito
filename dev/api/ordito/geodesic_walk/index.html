@@ -5340,6 +5340,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#ordito.geodesic_walk.GeodesicPathMethod" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        GeodesicPathMethod
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ordito.geodesic_walk.trace_from_vertex" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -5984,6 +5995,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#ordito.geodesic_walk.GeodesicPathMethod" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        GeodesicPathMethod
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ordito.geodesic_walk.trace_from_vertex" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -6191,6 +6213,37 @@ high-curvature vertices therefore drift from geometry-central's by about the ang
 
 
 
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h2 id="ordito.geodesic_walk.GeodesicPathMethod" class="doc doc-heading">
+            <span class="doc doc-object-name doc-attribute-name">GeodesicPathMethod</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-module-attribute"><code>module-attribute</code></small>
+  </span>
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="n">GeodesicPathMethod</span> <span class="o">=</span> <span class="n">Literal</span><span class="p">[</span><span class="s1">'heat'</span><span class="p">,</span> <span class="s1">'potpourri3d'</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>The ways <a class="autorefs autorefs-internal" title="geodesic_path" href="./#ordito.geodesic_walk.geodesic_path"><code>geodesic_path</code></a> finds a path.</p>
+
+          
+    <details class="doc doc-backlinks ordito-backlinks">
+      <summary>Used by 1 place</summary>
+        <p><span class="ordito-backlinks-section">API Reference</span>
+<span class="ordito-backlink"><a href="./#ordito.geodesic_walk">geodesic_walk</a> › <a href="./#ordito.geodesic_walk.geodesic_path">geodesic_path</a></span></p>
+    </details>
+
+    </div>
+
+</div>
 
 
 
@@ -6479,16 +6532,7 @@ beginning at its start vertex. A ray always contributes at least one point.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/geodesic_walk.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 50</span>
-<span class="normal"> 51</span>
-<span class="normal"> 52</span>
-<span class="normal"> 53</span>
-<span class="normal"> 54</span>
-<span class="normal"> 55</span>
-<span class="normal"> 56</span>
-<span class="normal"> 57</span>
-<span class="normal"> 58</span>
-<span class="normal"> 59</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 59</span>
 <span class="normal"> 60</span>
 <span class="normal"> 61</span>
 <span class="normal"> 62</span>
@@ -6627,7 +6671,16 @@ beginning at its start vertex. A ray always contributes at least one point.</p>
 <span class="normal">195</span>
 <span class="normal">196</span>
 <span class="normal">197</span>
-<span class="normal">198</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">trace_from_vertex</span><span class="p">(</span>
+<span class="normal">198</span>
+<span class="normal">199</span>
+<span class="normal">200</span>
+<span class="normal">201</span>
+<span class="normal">202</span>
+<span class="normal">203</span>
+<span class="normal">204</span>
+<span class="normal">205</span>
+<span class="normal">206</span>
+<span class="normal">207</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">trace_from_vertex</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">start_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -7027,16 +7080,7 @@ streamlines of a face-based vector field.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/geodesic_walk.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">201</span>
-<span class="normal">202</span>
-<span class="normal">203</span>
-<span class="normal">204</span>
-<span class="normal">205</span>
-<span class="normal">206</span>
-<span class="normal">207</span>
-<span class="normal">208</span>
-<span class="normal">209</span>
-<span class="normal">210</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">210</span>
 <span class="normal">211</span>
 <span class="normal">212</span>
 <span class="normal">213</span>
@@ -7127,7 +7171,16 @@ streamlines of a face-based vector field.</p>
 <span class="normal">298</span>
 <span class="normal">299</span>
 <span class="normal">300</span>
-<span class="normal">301</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">trace_from_face</span><span class="p">(</span>
+<span class="normal">301</span>
+<span class="normal">302</span>
+<span class="normal">303</span>
+<span class="normal">304</span>
+<span class="normal">305</span>
+<span class="normal">306</span>
+<span class="normal">307</span>
+<span class="normal">308</span>
+<span class="normal">309</span>
+<span class="normal">310</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">trace_from_face</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">start_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -7553,16 +7606,7 @@ corner along the diagonal and from vertex 10 along the edge:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/geodesic_walk.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">304</span>
-<span class="normal">305</span>
-<span class="normal">306</span>
-<span class="normal">307</span>
-<span class="normal">308</span>
-<span class="normal">309</span>
-<span class="normal">310</span>
-<span class="normal">311</span>
-<span class="normal">312</span>
-<span class="normal">313</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">313</span>
 <span class="normal">314</span>
 <span class="normal">315</span>
 <span class="normal">316</span>
@@ -7695,7 +7739,16 @@ corner along the diagonal and from vertex 10 along the edge:</p>
 <span class="normal">443</span>
 <span class="normal">444</span>
 <span class="normal">445</span>
-<span class="normal">446</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">descend_field</span><span class="p">(</span>
+<span class="normal">446</span>
+<span class="normal">447</span>
+<span class="normal">448</span>
+<span class="normal">449</span>
+<span class="normal">450</span>
+<span class="normal">451</span>
+<span class="normal">452</span>
+<span class="normal">453</span>
+<span class="normal">454</span>
+<span class="normal">455</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">descend_field</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
@@ -7859,6 +7912,7 @@ corner along the diagonal and from vertex 10 along the edge:</p>
     <span class="n">targets</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">/</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">GeodesicPathMethod</span> <span class="o">=</span> <span class="s2">"heat"</span><span class="p">,</span>
     <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">max_steps</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">_DEFAULT_MAX_STEPS</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
@@ -7869,6 +7923,7 @@ corner along the diagonal and from vertex 10 along the edge:</p>
     <span class="n">targets</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">/</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">GeodesicPathMethod</span> <span class="o">=</span> <span class="s2">"heat"</span><span class="p">,</span>
     <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">max_steps</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">_DEFAULT_MAX_STEPS</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
@@ -7880,6 +7935,7 @@ corner along the diagonal and from vertex 10 along the edge:</p>
     <span class="n">targets</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">GeodesicPathMethod</span> <span class="o">=</span> <span class="s2">"heat"</span><span class="p">,</span>
     <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">max_steps</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">_DEFAULT_MAX_STEPS</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
@@ -7889,11 +7945,20 @@ corner along the diagonal and from vertex 10 along the edge:</p>
 
         <p>Trace a path across the surface from each target vertex back to a source set.</p>
 <p>The <strong>point-to-point</strong> geodesic, as against this module's straightest walks and
-<a class="autorefs autorefs-internal" title="heat_geodesic" href="../heat/#ordito.heat.heat_geodesic"><code>heat_geodesic</code></a>'s distance <em>field</em>: one heat solve gives
-the distance to the source everywhere, and descending it from a target follows that geodesic
-back. Every target shares the one solve, so a thousand paths to one source cost one system and a
-thousand independent walks -- which is why the signature is one source and many targets rather
-than a list of pairs.</p>
+<a class="autorefs autorefs-internal" title="heat_geodesic" href="../heat/#ordito.heat.heat_geodesic"><code>heat_geodesic</code></a>'s distance <em>field</em>. <code>method</code> picks how:</p>
+<ul>
+<li><code>"heat"</code> (the default): one heat solve gives the distance to the source everywhere, and
+  descending it from a target follows that geodesic back. Every target shares the one solve,
+  so a thousand paths to one source cost one system and a thousand independent walks -- which
+  is why the signature is one source and many targets rather than a list of pairs. The path is
+  approximate (see Notes).</li>
+<li><code>"potpourri3d"</code>: <code>potpourri3d</code>'s <code>EdgeFlipGeodesicSolver.find_geodesic_path</code> (Sharp
+  and Crane's edge-flip geodesics, from geometry-central). Each path starts as the shortest
+  mesh-edge path from the nearest source and is straightened by flipping the edges of an
+  intrinsic triangulation until it is a <em>locally shortest</em> path: exact for the polyhedral
+  surface, within the homotopy class of the edge path it started from. The answer is the
+  reference's point for point.</li>
+</ul>
 <p>Takes the mesh as an <a class="autorefs autorefs-internal" title="Trimesh" href="../mesh/#ordito.mesh.Trimesh"><code>ordito.mesh.Trimesh</code></a>, which keeps the heat
 method's operators and factorizations for the next call (several sources traced on one mesh),
 or as its <code>vertices</code> and <code>faces</code>.</p>
@@ -7994,6 +8059,27 @@ since the field is the distance to the <em>set</em>.</p>
           </tr>
           <tr class="doc-section-item">
             <td>
+                <code>method</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="GeodesicPathMethod
+
+
+  
+      module-attribute
+   (ordito.geodesic_walk.GeodesicPathMethod)" href="./#ordito.geodesic_walk.GeodesicPathMethod">GeodesicPathMethod</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>"heat"</code> or <code>"potpourri3d"</code>, the two ways above.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;heat&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                 <code>t</code>
             </td>
             <td>
@@ -8002,7 +8088,8 @@ since the field is the distance to the <em>set</em>.</p>
             <td>
               <div class="doc-md-description">
                 <p>Heat diffusion time, forwarded to
-<a class="autorefs autorefs-internal" title="heat_geodesic" href="../heat/#ordito.heat.heat_geodesic"><code>heat_geodesic</code></a>. <code>None</code> uses its default.</p>
+<a class="autorefs autorefs-internal" title="heat_geodesic" href="../heat/#ordito.heat.heat_geodesic"><code>heat_geodesic</code></a>. <code>None</code> uses its default. Read by
+<code>"heat"</code> only.</p>
               </div>
             </td>
             <td>
@@ -8018,7 +8105,7 @@ since the field is the distance to the <em>set</em>.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Cap on steps per path.</p>
+                <p>Cap on steps per path. Read by <code>"heat"</code> only.</p>
               </div>
             </td>
             <td>
@@ -8065,6 +8152,20 @@ with <a class="autorefs autorefs-internal" title="polyline_length" href="../poly
       <tbody>
           <tr class="doc-section-item">
             <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>method</code> is not one of the two; with <code>"potpourri3d"</code>, if an entry of <code>source</code> or
+<code>targets</code> is not a vertex index in <code>[0, n_vertices)</code> or a vertex's faces do not form a
+single fan. <code>"potpourri3d"</code> also takes
+<a class="autorefs autorefs-internal" title="halfedge_twins" href="../halfedge/#ordito.halfedge.halfedge_twins"><code>halfedge_twins</code></a>' refusals: an edge of three or more
+faces, or two faces wound against each other.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
                   <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#RuntimeError">RuntimeError</a></code>
             </td>
             <td>
@@ -8092,8 +8193,10 @@ with <a class="autorefs autorefs-internal" title="polyline_length" href="../poly
             </td>
             <td>
               <div class="doc-md-description">
-                <p>When paths stopped short of the source on the heat distance and were finished along mesh
-edges (see Notes); the message counts the paths so finished.</p>
+                <p>With <code>"heat"</code>, when paths stopped short of the source on the heat distance and were
+finished along mesh edges (see Notes); the message counts the paths so finished. With
+<code>"potpourri3d"</code>, when paths stopped shortening at the step bound (a numerically stuck
+flip sequence), counting them.</p>
               </div>
             </td>
           </tr>
@@ -8119,6 +8222,16 @@ running out leaves a path truncated, and a target in a component no source reach
 path the descent left, with no tail and no count in the warning.
 <a class="autorefs autorefs-internal" title="descend_field" href="./#ordito.geodesic_walk.descend_field"><code>descend_field</code></a> keeps the plain behaviour: a descent of
 any other field stops where that field does.</p>
+<p><strong><code>"potpourri3d"</code> is exact, but local.</strong> Its path is a geodesic of the polyhedral surface:
+straight across every face and edge, and through a vertex only where the angle on both sides
+is at least <code>pi</code>. It is the shortest path near the one it started from, not necessarily the
+shortest overall: on a surface with handles or holes it keeps the side of each one the
+starting edge path took, so it can be longer than the shortest path there. With several
+sources it runs from the source nearest along mesh edges. A target that is
+a source, or that no source reaches, gets a path of the one point (<code>potpourri3d</code> raises on
+both). The mesh's tables, the edge paths and the traces of the result run on the mesh's
+device; the flips of each path depend on the ones before them, so they run path after path in
+one thread on the CPU device, whatever the mesh's device.</p>
 </details>
 
 <details class="see-also" open>
@@ -8130,7 +8243,9 @@ any other field stops where that field does.</p>
 </details>
 
 <p><span class="doc-section-title">Examples:</span></p>
-    <p>Pole to pole on a unit sphere, whose true geodesic is half a great circle, of length <code>pi</code>:</p>
+    <p>Pole to pole on a unit sphere, whose true geodesic is half a great circle, of length <code>pi</code>.
+The edge-flip path is the exact geodesic of the polyhedron, a little shorter than the heat
+method's descent:</p>
 <div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
 <span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
 
@@ -8141,14 +8256,18 @@ any other field stops where that field does.</p>
 <span class="n">source</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="n">np</span><span class="o">.</span><span class="n">argmax</span><span class="p">(</span><span class="n">heights</span><span class="p">)],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
 <span class="n">targets</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="n">np</span><span class="o">.</span><span class="n">argmin</span><span class="p">(</span><span class="n">heights</span><span class="p">)],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
 <span class="n">points</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">geodesic_walk</span><span class="o">.</span><span class="n">geodesic_path</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">targets</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">od</span><span class="o">.</span><span class="n">polyline</span><span class="o">.</span><span class="n">polyline_length</span><span class="p">(</span><span class="n">points</span><span class="p">)</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>  <span class="c1"># 3.14</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">od</span><span class="o">.</span><span class="n">polyline</span><span class="o">.</span><span class="n">polyline_length</span><span class="p">(</span><span class="n">points</span><span class="p">)</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>  <span class="c1"># 3.137</span>
+<span class="n">points</span><span class="p">,</span> <span class="n">offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">geodesic_walk</span><span class="o">.</span><span class="n">geodesic_path</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">targets</span><span class="p">,</span> <span class="n">method</span><span class="o">=</span><span class="s2">"potpourri3d"</span>
+<span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">od</span><span class="o">.</span><span class="n">polyline</span><span class="o">.</span><span class="n">polyline_length</span><span class="p">(</span><span class="n">points</span><span class="p">)</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>  <span class="c1"># 3.133</span>
 </code></pre></div>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 4 places</summary>
+      <summary>Referenced by 5 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.geodesic_walk">geodesic_walk</a> › <a href="./#ordito.geodesic_walk.descend_field">descend_field</a></span> · <span class="ordito-backlink"><a href="./#ordito.geodesic_walk">geodesic_walk</a> › <a href="./#ordito.geodesic_walk.shorten_loop">shorten_loop</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="./#ordito.geodesic_walk">geodesic_walk</a> › <a href="./#ordito.geodesic_walk.GeodesicPathMethod">GeodesicPathMethod</a></span> · <span class="ordito-backlink"><a href="./#ordito.geodesic_walk">geodesic_walk</a> › <a href="./#ordito.geodesic_walk.descend_field">descend_field</a></span> · <span class="ordito-backlink"><a href="./#ordito.geodesic_walk">geodesic_walk</a> › <a href="./#ordito.geodesic_walk.shorten_loop">shorten_loop</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/geodesics/#geodesics-and-tangent-fields">Geodesics and tangent fields</a> › <a href="../../../examples/geodesics/#g2">Shortest paths: along the edges and across the faces</a></span></p>
     </details>
@@ -8156,18 +8275,7 @@ any other field stops where that field does.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/geodesic_walk.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">470</span>
-<span class="normal">471</span>
-<span class="normal">472</span>
-<span class="normal">473</span>
-<span class="normal">474</span>
-<span class="normal">475</span>
-<span class="normal">476</span>
-<span class="normal">477</span>
-<span class="normal">478</span>
-<span class="normal">479</span>
-<span class="normal">480</span>
-<span class="normal">481</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">481</span>
 <span class="normal">482</span>
 <span class="normal">483</span>
 <span class="normal">484</span>
@@ -8298,13 +8406,73 @@ any other field stops where that field does.</p>
 <span class="normal">609</span>
 <span class="normal">610</span>
 <span class="normal">611</span>
-<span class="normal">612</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_path</span><span class="p">(</span>
+<span class="normal">612</span>
+<span class="normal">613</span>
+<span class="normal">614</span>
+<span class="normal">615</span>
+<span class="normal">616</span>
+<span class="normal">617</span>
+<span class="normal">618</span>
+<span class="normal">619</span>
+<span class="normal">620</span>
+<span class="normal">621</span>
+<span class="normal">622</span>
+<span class="normal">623</span>
+<span class="normal">624</span>
+<span class="normal">625</span>
+<span class="normal">626</span>
+<span class="normal">627</span>
+<span class="normal">628</span>
+<span class="normal">629</span>
+<span class="normal">630</span>
+<span class="normal">631</span>
+<span class="normal">632</span>
+<span class="normal">633</span>
+<span class="normal">634</span>
+<span class="normal">635</span>
+<span class="normal">636</span>
+<span class="normal">637</span>
+<span class="normal">638</span>
+<span class="normal">639</span>
+<span class="normal">640</span>
+<span class="normal">641</span>
+<span class="normal">642</span>
+<span class="normal">643</span>
+<span class="normal">644</span>
+<span class="normal">645</span>
+<span class="normal">646</span>
+<span class="normal">647</span>
+<span class="normal">648</span>
+<span class="normal">649</span>
+<span class="normal">650</span>
+<span class="normal">651</span>
+<span class="normal">652</span>
+<span class="normal">653</span>
+<span class="normal">654</span>
+<span class="normal">655</span>
+<span class="normal">656</span>
+<span class="normal">657</span>
+<span class="normal">658</span>
+<span class="normal">659</span>
+<span class="normal">660</span>
+<span class="normal">661</span>
+<span class="normal">662</span>
+<span class="normal">663</span>
+<span class="normal">664</span>
+<span class="normal">665</span>
+<span class="normal">666</span>
+<span class="normal">667</span>
+<span class="normal">668</span>
+<span class="normal">669</span>
+<span class="normal">670</span>
+<span class="normal">671</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">geodesic_path</span><span class="p">(</span>
     <span class="n">mesh</span><span class="p">:</span> <span class="n">Trimesh</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">source</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">targets</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">method</span><span class="p">:</span> <span class="n">GeodesicPathMethod</span> <span class="o">=</span> <span class="s2">"heat"</span><span class="p">,</span>
     <span class="n">t</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">max_steps</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="n">_DEFAULT_MAX_STEPS</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
@@ -8312,11 +8480,19 @@ any other field stops where that field does.</p>
 <span class="sd">    Trace a path across the surface from each target vertex back to a source set.</span>
 
 <span class="sd">    The **point-to-point** geodesic, as against this module's straightest walks and</span>
-<span class="sd">    [`heat_geodesic`][ordito.heat.heat_geodesic]'s distance *field*: one heat solve gives</span>
-<span class="sd">    the distance to the source everywhere, and descending it from a target follows that geodesic</span>
-<span class="sd">    back. Every target shares the one solve, so a thousand paths to one source cost one system and a</span>
-<span class="sd">    thousand independent walks -- which is why the signature is one source and many targets rather</span>
-<span class="sd">    than a list of pairs.</span>
+<span class="sd">    [`heat_geodesic`][ordito.heat.heat_geodesic]'s distance *field*. ``method`` picks how:</span>
+
+<span class="sd">    - ``"heat"`` (the default): one heat solve gives the distance to the source everywhere, and</span>
+<span class="sd">      descending it from a target follows that geodesic back. Every target shares the one solve,</span>
+<span class="sd">      so a thousand paths to one source cost one system and a thousand independent walks -- which</span>
+<span class="sd">      is why the signature is one source and many targets rather than a list of pairs. The path is</span>
+<span class="sd">      approximate (see Notes).</span>
+<span class="sd">    - ``"potpourri3d"``: ``potpourri3d``'s ``EdgeFlipGeodesicSolver.find_geodesic_path`` (Sharp</span>
+<span class="sd">      and Crane's edge-flip geodesics, from geometry-central). Each path starts as the shortest</span>
+<span class="sd">      mesh-edge path from the nearest source and is straightened by flipping the edges of an</span>
+<span class="sd">      intrinsic triangulation until it is a *locally shortest* path: exact for the polyhedral</span>
+<span class="sd">      surface, within the homotopy class of the edge path it started from. The answer is the</span>
+<span class="sd">      reference's point for point.</span>
 
 <span class="sd">    Takes the mesh as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh], which keeps the heat</span>
 <span class="sd">    method's operators and factorizations for the next call (several sources traced on one mesh),</span>
@@ -8336,11 +8512,14 @@ any other field stops where that field does.</p>
 <span class="sd">        since the field is the distance to the *set*.</span>
 <span class="sd">    targets</span>
 <span class="sd">        ``(n_paths,)`` vertices to trace from.</span>
+<span class="sd">    method</span>
+<span class="sd">        ``"heat"`` or ``"potpourri3d"``, the two ways above.</span>
 <span class="sd">    t</span>
 <span class="sd">        Heat diffusion time, forwarded to</span>
-<span class="sd">        [`heat_geodesic`][ordito.heat.heat_geodesic]. ``None`` uses its default.</span>
+<span class="sd">        [`heat_geodesic`][ordito.heat.heat_geodesic]. ``None`` uses its default. Read by</span>
+<span class="sd">        ``"heat"`` only.</span>
 <span class="sd">    max_steps</span>
-<span class="sd">        Cap on steps per path.</span>
+<span class="sd">        Cap on steps per path. Read by ``"heat"`` only.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -8351,14 +8530,22 @@ any other field stops where that field does.</p>
 
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If ``method`` is not one of the two; with ``"potpourri3d"``, if an entry of ``source`` or</span>
+<span class="sd">        ``targets`` is not a vertex index in ``[0, n_vertices)`` or a vertex's faces do not form a</span>
+<span class="sd">        single fan. ``"potpourri3d"`` also takes</span>
+<span class="sd">        [`halfedge_twins`][ordito.halfedge.halfedge_twins]' refusals: an edge of three or more</span>
+<span class="sd">        faces, or two faces wound against each other.</span>
 <span class="sd">    RuntimeError</span>
 <span class="sd">        If ``vertices``, ``faces``, ``source`` and ``targets`` are not all on one device.</span>
 
 <span class="sd">    Warns</span>
 <span class="sd">    -----</span>
 <span class="sd">    UserWarning</span>
-<span class="sd">        When paths stopped short of the source on the heat distance and were finished along mesh</span>
-<span class="sd">        edges (see Notes); the message counts the paths so finished.</span>
+<span class="sd">        With ``"heat"``, when paths stopped short of the source on the heat distance and were</span>
+<span class="sd">        finished along mesh edges (see Notes); the message counts the paths so finished. With</span>
+<span class="sd">        ``"potpourri3d"``, when paths stopped shortening at the step bound (a numerically stuck</span>
+<span class="sd">        flip sequence), counting them.</span>
 
 <span class="sd">    Notes</span>
 <span class="sd">    -----</span>
@@ -8380,6 +8567,17 @@ any other field stops where that field does.</p>
 <span class="sd">    [`descend_field`][ordito.geodesic_walk.descend_field] keeps the plain behaviour: a descent of</span>
 <span class="sd">    any other field stops where that field does.</span>
 
+<span class="sd">    **``"potpourri3d"`` is exact, but local.** Its path is a geodesic of the polyhedral surface:</span>
+<span class="sd">    straight across every face and edge, and through a vertex only where the angle on both sides</span>
+<span class="sd">    is at least ``pi``. It is the shortest path near the one it started from, not necessarily the</span>
+<span class="sd">    shortest overall: on a surface with handles or holes it keeps the side of each one the</span>
+<span class="sd">    starting edge path took, so it can be longer than the shortest path there. With several</span>
+<span class="sd">    sources it runs from the source nearest along mesh edges. A target that is</span>
+<span class="sd">    a source, or that no source reaches, gets a path of the one point (``potpourri3d`` raises on</span>
+<span class="sd">    both). The mesh's tables, the edge paths and the traces of the result run on the mesh's</span>
+<span class="sd">    device; the flips of each path depend on the ones before them, so they run path after path in</span>
+<span class="sd">    one thread on the CPU device, whatever the mesh's device.</span>
+
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
 <span class="sd">    [`descend_field`][ordito.geodesic_walk.descend_field]</span>
@@ -8389,7 +8587,9 @@ any other field stops where that field does.</p>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
-<span class="sd">    Pole to pole on a unit sphere, whose true geodesic is half a great circle, of length ``pi``:</span>
+<span class="sd">    Pole to pole on a unit sphere, whose true geodesic is half a great circle, of length ``pi``.</span>
+<span class="sd">    The edge-flip path is the exact geodesic of the polyhedron, a little shorter than the heat</span>
+<span class="sd">    method's descent:</span>
 
 <span class="sd">    ```python</span>
 <span class="sd">    import numpy as np</span>
@@ -8402,7 +8602,11 @@ any other field stops where that field does.</p>
 <span class="sd">    source = wp.array([np.argmax(heights)], dtype=wp.int32)</span>
 <span class="sd">    targets = wp.array([np.argmin(heights)], dtype=wp.int32)</span>
 <span class="sd">    points, offsets = od.geodesic_walk.geodesic_path(vertices, faces, source, targets)</span>
-<span class="sd">    print(f"{od.polyline.polyline_length(points):.2f}")  # 3.14</span>
+<span class="sd">    print(f"{od.polyline.polyline_length(points):.3f}")  # 3.137</span>
+<span class="sd">    points, offsets = od.geodesic_walk.geodesic_path(</span>
+<span class="sd">        vertices, faces, source, targets, method="potpourri3d"</span>
+<span class="sd">    )</span>
+<span class="sd">    print(f"{od.polyline.polyline_length(points):.3f}")  # 3.133</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">bound</span><span class="p">,</span> <span class="n">owned</span><span class="p">,</span> <span class="n">arguments</span> <span class="o">=</span> <span class="n">mesh_arguments</span><span class="p">(</span>
@@ -8411,6 +8615,17 @@ any other field stops where that field does.</p>
     <span class="n">source</span> <span class="o">=</span> <span class="n">cast</span><span class="p">(</span><span class="s2">"wp.array[wp.int32]"</span><span class="p">,</span> <span class="n">arguments</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
     <span class="n">targets</span> <span class="o">=</span> <span class="n">cast</span><span class="p">(</span><span class="s2">"wp.array[wp.int32]"</span><span class="p">,</span> <span class="n">arguments</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">bound</span><span class="o">.</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">bound</span><span class="o">.</span><span class="n">faces</span><span class="p">,</span> <span class="n">source</span><span class="o">=</span><span class="n">source</span><span class="p">,</span> <span class="n">targets</span><span class="o">=</span><span class="n">targets</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="s2">"heat"</span><span class="p">,</span> <span class="s2">"potpourri3d"</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method must be 'heat' or 'potpourri3d', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"potpourri3d"</span><span class="p">:</span>
+        <span class="n">points</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">n_unconverged</span> <span class="o">=</span> <span class="n">_flip_geodesic_paths</span><span class="p">(</span><span class="n">bound</span><span class="p">,</span> <span class="n">source</span><span class="p">,</span> <span class="n">targets</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">n_unconverged</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">warnings</span><span class="o">.</span><span class="n">warn</span><span class="p">(</span>
+                <span class="sa">f</span><span class="s2">"geodesic_path: </span><span class="si">{</span><span class="n">n_unconverged</span><span class="si">}</span><span class="s2"> of </span><span class="si">{</span><span class="n">targets</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2"> paths stopped shortening at "</span>
+                <span class="s2">"the step bound and are returned as they stood."</span><span class="p">,</span>
+                <span class="n">stacklevel</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="k">return</span> <span class="n">points</span><span class="p">,</span> <span class="n">offsets</span>
     <span class="c1"># The ``vertices, faces`` form hands them on, so ``heat_geodesic`` builds and drops the mesh</span>
     <span class="c1"># (and logs a factorization it drops); a `Trimesh` keeps its heat solver for the next source.</span>
     <span class="n">distance</span> <span class="o">=</span> <span class="p">(</span>
@@ -8743,139 +8958,139 @@ answer is locally minimal; equal to it, the cap bound the result.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/geodesic_walk.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">752</span>
-<span class="normal">753</span>
-<span class="normal">754</span>
-<span class="normal">755</span>
-<span class="normal">756</span>
-<span class="normal">757</span>
-<span class="normal">758</span>
-<span class="normal">759</span>
-<span class="normal">760</span>
-<span class="normal">761</span>
-<span class="normal">762</span>
-<span class="normal">763</span>
-<span class="normal">764</span>
-<span class="normal">765</span>
-<span class="normal">766</span>
-<span class="normal">767</span>
-<span class="normal">768</span>
-<span class="normal">769</span>
-<span class="normal">770</span>
-<span class="normal">771</span>
-<span class="normal">772</span>
-<span class="normal">773</span>
-<span class="normal">774</span>
-<span class="normal">775</span>
-<span class="normal">776</span>
-<span class="normal">777</span>
-<span class="normal">778</span>
-<span class="normal">779</span>
-<span class="normal">780</span>
-<span class="normal">781</span>
-<span class="normal">782</span>
-<span class="normal">783</span>
-<span class="normal">784</span>
-<span class="normal">785</span>
-<span class="normal">786</span>
-<span class="normal">787</span>
-<span class="normal">788</span>
-<span class="normal">789</span>
-<span class="normal">790</span>
-<span class="normal">791</span>
-<span class="normal">792</span>
-<span class="normal">793</span>
-<span class="normal">794</span>
-<span class="normal">795</span>
-<span class="normal">796</span>
-<span class="normal">797</span>
-<span class="normal">798</span>
-<span class="normal">799</span>
-<span class="normal">800</span>
-<span class="normal">801</span>
-<span class="normal">802</span>
-<span class="normal">803</span>
-<span class="normal">804</span>
-<span class="normal">805</span>
-<span class="normal">806</span>
-<span class="normal">807</span>
-<span class="normal">808</span>
-<span class="normal">809</span>
-<span class="normal">810</span>
-<span class="normal">811</span>
-<span class="normal">812</span>
-<span class="normal">813</span>
-<span class="normal">814</span>
-<span class="normal">815</span>
-<span class="normal">816</span>
-<span class="normal">817</span>
-<span class="normal">818</span>
-<span class="normal">819</span>
-<span class="normal">820</span>
-<span class="normal">821</span>
-<span class="normal">822</span>
-<span class="normal">823</span>
-<span class="normal">824</span>
-<span class="normal">825</span>
-<span class="normal">826</span>
-<span class="normal">827</span>
-<span class="normal">828</span>
-<span class="normal">829</span>
-<span class="normal">830</span>
-<span class="normal">831</span>
-<span class="normal">832</span>
-<span class="normal">833</span>
-<span class="normal">834</span>
-<span class="normal">835</span>
-<span class="normal">836</span>
-<span class="normal">837</span>
-<span class="normal">838</span>
-<span class="normal">839</span>
-<span class="normal">840</span>
-<span class="normal">841</span>
-<span class="normal">842</span>
-<span class="normal">843</span>
-<span class="normal">844</span>
-<span class="normal">845</span>
-<span class="normal">846</span>
-<span class="normal">847</span>
-<span class="normal">848</span>
-<span class="normal">849</span>
-<span class="normal">850</span>
-<span class="normal">851</span>
-<span class="normal">852</span>
-<span class="normal">853</span>
-<span class="normal">854</span>
-<span class="normal">855</span>
-<span class="normal">856</span>
-<span class="normal">857</span>
-<span class="normal">858</span>
-<span class="normal">859</span>
-<span class="normal">860</span>
-<span class="normal">861</span>
-<span class="normal">862</span>
-<span class="normal">863</span>
-<span class="normal">864</span>
-<span class="normal">865</span>
-<span class="normal">866</span>
-<span class="normal">867</span>
-<span class="normal">868</span>
-<span class="normal">869</span>
-<span class="normal">870</span>
-<span class="normal">871</span>
-<span class="normal">872</span>
-<span class="normal">873</span>
-<span class="normal">874</span>
-<span class="normal">875</span>
-<span class="normal">876</span>
-<span class="normal">877</span>
-<span class="normal">878</span>
-<span class="normal">879</span>
-<span class="normal">880</span>
-<span class="normal">881</span>
-<span class="normal">882</span>
-<span class="normal">883</span>
-<span class="normal">884</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shorten_loop</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1187</span>
+<span class="normal">1188</span>
+<span class="normal">1189</span>
+<span class="normal">1190</span>
+<span class="normal">1191</span>
+<span class="normal">1192</span>
+<span class="normal">1193</span>
+<span class="normal">1194</span>
+<span class="normal">1195</span>
+<span class="normal">1196</span>
+<span class="normal">1197</span>
+<span class="normal">1198</span>
+<span class="normal">1199</span>
+<span class="normal">1200</span>
+<span class="normal">1201</span>
+<span class="normal">1202</span>
+<span class="normal">1203</span>
+<span class="normal">1204</span>
+<span class="normal">1205</span>
+<span class="normal">1206</span>
+<span class="normal">1207</span>
+<span class="normal">1208</span>
+<span class="normal">1209</span>
+<span class="normal">1210</span>
+<span class="normal">1211</span>
+<span class="normal">1212</span>
+<span class="normal">1213</span>
+<span class="normal">1214</span>
+<span class="normal">1215</span>
+<span class="normal">1216</span>
+<span class="normal">1217</span>
+<span class="normal">1218</span>
+<span class="normal">1219</span>
+<span class="normal">1220</span>
+<span class="normal">1221</span>
+<span class="normal">1222</span>
+<span class="normal">1223</span>
+<span class="normal">1224</span>
+<span class="normal">1225</span>
+<span class="normal">1226</span>
+<span class="normal">1227</span>
+<span class="normal">1228</span>
+<span class="normal">1229</span>
+<span class="normal">1230</span>
+<span class="normal">1231</span>
+<span class="normal">1232</span>
+<span class="normal">1233</span>
+<span class="normal">1234</span>
+<span class="normal">1235</span>
+<span class="normal">1236</span>
+<span class="normal">1237</span>
+<span class="normal">1238</span>
+<span class="normal">1239</span>
+<span class="normal">1240</span>
+<span class="normal">1241</span>
+<span class="normal">1242</span>
+<span class="normal">1243</span>
+<span class="normal">1244</span>
+<span class="normal">1245</span>
+<span class="normal">1246</span>
+<span class="normal">1247</span>
+<span class="normal">1248</span>
+<span class="normal">1249</span>
+<span class="normal">1250</span>
+<span class="normal">1251</span>
+<span class="normal">1252</span>
+<span class="normal">1253</span>
+<span class="normal">1254</span>
+<span class="normal">1255</span>
+<span class="normal">1256</span>
+<span class="normal">1257</span>
+<span class="normal">1258</span>
+<span class="normal">1259</span>
+<span class="normal">1260</span>
+<span class="normal">1261</span>
+<span class="normal">1262</span>
+<span class="normal">1263</span>
+<span class="normal">1264</span>
+<span class="normal">1265</span>
+<span class="normal">1266</span>
+<span class="normal">1267</span>
+<span class="normal">1268</span>
+<span class="normal">1269</span>
+<span class="normal">1270</span>
+<span class="normal">1271</span>
+<span class="normal">1272</span>
+<span class="normal">1273</span>
+<span class="normal">1274</span>
+<span class="normal">1275</span>
+<span class="normal">1276</span>
+<span class="normal">1277</span>
+<span class="normal">1278</span>
+<span class="normal">1279</span>
+<span class="normal">1280</span>
+<span class="normal">1281</span>
+<span class="normal">1282</span>
+<span class="normal">1283</span>
+<span class="normal">1284</span>
+<span class="normal">1285</span>
+<span class="normal">1286</span>
+<span class="normal">1287</span>
+<span class="normal">1288</span>
+<span class="normal">1289</span>
+<span class="normal">1290</span>
+<span class="normal">1291</span>
+<span class="normal">1292</span>
+<span class="normal">1293</span>
+<span class="normal">1294</span>
+<span class="normal">1295</span>
+<span class="normal">1296</span>
+<span class="normal">1297</span>
+<span class="normal">1298</span>
+<span class="normal">1299</span>
+<span class="normal">1300</span>
+<span class="normal">1301</span>
+<span class="normal">1302</span>
+<span class="normal">1303</span>
+<span class="normal">1304</span>
+<span class="normal">1305</span>
+<span class="normal">1306</span>
+<span class="normal">1307</span>
+<span class="normal">1308</span>
+<span class="normal">1309</span>
+<span class="normal">1310</span>
+<span class="normal">1311</span>
+<span class="normal">1312</span>
+<span class="normal">1313</span>
+<span class="normal">1314</span>
+<span class="normal">1315</span>
+<span class="normal">1316</span>
+<span class="normal">1317</span>
+<span class="normal">1318</span>
+<span class="normal">1319</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shorten_loop</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">loops</span><span class="p">:</span> <span class="n">Sequence</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]],</span>
@@ -9305,157 +9520,157 @@ all on one device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/geodesic_walk.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 887</span>
-<span class="normal"> 888</span>
-<span class="normal"> 889</span>
-<span class="normal"> 890</span>
-<span class="normal"> 891</span>
-<span class="normal"> 892</span>
-<span class="normal"> 893</span>
-<span class="normal"> 894</span>
-<span class="normal"> 895</span>
-<span class="normal"> 896</span>
-<span class="normal"> 897</span>
-<span class="normal"> 898</span>
-<span class="normal"> 899</span>
-<span class="normal"> 900</span>
-<span class="normal"> 901</span>
-<span class="normal"> 902</span>
-<span class="normal"> 903</span>
-<span class="normal"> 904</span>
-<span class="normal"> 905</span>
-<span class="normal"> 906</span>
-<span class="normal"> 907</span>
-<span class="normal"> 908</span>
-<span class="normal"> 909</span>
-<span class="normal"> 910</span>
-<span class="normal"> 911</span>
-<span class="normal"> 912</span>
-<span class="normal"> 913</span>
-<span class="normal"> 914</span>
-<span class="normal"> 915</span>
-<span class="normal"> 916</span>
-<span class="normal"> 917</span>
-<span class="normal"> 918</span>
-<span class="normal"> 919</span>
-<span class="normal"> 920</span>
-<span class="normal"> 921</span>
-<span class="normal"> 922</span>
-<span class="normal"> 923</span>
-<span class="normal"> 924</span>
-<span class="normal"> 925</span>
-<span class="normal"> 926</span>
-<span class="normal"> 927</span>
-<span class="normal"> 928</span>
-<span class="normal"> 929</span>
-<span class="normal"> 930</span>
-<span class="normal"> 931</span>
-<span class="normal"> 932</span>
-<span class="normal"> 933</span>
-<span class="normal"> 934</span>
-<span class="normal"> 935</span>
-<span class="normal"> 936</span>
-<span class="normal"> 937</span>
-<span class="normal"> 938</span>
-<span class="normal"> 939</span>
-<span class="normal"> 940</span>
-<span class="normal"> 941</span>
-<span class="normal"> 942</span>
-<span class="normal"> 943</span>
-<span class="normal"> 944</span>
-<span class="normal"> 945</span>
-<span class="normal"> 946</span>
-<span class="normal"> 947</span>
-<span class="normal"> 948</span>
-<span class="normal"> 949</span>
-<span class="normal"> 950</span>
-<span class="normal"> 951</span>
-<span class="normal"> 952</span>
-<span class="normal"> 953</span>
-<span class="normal"> 954</span>
-<span class="normal"> 955</span>
-<span class="normal"> 956</span>
-<span class="normal"> 957</span>
-<span class="normal"> 958</span>
-<span class="normal"> 959</span>
-<span class="normal"> 960</span>
-<span class="normal"> 961</span>
-<span class="normal"> 962</span>
-<span class="normal"> 963</span>
-<span class="normal"> 964</span>
-<span class="normal"> 965</span>
-<span class="normal"> 966</span>
-<span class="normal"> 967</span>
-<span class="normal"> 968</span>
-<span class="normal"> 969</span>
-<span class="normal"> 970</span>
-<span class="normal"> 971</span>
-<span class="normal"> 972</span>
-<span class="normal"> 973</span>
-<span class="normal"> 974</span>
-<span class="normal"> 975</span>
-<span class="normal"> 976</span>
-<span class="normal"> 977</span>
-<span class="normal"> 978</span>
-<span class="normal"> 979</span>
-<span class="normal"> 980</span>
-<span class="normal"> 981</span>
-<span class="normal"> 982</span>
-<span class="normal"> 983</span>
-<span class="normal"> 984</span>
-<span class="normal"> 985</span>
-<span class="normal"> 986</span>
-<span class="normal"> 987</span>
-<span class="normal"> 988</span>
-<span class="normal"> 989</span>
-<span class="normal"> 990</span>
-<span class="normal"> 991</span>
-<span class="normal"> 992</span>
-<span class="normal"> 993</span>
-<span class="normal"> 994</span>
-<span class="normal"> 995</span>
-<span class="normal"> 996</span>
-<span class="normal"> 997</span>
-<span class="normal"> 998</span>
-<span class="normal"> 999</span>
-<span class="normal">1000</span>
-<span class="normal">1001</span>
-<span class="normal">1002</span>
-<span class="normal">1003</span>
-<span class="normal">1004</span>
-<span class="normal">1005</span>
-<span class="normal">1006</span>
-<span class="normal">1007</span>
-<span class="normal">1008</span>
-<span class="normal">1009</span>
-<span class="normal">1010</span>
-<span class="normal">1011</span>
-<span class="normal">1012</span>
-<span class="normal">1013</span>
-<span class="normal">1014</span>
-<span class="normal">1015</span>
-<span class="normal">1016</span>
-<span class="normal">1017</span>
-<span class="normal">1018</span>
-<span class="normal">1019</span>
-<span class="normal">1020</span>
-<span class="normal">1021</span>
-<span class="normal">1022</span>
-<span class="normal">1023</span>
-<span class="normal">1024</span>
-<span class="normal">1025</span>
-<span class="normal">1026</span>
-<span class="normal">1027</span>
-<span class="normal">1028</span>
-<span class="normal">1029</span>
-<span class="normal">1030</span>
-<span class="normal">1031</span>
-<span class="normal">1032</span>
-<span class="normal">1033</span>
-<span class="normal">1034</span>
-<span class="normal">1035</span>
-<span class="normal">1036</span>
-<span class="normal">1037</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shorten_loop_with_offsets</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1322</span>
+<span class="normal">1323</span>
+<span class="normal">1324</span>
+<span class="normal">1325</span>
+<span class="normal">1326</span>
+<span class="normal">1327</span>
+<span class="normal">1328</span>
+<span class="normal">1329</span>
+<span class="normal">1330</span>
+<span class="normal">1331</span>
+<span class="normal">1332</span>
+<span class="normal">1333</span>
+<span class="normal">1334</span>
+<span class="normal">1335</span>
+<span class="normal">1336</span>
+<span class="normal">1337</span>
+<span class="normal">1338</span>
+<span class="normal">1339</span>
+<span class="normal">1340</span>
+<span class="normal">1341</span>
+<span class="normal">1342</span>
+<span class="normal">1343</span>
+<span class="normal">1344</span>
+<span class="normal">1345</span>
+<span class="normal">1346</span>
+<span class="normal">1347</span>
+<span class="normal">1348</span>
+<span class="normal">1349</span>
+<span class="normal">1350</span>
+<span class="normal">1351</span>
+<span class="normal">1352</span>
+<span class="normal">1353</span>
+<span class="normal">1354</span>
+<span class="normal">1355</span>
+<span class="normal">1356</span>
+<span class="normal">1357</span>
+<span class="normal">1358</span>
+<span class="normal">1359</span>
+<span class="normal">1360</span>
+<span class="normal">1361</span>
+<span class="normal">1362</span>
+<span class="normal">1363</span>
+<span class="normal">1364</span>
+<span class="normal">1365</span>
+<span class="normal">1366</span>
+<span class="normal">1367</span>
+<span class="normal">1368</span>
+<span class="normal">1369</span>
+<span class="normal">1370</span>
+<span class="normal">1371</span>
+<span class="normal">1372</span>
+<span class="normal">1373</span>
+<span class="normal">1374</span>
+<span class="normal">1375</span>
+<span class="normal">1376</span>
+<span class="normal">1377</span>
+<span class="normal">1378</span>
+<span class="normal">1379</span>
+<span class="normal">1380</span>
+<span class="normal">1381</span>
+<span class="normal">1382</span>
+<span class="normal">1383</span>
+<span class="normal">1384</span>
+<span class="normal">1385</span>
+<span class="normal">1386</span>
+<span class="normal">1387</span>
+<span class="normal">1388</span>
+<span class="normal">1389</span>
+<span class="normal">1390</span>
+<span class="normal">1391</span>
+<span class="normal">1392</span>
+<span class="normal">1393</span>
+<span class="normal">1394</span>
+<span class="normal">1395</span>
+<span class="normal">1396</span>
+<span class="normal">1397</span>
+<span class="normal">1398</span>
+<span class="normal">1399</span>
+<span class="normal">1400</span>
+<span class="normal">1401</span>
+<span class="normal">1402</span>
+<span class="normal">1403</span>
+<span class="normal">1404</span>
+<span class="normal">1405</span>
+<span class="normal">1406</span>
+<span class="normal">1407</span>
+<span class="normal">1408</span>
+<span class="normal">1409</span>
+<span class="normal">1410</span>
+<span class="normal">1411</span>
+<span class="normal">1412</span>
+<span class="normal">1413</span>
+<span class="normal">1414</span>
+<span class="normal">1415</span>
+<span class="normal">1416</span>
+<span class="normal">1417</span>
+<span class="normal">1418</span>
+<span class="normal">1419</span>
+<span class="normal">1420</span>
+<span class="normal">1421</span>
+<span class="normal">1422</span>
+<span class="normal">1423</span>
+<span class="normal">1424</span>
+<span class="normal">1425</span>
+<span class="normal">1426</span>
+<span class="normal">1427</span>
+<span class="normal">1428</span>
+<span class="normal">1429</span>
+<span class="normal">1430</span>
+<span class="normal">1431</span>
+<span class="normal">1432</span>
+<span class="normal">1433</span>
+<span class="normal">1434</span>
+<span class="normal">1435</span>
+<span class="normal">1436</span>
+<span class="normal">1437</span>
+<span class="normal">1438</span>
+<span class="normal">1439</span>
+<span class="normal">1440</span>
+<span class="normal">1441</span>
+<span class="normal">1442</span>
+<span class="normal">1443</span>
+<span class="normal">1444</span>
+<span class="normal">1445</span>
+<span class="normal">1446</span>
+<span class="normal">1447</span>
+<span class="normal">1448</span>
+<span class="normal">1449</span>
+<span class="normal">1450</span>
+<span class="normal">1451</span>
+<span class="normal">1452</span>
+<span class="normal">1453</span>
+<span class="normal">1454</span>
+<span class="normal">1455</span>
+<span class="normal">1456</span>
+<span class="normal">1457</span>
+<span class="normal">1458</span>
+<span class="normal">1459</span>
+<span class="normal">1460</span>
+<span class="normal">1461</span>
+<span class="normal">1462</span>
+<span class="normal">1463</span>
+<span class="normal">1464</span>
+<span class="normal">1465</span>
+<span class="normal">1466</span>
+<span class="normal">1467</span>
+<span class="normal">1468</span>
+<span class="normal">1469</span>
+<span class="normal">1470</span>
+<span class="normal">1471</span>
+<span class="normal">1472</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shorten_loop_with_offsets</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">loops</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>

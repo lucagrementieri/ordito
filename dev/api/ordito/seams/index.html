@@ -6504,8 +6504,7 @@ row order, and the boundary edges, when asked for, after them in
 <span class="normal">169</span>
 <span class="normal">170</span>
 <span class="normal">171</span>
-<span class="normal">172</span>
-<span class="normal">173</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crease_edges</span><span class="p">(</span>
+<span class="normal">172</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crease_edges</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">angle</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">30.0</span><span class="p">,</span>
@@ -6615,9 +6614,8 @@ row order, and the boundary edges, when asked for, after them in
         <span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">word_ranks</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">word_ranks</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
     <span class="c1"># Sizes the output: the one host readback.</span>
-    <span class="n">n_edges</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">word_ranks</span><span class="p">))</span>
+    <span class="n">n_edges</span> <span class="o">=</span> <span class="n">scan_count</span><span class="p">(</span><span class="n">word_ranks</span><span class="p">)</span>
     <span class="n">edges</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="n">n_edges</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_edges</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">halfedges</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">halfedge</span><span class="o">.</span><span class="n">key_ordered_halfedges</span><span class="p">(</span>
@@ -6900,7 +6898,8 @@ survive.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/seams.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">192</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">191</span>
+<span class="normal">192</span>
 <span class="normal">193</span>
 <span class="normal">194</span>
 <span class="normal">195</span>
@@ -7036,9 +7035,7 @@ survive.</p>
 <span class="normal">325</span>
 <span class="normal">326</span>
 <span class="normal">327</span>
-<span class="normal">328</span>
-<span class="normal">329</span>
-<span class="normal">330</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cut_along_edges</span><span class="p">(</span>
+<span class="normal">328</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">cut_along_edges</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3d</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span>
@@ -7165,8 +7162,7 @@ survive.</p>
     <span class="p">)</span>
     <span class="c1"># Scanned in place, a root's flag becomes its rank plus one among the roots in ascending order,</span>
     <span class="c1"># which numbers the output vertices by their smallest corner; the total is the last entry.</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">root_ranks</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">root_ranks</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-    <span class="n">out_vertices</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">root_ranks</span><span class="p">)),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">out_vertices</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">scan_count</span><span class="p">(</span><span class="n">root_ranks</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="c1"># The union-find is done with ``parents``, so it takes the new face buffer: corner ``h`` of the</span>
     <span class="c1"># flat layout is entry ``h``.</span>
     <span class="n">corner_index</span> <span class="o">=</span> <span class="n">parents</span>
@@ -7515,7 +7511,9 @@ wound manifold mesh:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/seams.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">333</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">331</span>
+<span class="normal">332</span>
+<span class="normal">333</span>
 <span class="normal">334</span>
 <span class="normal">335</span>
 <span class="normal">336</span>
@@ -7688,7 +7686,13 @@ wound manifold mesh:</p>
 <span class="normal">503</span>
 <span class="normal">504</span>
 <span class="normal">505</span>
-<span class="normal">506</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">uv_seam_edges</span><span class="p">(</span>
+<span class="normal">506</span>
+<span class="normal">507</span>
+<span class="normal">508</span>
+<span class="normal">509</span>
+<span class="normal">510</span>
+<span class="normal">511</span>
+<span class="normal">512</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">uv_seam_edges</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">texcoords</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span>
     <span class="n">face_texcoords</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7826,10 +7830,16 @@ wound manifold mesh:</p>
     <span class="k">if</span> <span class="n">twins</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">twins</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">halfedge</span><span class="o">.</span><span class="n">halfedge_twins</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">)</span>
 
-    <span class="c1"># Row ``k`` flags class ``k + 1`` (seam, boundary, foldover). One inclusive scan of the</span>
-    <span class="c1"># flattened table, in place, numbers all three blocks, and its last column holds the running</span>
-    <span class="c1"># totals that size them -- read back together in one copy.</span>
-    <span class="n">flags</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_2d</span><span class="p">((</span><span class="mi">3</span><span class="p">,</span> <span class="n">n_halfedges</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># Row ``k`` of a bitmask flags class ``k + 1`` (seam, boundary, foldover), a bit a halfedge,</span>
+    <span class="c1"># rows a whole number of words apart. One inclusive scan of the words' populations, in place,</span>
+    <span class="c1"># ranks all three rows, and each row's last word holds the running total that sizes them --</span>
+    <span class="c1"># read back together in one copy.</span>
+    <span class="n">row_words</span> <span class="o">=</span> <span class="p">(</span><span class="n">n_halfedges</span> <span class="o">+</span> <span class="mi">31</span><span class="p">)</span> <span class="o">//</span> <span class="mi">32</span>
+    <span class="n">n_words</span> <span class="o">=</span> <span class="mi">3</span> <span class="o">*</span> <span class="n">row_words</span>
+    <span class="c1"># The bits, then their words' populations, which the flagging launch adds and the scan ranks.</span>
+    <span class="n">buffer</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">n_words</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">words</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view_as</span><span class="p">(</span><span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">n_words</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">uint32</span><span class="p">)</span>
+    <span class="n">word_ranks</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="n">n_words</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n_words</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_seams</span><span class="o">.</span><span class="n">classify_uv_halfedges</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_halfedges</span><span class="p">,</span>
@@ -7841,13 +7851,15 @@ wound manifold mesh:</p>
             <span class="n">texcoords</span><span class="p">,</span>
             <span class="n">match_uv</span><span class="p">,</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">tolerance</span> <span class="o">*</span> <span class="n">tolerance</span><span class="p">),</span>
-            <span class="n">flags</span><span class="p">,</span>
+            <span class="mi">32</span> <span class="o">*</span> <span class="n">row_words</span><span class="p">,</span>
+            <span class="n">words</span><span class="p">,</span>
+            <span class="n">word_ranks</span><span class="p">,</span>
         <span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="n">inclusive</span> <span class="o">=</span> <span class="n">flags</span><span class="o">.</span><span class="n">flatten</span><span class="p">()</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">inclusive</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">inclusive</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-    <span class="n">totals</span> <span class="o">=</span> <span class="n">flags</span><span class="p">[:,</span> <span class="n">n_halfedges</span> <span class="o">-</span> <span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">word_ranks</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">word_ranks</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="c1"># Sizes the three outputs: the one host readback.</span>
+    <span class="n">totals</span> <span class="o">=</span> <span class="n">word_ranks</span><span class="o">.</span><span class="n">reshape</span><span class="p">((</span><span class="mi">3</span><span class="p">,</span> <span class="n">row_words</span><span class="p">))[:,</span> <span class="n">row_words</span> <span class="o">-</span> <span class="mi">1</span><span class="p">]</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
     <span class="n">n_seams</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">totals</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
     <span class="n">n_boundaries</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">totals</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span> <span class="o">-</span> <span class="n">n_seams</span>
     <span class="n">n_foldovers</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">totals</span><span class="p">[</span><span class="mi">2</span><span class="p">])</span> <span class="o">-</span> <span class="nb">int</span><span class="p">(</span><span class="n">totals</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
@@ -7858,7 +7870,7 @@ wound manifold mesh:</p>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_seams</span><span class="o">.</span><span class="n">scatter_uv_halfedges</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">n_halfedges</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="p">,</span> <span class="n">inclusive</span><span class="p">,</span> <span class="n">seams</span><span class="p">,</span> <span class="n">boundaries</span><span class="p">,</span> <span class="n">foldovers</span><span class="p">],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="p">,</span> <span class="n">words</span><span class="p">,</span> <span class="n">word_ranks</span><span class="p">,</span> <span class="mi">32</span> <span class="o">*</span> <span class="n">row_words</span><span class="p">,</span> <span class="n">seams</span><span class="p">,</span> <span class="n">boundaries</span><span class="p">,</span> <span class="n">foldovers</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
     <span class="k">return</span> <span class="n">seams</span><span class="p">,</span> <span class="n">boundaries</span><span class="p">,</span> <span class="n">foldovers</span>
@@ -8049,13 +8061,7 @@ matching <a class="autorefs autorefs-internal" title="oriented_boundary_edges" h
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/seams.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">509</span>
-<span class="normal">510</span>
-<span class="normal">511</span>
-<span class="normal">512</span>
-<span class="normal">513</span>
-<span class="normal">514</span>
-<span class="normal">515</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">515</span>
 <span class="normal">516</span>
 <span class="normal">517</span>
 <span class="normal">518</span>
@@ -8122,7 +8128,13 @@ matching <a class="autorefs autorefs-internal" title="oriented_boundary_edges" h
 <span class="normal">579</span>
 <span class="normal">580</span>
 <span class="normal">581</span>
-<span class="normal">582</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">seam_edge_vertices</span><span class="p">(</span>
+<span class="normal">582</span>
+<span class="normal">583</span>
+<span class="normal">584</span>
+<span class="normal">585</span>
+<span class="normal">586</span>
+<span class="normal">587</span>
+<span class="normal">588</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">seam_edge_vertices</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">face_corners</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8474,13 +8486,7 @@ is neither <code>"index"</code> nor <code>"uv"</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/seams.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">585</span>
-<span class="normal">586</span>
-<span class="normal">587</span>
-<span class="normal">588</span>
-<span class="normal">589</span>
-<span class="normal">590</span>
-<span class="normal">591</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">591</span>
 <span class="normal">592</span>
 <span class="normal">593</span>
 <span class="normal">594</span>
@@ -8590,7 +8596,13 @@ is neither <code>"index"</code> nor <code>"uv"</code>.</p>
 <span class="normal">698</span>
 <span class="normal">699</span>
 <span class="normal">700</span>
-<span class="normal">701</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">uv_seam_vertex_mask</span><span class="p">(</span>
+<span class="normal">701</span>
+<span class="normal">702</span>
+<span class="normal">703</span>
+<span class="normal">704</span>
+<span class="normal">705</span>
+<span class="normal">706</span>
+<span class="normal">707</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">uv_seam_vertex_mask</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">texcoords</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span>
     <span class="n">face_texcoords</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>

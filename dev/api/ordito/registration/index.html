@@ -6564,7 +6564,10 @@ so its <code>R</code> is this matrix's linear block divided by the scale and <em
 <span class="normal">194</span>
 <span class="normal">195</span>
 <span class="normal">196</span>
-<span class="normal">197</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">procrustes</span><span class="p">(</span>
+<span class="normal">197</span>
+<span class="normal">198</span>
+<span class="normal">199</span>
+<span class="normal">200</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">procrustes</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">b</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">weights</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -6682,7 +6685,10 @@ so its <code>R</code> is this matrix's linear block divided by the scale and <em
     <span class="c1"># allocation and a host sync for the reduction. Its NaN output is discarded by the raise.</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">return_cost</span><span class="p">:</span>
         <span class="n">matrix</span> <span class="o">=</span> <span class="n">cast</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">],</span> <span class="n">result</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">weighted</span> <span class="ow">and</span> <span class="nb">float</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">workspace</span><span class="p">[</span><span class="s2">"acc"</span><span class="p">],</span> <span class="n">kernel_registration</span><span class="o">.</span><span class="n">ACC_W_SUM</span><span class="p">))</span> <span class="o">==</span> <span class="mf">0.0</span><span class="p">:</span>
+        <span class="k">if</span> <span class="p">(</span>
+            <span class="n">weighted</span>
+            <span class="ow">and</span> <span class="nb">float</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">workspace</span><span class="p">[</span><span class="s2">"acc"</span><span class="p">],</span> <span class="nb">int</span><span class="p">(</span><span class="n">kernel_registration</span><span class="o">.</span><span class="n">ACC_W_SUM</span><span class="p">)))</span> <span class="o">==</span> <span class="mf">0.0</span>
+        <span class="p">):</span>
             <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"weights sum to zero: no point carries any weight"</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">matrix</span>
     <span class="n">matrix</span><span class="p">,</span> <span class="n">transformed</span><span class="p">,</span> <span class="n">cost</span><span class="p">,</span> <span class="n">weight_sum</span> <span class="o">=</span> <span class="n">cast</span><span class="p">(</span>
@@ -7108,10 +7114,7 @@ correspondences are given:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/registration.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">302</span>
-<span class="normal">303</span>
-<span class="normal">304</span>
-<span class="normal">305</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">305</span>
 <span class="normal">306</span>
 <span class="normal">307</span>
 <span class="normal">308</span>
@@ -7415,7 +7418,10 @@ correspondences are given:</p>
 <span class="normal">606</span>
 <span class="normal">607</span>
 <span class="normal">608</span>
-<span class="normal">609</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp</span><span class="p">(</span>
+<span class="normal">609</span>
+<span class="normal">610</span>
+<span class="normal">611</span>
+<span class="normal">612</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7606,7 +7612,7 @@ correspondences are given:</p>
     <span class="n">acc</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">block_partials</span><span class="p">(</span><span class="n">blocks</span><span class="p">,</span> <span class="n">stride</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="n">fitted</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="c1"># The loop state, then the integer ticket that elects the fit's last block to close the round</span>
-    <span class="c1"># under the atomic commit (``kernel_registration.last_atomic_block``): one zeroed allocation.</span>
+    <span class="c1"># under the atomic commit (``kernel_reduce.last_atomic_block``): one zeroed allocation.</span>
     <span class="n">words</span> <span class="o">=</span> <span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_STATE_SIZE</span>
     <span class="n">state_and_ticket</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">words</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">state</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">state_and_ticket</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">words</span><span class="p">)</span>
@@ -8153,10 +8159,7 @@ a mesh target.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/registration.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 682</span>
-<span class="normal"> 683</span>
-<span class="normal"> 684</span>
-<span class="normal"> 685</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 685</span>
 <span class="normal"> 686</span>
 <span class="normal"> 687</span>
 <span class="normal"> 688</span>
@@ -8520,7 +8523,10 @@ a mesh target.</p>
 <span class="normal">1046</span>
 <span class="normal">1047</span>
 <span class="normal">1048</span>
-<span class="normal">1049</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
+<span class="normal">1049</span>
+<span class="normal">1050</span>
+<span class="normal">1051</span>
+<span class="normal">1052</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">icp_point_to_plane</span><span class="p">(</span>
     <span class="n">a</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">target_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -8726,7 +8732,7 @@ a mesh target.</p>
     <span class="n">step</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">total</span> <span class="o">=</span> <span class="n">initial_matrix</span>
     <span class="c1"># The loop state, then the integer ticket that elects the accumulation's last block to close</span>
-    <span class="c1"># the round under the atomic commit (``kernel_registration.last_atomic_block``), then the</span>
+    <span class="c1"># the round under the atomic commit (``kernel_reduce.last_atomic_block``), then the</span>
     <span class="c1"># matched faces, which the searches write before any read: one zeroed allocation.</span>
     <span class="n">state</span><span class="p">,</span> <span class="n">ticket</span><span class="p">,</span> <span class="n">triangle_id</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span>
         <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="p">[</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_STATE_SIZE</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">n</span><span class="p">],</span> <span class="n">device</span><span class="p">,</span> <span class="n">zeroed</span><span class="o">=</span><span class="kc">True</span>

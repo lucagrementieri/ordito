@@ -7193,7 +7193,7 @@ labels.</p>
 
     <span class="c1"># Every label is a face id, below ``n_faces``, so the radix sort stops at that bit width instead</span>
     <span class="c1"># of running all 32 bits.</span>
-    <span class="n">end_bit</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">(</span><span class="n">n_faces</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">bit_length</span><span class="p">())</span>
+    <span class="n">end_bit</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">key_bits</span><span class="p">(</span><span class="n">n_faces</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">labels</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="c1"># The labelling's flatten writes the labels and the identity payload straight into the</span>
         <span class="c1"># sort's double-width buffers.</span>

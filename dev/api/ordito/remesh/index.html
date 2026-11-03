@@ -6789,13 +6789,7 @@ near the target:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">149</span>
-<span class="normal">150</span>
-<span class="normal">151</span>
-<span class="normal">152</span>
-<span class="normal">153</span>
-<span class="normal">154</span>
-<span class="normal">155</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">155</span>
 <span class="normal">156</span>
 <span class="normal">157</span>
 <span class="normal">158</span>
@@ -7171,7 +7165,13 @@ near the target:</p>
 <span class="normal">528</span>
 <span class="normal">529</span>
 <span class="normal">530</span>
-<span class="normal">531</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">isotropic_remesh</span><span class="p">(</span>
+<span class="normal">531</span>
+<span class="normal">532</span>
+<span class="normal">533</span>
+<span class="normal">534</span>
+<span class="normal">535</span>
+<span class="normal">536</span>
+<span class="normal">537</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">isotropic_remesh</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7849,13 +7849,7 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2121</span>
-<span class="normal">2122</span>
-<span class="normal">2123</span>
-<span class="normal">2124</span>
-<span class="normal">2125</span>
-<span class="normal">2126</span>
-<span class="normal">2127</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2127</span>
 <span class="normal">2128</span>
 <span class="normal">2129</span>
 <span class="normal">2130</span>
@@ -8371,10 +8365,7 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
     <span class="c1"># unique cell keys of a whole-mesh dedup would give them. The keys are distinct, so the</span>
     <span class="c1"># permutation does not depend on the order the claims arrived in.</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">radix_sort_pairs</span><span class="p">(</span>
-        <span class="n">sort_keys</span><span class="p">,</span>
-        <span class="n">kept_cells</span><span class="p">,</span>
-        <span class="n">count</span><span class="o">=</span><span class="n">n_kept</span><span class="p">,</span>
-        <span class="n">end_bit</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">(</span><span class="nb">min</span><span class="p">(</span><span class="n">radix</span><span class="o">**</span><span class="mi">3</span><span class="p">,</span> <span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="mi">64</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">bit_length</span><span class="p">()),</span>
+        <span class="n">sort_keys</span><span class="p">,</span> <span class="n">kept_cells</span><span class="p">,</span> <span class="n">count</span><span class="o">=</span><span class="n">n_kept</span><span class="p">,</span> <span class="n">end_bit</span><span class="o">=</span><span class="n">_launch</span><span class="o">.</span><span class="n">key_bits</span><span class="p">(</span><span class="n">radix</span><span class="o">**</span><span class="mi">3</span><span class="p">)</span>
     <span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_remesh</span><span class="o">.</span><span class="n">cluster_rank_cells</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="n">n_kept</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">kept_cells</span><span class="p">,</span> <span class="n">cell_rank</span><span class="p">],</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
@@ -8389,7 +8380,7 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
         <span class="k">if</span> <span class="n">ordered</span>
         <span class="k">else</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_kept</span> <span class="k">if</span> <span class="n">average</span> <span class="k">else</span> <span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="p">)</span>
-    <span class="n">closest</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="mi">0</span> <span class="k">if</span> <span class="n">average</span> <span class="k">else</span> <span class="n">n_kept</span><span class="p">,</span> <span class="n">UINT64_MAX</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">closest</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="mi">0</span> <span class="k">if</span> <span class="n">average</span> <span class="k">else</span> <span class="n">n_kept</span><span class="p">,</span> <span class="n">INT64_MAX</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">mode</span> <span class="o">=</span> <span class="p">(</span>
         <span class="n">kernel_remesh</span><span class="o">.</span><span class="n">CLUSTER_AVERAGE_SORTED</span>
         <span class="k">if</span> <span class="n">ordered</span>
@@ -8429,10 +8420,7 @@ move their last bits from one call to the next. <code>"closest"</code> repeats e
     <span class="p">)</span>
     <span class="c1"># Three indices below ``n_kept`` pack below ``n_kept ** 3``.</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">radix_sort_pairs</span><span class="p">(</span>
-        <span class="n">sort_keys</span><span class="p">,</span>
-        <span class="n">kept_cells</span><span class="p">,</span>
-        <span class="n">count</span><span class="o">=</span><span class="n">n_unique</span><span class="p">,</span>
-        <span class="n">end_bit</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">(</span><span class="nb">min</span><span class="p">(</span><span class="n">n_kept</span><span class="o">**</span><span class="mi">3</span><span class="p">,</span> <span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="mi">64</span><span class="p">)</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">bit_length</span><span class="p">()),</span>
+        <span class="n">sort_keys</span><span class="p">,</span> <span class="n">kept_cells</span><span class="p">,</span> <span class="n">count</span><span class="o">=</span><span class="n">n_unique</span><span class="p">,</span> <span class="n">end_bit</span><span class="o">=</span><span class="n">_launch</span><span class="o">.</span><span class="n">key_bits</span><span class="p">(</span><span class="n">n_kept</span><span class="o">**</span><span class="mi">3</span><span class="p">)</span>
     <span class="p">)</span>
     <span class="n">kept_vertices</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_kept</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">out_faces</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n_unique</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
@@ -12193,7 +12181,7 @@ toward its smooth limit; the operator maps the 12 input vertices to the 42 outpu
     <span class="p">)</span>
     <span class="k">if</span> <span class="n">ring_terms</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">sorted_endpoints</span><span class="p">,</span> <span class="n">endpoint_order</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">sort_and_argsort</span><span class="p">(</span>
-            <span class="n">unique_edges</span><span class="o">.</span><span class="n">flatten</span><span class="p">(),</span> <span class="n">end_bit</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">(</span><span class="n">n_vertices</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">bit_length</span><span class="p">())</span>
+            <span class="n">unique_edges</span><span class="o">.</span><span class="n">flatten</span><span class="p">(),</span> <span class="n">end_bit</span><span class="o">=</span><span class="n">_launch</span><span class="o">.</span><span class="n">key_bits</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">)</span>
         <span class="p">)</span>
         <span class="n">empty</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
@@ -13090,7 +13078,9 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5085</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5083</span>
+<span class="normal">5084</span>
+<span class="normal">5085</span>
 <span class="normal">5086</span>
 <span class="normal">5087</span>
 <span class="normal">5088</span>
@@ -13360,9 +13350,7 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 <span class="normal">5352</span>
 <span class="normal">5353</span>
 <span class="normal">5354</span>
-<span class="normal">5355</span>
-<span class="normal">5356</span>
-<span class="normal">5357</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_region_to_size</span><span class="p">(</span>
+<span class="normal">5355</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_region_to_size</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -13965,7 +13953,9 @@ already split) is refined until it matches its surroundings:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5415</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5413</span>
+<span class="normal">5414</span>
+<span class="normal">5415</span>
 <span class="normal">5416</span>
 <span class="normal">5417</span>
 <span class="normal">5418</span>
@@ -14162,9 +14152,7 @@ already split) is refined until it matches its surroundings:</p>
 <span class="normal">5609</span>
 <span class="normal">5610</span>
 <span class="normal">5611</span>
-<span class="normal">5612</span>
-<span class="normal">5613</span>
-<span class="normal">5614</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
+<span class="normal">5612</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -14740,7 +14728,9 @@ splits just the two faces sharing that edge:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5714</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5712</span>
+<span class="normal">5713</span>
+<span class="normal">5714</span>
 <span class="normal">5715</span>
 <span class="normal">5716</span>
 <span class="normal">5717</span>
@@ -14934,9 +14924,7 @@ splits just the two faces sharing that edge:</p>
 <span class="normal">5905</span>
 <span class="normal">5906</span>
 <span class="normal">5907</span>
-<span class="normal">5908</span>
-<span class="normal">5909</span>
-<span class="normal">5910</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
+<span class="normal">5908</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">split_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>

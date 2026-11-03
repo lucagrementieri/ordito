@@ -13114,7 +13114,7 @@ is dropped. Entry 0 collects payloads 0 and 2:</p>
     <span class="n">offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_rows</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">columns</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="nb">sentinel</span> <span class="o">=</span> <span class="n">n_rows</span> <span class="o">*</span> <span class="n">n_cols</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">radix_sort_pairs</span><span class="p">(</span><span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">count</span><span class="o">=</span><span class="n">count</span><span class="p">,</span> <span class="n">end_bit</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="nb">sentinel</span><span class="o">.</span><span class="n">bit_length</span><span class="p">()))</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">radix_sort_pairs</span><span class="p">(</span><span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">count</span><span class="o">=</span><span class="n">count</span><span class="p">,</span> <span class="n">end_bit</span><span class="o">=</span><span class="n">_launch</span><span class="o">.</span><span class="n">key_bits</span><span class="p">(</span><span class="nb">sentinel</span> <span class="o">+</span> <span class="mi">1</span><span class="p">))</span>
     <span class="c1"># The entries' sorted positions live in the key buffer's upper half, sort scratch too: its</span>
     <span class="c1"># ``count`` 8-byte slots hold ``count + 1`` 4-byte ones. ``keys`` and ``order`` are one</span>
     <span class="c1"># allocation, which every caller holds while it reads ``starts`` beside ``order``, so the alias</span>
@@ -16119,7 +16119,8 @@ first axis when <code>indices</code> is empty.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2676</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2675</span>
+<span class="normal">2676</span>
 <span class="normal">2677</span>
 <span class="normal">2678</span>
 <span class="normal">2679</span>
@@ -16182,8 +16183,7 @@ first axis when <code>indices</code> is empty.</p>
 <span class="normal">2736</span>
 <span class="normal">2737</span>
 <span class="normal">2738</span>
-<span class="normal">2739</span>
-<span class="normal">2740</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">gather</span><span class="p">(</span>
+<span class="normal">2739</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">gather</span><span class="p">(</span>
     <span class="n">src</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">]</span> <span class="o">|</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">]</span> <span class="o">|</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -16414,7 +16414,8 @@ contiguous table, as <a class="autorefs autorefs-internal" title="hash_rows" hre
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2743</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2742</span>
+<span class="normal">2743</span>
 <span class="normal">2744</span>
 <span class="normal">2745</span>
 <span class="normal">2746</span>
@@ -16467,8 +16468,7 @@ contiguous table, as <a class="autorefs autorefs-internal" title="hash_rows" hre
 <span class="normal">2793</span>
 <span class="normal">2794</span>
 <span class="normal">2795</span>
-<span class="normal">2796</span>
-<span class="normal">2797</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">astype</span><span class="p">(</span><span class="n">values</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">DType</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
+<span class="normal">2796</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">astype</span><span class="p">(</span><span class="n">values</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">DType</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">,</span> <span class="n">Any</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Element-wise dtype conversion, shape and rank preserved (``numpy.ndarray.astype``).</span>
 
@@ -16668,7 +16668,8 @@ contiguous, since the rank-2 conversion flattens.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2800</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2799</span>
+<span class="normal">2800</span>
 <span class="normal">2801</span>
 <span class="normal">2802</span>
 <span class="normal">2803</span>
@@ -16725,8 +16726,7 @@ contiguous, since the rank-2 conversion flattens.</p>
 <span class="normal">2854</span>
 <span class="normal">2855</span>
 <span class="normal">2856</span>
-<span class="normal">2857</span>
-<span class="normal">2858</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">copyto</span><span class="p">(</span><span class="n">dst</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">src</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">2857</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">copyto</span><span class="p">(</span><span class="n">dst</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">,</span> <span class="n">src</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNd</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Copy ``src`` into ``dst``, converting each element to ``dst``'s dtype (``numpy.copyto``).</span>
 
@@ -16944,7 +16944,8 @@ half of that check can ever fire. Pass this instead and the packing's <code>vali
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2861</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2860</span>
+<span class="normal">2861</span>
 <span class="normal">2862</span>
 <span class="normal">2863</span>
 <span class="normal">2864</span>
@@ -17002,8 +17003,7 @@ half of that check can ever fire. Pass this instead and the packing's <code>vali
 <span class="normal">2916</span>
 <span class="normal">2917</span>
 <span class="normal">2918</span>
-<span class="normal">2919</span>
-<span class="normal">2920</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">index_bound</span><span class="p">(</span><span class="n">indices</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdInt</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">require_non_negative</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
+<span class="normal">2919</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">index_bound</span><span class="p">(</span><span class="n">indices</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdInt</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">require_non_negative</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Exclusive upper bound on an index buffer's values, as ``max(indices) + 1``.</span>
 
@@ -17205,7 +17205,8 @@ half of that check can ever fire. Pass this instead and the packing's <code>vali
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2923</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2922</span>
+<span class="normal">2923</span>
 <span class="normal">2924</span>
 <span class="normal">2925</span>
 <span class="normal">2926</span>
@@ -17252,8 +17253,7 @@ half of that check can ever fire. Pass this instead and the packing's <code>vali
 <span class="normal">2967</span>
 <span class="normal">2968</span>
 <span class="normal">2969</span>
-<span class="normal">2970</span>
-<span class="normal">2971</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">indices_to_mask</span><span class="p">(</span>
+<span class="normal">2970</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">indices_to_mask</span><span class="p">(</span>
     <span class="n">indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">n</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -17441,7 +17441,8 @@ unselected entries 1 and 4 are renumbered 0 and 1:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2974</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2973</span>
+<span class="normal">2974</span>
 <span class="normal">2975</span>
 <span class="normal">2976</span>
 <span class="normal">2977</span>
@@ -17501,8 +17502,7 @@ unselected entries 1 and 4 are renumbered 0 and 1:</p>
 <span class="normal">3031</span>
 <span class="normal">3032</span>
 <span class="normal">3033</span>
-<span class="normal">3034</span>
-<span class="normal">3035</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mask_to_compact_ranks</span><span class="p">(</span>
+<span class="normal">3034</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mask_to_compact_ranks</span><span class="p">(</span>
     <span class="n">mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">invert</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="nb">int</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -17725,7 +17725,8 @@ one.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3038</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3037</span>
+<span class="normal">3038</span>
 <span class="normal">3039</span>
 <span class="normal">3040</span>
 <span class="normal">3041</span>
@@ -17787,8 +17788,7 @@ one.</p>
 <span class="normal">3097</span>
 <span class="normal">3098</span>
 <span class="normal">3099</span>
-<span class="normal">3100</span>
-<span class="normal">3101</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bit_ranks</span><span class="p">(</span>
+<span class="normal">3100</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bit_ranks</span><span class="p">(</span>
     <span class="n">words</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">uint32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">out</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -17985,7 +17985,8 @@ payload from <code>3 * n_faces</code> and would gain a synchronization they curr
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3104</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3103</span>
+<span class="normal">3104</span>
 <span class="normal">3105</span>
 <span class="normal">3106</span>
 <span class="normal">3107</span>
@@ -18046,8 +18047,7 @@ payload from <code>3 * n_faces</code> and would gain a synchronization they curr
 <span class="normal">3162</span>
 <span class="normal">3163</span>
 <span class="normal">3164</span>
-<span class="normal">3165</span>
-<span class="normal">3166</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">counts_to_offsets</span><span class="p">(</span><span class="n">counts</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="nb">int</span><span class="p">]:</span>
+<span class="normal">3165</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">counts_to_offsets</span><span class="p">(</span><span class="n">counts</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="nb">int</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Total-terminated exclusive prefix sum of ``counts``, plus their total.</span>
 
@@ -18259,7 +18259,8 @@ for non-negative <code>indices[i]</code>, and <code>out[i] = indices[i]</code> o
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3185</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3184</span>
+<span class="normal">3185</span>
 <span class="normal">3186</span>
 <span class="normal">3187</span>
 <span class="normal">3188</span>
@@ -18312,8 +18313,7 @@ for non-negative <code>indices[i]</code>, and <code>out[i] = indices[i]</code> o
 <span class="normal">3235</span>
 <span class="normal">3236</span>
 <span class="normal">3237</span>
-<span class="normal">3238</span>
-<span class="normal">3239</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_indices</span><span class="p">(</span><span class="n">indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">remap</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
+<span class="normal">3238</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">remap_indices</span><span class="p">(</span><span class="n">indices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">remap</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Remap an index buffer through a lookup table, passing negative (sentinel) entries through.</span>
 
@@ -18505,7 +18505,8 @@ its buffer's device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3242</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3241</span>
+<span class="normal">3242</span>
 <span class="normal">3243</span>
 <span class="normal">3244</span>
 <span class="normal">3245</span>
@@ -18561,8 +18562,7 @@ its buffer's device.</p>
 <span class="normal">3295</span>
 <span class="normal">3296</span>
 <span class="normal">3297</span>
-<span class="normal">3298</span>
-<span class="normal">3299</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">trim_to_count</span><span class="p">(</span>
+<span class="normal">3298</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">trim_to_count</span><span class="p">(</span>
     <span class="n">counter</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="n">buffers</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">,</span> <span class="n">Any</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">list</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">,</span> <span class="n">Any</span><span class="p">]]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -18748,7 +18748,8 @@ copy on <code>data.device</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3302</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3301</span>
+<span class="normal">3302</span>
 <span class="normal">3303</span>
 <span class="normal">3304</span>
 <span class="normal">3305</span>
@@ -18828,8 +18829,7 @@ copy on <code>data.device</code>.</p>
 <span class="normal">3379</span>
 <span class="normal">3380</span>
 <span class="normal">3381</span>
-<span class="normal">3382</span>
-<span class="normal">3383</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bitcast_to_int</span><span class="p">(</span>
+<span class="normal">3382</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bitcast_to_int</span><span class="p">(</span>
     <span class="n">data</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Scalar</span><span class="p">],</span> <span class="n">count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int64</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -19052,7 +19052,8 @@ tail is left uninitialized.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/array.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3386</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">3385</span>
+<span class="normal">3386</span>
 <span class="normal">3387</span>
 <span class="normal">3388</span>
 <span class="normal">3389</span>
@@ -19117,8 +19118,7 @@ tail is left uninitialized.</p>
 <span class="normal">3448</span>
 <span class="normal">3449</span>
 <span class="normal">3450</span>
-<span class="normal">3451</span>
-<span class="normal">3452</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bitcast_from_int</span><span class="p">(</span>
+<span class="normal">3451</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">bitcast_from_int</span><span class="p">(</span>
     <span class="n">data</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int64</span><span class="p">],</span> <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Scalar</span><span class="p">],</span> <span class="n">count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Scalar</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
