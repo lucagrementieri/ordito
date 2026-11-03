@@ -13090,29 +13090,7 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5063</span>
-<span class="normal">5064</span>
-<span class="normal">5065</span>
-<span class="normal">5066</span>
-<span class="normal">5067</span>
-<span class="normal">5068</span>
-<span class="normal">5069</span>
-<span class="normal">5070</span>
-<span class="normal">5071</span>
-<span class="normal">5072</span>
-<span class="normal">5073</span>
-<span class="normal">5074</span>
-<span class="normal">5075</span>
-<span class="normal">5076</span>
-<span class="normal">5077</span>
-<span class="normal">5078</span>
-<span class="normal">5079</span>
-<span class="normal">5080</span>
-<span class="normal">5081</span>
-<span class="normal">5082</span>
-<span class="normal">5083</span>
-<span class="normal">5084</span>
-<span class="normal">5085</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5085</span>
 <span class="normal">5086</span>
 <span class="normal">5087</span>
 <span class="normal">5088</span>
@@ -13361,7 +13339,30 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
 <span class="normal">5331</span>
 <span class="normal">5332</span>
 <span class="normal">5333</span>
-<span class="normal">5334</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_region_to_size</span><span class="p">(</span>
+<span class="normal">5334</span>
+<span class="normal">5335</span>
+<span class="normal">5336</span>
+<span class="normal">5337</span>
+<span class="normal">5338</span>
+<span class="normal">5339</span>
+<span class="normal">5340</span>
+<span class="normal">5341</span>
+<span class="normal">5342</span>
+<span class="normal">5343</span>
+<span class="normal">5344</span>
+<span class="normal">5345</span>
+<span class="normal">5346</span>
+<span class="normal">5347</span>
+<span class="normal">5348</span>
+<span class="normal">5349</span>
+<span class="normal">5350</span>
+<span class="normal">5351</span>
+<span class="normal">5352</span>
+<span class="normal">5353</span>
+<span class="normal">5354</span>
+<span class="normal">5355</span>
+<span class="normal">5356</span>
+<span class="normal">5357</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">subdivide_region_to_size</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -13505,8 +13506,8 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
         <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">current_vertices</span><span class="o">.</span><span class="n">size</span>
 
         <span class="c1"># The pass's edge grouping, from the flip loop's sort when one is held (it is of these</span>
-        <span class="c1"># faces), and the region's long edges marked in its emit; the zeroed rank buffer, the</span>
-        <span class="c1"># unique edges and the corner map in one allocation.</span>
+        <span class="c1"># faces), and the region's long edges marked in its emit; the unique edges, the corner map</span>
+        <span class="c1"># and the ranked bitmask in one allocation.</span>
         <span class="n">held</span> <span class="o">=</span> <span class="p">(</span>
             <span class="p">(</span><span class="o">*</span><span class="n">topology</span><span class="o">.</span><span class="n">sorted_corner_keys</span><span class="p">(),</span> <span class="n">n_vertices</span><span class="p">)</span>
             <span class="k">if</span> <span class="n">topology</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">topology</span><span class="o">.</span><span class="n">built</span>
@@ -13518,11 +13519,13 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
         <span class="n">key_buffer</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">ranks</span><span class="p">,</span> <span class="n">_m</span> <span class="o">=</span> <span class="n">_sorted_corner_edges</span><span class="p">(</span>
             <span class="n">current_faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">held</span><span class="p">,</span> <span class="n">presorted</span><span class="o">=</span><span class="n">held</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">,</span> <span class="n">read_count</span><span class="o">=</span><span class="kc">False</span>
         <span class="p">)</span>
-        <span class="n">rank_buffer</span><span class="p">,</span> <span class="n">unique_rows</span><span class="p">,</span> <span class="n">inverse</span> <span class="o">=</span> <span class="n">_split_buffer</span><span class="p">(</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">4</span> <span class="o">*</span> <span class="n">n</span> <span class="o">+</span> <span class="mi">2</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="n">n</span> <span class="o">+</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n</span><span class="p">,</span> <span class="n">n</span>
+        <span class="n">size</span> <span class="o">=</span> <span class="n">_long_edge_bits_size</span><span class="p">(</span><span class="n">n</span><span class="p">)</span>
+        <span class="n">unique_rows</span><span class="p">,</span> <span class="n">inverse</span><span class="p">,</span> <span class="n">bits</span> <span class="o">=</span> <span class="n">_split_buffer</span><span class="p">(</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n</span> <span class="o">+</span> <span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">size</span>
         <span class="p">)</span>
         <span class="n">unique_edges</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">unique_rows</span><span class="o">.</span><span class="n">reshape</span><span class="p">((</span><span class="n">n</span><span class="p">,</span> <span class="mi">2</span><span class="p">)),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
         <span class="n">long_mask</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">words</span><span class="p">,</span> <span class="n">counts</span><span class="p">,</span> <span class="n">word_ranks</span> <span class="o">=</span> <span class="n">_long_edge_bits</span><span class="p">(</span><span class="n">bits</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_remesh</span><span class="o">.</span><span class="n">emit_long_region_edges</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n_faces</span><span class="p">,</span>
@@ -13535,18 +13538,16 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
                 <span class="n">region_flags</span><span class="p">,</span>
                 <span class="n">max_edge_f</span><span class="p">,</span>
             <span class="p">],</span>
-            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">unique_edges</span><span class="p">,</span> <span class="n">inverse</span><span class="p">,</span> <span class="n">long_mask</span><span class="p">,</span> <span class="n">rank_buffer</span><span class="p">[</span><span class="mi">1</span><span class="p">:]],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">unique_edges</span><span class="p">,</span> <span class="n">inverse</span><span class="p">,</span> <span class="n">long_mask</span><span class="p">,</span> <span class="n">words</span><span class="p">,</span> <span class="n">counts</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
 
         <span class="c1"># The count drives the stopping test, the budget and the running total. The ranks are the</span>
         <span class="c1"># split's own and their scan total is the count, so the split below reuses them rather than</span>
         <span class="c1"># scanning the mask a second time; a budget-trimmed mask re-ranks.</span>
-        <span class="n">n_long</span><span class="p">,</span> <span class="n">m</span> <span class="o">=</span> <span class="n">_corner_bounded_ranks</span><span class="p">(</span><span class="n">rank_buffer</span><span class="p">)</span>
+        <span class="n">split_bits</span><span class="p">,</span> <span class="n">n_long</span><span class="p">,</span> <span class="n">m</span> <span class="o">=</span> <span class="n">_rank_long_edge_bits</span><span class="p">(</span><span class="n">bits</span><span class="p">,</span> <span class="n">words</span><span class="p">,</span> <span class="n">word_ranks</span><span class="p">)</span>
         <span class="n">unique_edges</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">unique_rows</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">m</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">((</span><span class="n">m</span><span class="p">,</span> <span class="mi">2</span><span class="p">)),</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">)</span>
         <span class="n">long_mask</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">long_mask</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">m</span><span class="p">)</span>
-        <span class="n">rank_buffer</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">rank_buffer</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">m</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
-        <span class="n">offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">rank_buffer</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">m</span><span class="p">)</span>
 
         <span class="k">if</span> <span class="n">n_long</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
             <span class="k">break</span>
@@ -13562,8 +13563,8 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
             <span class="k">if</span> <span class="n">n_long</span> <span class="o">&gt;</span> <span class="n">remaining</span><span class="p">:</span>
                 <span class="c1"># It keeps exactly ``remaining`` of the flagged edges, by construction, so the</span>
                 <span class="c1"># new count needs no readback.</span>
-                <span class="n">offsets</span> <span class="o">=</span> <span class="n">_keep_longest_edges</span><span class="p">(</span>
-                    <span class="n">current_vertices</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">long_mask</span><span class="p">,</span> <span class="n">rank_buffer</span><span class="p">,</span> <span class="n">n_long</span><span class="p">,</span> <span class="n">remaining</span>
+                <span class="n">split_bits</span> <span class="o">=</span> <span class="n">_keep_longest_edges</span><span class="p">(</span>
+                    <span class="n">current_vertices</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">long_mask</span><span class="p">,</span> <span class="n">split_bits</span><span class="p">,</span> <span class="n">n_long</span><span class="p">,</span> <span class="n">remaining</span>
                 <span class="p">)</span>
                 <span class="n">n_long</span> <span class="o">=</span> <span class="n">remaining</span>
 
@@ -13575,7 +13576,7 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
             <span class="n">current_vertices</span><span class="p">,</span>
             <span class="n">current_faces</span><span class="p">,</span>
             <span class="n">long_mask</span><span class="p">,</span>
-            <span class="n">offsets</span><span class="p">,</span>
+            <span class="kc">None</span><span class="p">,</span>
             <span class="n">n_long</span><span class="p">,</span>
             <span class="n">unique_edges</span><span class="p">,</span>
             <span class="n">inverse</span><span class="p">,</span>
@@ -13583,6 +13584,7 @@ it borders a refined edge, which keeps the mesh free of cracks:</p>
             <span class="n">region_flags</span><span class="p">,</span>
             <span class="kc">None</span><span class="p">,</span>
             <span class="kc">True</span><span class="p">,</span>
+            <span class="n">split_bits</span><span class="o">=</span><span class="n">split_bits</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="n">splits_done</span> <span class="o">+=</span> <span class="n">n_long</span>
 
@@ -13963,33 +13965,7 @@ already split) is refined until it matches its surroundings:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5389</span>
-<span class="normal">5390</span>
-<span class="normal">5391</span>
-<span class="normal">5392</span>
-<span class="normal">5393</span>
-<span class="normal">5394</span>
-<span class="normal">5395</span>
-<span class="normal">5396</span>
-<span class="normal">5397</span>
-<span class="normal">5398</span>
-<span class="normal">5399</span>
-<span class="normal">5400</span>
-<span class="normal">5401</span>
-<span class="normal">5402</span>
-<span class="normal">5403</span>
-<span class="normal">5404</span>
-<span class="normal">5405</span>
-<span class="normal">5406</span>
-<span class="normal">5407</span>
-<span class="normal">5408</span>
-<span class="normal">5409</span>
-<span class="normal">5410</span>
-<span class="normal">5411</span>
-<span class="normal">5412</span>
-<span class="normal">5413</span>
-<span class="normal">5414</span>
-<span class="normal">5415</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5415</span>
 <span class="normal">5416</span>
 <span class="normal">5417</span>
 <span class="normal">5418</span>
@@ -14162,7 +14138,33 @@ already split) is refined until it matches its surroundings:</p>
 <span class="normal">5585</span>
 <span class="normal">5586</span>
 <span class="normal">5587</span>
-<span class="normal">5588</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
+<span class="normal">5588</span>
+<span class="normal">5589</span>
+<span class="normal">5590</span>
+<span class="normal">5591</span>
+<span class="normal">5592</span>
+<span class="normal">5593</span>
+<span class="normal">5594</span>
+<span class="normal">5595</span>
+<span class="normal">5596</span>
+<span class="normal">5597</span>
+<span class="normal">5598</span>
+<span class="normal">5599</span>
+<span class="normal">5600</span>
+<span class="normal">5601</span>
+<span class="normal">5602</span>
+<span class="normal">5603</span>
+<span class="normal">5604</span>
+<span class="normal">5605</span>
+<span class="normal">5606</span>
+<span class="normal">5607</span>
+<span class="normal">5608</span>
+<span class="normal">5609</span>
+<span class="normal">5610</span>
+<span class="normal">5611</span>
+<span class="normal">5612</span>
+<span class="normal">5613</span>
+<span class="normal">5614</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">refine_region_to_density</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">region</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
@@ -14738,33 +14740,7 @@ splits just the two faces sharing that edge:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/remesh.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5688</span>
-<span class="normal">5689</span>
-<span class="normal">5690</span>
-<span class="normal">5691</span>
-<span class="normal">5692</span>
-<span class="normal">5693</span>
-<span class="normal">5694</span>
-<span class="normal">5695</span>
-<span class="normal">5696</span>
-<span class="normal">5697</span>
-<span class="normal">5698</span>
-<span class="normal">5699</span>
-<span class="normal">5700</span>
-<span class="normal">5701</span>
-<span class="normal">5702</span>
-<span class="normal">5703</span>
-<span class="normal">5704</span>
-<span class="normal">5705</span>
-<span class="normal">5706</span>
-<span class="normal">5707</span>
-<span class="normal">5708</span>
-<span class="normal">5709</span>
-<span class="normal">5710</span>
-<span class="normal">5711</span>
-<span class="normal">5712</span>
-<span class="normal">5713</span>
-<span class="normal">5714</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">5714</span>
 <span class="normal">5715</span>
 <span class="normal">5716</span>
 <span class="normal">5717</span>
@@ -14934,7 +14910,33 @@ splits just the two faces sharing that edge:</p>
 <span class="normal">5881</span>
 <span class="normal">5882</span>
 <span class="normal">5883</span>
-<span class="normal">5884</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
+<span class="normal">5884</span>
+<span class="normal">5885</span>
+<span class="normal">5886</span>
+<span class="normal">5887</span>
+<span class="normal">5888</span>
+<span class="normal">5889</span>
+<span class="normal">5890</span>
+<span class="normal">5891</span>
+<span class="normal">5892</span>
+<span class="normal">5893</span>
+<span class="normal">5894</span>
+<span class="normal">5895</span>
+<span class="normal">5896</span>
+<span class="normal">5897</span>
+<span class="normal">5898</span>
+<span class="normal">5899</span>
+<span class="normal">5900</span>
+<span class="normal">5901</span>
+<span class="normal">5902</span>
+<span class="normal">5903</span>
+<span class="normal">5904</span>
+<span class="normal">5905</span>
+<span class="normal">5906</span>
+<span class="normal">5907</span>
+<span class="normal">5908</span>
+<span class="normal">5909</span>
+<span class="normal">5910</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">split_edges</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">split_mask</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
