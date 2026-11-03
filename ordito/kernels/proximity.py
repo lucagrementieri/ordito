@@ -458,7 +458,7 @@ def sampled_corner_distance_min(
         publish_best_sq(out_bounds, distance * distance)
 
 
-# Why the straggler walk below is not ``wp.tile_bvh_query_aabb`` (Warp 1.18,
+# Why the straggler walk below is not ``wp.tile_bvh_query_aabb`` (Warp 1.19,
 # ``warp/native/tile_bvh.h``), which it used to be: that builtin can drop primitives and read past
 # its own shared memory. A traversal round hands each of the ``block_dim`` lanes at most one node
 # and appends every primitive of each leaf it meets to a shared buffer of ``5 * block_dim`` entries,
@@ -466,13 +466,13 @@ def sampled_corner_distance_min(
 # only the *write* is guarded, and the round ends with each lane reading
 # ``buffer[count - block_dim + lane]``. That stays inside the buffer only while every leaf holds at
 # most four primitives -- the default leaf size, but not a bound: every Warp BVH builder turns a
-# node at depth ``BVH_QUERY_STACK_SIZE`` (32) into a leaf whatever its size
-# (``bvh.cu::mark_packed_leaf_nodes``, ``bvh.cpp``, ``bvh_cubql.cu``). The bunnies have no such
-# leaf, ``dragon`` and ``happy_buddha`` a few dozen, and ``lucy`` 0.9 M, holding up to 28 faces
-# each and a quarter of its faces; a round meeting enough of them overran the buffer, the
-# primitives the guarded write skipped were lost, and the read past the buffer faulted (CUDA error
-# 700, an out-of-bounds ``__shared__`` read *inside* the builtin, where no check on the index it
-# returns can reach). A lucy pair 1.01 extents apart hit it.
+# node near depth ``BVH_QUERY_STACK_SIZE`` (32) into a leaf whatever its size -- at depth 32 in
+# ``bvh.cu::mark_packed_leaf_nodes``, at depth 31 in ``bvh.cpp`` and ``bvh_cubql.cu``. The
+# bunnies have no such leaf, ``dragon`` and ``happy_buddha`` a few dozen, and ``lucy`` 0.9 M,
+# holding up to 28 faces each and a quarter of its faces; a round meeting enough of them overran
+# the buffer, the primitives the guarded write skipped were lost, and the read past the buffer
+# faulted (CUDA error 700, an out-of-bounds ``__shared__`` read *inside* the builtin, where no
+# check on the index it returns can reach). A lucy pair 1.01 extents apart hit it.
 #
 # So the builtin walks only a query that meets no leaf of more than ``TILE_WALK_LEAF_MAX``
 # primitives (``meets_overfull_leaf``, over the node bitset ``mark_overfull_leaves`` builds once per
@@ -1414,7 +1414,7 @@ def _winding_number_tiled_kernel(width: int) -> wp.Kernel:
         #
         # Lane-free because the threads partition the **outer** work -- the face list -- rather than
         # a sequence one block owns, so there is no `wp.block_dim()` to stride by; on the CPU
-        # device, where `wp.launch_tiled` runs one lane per block through Warp 1.18, that lane would
+        # device, where `wp.launch_tiled` runs one lane per block through Warp 1.19, that lane would
         # cover `1/block_dim` of the slice. See
         # `face_to_mesh_distance_tiled` above for the other side of the rule.
         #

@@ -38,7 +38,7 @@ from ordito.kernels.array import cross2, declare_map_signatures, map_probe, sort
 wp.set_module_options({"enable_backward": False})
 
 # Full turn in ``float64``; ``type(x)(TWO_PI_F64)`` narrows it to the caller's precision, and at
-# ``float32`` that is bit-identical to ``2 * wp.PI`` (verified on both devices, Warp 1.18).
+# ``float32`` that is bit-identical to ``2 * wp.PI`` (verified on both devices, Warp 1.19).
 TWO_PI_F64 = wp.constant(wp.float64(2.0 * math.pi))
 
 # Relative rounding allowance of a float64 plane distance ``dot(n, p - a)`` over float32 corners,

@@ -183,7 +183,7 @@ def test_closest_point_on_mesh_matches_references(
     are float64-exact and agree with each other to 4e-16; MeshLib's float32 projection to 3.0e-07)
     and the distance to **2.6e-07** -- the ``float32`` floor, so the shared ``1e-5`` holds with a
     30x margin. An earlier 6e-4 point tolerance on ``saddle_graded`` recorded a CPU-side needle
-    error of ``mesh_query_point_no_sign`` that no longer reproduces on Warp 1.18; re-measure before
+    error of ``mesh_query_point_no_sign`` that no longer reproduces on Warp 1.19; re-measure before
     loosening it again.
 
     **The MeshLib face index is a tie-break gauge.** ``findProjection`` returns a
@@ -1783,7 +1783,7 @@ def test_winding_number_lane_paths_match_igl_on_the_cpu(
     """
     Class A: the two ``launch_tiled`` paths on the CPU device the ``device`` fixture never reaches.
 
-    ``wp.launch_tiled`` executes exactly one lane per block on Warp 1.18's CPU backend -- the lane
+    ``wp.launch_tiled`` executes exactly one lane per block on Warp 1.19's CPU backend -- the lane
     index from ``wp.tid()`` is always 0. The tiled sum used to perform a block-wide ``wp.tile_sum``
     there, which summed one face per 64-face tile and returned a winding number off by up to 0.99,
     i.e. a whole turn; it is lane-free now. The patch hierarchy's walk splits each patch's work by

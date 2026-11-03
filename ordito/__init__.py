@@ -213,12 +213,14 @@ def _import_submodule(qualified: str) -> ModuleType:
     """
     Import ``qualified`` on a helper thread, so its frames do not reach the caller's.
 
-    Warp's ``@wp.func`` decorator keeps its own frame in a local, a cycle only the garbage
-    collector breaks, and every frame holds its callers through ``f_back``: imported from inside a
-    call (the first ``od.<module>`` an ordito function touches), the module's thousand-odd
-    decorations kept that call's frame, and every array it had bound, outputs included, until a
-    full collection (26.9 MiB after a depth-9 octree reconstruction). On a helper thread the
-    chain ends at the thread's start; an import error is raised again on the caller's thread. A
+    Before Warp 1.19 (NVIDIA/warp#2068), the ``@wp.func`` decorator kept its own frame in a local,
+    a cycle only the garbage collector breaks, and every frame holds its callers through
+    ``f_back``: imported from inside a call (the first ``od.<module>`` an ordito function touches),
+    the module's thousand-odd decorations kept that call's frame, and every array it had bound,
+    outputs included, until a full collection (26.9 MiB after a depth-9 octree reconstruction).
+    Warp 1.19 frees the frame without a collection; the helper thread stays while the supported
+    floor is older. On a helper thread the chain ends at the thread's start; an import error is
+    raised again on the caller's thread. A
     touch from the helper thread, or while an ordito module is still executing its own import
     (which may be what ``qualified`` imports, and whose lock this thread holds), imports in place.
     """

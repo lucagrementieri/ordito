@@ -309,7 +309,7 @@ def update_argmin(
 ):
     # Running min-with-index update in place. Callers must be compiled with
     # ``enable_backward=False`` (``wp.ref`` helpers have no adjoint). Concrete ``float32``:
-    # ``wp.ref[wp.Scalar]`` generics do not instantiate through Warp 1.18 (a ``WarpCodegenError`` at
+    # ``wp.ref[wp.Scalar]`` generics do not instantiate through Warp 1.19 (a ``WarpCodegenError`` at
     # kernel parse), so float64 sites keep a hand-written loop; the index/tag stays ``int32``.
     if value < best_value:
         best_value = value
@@ -1789,7 +1789,8 @@ _register_overloads()
 
 @wp.func
 def popcount32(x: wp.uint32) -> wp.int32:
-    # Set bits of ``x`` (the SWAR reduction; Warp has no population-count builtin).
+    # Set bits of ``x`` (the SWAR reduction; ``wp.bit_count`` arrived in Warp 1.19, above the
+    # supported floor).
     v = x - ((x >> wp.uint32(1)) & wp.uint32(0x55555555))
     v = (v & wp.uint32(0x33333333)) + ((v >> wp.uint32(2)) & wp.uint32(0x33333333))
     v = (v + (v >> wp.uint32(4))) & wp.uint32(0x0F0F0F0F)

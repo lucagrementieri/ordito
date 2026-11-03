@@ -245,12 +245,13 @@ def chamfer_nn_term_sliced(
     [`chamfer_nn_term_tiled`][ordito.kernels.metrics.chamfer_nn_term_tiled] is not; it gives up
     the block shuffle-reduce and is measurably slower on CUDA, which is why both exist.
 
-    A slice that owns no element returns before its loop. On Warp 1.18 the backward pass of a
-    dynamic ``range(start, end, step)`` walks ``iter_reverse`` of it, which for an *empty* range
-    whose ``end - start - 1`` truncates to zero against ``step`` is not empty but one iteration at
+    A slice that owns no element returns before its loop. Through Warp 1.18 the backward pass of
+    a dynamic ``range(start, end, step)`` walked ``iter_reverse`` of it, which for an *empty* range
+    whose ``end - start - 1`` truncates to zero against ``step`` was not empty but one iteration at
     ``start`` -- past the end of ``x`` -- so an empty slice read ``x`` and ``nearest`` out of bounds
-    and scattered a gradient through them. ``slice_count`` never launches more slices than points,
-    so no public call reached it; the guard makes the kernel safe under any slice count.
+    and scattered a gradient through them. Warp 1.19 fixed that adjoint (NVIDIA/warp GH-2046); the
+    guard stays while the supported floor is older. ``slice_count`` never launches more slices than
+    points, so no public call reached it either way.
     """
     j = wp.int32(wp.tid())
     if j >= x.shape[0]:

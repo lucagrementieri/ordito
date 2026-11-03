@@ -1482,10 +1482,11 @@ def test_sliced_chamfer_terms_grad_with_more_slices_than_points(device: str, ter
     """
     Ordito against ordito: a sliced term launched with empty slices against one serial slice.
 
-    Five points over 45 slices leaves 40 threads with no element. Warp's backward pass reverses a
-    dynamic ``range`` through ``iter_reverse``, which turns such an empty range into one iteration
-    at its start, past the end of the points -- so without the kernels' empty-slice guard those
-    threads read out of bounds and added a gradient (11x the true one on the nn term). The single
+    Five points over 45 slices leaves 40 threads with no element. Before Warp 1.19 (GH-2046) the
+    backward pass reversed a dynamic ``range`` through an ``iter_reverse`` that turned such an
+    empty strided range into one iteration at its start, past the end of the points -- so without
+    the kernels' empty-slice guard those threads read out of bounds and added a gradient (11x the
+    true one on the nn term). The single
     slice has no empty thread and is the reference; the nn term's is also checked against its
     closed form, which is what shows the reference itself is right. ``slice_count`` never launches
     more slices than points, so no public call reaches this -- the guard is for any other caller.

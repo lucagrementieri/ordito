@@ -333,7 +333,7 @@ _MODULES_WITHOUT_KERNELS = frozenset({"config", "constants", "io", "mesh", "typi
 # A Warp version claim, and the spelling is the convention: the word **Warp** immediately before
 # the number. Anything looser is unusable here -- this package writes measured ratios in the same
 # shape ("within 1.25x of best", "1.13x on CUDA at both sizes"), so a bare ``1.N`` token matches an
-# order of magnitude more ratios than real claims. A version claim says "Warp 1.18", never
+# order of magnitude more ratios than real claims. A version claim says "Warp 1.19", never
 # "through 1.18" with the word three lines up.
 _WARP_VERSION_CLAIM = re.compile(r"\bWarp\s+1\.(\d+)(?:\.(\d+))?\b")
 
@@ -343,6 +343,67 @@ _WARP_VERSION_CLAIM = re.compile(r"\bWarp\s+1\.(\d+)(?:\.(\d+))?\b")
 # ``ordito/`` are keyed by their dotted name, everything else by its path
 # (``tests.api_conventions``, ``benchmarks.test_creation``).
 _WARP_VERSION_ALLOWLIST: dict[tuple[str, str], str] = {
+    # ---------------------------------------------------------------------------------------
+    # Added by the Warp 1.19 upgrade. Same two kinds as the blocks below: measurement stamps
+    # taken on 1.18 and not re-run (the GPU was busy, so no clock reading was valid) and
+    # history. A key covers every 1.18 claim in its module, so the mechanism claims sharing a
+    # module with one of these were re-stamped rather than left to hide under it.
+    #
+    # The mechanism claims re-probed on 1.19 and re-stamped: the CPU single-lane
+    # ``wp.launch_tiled`` (``wp.block_dim()`` reads 1; a lane-built tile sum over 8 blocks of
+    # 64 ones gives 8.0 on the CPU against 512.0 on CUDA; ``wp.config.enable_cpu_blocks``
+    # still off by default), the empty-``wp.Mesh`` CUDA corruption (10/10 throwaway
+    # subprocesses hit CUDA error 700 on the next 4 MiB allocation; a one-triangle control
+    # passes), ``wp.ref[wp.Scalar]`` (``WarpCodegenError``; ``wp.ref[wp.float32]`` works),
+    # ``wp.copy(count=0)`` copying the whole source (and the ``TypeError`` into a length-0
+    # destination), kernel-scope ``and`` / ``or`` short-circuit (a side-effecting right
+    # operand never ran, both devices), ``wp.constant`` as identity, a matrix's missing
+    # ``.shape`` (``WarpCodegenAttributeError``), one-argument ``wp.spatial_vector(x)`` and a
+    # float32 into float64 ``wp.atomic_add`` both failing at parse, ``2 * wp.PI`` bit-identical
+    # to the narrowed ``float64`` constant on both devices, the slice ``_ref``
+    # back-reference, ``StructInstance``'s private home, the radix key-dtype set and high-bit
+    # ``uint64`` keys (both devices), the inclusive BVH box test, ``wp.Volume``'s zero-point
+    # raise, the per-kernel block-shared BVH query stack (SHARED:34816 at block_dim 256 for one
+    # call site and for four, from ``cuobjdump``), ``mesh_query_point_no_sign`` and the private
+    # ``BVH`` layout unchanged in ``native/``, ``tile_bvh.h``'s ``5 * block_dim`` result buffer
+    # with its unguarded count, and the CPU closest-point needle test passing at ``1e-5``.
+    #
+    # Two changed. The adjoint of an empty strided dynamic ``range`` no longer runs a spurious
+    # iteration (GH-2046: ``range(5, 4, 3)`` gave a gradient of 1 at index 5 on 1.18 and none
+    # on 1.19, and ``reversed(range(...))`` likewise), so ``kernels.metrics`` now records it
+    # as history. The top-down host BVH builder now cuts leaves at depth 31 rather than 32
+    # (GH-1991; cuBQL already did, the CUDA LBVH still cuts at 32), and
+    # ``kernels.proximity``'s straggler-walk comment now says so.
+    # ---------------------------------------------------------------------------------------
+    ("_device", "1.18"): (
+        "deliberate history: the version that shipped the experimental, off-by-default "
+        "``wp.config.enable_cpu_blocks`` (NVIDIA/warp#1638)"
+    ),
+    ("kernels.curvature", "1.18"): (
+        "measurement stamp and history: 1.18's traversal rewrite slowed the sphere walk, and "
+        "the ball-against-cube re-timing of the mean-curvature measure was taken on 1.18 and "
+        "not re-run"
+    ),
+    ("kernels.metrics", "1.18"): (
+        "deliberate history: the last version whose dynamic-``range`` adjoint ran one spurious "
+        "iteration on an empty strided range (fixed in 1.19, NVIDIA/warp GH-2046)"
+    ),
+    ("kernels.neighbors", "1.18"): (
+        "measurement stamp and history: 1.18's traversal rewrite slowed the sphere walk, and "
+        "the sphere-against-box verdict through the public calls was re-taken on 1.18 and not "
+        "re-run"
+    ),
+    ("kernels.proximity", "1.18"): (
+        "measurement stamp and history: the cube-against-ball re-timing of the edge scan after "
+        "1.18 slowed the sphere walk was taken on 1.18 and not re-run"
+    ),
+    ("mesh", "1.18"): (
+        "measurement stamp: the cuBQL build cost, per-ray saving and break-even behind "
+        "``mesh_for_rays``' budget constants were measured on 1.18 and not re-run"
+    ),
+    ("tests.api_conventions", "1.18"): (
+        "deliberate history: the heading of the allowlist block the 1.18 upgrade added"
+    ),
     # ---------------------------------------------------------------------------------------
     # Added by the Warp 1.18 upgrade. Same two kinds as the 1.17 block below: measurement
     # stamps nobody re-ran (the GPU was busy, so no clock reading was valid) and history.
@@ -2438,7 +2499,7 @@ def admonition_placement_problems() -> list[str]:
 
 # Warp's scalar, vector and matrix constructors. A value built by one of these is a
 # ``warp._src.types`` instance, *not* a Python number, and its operators route through Warp's
-# Python-scope builtin dispatch. ``wp.constant`` is deliberately absent: on Warp 1.18 it is
+# Python-scope builtin dispatch. ``wp.constant`` is deliberately absent: on Warp 1.19 it is
 # ``return x`` after a validity check, so ``wp.constant(7)`` is a plain ``int`` and only
 # ``wp.constant(wp.int32(7))`` is Warp-typed -- the check unwraps it and looks at what is inside.
 _WARP_TYPED_CONSTRUCTORS: frozenset[str] = frozenset(

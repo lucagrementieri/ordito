@@ -26,7 +26,7 @@ group_test_data = (
         [[1, 3, 6], [5, 10, 12]],
     ),
     (np.array([-1, 3, 2, -3, 4, 2, -1, 2, 2, 2], dtype=np.int64), 4, []),
-    # High-bit uint64 keys sort natively as unsigned (after low keys) in Warp 1.18.
+    # High-bit uint64 keys sort natively as unsigned (after low keys) in Warp 1.19.
     (np.array([2**63 + 5, 1, 2**63 + 5, 1], dtype=np.uint64), 2, [[1, 3], [0, 2]]),
     # ``int16`` is not radix-sortable, so it is widened into the sort buffer first.
     (np.array([-7, 300, -7, 2, 300], dtype=np.int16), 2, [[0, 2], [1, 4]]),

@@ -784,7 +784,7 @@ def _tiled_span(
     then alias or copy depending on the allocator. Requiring a common base restricts the fast path
     to callers already holding aliases of one allocation -- exactly the ``split`` round trip.
 
-    ``_ref`` is Warp's own back-reference from a slice to the array it keeps alive (Warp 1.18); it
+    ``_ref`` is Warp's own back-reference from a slice to the array it keeps alive (Warp 1.19); it
     is read through ``getattr`` and every conclusion drawn from it is re-checked against the public
     ``ptr`` / ``shape`` / ``strides`` / ``dtype`` / ``device``, so a release that drops the
     attribute loses the fast path rather than the correctness. ``None`` when the segments are not
@@ -3354,7 +3354,7 @@ def bitcast_to_int(
     target = wp.int64 if n_bits > 32 else wp.int32
 
     # ``count=0`` reaches ``wp.copy`` as *"copy the whole source"* -- a documented
-    # back-compatibility rule in Warp 1.18 (``if count == 0: count = src.size``), so the zero that
+    # back-compatibility rule in Warp 1.19 (``if count == 0: count = src.size``), so the zero that
     # means "nothing" and the zero that means "everything" are the same argument. Into a length-0
     # destination that is not even a clean refusal: it raises ``TypeError: unsupported operand
     # type(s) for +: 'NoneType' and 'int'`` from inside the copy. Returning the empty allocation

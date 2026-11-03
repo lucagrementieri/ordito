@@ -1489,7 +1489,7 @@ def test_single_triangle_has_no_adjacency_to_test(device: str) -> None:
     zero for the face with an empty signed graph, and the vertex-manifold test on a supplied empty
     adjacency pair is ``True``. ``is_self_intersecting`` short-circuits below two faces, which is
     exercised here because a ``warp.Mesh`` with zero triangles corrupts CUDA state when its BVH is
-    built (a Warp 1.18 bug independent of ordito). A collision budget below one raises once there
+    built (a Warp 1.19 bug independent of ordito). A collision budget below one raises once there
     are two faces to test.
     """
     vertices_wp = wp.array(

@@ -806,7 +806,7 @@ def fill_dp_span_tiled(tables: HoleFillTables, span_offset: wp.int32) -> None:
     # ``hole_dp_block`` picked -- which is a second reason the stride must be the runtime value and
     # not the constant, since the constant is now only one of the two it could have been launched
     # with. They differ on the CPU device, where ``wp.launch_tiled`` runs exactly one lane
-    # per block through Warp 1.18 (unless the experimental ``wp.config.enable_cpu_blocks`` is set)
+    # per block through Warp 1.19 (unless the experimental ``wp.config.enable_cpu_blocks`` is set)
     # and ``wp.block_dim()`` reads 1. With the constant, lane 0 was the
     # only lane running and it stepped by 32, so the DP minimized over every 32nd apex and returned
     # a valid-looking, equal-count, *wrong* triangulation. With the runtime value the single CPU
@@ -1670,7 +1670,7 @@ def stitch_dp_tile(
     #
     # **The lane stride is ``wp.block_dim()``, not ``tile``.** They agree on CUDA, where the launch
     # passes ``tile`` as its ``block_dim``. On the CPU device ``wp.launch_tiled`` runs one lane per
-    # block through Warp 1.18, so the runtime value reads 1 and that single lane walks every row of
+    # block through Warp 1.19, so the runtime value reads 1 and that single lane walks every row of
     # each anti-diagonal in turn -- correct, because the cells of one anti-diagonal are independent
     # of each other. With the constant it would compute one cell in ``tile`` and leave the rest of
     # the square at its fill value.

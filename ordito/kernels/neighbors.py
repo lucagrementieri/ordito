@@ -637,7 +637,7 @@ def query_bvh_nearest_neighbors(
     # the plain query a block-shared stack on CUDA (``__shared__ int
     # stack[BVH_QUERY_STACK_SIZE * WP_TILE_BLOCK_DIM]``), but it is declared once per kernel, not
     # per call site: one call site and four both report SHARED:34816 and LOCAL:0 at block_dim=256
-    # on Warp 1.18, and four compile and run. The single call site here is just what the loop
+    # on Warp 1.19, and four compile and run. The single call site here is just what the loop
     # needs, not a constraint -- so a future edit needing a second one may add it.
     for attempt in range(MAX_SEARCH_ATTEMPTS):
         r = attempt_radius(attempt, r, r_hard)
@@ -650,7 +650,7 @@ def query_bvh_nearest_neighbors(
 
 
 # The nearest point to ``q`` in a ``wp.Bvh`` whose item ``i`` is the point ``points[i]``: Warp's
-# own closest-point descent (``mesh_query_point_no_sign`` in ``native/mesh.h``, Warp 1.18) with the
+# own closest-point descent (``mesh_query_point_no_sign`` in ``native/mesh.h``, Warp 1.19) with the
 # triangle test replaced by a point test, nearer child popped first and a subtree pruned once its
 # box is no closer than the best point so far. Returns ``-1`` when no point lies within
 # ``max_dist``. It reads the tree through Warp's private ``BVH`` layout, like

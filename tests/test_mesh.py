@@ -42,7 +42,7 @@ def test_construction_flat_and_2d_faces_agree(sphere_irregular: tuple[tm.Trimesh
 
 
 def _empty_warp_mesh(mesh: od.Trimesh) -> object:
-    # A warp.Mesh with zero triangles silently corrupts CUDA state (Warp 1.18); warp_mesh must
+    # A warp.Mesh with zero triangles silently corrupts CUDA state (Warp 1.19); warp_mesh must
     # raise instead of building one.
     empty = od.Trimesh(warp_empty(0, wp.vec3, mesh.device), warp_empty(0, wp.int32, mesh.device))
     return empty.warp_mesh
