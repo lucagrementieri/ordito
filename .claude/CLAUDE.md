@@ -976,14 +976,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **`multigrid_preconditioner` runs out of memory on a fragmented free set.**
-  `min_quad_with_fixed(cotmatrix(lucy), preconditioner="multigrid")` with 50 % of the vertices
-  pinned at random (7 M free unknowns, mostly isolated): the aggregation barely coarsens, a level's
-  Galerkin product exceeds `_MULTIGRID_TRIPLET_FACTOR` and falls back to `bsr_mm`, which asks for
-  4.3 GB and fails, leaving the CUDA context unusable (error 101 on the next launch); `"auto"` dies
-  the same way. Present before 2026-11-04 (`a12819f7`: 4.45 GB). A level that stalls should end the
-  hierarchy (as `_MULTIGRID_MIN_COARSENING` does) before its product is formed, or the `bsr_mm`
-  fallback be bounded.
 - **Unoriented `triangulate_point_cloud`** costs 1.8x the old mesh-level winding (still 3.5x faster
   than MeshLib's): the flood, 3 226 rounds of six launches on dragon, 61.9 of the call's 166 ms,
   3.2 us a launch. Not launch-bound (2026-11-03): the same recorded loop of empty kernels at the

@@ -1636,6 +1636,42 @@ def test_adaptive_escalates_to_a_v_cycle_on_a_large_system(
     assert np.allclose(solution_wp.numpy(), reference_np, rtol=1e-5, atol=1e-5)
 
 
+def test_adaptive_escalates_to_the_polynomial_without_a_hierarchy(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: an escalation with no usable hierarchy takes Chebyshev.
+
+    When ``_multigrid_hierarchy`` returns ``None`` (a free set its products refuse) a multigrid
+    state runs Jacobi, which ``"adaptive"``'s probe has just failed with, so the escalation takes
+    the polynomial instead: the large system of lucy with half its unknowns pinned ran into the
+    factorization fallback without it (2.6 s at the polynomial, 6.6 s through Jacobi and the
+    factorization). The hierarchy is refused by patching, the probe cut to five rounds and the
+    gate put at zero; the polynomial's setup must run once and the answer reach the reference.
+    """
+    built: list[int] = []
+    chebyshev = od.linalg._JacobiChebyshev
+
+    class _Recording(chebyshev):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            built.append(1)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(od.linalg, "_JacobiChebyshev", _Recording)
+    monkeypatch.setattr(od.linalg, "_multigrid_hierarchy", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(od.linalg, "CG_CHEBYSHEV_PROBE_ITERATIONS", 5)
+    monkeypatch.setattr(od.linalg, "CG_ADAPTIVE_MULTIGRID_FROM", 0)
+    monkeypatch.setattr(od.linalg, "_SOLVER_POOL", {})
+    matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device)
+    solution_wp = wp.zeros_like(rhs_wp)
+    od.linalg.solve_spd_columns(
+        matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), preconditioner="adaptive"
+    )
+    assert len(built) == 1
+    reference_np = np.linalg.solve(dense_np, rhs_np.T).T
+    assert np.allclose(solution_wp.numpy(), reference_np, rtol=1e-5, atol=1e-5)
+
+
 def test_multigrid_preconditioner_solves_the_same_system(device: str) -> None:
     """
     Class A, against ``numpy.linalg.solve``: the V-cycle changes the path, not the answer.
@@ -1844,6 +1880,77 @@ def test_multigrid_aggregation_counts_the_aggregates_it_labels(
     assert counts[1] > counts[od.linalg._MULTIGRID_MIS_ROUNDS] > 1
 
 
+def test_multigrid_aggregation_leaves_isolated_rows_out(device: str) -> None:
+    """
+    Not a library comparison: a row with no off-diagonal entry joins no aggregate.
+
+    No reference aggregates this way. A grid Laplacian with a few rows decoupled (their
+    off-diagonals zeroed on both sides, the diagonal kept) stands in for the free rows a heavily
+    pinned system isolates: as aggregates of their own they would stay isolated on every coarser
+    level and stall the coarsening. Each must be labelled ``MG_UNAGGREGATED``, uncounted in
+    ``sizes``, and get a zero row in the tentative prolongator, while every other row keeps an
+    aggregate.
+    """
+    _matrix_wp, _rhs, dense_np, _rhs_np = _grid_laplacian_system(device, k=24)
+    isolated_np = np.array([0, 37, 300, 575])
+    dense_np = dense_np.copy()
+    diagonal_np = dense_np.diagonal().copy()
+    dense_np[isolated_np, :] = 0.0
+    dense_np[:, isolated_np] = 0.0
+    dense_np[isolated_np, isolated_np] = diagonal_np[isolated_np]
+    matrix_wp = scipy_to_bsr(sp.csr_matrix(dense_np), device)
+    n = dense_np.shape[0]
+    aggregation = od.linalg._multigrid_aggregate(matrix_wp, 0)
+    label_np = aggregation.label.numpy()
+    assert np.array_equal(np.flatnonzero(label_np < 0), isolated_np)
+    assert int(aggregation.sizes.numpy().sum()) == n - isolated_np.size
+    zero = wp.zeros(n, dtype=wp.float64, device=device)
+    tentative_np = bsr_to_csr(
+        od.linalg._multigrid_prolongator(
+            matrix_wp, aggregation.label, aggregation.sizes, aggregation.n_aggregates, zero, None
+        )
+    ).toarray()
+    assert np.abs(tentative_np[isolated_np]).max() == 0.0
+    others_np = np.setdiff1d(np.arange(n), isolated_np)
+    assert (np.abs(tentative_np[others_np]).max(axis=1) > 0.0).all()
+
+
+def test_multigrid_hierarchy_ends_where_a_product_is_refused(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: a product too large for ``bsr_mm`` ends the hierarchy.
+
+    Past its key budget a Galerkin product falls back to ``bsr_mm`` only when even a dense output
+    would fit (``_MULTIGRID_DENSE_OUTPUT_CAP``); otherwise the level becomes the coarsest, and a
+    coarsest level too large to densify (``_MULTIGRID_MAX_DENSIFIED``) leaves no hierarchy, which
+    the solve meets with Jacobi. On lucy with half its unknowns pinned at random the fallback
+    faulted instead. Both bounds are lowered so a grid's first product is refused: ``bsr_mm`` must
+    not run, the hierarchy must be ``None``, and a ``"multigrid"`` solve must still reach the
+    reference.
+    """
+    monkeypatch.setattr(od.linalg, "_MULTIGRID_TRIPLET_FACTOR", 0)
+    monkeypatch.setattr(od.linalg, "_MULTIGRID_DENSE_OUTPUT_CAP", 0)
+    monkeypatch.setattr(od.linalg, "_MULTIGRID_MAX_DENSIFIED", 16)
+    multiplied: list[int] = []
+    bsr_mm = odt.bsr_mm
+
+    def recording(*args: Any, **kwargs: Any) -> Any:
+        multiplied.append(1)
+        return bsr_mm(*args, **kwargs)
+
+    monkeypatch.setattr(odt, "bsr_mm", recording)
+    matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device)
+    assert od.linalg._multigrid_hierarchy(matrix_wp, 0) is None
+    solution_wp = wp.zeros_like(rhs_wp)
+    od.linalg.solve_spd_columns(
+        matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), preconditioner="multigrid"
+    )
+    assert not multiplied
+    reference_np = np.linalg.solve(dense_np, rhs_np.T).T
+    assert np.allclose(solution_wp.numpy(), reference_np, rtol=1e-5, atol=1e-5)
+
+
 def test_multigrid_tentative_prolongator_interpolates_the_carried_near_nullspace(
     device: str,
 ) -> None:
@@ -1882,6 +1989,7 @@ def test_multigrid_tentative_prolongator_interpolates_the_carried_near_nullspace
         coarse = od.linalg._multigrid_galerkin(
             operator, tentative_wp, aggregation.starts, synced=True
         )
+        assert coarse is not None
         assert not isinstance(coarse, np.ndarray)
         operator = coarse
         checked += 1

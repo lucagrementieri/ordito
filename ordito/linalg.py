@@ -3176,6 +3176,13 @@ class _AdaptiveCg:
             self._escalation = self._state(
                 escalation, self._maxiter - self._probe_cap, vectors_from=self._probe
             )
+            if escalation == "multigrid" and not self._escalation.cycled:
+                # No usable hierarchy (``_multigrid_hierarchy`` returned ``None``: a free set
+                # pinned along much of its length, whose levels densify): the state would run
+                # Jacobi, which the probe has just failed with, so the polynomial takes over.
+                self._escalation = self._state(
+                    "chebyshev", self._maxiter - self._probe_cap, vectors_from=self._probe
+                )
         iterations, residual, tolerance = self._run(self._escalation)
         if isinstance(iterations, wp.array):
             return iterations, residual, tolerance
@@ -3900,6 +3907,11 @@ class _BatchedCg:
         if self._check_every == 0 and not self._device.is_cuda:
             return CG_CHECK_EVERY_FALLBACK
         return self._check_every
+
+    @property
+    def cycled(self) -> bool:
+        """Whether the state applies a preconditioner of its own beyond Jacobi."""
+        return self._cycle is not None
 
     def _serial(self) -> bool:
         """Whether a solve runs as ``_solve_serial``'s one launch (on the CPU device only)."""
@@ -5691,6 +5703,21 @@ _MULTIGRID_THETA = 0.05
 _MULTIGRID_TRIPLET_FACTOR = 16
 _MULTIGRID_TRIPLET_CAP = 1 << 30
 
+# Largest ``rows x coarse columns`` of a Galerkin product the ``bsr_mm`` fallback takes: one that
+# bounds even a dense output. Past it the hierarchy ends at the level instead
+# (``_multigrid_galerkin`` returns ``None``). The fallback serves a small level gone nearly dense;
+# on a large one the product is too large for it as well -- lucy with half its unknowns pinned at
+# random, a 661 696-row level over 353 672 aggregates, 836 M triplets: ``bsr_mm`` faulted (CUDA
+# error 700) or asked for 4.3 GB and left the context unusable.
+_MULTIGRID_DENSE_OUTPUT_CAP = 1 << 28
+
+# Rows above which the coarsest level is not densified for its pseudo-inverse: the hierarchy has no
+# usable bottom and the caller takes Jacobi (``_multigrid_hierarchy`` returns ``None``). The dense
+# inverse covers at most ``_MULTIGRID_MAX_DENSE`` active rows anyway; a level many times that ends
+# the hierarchy only when its coarsening stalled or its product was refused, and densifying it
+# would cost ``rows**2`` host memory first.
+_MULTIGRID_MAX_DENSIFIED = 4096
+
 
 class _MultigridLevel:
     """One level of the hierarchy: its operator, its smoother, and its link to the next."""
@@ -5771,7 +5798,9 @@ def _multigrid_hierarchy(
         # setup launch.
         aggregation = _multigrid_aggregate(operator, seed, l1_smoother, weights)
         n_aggregates = aggregation.n_aggregates
-        if n_aggregates >= _MULTIGRID_MIN_COARSENING * level.n:
+        # Every row isolated (``kernel_mg.mis_level_setup``) leaves no coarse level to build: the
+        # level is diagonal, which the smoother solves, so it ends the hierarchy as a stall does.
+        if n_aggregates == 0 or n_aggregates >= _MULTIGRID_MIN_COARSENING * level.n:
             break
         # ``omega D^-1``, the damping already folded in, so the smoother and the prolongator read
         # one scaled diagonal and no level reads its spectral radius back to the host.
@@ -5801,6 +5830,10 @@ def _multigrid_hierarchy(
             synced=not coarsest,
             dense=coarsest and not is_deterministic(),
         )
+        if coarse is None:
+            # The product was refused: this level is the coarsest, with no transfer below it.
+            level.prolongator = level.restrictor = None
+            break
         if isinstance(coarse, np.ndarray):
             levels.append(_MultigridLevel(None, n_aggregates))
             coarse_dense = coarse
@@ -5810,6 +5843,8 @@ def _multigrid_hierarchy(
     if coarse_dense is None:
         last = levels[-1].operator
         assert last is not None
+        if int(last.nrow) > _MULTIGRID_MAX_DENSIFIED:
+            return None
         coarse_dense = _csr_to_dense(last)
     coarse_inverse = _multigrid_dense_inverse(coarse_dense, matrix.device)
     if coarse_inverse is None:
@@ -5884,7 +5919,7 @@ def _multigrid_aggregate(
         kernel_mg.mis_level_setup,
         dim=n,
         inputs=[wp.int32(seed), wp.int32(l1_smoother), offsets, columns, values],
-        outputs=[diagonal, scaled_diagonal, priority, state, power, counts],
+        outputs=[diagonal, scaled_diagonal, priority, state, flags, power, counts],
         device=device,
     )
     starts = _launch.empty(n + 1, dtype=wp.int64, device=device)
@@ -6118,9 +6153,12 @@ def _multigrid_galerkin(
     *,
     synced: bool,
     dense: bool = False,
-) -> odt.BsrMatrix[wp.float64] | npt.NDArray[np.float64]:
+) -> odt.BsrMatrix[wp.float64] | npt.NDArray[np.float64] | None:
     """
     Form the coarse operator ``P^T A P``, with its exactly-zero entries pruned.
+
+    ``None`` when the product is past its key budget and too large for the ``bsr_mm`` fallback
+    (``_MULTIGRID_DENSE_OUTPUT_CAP``): the caller ends the hierarchy at this level.
 
     Its ``nnz`` is synced when ``synced``; otherwise that field may be a capacity (the key
     assembly's contribution count), for a consumer reading only the offsets. ``starts`` is
@@ -6165,6 +6203,8 @@ def _multigrid_galerkin(
         synced=False,
     )
     if product is None:
+        if n * n_coarse > _MULTIGRID_DENSE_OUTPUT_CAP:
+            return None
         product = odt.bsr_mm(matrix, p)
     elif dense:
         out = _launch.zeros(n_coarse * n_coarse, dtype=wp.float64, device=matrix.device)

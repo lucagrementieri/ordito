@@ -425,10 +425,17 @@ def smoothed_prolongator_keys(
     for e in range(offsets[i], offsets[i + 1]):
         j = columns[e]
         aggregate = label[j]
+        # An unaggregated node (``mis_level_setup``) has no column in ``P0``: its slot emits an
+        # exact zero, which the assembly drops.
+        contribution = wp.float64(0.0)
+        if aggregate != MG_UNAGGREGATED:
+            contribution = (
+                scale * values[e] * tentative_scale(weights, j) / tentative_norm(sizes, aggregate)
+            )
         emit_entry(
             i,
-            aggregate,
-            scale * values[e] * tentative_scale(weights, j) / tentative_norm(sizes, aggregate),
+            wp.max(aggregate, wp.int32(0)),
+            contribution,
             e,
             n,
             n_aggregates,
@@ -436,10 +443,14 @@ def smoothed_prolongator_keys(
             out_order,
             out_values,
         )
+    own = label[i]
+    identity = wp.float64(0.0)
+    if own != MG_UNAGGREGATED:
+        identity = tentative_scale(weights, i) / tentative_norm(sizes, own)
     emit_entry(
         i,
-        label[i],
-        tentative_scale(weights, i) / tentative_norm(sizes, label[i]),
+        wp.max(own, wp.int32(0)),
+        identity,
         offsets[n] + i,
         n,
         n_aggregates,
@@ -1241,6 +1252,7 @@ def mis_level_setup(
     out_scaled_diagonal: wp.array[wp.float64],
     out_priority: wp.array[wp.uint32],
     out_state: wp.array[wp.int32],
+    out_root_flags: wp.array[wp.int32],
     out_power: wp.array[wp.float64],
     out_counts: wp.array[wp.int32],
 ) -> None:
@@ -1269,7 +1281,17 @@ def mis_level_setup(
     )
     out_scaled_diagonal[i] = sqrt_abs(diagonal)
     out_priority[i] = element_priority(seed, i)
-    out_state[i] = MG_UNDECIDED
+    # A row with no nonzero off-diagonal entry is left out of every aggregate: the smoother solves
+    # it exactly, and as an aggregate of its own it would stay an isolated row on every coarser
+    # level. Where much of a system is pinned (``min_quad_with_fixed`` with half its unknowns
+    # fixed at random) such rows multiply level by level -- 2 % of dragon's free rows, 81 % six
+    # levels down -- so coarsening stalls just under ``linalg._MULTIGRID_MIN_COARSENING`` while the
+    # rest densifies, and on lucy a level's product overran memory. It starts excluded, which no
+    # round revisits, with its root flag written here since no round writes it.
+    isolated = off_sum == wp.float64(0.0)
+    out_state[i] = wp.where(isolated, MG_EXCLUDED, MG_UNDECIDED)
+    if isolated:
+        out_root_flags[i] = wp.int32(0)
     out_power[i] = power_row(
         seed, wp.int32(1), out_diagonal, offsets, columns, values, out_power, i
     )
