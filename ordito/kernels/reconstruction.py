@@ -943,23 +943,26 @@ def winding_flipped(a: wp.int32, b: wp.int32, c: wp.int32) -> wp.bool:
 # and the first follows the same rule here (no positive margin: the largest touched fan, else the
 # farthest point). Where fans conflict the order places the seams, and the rounds approach it by
 # deciding only the fans the visited ones support by a margin of at least ``min(top, 3)``. A round
-# is six launches: the votes, one thread a fan row (``count_flood_votes``); each fan's majority and
-# margin (``settle_flood_fans``); the seeds (``pick_touched_seed``, ``pick_farthest_seed``); the
-# visits (``choose_flood_visits``) and their neighbours, one thread a row
-# (``spread_flood_visits``). Inert fans, which share no triangle, are seeded together: the
-# reference visits them one at a time ahead of the next fan that shares one, and their windings
-# decide nothing (their touches can, in principle, hand that fan's component a different first
-# fan; no measured cloud showed it).
+# is four launches: the votes, one thread a fan row (``count_flood_votes``); each fan's majority
+# and margin, and the candidate seeds (``settle_flood_fans``); the visits
+# (``choose_flood_visits``) and their neighbours, one thread a row (``spread_flood_visits``). Inert
+# fans, which share no triangle, are seeded together: the reference visits them one at a time
+# ahead of the next fan that shares one, and their windings decide nothing (their touches can, in
+# principle, hand that fan's component a different first fan; no measured cloud showed it).
 # --------------------------------------------------------------------------------------
 @wp.func
-def packed_candidate(
+def flood_code(
     sorted_slots: wp.array[wp.int32],
+    rows: wp.array2d[wp.int32],
     inclusive_counts: wp.array[wp.int32],
     fan_width: wp.int32,
     i: wp.int32,
 ) -> wp.int32:
-    # The packed row of sorted candidate ``i``: its fan's first row plus its slot within the fan.
-    return fan_row_index(inclusive_counts, fan_width, sorted_slots[i])
+    # Sorted candidate ``i``'s code: twice its fan plus its row's winding against the sorted triple.
+    slot = sorted_slots[i]
+    packed = fan_row_index(inclusive_counts, fan_width, slot)
+    wound = winding_flipped(rows[packed, 0], rows[packed, 1], rows[packed, 2])
+    return 2 * (slot // fan_width) + wp.where(wound, 1, 0)
 
 
 @wp.kernel
@@ -969,34 +972,29 @@ def pack_flood_candidates(
     rows: wp.array2d[wp.int32],
     inclusive_counts: wp.array[wp.int32],
     fan_width: wp.int32,
-    out_partners: wp.array[wp.vec2i],
-    out_codes: wp.array[wp.int32],
+    out_codes: wp.array[wp.vec3i],
 ) -> None:
     # The flood's candidate table, over sorted position ``i``, beside the packed fans ``rows`` (a
-    # fan's triangles contiguous, its center in column 0): each fan slot's code at its packed
-    # position (twice the fan plus the row's winding against its sorted triple) and its partners,
-    # the packed rows of the other fans carrying the same triangle (at most its two other
-    # corners', ``-1`` past them), read off the run of equal unoriented keys. A vote then reads
-    # two codes, not the run.
+    # fan's triangles contiguous, its center in column 0): at each fan slot's packed position its
+    # code (``flood_code``), then the codes of the other fans carrying the same triangle (at most
+    # its two other corners', ``-1`` past them), read off the run of equal unoriented keys. A vote
+    # then reads one vector, not the run or the partners' rows.
     i = wp.int32(wp.tid())
-    slot = sorted_slots[i]
-    packed = packed_candidate(sorted_slots, inclusive_counts, fan_width, i)
-    wound = winding_flipped(rows[packed, 0], rows[packed, 1], rows[packed, 2])
-    out_codes[packed] = 2 * (slot // fan_width) + wp.where(wound, 1, 0)
+    packed = fan_row_index(inclusive_counts, fan_width, sorted_slots[i])
+    codes = wp.vec3i(flood_code(sorted_slots, rows, inclusive_counts, fan_width, i), -1, -1)
     first = i
     while not sorted_run_start(sorted_keys, first):
         first -= 1
-    partners = wp.vec2i(-1, -1)
-    found = wp.int32(0)
+    found = wp.int32(1)
     j = first
-    while j < sorted_slots.shape[0] and found < 2:
+    while j < sorted_slots.shape[0] and found < 3:
         if j != first and sorted_run_start(sorted_keys, j):
             break
         if j != i:
-            partners[found] = packed_candidate(sorted_slots, inclusive_counts, fan_width, j)
+            codes[found] = flood_code(sorted_slots, rows, inclusive_counts, fan_width, j)
             found += 1
         j += 1
-    out_partners[packed] = partners
+    out_codes[packed] = codes
 
 
 # The flood decides in bulk every fan whose margin reaches ``min(top, FLOOD_BULK_MARGIN)``, ``top``
@@ -1050,7 +1048,7 @@ def start_fan_flood(
     points: wp.array[wp.vec3],
     rows: wp.array2d[wp.int32],
     inclusive_counts: wp.array[wp.int32],
-    partners: wp.array[wp.vec2i],
+    codes: wp.array[wp.vec3i],
     center: wp.vec3,
     max_distance_sq: wp.float32,
     out_flipped: wp.array[wp.int32],
@@ -1074,7 +1072,7 @@ def start_fan_flood(
         row = start + j
         # ``dot(pv - center, (pb - pv) x (pc - pv))`` is ``-det(pb - pv, pc - pv, center - pv)``.
         balance -= orient3d_sign_f32(pv, points[rows[row, 1]], points[rows[row, 2]], center)
-        if partners[row][0] >= 0:
+        if codes[row][1] >= 0:
             inert = 0
     out_inert[v] = inert
     out_flipped[v] = wp.where(balance < 0, 1, 0)
@@ -1091,20 +1089,18 @@ def start_fan_flood(
 @wp.func
 def row_vote(
     row: wp.int32,
-    partners: wp.array[wp.vec2i],
-    codes: wp.array[wp.int32],
+    codes: wp.array[wp.vec3i],
     visited: wp.array[wp.int32],
     flipped: wp.array[wp.int32],
 ) -> wp.int32:
     # The visited fans' vote on row ``row``'s fan from its triangle: ``0`` to keep the fan's
     # winding, ``1`` to flip it, ``-1`` when no visited fan carries the triangle or they disagree.
-    pair = partners[row]
+    row_codes = codes[row]
     same = wp.int32(0)
     opposite = wp.int32(0)
-    for t in range(2):
-        other = pair[t]
-        if other >= 0:
-            code = codes[other]
+    for t in range(1, 3):
+        code = row_codes[t]
+        if code >= 0:
             w = code // 2
             if visited[w] != 0:
                 if (code % 2) != flipped[w]:
@@ -1114,7 +1110,7 @@ def row_vote(
     vote = wp.int32(-1)
     if (same > 0) != (opposite > 0):
         agreed = wp.where(same > 0, 0, 1)
-        vote = wp.where(codes[row] % 2 == agreed, 0, 1)
+        vote = wp.where(row_codes[0] % 2 == agreed, 0, 1)
     return vote
 
 
@@ -1122,13 +1118,13 @@ def row_vote(
 def count_flood_votes_strided(
     first: wp.int32,
     inclusive_counts: wp.array[wp.int32],
-    partners: wp.array[wp.vec2i],
-    codes: wp.array[wp.int32],
+    codes: wp.array[wp.vec3i],
     visited: wp.array[wp.int32],
     flipped: wp.array[wp.int32],
     stale: wp.array[wp.int32],
     frontier: wp.array[wp.int32],
     fan_width: wp.int32,
+    far_order_length: wp.int32,
     slot: wp.int32,
     lanes: wp.int32,
     state: wp.array[wp.int32],
@@ -1138,7 +1134,17 @@ def count_flood_votes_strided(
     # one thread a row: the visited fans carrying a row's triangle, when they agree, vote to keep
     # the fan's winding (``votes[2 u]``) or to flip it (``votes[2 u + 1]``), arriving zero. The
     # ``lanes`` threads stride over the frontier's ``(fan, row)`` pairs, this one from ``first``.
+    # As the round's first launch, thread 0 also resets the other parity's slot, which the
+    # previous round alone read and this round's visits append to, and the farthest position,
+    # which the previous round's visits alone read.
     base = FLOOD_SLOTS + FLOOD_SLOT_WORDS * slot
+    if first == 0:
+        other = FLOOD_SLOTS + FLOOD_SLOT_WORDS * (1 - slot)
+        state[other + FLOOD_TOP] = 0
+        state[other + FLOOD_SEED] = -1
+        state[other + FLOOD_COUNT] = 0
+        state[other + FLOOD_INERT] = -1
+        state[FLOOD_FARTHEST] = far_order_length
     items = state[base + FLOOD_COUNT] * fan_width
     e = first
     while e < items:
@@ -1150,7 +1156,7 @@ def count_flood_votes_strided(
         start, count = scanned_count(inclusive_counts, u)
         if j >= count:
             continue
-        vote = row_vote(start + j, partners, codes, visited, flipped)
+        vote = row_vote(start + j, codes, visited, flipped)
         if vote >= 0:
             wp.atomic_add(votes, 2 * u + vote, 1)
 
@@ -1159,7 +1165,9 @@ def count_flood_votes_strided(
 def settle_flood_fans_strided(
     first: wp.int32,
     visited: wp.array[wp.int32],
+    inert: wp.array[wp.int32],
     frontier: wp.array[wp.int32],
+    far_order: wp.array[wp.int32],
     slot: wp.int32,
     lanes: wp.int32,
     flipped: wp.array[wp.int32],
@@ -1171,7 +1179,14 @@ def settle_flood_fans_strided(
     # Every stale frontier fan turns to its votes' majority (a tie keeps its winding) and takes the
     # margin, ``-1`` without votes, its counts cleared; the others keep theirs, since only a visit
     # changes a fan's votes. The round's largest margin gathers in its state slot (arriving
-    # ``0``). The ``lanes`` threads stride over the frontier, this one from ``first``.
+    # ``0``), and its candidate seeds beside it, used only when no margin is positive: the largest
+    # unvisited frontier fan (its votes, if any, tie) in the seed word, an inert one in the inert
+    # word (both arriving ``-1``). Every frontier fan is unvisited when a round starts, so a round
+    # touches none exactly when its frontier is empty; on CUDA such a round finds the first
+    # unvisited position of the farthest-first order past the cursor (one ``atomic_min`` a warp),
+    # which ``choose_flood_visits`` seeds from, and the CPU device walks the cursor there instead.
+    # The ``lanes`` threads stride over the frontier, then over the order, this one from
+    # ``first``.
     base = FLOOD_SLOTS + FLOOD_SLOT_WORDS * slot
     count = state[base + FLOOD_COUNT]
     i = first
@@ -1196,89 +1211,22 @@ def settle_flood_fans_strided(
             margin[u] = weight
         if margin[u] > 0:
             wp.atomic_max(state, base + FLOOD_TOP, margin[u])
-
-
-@wp.func
-def pick_touched_seed_strided(
-    first: wp.int32,
-    visited: wp.array[wp.int32],
-    inert: wp.array[wp.int32],
-    frontier: wp.array[wp.int32],
-    far_order: wp.array[wp.int32],
-    slot: wp.int32,
-    lanes: wp.int32,
-    state: wp.array[wp.int32],
-):
-    # A round with no positive margin seeds instead: the largest unvisited frontier fan (its votes,
-    # if any, tie) into the slot's seed word, an inert one into its inert word (both arriving
-    # ``-1``). On CUDA it also finds the first unvisited position of the farthest-first order past
-    # the cursor (one ``atomic_min`` a warp), which ``pick_farthest_seed`` takes when no fan is
-    # touched; the CPU device walks the cursor there instead. The ``lanes`` threads stride over
-    # the frontier, then over the order, this one from ``first``.
-    base = FLOOD_SLOTS + FLOOD_SLOT_WORDS * slot
-    if state[base + FLOOD_TOP] > 0:
+        word = wp.where(inert[u] != 0, FLOOD_INERT, FLOOD_SEED)
+        wp.atomic_max(state, base + word, u)
+    if count > 0 or device_is_cpu() != 0:
         return
-    count = state[base + FLOOD_COUNT]
-    i = first
-    while i < count:
-        u = frontier[slot * visited.shape[0] + i]
-        if visited[u] == 0:
-            word = wp.where(inert[u] != 0, FLOOD_INERT, FLOOD_SEED)
-            wp.atomic_max(state, base + word, u)
-        i += lanes
-    if device_is_cpu() != 0:
-        return
-    cursor = state[FLOOD_CURSOR]
-    position = cursor + first
+    position = state[FLOOD_CURSOR] + first
     while position < far_order.shape[0]:
         candidate = wp.int32(2147483647)
         if visited[far_order[position]] == 0:
             candidate = position
-        first = warp_min_at_lead(candidate)
-        if first < far_order.shape[0]:
-            wp.atomic_min(state, FLOOD_FARTHEST, first)
+        found = warp_min_at_lead(candidate)
+        if found < far_order.shape[0]:
+            wp.atomic_min(state, FLOOD_FARTHEST, found)
         position += lanes
         # The found position only falls, so one below this thread's next ends its search.
         if position > state[FLOOD_FARTHEST]:
             break
-
-
-@wp.func
-def pick_farthest_seed_once(
-    far_order: wp.array[wp.int32],
-    visited: wp.array[wp.int32],
-    slot: wp.int32,
-    state: wp.array[wp.int32],
-):
-    # One thread. Resets the other parity's slot for the next round, which alone reads it (its
-    # frontier count then gathers this round's appends). A seeding round no fan touches takes the
-    # farthest unvisited fan: the first unvisited position of the farthest-first order past the
-    # cursor, which ``pick_touched_seed`` found on CUDA and the CPU device walks to; none left ends
-    # the flood. Visits only grow, so the cursor moves there.
-    base = FLOOD_SLOTS + FLOOD_SLOT_WORDS * slot
-    other = FLOOD_SLOTS + FLOOD_SLOT_WORDS * (1 - slot)
-    state[other + FLOOD_TOP] = 0
-    state[other + FLOOD_SEED] = -1
-    state[other + FLOOD_COUNT] = 0
-    state[other + FLOOD_INERT] = -1
-    n = far_order.shape[0]
-    first = state[FLOOD_FARTHEST]
-    state[FLOOD_FARTHEST] = n
-    if state[base + FLOOD_TOP] > 0 or state[base + FLOOD_SEED] >= 0:
-        return
-    if state[base + FLOOD_INERT] >= 0:
-        return
-    if device_is_cpu() != 0:
-        first = state[FLOOD_CURSOR]
-        while first < n:
-            if visited[far_order[first]] == 0:
-                break
-            first += 1
-    state[FLOOD_CURSOR] = first
-    if first == n:
-        state[FLOOD_GOING] = 0
-    else:
-        state[base + FLOOD_SEED] = far_order[first]
 
 
 @wp.func
@@ -1318,6 +1266,7 @@ def choose_flood_visits_strided(
     inclusive_counts: wp.array[wp.int32],
     margin: wp.array[wp.int32],
     inert: wp.array[wp.int32],
+    far_order: wp.array[wp.int32],
     slot: wp.int32,
     lanes: wp.int32,
     state: wp.array[wp.int32],
@@ -1330,12 +1279,15 @@ def choose_flood_visits_strided(
     # The round's visits: every frontier fan whose margin reaches ``min(top, FLOOD_BULK_MARGIN)``;
     # with no positive margin, every inert frontier fan above the seed when there is one (the
     # reference visits them one by one before the seed, and their windings decide nothing), else
-    # the seed. A visited fan's winding is final, and ``chosen[i]`` marks frontier entry ``i``'s
-    # visit for ``spread_flood_visits``; an undecided frontier fan carries over to the next
-    # frontier (``append_slot``, one atomic a warp). Thread 0 visits a seed that is not on the
-    # frontier (the farthest point) and touches its neighbours itself. The appends' order decides
-    # nothing: every decision is a fan's own, or a maximum. The ``lanes`` threads stride over the
-    # frontier, this one from ``first``.
+    # the seed, which a round no fan touches takes as the farthest unvisited fan: the first
+    # unvisited position of the farthest-first order past the cursor, which
+    # ``settle_flood_fans`` found on CUDA and the CPU device walks to. Thread 0 moves the cursor
+    # there (visits only grow), and none left ends the flood. A visited fan's winding is final,
+    # and ``chosen[i]`` marks frontier entry ``i``'s visit for ``spread_flood_visits``; an
+    # undecided frontier fan carries over to the next frontier (``append_slot``, one atomic a
+    # warp). Thread 0 visits a seed that is not on the frontier (the farthest point) and touches
+    # its neighbours itself. The appends' order decides nothing: every decision is a fan's own, or
+    # a maximum. The ``lanes`` threads stride over the frontier, this one from ``first``.
     n = visited.shape[0]
     base = FLOOD_SLOTS + FLOOD_SLOT_WORDS * slot
     next_count = FLOOD_SLOTS + FLOOD_SLOT_WORDS * (1 - slot) + FLOOD_COUNT
@@ -1343,8 +1295,23 @@ def choose_flood_visits_strided(
     count = state[base + FLOOD_COUNT]
     top = state[base + FLOOD_TOP]
     seed = state[base + FLOOD_SEED]
+    largest_inert = state[base + FLOOD_INERT]
+    if top <= 0 and seed < 0 and largest_inert < 0:
+        far = state[FLOOD_FARTHEST]
+        if device_is_cpu() != 0:
+            far = state[FLOOD_CURSOR]
+            while far < far_order.shape[0]:
+                if visited[far_order[far]] == 0:
+                    break
+                far += 1
+        if far < far_order.shape[0]:
+            seed = far_order[far]
+        if first == 0:
+            state[FLOOD_CURSOR] = far
+            if far == far_order.shape[0]:
+                state[FLOOD_GOING] = 0
     # The inert fans the reference would visit before the seed: every one above it at once.
-    inert_batch = state[base + FLOOD_INERT] > seed
+    inert_batch = largest_inert > seed
     i = first
     if i == 0 and top <= 0 and not inert_batch and seed >= 0:
         if touched[seed] == 0:
@@ -1413,19 +1380,19 @@ def spread_flood_visits_strided(
             )
 
 
-# The six flood kernels: each launch runs its ``@wp.func`` above in every lane, ``lanes`` of them
+# The four flood kernels: each launch runs its ``@wp.func`` above in every lane, ``lanes`` of them
 # striding from their thread index. ``flood_rounds_serial`` runs the same funcs, lane by lane, for
 # the CPU device.
 @wp.kernel
 def count_flood_votes(
     inclusive_counts: wp.array[wp.int32],
-    partners: wp.array[wp.vec2i],
-    codes: wp.array[wp.int32],
+    codes: wp.array[wp.vec3i],
     visited: wp.array[wp.int32],
     flipped: wp.array[wp.int32],
     stale: wp.array[wp.int32],
     frontier: wp.array[wp.int32],
     fan_width: wp.int32,
+    far_order_length: wp.int32,
     slot: wp.int32,
     lanes: wp.int32,
     state: wp.array[wp.int32],
@@ -1434,13 +1401,13 @@ def count_flood_votes(
     count_flood_votes_strided(
         wp.int32(wp.tid()),
         inclusive_counts,
-        partners,
         codes,
         visited,
         flipped,
         stale,
         frontier,
         fan_width,
+        far_order_length,
         slot,
         lanes,
         state,
@@ -1451,7 +1418,9 @@ def count_flood_votes(
 @wp.kernel
 def settle_flood_fans(
     visited: wp.array[wp.int32],
+    inert: wp.array[wp.int32],
     frontier: wp.array[wp.int32],
+    far_order: wp.array[wp.int32],
     slot: wp.int32,
     lanes: wp.int32,
     flipped: wp.array[wp.int32],
@@ -1461,33 +1430,19 @@ def settle_flood_fans(
     state: wp.array[wp.int32],
 ) -> None:
     settle_flood_fans_strided(
-        wp.int32(wp.tid()), visited, frontier, slot, lanes, flipped, stale, votes, margin, state
+        wp.int32(wp.tid()),
+        visited,
+        inert,
+        frontier,
+        far_order,
+        slot,
+        lanes,
+        flipped,
+        stale,
+        votes,
+        margin,
+        state,
     )
-
-
-@wp.kernel
-def pick_touched_seed(
-    visited: wp.array[wp.int32],
-    inert: wp.array[wp.int32],
-    frontier: wp.array[wp.int32],
-    far_order: wp.array[wp.int32],
-    slot: wp.int32,
-    lanes: wp.int32,
-    state: wp.array[wp.int32],
-) -> None:
-    pick_touched_seed_strided(
-        wp.int32(wp.tid()), visited, inert, frontier, far_order, slot, lanes, state
-    )
-
-
-@wp.kernel
-def pick_farthest_seed(
-    far_order: wp.array[wp.int32],
-    visited: wp.array[wp.int32],
-    slot: wp.int32,
-    state: wp.array[wp.int32],
-) -> None:
-    pick_farthest_seed_once(far_order, visited, slot, state)
 
 
 @wp.kernel
@@ -1496,6 +1451,7 @@ def choose_flood_visits(
     inclusive_counts: wp.array[wp.int32],
     margin: wp.array[wp.int32],
     inert: wp.array[wp.int32],
+    far_order: wp.array[wp.int32],
     slot: wp.int32,
     lanes: wp.int32,
     state: wp.array[wp.int32],
@@ -1511,6 +1467,7 @@ def choose_flood_visits(
         inclusive_counts,
         margin,
         inert,
+        far_order,
         slot,
         lanes,
         state,
@@ -1556,8 +1513,7 @@ def spread_flood_visits(
 def flood_rounds_serial(
     rows: wp.array2d[wp.int32],
     inclusive_counts: wp.array[wp.int32],
-    partners: wp.array[wp.vec2i],
-    codes: wp.array[wp.int32],
+    codes: wp.array[wp.vec3i],
     inert: wp.array[wp.int32],
     far_order: wp.array[wp.int32],
     fan_width: wp.int32,
@@ -1571,10 +1527,11 @@ def flood_rounds_serial(
     frontier: wp.array[wp.int32],
     state: wp.array[wp.int32],
 ) -> None:
-    # ``dim=1``, the CPU device's whole flood: every round the six launches above would make at
+    # ``dim=1``, the CPU device's whole flood: every round the four launches above would make at
     # the width a CPU round takes (its frontier's count, one lane at least), each lane in turn as
     # the CPU device runs a launch's threads, so the same arithmetic in the same order with no
     # launch or readback a round. Rounds alternate parity until the going flag clears.
+    far_order_length = far_order.shape[0]
     slot = wp.int32(0)
     while state[FLOOD_GOING] != 0:
         lanes = wp.max(state[FLOOD_SLOTS + FLOOD_SLOT_WORDS * slot + FLOOD_COUNT], 1)
@@ -1582,13 +1539,13 @@ def flood_rounds_serial(
             count_flood_votes_strided(
                 t,
                 inclusive_counts,
-                partners,
                 codes,
                 visited,
                 flipped,
                 stale,
                 frontier,
                 fan_width,
+                far_order_length,
                 slot,
                 lanes,
                 state,
@@ -1596,11 +1553,19 @@ def flood_rounds_serial(
             )
         for t in range(lanes):
             settle_flood_fans_strided(
-                t, visited, frontier, slot, lanes, flipped, stale, votes, margin, state
+                t,
+                visited,
+                inert,
+                frontier,
+                far_order,
+                slot,
+                lanes,
+                flipped,
+                stale,
+                votes,
+                margin,
+                state,
             )
-        for t in range(lanes):
-            pick_touched_seed_strided(t, visited, inert, frontier, far_order, slot, lanes, state)
-        pick_farthest_seed_once(far_order, visited, slot, state)
         for t in range(lanes):
             choose_flood_visits_strided(
                 t,
@@ -1608,6 +1573,7 @@ def flood_rounds_serial(
                 inclusive_counts,
                 margin,
                 inert,
+                far_order,
                 slot,
                 lanes,
                 state,

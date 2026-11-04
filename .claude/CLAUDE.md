@@ -976,11 +976,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **Unoriented `triangulate_point_cloud`** costs 1.8x the old mesh-level winding (still 3.5x faster
-  than MeshLib's): the flood, 3 226 rounds of six launches on dragon, 61.9 of the call's 166 ms,
-  3.2 us a launch. Not launch-bound (2026-11-03): the same recorded loop of empty kernels at the
-  same dims runs 0.92 us a launch, so ~2.3 us a launch is the kernels' own work, led by
-  `count_flood_votes` and `spread_flood_visits`; the octree's graph-replay lever does not
-  transfer (the loop already replays). Weighing is already incremental; list-driven passes
-  (0.99-1.04x) and four fused launches a round (1.10-1.33x) were tried and reverted. Only fewer
-  rounds or cheaper vote and spread rows would pay (`reference/component-status.md`).
+- **Unoriented `triangulate_point_cloud`**: the flood is still 41.6 of the call's 139 ms on dragon
+  (2026-11-04): 3 226 rounds of four launches, 2.4-3.2 us a graph node against a ~1.2 us floor
+  (a 1-thread node). The seed kernels are folded in, the lanes widened, the vote one load level
+  shorter; lane groups a fan, branch-free settling and warp-aggregated commits were neutral or lost
+  (`reference/component-status.md`). What remains is the round count, which the decision schedule
+  sets (its declined variants are listed there), or a round of fewer than four dependent launches
+  that serializes no fan's rows.

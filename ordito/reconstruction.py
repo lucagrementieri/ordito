@@ -566,8 +566,15 @@ def _assemble_fans(
 
 
 # The threads of each CUDA flood launch, striding over the frontier: a launch over every fan costs
-# its width in device time each round, and a frontier is a band of the surface.
-_FLOOD_CUDA_LANES = 16384
+# its width in device time each round, and a frontier is a band of the surface. A round's launches
+# are each a chain of dependent loads a thread, so a thread's share of the frontier's rows sets
+# their time: 65 536 took the flood 0.87x the time of 16 384 on dragon (131 072: 0.98x more, and
+# 1.01x on bunny); fewer lanes walking a fan's rows each lost (two a fan: 1.45x on bunny).
+_FLOOD_CUDA_LANES = 65536
+# The round pairs a replay of the recorded loop runs between reads of its going flag: each read is
+# a conditional node of its own, and the rounds past the last are no-ops (two: 0.94-0.95x on bunny
+# and dragon against one; four: 0.97x more on dragon, 1.02x on bunny).
+_FLOOD_REPLAY_PAIRS = 2
 
 
 def _orient_fans(
@@ -599,14 +606,12 @@ def _orient_fans(
     device = points.device
     n = points.size
     rows, inclusive_counts = fans.rows, fans.inclusive_counts
-    partners, codes = _launch.carve_typed(
-        ((wp.vec2i, n_candidates), (wp.int32, n_candidates)), device
-    )
+    codes = _launch.empty(n_candidates, dtype=wp.vec3i, device=device)
     _launch.launch(
         kernel_reconstruction.pack_flood_candidates,
         dim=n_candidates,
         inputs=[sorted_keys, sorted_slots, rows, inclusive_counts, wp.int32(fans.width)],
-        outputs=[partners, codes],
+        outputs=[codes],
         device=device,
     )
     lower = np.array(bounds[0], dtype=np.float32)
@@ -628,7 +633,7 @@ def _orient_fans(
             points,
             rows,
             inclusive_counts,
-            partners,
+            codes,
             _box_center(bounds),
             wp.float32(max_distance_sq),
         ],
@@ -636,6 +641,8 @@ def _orient_fans(
         device=device,
     )
     _launch.radix_sort_pairs(far_keys, far_order, count=n)
+    # The order alone; its upper half was the sort's scratch.
+    far_order = _launch.view(far_order, 0, n)
     # The cursor, the going flag, the first unvisited position, and each round parity's largest
     # margin, seed, frontier count and largest inert fan.
     state = wp.array([0, 1, n, 0, -1, 0, -1, 0, -1, 0, -1], dtype=wp.int32, device=device)
@@ -650,13 +657,13 @@ def _orient_fans(
             dim=width,
             inputs=[
                 inclusive_counts,
-                partners,
                 codes,
                 visited,
                 flipped,
                 stale,
                 frontier,
                 fan_width,
+                wp.int32(n),
                 parity,
                 lanes,
                 state,
@@ -667,19 +674,19 @@ def _orient_fans(
         _launch.launch(
             kernel_reconstruction.settle_flood_fans,
             dim=width,
-            inputs=[visited, frontier, parity, lanes, flipped, stale, votes, margin, state],
-            device=device,
-        )
-        _launch.launch(
-            kernel_reconstruction.pick_touched_seed,
-            dim=width,
-            inputs=[visited, inert, frontier, far_order, parity, lanes, state],
-            device=device,
-        )
-        _launch.launch(
-            kernel_reconstruction.pick_farthest_seed,
-            dim=1,
-            inputs=[far_order, visited, parity, state],
+            inputs=[
+                visited,
+                inert,
+                frontier,
+                far_order,
+                parity,
+                lanes,
+                flipped,
+                stale,
+                votes,
+                margin,
+                state,
+            ],
             device=device,
         )
         _launch.launch(
@@ -690,6 +697,7 @@ def _orient_fans(
                 inclusive_counts,
                 margin,
                 inert,
+                far_order,
                 parity,
                 lanes,
                 state,
@@ -726,17 +734,19 @@ def _orient_fans(
         _launch.launch(
             kernel_reconstruction.flood_rounds_serial,
             dim=1,
-            inputs=[rows, inclusive_counts, partners, codes, inert, far_order, fan_width],
+            inputs=[rows, inclusive_counts, codes, inert, far_order, fan_width],
             outputs=[flipped, visited, touched, stale, votes, margin, chosen, frontier, state],
             device=device,
         )
     else:
         # CUDA runs the rounds as one recorded device loop until the going flag clears, every
         # launch ``_FLOOD_CUDA_LANES`` threads striding over the frontier, whose count the kernels
-        # read. A replay is two rounds, one of each parity; a round after the last is a no-op.
+        # read. A replay is ``_FLOOD_REPLAY_PAIRS`` pairs of rounds, one of each parity; a round
+        # after the last is a no-op.
         def both_parities() -> None:
-            flood_round(0, _FLOOD_CUDA_LANES)
-            flood_round(1, _FLOOD_CUDA_LANES)
+            for _ in range(_FLOOD_REPLAY_PAIRS):
+                flood_round(0, _FLOOD_CUDA_LANES)
+                flood_round(1, _FLOOD_CUDA_LANES)
 
         going = kernel_reconstruction.FLOOD_GOING
         run_device_loop(device, odt.as_dense(state[going : going + 1]), both_parities)
