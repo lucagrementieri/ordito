@@ -713,9 +713,44 @@ CHEBYSHEV_STEP_ROWS_FROM = 1 << 16
 CHEBYSHEV_STEP_ROWS_COLUMNS = (2, 3)
 
 
+def _csr_row_dots(n_columns: int) -> wp.Function:
+    """``csr_row_dot`` against ``n_columns`` columns of ``x`` at once, off one walk of the row."""
+    column_values = wp.types.vector(length=n_columns, dtype=wp.float64)
+
+    def _func(
+        row: wp.int32,
+        stride: wp.int32,
+        offsets: wp.array[wp.int32],
+        columns: wp.array[wp.int32],
+        values: wp.array[wp.float64],
+        x: wp.array[wp.float64],
+    ) -> column_values:
+        # The row walk every thread-a-row kernel here shares: each column's sum, into registers (a
+        # constant ``n_columns``, so the column loop unrolls and the vector is never indexed at run
+        # time), adds the row's entries in ``csr_row_dot``'s order, so a thread-a-row kernel's
+        # result is its thread-a-slot sibling's to the bit.
+        total = column_values()
+        for k in range(offsets[row], offsets[row + 1]):
+            value = values[k]
+            entry = columns[k]
+            for column in range(n_columns):
+                total[column] += value * x[column * stride + entry]
+        return total
+
+    return wp.func(_func, name=f"csr_row_dots{n_columns}")
+
+
+# The column counts with thread-a-row kernels (``csr_row_dots``): one column (the scalar solves,
+# where only the cycle's fused sweep differs from the thread-a-slot form), the parametrizations' UV
+# pair and the solvers' coordinate columns.
+ROWS_COLUMNS = (1, 2, 3)
+
+CSR_ROW_DOTS = {n_columns: _csr_row_dots(n_columns) for n_columns in ROWS_COLUMNS}
+
+
 def _chebyshev_step_rows(n_columns: int) -> wp.Kernel:
     """``chebyshev_step`` over ``n_columns`` columns, one thread a row walking it once."""
-    column_values = wp.types.vector(length=n_columns, dtype=wp.float64)
+    row_dots = CSR_ROW_DOTS[n_columns]
 
     def _kernel(
         stride: wp.int32,
@@ -732,16 +767,10 @@ def _chebyshev_step_rows(n_columns: int) -> wp.Kernel:
         out_x: wp.array[wp.float64],
     ) -> None:
         # ``chebyshev_step``'s contract and aliasing rules, with every column's product of the row
-        # summed off one walk of it into registers (a constant ``n_columns``, so the column loops
-        # unroll and the vector is never indexed at run time). Each column's sum adds the row's
-        # entries in ``csr_row_dot``'s order, so the result is ``chebyshev_step``'s to the bit.
+        # summed off one walk of it (``csr_row_dots``), so the result is ``chebyshev_step``'s to
+        # the bit.
         row = wp.int32(wp.tid())
-        ax = column_values()
-        for k in range(offsets[row], offsets[row + 1]):
-            value = values[k]
-            entry = columns[k]
-            for column in range(n_columns):
-                ax[column] += value * x[column * stride + entry]
+        ax = row_dots(row, stride, offsets, columns, values, x)
         step = steps[index]
         for column in range(n_columns):
             slot = column * stride + row
@@ -755,6 +784,103 @@ def _chebyshev_step_rows(n_columns: int) -> wp.Kernel:
 CHEBYSHEV_STEP_ROWS = {
     n_columns: _chebyshev_step_rows(n_columns) for n_columns in CHEBYSHEV_STEP_ROWS_COLUMNS
 }
+
+
+@wp.func
+def jacobi_update(
+    x: wp.float64, scale: wp.float64, rhs: wp.float64, operator_x: wp.float64
+) -> wp.float64:
+    # One entry of a damped-Jacobi sweep, ``x + scale (b - A x)`` with ``scale = w / A_ii``.
+    # Shared by ``jacobi_sweep`` (``A x`` read from a buffer a mat-vec wrote) and
+    # ``cycle_sweep_rows`` (``A x`` summed in the same thread), which differ only in that.
+    return x + scale * (rhs - operator_x)
+
+
+# Row count from which a multigrid cycle level on CUDA runs its passes one thread a row
+# (``CYCLE_ROWS``) rather than as ``csr_matvec`` plus an elementwise pass a slot. Every pass of
+# such a level walks each row once for all its columns, and a smoothing sweep and the residual take
+# their mat-vec in the same thread, so ``A x`` is never stored. Bit-identical to the slot form.
+# CUDA, ``smooth_region``'s squared V-cycle (three columns), rows/slots: 0.78x a call on dragon's
+# 109 k free vertices, 0.51-0.53x on lucy's 3.5 M; ``multigrid_preconditioner`` solves on
+# ``icosphere(8 / 9)`` 0.90-0.93x at one column, 0.61-0.80x at three. The gate, a call at 2**14
+# against 2**16: 0.96-0.98x at 21-43 k free vertices, level from 109 k; at zero, 1.03-1.10x (a
+# thread a row starves the small levels).
+CYCLE_ROWS_FROM = 1 << 14
+
+
+def _cycle_rows(n_columns: int) -> tuple[wp.Kernel, wp.Kernel, wp.Kernel]:
+    """Return a cycle level's sweep, residual and transfer mat-vec over ``n_columns`` columns."""
+    row_dots = CSR_ROW_DOTS[n_columns]
+
+    def _sweep(
+        stride: wp.int32,
+        inv_diag: wp.array[wp.float64],
+        offsets: wp.array[wp.int32],
+        columns: wp.array[wp.int32],
+        values: wp.array[wp.float64],
+        rhs: wp.array[wp.float64],
+        x: wp.array[wp.float64],
+        out_x: wp.array[wp.float64],
+    ) -> None:
+        # ``csr_matvec`` then ``jacobi_sweep`` (the damping folded into ``inv_diag``) in one pass,
+        # to the bit. ``out_x`` must not alias ``x``: the row dot reads ``x`` at other rows, so the
+        # cycle ping-pongs a level's iterate between two buffers.
+        row = wp.int32(wp.tid())
+        ax = row_dots(row, stride, offsets, columns, values, x)
+        scale = inv_diag[row]
+        for column in range(n_columns):
+            slot = column * stride + row
+            out_x[slot] = jacobi_update(x[slot], scale, rhs[slot], ax[column])
+
+    def _residual(
+        stride: wp.int32,
+        offsets: wp.array[wp.int32],
+        columns: wp.array[wp.int32],
+        values: wp.array[wp.float64],
+        rhs: wp.array[wp.float64],
+        x: wp.array[wp.float64],
+        out_residual: wp.array[wp.float64],
+    ) -> None:
+        # ``csr_matvec`` then ``residual`` in one pass, to the bit.
+        row = wp.int32(wp.tid())
+        ax = row_dots(row, stride, offsets, columns, values, x)
+        for column in range(n_columns):
+            slot = column * stride + row
+            out_residual[slot] = rhs[slot] - ax[column]
+
+    def _matvec(
+        x_stride: wp.int32,
+        y_stride: wp.int32,
+        accumulate: wp.int32,
+        offsets: wp.array[wp.int32],
+        columns: wp.array[wp.int32],
+        values: wp.array[wp.float64],
+        x: wp.array[wp.float64],
+        addend: wp.array[wp.float64],
+        out_y: wp.array[wp.float64],
+    ) -> None:
+        # ``csr_matvec`` at ``alpha = 1``, a row each: the restriction (``accumulate`` zero) and the
+        # prolongation, which under a nonzero ``accumulate`` (warp uniform) writes ``addend + P e``.
+        # ``addend`` may alias ``out_y`` (each slot is read before it is written), which is
+        # ``csr_matvec``'s in-place accumulation; a distinct one lets the cycle land the corrected
+        # iterate in the other buffer of the level's pair.
+        row = wp.int32(wp.tid())
+        product = row_dots(row, x_stride, offsets, columns, values, x)
+        for column in range(n_columns):
+            slot = column * y_stride + row
+            if accumulate != wp.int32(0):
+                out_y[slot] = addend[slot] + product[column]
+            else:
+                out_y[slot] = product[column]
+
+    return (
+        wp.kernel(_sweep, name=f"cycle_sweep_rows{n_columns}"),
+        wp.kernel(_residual, name=f"cycle_residual_rows{n_columns}"),
+        wp.kernel(_matvec, name=f"cycle_matvec_rows{n_columns}"),
+    )
+
+
+CYCLE_ROWS = {n_columns: _cycle_rows(n_columns) for n_columns in ROWS_COLUMNS}
 
 
 @wp.func
@@ -1100,7 +1226,7 @@ def jacobi_sweep(
     row = t % stride
     if row >= n:
         return
-    out_x[t] += omega * inv_diag[row] * (rhs[t] - operator_x[t])
+    out_x[t] = jacobi_update(out_x[t], omega * inv_diag[row], rhs[t], operator_x[t])
 
 
 @wp.kernel

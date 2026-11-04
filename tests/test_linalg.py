@@ -2280,6 +2280,69 @@ def test_chebyshev_row_step_matches_the_slot_step(
     assert np.ptp(slots_np) > 1e-3  # non-vacuity: a zero solve would pass trivially
 
 
+@pytest.mark.parametrize("n_columns", [1, 2, 3])
+@pytest.mark.parametrize(
+    ("kind", "sweeps"), [("multigrid", None), ("squared", None), ("squared", 3)]
+)
+@pytest.mark.usefixtures("batched_engine")
+def test_multigrid_cycle_rows_match_the_slot_cycle(
+    device: str, monkeypatch: pytest.MonkeyPatch, n_columns: int, kind: str, sweeps: int | None
+) -> None:
+    """
+    Ordito against ordito: a V-cycle level run a thread a row is the slot-form level to the bit.
+
+    ``_MultigridCycle`` runs a level of at least ``kernels/algorithms/multigrid.CYCLE_ROWS_FROM``
+    rows on CUDA with ``CYCLE_ROWS``' kernels: every column off one walk of a row, the sweep and
+    the residual fused with their mat-vec, the iterate ping-ponged between two buffers. A solve is
+    run with that gate lowered to zero and again with it out of reach, and the answers must be
+    byte-identical: through ``multigrid_preconditioner`` (two sweeps a half-cycle) and the squared
+    form's ``V D² V`` under a degree-3 Chebyshev wrapper, at its eight sweeps and at an odd count,
+    the other parity of the ping-pong. Each arm builds its own system and starts from an empty
+    solver pool, or the second would replay the graph the first recorded. The library comparison
+    is ``test_multigrid_preconditioner_solves_the_same_system``. The CPU device keeps the slot
+    form, so there both arms take the same path.
+    """
+    rows_levels: list[int] = []
+    cycle_rows = od.linalg._MultigridCycle._cycle_rows
+
+    def recording(cycle: Any, depth: int) -> None:
+        rows_levels.append(depth)
+        cycle_rows(cycle, depth)
+
+    monkeypatch.setattr(od.linalg._MultigridCycle, "_cycle_rows", recording)
+    if sweeps is not None:
+        monkeypatch.setattr(od.linalg, "_SQUARED_MULTIGRID_SWEEPS", sweeps)
+
+    def solve(rows_from: int) -> np.ndarray:
+        monkeypatch.setattr(kernel_mg, "CYCLE_ROWS_FROM", rows_from)
+        monkeypatch.setattr(od.linalg, "_SOLVER_POOL", {})
+        monkeypatch.setattr(od.linalg, "_SHAPES_SEEN", set())
+        system_wp, rhs_wp, laplacian_wp, sums_wp, _system_np, _rhs_np = _normal_equations_system(
+            device, negative=False, n_rhs=n_columns
+        )
+        if kind == "multigrid":
+            system_wp, preconditioner = laplacian_wp, "multigrid"
+        else:
+            preconditioner = od.linalg.squared_laplacian_preconditioner(
+                laplacian_wp, sums_wp, method="multigrid", degree=3
+            )
+        solution_wp = wp.zeros_like(rhs_wp)
+        od.linalg.solve_spd_columns(
+            system_wp,
+            rhs_wp,
+            odt.as_array2d(solution_wp, wp.float64),
+            preconditioner=preconditioner,
+        )
+        return solution_wp.numpy()
+
+    slots_np = solve(1 << 62)
+    assert not rows_levels
+    rows_np = solve(0)
+    assert rows_levels or wp.get_device(device).is_cpu
+    assert np.array_equal(rows_np, slots_np)
+    assert np.ptp(slots_np) > 1e-3  # non-vacuity: a zero solve would pass trivially
+
+
 @pytest.mark.parametrize("n_columns", [1, 3])
 def test_replicated_operator_applies_the_base_to_each_block(device: str, n_columns: int) -> None:
     """

@@ -5624,6 +5624,8 @@ class _MultigridLevel:
         "r",
         "restrict_dim",
         "restrictor",
+        "rows",
+        "spare",
         "stride",
         "x",
     )
@@ -5637,6 +5639,10 @@ class _MultigridLevel:
         self.restrictor: odt.BsrMatrix[wp.float64] | None = None
         # ``omega D^-1``, the smoother's damping folded in (``_multigrid_damped_diagonal``).
         self.inverse_diagonal: wp.array[wp.float64] | None = None
+        # The thread-a-row kernels (``kernel_mg.CYCLE_ROWS``) a cycle runs this level with, and the
+        # second buffer of its iterate's pair, which they ping-pong; ``None`` on the slot form.
+        self.rows: tuple[wp.Kernel, wp.Kernel, wp.Kernel] | None = None
+        self.spare: wp.array[wp.float64] | None = None
 
 
 def _multigrid_hierarchy(
@@ -6386,14 +6392,27 @@ class _MultigridCycle:
 
         # Every level's working vectors are views of one buffer, uninitialized: each is written
         # before it is read (the top level's padding is never read at all).
+        # A level of at least ``kernel_mg.CYCLE_ROWS_FROM`` rows on CUDA runs a thread a row
+        # (``kernel_mg.CYCLE_ROWS``): its passes walk each row once for every column, and its sweeps
+        # and residual take their mat-vec in the same thread. Bit-identical to the slot form.
+        rows = kernel_mg.CYCLE_ROWS.get(n_columns) if self._device.is_cuda else None
         for depth, level in enumerate(levels):
             level.stride = stride if depth == 0 else level.n
             level.dim = n_columns * level.stride
             level.matvec_dim = n_columns * level.n
+            level.rows = (
+                rows
+                if level.prolongator is not None and level.n >= kernel_mg.CYCLE_ROWS_FROM
+                else None
+            )
         # The residual is formed elementwise in place over the mat-vec's ``ax`` (``kernel_mg
         # .residual``), which no launch reads again before the post-smoothing rewrites it: a level
-        # holds ``ax`` (also its residual), and below the top its right-hand side and iterate.
-        counts = [1 if depth == 0 else 3 for depth in range(len(levels))]
+        # holds ``ax`` (also its residual), and below the top its right-hand side and iterate; a
+        # thread-a-row level also the spare of its iterate's pair.
+        counts = [
+            (1 if depth == 0 else 3) + (level.rows is not None)
+            for depth, level in enumerate(levels)
+        ]
         total = sum(count * level.dim for count, level in zip(counts, levels, strict=True))
         vectors = _launch.empty(total, dtype=wp.float64, device=self._device)
         start = 0
@@ -6407,7 +6426,9 @@ class _MultigridCycle:
                 )
                 start += level.dim
             level.ax = level.r = views[0]
-            if count == 3:
+            if level.rows is not None:
+                level.spare = views.pop()
+            if len(views) == 3:
                 level.b, level.x = views[1], views[2]
         for depth, level in enumerate(levels[:-1]):
             child = levels[depth + 1]
@@ -6499,6 +6520,9 @@ class _MultigridCycle:
                 device=self._device,
             )
             return
+        if level.rows is not None:
+            self._cycle_rows(depth)
+            return
         # The first sweep from a zero initial guess is a *write*, so nothing has to be zeroed and
         # that sweep costs no mat-vec.
         _launch.launch(
@@ -6547,6 +6571,114 @@ class _MultigridCycle:
             accumulate=True,
         )
         self._smooth(level, self._sweeps)
+
+    def _cycle_rows(self, depth: int) -> None:
+        """``_cycle`` on a thread-a-row level: the same passes, to the bit, fused per row."""
+        level = self._levels[depth]
+        child = self._levels[depth + 1]
+        operator, restrictor, prolongator = level.operator, level.restrictor, level.prolongator
+        assert level.rows is not None
+        assert level.spare is not None
+        assert operator is not None
+        assert restrictor is not None
+        assert prolongator is not None
+        sweep, residual, matvec = level.rows
+        sweeps = self._sweeps
+        # A sweep reads its iterate at other rows, so it writes the pair's other buffer. Each half
+        # starts in whichever buffer its sweep count brings back to ``x``: the pre-smoothing's
+        # first write (no mat-vec, as in ``_cycle``) and the prolongation's corrected iterate.
+        current, other = (level.x, level.spare) if sweeps % 2 == 1 else (level.spare, level.x)
+        _launch.launch(
+            kernel_cg.scaled_diagonal_apply,
+            dim=level.dim,
+            inputs=[
+                wp.int32(level.n),
+                wp.int32(level.stride),
+                level.inverse_diagonal,
+                wp.float64(1.0),  # the damping is in the diagonal already
+                level.b,
+                current,
+            ],
+            device=self._device,
+        )
+        for _ in range(sweeps - 1):
+            self._sweep_rows(sweep, level, operator, current, other)
+            current, other = other, current
+        _launch.launch(
+            residual,
+            dim=level.n,
+            inputs=[
+                wp.int32(level.stride),
+                operator.offsets,
+                operator.columns,
+                operator.values,
+                level.b,
+                level.x,
+                level.r,
+            ],
+            device=self._device,
+        )
+        _launch.launch(
+            matvec,
+            dim=child.n,
+            inputs=[
+                wp.int32(level.stride),
+                wp.int32(child.stride),
+                wp.int32(0),
+                restrictor.offsets,
+                restrictor.columns,
+                restrictor.values,
+                level.r,
+                child.b,
+                child.b,
+            ],
+            device=self._device,
+        )
+        self._cycle(depth + 1)
+        current, other = (level.x, level.spare) if sweeps % 2 == 0 else (level.spare, level.x)
+        _launch.launch(
+            matvec,
+            dim=level.n,
+            inputs=[
+                wp.int32(child.stride),
+                wp.int32(level.stride),
+                wp.int32(1),
+                prolongator.offsets,
+                prolongator.columns,
+                prolongator.values,
+                child.x,
+                level.x,
+                current,
+            ],
+            device=self._device,
+        )
+        for _ in range(sweeps):
+            self._sweep_rows(sweep, level, operator, current, other)
+            current, other = other, current
+
+    def _sweep_rows(
+        self,
+        sweep: wp.Kernel,
+        level: _MultigridLevel,
+        operator: odt.BsrMatrix[wp.float64],
+        x: wp.array[wp.float64],
+        out_x: wp.array[wp.float64],
+    ) -> None:
+        _launch.launch(
+            sweep,
+            dim=level.n,
+            inputs=[
+                wp.int32(level.stride),
+                level.inverse_diagonal,
+                operator.offsets,
+                operator.columns,
+                operator.values,
+                level.b,
+                x,
+            ],
+            outputs=[out_x],
+            device=self._device,
+        )
 
 
 def _warn_if_not_converged(result: tuple[int, float, float], iteration_cap: int, name: str) -> None:

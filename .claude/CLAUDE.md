@@ -976,7 +976,13 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **`smooth_region` is not flat in `n`** with the squared V-cycle: 1 885 iterations, 43 s on `lucy`.
+- **`smooth_region`'s iteration count is not flat in `n`** with the squared V-cycle: unit weights
+  99 iterations on dragon's 109 k free vertices, 348 on lucy's 3.5 M (21 s); cotangent 341 and 731
+  (52 s). The cost per iteration is now about linear (2026-11-04). The V-cycle alone on `L_ff`
+  grows less (46 -> 75 iterations), and squaring the preconditioner amplifies that: a flat count
+  needs a better cycle (W- or K-cycle, coarsening), not a cheaper one. Four sweeps instead of
+  eight gave lucy unit 15.8 s but tied on cotangent and lost at mid sizes, so it stays at eight
+  until a cycle change re-prices it.
 - **Unoriented `triangulate_point_cloud`** costs 1.8x the old mesh-level winding (still 3.5x faster
   than MeshLib's): the flood, 3 226 rounds of six launches on dragon, 61.9 of the call's 166 ms,
   3.2 us a launch. Not launch-bound (2026-11-03): the same recorded loop of empty kernels at the
