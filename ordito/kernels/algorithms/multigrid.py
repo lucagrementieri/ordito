@@ -1261,7 +1261,12 @@ def mis_level_setup(
     # diagonal.
     i = wp.int32(wp.tid())
     diagonal, off_sum = csr_row_diagonal(offsets, columns, values, i)
-    out_diagonal[i] = wp.where(l1_smoother != 0, wp.abs(diagonal) + off_sum, diagonal)
+    # The l1 diagonal keeps the true one's sign, so a negative-definite operator (a cotangent
+    # Laplacian as ``cotmatrix`` returns it) smooths toward its solution rather than away from it.
+    l1 = wp.abs(diagonal) + off_sum
+    out_diagonal[i] = wp.where(
+        l1_smoother != 0, wp.where(diagonal < wp.float64(0.0), -l1, l1), diagonal
+    )
     out_scaled_diagonal[i] = sqrt_abs(diagonal)
     out_priority[i] = element_priority(seed, i)
     out_state[i] = MG_UNDECIDED

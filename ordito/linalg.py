@@ -93,15 +93,14 @@ aggregation keeps a strength-of-connection threshold (``_MULTIGRID_THETA``) rath
 off-diagonal, because on a graded (anisotropic) patch keeping every off-diagonal aggregates across
 the weak direction and the hierarchy converges far more slowly.
 
-**Routing through ``"auto"`` decides from the operator, not the caller**, and the axis that matters
-is conditioning: only a system whose off-diagonal dominance clears
-[`CG_MULTIGRID_DOMINANCE`][ordito.linalg.CG_MULTIGRID_DOMINANCE] benefits from a hierarchy. A plain
-Laplacian (``tutte``, ``min_quad_with_fixed`` on a raw cotangent matrix) and ``lscm``'s coupled u/v
-system sit below that bar and a forced hierarchy regresses them, where a *squared* operator
-(``harmonic`` at ``k >= 3``) sits comfortably above it. So
-[`harmonic`][ordito.parametrization.harmonic] passes ``"auto"`` at ``k >= 3`` for the iteration it
-falls back to when the system cannot be factored (it factors first there), and
-[`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] defaults to ``"adaptive"``. At ``k = 2``
+**Routing through ``"auto"`` decides from the operator, not the caller.** A hierarchy pays on a
+large system that converges slowly -- a plain Laplacian with few pinned unknowns included -- and
+loses to its setup on a small one or one pinned along much of its length, which Jacobi solves in a
+few rounds. [`harmonic`][ordito.parametrization.harmonic] passes ``"auto"`` at ``k >= 3`` for the
+iteration it falls back to when the system cannot be factored (it factors first there), and
+[`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] defaults to ``"adaptive"``, whose Jacobi
+probe tells a short solve from a long one and whose escalation takes a V-cycle on a large system
+([`CG_ADAPTIVE_MULTIGRID_FROM`][ordito.linalg.CG_ADAPTIVE_MULTIGRID_FROM]). At ``k = 2``
 the operator is ``L M^-1 L``, which
 [`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner] inverts as the
 square of a Laplacian, and ``harmonic`` takes that instead.
@@ -206,6 +205,15 @@ CG_CHECK_EVERY = 0
 # between the two classes the suite's solves fall into: the short ones finish in under a hundred
 # Jacobi rounds, the long ones take several hundred to a few thousand.
 CG_CHEBYSHEV_PROBE_ITERATIONS = 150
+
+# Rows from which ``preconditioner="adaptive"`` escalates to a multigrid V-cycle rather than the
+# Chebyshev polynomial. A solve its probe did not finish is a long one, and on a large system the
+# V-cycle's setup is the cheaper half: ``min_quad_with_fixed`` on a cotangent Laplacian, CUDA,
+# new/old, a 1 M-vertex disk pinned along its rim 0.16x, ``icosphere(8)`` (655 k) with 0.1 / 1 %
+# pinned 0.48x / 0.63x, a 160 k disk 0.51x, ``icosphere(7)`` 0.76x; the systems that finish inside
+# the probe (10-50 % pinned) unchanged. Below it the polynomial stays: on 17-41 k rows the V-cycle
+# alone lost to it 1.4-2.6x but on the graded saddle, where it won 0.6x.
+CG_ADAPTIVE_MULTIGRID_FROM = 50_000
 
 # Tiles per column up to which a conjugate-gradient round's update folds the dots' second stage
 # itself -- each block re-reading its column's ``blocks`` partials through the same fixed tree, so
@@ -361,10 +369,10 @@ def min_quad_with_fixed(
         on it — the solver's ``(iterations, residual, atol)`` triple is not surfaced here.
     preconditioner
         Forwarded to [`solve_spd_columns`][ordito.linalg.solve_spd_columns]. ``"adaptive"`` (the
-        default) because the eliminated operator is usually a plain Laplacian, whose rows nearly sum
-        to zero and which a V-cycle does not help, and whose solve is short when many degrees of
-        freedom are pinned and long when few are -- the one case Jacobi wins and the other the
-        polynomial does, with a probe to tell them apart.
+        default) because the eliminated operator is usually a plain Laplacian, whose solve is short
+        when many degrees of freedom are pinned and long when few are -- the one case Jacobi wins,
+        the other the polynomial does on a small system and a V-cycle on a large one, with a probe
+        to tell them apart.
     solver
         ``"iterative"`` (the default) runs the verified conjugate gradient above. ``"direct"``
         factors ``Q_uu`` first and solves by the factorization, iterating (verified, to the full
@@ -1632,8 +1640,10 @@ def solve_spd_columns(
         symmetric Laplacian-like system, and a loss on a short one -- ``"adaptive"`` for Jacobi
         under a probe of
         [`CG_CHEBYSHEV_PROBE_ITERATIONS`][ordito.linalg.CG_CHEBYSHEV_PROBE_ITERATIONS] rounds that
-        escalates to that polynomial, warm-started, only if the probe has not converged -- the
-        choice for a caller whose solves may be short or long -- ``"multigrid"`` for the
+        escalates, warm-started, only if the probe has not converged -- to that polynomial, or
+        from [`CG_ADAPTIVE_MULTIGRID_FROM`][ordito.linalg.CG_ADAPTIVE_MULTIGRID_FROM] rows to the
+        V-cycle below; the choice for a caller whose solves may be short or long -- ``"multigrid"``
+        for the
         smoothed-aggregation V-cycle [`multigrid_preconditioner`]
         [ordito.linalg.multigrid_preconditioner] builds, or ``"auto"`` to let the operator decide.
         ``"auto"`` first tests the assembled system against
@@ -1972,7 +1982,8 @@ def spd_column_solver(
         ``"diag"``, ``"chebyshev"``, ``"adaptive"`` or ``"multigrid"``, as in
         [`solve_spd_columns`][ordito.linalg.solve_spd_columns]. Built once here and reused by every
         call against this state, which is the shape the V-cycle's setup cost wants; ``"adaptive"``
-        decides on every call, and builds its polynomial on the first call that escalates.
+        decides on every call, and builds its escalation's preconditioner on the first call that
+        escalates.
         ``"auto"`` is **not** accepted: it decides on the first solve -- from that system's
         operator, and from the probe when the operator does not settle it -- and a hoisted state
         exists to be driven many times.
@@ -3062,12 +3073,14 @@ def _read_pair(
 
 class _AdaptiveCg:
     """
-    ``preconditioner="adaptive"``: Jacobi under a probe, escalating to the Chebyshev polynomial.
+    ``preconditioner="adaptive"``: Jacobi under a probe, escalating to a polynomial or a V-cycle.
 
     Runs up to [`CG_CHEBYSHEV_PROBE_ITERATIONS`][ordito.linalg.CG_CHEBYSHEV_PROBE_ITERATIONS]
-    Jacobi rounds; a solve that converges there never pays for the polynomial, and one that does
-    not continues under ``"chebyshev"`` from the iterate the probe left, with the rest of the
-    budget. Callable like ``_BatchedCg``, returning the last solve's three values; as host scalars
+    Jacobi rounds; a solve that converges there never pays for an escalation, and one that does
+    not continues from the iterate the probe left, with the rest of the budget, under
+    ``"chebyshev"`` -- or ``"multigrid"`` from
+    [`CG_ADAPTIVE_MULTIGRID_FROM`][ordito.linalg.CG_ADAPTIVE_MULTIGRID_FROM] rows. Callable like
+    ``_BatchedCg``, returning the last solve's three values; as host scalars
     an escalated count includes the probe's rounds, so it is comparable with the caller's cap and
     a non-convergence warning can fire. Device arrays are returned as the escalated solve left
     them.
@@ -3157,8 +3170,11 @@ class _AdaptiveCg:
                 return result
         if self._escalation is None:
             # The escalation never runs while the probe does: it borrows the probe's vectors.
+            escalation = (
+                "multigrid" if int(self._matrix.nrow) >= CG_ADAPTIVE_MULTIGRID_FROM else "chebyshev"
+            )
             self._escalation = self._state(
-                "chebyshev", self._maxiter - self._probe_cap, vectors_from=self._probe
+                escalation, self._maxiter - self._probe_cap, vectors_from=self._probe
             )
         iterations, residual, tolerance = self._run(self._escalation)
         if isinstance(iterations, wp.array):
@@ -5722,7 +5738,7 @@ class _MultigridLevel:
 
 
 def _multigrid_hierarchy(
-    matrix: odt.BsrMatrix[wp.float64], seed: int, *, l1_smoother: bool = False
+    matrix: odt.BsrMatrix[wp.float64], seed: int, *, l1_smoother: bool = True
 ) -> tuple[list[_MultigridLevel], _CoarseSolve] | None:
     """
     Coarsen ``matrix`` until a level is small enough to invert densely.

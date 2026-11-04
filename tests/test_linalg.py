@@ -11,6 +11,7 @@ import igl
 import numpy as np
 import pytest
 import scipy.sparse as sp
+import scipy.sparse.linalg as spla
 import trimesh as tm
 import warp as wp
 import warp.sparse as wps
@@ -1601,6 +1602,40 @@ def test_adaptive_preconditioner_escalates_only_past_its_probe(device: str, shif
     "operator is the oracle for that; timing it would be the O(n^3)-against-iterative "
     "mismatch the sibling claims record.",
 )
+@pytest.mark.parametrize("large", [False, True])
+def test_adaptive_escalates_to_a_v_cycle_on_a_large_system(
+    device: str, monkeypatch: pytest.MonkeyPatch, large: bool
+) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: ``"adaptive"``'s escalation picks its preconditioner.
+
+    A probe that does not converge escalates to the Chebyshev polynomial below
+    ``CG_ADAPTIVE_MULTIGRID_FROM`` rows and to a multigrid V-cycle from it. The probe is cut to five
+    rounds so a small grid Laplacian escalates, the gate is put on either side of it, and the
+    hierarchy builds are counted: one when large, none otherwise; the answer is the reference's
+    either way.
+    """
+    built: list[int] = []
+    hierarchy = od.linalg._multigrid_hierarchy
+
+    def recording(*args: Any, **kwargs: Any) -> Any:
+        built.append(1)
+        return hierarchy(*args, **kwargs)
+
+    monkeypatch.setattr(od.linalg, "_multigrid_hierarchy", recording)
+    monkeypatch.setattr(od.linalg, "CG_CHEBYSHEV_PROBE_ITERATIONS", 5)
+    monkeypatch.setattr(od.linalg, "CG_ADAPTIVE_MULTIGRID_FROM", 0 if large else 1 << 40)
+    monkeypatch.setattr(od.linalg, "_SOLVER_POOL", {})
+    matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device)
+    reference_np = np.linalg.solve(dense_np, rhs_np.T).T
+    solution_wp = wp.zeros_like(rhs_wp)
+    od.linalg.solve_spd_columns(
+        matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), preconditioner="adaptive"
+    )
+    assert len(built) == (1 if large else 0)
+    assert np.allclose(solution_wp.numpy(), reference_np, rtol=1e-5, atol=1e-5)
+
+
 def test_multigrid_preconditioner_solves_the_same_system(device: str) -> None:
     """
     Class A, against ``numpy.linalg.solve``: the V-cycle changes the path, not the answer.
@@ -1618,6 +1653,53 @@ def test_multigrid_preconditioner_solves_the_same_system(device: str) -> None:
             matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), preconditioner=mode
         )
         assert np.allclose(solution_wp.numpy(), reference_np, rtol=1e-5, atol=1e-5), mode
+
+
+def test_multigrid_solves_a_negative_definite_laplacian(device: str) -> None:
+    """
+    Class A: a V-cycle over a negative-definite operator converges, to SciPy's direct answer.
+
+    ``cotmatrix`` is negative semi-definite, and ``min_quad_with_fixed`` hands its interior block
+    to the solver as it is. The hierarchy's l1 smoother scales each row by its absolute sum; that
+    sum must carry the diagonal's sign, or the smoother steps away from the solution and conjugate
+    gradient never converges -- which ``min_quad_with_fixed`` hides behind its factorization
+    fallback, so the iteration count is asserted here, not only the answer. A jittered grid has
+    obtuse triangles, so its weights are not all positive: the operator is not an M-matrix, where
+    the l1 scaling is what keeps the cycle convergent at all.
+    """
+    vertices_wp, faces_wp = od.creation.grid(count=(48, 48))
+    vertices_np = vertices_wp.numpy().reshape(-1, 3).astype(np.float32)
+    spacing = 1.0 / 47
+    interior_np = np.asarray((np.abs(vertices_np[:, :2]) < 0.5 - 1e-6).all(axis=1), dtype=bool)
+    jitter_np = np.random.default_rng(3).uniform(-0.3, 0.3, (int(interior_np.sum()), 2))
+    vertices_np[interior_np, :2] += (spacing * jitter_np).astype(np.float32)
+    laplacian_wp = od.laplacian.cotmatrix(
+        wp.array(vertices_np, dtype=wp.vec3, device=device),
+        wp.array(faces_wp.numpy(), dtype=wp.int32, device=device),
+        dtype=wp.float64,
+    )
+    fixed_wp = wp.array(~interior_np, dtype=wp.bool, device=device)
+    free_map, n_free = od.linalg.free_partition(fixed_wp)
+    values_wp = odt.as_array2d(
+        wp.array(np.ascontiguousarray(vertices_np[:, :2].T), dtype=wp.float64, device=device),
+        wp.float64,
+    )
+    system_wp, rhs_wp = od.linalg.assemble_interior_system(
+        laplacian_wp, fixed_wp, free_map, values_wp, n_free
+    )
+    system_np = bsr_to_csr(system_wp)
+    assert system_np.diagonal().max() < 0.0  # the operator is negative definite
+    assert (system_np - sp.diags(system_np.diagonal())).max() > 0.0  # not an M-matrix
+    solution_wp = odt.as_array2d(
+        wp.zeros(rhs_wp.shape, dtype=wp.float64, device=device), wp.float64
+    )
+    iterations, _residual, _tolerance = od.linalg.solve_spd_columns(
+        system_wp, rhs_wp, solution_wp, preconditioner="multigrid", check_every=1, maxiter=500
+    )
+    reference_np = np.stack([spla.spsolve(system_np.tocsc(), row) for row in rhs_wp.numpy()])
+    assert int(iterations) < 40  # measured 18; the l1 diagonal without its sign took 131
+    assert np.allclose(solution_wp.numpy(), reference_np, rtol=1e-5, atol=1e-5)
+    assert np.ptp(reference_np) > 1e-2  # non-vacuity
 
 
 def test_multigrid_preconditioner_is_symmetric(device: str) -> None:
