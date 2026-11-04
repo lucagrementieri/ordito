@@ -723,6 +723,12 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("reconstruction", "grow_seed_rings"): frozenset({"distance"}),
     # The flood's flips then reverse the packed fans' rows in place.
     ("reconstruction", "flip_fan_windings"): frozenset({"rows"}),
+    # The narrow rounds advance the flood's state the four round launches carry (visits, margins,
+    # the frontier and its state words) through the block's own scratch: its lists, margin counts,
+    # list lengths and seed bitsets. The answer is the windings ``flip_fan_windings`` applies.
+    ("reconstruction", "flood_narrow_rounds"): frozenset(
+        {"frontier", "hist", "live", "margin", "narrow", "seeds", "stale_list", "state", "visited"}
+    ),
     # The serial builder's half-edge records and its per-round marks are its working state across
     # the whole assembly; the answer is ``out_state``.
     ("algorithms.mesh_builder", "build_candidate_mesh"): frozenset({"t", "marked"}),

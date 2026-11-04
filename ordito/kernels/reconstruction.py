@@ -21,6 +21,7 @@ from ordito.kernels.algorithms.conjugate_gradient import (
 from ordito.kernels.array import (
     LOOP_CONDITION,
     append_slot,
+    append_slot_if,
     cube_corner_offset,
     is_positive_finite,
     ordered_float_bits,
@@ -1011,6 +1012,8 @@ FLOOD_GOING = 1
 FLOOD_FARTHEST = 2
 FLOOD_SLOTS = 3
 FLOOD_SLOT_WORDS = 4
+# Past the two slots, the fans a round's visits turned stale (counted for ``flood_narrow_rounds``).
+FLOOD_STALE_COUNT = 11
 FLOOD_TOP = 0
 FLOOD_SEED = 1
 FLOOD_COUNT = 2
@@ -1055,6 +1058,7 @@ def start_fan_flood(
     out_visited: wp.array[wp.int32],
     out_touched: wp.array[wp.int32],
     out_inert: wp.array[wp.int32],
+    out_margin: wp.array[wp.int32],
     out_far_keys: wp.array[wp.uint64],
     out_far_order: wp.array[wp.int32],
 ) -> None:
@@ -1062,7 +1066,8 @@ def start_fan_flood(
     # triangle's normal against the direction from ``center``), is flagged inert when no other fan
     # carries any of its triangles (its winding then decides nothing), and gets its key in the
     # farthest-first seed order: the priority's ordered bits above the index, complemented so that
-    # an ascending sort puts the largest first, an empty fan last. An empty fan starts visited.
+    # an ascending sort puts the largest first, an empty fan last. An empty fan starts visited,
+    # and every fan unweighed (margin ``0``).
     v = wp.int32(wp.tid())
     start, count = scanned_count(inclusive_counts, v)
     pv = points[v]
@@ -1075,6 +1080,7 @@ def start_fan_flood(
         if codes[row][1] >= 0:
             inert = 0
     out_inert[v] = inert
+    out_margin[v] = 0
     out_flipped[v] = wp.where(balance < 0, 1, 0)
     out_visited[v] = wp.where(count == 0, 1, 0)
     out_touched[v] = 0
@@ -1115,6 +1121,25 @@ def row_vote(
 
 
 @wp.func
+def vote_fan_row(
+    u: wp.int32,
+    j: wp.int32,
+    inclusive_counts: wp.array[wp.int32],
+    codes: wp.array[wp.vec3i],
+    visited: wp.array[wp.int32],
+    flipped: wp.array[wp.int32],
+    votes: wp.array[wp.int32],
+):
+    # Row ``j`` of fan ``u``'s vote (``row_vote``) counted into ``votes``; a slot past the fan's
+    # rows votes nothing.
+    start, count = scanned_count(inclusive_counts, u)
+    if j < count:
+        vote = row_vote(start + j, codes, visited, flipped)
+        if vote >= 0:
+            wp.atomic_add(votes, 2 * u + vote, 1)
+
+
+@wp.func
 def count_flood_votes_strided(
     first: wp.int32,
     inclusive_counts: wp.array[wp.int32],
@@ -1145,6 +1170,7 @@ def count_flood_votes_strided(
         state[other + FLOOD_COUNT] = 0
         state[other + FLOOD_INERT] = -1
         state[FLOOD_FARTHEST] = far_order_length
+        state[FLOOD_STALE_COUNT] = 0
     items = state[base + FLOOD_COUNT] * fan_width
     e = first
     while e < items:
@@ -1153,12 +1179,62 @@ def count_flood_votes_strided(
         e += lanes
         if visited[u] != 0 or stale[u] == 0:
             continue
-        start, count = scanned_count(inclusive_counts, u)
-        if j >= count:
-            continue
-        vote = row_vote(start + j, codes, visited, flipped)
-        if vote >= 0:
-            wp.atomic_add(votes, 2 * u + vote, 1)
+        vote_fan_row(u, j, inclusive_counts, codes, visited, flipped, votes)
+
+
+@wp.func
+def settle_winding(
+    u: wp.int32, keep: wp.int32, flip: wp.int32, flipped: wp.array[wp.int32]
+) -> wp.int32:
+    # Fan ``u`` turns to the majority of its ``keep`` and ``flip`` votes (a tie keeps its
+    # winding); returns its margin, ``-1`` without votes.
+    weight = wp.int32(-1)
+    if keep + flip > 0:
+        if flip > keep:
+            flipped[u] = 1
+        elif keep > flip:
+            flipped[u] = 0
+        weight = wp.abs(keep - flip)
+    return weight
+
+
+@wp.func
+def reweigh_fan(
+    u: wp.int32, flipped: wp.array[wp.int32], stale: wp.array[wp.int32], votes: wp.array[wp.int32]
+) -> wp.int32:
+    # Stale fan ``u`` turns to its votes' majority (a tie keeps its winding), its votes cleared and
+    # its staleness with them; returns its margin, ``-1`` without votes.
+    stale[u] = 0
+    keep = votes[2 * u]
+    flip = votes[2 * u + 1]
+    votes[2 * u] = 0
+    votes[2 * u + 1] = 0
+    return settle_winding(u, keep, flip, flipped)
+
+
+@wp.func
+def find_farthest_unvisited(
+    first: wp.int32,
+    lanes: wp.int32,
+    far_order: wp.array[wp.int32],
+    visited: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+):
+    # CUDA: the first unvisited position of the farthest-first order past the cursor into the
+    # state's ``FLOOD_FARTHEST`` (arriving the order's length), one ``atomic_min`` a warp, the
+    # ``lanes`` threads striding from ``first``.
+    position = state[FLOOD_CURSOR] + first
+    while position < far_order.shape[0]:
+        candidate = wp.int32(2147483647)
+        if visited[far_order[position]] == 0:
+            candidate = position
+        found = warp_min_at_lead(candidate)
+        if found < far_order.shape[0]:
+            wp.atomic_min(state, FLOOD_FARTHEST, found)
+        position += lanes
+        # The found position only falls, so one below this thread's next ends its search.
+        if position > state[FLOOD_FARTHEST]:
+            break
 
 
 @wp.func
@@ -1196,37 +1272,14 @@ def settle_flood_fans_strided(
         if visited[u] != 0:
             continue
         if stale[u] != 0:
-            stale[u] = 0
-            keep = votes[2 * u]
-            flip = votes[2 * u + 1]
-            votes[2 * u] = 0
-            votes[2 * u + 1] = 0
-            weight = wp.int32(-1)
-            if keep + flip > 0:
-                if flip > keep:
-                    flipped[u] = 1
-                elif keep > flip:
-                    flipped[u] = 0
-                weight = wp.abs(keep - flip)
-            margin[u] = weight
+            margin[u] = reweigh_fan(u, flipped, stale, votes)
         if margin[u] > 0:
             wp.atomic_max(state, base + FLOOD_TOP, margin[u])
         word = wp.where(inert[u] != 0, FLOOD_INERT, FLOOD_SEED)
         wp.atomic_max(state, base + word, u)
     if count > 0 or device_is_cpu() != 0:
         return
-    position = state[FLOOD_CURSOR] + first
-    while position < far_order.shape[0]:
-        candidate = wp.int32(2147483647)
-        if visited[far_order[position]] == 0:
-            candidate = position
-        found = warp_min_at_lead(candidate)
-        if found < far_order.shape[0]:
-            wp.atomic_min(state, FLOOD_FARTHEST, found)
-        position += lanes
-        # The found position only falls, so one below this thread's next ends its search.
-        if position > state[FLOOD_FARTHEST]:
-            break
+    find_farthest_unvisited(first, lanes, far_order, visited, state)
 
 
 @wp.func
@@ -1251,12 +1304,37 @@ def touch_flood_neighbour(
     frontier: wp.array[wp.int32],
     at: wp.int32,
 ) -> None:
-    # A visited fan's neighbour ``x``: unvisited, it turns stale, and joins the next frontier the
-    # first time any visit touches it.
+    # A visited fan's neighbour ``x``: unvisited, it turns stale (counted in the state's
+    # ``FLOOD_STALE_COUNT``), and joins the next frontier the first time any visit touches it.
     if visited[x] == 0:
-        stale[x] = 1
+        if wp.atomic_max(stale, x, 1) == 0:
+            append_slot(state, FLOOD_STALE_COUNT)
         if wp.atomic_max(touched, x, 1) == 0:
             append_frontier(state, next_count, frontier, at, x)
+
+
+@wp.func
+def touch_fan_row(
+    u: wp.int32,
+    j: wp.int32,
+    rows: wp.array2d[wp.int32],
+    inclusive_counts: wp.array[wp.int32],
+    visited: wp.array[wp.int32],
+    touched: wp.array[wp.int32],
+    stale: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    next_count: wp.int32,
+    frontier: wp.array[wp.int32],
+    at: wp.int32,
+):
+    # The two other corners of row ``j`` of visited fan ``u``, each touched as
+    # ``touch_flood_neighbour`` does; a slot past the fan's rows touches nothing.
+    start, count = scanned_count(inclusive_counts, u)
+    if j < count:
+        for c in range(1, 3):
+            touch_flood_neighbour(
+                rows[start + j, c], visited, touched, stale, state, next_count, frontier, at
+            )
 
 
 @wp.func
@@ -1370,14 +1448,19 @@ def spread_flood_visits_strided(
         e += lanes
         if chosen[i] == 0:
             continue
-        u = frontier[slot * n + i]
-        start, count = scanned_count(inclusive_counts, u)
-        if j >= count:
-            continue
-        for c in range(1, 3):
-            touch_flood_neighbour(
-                rows[start + j, c], visited, touched, stale, state, next_count, frontier, at
-            )
+        touch_fan_row(
+            frontier[slot * n + i],
+            j,
+            rows,
+            inclusive_counts,
+            visited,
+            touched,
+            stale,
+            state,
+            next_count,
+            frontier,
+            at,
+        )
 
 
 # The four flood kernels: each launch runs its ``@wp.func`` above in every lane, ``lanes`` of them
@@ -1507,6 +1590,479 @@ def spread_flood_visits(
         stale,
         frontier,
     )
+
+
+# ------------------------------------------------------------------------------------------
+# The flood's narrow rounds, in one block (CUDA)
+#
+# Most rounds of a cloud whose fans conflict visit a few fans beside a wide frontier (dragon: 2 550
+# of 3 226 rounds leave at most 128 fans to weigh), and the four launches cost such a round what
+# they cost a wide one. ``flood_narrow_rounds`` runs them in one block, a barrier for each launch
+# boundary, with work in the round's changes rather than its frontier:
+#
+# - the frontier is a list (``live``) that first touches append to and visits leave in place;
+# - the stale fans are listed by the touches that turn them, two lists by round parity;
+# - the positive margins of the unvisited live fans are counted by value (``hist``: the round's
+#   largest is one warp's ballot) and listed by class (``margin_class``: 1, 2, or 3 and more).
+#   The round that visits a class reads its list in full, visiting every fan in it whose margin
+#   still reaches the round's threshold; a fan whose margin moves is listed again under its new
+#   class, and the entry it leaves behind no longer matches;
+# - a seeding round's largest touched and inert fans are the highest bits of two bitsets of the
+#   unvisited live fans (``seeds``).
+#
+# The block enters at a pair's first round, from the slot-0 frontier, when the launches' last round
+# left at most ``max_stale`` fans stale, and leaves at the first round that leaves more, compacting
+# the unvisited live fans back into the slot-0 frontier: every decision is the launches' own, so
+# the windings are theirs bit for bit. Measured against the launches alone (dragon, happy_buddha):
+# the flood 0.68x and 0.63x; the steps, each against the one before: the lists and counts 0.85x
+# (the frontier scanned twice a round in the block instead: 1.06x), the ballot 0.93x, the seed
+# bitsets 0.92x and 0.84x (a scan of the live list compacting it), the touches' corners issued
+# together 0.96x. Declined: a stale fan's votes counted by one thread in the weighing (1.10x),
+# 512 lanes (1.02-1.13x), ``max_stale`` 64-256 within 2 % (512: 1.22x on bunny).
+# ------------------------------------------------------------------------------------------
+# The words of ``flood_narrow_rounds``' ``narrow`` table: the live list's length, its unvisited
+# fans, the two stale lists' lengths (a round reads one, its touches fill the other), the visit
+# list's length, the three class lists' lengths, a seeding round's largest touched and inert fan,
+# and the highest word each seed set may hold.
+NARROW_LIVE = 0
+NARROW_UNVISITED = 1
+NARROW_STALE = 2
+NARROW_VISITS = 4
+NARROW_CLASSES = 5
+NARROW_SEED = 8
+NARROW_INERT = 9
+NARROW_SEED_HIGH = 10
+NARROW_WORDS = 12
+
+_SYNC_BLOCK = """
+#if defined(__CUDA_ARCH__)
+__syncthreads();
+#endif
+"""
+
+
+# A bare block barrier, for a kernel only CUDA launches: ``block_barrier``'s reduction in its place
+# took the narrow rounds 1.18x.
+@wp.func_native(_SYNC_BLOCK)
+def sync_block(): ...
+
+
+_WARP_HIGHEST_SET = """
+#if defined(__CUDA_ARCH__)
+const unsigned mask = __ballot_sync(0xffffffffu, flag != 0);
+return mask == 0u ? -1 : 31 - __clz(mask);
+#else
+return flag != 0 ? 0 : -1;
+#endif
+"""
+
+
+# The highest lane of a full, converged warp whose ``flag`` is set, ``-1`` for none.
+@wp.func_native(_WARP_HIGHEST_SET)
+def warp_highest_set(flag: wp.int32) -> wp.int32: ...
+
+
+@wp.func
+def largest_counted(hist: wp.array[wp.int32], lane: wp.int32) -> wp.int32:
+    # The largest positive index of ``hist`` holding a positive count, ``0`` for none: a warp's
+    # lanes read 32 counts at once from the top, every warp of the block alike.
+    top = wp.int32(0)
+    base = ((hist.shape[0] - 1) // 32) * 32
+    while base >= 0:
+        i = base + lane % 32
+        count = hist[wp.min(i, hist.shape[0] - 1)]
+        highest = warp_highest_set(wp.where(i < hist.shape[0] and i > 0 and count > 0, 1, 0))
+        if highest >= 0:
+            top = base + highest
+            break
+        base -= 32
+    return top
+
+
+@wp.func
+def margin_class(weight: wp.int32) -> wp.int32:
+    # The class list (``0``, ``1``, ``2``) of a positive margin: 1, 2, or ``FLOOD_BULK_MARGIN`` and
+    # more, the classes a round's threshold ``min(top, FLOOD_BULK_MARGIN)`` tells apart.
+    return wp.min(weight, FLOOD_BULK_MARGIN) - 1
+
+
+@wp.func
+def count_live_margin(
+    u: wp.int32,
+    weight: wp.int32,
+    hist: wp.array[wp.int32],
+    classes: wp.array[wp.int32],
+    narrow: wp.array[wp.int32],
+):
+    # Unvisited live fan ``u``'s margin ``weight``, when positive, counted in ``hist`` and listed
+    # under its class. One atomic a fan: ``append_slot`` would pool a warp's lanes into one class.
+    if weight > 0:
+        wp.atomic_add(hist, weight, 1)
+        c = margin_class(weight)
+        n = classes.shape[0] // 3
+        classes[c * n + wp.atomic_add(narrow, NARROW_CLASSES + c, 1)] = u
+
+
+_HIGHEST_BIT = """
+#if defined(__CUDA_ARCH__)
+return 31 - __clz(word);
+#else
+return 31 - __builtin_clz(word);
+#endif
+"""
+
+
+# The highest set bit of a non-zero ``word``.
+@wp.func_native(_HIGHEST_BIT)
+def highest_bit(word: wp.uint32) -> wp.int32: ...
+
+
+@wp.func
+def add_seed(
+    u: wp.int32, inert: wp.array[wp.int32], seeds: wp.array[wp.uint32], narrow: wp.array[wp.int32]
+):
+    # Unvisited live fan ``u`` into its seed set, ``seeds``' first half for a fan sharing a
+    # triangle and its second for an inert one, raising that set's highest word.
+    words = seeds.shape[0] // 2
+    kind = wp.where(inert[u] != 0, 1, 0)
+    wp.atomic_or(seeds, kind * words + (u >> 5), wp.uint32(1) << wp.uint32(u & 31))
+    wp.atomic_max(narrow, NARROW_SEED_HIGH + kind, u >> 5)
+
+
+@wp.func
+def largest_seed(
+    seeds: wp.array[wp.uint32], kind: wp.int32, narrow: wp.array[wp.int32], lane: wp.int32
+) -> wp.int32:
+    # The largest fan of seed set ``kind`` (``-1`` for none) into ``narrow``'s seed or inert word
+    # (arriving ``-1``), every lane of the block calling: its words from the set's highest down, a
+    # lane a word, a barrier a pass; lane 0 then lowers the highest word to the one found.
+    words = seeds.shape[0] // 2
+    out = NARROW_SEED + kind
+    high = narrow[NARROW_SEED_HIGH + kind]
+    found = wp.int32(-1)
+    w = high - lane
+    while high >= 0:
+        if w >= 0:
+            word = seeds[kind * words + w]
+            if word != wp.uint32(0):
+                wp.atomic_max(narrow, out, w * 32 + highest_bit(word))
+        sync_block()
+        found = narrow[out]
+        sync_block()
+        if found >= 0:
+            break
+        high -= wp.block_dim()
+        w -= wp.block_dim()
+    if lane == 0:
+        narrow[NARROW_SEED_HIGH + kind] = wp.where(found >= 0, found >> 5, -1)
+    return found
+
+
+@wp.func
+def touch_live_corners(
+    x: wp.int32,
+    y: wp.int32,
+    visited: wp.array[wp.int32],
+    touched: wp.array[wp.int32],
+    stale: wp.array[wp.int32],
+    stale_list: wp.array[wp.int32],
+    stale_next: wp.int32,
+    live: wp.array[wp.int32],
+    inert: wp.array[wp.int32],
+    seeds: wp.array[wp.uint32],
+    narrow: wp.array[wp.int32],
+):
+    # ``touch_flood_neighbour`` in the block for a row's two other corners ``x`` and ``y``: each
+    # unvisited one turns stale, listed in stale list ``stale_next`` the first time it does since
+    # it was last weighed, and joins the live list and its seed set the first time any visit
+    # touches it. A visited corner's flags take an ``atomic_max`` of ``0``, so the four atomics
+    # and the appends issue without a branch to wait on (corner after corner, they chained).
+    n = visited.shape[0]
+    open_x = wp.where(visited[x] == 0, 1, 0)
+    open_y = wp.where(visited[y] == 0, 1, 0)
+    stale_x = wp.atomic_max(stale, x, open_x)
+    stale_y = wp.atomic_max(stale, y, open_y)
+    touched_x = wp.atomic_max(touched, x, open_x)
+    touched_y = wp.atomic_max(touched, y, open_y)
+    word = NARROW_STALE + stale_next
+    at = append_slot_if(narrow, word, wp.where(open_x != 0 and stale_x == 0, 1, 0))
+    if at >= 0:
+        stale_list[stale_next * n + at] = x
+    at = append_slot_if(narrow, word, wp.where(open_y != 0 and stale_y == 0, 1, 0))
+    if at >= 0:
+        stale_list[stale_next * n + at] = y
+    at = append_slot_if(narrow, NARROW_LIVE, wp.where(open_x != 0 and touched_x == 0, 1, 0))
+    if at >= 0:
+        live[at] = x
+        wp.atomic_add(narrow, NARROW_UNVISITED, 1)
+        add_seed(x, inert, seeds, narrow)
+    at = append_slot_if(narrow, NARROW_LIVE, wp.where(open_y != 0 and touched_y == 0, 1, 0))
+    if at >= 0:
+        live[at] = y
+        wp.atomic_add(narrow, NARROW_UNVISITED, 1)
+        add_seed(y, inert, seeds, narrow)
+
+
+@wp.func
+def touch_live_row(
+    u: wp.int32,
+    j: wp.int32,
+    rows: wp.array2d[wp.int32],
+    inclusive_counts: wp.array[wp.int32],
+    visited: wp.array[wp.int32],
+    touched: wp.array[wp.int32],
+    stale: wp.array[wp.int32],
+    stale_list: wp.array[wp.int32],
+    stale_next: wp.int32,
+    live: wp.array[wp.int32],
+    inert: wp.array[wp.int32],
+    seeds: wp.array[wp.uint32],
+    narrow: wp.array[wp.int32],
+):
+    # ``touch_fan_row`` in the block.
+    start, count = scanned_count(inclusive_counts, u)
+    if j < count:
+        touch_live_corners(
+            rows[start + j, 1],
+            rows[start + j, 2],
+            visited,
+            touched,
+            stale,
+            stale_list,
+            stale_next,
+            live,
+            inert,
+            seeds,
+            narrow,
+        )
+
+
+@wp.func
+def visit_live(
+    u: wp.int32,
+    visited: wp.array[wp.int32],
+    inert: wp.array[wp.int32],
+    seeds: wp.array[wp.uint32],
+    visit_list: wp.array[wp.int32],
+    narrow: wp.array[wp.int32],
+):
+    # Live fan ``u`` visited once whatever lists name it, leaving its seed set and joining the
+    # visit list; the touches take its margin out of ``hist`` (which the visits read).
+    if wp.atomic_max(visited, u, 1) == 0:
+        words = seeds.shape[0] // 2
+        word = wp.where(inert[u] != 0, words, 0) + (u >> 5)
+        wp.atomic_and(seeds, word, ~(wp.uint32(1) << wp.uint32(u & 31)))
+        visit_list[append_slot(narrow, NARROW_VISITS)] = u
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def flood_narrow_rounds(
+    rows: wp.array2d[wp.int32],
+    inclusive_counts: wp.array[wp.int32],
+    codes: wp.array[wp.vec3i],
+    inert: wp.array[wp.int32],
+    far_order: wp.array[wp.int32],
+    fan_width: wp.int32,
+    max_stale: wp.int32,
+    flipped: wp.array[wp.int32],
+    visited: wp.array[wp.int32],
+    touched: wp.array[wp.int32],
+    stale: wp.array[wp.int32],
+    votes: wp.array[wp.int32],
+    margin: wp.array[wp.int32],
+    frontier: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    live: wp.array[wp.int32],
+    stale_list: wp.array[wp.int32],
+    visit_list: wp.array[wp.int32],
+    classes: wp.array[wp.int32],
+    hist: wp.array[wp.int32],
+    narrow: wp.array[wp.int32],
+    seeds: wp.array[wp.uint32],
+) -> None:
+    # One block, launched ahead of each pair of the four launches in the recorded loop: the flood's
+    # rounds from the slot-0 frontier while they weigh at most ``max_stale`` fans (see above),
+    # returning at once when the launches' last round left more stale. ``seeds`` holds the
+    # unvisited live fans as two bitsets (``add_seed``), cleared again on the way out.
+    _block, lane = wp.tid()
+    lanes = wp.block_dim()
+    n = visited.shape[0]
+    count = state[FLOOD_SLOTS + FLOOD_COUNT]
+    if state[FLOOD_STALE_COUNT] > max_stale or state[FLOOD_GOING] == 0:
+        return
+    if lane < NARROW_WORDS:
+        narrow[lane] = wp.where(lane >= NARROW_SEED_HIGH, -1, 0)
+    m = lane
+    while m < hist.shape[0]:
+        hist[m] = 0
+        m += lanes
+    sync_block()
+    if lane == 0:
+        narrow[NARROW_LIVE] = count
+        narrow[NARROW_UNVISITED] = count
+    i = lane
+    while i < count:
+        u = frontier[i]
+        live[i] = u
+        if stale[u] != 0:
+            stale_list[append_slot(narrow, NARROW_STALE)] = u
+        count_live_margin(u, margin[u], hist, classes, narrow)
+        add_seed(u, inert, seeds, narrow)
+        i += lanes
+    sync_block()
+    parity = wp.int32(0)
+    while True:
+        weighed = narrow[NARROW_STALE + parity]
+        crowded = wp.int32(0)
+        for c in range(3):
+            if narrow[NARROW_CLASSES + c] > n - max_stale:
+                crowded = 1
+        if state[FLOOD_GOING] == 0 or weighed > max_stale or crowded != 0:
+            break
+        # The votes, a thread a row, then the weighing, a thread a stale fan. Lane 0 resets the
+        # words the round fills, whose last readers are past a barrier: the other stale list's,
+        # read by the previous round.
+        if lane == 0:
+            narrow[NARROW_STALE + 1 - parity] = 0
+            narrow[NARROW_VISITS] = 0
+            narrow[NARROW_SEED] = -1
+            narrow[NARROW_INERT] = -1
+            state[FLOOD_FARTHEST] = far_order.shape[0]
+        e = lane
+        while e < weighed * fan_width:
+            vote_fan_row(
+                stale_list[parity * n + e // fan_width],
+                e % fan_width,
+                inclusive_counts,
+                codes,
+                visited,
+                flipped,
+                votes,
+            )
+            e += lanes
+        sync_block()
+        i = lane
+        while i < weighed:
+            u = stale_list[parity * n + i]
+            old = margin[u]
+            if old > 0:
+                wp.atomic_add(hist, old, -1)
+            weight = reweigh_fan(u, flipped, stale, votes)
+            margin[u] = weight
+            count_live_margin(u, weight, hist, classes, narrow)
+            i += lanes
+        sync_block()
+        # The visits, as ``choose_flood_visits`` makes them; ``hist`` and the unvisited count stay
+        # as the weighing left them until the touches.
+        unvisited = narrow[NARROW_UNVISITED]
+        top = largest_counted(hist, lane)
+        threshold = wp.min(top, FLOOD_BULK_MARGIN)
+        if top > 0:
+            for c in range(margin_class(threshold), 3):
+                length = narrow[NARROW_CLASSES + c]
+                i = lane
+                while i < length:
+                    u = classes[c * n + i]
+                    if visited[u] == 0 and margin[u] >= threshold:
+                        visit_live(u, visited, inert, seeds, visit_list, narrow)
+                    i += lanes
+        elif unvisited > 0:
+            # The seeds, from the seed sets.
+            seed = largest_seed(seeds, 0, narrow, lane)
+            largest_inert = largest_seed(seeds, 1, narrow, lane)
+            if largest_inert > seed:
+                # The inert fans the reference would visit before the seed: every one above it.
+                words = seeds.shape[0] // 2
+                low = wp.max(seed, 0) >> 5
+                w = low + lane
+                while w <= largest_inert >> 5:
+                    word = seeds[words + w]
+                    if w == low and seed >= 0:
+                        word = word & ~((wp.uint32(2) << wp.uint32(seed & 31)) - wp.uint32(1))
+                    while word != wp.uint32(0):
+                        b = highest_bit(word)
+                        word = word & ~(wp.uint32(1) << wp.uint32(b))
+                        visit_live(w * 32 + b, visited, inert, seeds, visit_list, narrow)
+                    w += lanes
+            elif lane == 0:
+                visit_live(seed, visited, inert, seeds, visit_list, narrow)
+        else:
+            find_farthest_unvisited(lane, lanes, far_order, visited, state)
+            sync_block()
+            if lane == 0:
+                far = state[FLOOD_FARTHEST]
+                state[FLOOD_CURSOR] = far
+                if far == far_order.shape[0]:
+                    state[FLOOD_GOING] = 0
+                else:
+                    seed = far_order[far]
+                    visited[seed] = 1
+                    start, fan_count = scanned_count(inclusive_counts, seed)
+                    for j in range(fan_count):
+                        touch_live_corners(
+                            rows[start + j, 1],
+                            rows[start + j, 2],
+                            visited,
+                            touched,
+                            stale,
+                            stale_list,
+                            1 - parity,
+                            live,
+                            inert,
+                            seeds,
+                            narrow,
+                        )
+        sync_block()
+        # The touches, over the visit list; each visit's first lane takes it out of ``hist`` and
+        # the unvisited count, and lane 0 empties the class lists the visits read.
+        if lane == 0 and top > 0:
+            for c in range(margin_class(threshold), 3):
+                narrow[NARROW_CLASSES + c] = 0
+        e = lane
+        while e < narrow[NARROW_VISITS] * fan_width:
+            u = visit_list[e // fan_width]
+            j = e % fan_width
+            if j == 0:
+                weight = margin[u]
+                if weight > 0:
+                    wp.atomic_add(hist, weight, -1)
+                wp.atomic_add(narrow, NARROW_UNVISITED, -1)
+            touch_live_row(
+                u,
+                j,
+                rows,
+                inclusive_counts,
+                visited,
+                touched,
+                stale,
+                stale_list,
+                1 - parity,
+                live,
+                inert,
+                seeds,
+                narrow,
+            )
+            e += lanes
+        sync_block()
+        parity = 1 - parity
+    # Back to the launches: the unvisited live fans become the slot-0 frontier, its words as a
+    # round's arrive.
+    if lane == 0:
+        state[FLOOD_SLOTS + FLOOD_TOP] = 0
+        state[FLOOD_SLOTS + FLOOD_SEED] = -1
+        state[FLOOD_SLOTS + FLOOD_COUNT] = 0
+        state[FLOOD_SLOTS + FLOOD_INERT] = -1
+    sync_block()
+    length = narrow[NARROW_LIVE]
+    words = seeds.shape[0] // 2
+    i = lane
+    while i < length:
+        u = live[i]
+        seeds[u >> 5] = wp.uint32(0)
+        seeds[words + (u >> 5)] = wp.uint32(0)
+        if visited[u] == 0:
+            frontier[append_slot(state, FLOOD_SLOTS + FLOOD_COUNT)] = u
+        i += lanes
 
 
 @wp.kernel

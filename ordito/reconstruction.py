@@ -575,6 +575,11 @@ _FLOOD_CUDA_LANES = 65536
 # a conditional node of its own, and the rounds past the last are no-ops (two: 0.94-0.95x on bunny
 # and dragon against one; four: 0.97x more on dragon, 1.02x on bunny).
 _FLOOD_REPLAY_PAIRS = 2
+# The block that runs the flood's narrow rounds ahead of each pair
+# (``kernels/reconstruction.flood_narrow_rounds``), and the stale fans past which a round is the
+# launches' (64 to 256 alike within 2 %).
+_FLOOD_NARROW_LANES = 1024
+_FLOOD_NARROW_STALE = 128
 
 
 def _orient_fans(
@@ -637,7 +642,7 @@ def _orient_fans(
             _box_center(bounds),
             wp.float32(max_distance_sq),
         ],
-        outputs=[flipped, visited, touched, inert, far_keys, far_order],
+        outputs=[flipped, visited, touched, inert, margin, far_keys, far_order],
         device=device,
     )
     _launch.radix_sort_pairs(far_keys, far_order, count=n)
@@ -645,7 +650,7 @@ def _orient_fans(
     far_order = _launch.view(far_order, 0, n)
     # The cursor, the going flag, the first unvisited position, and each round parity's largest
     # margin, seed, frontier count and largest inert fan.
-    state = wp.array([0, 1, n, 0, -1, 0, -1, 0, -1, 0, -1], dtype=wp.int32, device=device)
+    state = wp.array([0, 1, n, 0, -1, 0, -1, 0, -1, 0, -1, 0], dtype=wp.int32, device=device)
 
     fan_width = wp.int32(fans.width)
 
@@ -741,10 +746,49 @@ def _orient_fans(
     else:
         # CUDA runs the rounds as one recorded device loop until the going flag clears, every
         # launch ``_FLOOD_CUDA_LANES`` threads striding over the frontier, whose count the kernels
-        # read. A replay is ``_FLOOD_REPLAY_PAIRS`` pairs of rounds, one of each parity; a round
-        # after the last is a no-op.
+        # read. A replay is ``_FLOOD_REPLAY_PAIRS`` pairs of rounds, one of each parity, each pair
+        # after one block that runs the narrow rounds ahead of it; a round after the last is a
+        # no-op. The block's lists, its margin counts and its seed bitsets (zeroed, and left so).
+        live, stale_list, visit_list, classes = _launch.carve_typed(
+            [(wp.int32, n), (wp.int32, 2 * n), (wp.int32, n), (wp.int32, 3 * n)], device
+        )
+        seeds = _launch.zeros(2 * ((n + 31) // 32), dtype=wp.uint32, device=device)
+        hist, narrow = _launch.carve_typed(
+            [(wp.int32, fans.width + 1), (wp.int32, kernel_reconstruction.NARROW_WORDS)], device
+        )
+
         def both_parities() -> None:
             for _ in range(_FLOOD_REPLAY_PAIRS):
+                _launch.launch_tiled(
+                    kernel_reconstruction.flood_narrow_rounds,
+                    dim=1,
+                    inputs=[
+                        rows,
+                        inclusive_counts,
+                        codes,
+                        inert,
+                        far_order,
+                        fan_width,
+                        wp.int32(_FLOOD_NARROW_STALE),
+                        flipped,
+                        visited,
+                        touched,
+                        stale,
+                        votes,
+                        margin,
+                        frontier,
+                        state,
+                        live,
+                        stale_list,
+                        visit_list,
+                        classes,
+                        hist,
+                        narrow,
+                        seeds,
+                    ],
+                    device=device,
+                    block_dim=_FLOOD_NARROW_LANES,
+                )
                 flood_round(0, _FLOOD_CUDA_LANES)
                 flood_round(1, _FLOOD_CUDA_LANES)
 

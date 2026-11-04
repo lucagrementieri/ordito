@@ -2161,6 +2161,34 @@ return wp::atomic_add(wp::data_at_byte_offset(counter, wp::byte_offset(counter, 
 def append_slot(counter: wp.array[wp.int32], index: wp.int32) -> wp.int32: ...
 
 
+# ``append_slot`` for the lanes whose ``flag`` is set, ``-1`` for the others, called by every lane
+# without a branch: the warp's flags are one ballot, so the reservation need not wait on a branch
+# taken first, and two appends in a row overlap.
+_APPEND_SLOT_IF = """
+#if defined(__CUDA_ARCH__)
+const unsigned active = __activemask();
+const unsigned wanted = __ballot_sync(active, flag != 0);
+const unsigned lane = threadIdx.x & 31u;
+const int leader = __ffs(active) - 1;
+int base = 0;
+if ((int)lane == leader && wanted != 0u) {
+    base = wp::atomic_add(
+        wp::data_at_byte_offset(counter, wp::byte_offset(counter, index)), (int)__popc(wanted));
+}
+base = __shfl_sync(active, base, leader);
+return flag != 0 ? base + (int)__popc(wanted & ((1u << lane) - 1u)) : -1;
+#else
+return flag != 0
+    ? wp::atomic_add(wp::data_at_byte_offset(counter, wp::byte_offset(counter, index)), 1)
+    : -1;
+#endif
+"""
+
+
+@wp.func_native(_APPEND_SLOT_IF)
+def append_slot_if(counter: wp.array[wp.int32], index: wp.int32, flag: wp.int32) -> wp.int32: ...
+
+
 # Bit ``index`` of a ``uint32`` bitmask (zeroed by the caller) set from ``bit``, for a launch whose
 # thread ``index`` is slot ``index`` of a dense 1-D domain: on CUDA the converged lanes of a warp
 # hold consecutive slots of one word (lane ``index & 31``, a launch's threads coming in warps of

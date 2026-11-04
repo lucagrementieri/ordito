@@ -976,10 +976,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **Unoriented `triangulate_point_cloud`**: the flood is still 41.6 of the call's 139 ms on dragon
-  (2026-11-04): 3 226 rounds of four launches, 2.4-3.2 us a graph node against a ~1.2 us floor
-  (a 1-thread node). The seed kernels are folded in, the lanes widened, the vote one load level
-  shorter; lane groups a fan, branch-free settling and warp-aggregated commits were neutral or lost
-  (`reference/component-status.md`). What remains is the round count, which the decision schedule
-  sets (its declined variants are listed there), or a round of fewer than four dependent launches
-  that serializes no fan's rows.
+- **Unoriented `triangulate_point_cloud`'s contested rows.** The fan flood is closed (2026-11-04:
+  0.45x on dragon, 0.39x on happy_buddha, its narrow rounds in one block); what the unoriented
+  call pays over the oriented one is now mostly downstream of it on the larger scans: happy_buddha
+  246.6 against 107.6 ms, of which the flood is 39.7 and the CPU builder's contested rows +74.7
+  (`_contested_rows_kept` 27.9 -> 102.6 ms; dragon +10.8). Flood-wound fans conflict more than
+  normal-wound ones, so more rows go through the serial builder (a CUDA thread for it was ~16x
+  slower). Unexplored: whether the contested region can be cut tighter than 4 rings, or the
+  builder's rows split between independent regions (`reference/component-status.md`).
