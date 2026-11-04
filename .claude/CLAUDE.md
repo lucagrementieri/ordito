@@ -976,16 +976,13 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **`smooth_region`'s iteration count follows its exact preconditioner's floor, which grows with
-  `n`.** `L_ff⁻¹ D² L_ff⁻¹` inverts the free rows' square `M_ffᵀ M_ff` exactly but not the rim's own
-  rows: it squares a Dirichlet Laplacian (a simply supported plate) where `MᵀM` is clamped across
-  the rim, and the two are not spectrally equivalent uniformly in the mesh size. Exact-solve floor
-  (host CG over device Cholesky solves), unit: 56-62 on dragon, 61-65 / 81-87 / 114-127 on lucy's
-  top 2 / 5 / 10 %; cotangent 85-92 / 133-139 / 168-185 on lucy. The V-cycle form runs at 1.0-1.5x
-  it (lucy 25 %: unit 167 iterations, 6.4 s; cotangent about 300, 17.6 s). Measured levers: a
-  diagonal `0.1 D` added to `L_ff` on the first free ring cuts the floor 15-22 % (lucy 5 %: 87 -> 70)
-  without flattening it, not yet tried through the V-cycle; a Woodbury correction of the rim rows
-  needs one preconditioner apply per rim row (2 000-2 400 on lucy) at setup, more than the solve.
+- **`smooth_region`'s iteration count still grows mildly with `n`.** With the rim band
+  (`_SMOOTH_REGION_RIM`, 2026-11-04) the V-cycle form runs below the old exact-solve floor: unit 38
+  iterations on dragon, 38 / 70 on lucy's top 5 / 25 %; cotangent 60, 63 / 107 (lucy 25 %: 2.7 s
+  unit, 6.2 s cotangent). Untried: the band's own exact-solve floor at size (whether what remains is
+  the cycle or the band), and the band in the polynomial form below
+  `_SMOOTH_REGION_MULTIGRID_FROM` (its factor is `D⁻¹ L_ff`, so the lift would enter `L_ff` and the
+  Gershgorin bound), which would also move that gate.
 - **Unoriented `triangulate_point_cloud`** costs 1.8x the old mesh-level winding (still 3.5x faster
   than MeshLib's): the flood, 3 226 rounds of six launches on dragon, 61.9 of the call's 166 ms,
   3.2 us a launch. Not launch-bound (2026-11-03): the same recorded loop of empty kernels at the

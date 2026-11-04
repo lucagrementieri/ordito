@@ -91,13 +91,26 @@ _SMOOTH_REGION_MULTIGRID_FROM = 30_000
 # which falls as about ``5 / n_free``.
 _SMOOTH_REGION_MULTIGRID_SHIFT = 5.0
 
+# The V-cycle form's ``L_ff`` also lifts its diagonal by this multiple of ``D`` on the first free
+# ring (the free vertices with a fixed neighbour), halving every ring inward for
+# ``kernels/smoothing.RIM_RINGS`` rings (``rim_lift``). ``L_ff⁻¹ D² L_ff⁻¹`` inverts the free rows'
+# square but not the rim's own rows, which clamp the surface across the rim; their absence sets an
+# iteration floor that grows with the region even under exact solves (lucy's top 5 %, unit: 81-87),
+# and the stiffened band stands in for them, below that floor (57 at 5 %). Solve time on lucy's top
+# 5 / 10 %, CUDA, against none: unit 0.46x / 0.41x, cotangent 0.37x / 0.34x. By ring depth,
+# 1 / 3 / 5 rings took 0.74-0.79x / 0.47-0.60x / 0.40-0.51x of none, and 9 or 12 no more than 8;
+# a slower decay (about 0.6 a ring) lost 1.1x to halving, and a lift proportional to each ring
+# vertex's weight to the rim lost 1.02-1.04x to a flat one. By the first ring's value, best
+# 0.15-0.2 unit and 0.1-0.15 cotangent; this one costs at most 1.03x either.
+_SMOOTH_REGION_RIM = 0.15
+
 # Free-vertex counts from which ``smooth_region``'s V-cycle form raises its Chebyshev degree
 # (``squared_laplacian_preconditioner``'s ``degree``) by one, per weighting: cotangent 3 -> 4, unit
-# 2 -> 3. Lucy's top regions, CUDA, the higher degree's time over the lower's: cotangent 0.98x at
-# 701 k, 0.86x at 1.4 M, 0.72x at 3.5 M, tied on dragon and happy_buddha, and degree 2 1.27x degree
-# 3 at 281 k; unit 1.03x at 701 k, 1.02x at 1.4 M, 0.83x at 3.5 M, 1.14-1.25x on dragon and
-# happy_buddha.
-_SMOOTH_REGION_CHEBYSHEV_FROM_COTAN = 500_000
+# 2 -> 3. With the rim lift (``_SMOOTH_REGION_RIM``), CUDA, the higher degree's time over the
+# lower's: cotangent 1.10x at lucy's top 5 % (701 k free), 0.98x at 1.4 M, 0.88x at 2.1 M, 0.80x
+# at 3.5 M, and degree 2 0.94x degree 3 on dragon but 1.9x at 701 k; unit 1.00x at 701 k, 0.77x at
+# 3.5 M, and 1.29x on dragon.
+_SMOOTH_REGION_CHEBYSHEV_FROM_COTAN = 1_000_000
 _SMOOTH_REGION_CHEBYSHEV_FROM_UNIT = 2_500_000
 
 # Free-vertex count from which ``smooth_region_fixed_rim`` preconditions its Dirichlet solve with
@@ -3700,8 +3713,11 @@ def _solve_region_smooth(
     row_rhs = row_rhs_flat.reshape((n, 3)).view(wp.vec3d)
     atb = atb_flat.reshape((3, n_free))
     sol = sol_flat.reshape((3, n_free))
-    free_degrees, term_offsets, system_offsets, anchored = _launch.carve(
-        wp.int32, (n, n_free + 1, n_free + 1, n_free), device, zeroed=True
+    free_degrees, term_offsets, system_offsets, anchored, rim_distance = _launch.carve(
+        wp.int32,
+        (n, n_free + 1, n_free + 1, n_free, n_free if laplacian_form else 0),
+        device,
+        zeroed=True,
     )
     _launch.launch(
         kernel_smoothing.least_squares_rows,
@@ -3711,6 +3727,24 @@ def _solve_region_smooth(
         device=device,
     )
     term_counts = odt.as_dense(term_offsets[1:])
+    if laplacian_form:
+        # Each free vertex's ring counted from the rim, for the V-cycle operator's lift.
+        for level in range(1, kernel_smoothing.RIM_RINGS + 1):
+            _launch.launch(
+                kernel_smoothing.rim_distance_level,
+                dim=n,
+                inputs=[
+                    region.incidence_offsets,
+                    region.incident_edges,
+                    region.unique_edges,
+                    free_mask,
+                    free_map,
+                    row_sums,
+                    wp.int32(level),
+                ],
+                outputs=[rim_distance],
+                device=device,
+            )
     _launch.launch(
         kernel_smoothing.normal_equations_setup,
         dim=n,
@@ -3725,6 +3759,8 @@ def _solve_region_smooth(
             vertices,
             wp.int32(1 if laplacian_form else 0),
             wp.float64(_SMOOTH_REGION_MULTIGRID_SHIFT / max(n_free, 1)),
+            wp.float64(_SMOOTH_REGION_RIM),
+            rim_distance,
         ],
         outputs=[
             term_counts,

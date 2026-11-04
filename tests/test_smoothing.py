@@ -2367,6 +2367,78 @@ def test_smooth_region_leaves_an_unanchored_fragment_in_place(
     assert np.allclose(both_wp[:n_grid], alone_wp, rtol=1e-5, atol=1e-5)
 
 
+def test_smooth_region_v_cycle_operator_stiffens_a_band_along_the_rim(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: no reference builds this preconditioner; its operator is pinned.
+
+    The V-cycle form hands ``squared_laplacian_preconditioner`` the free rows' Laplacian with its
+    diagonal lifted by ``_SMOOTH_REGION_MULTIGRID_SHIFT / n_free`` everywhere and by
+    ``_SMOOTH_REGION_RIM`` on the free vertices with a fixed neighbour, halving every ring inward
+    for ``kernels/smoothing.RIM_RINGS`` rings, all in units of the row's weight sum ``D``, which
+    goes along as the second argument. The rim lift changes only the iteration count, never the
+    answer, so a solution comparison cannot see it: the operator is compared with a NumPy assembly
+    of that definition, rings from a breadth-first search, on a grid (unit weights, so ``L`` is
+    the graph Laplacian) with at least three rings, so a flat lift, a lift on one ring or none
+    fails.
+    """
+    monkeypatch.setattr(od.smoothing, "_SMOOTH_REGION_MULTIGRID_FROM", 0)
+    captured: dict[str, Any] = {}
+    preconditioner = od.linalg.squared_laplacian_preconditioner
+
+    def capture(laplacian: Any, weight_sums: Any, **kwargs: Any) -> Any:
+        captured["laplacian"], captured["weight_sums"] = laplacian, weight_sums
+        return preconditioner(laplacian, weight_sums, **kwargs)
+
+    monkeypatch.setattr(od.linalg, "squared_laplacian_preconditioner", capture)
+    grid_v, grid_f = od.creation.grid(count=(12, 12))
+    vertices_np = np.asarray(grid_v.numpy(), dtype=np.float32).reshape(-1, 3)
+    faces_np = grid_f.numpy().reshape(-1, 3)
+    free_np = np.asarray((np.abs(vertices_np[:, :2]) < 0.4).all(axis=1), dtype=bool)
+    od.smoothing.smooth_region(
+        wp.array(vertices_np, dtype=wp.vec3, device=device),
+        wp.array(faces_np.ravel(), dtype=wp.int32, device=device),
+        wp.array(free_np, dtype=wp.bool, device=device),
+        "unit",
+    )
+
+    n = vertices_np.shape[0]
+    edges_np = np.unique(np.sort(faces_np[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), axis=1), axis=0)
+    adjacency_np = sp.coo_matrix(
+        (np.ones(edges_np.shape[0]), (edges_np[:, 0], edges_np[:, 1])), shape=(n, n)
+    )
+    adjacency_np = (adjacency_np + adjacency_np.T).tocsr()
+    degree_np = np.asarray(adjacency_np.sum(axis=1)).ravel()
+    free_index_np = np.flatnonzero(free_np)
+    n_free = free_index_np.shape[0]
+    free_adjacency_np = adjacency_np[free_index_np][:, free_index_np]
+    ring_np = np.asarray(adjacency_np[free_index_np][:, ~free_np].sum(axis=1)).ravel() > 0
+    distance_np = np.where(ring_np, 1, 0)
+    for level in range(2, kernel_smoothing.RIM_RINGS + 1):
+        beside_np = free_adjacency_np @ (distance_np == level - 1).astype(np.float64) > 0
+        distance_np[beside_np & (distance_np == 0)] = level
+    # Non-vacuity: several rings, and free vertices past the first.
+    assert distance_np.max() >= 3
+    assert 0 < int(ring_np.sum()) < n_free
+    shift = od.smoothing._SMOOTH_REGION_MULTIGRID_SHIFT  # pyright: ignore[reportPrivateUsage]
+    rim = od.smoothing._SMOOTH_REGION_RIM  # pyright: ignore[reportPrivateUsage]
+    ring_lift_np = rim * 0.5 ** (np.maximum(distance_np, 1) - 1)
+    lift_np = shift / n_free + np.where(distance_np > 0, ring_lift_np, 0.0)
+    sums_np = degree_np[free_index_np]
+    reference_np = (sp.diags(sums_np * (1.0 + lift_np)) - free_adjacency_np).toarray()
+
+    laplacian = captured["laplacian"]
+    offsets_np = laplacian.offsets.numpy()
+    stored = int(offsets_np[-1])
+    laplacian_np = sp.csr_matrix(
+        (laplacian.values.numpy().ravel()[:stored], laplacian.columns.numpy()[:stored], offsets_np),
+        shape=(n_free, n_free),
+    ).toarray()
+    assert np.allclose(captured["weight_sums"].numpy(), sums_np, rtol=1e-12, atol=0.0)
+    assert np.allclose(laplacian_np, reference_np, rtol=1e-12, atol=1e-12)
+
+
 @pytest.mark.parity("smooth_region", "meshlib")
 def test_smooth_region_cotan_off_mode_matches_meshlib(device: str) -> None:
     """

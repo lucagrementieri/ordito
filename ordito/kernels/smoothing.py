@@ -446,6 +446,55 @@ def write_factor_pair(
     return wp.where(valid_i, wp.abs(lij), wp.float64(0.0))
 
 
+# Free-vertex rings, counted from the rim, that ``smooth_region``'s V-cycle form lifts
+# (``rim_distance_level``, ``rim_lift``).
+RIM_RINGS = 8
+
+
+@wp.kernel
+def rim_distance_level(
+    offsets: wp.array[wp.int32],
+    incident: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    free_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    row_sums: wp.array[wp.float64],
+    level: wp.int32,
+    out_distance: wp.array[wp.int32],
+) -> None:
+    # One level of a breadth-first search from the rim over the free vertices, launched for
+    # ``level`` 1 to ``RIM_RINGS`` over the zeroed ``out_distance`` (one entry per free row, ``0``
+    # for unreached): level 1 marks the free vertices with a fixed neighbour that has a
+    # least-squares row (the first fixed ring always does), level ``k`` the unreached ones beside
+    # a level ``k - 1`` vertex. A launch writes only unreached entries and reads only level
+    # ``k - 1`` ones, so its threads do not race.
+    i = wp.int32(wp.tid())
+    ri = selected_row(free_mask, free_map, i)
+    if ri < 0:
+        return
+    if out_distance[ri] != wp.int32(0):
+        return
+    for k in range(offsets[i], offsets[i + 1]):
+        v = incident_neighbor(unique_edges, incident[k], i)
+        reached = wp.bool(False)
+        if level == wp.int32(1):
+            reached = not free_mask[v] and row_sums[v] != wp.float64(0.0)
+        else:
+            reached = free_mask[v] and out_distance[free_map[v]] == level - wp.int32(1)
+        if reached:
+            out_distance[ri] = level
+            return
+
+
+@wp.func
+def rim_lift(rim: wp.float64, distance: wp.int32) -> wp.float64:
+    # The diagonal lift, in units of ``D``, of a free vertex ``distance`` rings from the rim:
+    # ``rim`` on the first ring, halving every ring after, none past ``RIM_RINGS`` (``0``).
+    if distance <= wp.int32(0):
+        return wp.float64(0.0)
+    return rim * wp.pow(wp.float64(0.5), wp.float64(distance - wp.int32(1)))
+
+
 @wp.kernel
 def normal_equations_setup(
     offsets: wp.array[wp.int32],
@@ -462,6 +511,8 @@ def normal_equations_setup(
     points: wp.array[wp.vec3],
     laplacian_form: wp.int32,
     laplacian_shift: wp.float64,
+    laplacian_rim: wp.float64,
+    rim_distance: wp.array[wp.int32],
     out_term_counts: wp.array[wp.int32],
     out_atb_x: wp.array[wp.float64],
     out_atb_y: wp.array[wp.float64],
@@ -497,7 +548,10 @@ def normal_equations_setup(
     #   ``L_ff`` and ``D`` rather than the factor) row ``i`` of ``L_ff + laplacian_shift * D``
     #   goes into ``out_factor`` and ``D_i`` (``1`` on an invalid row) into ``out_ratios``; see
     #   ``write_factor_pair``. The shift makes the matrix definite on a free component no fixed
-    #   vertex touches, where ``L_ff`` itself is singular.
+    #   vertex touches, where ``L_ff`` itself is singular. A free vertex near the rim also adds
+    #   ``rim_lift`` times ``D_i``, from its ``rim_distance``: ``M^T M`` holds the rim's own rows,
+    #   which clamp the surface across the rim where ``L_ff``'s square alone only pins it, and a
+    #   stiffened band along the rim stands in for them in the preconditioner.
     #
     # And the solve's initial guess (``gather_free_positions``).
     i = wp.int32(wp.tid())
@@ -511,8 +565,12 @@ def normal_equations_setup(
     valid_i = sum_i != wp.float64(0.0)
     scale_i = inverse_or_one(wp.where(valid_i, sum_i, wp.float64(1.0)))
     one = wp.float64(1.0)
-    # The diagonal entry written: ``L_ii`` for the factor, ``(1 + shift) L_ii`` for ``L_ff``.
-    diagonal_value = wp.where(laplacian_form != wp.int32(0), sum_i * (one + laplacian_shift), sum_i)
+    # The diagonal entry written: ``L_ii`` for the factor, ``(1 + shift + rim lift) L_ii`` for
+    # ``L_ff``.
+    lift = laplacian_shift
+    if laplacian_form != wp.int32(0):
+        lift += rim_lift(laplacian_rim, rim_distance[ri])
+    diagonal_value = wp.where(laplacian_form != wp.int32(0), sum_i * (one + lift), sum_i)
     ax = wp.float64(0.0)
     ay = wp.float64(0.0)
     az = wp.float64(0.0)
