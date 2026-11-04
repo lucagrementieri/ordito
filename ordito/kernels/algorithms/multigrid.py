@@ -831,9 +831,9 @@ def jacobi_update(
 
 
 # Row count from which a multigrid cycle level on CUDA runs its passes one thread a row
-# (``CYCLE_ROWS``) rather than as ``csr_matvec`` plus an elementwise pass a slot. Every pass of
-# such a level walks each row once for all its columns, and a smoothing sweep and the residual take
-# their mat-vec in the same thread, so ``A x`` is never stored. Bit-identical to the slot form.
+# (``CYCLE_ROWS``) rather than one a row and column (``CYCLE_SLOTS``). Either way a smoothing sweep
+# and the residual take their mat-vec in the same thread, so ``A x`` is never stored; a thread a
+# row also walks each row once for all its columns. Bit-identical to the slot forms.
 # CUDA, ``smooth_region``'s squared V-cycle (three columns), rows/slots: 0.78x a call on dragon's
 # 109 k free vertices, 0.51-0.53x on lucy's 3.5 M; ``multigrid_preconditioner`` solves on
 # ``icosphere(8 / 9)`` 0.90-0.93x at one column, 0.61-0.80x at three. The gate, a call at 2**14
@@ -924,6 +924,79 @@ CYCLE_ROWS = {n_columns: _cycle_rows(n_columns) for n_columns in ROWS_COLUMNS}
 # The same kernels over ``float32`` values: a level whose operators the cycle keeps a narrow copy
 # of (``linalg._MultigridCycle``).
 CYCLE_ROWS_NARROW = {n_columns: _cycle_rows(n_columns, wp.float32) for n_columns in ROWS_COLUMNS}
+
+
+# A cycle level below ``CYCLE_ROWS_FROM`` rows on CUDA runs ``CYCLE_ROWS``' fused passes one thread
+# a row and column instead (a thread a row would leave such a level too few threads), still with
+# the mat-vec in the sweep's and the residual's thread, so a sweep is one launch, not two. Same
+# contracts, aliasing rules and arithmetic as the thread-a-row kernels, to the bit.
+
+
+@wp.kernel
+def cycle_sweep_slots(
+    n_rows: wp.int32,
+    stride: wp.int32,
+    inv_diag: wp.array[wp.float64],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    rhs: wp.array[wp.float64],
+    x: wp.array[wp.float64],
+    out_x: wp.array[wp.float64],
+) -> None:
+    t = wp.int32(wp.tid())
+    column = t // n_rows
+    row = t % n_rows
+    base = column * stride
+    slot = base + row
+    ax = csr_row_dot(row, base, offsets, columns, values, x)
+    out_x[slot] = jacobi_update(x[slot], inv_diag[row], rhs[slot], ax)
+
+
+@wp.kernel
+def cycle_residual_slots(
+    n_rows: wp.int32,
+    stride: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    rhs: wp.array[wp.float64],
+    x: wp.array[wp.float64],
+    out_residual: wp.array[wp.float64],
+) -> None:
+    t = wp.int32(wp.tid())
+    column = t // n_rows
+    row = t % n_rows
+    base = column * stride
+    slot = base + row
+    out_residual[slot] = rhs[slot] - csr_row_dot(row, base, offsets, columns, values, x)
+
+
+@wp.kernel
+def cycle_matvec_slots(
+    n_rows: wp.int32,
+    x_stride: wp.int32,
+    y_stride: wp.int32,
+    accumulate: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    x: wp.array[wp.float64],
+    addend: wp.array[wp.float64],
+    out_y: wp.array[wp.float64],
+) -> None:
+    t = wp.int32(wp.tid())
+    column = t // n_rows
+    row = t % n_rows
+    product = csr_row_dot(row, column * x_stride, offsets, columns, values, x)
+    slot = column * y_stride + row
+    if accumulate != wp.int32(0):
+        out_y[slot] = addend[slot] + product
+    else:
+        out_y[slot] = product
+
+
+CYCLE_SLOTS = (cycle_sweep_slots, cycle_residual_slots, cycle_matvec_slots)
 
 
 @wp.func
@@ -1302,9 +1375,15 @@ def dense_solve(
     # count depends on the data -- it is a single launch inside the captured cycle. The *pseudo*
     # inverse because the coarse operator inherits the fine one's null space. It covers only the
     # active rows (``slots`` maps a row to its position among them, ``-1`` for an inactive row,
-    # which solves to zero; both maps are empty when every row is active), summed in ascending row
-    # order: the terms an ``(n, n)`` inverse would add for the inactive columns are exact zeros.
-    t = wp.int32(wp.tid())
+    # which solves to zero; both maps are empty when every row is active): the terms an ``(n, n)``
+    # inverse would add for the inactive columns are exact zeros.
+    #
+    # Launched tiled, a block an output slot, its lanes striding the dot by ``wp.block_dim()`` (the
+    # one CPU lane walks it whole, in ascending order) and summing with ``block_sum``: one thread a
+    # slot walked a few hundred dependent loads and was latency-bound (30 us a launch on dragon's
+    # 203-row level, coalesced or not). The inverse is read down a column, ``inverse[k, slot]``,
+    # which is row ``slot``'s value: it is exactly symmetric (``linalg._symmetric_inverse``).
+    t, lane = wp.tid()
     column = t // stride
     row = t % stride
     if row >= n:
@@ -1313,11 +1392,16 @@ def dense_solve(
     slot = row
     if mapped:
         slot = slots[row]
-    total = wp.float64(0.0)
-    if slot >= 0:
-        for k in range(inverse.shape[0]):
-            source = k
-            if mapped:
-                source = active[k]
-            total += inverse[slot, k] * rhs[column * stride + source]
-    out_x[t] = total
+    if slot < 0:
+        if lane == 0:
+            out_x[t] = wp.float64(0.0)
+        return
+    partial = wp.float64(0.0)
+    for k in range(lane, inverse.shape[0], wp.block_dim()):
+        source = k
+        if mapped:
+            source = active[k]
+        partial += inverse[k, slot] * rhs[column * stride + source]
+    total = block_sum(partial)
+    if lane == 0:
+        out_x[t] = total

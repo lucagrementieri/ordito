@@ -2332,13 +2332,15 @@ def test_multigrid_cycle_rows_match_the_slot_cycle(
     device: str, monkeypatch: pytest.MonkeyPatch, n_columns: int, kind: str, sweeps: int | None
 ) -> None:
     """
-    Ordito against ordito: a V-cycle level run a thread a row is the slot-form level to the bit.
+    Ordito against ordito: a V-cycle level's three pass forms agree to the bit.
 
     ``_MultigridCycle`` runs a level of at least ``kernels/algorithms/multigrid.CYCLE_ROWS_FROM``
     rows on CUDA with ``CYCLE_ROWS``' kernels: every column off one walk of a row, the sweep and
     the residual fused with their mat-vec, the iterate ping-ponged between two buffers. A solve is
     run with that gate lowered to zero and again with it out of reach, and the answers must be
-    byte-identical: through ``multigrid_preconditioner`` (two sweeps a half-cycle) and the squared
+    byte-identical, and so must a third arm whose small levels run the two-launch passes (a
+    mat-vec, then the Jacobi or residual pass) rather than ``CYCLE_SLOTS``' fused ones a thread a
+    row and column: through ``multigrid_preconditioner`` (two sweeps a half-cycle) and the squared
     form's ``V D² V`` under a degree-3 Chebyshev wrapper, at its four sweeps and at an odd count,
     the other parity of the ping-pong. Each arm builds its own system and starts from an empty
     solver pool, or the second would replay the graph the first recorded. The library comparison
@@ -2349,7 +2351,8 @@ def test_multigrid_cycle_rows_match_the_slot_cycle(
     cycle_rows = od.linalg._MultigridCycle._cycle_rows
 
     def recording(cycle: Any, depth: int) -> None:
-        rows_levels.append(depth)
+        if cycle._levels[depth].per_row:
+            rows_levels.append(depth)
         cycle_rows(cycle, depth)
 
     monkeypatch.setattr(od.linalg._MultigridCycle, "_cycle_rows", recording)
@@ -2382,7 +2385,10 @@ def test_multigrid_cycle_rows_match_the_slot_cycle(
     assert not rows_levels
     rows_np = solve(0)
     assert rows_levels or wp.get_device(device).is_cpu
+    monkeypatch.setattr(kernel_mg, "CYCLE_SLOTS", None)
+    unfused_np = solve(1 << 62)
     assert np.array_equal(rows_np, slots_np)
+    assert np.array_equal(unfused_np, slots_np)
     assert np.ptp(slots_np) > 1e-3  # non-vacuity: a zero solve would pass trivially
 
 

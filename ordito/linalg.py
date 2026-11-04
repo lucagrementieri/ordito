@@ -5688,6 +5688,7 @@ class _MultigridLevel:
         "n",
         "narrow",
         "operator",
+        "per_row",
         "prolong_dim",
         "prolongator",
         "r",
@@ -5711,6 +5712,9 @@ class _MultigridLevel:
         # The thread-a-row kernels (``kernel_mg.CYCLE_ROWS``) a cycle runs this level with, and the
         # second buffer of its iterate's pair, which they ping-pong; ``None`` on the slot form.
         self.rows: tuple[wp.Kernel, wp.Kernel, wp.Kernel] | None = None
+        # Whether ``rows`` are the thread-a-row kernels, rather than their thread-a-slot siblings
+        # (``kernel_mg.CYCLE_SLOTS``).
+        self.per_row = False
         self.spare: wp.array[wp.float64] | None = None
         # ``float32`` copies of the operator's, the restrictor's and the prolongator's values that
         # the thread-a-row kernels read, made once by the first cycle over the level.
@@ -6494,6 +6498,12 @@ class _MultigridCycle:
                 if level.prolongator is not None and level.n >= kernel_mg.CYCLE_ROWS_FROM
                 else None
             )
+            level.per_row = level.rows is not None
+            # Below the thread-a-row gate, still fused, a thread a row and column (``None`` keeps
+            # the two-launch passes, which the CPU device runs).
+            slots = kernel_mg.CYCLE_SLOTS if self._device.is_cuda else None
+            if level.rows is None and level.prolongator is not None and slots is not None:
+                level.rows = cast("tuple[wp.Kernel, wp.Kernel, wp.Kernel]", slots)
             if level.rows is not None and level.n >= _CYCLE_NARROW_FROM and level.narrow is None:
                 operator, restrictor, prolongator = (
                     level.operator,
@@ -6548,7 +6558,8 @@ class _MultigridCycle:
     @property
     def top_rows(self) -> tuple[wp.Kernel, wp.Kernel, wp.Kernel] | None:
         """The top level's thread-a-row kernels (``kernel_mg.CYCLE_ROWS``), or ``None``."""
-        return self._levels[0].rows
+        top = self._levels[0]
+        return top.rows if top.per_row else None
 
     @property
     def top_values(self) -> wp.array[Any]:
@@ -6622,9 +6633,9 @@ class _MultigridCycle:
     def _cycle(self, depth: int) -> None:
         level = self._levels[depth]
         if level.prolongator is None:
-            _launch.launch(
+            _launch.launch_tiled(
                 kernel_mg.dense_solve,
-                dim=level.dim,
+                dim=[level.dim],
                 inputs=[
                     wp.int32(level.n),
                     wp.int32(level.stride),
@@ -6634,6 +6645,7 @@ class _MultigridCycle:
                     level.b,
                     level.x,
                 ],
+                block_dim=TILE_1D,
                 device=self._device,
             )
             return
@@ -6690,7 +6702,7 @@ class _MultigridCycle:
         self._smooth(level, self._sweeps)
 
     def _cycle_rows(self, depth: int) -> None:
-        """``_cycle`` on a thread-a-row level: the same passes, to the bit, fused per row."""
+        """``_cycle`` on a fused level: the same passes, to the bit, a thread a row or a slot."""
         level = self._levels[depth]
         child = self._levels[depth + 1]
         operator, restrictor, prolongator = level.operator, level.restrictor, level.prolongator
@@ -6726,10 +6738,11 @@ class _MultigridCycle:
         for _ in range(sweeps - 1):
             self._sweep_rows(sweep, level, operator, operator_values, current, other)
             current, other = other, current
-        _launch.launch(
+        self._fused(
             residual,
-            dim=level.n,
-            inputs=[
+            level,
+            level.n,
+            [
                 wp.int32(level.stride),
                 operator.offsets,
                 operator.columns,
@@ -6738,12 +6751,12 @@ class _MultigridCycle:
                 level.x,
                 level.r,
             ],
-            device=self._device,
         )
-        _launch.launch(
+        self._fused(
             matvec,
-            dim=child.n,
-            inputs=[
+            level,
+            child.n,
+            [
                 wp.int32(level.stride),
                 wp.int32(child.stride),
                 wp.int32(0),
@@ -6754,14 +6767,14 @@ class _MultigridCycle:
                 child.b,
                 child.b,
             ],
-            device=self._device,
         )
         self._cycle(depth + 1)
         current, other = (level.x, level.spare) if sweeps % 2 == 0 else (level.spare, level.x)
-        _launch.launch(
+        self._fused(
             matvec,
-            dim=level.n,
-            inputs=[
+            level,
+            level.n,
+            [
                 wp.int32(child.stride),
                 wp.int32(level.stride),
                 wp.int32(1),
@@ -6772,7 +6785,6 @@ class _MultigridCycle:
                 level.x,
                 current,
             ],
-            device=self._device,
         )
         for _ in range(sweeps):
             self._sweep_rows(sweep, level, operator, operator_values, current, other)
@@ -6787,10 +6799,11 @@ class _MultigridCycle:
         x: wp.array[wp.float64],
         out_x: wp.array[wp.float64],
     ) -> None:
-        _launch.launch(
+        self._fused(
             sweep,
-            dim=level.n,
-            inputs=[
+            level,
+            level.n,
+            [
                 wp.int32(level.stride),
                 level.inverse_diagonal,
                 operator.offsets,
@@ -6798,10 +6811,23 @@ class _MultigridCycle:
                 values,
                 level.b,
                 x,
+                out_x,
             ],
-            outputs=[out_x],
-            device=self._device,
         )
+
+    def _fused(
+        self, kernel: wp.Kernel, level: _MultigridLevel, n_rows: int, inputs: list[Any]
+    ) -> None:
+        """Launch one of ``level``'s fused passes over ``n_rows`` rows, a thread a row or a slot."""
+        if level.per_row:
+            _launch.launch(kernel, dim=n_rows, inputs=inputs, device=self._device)
+        else:
+            _launch.launch(
+                kernel,
+                dim=self._n_columns * n_rows,
+                inputs=[wp.int32(n_rows), *inputs],
+                device=self._device,
+            )
 
 
 def _warn_if_not_converged(result: tuple[int, float, float], iteration_cap: int, name: str) -> None:

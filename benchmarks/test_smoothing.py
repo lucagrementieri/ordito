@@ -877,9 +877,10 @@ def test_smooth_region(bench_case: BenchCase) -> None:
     own rows, which clamp the surface across it: new/old lucy 0.42x unit, 0.35x cotangent, dragon
     0.54x / 0.52x; its per-weighting decay (``_SMOOTH_REGION_RIM_UNIT`` / ``_COTAN``) lucy 0.80x /
     0.88x more. From ``smoothing._SMOOTH_REGION_RIM_POLYNOMIAL_FROM`` free vertices the polynomial
-    form takes the band too: the bunny row 0.69x. A level from
-    ``kernels/algorithms/multigrid.CYCLE_ROWS_FROM`` rows runs a thread a row, its sweeps fused with
-    their mat-vec. ``linalg._MULTIGRID_THETA`` moves the scan rows.
+    form takes the band too: the bunny row 0.69x. Every cycle level fuses each sweep and residual
+    with its mat-vec, a thread a row from ``kernels/algorithms/multigrid.CYCLE_ROWS_FROM`` rows and
+    a thread a row and column below (dragon 0.84x / 0.82x), and the coarsest level's dense solve
+    splits each dot over a block. ``linalg._MULTIGRID_THETA`` moves the scan rows.
     """
     skip_larger_than(
         bench_case,
