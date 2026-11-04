@@ -2375,8 +2375,9 @@ def test_smooth_region_v_cycle_operator_stiffens_a_band_along_the_rim(
 
     The V-cycle form hands ``squared_laplacian_preconditioner`` the free rows' Laplacian with its
     diagonal lifted by ``_SMOOTH_REGION_MULTIGRID_SHIFT / n_free`` everywhere and by
-    ``_SMOOTH_REGION_RIM`` on the free vertices with a fixed neighbour, halving every ring inward
-    for ``kernels/smoothing.RIM_RINGS`` rings, all in units of the row's weight sum ``D``, which
+    ``_SMOOTH_REGION_RIM_UNIT``'s lead on the free vertices with a fixed neighbour, times its decay
+    every ring inward for ``kernels/smoothing.RIM_RINGS`` rings, all in units of the row's weight
+    sum ``D``, which
     goes along as the second argument. The rim lift changes only the iteration count, never the
     answer, so a solution comparison cannot see it: the operator is compared with a NumPy assembly
     of that definition, rings from a breadth-first search, on a grid (unit weights, so ``L`` is
@@ -2422,8 +2423,8 @@ def test_smooth_region_v_cycle_operator_stiffens_a_band_along_the_rim(
     assert distance_np.max() >= 3
     assert 0 < int(ring_np.sum()) < n_free
     shift = od.smoothing._SMOOTH_REGION_MULTIGRID_SHIFT  # pyright: ignore[reportPrivateUsage]
-    rim = od.smoothing._SMOOTH_REGION_RIM  # pyright: ignore[reportPrivateUsage]
-    ring_lift_np = rim * 0.5 ** (np.maximum(distance_np, 1) - 1)
+    lead, decay = od.smoothing._SMOOTH_REGION_RIM_UNIT  # pyright: ignore[reportPrivateUsage]
+    ring_lift_np = lead * decay ** (np.maximum(distance_np, 1) - 1)
     lift_np = shift / n_free + np.where(distance_np > 0, ring_lift_np, 0.0)
     sums_np = degree_np[free_index_np]
     reference_np = (sp.diags(sums_np * (1.0 + lift_np)) - free_adjacency_np).toarray()

@@ -91,18 +91,30 @@ _SMOOTH_REGION_MULTIGRID_FROM = 30_000
 # which falls as about ``5 / n_free``.
 _SMOOTH_REGION_MULTIGRID_SHIFT = 5.0
 
-# The V-cycle form's ``L_ff`` also lifts its diagonal by this multiple of ``D`` on the first free
-# ring (the free vertices with a fixed neighbour), halving every ring inward for
-# ``kernels/smoothing.RIM_RINGS`` rings (``rim_lift``). ``L_ff⁻¹ D² L_ff⁻¹`` inverts the free rows'
-# square but not the rim's own rows, which clamp the surface across the rim; their absence sets an
-# iteration floor that grows with the region even under exact solves (lucy's top 5 %, unit: 81-87),
-# and the stiffened band stands in for them, below that floor (57 at 5 %). Solve time on lucy's top
-# 5 / 10 %, CUDA, against none: unit 0.46x / 0.41x, cotangent 0.37x / 0.34x. By ring depth,
-# 1 / 3 / 5 rings took 0.74-0.79x / 0.47-0.60x / 0.40-0.51x of none, and 9 or 12 no more than 8;
-# a slower decay (about 0.6 a ring) lost 1.1x to halving, and a lift proportional to each ring
-# vertex's weight to the rim lost 1.02-1.04x to a flat one. By the first ring's value, best
-# 0.15-0.2 unit and 0.1-0.15 cotangent; this one costs at most 1.03x either.
-_SMOOTH_REGION_RIM = 0.15
+# The V-cycle form's ``L_ff`` also lifts its diagonal by ``lead`` times ``D`` on the first free
+# ring (the free vertices with a fixed neighbour), times ``decay`` every ring inward for
+# ``kernels/smoothing.RIM_RINGS`` rings (``rim_lift``), per weighting as ``(lead, decay)``.
+# ``L_ff⁻¹ D² L_ff⁻¹`` inverts the free rows' square but not the rim's own rows, which clamp the
+# surface across the rim; their absence sets an iteration floor that grows with the region even
+# under exact solves (lucy's top 5 %, unit: 81-87), and the stiffened band stands in for them,
+# below that floor. Measured on lucy's top regions, CUDA. A lift on the first ring alone took
+# 0.74-0.79x the solve time of none; rings halving from 0.15, 8 deep, 0.34-0.46x (more rings no
+# better). Slower decays need more rings and pay more the larger the region: cotangent at
+# ``(0.13, 0.6)`` against that halving profile 1.00x / 0.96x / 0.85x on lucy's top 2 / 10 / 25 %;
+# unit's iterations by decay 0.5 / 0.6 / 0.65 / 0.7 / 0.75 (32 rings), dragon 37 / 33 / 33 / 35 /
+# 39, lucy 2 % 37 / 32 / 30 / 29 / 29, 10 % - / 68 / 65 / 61 / 67, 25 % - / 60 / 57 / 55 / 51, so
+# 0.7 is within 1.07x of each size's best. Decays of 0.85 and slower lost at every size, cotangent
+# at 0.75 lost 1.07-1.16x below 1 M free. A lift proportional to each ring vertex's weight to the
+# rim lost 1.02-1.04x to a flat one.
+_SMOOTH_REGION_RIM_UNIT = (0.09, 0.7)
+_SMOOTH_REGION_RIM_COTAN = (0.13, 0.6)
+
+# Free-vertex count from which the polynomial form (below ``_SMOOTH_REGION_MULTIGRID_FROM``) takes
+# the same rim lift in its factor ``D⁻¹ L_ff``. CUDA harness rows, new/old: ``smooth_region`` on
+# bunny (9 k free) 0.69x, bunny_decimated (4 k) 0.85x; but the hole fills' refined patches and
+# ``stitch_smooth``'s band (about 1 000 free vertices, thin, so the band is most of the region) lost
+# 1.06-1.18x and 2.16x, and sphere_small's 640 free 1.05x.
+_SMOOTH_REGION_RIM_POLYNOMIAL_FROM = 4_000
 
 # Free-vertex counts from which ``smooth_region``'s V-cycle form raises its Chebyshev degree
 # (``squared_laplacian_preconditioner``'s ``degree``) by one, per weighting: cotangent 3 -> 4, unit
@@ -3686,6 +3698,7 @@ def _solve_region_smooth(
     # factor, its transpose and their ``float32`` copies; the V-cycle takes ``L_ff`` (into
     # ``factor``) and ``D`` (into ``ratios``) alone.
     laplacian_form = n_free >= _SMOOTH_REGION_MULTIGRID_FROM
+    banded = laplacian_form or n_free >= _SMOOTH_REGION_RIM_POLYNOMIAL_FROM
     polynomial_capacity = 0 if laplacian_form else capacity
     # The assembly's buffers, dropped together, in one allocation per dtype and initial value.
     # ``float64``: the ``(3, n_free)`` ``M^T b`` (one contiguous block, so the three columns
@@ -3714,10 +3727,7 @@ def _solve_region_smooth(
     atb = atb_flat.reshape((3, n_free))
     sol = sol_flat.reshape((3, n_free))
     free_degrees, term_offsets, system_offsets, anchored, rim_distance = _launch.carve(
-        wp.int32,
-        (n, n_free + 1, n_free + 1, n_free, n_free if laplacian_form else 0),
-        device,
-        zeroed=True,
+        wp.int32, (n, n_free + 1, n_free + 1, n_free, n_free if banded else 0), device, zeroed=True
     )
     _launch.launch(
         kernel_smoothing.least_squares_rows,
@@ -3727,24 +3737,25 @@ def _solve_region_smooth(
         device=device,
     )
     term_counts = odt.as_dense(term_offsets[1:])
-    if laplacian_form:
-        # Each free vertex's ring counted from the rim, for the V-cycle operator's lift.
-        for level in range(1, kernel_smoothing.RIM_RINGS + 1):
-            _launch.launch(
-                kernel_smoothing.rim_distance_level,
-                dim=n,
-                inputs=[
-                    region.incidence_offsets,
-                    region.incident_edges,
-                    region.unique_edges,
-                    free_mask,
-                    free_map,
-                    row_sums,
-                    wp.int32(level),
-                ],
-                outputs=[rim_distance],
-                device=device,
-            )
+    rim = _SMOOTH_REGION_RIM_UNIT if unit else _SMOOTH_REGION_RIM_COTAN
+    # Each free vertex's ring counted from the rim, for the preconditioner's lift; none (an empty
+    # distance table) below the polynomial form's gate.
+    for level in range(1, kernel_smoothing.RIM_RINGS + 1 if banded else 1):
+        _launch.launch(
+            kernel_smoothing.rim_distance_level,
+            dim=n,
+            inputs=[
+                region.incidence_offsets,
+                region.incident_edges,
+                region.unique_edges,
+                free_mask,
+                free_map,
+                row_sums,
+                wp.int32(level),
+            ],
+            outputs=[rim_distance],
+            device=device,
+        )
     _launch.launch(
         kernel_smoothing.normal_equations_setup,
         dim=n,
@@ -3759,7 +3770,8 @@ def _solve_region_smooth(
             vertices,
             wp.int32(1 if laplacian_form else 0),
             wp.float64(_SMOOTH_REGION_MULTIGRID_SHIFT / max(n_free, 1)),
-            wp.float64(_SMOOTH_REGION_RIM),
+            wp.float64(rim[0]),
+            wp.float64(rim[1]),
             rim_distance,
         ],
         outputs=[

@@ -976,13 +976,13 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **`smooth_region`'s iteration count still grows mildly with `n`.** With the rim band
-  (`_SMOOTH_REGION_RIM`, 2026-11-04) the V-cycle form runs below the old exact-solve floor: unit 38
-  iterations on dragon, 38 / 70 on lucy's top 5 / 25 %; cotangent 60, 63 / 107 (lucy 25 %: 2.7 s
-  unit, 6.2 s cotangent). Untried: the band's own exact-solve floor at size (whether what remains is
-  the cycle or the band), and the band in the polynomial form below
-  `_SMOOTH_REGION_MULTIGRID_FROM` (its factor is `D⁻¹ L_ff`, so the lift would enter `L_ff` and the
-  Gershgorin bound), which would also move that gate.
+- **`smooth_region`'s iteration count still grows mildly with `n`, set by the rim band's own
+  floor.** Exact solves of the banded preconditioner (2026-11-04), unit: 31-34 on dragon, 27-30 /
+  34-36 / 44-50 on lucy's top 2 / 5 / 10 %; cotangent 51-58, 39-43 / 47-51 / 66-71. The V-cycle form
+  runs 1.0-1.6x that (lucy 25 %: unit 55 iterations, 2.2 s; cotangent about 100, 5.4 s). The best
+  band decay drifts slower as the region grows (cotangent 0.5-0.6 below 1 M free, 0.7-0.75 at
+  3.5 M; unit 0.6-0.65 to 0.75), so a width that scales with the region (the decay a function of
+  `n_free` or of the region's ring depth) is the untried lever; a fixed profile per weighting ships.
 - **Unoriented `triangulate_point_cloud`** costs 1.8x the old mesh-level winding (still 3.5x faster
   than MeshLib's): the flood, 3 226 rounds of six launches on dragon, 61.9 of the call's 166 ms,
   3.2 us a launch. Not launch-bound (2026-11-03): the same recorded loop of empty kernels at the

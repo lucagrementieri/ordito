@@ -875,14 +875,16 @@ def test_smooth_region(bench_case: BenchCase) -> None:
     0.96x / 0.78x. The V-cycle's ``L_ff`` is stiffened along the rim
     (``smoothing._SMOOTH_REGION_RIM``, a band of rings halving inward), standing in for the rim's
     own rows, which clamp the surface across it: new/old lucy 0.42x unit, 0.35x cotangent, dragon
-    0.54x / 0.52x. A level from
+    0.54x / 0.52x; its per-weighting decay (``_SMOOTH_REGION_RIM_UNIT`` / ``_COTAN``) lucy 0.80x /
+    0.88x more. From ``smoothing._SMOOTH_REGION_RIM_POLYNOMIAL_FROM`` free vertices the polynomial
+    form takes the band too: the bunny row 0.69x. A level from
     ``kernels/algorithms/multigrid.CYCLE_ROWS_FROM`` rows runs a thread a row, its sweeps fused with
     their mat-vec. ``linalg._MULTIGRID_THETA`` moves the scan rows.
     """
     skip_larger_than(
         bench_case,
         "happy_buddha",
-        "one ordito round on lucy is 2.7 s (70 CG iterations over 3.5 M free vertices)",
+        "one ordito round on lucy is 2.2 s (55 CG iterations over 3.5 M free vertices)",
     )
     n_vertices = bench_case.n_vertices
     free_np = _free_mask_np(bench_case)

@@ -448,7 +448,7 @@ def write_factor_pair(
 
 # Free-vertex rings, counted from the rim, that ``smooth_region``'s V-cycle form lifts
 # (``rim_distance_level``, ``rim_lift``).
-RIM_RINGS = 8
+RIM_RINGS = 32
 
 
 @wp.kernel
@@ -487,12 +487,12 @@ def rim_distance_level(
 
 
 @wp.func
-def rim_lift(rim: wp.float64, distance: wp.int32) -> wp.float64:
+def rim_lift(rim: wp.float64, decay: wp.float64, distance: wp.int32) -> wp.float64:
     # The diagonal lift, in units of ``D``, of a free vertex ``distance`` rings from the rim:
-    # ``rim`` on the first ring, halving every ring after, none past ``RIM_RINGS`` (``0``).
+    # ``rim`` on the first ring, times ``decay`` every ring after, none past ``RIM_RINGS`` (``0``).
     if distance <= wp.int32(0):
         return wp.float64(0.0)
-    return rim * wp.pow(wp.float64(0.5), wp.float64(distance - wp.int32(1)))
+    return rim * wp.pow(decay, wp.float64(distance - wp.int32(1)))
 
 
 @wp.kernel
@@ -512,6 +512,7 @@ def normal_equations_setup(
     laplacian_form: wp.int32,
     laplacian_shift: wp.float64,
     laplacian_rim: wp.float64,
+    laplacian_rim_decay: wp.float64,
     rim_distance: wp.array[wp.int32],
     out_term_counts: wp.array[wp.int32],
     out_atb_x: wp.array[wp.float64],
@@ -567,10 +568,12 @@ def normal_equations_setup(
     one = wp.float64(1.0)
     # The diagonal entry written: ``L_ii`` for the factor, ``(1 + shift + rim lift) L_ii`` for
     # ``L_ff``.
-    lift = laplacian_shift
+    lift = wp.float64(0.0)
     if laplacian_form != wp.int32(0):
-        lift += rim_lift(laplacian_rim, rim_distance[ri])
-    diagonal_value = wp.where(laplacian_form != wp.int32(0), sum_i * (one + lift), sum_i)
+        lift = laplacian_shift
+    if rim_distance.shape[0] > 0:
+        lift += rim_lift(laplacian_rim, laplacian_rim_decay, rim_distance[ri])
+    diagonal_value = sum_i * (one + lift)
     ax = wp.float64(0.0)
     ay = wp.float64(0.0)
     az = wp.float64(0.0)
