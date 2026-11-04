@@ -729,9 +729,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("reconstruction", "flood_narrow_rounds"): frozenset(
         {"frontier", "hist", "live", "margin", "narrow", "seeds", "stale_list", "state", "visited"}
     ),
-    # The serial builder's half-edge records and its per-round marks are its working state across
-    # the whole assembly; the answer is ``out_state``.
-    ("algorithms.mesh_builder", "build_candidate_mesh"): frozenset({"t", "marked"}),
     # The edge-flip geodesics' CPU-device Dijkstra: its queue size and the per-vertex marks of the
     # targets still to settle; the answer is ``out_incoming``.
     ("algorithms.flip_geodesics", "shortest_edge_tree_serial"): frozenset({"state", "wanted"}),

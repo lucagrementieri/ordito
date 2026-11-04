@@ -569,7 +569,10 @@ def test_contested_cloud_matches_meshlib(device: str, seed: int):
     )
 
 
-def test_contested_rows_kept_match_meshlib_builder(device: str):
+@pytest.mark.parametrize("group_rows", [None, 64], ids=["one-launch", "grouped"])
+def test_contested_rows_kept_match_meshlib_builder(
+    device: str, group_rows: int | None, monkeypatch: pytest.MonkeyPatch
+):
     """
     Class A: the candidate rows the builder keeps are MeshLib's ``MeshBuilder`` faces, by id.
 
@@ -578,9 +581,31 @@ def test_contested_rows_kept_match_meshlib_builder(device: str):
     by stage: ``addTriangles`` over the ``t3`` rows, then over those left and the ``t2`` rows, then
     up to three rounds of deleting ``findHoleComplicatingFaces`` and adding again. Its face ids are
     the row indices, so the kept faces in id order are the rows ordito keeps, in its order. The
-    graded noisy saddle leaves pinches, and the test asserts a delete round ran.
+    graded noisy saddle leaves pinches, and the test asserts a delete round ran. ``grouped`` takes
+    two such saddles apart in one cloud and lowers the rows a builder group needs, so that the
+    region splits into two groups (asserted), as a scanned cloud's does at the default: the groups
+    run apart, on host threads, and their hole walks are those of the one-launch builder. The two
+    saddles' delete rounds end apart, so the rounds' global stopping tests matter: summing the
+    first group's counts alone fails here.
     """
+    groups: list[int] = []
+    if group_rows is not None:
+        monkeypatch.setattr(od.reconstruction, "_BUILDER_GROUP_ROWS", group_rows)
+        builder_groups = od.reconstruction._builder_groups  # pyright: ignore[reportPrivateUsage]
+
+        def counted(*args: Any) -> Any:
+            packed = builder_groups(*args)
+            groups.append(int(np.count_nonzero(np.diff(packed[2]))))
+            return packed
+
+        monkeypatch.setattr(od.reconstruction, "_builder_groups", counted)
     points_np, normals_np = _saddle_cloud(0, graded=True)
+    if group_rows is not None:
+        other_np, other_normals_np = _saddle_cloud(4, graded=True)
+        points_np = np.concatenate(
+            [points_np, other_np + np.array([4.0, 0.0, 0.0], dtype=np.float32)]
+        )
+        normals_np = np.concatenate([normals_np, other_normals_np])
     rows_ml, n_rep3 = _meshlib_candidates(points_np, normals_np, 16)
     mesh_ml = mm.Mesh()
     mesh_ml.points = points_to_meshlib(points_np.astype(np.float64)).points
@@ -616,6 +641,8 @@ def test_contested_rows_kept_match_meshlib_builder(device: str):
         n_rep3,
     )
     assert np.array_equal(kept_wp.numpy().reshape(-1, 3), kept_ml)
+    if group_rows is not None:
+        assert groups == [2], "the region must split into two groups"
 
 
 @pytest.mark.parity("triangulate_point_cloud_unoriented", "meshlib")

@@ -2430,6 +2430,16 @@ def localize_rows(
 
 
 @wp.kernel
+def contested_row_edges(rows: wp.array2d[wp.int32], out_edges: wp.array2d[wp.int32]) -> None:
+    # Two edges of each region row, enough to join its three corners in one component.
+    i = wp.int32(wp.tid())
+    out_edges[2 * i, 0] = rows[i, 0]
+    out_edges[2 * i, 1] = rows[i, 1]
+    out_edges[2 * i + 1, 0] = rows[i, 1]
+    out_edges[2 * i + 1, 1] = rows[i, 2]
+
+
+@wp.kernel
 def apply_builder_state(
     contested: wp.array[wp.int32],
     state: wp.array[wp.int32],

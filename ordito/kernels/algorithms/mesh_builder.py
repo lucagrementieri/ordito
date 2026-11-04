@@ -8,7 +8,8 @@ half-edge structure, refusing a triangle that would repeat a directed edge or pi
 deferring one whose vertex has no single gap to attach it to. It then deletes the faces that make
 a hole pass a vertex twice and adds the remaining triangles again, up to three rounds. Every
 decision reads the rings the earlier ones left, so the order is the algorithm: this module runs it
-in one thread, splice for splice.
+in one thread, splice for splice, a thread for each group of candidates that share no vertex with
+another group's (the phase kernels below).
 
 Only the candidates near a conflict reach it. Where every candidate around a vertex forms one fan
 with no repeated directed edge the builder adds them all, whatever the order, so
@@ -281,25 +282,30 @@ def add_face(t: HalfEdges, f: wp.int32, vs: wp.vec3i) -> wp.int32:
 
 @wp.func
 def add_pending_faces(
-    t: HalfEdges, tris: wp.array2d[wp.int32], state: wp.array[wp.int32], active: wp.array[wp.int32]
+    t: HalfEdges,
+    tris: wp.array2d[wp.int32],
+    state: wp.array[wp.int32],
+    active: wp.array[wp.int32],
+    first_face: wp.int32,
+    end_face: wp.int32,
 ) -> wp.int32:
-    # Add the pending faces: ascending, pass after pass until a pass
-    # adds nothing. A deferred face stays in the pass list; one that fails leaves it but stays
-    # pending, so the next call retries both.
+    # Add the pending faces of ``[first_face, end_face)``: ascending, pass after pass until a pass
+    # adds nothing. A deferred face stays in the pass list (``active`` from ``first_face``); one
+    # that fails leaves it but stays pending, so the next call retries both.
     n_active = wp.int32(0)
-    for f in range(tris.shape[0]):
+    for f in range(first_face, end_face):
         if state[f] == FACE_PENDING:
-            active[n_active] = f
+            active[first_face + n_active] = f
             n_active += 1
     total = wp.int32(0)
     while True:
         added = wp.int32(0)
         kept = wp.int32(0)
         for k in range(n_active):
-            face = active[k]
+            face = active[first_face + k]
             result = add_face(t, face, wp.vec3i(tris[face, 0], tris[face, 1], tris[face, 2]))
             if result == ADD_TRY_LATER:
-                active[kept] = face
+                active[first_face + kept] = face
                 kept += 1
             elif result == ADD_SUCCESS:
                 state[face] = FACE_ADDED
@@ -381,12 +387,17 @@ def mark_complicating_faces(
     local_to_global: wp.array[wp.int32],
     global_to_local: wp.array[wp.int32],
     hole_next: wp.array[wp.int32],
+    vertices: wp.array[wp.int32],
+    first_vertex: wp.int32,
+    end_vertex: wp.int32,
     marked: wp.array[wp.int32],
 ) -> wp.int32:
-    # At every vertex a hole passes twice, keep the widest fan
-    # between two gaps (the first in ring order on a tie) and mark the faces of every other one.
+    # At every vertex of ``vertices[first_vertex:end_vertex]`` a hole passes twice, keep the widest
+    # fan between two gaps (the first in ring order on a tie) and mark the faces of every other
+    # one.
     n_marked = wp.int32(0)
-    for v in range(t.edge_per_vertex.shape[0]):
+    for k in range(first_vertex, end_vertex):
+        v = vertices[k]
         e0 = t.edge_per_vertex[v]
         if e0 < 0 or complete[v] == 0:
             continue
@@ -423,13 +434,24 @@ def mark_complicating_faces(
 
 @wp.func
 def delete_marked_faces(
-    t: HalfEdges, state: wp.array[wp.int32], marked: wp.array[wp.int32], vacant: wp.array[wp.int32]
+    t: HalfEdges,
+    state: wp.array[wp.int32],
+    marked: wp.array[wp.int32],
+    vacant: wp.array[wp.int32],
+    vertices: wp.array[wp.int32],
+    first_vertex: wp.int32,
+    end_vertex: wp.int32,
+    first_face: wp.int32,
+    end_face: wp.int32,
+    first_edge: wp.int32,
 ) -> None:
     # Delete the marked faces, in these passes: an edge is vacated when no face
     # beside it survives, a vertex keeps an edge that survives or is dropped, the surviving
-    # records skip the vacated edges in their rings, and the vacated edges become lone.
+    # records skip the vacated edges in their rings, and the vacated edges become lone. Over one
+    # group's vertices, faces and half-edges (from ``first_edge`` to its count): every ring a pass
+    # follows is a vertex's, in its group.
     n_half = t.count[0]
-    for ue in range(n_half // 2):
+    for ue in range(first_edge // 2, n_half // 2):
         a = 2 * ue
         b = a + 1
         code = EDGE_VACATED
@@ -452,7 +474,8 @@ def delete_marked_faces(
                 if marked[t.left[b]] == 0:
                     code = EDGE_KEPT
         vacant[ue] = code
-    for v in range(t.edge_per_vertex.shape[0]):
+    for k in range(first_vertex, end_vertex):
+        v = vertices[k]
         e0 = t.edge_per_vertex[v]
         if e0 < 0:
             continue
@@ -469,11 +492,11 @@ def delete_marked_faces(
             t.edge_per_vertex[v] = -1
         elif vacant[e0 // 2] != EDGE_KEPT:
             t.edge_per_vertex[v] = found
-    for f in range(state.shape[0]):
+    for f in range(first_face, end_face):
         if marked[f] != 0:
             t.edge_per_face[f] = -1
             state[f] = FACE_DELETED
-    for h in range(n_half):
+    for h in range(first_edge, n_half):
         if vacant[h // 2] != EDGE_KEPT:
             continue
         n = t.next[h]
@@ -487,14 +510,51 @@ def delete_marked_faces(
         if t.left[h] >= 0:
             if marked[t.left[h]] != 0:
                 t.left[h] = -1
-    for h in range(n_half):
+    for h in range(first_edge, n_half):
         if vacant[h // 2] == EDGE_VACATED:
             t.next[h] = h
             t.prev[h] = h
             t.org[h] = -1
             t.left[h] = -1
-    for f in range(state.shape[0]):
+    for f in range(first_face, end_face):
         marked[f] = 0
+
+
+# The assembly in three kernels, each a group of the candidates in one thread: the faces of a group
+# are a range, ascending in the global order, its vertices a range of ``vertices``, its half-edges a
+# range from ``first_edge`` (``t.count`` holds its own end). Groups share no vertex, so the adds and
+# the deletes of one never read another's rings, and a group's passes past its last change are
+# no-ops; the marking only reads, so its hole walks may cross into another group's rings, whose
+# state is the serial order's at that point. The rounds' two stopping tests are global: the
+# caller sums the groups' counts between kernels. One group is the serial assembly.
+@wp.func
+def start_group(
+    tris: wp.array2d[wp.int32],
+    first_face: wp.int32,
+    rep3_face: wp.int32,
+    end_face: wp.int32,
+    vertices: wp.array[wp.int32],
+    first_vertex: wp.int32,
+    end_vertex: wp.int32,
+    first_edge: wp.int32,
+    t: HalfEdges,
+    active: wp.array[wp.int32],
+    marked: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+):
+    # The triangles three fans agree on (the group's faces below ``rep3_face``), then those left
+    # with the ones two fans agree on.
+    t.count[0] = first_edge
+    for k in range(first_vertex, end_vertex):
+        t.edge_per_vertex[vertices[k]] = -1
+    for f in range(first_face, end_face):
+        t.edge_per_face[f] = -1
+        marked[f] = 0
+        state[f] = wp.where(f < rep3_face, FACE_PENDING, FACE_OUTSIDE)
+    add_pending_faces(t, tris, state, active, first_face, end_face)
+    for f in range(rep3_face, end_face):
+        state[f] = FACE_PENDING
+    add_pending_faces(t, tris, state, active, first_face, end_face)
 
 
 @wp.kernel(enable_backward=False)
@@ -506,34 +566,132 @@ def build_candidate_mesh(
     local_to_global: wp.array[wp.int32],
     global_to_local: wp.array[wp.int32],
     hole_next: wp.array[wp.int32],
+    vertices: wp.array[wp.int32],
     t: HalfEdges,
     active: wp.array[wp.int32],
     marked: wp.array[wp.int32],
     vacant: wp.array[wp.int32],
     out_state: wp.array[wp.int32],
 ) -> None:
-    # dim=1. The assembly: the triangles three fans agree on (the first ``n_rep3``
-    # rows), then those left with the ones two fans agree on, then the delete-and-add rounds.
+    # dim=1. One group holding every candidate, its phases and rounds in one launch: the serial
+    # assembly, for a region too small to split.
     n_faces = tris.shape[0]
-    t.count[0] = 0
-    for v in range(t.edge_per_vertex.shape[0]):
-        t.edge_per_vertex[v] = -1
-    for f in range(n_faces):
-        t.edge_per_face[f] = -1
-        marked[f] = 0
-        out_state[f] = wp.where(f < n_rep3, FACE_PENDING, FACE_OUTSIDE)
-    add_pending_faces(t, tris, out_state, active)
-    for f in range(n_rep3, n_faces):
-        out_state[f] = FACE_PENDING
-    add_pending_faces(t, tris, out_state, active)
+    n_vertices = vertices.shape[0]
+    start_group(tris, 0, n_rep3, n_faces, vertices, 0, n_vertices, 0, t, active, marked, out_state)
     for _ in range(COMPLICATING_ROUNDS):
         if (
             mark_complicating_faces(
-                t, points, complete, local_to_global, global_to_local, hole_next, marked
+                t,
+                points,
+                complete,
+                local_to_global,
+                global_to_local,
+                hole_next,
+                vertices,
+                0,
+                n_vertices,
+                marked,
             )
             == 0
         ):
             break
-        delete_marked_faces(t, out_state, marked, vacant)
-        if add_pending_faces(t, tris, out_state, active) == 0:
+        delete_marked_faces(t, out_state, marked, vacant, vertices, 0, n_vertices, 0, n_faces, 0)
+        if add_pending_faces(t, tris, out_state, active, 0, n_faces) == 0:
             break
+
+
+@wp.kernel(enable_backward=False)
+def start_candidate_group(
+    tris: wp.array2d[wp.int32],
+    first_face: wp.int32,
+    rep3_face: wp.int32,
+    end_face: wp.int32,
+    vertices: wp.array[wp.int32],
+    first_vertex: wp.int32,
+    end_vertex: wp.int32,
+    first_edge: wp.int32,
+    t: HalfEdges,
+    active: wp.array[wp.int32],
+    marked: wp.array[wp.int32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # dim=1. ``start_group`` for one group.
+    start_group(
+        tris,
+        first_face,
+        rep3_face,
+        end_face,
+        vertices,
+        first_vertex,
+        end_vertex,
+        first_edge,
+        t,
+        active,
+        marked,
+        out_state,
+    )
+
+
+@wp.kernel(enable_backward=False)
+def mark_candidate_group(
+    points: wp.array[wp.vec3],
+    complete: wp.array[wp.int32],
+    local_to_global: wp.array[wp.int32],
+    global_to_local: wp.array[wp.int32],
+    hole_next: wp.array[wp.int32],
+    vertices: wp.array[wp.int32],
+    first_vertex: wp.int32,
+    end_vertex: wp.int32,
+    group: wp.int32,
+    t: HalfEdges,
+    marked: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # dim=1. A round's complicating faces at the group's vertices, their count in
+    # ``out_counts[group]``.
+    out_counts[group] = mark_complicating_faces(
+        t,
+        points,
+        complete,
+        local_to_global,
+        global_to_local,
+        hole_next,
+        vertices,
+        first_vertex,
+        end_vertex,
+        marked,
+    )
+
+
+@wp.kernel(enable_backward=False)
+def renew_candidate_group(
+    tris: wp.array2d[wp.int32],
+    first_face: wp.int32,
+    end_face: wp.int32,
+    vertices: wp.array[wp.int32],
+    first_vertex: wp.int32,
+    end_vertex: wp.int32,
+    first_edge: wp.int32,
+    group: wp.int32,
+    t: HalfEdges,
+    active: wp.array[wp.int32],
+    marked: wp.array[wp.int32],
+    vacant: wp.array[wp.int32],
+    out_state: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # dim=1. A round's deletes in the group and its pending faces added again, the count added in
+    # ``out_counts[group]``.
+    delete_marked_faces(
+        t,
+        out_state,
+        marked,
+        vacant,
+        vertices,
+        first_vertex,
+        end_vertex,
+        first_face,
+        end_face,
+        first_edge,
+    )
+    out_counts[group] = add_pending_faces(t, tris, out_state, active, first_face, end_face)

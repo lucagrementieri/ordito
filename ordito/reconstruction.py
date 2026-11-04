@@ -24,9 +24,12 @@ its consumers in [`ordito.levelset`][ordito.levelset], and ``screened_poisson`` 
 
 from __future__ import annotations
 
+import concurrent.futures
 import functools
+import heapq
 import itertools
 import math
+import os
 import warnings
 from collections.abc import Callable, Sequence
 from typing import Any, Literal, NamedTuple, cast
@@ -883,9 +886,9 @@ def _contested_rows_kept(
     are complete in the region, and the hole walk of its delete rounds continues past them along
     the clean vertices' single hole edges.
 
-    The builder is one thread. It runs on the CPU device whatever the input's: a CUDA thread
-    chasing the rings measured about 16x slower, and the contested rows are a few hundred to a
-    few thousand.
+    The builder runs on the CPU device whatever the input's: a CUDA thread chasing the rings
+    measured about 16x slower. A region of many rows splits by its components, which assemble on
+    host threads ([`_run_mesh_builder`][ordito.reconstruction._run_mesh_builder]).
     """
     device = rows.device
     m = rows.shape[0]
@@ -989,7 +992,151 @@ def _run_mesh_builder(
     global_to_local: wp.array[wp.int32],
     hole_next: wp.array[wp.int32],
 ) -> wp.array[wp.int32]:
-    """Run ``mesh_builder.build_candidate_mesh`` on the CPU device; return each row's state."""
+    """
+    Run ``mesh_builder``'s assembly on the CPU device; return each row's state.
+
+    The region's components share no vertex, so they assemble apart: packed into groups of
+    about equal rows, a group a launch, the groups' launches of each phase running on as many
+    host threads (a CPU launch releases the interpreter), and the rounds' stopping tests summed
+    over them between phases ([`_builder_groups`][ordito.reconstruction._builder_groups]).
+    """
+    host = "cpu"
+    n_rows = rows.shape[0]
+    if _builder_group_count(n_rows) == 1:
+        return _run_mesh_builder_serial(
+            points, rows, n_rep3, complete, local_to_global, global_to_local, hole_next
+        )
+    rows_np, face_order, face_offsets, rep3_ends, vertices, vertex_offsets = _builder_groups(
+        rows, points.size, n_rep3
+    )
+    n_groups = face_offsets.size - 1
+    capacity = 6 * n_rows
+    records = _launch.empty(4 * capacity, dtype=wp.int32, device=host)
+    edge_per_vertex = _launch.full(points.size, -1, dtype=wp.int32, device=host)
+    edge_per_face = _launch.empty(n_rows, dtype=wp.int32, device=host)
+    cursors, counts = _launch.carve(wp.int32, [n_groups, _BUILDER_MARK_SPLIT * n_groups], host)
+    tris = wp.array(rows_np[face_order], dtype=wp.int32, device=host)
+    vertex_list = wp.array(vertices, dtype=wp.int32, device=host)
+    state = _launch.empty(n_rows, dtype=wp.int32, device=host)
+    active = _launch.empty(n_rows, dtype=wp.int32, device=host)
+    marked = _launch.empty(n_rows, dtype=wp.int32, device=host)
+    vacant = _launch.empty(capacity // 2, dtype=wp.int32, device=host)
+    shared = [
+        _launch.clone(points, device=host),
+        _launch.clone(complete, device=host),
+        _launch.clone(local_to_global, device=host),
+        _launch.clone(global_to_local, device=host),
+        _launch.clone(hole_next, device=host),
+    ]
+    starts, marks, renews = [], [], []
+    for g in range(n_groups):
+        topology = kernel_mesh_builder.HalfEdges()
+        topology.next = _launch.view(records, 0, capacity)
+        topology.prev = _launch.view(records, capacity, 2 * capacity)
+        topology.org = _launch.view(records, 2 * capacity, 3 * capacity)
+        topology.left = _launch.view(records, 3 * capacity, 4 * capacity)
+        topology.edge_per_vertex = edge_per_vertex
+        topology.edge_per_face = edge_per_face
+        topology.count = _launch.view(cursors, g, g + 1)
+        faces = [wp.int32(int(face_offsets[g])), wp.int32(int(face_offsets[g + 1]))]
+        group_vertices = [
+            vertex_list,
+            wp.int32(int(vertex_offsets[g])),
+            wp.int32(int(vertex_offsets[g + 1])),
+        ]
+        first_edge = wp.int32(6 * int(face_offsets[g]))
+        starts.append(
+            wp.launch(
+                kernel_mesh_builder.start_candidate_group,
+                dim=1,
+                inputs=[
+                    tris,
+                    faces[0],
+                    wp.int32(int(rep3_ends[g])),
+                    faces[1],
+                    *group_vertices,
+                    first_edge,
+                    topology,
+                    active,
+                    marked,
+                ],
+                outputs=[state],
+                device=host,
+                record_cmd=True,
+            )
+        )
+        # The marking only reads the rings, so it splits the vertices instead, in more ranges
+        # than threads: its hole walks crowd in a few.
+        for k in range(_BUILDER_MARK_SPLIT * g, _BUILDER_MARK_SPLIT * (g + 1)):
+            n_ranges = _BUILDER_MARK_SPLIT * n_groups
+            mark_range = [
+                wp.int32(vertices.size * k // n_ranges),
+                wp.int32(vertices.size * (k + 1) // n_ranges),
+            ]
+            marks.append(
+                wp.launch(
+                    kernel_mesh_builder.mark_candidate_group,
+                    dim=1,
+                    inputs=[*shared, vertex_list, *mark_range, wp.int32(k), topology, marked],
+                    outputs=[counts],
+                    device=host,
+                    record_cmd=True,
+                )
+            )
+        renews.append(
+            wp.launch(
+                kernel_mesh_builder.renew_candidate_group,
+                dim=1,
+                inputs=[
+                    tris,
+                    *faces,
+                    *group_vertices,
+                    first_edge,
+                    wp.int32(g),
+                    topology,
+                    active,
+                    marked,
+                    vacant,
+                ],
+                outputs=[state, counts],
+                device=host,
+                record_cmd=True,
+            )
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(n_groups) as pool:
+
+        def run(commands: list[Any]) -> int:
+            # One phase's launches; the sum of the counts they wrote, one a launch (a start
+            # writes none).
+            if n_groups == 1:
+                for command in commands:
+                    command.launch()
+            else:
+                list(pool.map(lambda command: command.launch(), commands))
+            return int(counts.numpy()[: len(commands)].sum())
+
+        run(starts)
+        for _ in range(kernel_mesh_builder.COMPLICATING_ROUNDS):
+            if run(marks) == 0:
+                break
+            if run(renews) == 0:
+                break
+    by_row = np.empty(n_rows, dtype=np.int32)
+    by_row[face_order] = state.numpy()
+    return wp.array(by_row, dtype=wp.int32, device=host)
+
+
+def _run_mesh_builder_serial(
+    points: wp.array[wp.vec3],
+    rows: odt.Array2dInt32,
+    n_rep3: int,
+    complete: wp.array[wp.int32],
+    local_to_global: wp.array[wp.int32],
+    global_to_local: wp.array[wp.int32],
+    hole_next: wp.array[wp.int32],
+) -> wp.array[wp.int32]:
+    """Run ``mesh_builder.build_candidate_mesh``, the whole region in one launch."""
     host = "cpu"
     n_rows = rows.shape[0]
     capacity = 6 * n_rows
@@ -1014,6 +1161,7 @@ def _run_mesh_builder(
             _launch.clone(local_to_global, device=host),
             _launch.clone(global_to_local, device=host),
             _launch.clone(hole_next, device=host),
+            wp.array(np.arange(points.size, dtype=np.int32), dtype=wp.int32, device=host),
             topology,
             _launch.empty(n_rows, dtype=wp.int32, device=host),
             _launch.empty(n_rows, dtype=wp.int32, device=host),
@@ -1023,6 +1171,71 @@ def _run_mesh_builder(
         device=host,
     )
     return state
+
+
+# The builder's groups: at most this many, each of at least this many rows (fewer rows run as one),
+# and the vertex ranges a group's thread marks.
+_BUILDER_GROUPS = 8
+_BUILDER_GROUP_ROWS = 8192
+_BUILDER_MARK_SPLIT = 4
+
+
+def _builder_group_count(n_rows: int) -> int:
+    """Return the builder's group count for ``n_rows`` region rows."""
+    return min(_BUILDER_GROUPS, os.cpu_count() or 1, max(1, n_rows // _BUILDER_GROUP_ROWS))
+
+
+def _builder_groups(
+    rows: odt.Array2dInt32, n_vertices: int, n_rep3: int
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Pack the region's components into the builder's groups, about equal in rows.
+
+    Returns the rows on the host, the order that puts them in groups (each group's ascending),
+    the groups' row offsets, each group's end of its ``t3`` rows, the rows' vertices in group
+    order, and the groups' vertex offsets. The largest components go first, each to the group
+    holding fewest rows.
+    """
+    n_rows = rows.shape[0]
+    n_groups = _builder_group_count(n_rows)
+    rows_np = rows.numpy()  # Readback: the builder runs on the host and reads these rows.
+    in_rows = np.zeros(n_vertices, dtype=bool)
+    in_rows[rows_np.ravel()] = True
+    vertices = np.flatnonzero(in_rows).astype(np.int32)
+    row_group = np.zeros(n_rows, dtype=np.uint8)
+    vertex_group = np.zeros(vertices.size, dtype=np.uint8)
+    if n_groups > 1:
+        edges = odt.empty_2d((2 * n_rows, 2), wp.int32, device=rows.device)
+        _launch.launch(
+            kernel_reconstruction.contested_row_edges,
+            dim=n_rows,
+            inputs=[rows],
+            outputs=[edges],
+            device=rows.device,
+        )
+        # Readback: the grouping is host bookkeeping for the host builder. A label is the
+        # smallest vertex of its component, so the sizes are a count by label.
+        labels = od.graph.connected_component_labels_from_edges(
+            edges, n_vertices, validate=False
+        ).numpy()
+        row_labels = labels[rows_np[:, 0]]
+        sizes = np.bincount(row_labels, minlength=n_vertices)
+        components = np.flatnonzero(sizes)
+        loads = [(0, g) for g in range(n_groups)]
+        component_group = np.zeros(n_vertices, dtype=np.uint8)
+        for c in components[np.argsort(-sizes[components], kind="stable")]:
+            load, g = heapq.heappop(loads)
+            component_group[c] = g
+            heapq.heappush(loads, (load + int(sizes[c]), g))
+        row_group = component_group[row_labels]
+        vertex_group = component_group[labels[vertices]]
+    face_order = np.argsort(row_group, kind="stable").astype(np.int32)
+    group_rows = np.bincount(row_group, minlength=n_groups)
+    face_offsets = np.concatenate([[0], np.cumsum(group_rows)])
+    rep3_ends = face_offsets[:-1] + np.bincount(row_group[:n_rep3], minlength=n_groups)
+    vertex_order = np.argsort(vertex_group, kind="stable")
+    vertex_offsets = np.concatenate([[0], np.cumsum(np.bincount(vertex_group, minlength=n_groups))])
+    return rows_np, face_order, face_offsets, rep3_ends, vertices[vertex_order], vertex_offsets
 
 
 def _sorted_candidate_keys(
