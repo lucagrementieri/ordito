@@ -1185,6 +1185,54 @@ def test_fill_dp_captured_matches_plain(
     assert np.array_equal(fills[True], fills[False])
 
 
+@pytest.mark.parametrize("tiled", [True, False], ids=["tiled", "serial"])
+def test_fill_dp_ordered_matches_unordered(
+    monkeypatch: pytest.MonkeyPatch, device: str, tiled: bool
+) -> None:
+    """
+    Ordito against ordito: the span sweep over the loops longest first emits the identical faces.
+
+    Above ``holes._HOLE_DP_ORDER_FROM`` the span launches index the loops through
+    ``HoleFillTables.loop_order`` and cover only those longer than the span; below it, the loops in
+    their own order. The unordered sweep is what every reference comparison in this file runs, so
+    it carries the oracle. Three holes of different lengths (asserted) make the order differ from
+    the loops' own; on CUDA the longest is long enough that the sweep is also recorded and replayed
+    over the narrowed grids. Both span engines run (the serial one only on CUDA: the CPU device
+    sweeps each loop in one thread and never reads the order).
+    """
+    if not tiled and not wp.get_device(device).is_cuda:
+        pytest.skip("the CPU device's serial engine is the one-launch sweep, which has no order")
+    vertices_wp, faces_wp = od.creation.icosphere(4, device=device)
+    vertices_np, faces_np = vertices_wp.numpy(), faces_wp.numpy().reshape(-1, 3)
+    centroids = vertices_np[faces_np].mean(axis=1)
+    removed = np.zeros(faces_np.shape[0], dtype=bool)
+    for center, radius in (
+        ((0.0, 0.0, 1.0), 0.45),
+        ((1.0, 0.0, 0.0), 0.2),
+        ((0.0, -1.0, 0.0), 0.08),
+    ):
+        removed |= np.linalg.norm(centroids - np.asarray(center), axis=1) < radius
+    kept_wp = wp.array(faces_np[~removed].ravel(), dtype=wp.int32, device=device)
+    n_orig = kept_wp.size
+
+    original = od.holes._run_hole_dp  # pyright: ignore[reportPrivateUsage]
+    sizes: list[np.ndarray] = []
+
+    def sweep(*args: Any, **kwargs: Any) -> Any:
+        sizes.append(np.asarray(args[0].sizes_np))
+        return original(*args, **kwargs, tiled=tiled)
+
+    monkeypatch.setattr(od.holes, "_run_hole_dp", sweep)
+    fills = {}
+    for order_from in (0, 1 << 30):
+        monkeypatch.setattr(od.holes, "_HOLE_DP_ORDER_FROM", order_from)
+        fills[order_from] = od.holes.fill_min_weight(vertices_wp, kept_wp).numpy()[n_orig:]
+
+    assert np.unique(sizes[0]).size == 3, "the fixture must leave three holes of distinct lengths"
+    assert fills[0].size > 3 * 3, "fixture produced no fill to compare"
+    assert np.array_equal(fills[0], fills[1 << 30])
+
+
 def test_hole_dp_captures_is_bounded_at_both_ends(device: str) -> None:
     """
     Not a library comparison: the sweep's launch schedule has no counterpart to compare against.

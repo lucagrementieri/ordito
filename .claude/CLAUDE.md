@@ -977,10 +977,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
 - **Unoriented `triangulate_point_cloud` over the oriented call** (2026-11-04, after the flood's
-  narrow-round block and the builder's component groups on host threads): 1.28x on bunny, 1.55x
-  on dragon, 1.88x on happy_buddha (191 against 105 ms). happy_buddha's gap: the flood 40 ms, the
-  builder +22 (45 ms, bounded by the region's largest component, 34 751 rows serial), small holes
-  +12 (`holes._fill_small`, 2.6 -> 15.0 ms), grown fans +12 (62 -> 74 ms); dragon's is mostly the
-  flood (29 of 39 ms). Flood-wound fans conflict more than normal-wound ones, so every stage after
-  them has more to do. Unexplored: a tighter contested region than 4 rings (it sets the largest
-  component), and why the hole fill grows 6x (`reference/component-status.md`).
+  narrow-round block, the builder's component groups on host threads and the hole DP's narrowed
+  span grids): 1.27x on bunny, 1.52x on dragon, 1.79x on happy_buddha (176 against 98 ms).
+  happy_buddha's gap: the flood 40 ms, the builder +22 (45 ms, bounded by the region's largest
+  component, 34 751 rows serial), grown fans +12 (62 -> 74 ms), small holes +2; dragon's is
+  mostly the flood (29 of 37 ms). Flood-wound fans conflict more than normal-wound ones, so the
+  stages after them have more to do. Unexplored: a tighter contested region than 4 rings (it sets
+  the largest component), and the grown-fan rebuild's growth (`reference/component-status.md`).

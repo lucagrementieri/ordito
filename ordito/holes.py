@@ -1149,6 +1149,11 @@ def _traceback_fill_faces(
     return compacted
 
 
+# The grid (loops times the longest loop's slots) from which the DP's span launches cover the loops
+# longest first, each only those longer than its span (``kernels/holes.ordered_loop``).
+_HOLE_DP_ORDER_FROM = 1 << 15
+
+
 def _run_hole_dp(
     loops: _PackedLoops,
     loop_pos: wp.array[wp.vec3],
@@ -1247,6 +1252,22 @@ def _run_hole_dp(
     tables = kernel_holes.HoleFillTables()
     tables.loop_pos = loop_pos
     tables.loop_offsets = loops.offsets
+    # A wide grid's loops are ordered longest first, so that a span's launch covers only the loops
+    # longer than it: a many-hole mesh is mostly short loops, whose blocks would otherwise fill
+    # every launch. A narrow grid keeps its order: its launches are latency-bound, and the lookup
+    # would be one more load in each block's chain.
+    ordered = loops.n_loops * loops.max_size >= _HOLE_DP_ORDER_FROM
+    tables.ordered = wp.int32(1 if ordered else 0)
+    tables.loop_order = loops.offsets
+    longer = [loops.n_loops] * (loops.max_size + 1)
+    if ordered:
+        by_length = np.argsort(-loops.sizes_np, kind="stable").astype(np.int32)
+        tables.loop_order = _launch.array(by_length, dtype=wp.int32, device=device)
+        # ``longer[span]``: the loops longer than ``span``, for every span the sweep names.
+        longer = (
+            loops.n_loops
+            - np.searchsorted(np.sort(loops.sizes_np), np.arange(loops.max_size + 1), "right")
+        ).tolist()
     tables.dp_offsets = loops.dp_offsets
     tables.active = active
     tables.plane_normals = plane_normals
@@ -1269,7 +1290,8 @@ def _run_hole_dp(
 
     def issue(offset: int, width: int) -> None:
         inputs = [tables, wp.int32(offset)]
-        dim = (loops.n_loops, width)
+        # The loops longer than the span ``offset`` names, which a later replay's spans only cut.
+        dim = (max(longer[offset], 1), width)
         if tiled:
             _launch.launch_tiled(
                 kernel_holes.fill_dp_span_tiled,

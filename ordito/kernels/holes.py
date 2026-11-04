@@ -536,10 +536,23 @@ class HoleFillTables:
     A cross-*session* before/after read this as a win on the long rims and a loss on the short ones;
     the loss was drift in the surrounding work, which is what interleaving in one clock state is
     for.
+
+    **``loop_order`` and ``ordered`` narrow a wide grid.** A span launch spans every loop, and a
+    mesh with thousands of holes is mostly short ones whose blocks exit at once: on a scanned
+    cloud's reconstruction (4 517 holes, the longest 117) the 112 span launches cost 114 us of
+    device time each, nearly all of it empty blocks. With ``ordered`` the launches index the
+    loops longest first through ``loop_order`` and cover only those longer than the span
+    (``ordered_loop``): the fill 0.24x there, and on the other scanned reconstructions 0.40x
+    (1 939 holes), 0.63x (1 200) and 0.74x (1 603, the longest 50). A narrow grid
+    (about 5 000 blocks or fewer: a hundred-odd holes, or one long rim) keeps the loops' own order,
+    where the lookup's extra load in every block's chain measured 1.03-1.05x;
+    ``holes._HOLE_DP_ORDER_FROM`` is the grid size between the two.
     """
 
     loop_pos: wp.array[wp.vec3]
     loop_offsets: wp.array[wp.int32]
+    loop_order: wp.array[wp.int32]
+    ordered: wp.int32
     dp_offsets: wp.array[wp.int32]
     active: wp.array[wp.int32]
     plane_normals: wp.array[wp.vec3]
@@ -754,23 +767,34 @@ def fill_dp_interval(tables: HoleFillTables, ell: wp.int32, i: wp.int32, span: w
     tables.prev[base + i * b + j] = interval_apex(best_val, best_k)
 
 
+@wp.func
+def ordered_loop(tables: HoleFillTables, rank: wp.int32) -> wp.int32:
+    # The loop a span launch's ``rank`` names: ``tables.loop_order[rank]`` when the sweep is
+    # ordered longest first, else ``rank`` itself, with no load (``holes._run_hole_dp``).
+    ell = wp.int32(rank)
+    if tables.ordered != 0:
+        ell = tables.loop_order[rank]
+    return ell
+
+
 @wp.kernel(enable_backward=False)
 def fill_dp_span(tables: HoleFillTables, span_offset: wp.int32) -> None:
     # One thread per span-``span`` interval (i, j = i + span) of every loop at once; reads only
     # strictly smaller spans, so successive launches (span = 2, 3, ...) are the DP barriers.
     #
-    # Launched over ``(n_loops, max_B - span)``: threads whose loop is shorter than the current
-    # span exit at once, so a mesh whose loops differ wildly in length wastes some of the grid, but
-    # the launch *count* is ``max_B - 1`` for the whole mesh instead of ``B - 1`` per loop.
+    # Launched over ``(n_loops, max_B - span)``, or with the loops ordered longest first
+    # (``ordered_loop``) over only those longer than the span: the launch *count* is ``max_B - 1``
+    # for the whole mesh instead of ``B - 1`` per loop, and an ordered launch past the short loops'
+    # spans carries none of them.
     #
     # This is the tie-break reference on CUDA; ``fill_dp_span_tiled`` must agree with it apex for
     # apex (see ``tests/test_holes.py::test_fill_dp_span_tiled_matches_serial``). The CPU device
     # runs the same intervals in one launch, ``fill_dp_sweep``.
-    ell, i = wp.tid()
+    rank, i = wp.tid()
     # The span is the base the replays have stepped plus this launch's span in the first group, so
     # that every launch of a recorded group is byte-identical bar one integer -- see
     # ``HoleFillTables.span_base``.
-    fill_dp_interval(tables, ell, i, tables.span_base[0] + span_offset)
+    fill_dp_interval(tables, ordered_loop(tables, rank), i, tables.span_base[0] + span_offset)
 
 
 @wp.kernel(enable_backward=False)
@@ -824,8 +848,10 @@ def fill_dp_span_tiled(tables: HoleFillTables, span_offset: wp.int32) -> None:
     # own minimum, so the pair is (min cost, min k attaining it) -- which is what an ascending
     # strict ``<`` scan returns. Lanes with no apex, and an all-non-finite interval, both leave
     # ``(inf, -1)`` and agree with the serial kernel there too.
-    ell, i, t = wp.tid()
-    # As in ``fill_dp_span``: the stepped base plus this launch's span in the first group.
+    rank, i, t = wp.tid()
+    # As in ``fill_dp_span``: the loops longest first, and the stepped base plus this launch's span
+    # in the first group.
+    ell = ordered_loop(tables, rank)
     span = tables.span_base[0] + span_offset
     # Every guard below is warp-uniform (it reads only ``ell``, ``i`` and ``span``), so the whole
     # block returns together and the tile reductions never run in divergent control flow.
