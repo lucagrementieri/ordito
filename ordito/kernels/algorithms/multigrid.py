@@ -272,6 +272,27 @@ def aggregate_entry_label(
     return label[j]
 
 
+@wp.func
+def node_weight(weights: wp.array[wp.int32], i: wp.int32) -> wp.int32:
+    # How many finest-level rows node ``i`` of a level stands for: ``weights[i]`` below the finest
+    # level, ``1`` on it, where ``weights`` is empty. Smoothed aggregation interpolates the
+    # near-nullspace vector, the constant on the finest level; the tentative prolongator's
+    # normalized columns carry it to the next level as ``sqrt(weight)``, not as a constant, so
+    # every level reads it from the weights (``tentative_scale``) rather than assuming it.
+    if weights.shape[0] == 0:
+        return wp.int32(1)
+    return weights[i]
+
+
+@wp.func
+def tentative_scale(weights: wp.array[wp.int32], i: wp.int32) -> wp.float64:
+    # Row ``i``'s near-nullspace entry, ``sqrt(node_weight)``: exactly ``1`` on the finest level,
+    # so its prolongator is the constant one to the bit.
+    if weights.shape[0] == 0:
+        return wp.float64(1.0)
+    return wp.sqrt(wp.float64(weights[i]))
+
+
 @wp.kernel
 def spread_aggregate_labels(
     label: wp.array[wp.int32],
@@ -283,6 +304,7 @@ def spread_aggregate_labels(
     values: wp.array[wp.float64],
     scaled_diagonal: wp.array[wp.float64],
     theta: wp.float64,
+    weights: wp.array[wp.int32],
     out_label: wp.array[wp.int32],
     out_sizes: wp.array[wp.int32],
 ) -> None:
@@ -292,6 +314,8 @@ def spread_aggregate_labels(
     # scan, so no pass writes the labels first, and ``label`` is not read. The second hop, whose
     # labels are final, also counts each aggregate's rows into the zeroed ``out_sizes`` (the first
     # hop passes ``None`` and never reads it), so no separate counting pass runs over the labels.
+    # A row counts its ``node_weight``: the finest rows it stands for, so ``out_sizes`` holds each
+    # aggregate's, the next level's weights.
     #
     # The spread walks the same *strong* graph the independent set was selected on
     # (``mg_strong_neighbor``), which is what keeps the tiling consistent: every excluded node has
@@ -306,14 +330,15 @@ def spread_aggregate_labels(
                 best = wp.max(best, aggregate_entry_label(j, from_state, label, state, scan_pos))
     out_label[i] = best
     if from_state == 0 and best != MG_UNAGGREGATED:
-        wp.atomic_add(out_sizes, best, wp.int32(1))
+        wp.atomic_add(out_sizes, best, node_weight(weights, i))
 
 
 @wp.func
 def tentative_norm(sizes: wp.array[wp.int32], aggregate: wp.int32) -> wp.float64:
-    # ``sqrt(|aggregate|)``, the norm of the constant near-nullspace vector over an aggregate's
-    # column: the tentative prolongator ``P0``'s entry in a row of that aggregate is its reciprocal.
-    # Returned undivided so a caller scaling by it divides once, as it always has.
+    # ``sqrt(sizes[aggregate])``, the norm of the near-nullspace vector over an aggregate's column,
+    # ``sizes`` holding each aggregate's finest-row count (``spread_aggregate_labels``): the
+    # tentative prolongator ``P0``'s entry in a row of that aggregate is ``tentative_scale`` over
+    # it. Returned undivided so a caller scaling by it divides once, as it always has.
     return wp.sqrt(wp.float64(sizes[aggregate]))
 
 
@@ -379,6 +404,7 @@ def smoothed_prolongator_keys(
     values: wp.array[wp.float64],
     label: wp.array[wp.int32],
     sizes: wp.array[wp.int32],
+    weights: wp.array[wp.int32],
     damped_inverse_diagonal: wp.array[wp.float64],
     n_aggregates: wp.int32,
     out_keys: wp.array[wp.uint64],
@@ -386,22 +412,23 @@ def smoothed_prolongator_keys(
     out_values: wp.array[wp.float64],
 ) -> None:
     # The smoothed prolongator ``P = (I - w D^-1 A) P0`` as keyed contributions, one thread a row.
-    # ``P0`` holds one entry a row -- node ``j``'s aggregate, ``1 / sqrt(|aggregate|)``, the
-    # constant near-nullspace vector normalized per column -- so ``(A P0)_ik`` is the sum of
-    # ``A_ij P0_j`` over the row's columns ``j`` in aggregate ``k``: every stored ``A_ij`` is one
-    # contribution at ``(i, label[j])``, at the slot ``A`` stores it in, and the identity's ``P0_i``
-    # one more, after all of ``A``'s. The key sum that follows is the whole product, where
-    # ``bsr_mm`` against ``P0`` then a row scale and a ``bsr_axpy`` against ``P0`` was three
-    # sparse passes, each allocating its result.
+    # ``P0`` holds one entry a row -- node ``j``'s aggregate, ``tentative_scale(j) /
+    # tentative_norm(aggregate)``, the near-nullspace vector normalized per column -- so
+    # ``(A P0)_ik`` is the sum of ``A_ij P0_j`` over the row's columns ``j`` in aggregate ``k``:
+    # every stored ``A_ij`` is one contribution at ``(i, label[j])``, at the slot ``A`` stores it
+    # in, and the identity's ``P0_i`` one more, after all of ``A``'s. The key sum that follows is
+    # the whole product, where ``bsr_mm`` against ``P0`` then a row scale and a ``bsr_axpy``
+    # against ``P0`` was three sparse passes, each allocating its result.
     i = wp.int32(wp.tid())
     n = offsets.shape[0] - 1
     scale = -damped_inverse_diagonal[i]
     for e in range(offsets[i], offsets[i + 1]):
-        aggregate = label[columns[e]]
+        j = columns[e]
+        aggregate = label[j]
         emit_entry(
             i,
             aggregate,
-            scale * values[e] / tentative_norm(sizes, aggregate),
+            scale * values[e] * tentative_scale(weights, j) / tentative_norm(sizes, aggregate),
             e,
             n,
             n_aggregates,
@@ -412,7 +439,7 @@ def smoothed_prolongator_keys(
     emit_entry(
         i,
         label[i],
-        wp.float64(1.0) / tentative_norm(sizes, label[i]),
+        tentative_scale(weights, i) / tentative_norm(sizes, label[i]),
         offsets[n] + i,
         n,
         n_aggregates,

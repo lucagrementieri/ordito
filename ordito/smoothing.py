@@ -91,13 +91,12 @@ _SMOOTH_REGION_MULTIGRID_FROM = 30_000
 # which falls as about ``5 / n_free``.
 _SMOOTH_REGION_MULTIGRID_SHIFT = 5.0
 
-# Free-vertex counts from which ``smooth_region``'s V-cycle form wraps each V-cycle in a degree-3
-# Chebyshev iteration (``squared_laplacian_preconditioner``'s ``degree``), per weighting. The bare
-# ``V D² V`` iteration count grows with the region (lucy, cotangent: 338 on dragon's 109 k free
-# vertices, 3 370 on 3.5 M), and the polynomial trades it for a costlier iteration. Measured on
-# lucy's top 2 / 5 / 10 / 25 % (281 k / 701 k / 1.4 M / 3.5 M free), degree 3 over degree 1:
-# cotangent 1.24x / 0.81x / 0.72x / 0.64x the time, unit 1.69x / 1.22x / 1.10x / 0.87x. Degree 2 and
-# 4 lost to 3 on lucy, 6 and 8 on dragon.
+# Free-vertex counts from which ``smooth_region``'s V-cycle form raises its Chebyshev degree
+# (``squared_laplacian_preconditioner``'s ``degree``) by one, per weighting: cotangent 3 -> 4, unit
+# 2 -> 3. Lucy's top regions, CUDA, the higher degree's time over the lower's: cotangent 0.98x at
+# 701 k, 0.86x at 1.4 M, 0.72x at 3.5 M, tied on dragon and happy_buddha, and degree 2 1.27x degree
+# 3 at 281 k; unit 1.03x at 701 k, 1.02x at 1.4 M, 0.83x at 3.5 M, 1.14-1.25x on dragon and
+# happy_buddha.
 _SMOOTH_REGION_CHEBYSHEV_FROM_COTAN = 500_000
 _SMOOTH_REGION_CHEBYSHEV_FROM_UNIT = 2_500_000
 
@@ -3848,7 +3847,8 @@ def _solve_region_smooth(
 def _smooth_region_chebyshev_degree(n_free: int, unit: int) -> int:
     """Return the V-cycle form's Chebyshev degree for a region of ``n_free`` free vertices."""
     start = _SMOOTH_REGION_CHEBYSHEV_FROM_UNIT if unit else _SMOOTH_REGION_CHEBYSHEV_FROM_COTAN
-    return 3 if n_free >= start else 1
+    low = 2 if unit else 3
+    return low + 1 if n_free >= start else low
 
 
 def _csr_matrix(

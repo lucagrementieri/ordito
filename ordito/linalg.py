@@ -5173,15 +5173,23 @@ class _SquaredLaplacianApply(_ChebyshevApply):
         self._polynomial(self._owner._factor, self._middle, destination)  # pyright: ignore[reportPrivateUsage]
 
 
-_SQUARED_MULTIGRID_SWEEPS = 8
+# l1-Jacobi sweeps per half-cycle of the squared form's V-cycle. With the carried near-nullspace
+# (``_multigrid_aggregate``'s weights) the cycle is accurate enough that the Chebyshev iteration
+# around it, not the sweeps, is the cheaper accuracy: lucy's top 5 % (701 k free), CUDA, at the
+# best degree for each, 2 and 8 sweeps against 4: unit 1.00x and 1.21x, cotangent 1.33x and 1.14x.
+_SQUARED_MULTIGRID_SWEEPS = 4
 
 # The lower end of the interval ``[_SQUARED_MULTIGRID_LOWER, 1]`` of ``V L``'s spectrum that the
 # Chebyshev iteration ``C = p(V L) V`` is built for (``squared_laplacian_preconditioner``'s
 # ``degree``; a symmetric V-cycle with contracting smoothers keeps the spectrum in ``(0, 1]``).
 # ``p`` is positive on all of ``(0, 1]`` whatever the lower end, so a misjudged one costs
-# iterations, never definiteness. Measured on dragon at degree 8: 0.05 -> 117 iterations, 0.1 ->
-# 98, 0.2 -> 96.
-_SQUARED_MULTIGRID_LOWER = 0.1
+# iterations, never definiteness. The squared form ``C D² C`` is far more sensitive to it than a
+# solve with ``C`` alone: an interval reaching well below the spectrum leaves ``C``'s error large
+# where ``D²`` amplifies it. Measured ``V L`` on lucy's top regions (eight sweeps): ``[0.34, 1]`` to
+# ``[0.41, 1]`` cotangent, ``[0.45, 1]`` to ``[0.55, 1]`` unit. Lucy 5 % cotangent, eight sweeps,
+# degree 3: 0.1 -> 498 iterations, 0.3 -> 174, 0.5 -> 148. Per weighting the best is 0.4 for
+# cotangent and 0.5 for unit; this one value costs 1.02-1.07x against each.
+_SQUARED_MULTIGRID_LOWER = 0.45
 
 
 class _SquaredMultigrid(NamedTuple):
@@ -5666,6 +5674,9 @@ def _multigrid_hierarchy(
     stored: int | None = None
     # The coarsest operator as a host matrix, when its assembly formed it densely.
     coarse_dense: npt.NDArray[np.float64] | None = None
+    # How many finest rows each row of the level stands for (``_multigrid_aggregate``); ``None`` on
+    # the finest level.
+    weights: wp.array[wp.int32] | None = None
     while True:
         level = _MultigridLevel(operator)
         levels.append(level)
@@ -5674,7 +5685,7 @@ def _multigrid_hierarchy(
         # The diagonal, read by the aggregation's strength test (``sqrt(|A_ii|)``) and the smoother
         # (``1 / A_ii``), and the power iteration's first step are formed by the aggregation's own
         # setup launch.
-        aggregation = _multigrid_aggregate(operator, seed, l1_smoother)
+        aggregation = _multigrid_aggregate(operator, seed, l1_smoother, weights)
         n_aggregates = aggregation.n_aggregates
         if n_aggregates >= _MULTIGRID_MIN_COARSENING * level.n:
             break
@@ -5690,7 +5701,10 @@ def _multigrid_hierarchy(
             n_aggregates,
             level.inverse_diagonal,
             stored,
+            weights,
         )
+        # The finest rows each aggregate stands for: the next level's weights.
+        weights = aggregation.sizes
         level.restrictor = od.array.csr_transpose(level.prolongator)
         # The next level is the coarsest when it is small enough or the depth cap stops it: its
         # operator reaches only the dense inverse, which reads its stored count off the offsets it
@@ -5732,7 +5746,8 @@ class _Aggregation(NamedTuple):
     label: wp.array[wp.int32]
     """``(n,)`` each row's aggregate."""
     sizes: wp.array[wp.int32]
-    """``(n_aggregates,)`` each aggregate's row count, counted by the spread's final hop."""
+    """``(n_aggregates,)`` each aggregate's finest-level row count, summed by the spread's final
+    hop: the next level's ``weights``."""
     n_aggregates: int
     starts: wp.array[wp.int64]
     """``(n + 1,)`` scratch, spent by the independent set: the level's Galerkin assemblies count
@@ -5740,7 +5755,10 @@ class _Aggregation(NamedTuple):
 
 
 def _multigrid_aggregate(
-    matrix: odt.BsrMatrix[wp.float64], seed: int, l1_smoother: bool = False
+    matrix: odt.BsrMatrix[wp.float64],
+    seed: int,
+    l1_smoother: bool = False,
+    weights: wp.array[wp.int32] | None = None,
 ) -> _Aggregation:
     """
     Aggregate label per row, from a distance-2 maximal independent set on the off-diagonal graph.
@@ -5758,6 +5776,9 @@ def _multigrid_aggregate(
     (``|A_ij| >= _MULTIGRID_THETA sqrt(A_ii A_jj)``), tested per edge rather than materialized, so
     that a level pays no extra allocation for the filter and ``theta = 0`` is bit-exactly the
     unfiltered aggregation.
+
+    ``weights`` holds how many finest-level rows each row stands for (the previous level's
+    ``sizes``), ``None`` on the finest level, where each stands for itself; ``sizes`` sums them.
     """
     device = matrix.device
     n = int(matrix.nrow)
@@ -5829,7 +5850,7 @@ def _multigrid_aggregate(
 
     # Two hops of the spread. The first reads each label straight from ``(state, scan_pos)`` (its
     # ``label`` argument is not read); the second reads the first's output.
-    strong_graph = [offsets, columns, values, scaled_diagonal, theta]
+    strong_graph = [offsets, columns, values, scaled_diagonal, theta, weights]
     # ``next_state`` is the loop's spent ping-pong buffer, free to hold the first hop.
     hop = next_state
     _launch.launch(
@@ -5963,6 +5984,7 @@ def _multigrid_prolongator(
     n_aggregates: int,
     damped_inverse_diagonal: wp.array[wp.float64],
     stored: int | None,
+    weights: wp.array[wp.int32] | None = None,
 ) -> odt.BsrMatrix[wp.float64]:
     """
     Smoothed prolongator ``(I - omega D^-1 A) P0``, given ``omega D^-1``, for ``P0``.
@@ -5971,7 +5993,8 @@ def _multigrid_prolongator(
     aggregate and summed: one keyed contribution per stored entry plus the identity's, one
     assembly (``kernels/algorithms/multigrid.smoothed_prolongator_keys``), with no sparse product.
     Entries that sum to exactly zero are pruned. ``stored`` is ``matrix``'s stored entry count
-    when the caller knows it, else ``None``.
+    when the caller knows it, else ``None``. ``P0`` interpolates the near-nullspace vector
+    ``sqrt(weights)`` (``_multigrid_aggregate``), the constant on the finest level (``None``).
     """
     device = matrix.device
     n = int(matrix.nrow)
@@ -5992,6 +6015,7 @@ def _multigrid_prolongator(
             matrix.values,
             label,
             sizes,
+            weights,
             damped_inverse_diagonal,
             wp.int32(n_aggregates),
         ],

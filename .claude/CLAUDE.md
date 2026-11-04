@@ -976,13 +976,16 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   fills and stitches (`fill_smooth`, `refill_region`, `stitch_smooth`,
   `bridge_edges_smooth`, `smooth_region_boundary`), which follow a serial priority queue. Scoped
   per port, with source availability and licensing, in `reference/component-status.md` (16.0b).
-- **`smooth_region`'s iteration count is not flat in `n`** with the squared V-cycle: unit weights
-  99 iterations on dragon's 109 k free vertices, 348 on lucy's 3.5 M (21 s); cotangent 341 and 731
-  (52 s). The cost per iteration is now about linear (2026-11-04). The V-cycle alone on `L_ff`
-  grows less (46 -> 75 iterations), and squaring the preconditioner amplifies that: a flat count
-  needs a better cycle (W- or K-cycle, coarsening), not a cheaper one. Four sweeps instead of
-  eight gave lucy unit 15.8 s but tied on cotangent and lost at mid sizes, so it stays at eight
-  until a cycle change re-prices it.
+- **`smooth_region`'s iteration count follows its exact preconditioner's floor, which grows with
+  `n`.** `L_ff⁻¹ D² L_ff⁻¹` inverts the free rows' square `M_ffᵀ M_ff` exactly but not the rim's own
+  rows: it squares a Dirichlet Laplacian (a simply supported plate) where `MᵀM` is clamped across
+  the rim, and the two are not spectrally equivalent uniformly in the mesh size. Exact-solve floor
+  (host CG over device Cholesky solves), unit: 56-62 on dragon, 61-65 / 81-87 / 114-127 on lucy's
+  top 2 / 5 / 10 %; cotangent 85-92 / 133-139 / 168-185 on lucy. The V-cycle form runs at 1.0-1.5x
+  it (lucy 25 %: unit 167 iterations, 6.4 s; cotangent about 300, 17.6 s). Measured levers: a
+  diagonal `0.1 D` added to `L_ff` on the first free ring cuts the floor 15-22 % (lucy 5 %: 87 -> 70)
+  without flattening it, not yet tried through the V-cycle; a Woodbury correction of the rim rows
+  needs one preconditioner apply per rim row (2 000-2 400 on lucy) at setup, more than the solve.
 - **Unoriented `triangulate_point_cloud`** costs 1.8x the old mesh-level winding (still 3.5x faster
   than MeshLib's): the flood, 3 226 rounds of six launches on dragon, 61.9 of the call's 166 ms,
   3.2 us a launch. Not launch-bound (2026-11-03): the same recorded loop of empty kernels at the

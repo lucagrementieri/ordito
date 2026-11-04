@@ -865,19 +865,20 @@ def test_smooth_region(bench_case: BenchCase) -> None:
     degree and interval (``SQUARED_LAPLACIAN_DEGREE``, ``SQUARED_LAPLACIAN_INTERVAL``) move the
     bunny row. Its iteration count grows in proportion to the free count, so from the gate both
     weightings take ``method="multigrid"``, ``V D^2 V`` with ``V`` a smoothed-aggregation V-cycle
-    on ``L_ff`` under l1-Jacobi smoothing (``linalg._SQUARED_MULTIGRID_SWEEPS``): unit weights
-    dragon 1 035 -> 99 iterations, lucy past 600 s -> 48 s; the default cotangent weights dragon
-    10 948 -> 339 (6.4 -> 0.58 s), lucy 153 s where the polynomial did not finish. On the largest
-    regions each V-cycle is further wrapped in a degree-3 Chebyshev iteration
-    (``smoothing._SMOOTH_REGION_CHEBYSHEV_FROM_*``): lucy cotangent 153 -> 99 s, unit 48 -> 42 s.
-    A level from ``kernels/algorithms/multigrid.CYCLE_ROWS_FROM`` rows runs a thread a row, its
-    sweeps fused with their mat-vec: lucy 0.51-0.53x, dragon 0.78x. ``linalg._MULTIGRID_THETA``
-    moves the scan rows.
+    on ``L_ff`` under l1-Jacobi smoothing (``linalg._SQUARED_MULTIGRID_SWEEPS``), wrapped in a
+    Chebyshev iteration of degree 2-4 (``smoothing._smooth_region_chebyshev_degree``,
+    ``linalg._SQUARED_MULTIGRID_LOWER``). Every level's tentative prolongator interpolates the fine
+    constant as it reaches that level (``linalg._multigrid_aggregate``'s weights): assuming a
+    constant there lost the cycle's quality with depth, and with it the unit rows' flat count
+    (dragon 99, lucy 348 iterations; now 74 and 167, at the exact preconditioner's floor). New/old
+    with the polynomial's interval and degree re-fitted: lucy 0.30x unit, 0.34x cotangent; dragon
+    0.96x / 0.78x. A level from ``kernels/algorithms/multigrid.CYCLE_ROWS_FROM`` rows runs a thread
+    a row, its sweeps fused with their mat-vec. ``linalg._MULTIGRID_THETA`` moves the scan rows.
     """
     skip_larger_than(
         bench_case,
         "happy_buddha",
-        "one ordito round on lucy is 21 s (350 CG iterations over 3.5 M free vertices)",
+        "one ordito round on lucy is 6 s (170 CG iterations over 3.5 M free vertices)",
     )
     n_vertices = bench_case.n_vertices
     free_np = _free_mask_np(bench_case)

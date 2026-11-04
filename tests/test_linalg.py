@@ -21,7 +21,7 @@ import ordito.typing as odt
 from ordito.kernels import linalg as kernel_linalg
 from ordito.kernels.algorithms import multigrid as kernel_mg
 from tests.comparisons import assert_nonconstant
-from tests.conversions import bsr_to_dense, scipy_to_bsr, trimesh_to_pymeshlab
+from tests.conversions import bsr_to_csr, bsr_to_dense, scipy_to_bsr, trimesh_to_pymeshlab
 
 
 class _CgOptions(TypedDict):
@@ -1762,6 +1762,49 @@ def test_multigrid_aggregation_counts_the_aggregates_it_labels(
     assert counts[1] > counts[od.linalg._MULTIGRID_MIS_ROUNDS] > 1
 
 
+def test_multigrid_tentative_prolongator_interpolates_the_carried_near_nullspace(
+    device: str,
+) -> None:
+    """
+    Not a library comparison: every level's tentative prolongator interpolates the fine constant.
+
+    No reference here builds smoothed aggregation. The fine constant reaches a coarse level as
+    ``sqrt(weight)``, each node's finest-row count, because the tentative columns are normalized;
+    a level that assumes a constant there interpolates the wrong vector and the V-cycle's quality
+    falls with the hierarchy's depth. With the damping zeroed the prolongator is the tentative
+    ``P0``, so ``P0 sqrt(sizes) = sqrt(weights)`` must hold on the finest level (weights all one)
+    and on the next, whose weights are the finest level's ``sizes``. The second level is the one
+    a constant-assuming ``P0`` fails: it gives ones where the weights are mostly above one.
+    """
+    matrix_wp, _rhs, _dense_np, _rhs_np = _grid_laplacian_system(device, k=24)
+    n = int(matrix_wp.nrow)
+    weights_wp = None
+    checked = 0
+    operator = matrix_wp
+    while checked < 2:
+        aggregation = od.linalg._multigrid_aggregate(operator, 0, weights=weights_wp)
+        n_aggregates = aggregation.n_aggregates
+        rows = int(operator.nrow)
+        zero = wp.zeros(rows, dtype=wp.float64, device=device)
+        tentative_wp = od.linalg._multigrid_prolongator(
+            operator, aggregation.label, aggregation.sizes, n_aggregates, zero, None, weights_wp
+        )
+        weights_np = np.ones(rows) if weights_wp is None else weights_wp.numpy()
+        sizes_np = aggregation.sizes.numpy()
+        interpolated_np = bsr_to_csr(tentative_wp) @ np.sqrt(sizes_np.astype(np.float64))
+        assert np.allclose(interpolated_np, np.sqrt(weights_np), rtol=1e-12, atol=1e-12)
+        assert sizes_np.sum() == n  # every finest row is counted once, at every level
+        if weights_wp is not None:
+            assert np.ptp(weights_np) > 0  # non-vacuity: a constant would pass a constant P0
+        weights_wp = aggregation.sizes
+        coarse = od.linalg._multigrid_galerkin(
+            operator, tentative_wp, aggregation.starts, synced=True
+        )
+        assert not isinstance(coarse, np.ndarray)
+        operator = coarse
+        checked += 1
+
+
 @pytest.mark.parametrize(("preconditioner", "factor"), [("multigrid", 2), ("chebyshev", 4)])
 def test_preconditioners_need_fewer_iterations_than_jacobi(
     device: str, preconditioner: str, factor: int
@@ -2296,7 +2339,7 @@ def test_multigrid_cycle_rows_match_the_slot_cycle(
     the residual fused with their mat-vec, the iterate ping-ponged between two buffers. A solve is
     run with that gate lowered to zero and again with it out of reach, and the answers must be
     byte-identical: through ``multigrid_preconditioner`` (two sweeps a half-cycle) and the squared
-    form's ``V D² V`` under a degree-3 Chebyshev wrapper, at its eight sweeps and at an odd count,
+    form's ``V D² V`` under a degree-3 Chebyshev wrapper, at its four sweeps and at an odd count,
     the other parity of the ping-pong. Each arm builds its own system and starts from an empty
     solver pool, or the second would replay the graph the first recorded. The library comparison
     is ``test_multigrid_preconditioner_solves_the_same_system``. The CPU device keeps the slot
