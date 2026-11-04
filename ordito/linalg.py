@@ -3372,13 +3372,27 @@ class _BatchedCg:
         # ``solve_spd_settled``'s backward-error flag, kept across its solves, in the zeroed word
         # the integer state leaves free at the head's end (no allocation of its own).
         self.flag = _StampedFlag(device, word=odt.as_dense(self._ints[count + 1 : count + 2]))
+        # The heavy-row path's ``A u`` over every column off one walk of a row
+        # (``kernel_mg.CYCLE_ROWS``' transfer mat-vec), where ``bsr_mv`` would walk the operator
+        # once a column: CUDA, two or three columns, ``float64`` values, and rows short enough for
+        # a lane each (Warp's block-per-row kernel keeps the longer ones).
+        rows = kernel_mg.CYCLE_ROWS.get(self._n_columns) if self._n_columns > 1 else None
+        self._rows_mv = (
+            rows[2]
+            if rows is not None
+            and self._heavy
+            and self._mv_tile < 0
+            and self._device.is_cuda
+            and matrix.values.dtype == wp.float64
+            else None
+        )
         # The live rows of ``u`` and ``w`` per column, for ``bsr_mv`` on the heavy-row path.
         self._uw_columns = [
             (
                 odt.as_dense(self._u[c * self._stride : c * self._stride + self._n]),
                 odt.as_dense(self._w[c * self._stride : c * self._stride + self._n]),
             )
-            for c in range(self._n_columns if self._heavy else 0)
+            for c in range(self._n_columns if self._heavy and self._rows_mv is None else 0)
         ]
 
         # A multigrid V-cycle cannot be fused into a register the way the Jacobi apply is, so it
@@ -3616,6 +3630,23 @@ class _BatchedCg:
         tile = int(kernel_cg.CG_TILE)
         grid = (self._n_columns, self._blocks)
         if self._heavy:
+            if self._rows_mv is not None:
+                _launch.launch(
+                    self._rows_mv,
+                    dim=self._n,
+                    inputs=[
+                        wp.int32(self._stride),
+                        wp.int32(self._stride),
+                        wp.int32(0),
+                        self._matrix.offsets,
+                        self._matrix.columns,
+                        self._matrix.values,
+                        self._u,
+                        self._w,
+                        self._w,
+                    ],
+                    device=self._device,
+                )
             for u_column, w_column in self._uw_columns:
                 odt.bsr_mv(self._matrix, u_column, w_column, tile_size=self._mv_tile)
             _launch.launch_tiled(
@@ -5191,6 +5222,17 @@ _SQUARED_MULTIGRID_SWEEPS = 4
 # cotangent and 0.5 for unit; this one value costs 1.02-1.07x against each.
 _SQUARED_MULTIGRID_LOWER = 0.45
 
+# Row count from which a thread-a-row V-cycle level (``kernel_mg.CYCLE_ROWS_FROM``) reads
+# ``float32`` copies of its operator's, restrictor's and prolongator's values
+# (``kernel_mg.CYCLE_ROWS_NARROW``, summed in ``float64``): its sweeps are bound by bytes once the
+# level outgrows the L2, and the values are a third of them. The cycle is then exactly the V-cycle
+# of the operator rounded once per entry -- symmetric positive-definite still, and a preconditioner
+# only, so the system the conjugate-gradient iteration solves is unchanged. ``smooth_region`` on
+# lucy's top regions, CUDA, against none: 0.96-0.97x at 281 k free, 0.94-0.96x at 701 k,
+# 0.89-0.90x at 1.4 M and 3.5 M, the same iteration counts; at 2**19 the 281 k region lost its
+# gain, and on dragon and happy_buddha (109-136 k, L2-resident) narrowing lost 1.03x.
+_CYCLE_NARROW_FROM = 1 << 18
+
 
 class _SquaredMultigrid(NamedTuple):
     """The ``C D² C`` form's operator side: ``L``'s V-cycle hierarchy and ``D²``."""
@@ -5287,24 +5329,42 @@ class _SquaredMultigridApply:
                 if index == 1:
                     wp.copy(self._residual, source)
                     residual = self._residual
-                # ``residual -= L direction``.
-                _launch.launch(
-                    kernel_mg.csr_matvec,
-                    dim=self._dim,
-                    inputs=[
-                        wp.int32(self._n),
-                        wp.int32(self._stride),
-                        wp.int32(self._stride),
-                        wp.int32(1),
-                        wp.float64(-1.0),
-                        operator.offsets,
-                        operator.columns,
-                        operator.values,
-                        self._direction,
-                    ],
-                    outputs=[residual],
-                    device=self._device,
-                )
+                # ``residual -= L direction``: on a thread-a-row top level, every column off one
+                # walk of a row (``out = rhs - A x``, each slot read before it is written).
+                top_rows = self._cycle.top_rows
+                if top_rows is not None:
+                    _launch.launch(
+                        top_rows[1],
+                        dim=self._n,
+                        inputs=[
+                            wp.int32(self._stride),
+                            operator.offsets,
+                            operator.columns,
+                            self._cycle.top_values,
+                            residual,
+                            self._direction,
+                        ],
+                        outputs=[residual],
+                        device=self._device,
+                    )
+                else:
+                    _launch.launch(
+                        kernel_mg.csr_matvec,
+                        dim=self._dim,
+                        inputs=[
+                            wp.int32(self._n),
+                            wp.int32(self._stride),
+                            wp.int32(self._stride),
+                            wp.int32(1),
+                            wp.float64(-1.0),
+                            operator.offsets,
+                            operator.columns,
+                            operator.values,
+                            self._direction,
+                        ],
+                        outputs=[residual],
+                        device=self._device,
+                    )
             self._cycle.apply(residual, self._cycled)
             _launch.launch(
                 kernel_mg.cycle_chebyshev_update,
@@ -5626,6 +5686,7 @@ class _MultigridLevel:
         "inverse_diagonal",
         "matvec_dim",
         "n",
+        "narrow",
         "operator",
         "prolong_dim",
         "prolongator",
@@ -5651,6 +5712,9 @@ class _MultigridLevel:
         # second buffer of its iterate's pair, which they ping-pong; ``None`` on the slot form.
         self.rows: tuple[wp.Kernel, wp.Kernel, wp.Kernel] | None = None
         self.spare: wp.array[wp.float64] | None = None
+        # ``float32`` copies of the operator's, the restrictor's and the prolongator's values that
+        # the thread-a-row kernels read, made once by the first cycle over the level.
+        self.narrow: tuple[wp.array[Any], wp.array[Any], wp.array[Any]] | None = None
 
 
 def _multigrid_hierarchy(
@@ -6420,6 +6484,7 @@ class _MultigridCycle:
         # (``kernel_mg.CYCLE_ROWS``): its passes walk each row once for every column, and its sweeps
         # and residual take their mat-vec in the same thread. Bit-identical to the slot form.
         rows = kernel_mg.CYCLE_ROWS.get(n_columns) if self._device.is_cuda else None
+        narrow_rows = kernel_mg.CYCLE_ROWS_NARROW.get(n_columns)
         for depth, level in enumerate(levels):
             level.stride = stride if depth == 0 else level.n
             level.dim = n_columns * level.stride
@@ -6429,6 +6494,22 @@ class _MultigridCycle:
                 if level.prolongator is not None and level.n >= kernel_mg.CYCLE_ROWS_FROM
                 else None
             )
+            if level.rows is not None and level.n >= _CYCLE_NARROW_FROM and level.narrow is None:
+                operator, restrictor, prolongator = (
+                    level.operator,
+                    level.restrictor,
+                    level.prolongator,
+                )
+                assert operator is not None
+                assert restrictor is not None
+                assert prolongator is not None
+                level.narrow = (
+                    od.array.astype(operator.values, wp.float32),
+                    od.array.astype(restrictor.values, wp.float32),
+                    od.array.astype(prolongator.values, wp.float32),
+                )
+            if level.narrow is not None:
+                level.rows = narrow_rows
         # The residual is formed elementwise in place over the mat-vec's ``ax`` (``kernel_mg
         # .residual``), which no launch reads again before the post-smoothing rewrites it: a level
         # holds ``ax`` (also its residual), and below the top its right-hand side and iterate; a
@@ -6463,6 +6544,18 @@ class _MultigridCycle:
     def grid(self) -> list[int]:
         """Rows per level, coarsest last -- the hierarchy's shape."""
         return [level.n for level in self._levels]
+
+    @property
+    def top_rows(self) -> tuple[wp.Kernel, wp.Kernel, wp.Kernel] | None:
+        """The top level's thread-a-row kernels (``kernel_mg.CYCLE_ROWS``), or ``None``."""
+        return self._levels[0].rows
+
+    @property
+    def top_values(self) -> wp.array[Any]:
+        """The operator values the top level's thread-a-row kernels read."""
+        top = self._levels[0]
+        assert top.operator is not None
+        return top.narrow[0] if top.narrow is not None else top.operator.values
 
     def apply(self, source: wp.array[wp.float64], destination: wp.array[wp.float64]) -> None:
         """One V-cycle: ``destination = M^-1 source``, both at the caller's column pitch."""
@@ -6607,6 +6700,11 @@ class _MultigridCycle:
         assert restrictor is not None
         assert prolongator is not None
         sweep, residual, matvec = level.rows
+        operator_values, restrictor_values, prolongator_values = (
+            level.narrow
+            if level.narrow is not None
+            else (operator.values, restrictor.values, prolongator.values)
+        )
         sweeps = self._sweeps
         # A sweep reads its iterate at other rows, so it writes the pair's other buffer. Each half
         # starts in whichever buffer its sweep count brings back to ``x``: the pre-smoothing's
@@ -6626,7 +6724,7 @@ class _MultigridCycle:
             device=self._device,
         )
         for _ in range(sweeps - 1):
-            self._sweep_rows(sweep, level, operator, current, other)
+            self._sweep_rows(sweep, level, operator, operator_values, current, other)
             current, other = other, current
         _launch.launch(
             residual,
@@ -6635,7 +6733,7 @@ class _MultigridCycle:
                 wp.int32(level.stride),
                 operator.offsets,
                 operator.columns,
-                operator.values,
+                operator_values,
                 level.b,
                 level.x,
                 level.r,
@@ -6651,7 +6749,7 @@ class _MultigridCycle:
                 wp.int32(0),
                 restrictor.offsets,
                 restrictor.columns,
-                restrictor.values,
+                restrictor_values,
                 level.r,
                 child.b,
                 child.b,
@@ -6669,7 +6767,7 @@ class _MultigridCycle:
                 wp.int32(1),
                 prolongator.offsets,
                 prolongator.columns,
-                prolongator.values,
+                prolongator_values,
                 child.x,
                 level.x,
                 current,
@@ -6677,7 +6775,7 @@ class _MultigridCycle:
             device=self._device,
         )
         for _ in range(sweeps):
-            self._sweep_rows(sweep, level, operator, current, other)
+            self._sweep_rows(sweep, level, operator, operator_values, current, other)
             current, other = other, current
 
     def _sweep_rows(
@@ -6685,6 +6783,7 @@ class _MultigridCycle:
         sweep: wp.Kernel,
         level: _MultigridLevel,
         operator: odt.BsrMatrix[wp.float64],
+        values: wp.array[Any],
         x: wp.array[wp.float64],
         out_x: wp.array[wp.float64],
     ) -> None:
@@ -6696,7 +6795,7 @@ class _MultigridCycle:
                 level.inverse_diagonal,
                 operator.offsets,
                 operator.columns,
-                operator.values,
+                values,
                 level.b,
                 x,
             ],

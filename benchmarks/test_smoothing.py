@@ -884,7 +884,7 @@ def test_smooth_region(bench_case: BenchCase) -> None:
     skip_larger_than(
         bench_case,
         "happy_buddha",
-        "one ordito round on lucy is 2.2 s (55 CG iterations over 3.5 M free vertices)",
+        "one ordito round on lucy is 1.8 s (55 CG iterations over 3.5 M free vertices)",
     )
     n_vertices = bench_case.n_vertices
     free_np = _free_mask_np(bench_case)

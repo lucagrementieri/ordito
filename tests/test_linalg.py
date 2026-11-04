@@ -2387,6 +2387,117 @@ def test_multigrid_cycle_rows_match_the_slot_cycle(
 
 
 @pytest.mark.parametrize("n_columns", [1, 3])
+@pytest.mark.usefixtures("batched_engine")
+def test_multigrid_cycle_narrow_levels_solve_the_same_system(
+    device: str, monkeypatch: pytest.MonkeyPatch, n_columns: int
+) -> None:
+    """
+    Ordito against ordito: a cycle over ``float32`` level values preconditions as well.
+
+    From ``linalg._CYCLE_NARROW_FROM`` rows a thread-a-row level reads ``float32`` copies of its
+    operators (``kernels/algorithms/multigrid.CYCLE_ROWS_NARROW``), so the cycle is the V-cycle of
+    the operator rounded once per entry. A preconditioner never moves the answer, only the
+    iteration count, so the squared form's solve is run with both row gates lowered to zero and
+    again with the narrow gate out of reach: the answers agree to the solve's tolerance and the
+    iteration counts within two, which a wrong value array in a narrow pass (another level's, or
+    the restrictor's for the prolongator) would not keep. The library comparison is
+    ``test_multigrid_preconditioner_solves_the_same_system``. The CPU keeps the slot form.
+    """
+    launched: list[int] = []
+    narrow = set(kernel_mg.CYCLE_ROWS_NARROW[n_columns])
+    real_launch = od.linalg._launch.launch
+
+    def recording(kernel: Any, *args: Any, **kwargs: Any) -> None:
+        if kernel in narrow:
+            launched.append(1)
+        real_launch(kernel, *args, **kwargs)
+
+    monkeypatch.setattr(od.linalg._launch, "launch", recording)
+    monkeypatch.setattr(kernel_mg, "CYCLE_ROWS_FROM", 0)
+
+    def solve(narrow_from: int) -> tuple[np.ndarray, int]:
+        monkeypatch.setattr(od.linalg, "_CYCLE_NARROW_FROM", narrow_from)
+        monkeypatch.setattr(od.linalg, "_SOLVER_POOL", {})
+        monkeypatch.setattr(od.linalg, "_SHAPES_SEEN", set())
+        system_wp, rhs_wp, laplacian_wp, sums_wp, _system_np, _rhs_np = _normal_equations_system(
+            device, negative=False, n_rhs=n_columns
+        )
+        preconditioner = od.linalg.squared_laplacian_preconditioner(
+            laplacian_wp, sums_wp, method="multigrid", degree=3
+        )
+        solution_wp = wp.zeros_like(rhs_wp)
+        iterations, _residual, _tolerance = od.linalg.solve_spd_columns(
+            system_wp,
+            rhs_wp,
+            odt.as_array2d(solution_wp, wp.float64),
+            preconditioner=preconditioner,
+            check_every=1,
+        )
+        return solution_wp.numpy(), int(iterations)
+
+    wide_np, wide_iterations = solve(1 << 62)
+    assert not launched
+    narrow_np, narrow_iterations = solve(0)
+    assert launched or wp.get_device(device).is_cpu
+    assert abs(narrow_iterations - wide_iterations) <= 2
+    assert np.allclose(narrow_np, wide_np, rtol=1e-6, atol=1e-8)
+    assert np.ptp(wide_np) > 1e-3  # non-vacuity: a zero solve would pass trivially
+
+
+@pytest.mark.parametrize("n_columns", [2, 3])
+@pytest.mark.usefixtures("batched_engine")
+def test_heavy_row_cg_rows_product_matches_bsr_mv(
+    device: str, monkeypatch: pytest.MonkeyPatch, n_columns: int
+) -> None:
+    """
+    Ordito against ordito: the heavy-row round's one-walk product solves as ``bsr_mv``'s does.
+
+    A conjugate-gradient round over unfolded columns of rows past ``CG_HEAVY_ROW_ENTRIES`` forms
+    ``A u`` apart from its dots; on CUDA, at two or three ``float64`` columns, with one walk of a
+    row for every column (``kernels/algorithms/multigrid.CYCLE_ROWS``' transfer mat-vec), where
+    ``bsr_mv`` walks the operator once a column. The fold and the heavy-row gates are lowered so
+    a small normal-equations system takes that path, and the solve is run again with the rows
+    tables hidden, which leaves ``bsr_mv``. Both sum each row in stored order, so the answers
+    agree to rounding. The library comparison is
+    ``test_squared_laplacian_preconditioner_solves_the_same_system``. The CPU keeps ``bsr_mv``.
+    """
+    monkeypatch.setattr(od.linalg, "CG_FOLD_MAX_BLOCKS", 0)
+    monkeypatch.setattr(od.linalg, "CG_HEAVY_ROW_ENTRIES", 1)
+    launched: list[int] = []
+    rows_kernel = kernel_mg.CYCLE_ROWS[n_columns][2]
+    real_launch = od.linalg._launch.launch
+
+    def recording(kernel: Any, *args: Any, **kwargs: Any) -> None:
+        if kernel is rows_kernel:
+            launched.append(1)
+        real_launch(kernel, *args, **kwargs)
+
+    monkeypatch.setattr(od.linalg._launch, "launch", recording)
+
+    def solve(hide_rows: bool) -> np.ndarray:
+        if hide_rows:
+            monkeypatch.setattr(kernel_mg, "CYCLE_ROWS", {})
+        monkeypatch.setattr(od.linalg, "_SOLVER_POOL", {})
+        monkeypatch.setattr(od.linalg, "_SHAPES_SEEN", set())
+        system_wp, rhs_wp, _laplacian, _sums, _system_np, _rhs_np = _normal_equations_system(
+            device, negative=False, n_rhs=n_columns
+        )
+        solution_wp = wp.zeros_like(rhs_wp)
+        od.linalg.solve_spd_columns(
+            system_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), preconditioner="diag"
+        )
+        return solution_wp.numpy()
+
+    rows_np = solve(False)
+    assert launched or wp.get_device(device).is_cpu
+    count = len(launched)
+    bsr_np = solve(True)
+    assert len(launched) == count  # the second arm takes ``bsr_mv``
+    assert np.allclose(rows_np, bsr_np, rtol=1e-10, atol=1e-12)
+    assert np.ptp(bsr_np) > 1e-3  # non-vacuity: a zero solve would pass trivially
+
+
+@pytest.mark.parametrize("n_columns", [1, 3])
 def test_replicated_operator_applies_the_base_to_each_block(device: str, n_columns: int) -> None:
     """
     Class A: the batched ``matvec`` equals applying the single operator to each contiguous block.

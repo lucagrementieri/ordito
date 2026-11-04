@@ -979,7 +979,7 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
 - **`smooth_region`'s iteration count still grows mildly with `n`, set by the rim band's own
   floor.** Exact solves of the banded preconditioner (2026-11-04), unit: 31-34 on dragon, 27-30 /
   34-36 / 44-50 on lucy's top 2 / 5 / 10 %; cotangent 51-58, 39-43 / 47-51 / 66-71. The V-cycle form
-  runs 1.0-1.6x that (lucy 25 %: unit 55 iterations, 2.2 s; cotangent about 100, 5.4 s). The best
+  runs 1.0-1.6x that (lucy 25 %: unit 55 iterations, 1.8 s; cotangent 94, 4.3 s). The best
   band decay drifts slower as the region grows (cotangent 0.5-0.6 below 1 M free, 0.7-0.75 at
   3.5 M; unit 0.6-0.65 to 0.75), so a width that scales with the region (the decay a function of
   `n_free` or of the region's ring depth) is the untried lever; a fixed profile per weighting ships.

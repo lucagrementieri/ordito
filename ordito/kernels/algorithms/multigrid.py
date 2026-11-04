@@ -740,7 +740,7 @@ CHEBYSHEV_STEP_ROWS_FROM = 1 << 16
 CHEBYSHEV_STEP_ROWS_COLUMNS = (2, 3)
 
 
-def _csr_row_dots(n_columns: int) -> wp.Function:
+def _csr_row_dots(n_columns: int, value_dtype: Any = wp.float64) -> wp.Function:
     """``csr_row_dot`` against ``n_columns`` columns of ``x`` at once, off one walk of the row."""
     column_values = wp.types.vector(length=n_columns, dtype=wp.float64)
 
@@ -756,15 +756,19 @@ def _csr_row_dots(n_columns: int) -> wp.Function:
         # constant ``n_columns``, so the column loop unrolls and the vector is never indexed at run
         # time), adds the row's entries in ``csr_row_dot``'s order, so a thread-a-row kernel's
         # result is its thread-a-slot sibling's to the bit.
+        # ``float32`` values are widened as they are read (``csr_row_dot``'s convention); at
+        # ``float64`` the cast is the identity.
         total = column_values()
         for k in range(offsets[row], offsets[row + 1]):
-            value = values[k]
+            value = wp.float64(values[k])
             entry = columns[k]
             for column in range(n_columns):
                 total[column] += value * x[column * stride + entry]
         return total
 
-    return wp.func(_func, name=f"csr_row_dots{n_columns}")
+    _func.__annotations__["values"] = wp.array[value_dtype]
+    suffix = "" if value_dtype == wp.float64 else "_f32"
+    return wp.func(_func, name=f"csr_row_dots{n_columns}{suffix}")
 
 
 # The column counts with thread-a-row kernels (``csr_row_dots``): one column (the scalar solves,
@@ -773,6 +777,9 @@ def _csr_row_dots(n_columns: int) -> wp.Function:
 ROWS_COLUMNS = (1, 2, 3)
 
 CSR_ROW_DOTS = {n_columns: _csr_row_dots(n_columns) for n_columns in ROWS_COLUMNS}
+CSR_ROW_DOTS_NARROW = {
+    n_columns: _csr_row_dots(n_columns, wp.float32) for n_columns in ROWS_COLUMNS
+}
 
 
 def _chebyshev_step_rows(n_columns: int) -> wp.Kernel:
@@ -835,9 +842,13 @@ def jacobi_update(
 CYCLE_ROWS_FROM = 1 << 14
 
 
-def _cycle_rows(n_columns: int) -> tuple[wp.Kernel, wp.Kernel, wp.Kernel]:
+def _cycle_rows(
+    n_columns: int, value_dtype: Any = wp.float64
+) -> tuple[wp.Kernel, wp.Kernel, wp.Kernel]:
     """Return a cycle level's sweep, residual and transfer mat-vec over ``n_columns`` columns."""
-    row_dots = CSR_ROW_DOTS[n_columns]
+    narrow = value_dtype != wp.float64
+    row_dots = (CSR_ROW_DOTS_NARROW if narrow else CSR_ROW_DOTS)[n_columns]
+    suffix = "_f32" if narrow else ""
 
     def _sweep(
         stride: wp.int32,
@@ -900,14 +911,19 @@ def _cycle_rows(n_columns: int) -> tuple[wp.Kernel, wp.Kernel, wp.Kernel]:
             else:
                 out_y[slot] = product[column]
 
+    for kernel in (_sweep, _residual, _matvec):
+        kernel.__annotations__["values"] = wp.array[value_dtype]
     return (
-        wp.kernel(_sweep, name=f"cycle_sweep_rows{n_columns}"),
-        wp.kernel(_residual, name=f"cycle_residual_rows{n_columns}"),
-        wp.kernel(_matvec, name=f"cycle_matvec_rows{n_columns}"),
+        wp.kernel(_sweep, name=f"cycle_sweep_rows{n_columns}{suffix}"),
+        wp.kernel(_residual, name=f"cycle_residual_rows{n_columns}{suffix}"),
+        wp.kernel(_matvec, name=f"cycle_matvec_rows{n_columns}{suffix}"),
     )
 
 
 CYCLE_ROWS = {n_columns: _cycle_rows(n_columns) for n_columns in ROWS_COLUMNS}
+# The same kernels over ``float32`` values: a level whose operators the cycle keeps a narrow copy
+# of (``linalg._MultigridCycle``).
+CYCLE_ROWS_NARROW = {n_columns: _cycle_rows(n_columns, wp.float32) for n_columns in ROWS_COLUMNS}
 
 
 @wp.func
