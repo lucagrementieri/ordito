@@ -51,11 +51,11 @@ import warp as wp
 from ordito.constants import TILE_1D
 from ordito.kernels.array import csr_key_nonzero, element_priority, inverse_or_one, sqrt_abs
 from ordito.kernels.linalg import (
-    csr_block_row_dot,
     csr_row_diagonal,
     csr_row_dot,
     csr_row_long,
-    listed_long_rows,
+    listed_long_pieces,
+    long_row_piece_total,
 )
 from ordito.kernels.reduce import block_chunk, block_sum
 
@@ -752,7 +752,7 @@ def chebyshev_step(
 def chebyshev_long_rows(
     stride: wp.int32,
     launch_blocks: wp.int32,
-    rows: wp.array[wp.int32],
+    pieces: wp.array[wp.vec3i],
     count: wp.array[wp.int32],
     steps: wp.array[wp.vec4d],
     index: wp.int32,
@@ -764,20 +764,27 @@ def chebyshev_long_rows(
     source: wp.array[wp.float64],
     x: wp.array[wp.float64],
     x_previous: wp.array[wp.float64],
+    partials: wp.array[wp.float64],
+    tickets: wp.array[wp.int32],
     out_x: wp.array[wp.float64],
 ) -> None:
     # ``chebyshev_step`` at the long rows ``linalg.list_long_rows`` listed, which the thread-a-row
-    # steps skip under ``skip_long``: a block a row and column sums the row
-    # (``csr_block_row_dot``), its first lane updates. Launch tiled over
-    # ``(n_columns, launch_blocks)``; the blocks stride the listed rows, so a launch with none
+    # steps skip under ``skip_long``: a block a piece and column sums the row
+    # (``long_row_piece_total``), and the block folding it updates. Launch tiled over
+    # ``(n_columns, launch_blocks)``; the blocks stride the listed pieces, so a launch with none
     # listed returns at once (block uniform). Same aliasing rules.
     column, blk, lane = wp.tid()
     step = steps[index]
-    for b in range(blk, listed_long_rows(rows, count), launch_blocks):
-        row = rows[b]
-        slot = column * stride + row
-        ax = csr_block_row_dot(row, column * stride, lane, offsets, columns, values, x)
-        if lane == 0:
+    base = column * stride
+    slots = column * pieces.shape[0]
+    for b in range(blk, listed_long_pieces(pieces, count), launch_blocks):
+        piece = pieces[b]
+        last, ax = long_row_piece_total(
+            piece, base, slots, lane, offsets, columns, values, x, partials, tickets
+        )
+        if last != 0:
+            row = piece[0]
+            slot = base + row
             out_x[slot] = chebyshev_scaled_update(
                 row, slot, step, ax, row_scaled, row_scale, source, x, x_previous
             )

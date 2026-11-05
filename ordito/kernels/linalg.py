@@ -35,7 +35,7 @@ from warp._src.types import array as array_type
 from warp._src.types import type_is_generic
 
 from ordito.kernels.array import OverloadTable, inverse_or_one
-from ordito.kernels.reduce import block_chunk_1d, block_max, block_sum
+from ordito.kernels.reduce import block_chunk_1d, block_max, block_sum, thread_fence
 
 wp.set_module_options({"enable_backward": False})
 
@@ -420,18 +420,25 @@ def stacked_positions(
 
 
 # Entries from which a CSR row is *long*: on CUDA the row-a-thread solver kernels (Chebyshev steps,
-# the conjugate-gradient mat-vec) skip it under a nonzero ``skip_long`` and a block-per-row kernel
-# sums it instead (``csr_block_row_dot``). A row a thread is one thread's chain of dependent loads,
-# so a hub row (a fan's apex, 41 k entries) held every step for as long as the rest of the step
-# by a factor of ~1 000. Mesh and ``warp.fem`` rows stay far below it, so the threshold was not
-# swept. ``linalg._LongRows`` decides on the host, from one count read per listing, whether a
-# round launches the long-row kernels; launching them every step with no read instead (their
-# blocks returning at once with none listed) cost 1.0-1.31x where no row is long (geomean
-# 1.09-1.12 over 13 meshes and the solver rows of six benchmark files) against the read's
+# the conjugate-gradient mat-vec) skip it under a nonzero ``skip_long`` and blocks sum it instead, a
+# piece of ``CSR_LONG_ROW_PIECE`` entries each (``long_row_piece_total``). A row a thread is one
+# thread's chain of dependent loads, so a hub row (a fan's apex, 41 k entries) held every step for
+# as long as the rest of the step by a factor of ~1 000. Mesh and ``warp.fem`` rows stay far below
+# it, so the threshold was not swept. ``linalg._LongRows`` decides on the host, from one count read
+# per listing, whether a round launches the long-row kernels; launching them every step with no read
+# instead (their blocks returning at once with none listed) cost 1.0-1.31x where no row is long
+# (geomean 1.09-1.12 over 13 meshes and the solver rows of six benchmark files) against the read's
 # 0.98-1.13x (geomean 1.01-1.02; the worst a 1.7 ms call on 1 024 components): a small solve is
 # mostly steps, and the read is once a solve.
 # ``heat_geodesic`` on ``fan_hub``: 0.009x, the same 1 005 rounds.
 CSR_LONG_ROW_ENTRIES = wp.int32(1024)
+
+
+# Entries of a long row one block sums: its piece. A row a block put a 41 k-entry hub row's
+# 820 KB of values, columns and gathers through one SM, which held a launch at 49-55 us (the
+# thread-a-row step beside it: 5.5 us), and four interleaved accumulators a lane took it only to
+# 37 us; pieces spread the row over SMs and a ticket folds them.
+CSR_LONG_ROW_PIECE = wp.int32(1024)
 
 
 @wp.func
@@ -439,43 +446,76 @@ def csr_row_long(offsets: wp.array[wp.int32], row: wp.int32) -> wp.bool:
     return offsets[row + 1] - offsets[row] >= CSR_LONG_ROW_ENTRIES
 
 
+@wp.func
+def long_row_piece_count(offsets: wp.array[wp.int32], row: wp.int32) -> wp.int32:
+    return (offsets[row + 1] - offsets[row] + CSR_LONG_ROW_PIECE - 1) // CSR_LONG_ROW_PIECE
+
+
 @wp.kernel
 def list_long_rows(
-    offsets: wp.array[wp.int32], out_rows: wp.array[wp.int32], out_count: wp.array[wp.int32]
+    offsets: wp.array[wp.int32], out_pieces: wp.array[wp.vec3i], out_count: wp.array[wp.int32]
 ) -> None:
-    # The rows ``csr_row_long`` names, appended in arrival order: each is summed by a block of its
-    # own whose result does not depend on its slot. Launch over the row count; ``out_rows`` holds
-    # ``columns.size // CSR_LONG_ROW_ENTRIES``, which bounds their number.
+    # The pieces of the rows ``csr_row_long`` names, a row's pieces in consecutive slots taken in
+    # arrival order: ``(row, its first piece's slot, piece index)``. A row's sum does not depend
+    # on its slots. Launch over the row count; ``out_pieces`` holds ``columns.size //
+    # CSR_LONG_ROW_PIECE + columns.size // CSR_LONG_ROW_ENTRIES``, which bounds their number, so a
+    # row is listed whole or (past that, never) not at all.
     row = wp.int32(wp.tid())
     if csr_row_long(offsets, row):
-        slot = wp.atomic_add(out_count, 0, 1)
-        if slot < out_rows.shape[0]:
-            out_rows[slot] = row
+        n_pieces = long_row_piece_count(offsets, row)
+        first = wp.atomic_add(out_count, 0, n_pieces)
+        if first + n_pieces <= out_pieces.shape[0]:
+            for k in range(n_pieces):
+                out_pieces[first + k] = wp.vec3i(row, first, k)
 
 
 @wp.func
-def csr_block_row_dot(
-    row: wp.int32,
+def listed_long_pieces(pieces: wp.array[wp.vec3i], count: wp.array[wp.int32]) -> wp.int32:
+    # How many of ``list_long_rows``' slots hold a piece.
+    return wp.min(count[0], pieces.shape[0])
+
+
+@wp.func
+def long_row_piece_total(
+    piece: wp.vec3i,
     x_offset: wp.int32,
+    slot_offset: wp.int32,
     lane: wp.int32,
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: Any,
     x: Any,
-) -> Any:
-    # ``csr_row_dot`` by a whole block, its lanes striding the row and summed by the block
-    # (every lane must call it). A fixed order, so the result repeats; it differs from the
-    # one-thread order in its last bits.
+    partials: wp.array[wp.float64],
+    tickets: wp.array[wp.int32],
+) -> tuple[wp.int32, Any]:
+    # A block's piece of a long row against one column of ``x`` (every lane must call it): its
+    # lanes stride the piece and the block sums them, lane 0 stores the sum in its slot of
+    # ``partials`` (``slot_offset`` past the column's) and takes a ticket on the row's counter.
+    # The block drawing the row's last ticket folds its pieces in piece order and resets the
+    # counter: returns 1 and the row's sum in that block's lane 0, 0 elsewhere. A fixed order, so
+    # the result repeats; it differs from the one-thread order in its last bits.
+    row = piece[0]
+    first = slot_offset + piece[1]
+    start = offsets[row] + piece[2] * CSR_LONG_ROW_PIECE
+    end = wp.min(start + CSR_LONG_ROW_PIECE, offsets[row + 1])
     partial = x.dtype(0.0)
-    for k in range(offsets[row] + lane, offsets[row + 1], wp.block_dim()):
+    for k in range(start + lane, end, wp.block_dim()):
         partial += x.dtype(values[k]) * x[x_offset + columns[k]]
-    return block_sum(partial)
-
-
-@wp.func
-def listed_long_rows(rows: wp.array[wp.int32], count: wp.array[wp.int32]) -> wp.int32:
-    # How many of ``list_long_rows``' slots hold a row.
-    return wp.min(count[0], rows.shape[0])
+    total = block_sum(partial)
+    last = wp.int32(0)
+    if lane == 0:
+        partials[first + piece[2]] = wp.float64(total)
+        n_pieces = long_row_piece_count(offsets, row)
+        thread_fence()
+        if wp.atomic_add(tickets, first, 1) == n_pieces - 1:
+            thread_fence()
+            folded = wp.float64(0.0)
+            for k in range(n_pieces):
+                folded += partials[first + k]
+            tickets[first] = 0
+            total = x.dtype(folded)
+            last = 1
+    return last, total
 
 
 # Launched at its own width (``linalg._LONG_ROW_LANES``), so in a module of its own (§12.4).
@@ -483,24 +523,29 @@ def listed_long_rows(rows: wp.array[wp.int32], count: wp.array[wp.int32]) -> wp.
 def csr_long_rows_matvec(
     stride: wp.int32,
     launch_blocks: wp.int32,
-    rows: wp.array[wp.int32],
+    pieces: wp.array[wp.vec3i],
     count: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.Float],
     u: wp.array[wp.Float],
+    partials: wp.array[wp.float64],
+    tickets: wp.array[wp.int32],
     out_w: wp.array[wp.Float],
 ) -> None:
-    # ``w = A u`` at the long rows ``list_long_rows`` listed, a block a row and column. Launch
-    # tiled over ``(n_columns, launch_blocks)``; the blocks stride the listed rows, so a launch
-    # with none listed returns at once (block uniform).
+    # ``w = A u`` at the long rows ``list_long_rows`` listed, a block a piece and column
+    # (``long_row_piece_total``). Launch tiled over ``(n_columns, launch_blocks)``; the blocks
+    # stride the listed pieces, so a launch with none listed returns at once (block uniform).
     c, blk, lane = wp.tid()
     base = c * stride
-    for b in range(blk, listed_long_rows(rows, count), launch_blocks):
-        row = rows[b]
-        total = csr_block_row_dot(row, base, lane, offsets, columns, values, u)
-        if lane == 0:
-            out_w[base + row] = total
+    slots = c * pieces.shape[0]
+    for b in range(blk, listed_long_pieces(pieces, count), launch_blocks):
+        piece = pieces[b]
+        last, total = long_row_piece_total(
+            piece, base, slots, lane, offsets, columns, values, u, partials, tickets
+        )
+        if last != 0:
+            out_w[base + piece[0]] = total
 
 
 @wp.func
@@ -992,9 +1037,9 @@ def _register_overloads() -> None:
     CSR_LONG_ROWS_MATVEC = OverloadTable(
         csr_long_rows_matvec,
         {
-            (d, v): [wp.int32, wp.int32]
-            + [wp.array[wp.int32]] * 4
-            + [wp.array[v], wp.array[d], wp.array[d]]
+            (d, v): [wp.int32, wp.int32, wp.array[wp.vec3i]]
+            + [wp.array[wp.int32]] * 3
+            + [wp.array[v], wp.array[d], wp.array[wp.float64], wp.array[wp.int32], wp.array[d]]
             for d, v in (
                 (wp.float32, wp.float32),
                 (wp.float64, wp.float64),

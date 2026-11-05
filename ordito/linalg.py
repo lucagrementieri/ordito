@@ -3470,8 +3470,13 @@ class _BatchedCg:
         # Rows long enough to stall a row-a-thread kernel (``kernels/linalg.CSR_LONG_ROW_ENTRIES``),
         # summed a block a row on CUDA (``_LongRows``); shared with a Jacobi-Chebyshev polynomial,
         # which steps this same matrix.
-        self._long = _LongRows.build(self._matrix, self._n, self._device, self._heavy)
+        self._long = _LongRows.build(
+            self._matrix, self._n, self._n_columns, self._device, self._heavy
+        )
         if isinstance(self._cycle, _JacobiChebyshevApply):
+            # The polynomial's columns are the state's, so the listing's partials and tickets,
+            # a slot a piece and column, cover both.
+            assert self._cycle._n_columns == self._n_columns  # pyright: ignore[reportPrivateUsage]
             self._cycle.long_rows = self._long
 
         # The settle monitor ``solve_spd_settled`` runs (``check_rounds``, ``change_tolerance``,
@@ -3708,12 +3713,14 @@ class _BatchedCg:
                     inputs=[
                         wp.int32(self._stride),
                         wp.int32(long_rows.blocks),
-                        long_rows.rows,
+                        long_rows.pieces,
                         long_rows.count,
                         self._matrix.offsets,
                         self._matrix.columns,
                         self._round_values,
                         self._u,
+                        long_rows.partials,
+                        long_rows.tickets,
                     ],
                     outputs=[self._w],
                     block_dim=_LONG_ROW_LANES,
@@ -4133,26 +4140,36 @@ class _BatchedCg:
 _INT_WORDS = (kernel_array.LOOP_STATE_SIZE + 3) // 2
 
 
-# Lanes a long row is summed with, and the most blocks a long-row launch strides the listed rows
-# with.
+# Lanes a long row's piece is summed with, and the most blocks a long-row launch strides the
+# listed pieces with, per column.
 _LONG_ROW_LANES = 256
-_LONG_ROW_BLOCKS = 64
+_LONG_ROW_BLOCKS = 2048
 
 
 class _LongRows:
     """
-    A CG state's rows of ``CSR_LONG_ROW_ENTRIES`` entries or more, listed on the device.
+    A CG state's rows of ``CSR_LONG_ROW_ENTRIES`` entries or more, listed on the device by piece.
 
-    The thread-a-row kernels of a round skip them and a block a row sums them on CUDA
+    The thread-a-row kernels of a round skip them and blocks sum them on CUDA, a piece of
+    ``CSR_LONG_ROW_PIECE`` entries each, folded in piece order by a ticket
     (``kernels/linalg.csr_long_rows_matvec``, ``kernels/algorithms/multigrid.chebyshev_long_rows``).
-    Their count is read back once per listing (construction and ``refresh``), and the round
+    The piece count is read back once per listing (construction and ``refresh``), and the round
     launches the long-row kernels only when it is nonzero, so a matrix with no long row runs the
-    round it always did (``kernels/linalg.CSR_LONG_ROW_ENTRIES`` prices the alternative).
+    round it always did (``kernels/linalg.CSR_LONG_ROW_ENTRIES`` prices the alternative). The
+    partials and tickets are sized by the bound on pieces at construction, so a listing never
+    reallocates what a recorded round points at. They are allocated by the first listing that
+    finds a piece, which also makes the state record its round again (``active`` changed), so a
+    matrix with no long row pays for neither.
     """
 
-    def __init__(self, capacity: int, device: wp.DeviceLike) -> None:
-        self.rows = _launch.empty(capacity, dtype=wp.int32, device=device)
+    def __init__(self, capacity: int, n_columns: int, device: wp.DeviceLike) -> None:
+        self.pieces = _launch.empty(capacity, dtype=wp.vec3i, device=device)
         self.count = _launch.zeros(1, dtype=wp.int32, device=device)
+        self.n_columns = n_columns
+        # A piece's sum, a slot a piece and column; a row's ticket counter, at its first piece's
+        # slot, which the folding block returns to zero.
+        self.partials: wp.array[wp.float64] | None = None
+        self.tickets: wp.array[wp.int32] | None = None
         self.device = device
         self.blocks = 0
 
@@ -4163,17 +4180,21 @@ class _LongRows:
 
     @classmethod
     def build(
-        cls, matrix: odt.CsrMatrix, n: int, device: wp.DeviceLike, heavy: bool
+        cls, matrix: odt.CsrMatrix, n: int, n_columns: int, device: wp.DeviceLike, heavy: bool
     ) -> _LongRows | None:
         """List ``matrix``'s long rows, or ``None`` where none can be or the device is the CPU."""
         # The CPU device runs a round as one launch whose thread walks every row in turn
         # (``cg_round_serial``), and a ``bsr_mv`` round already splits rows across lanes.
         if heavy or not wp.get_device(device).is_cuda or n == 0:
             return None
-        capacity = min(n, matrix.columns.size // int(kernel_linalg.CSR_LONG_ROW_ENTRIES))
-        if capacity == 0:
+        entries = matrix.columns.size
+        if entries < int(kernel_linalg.CSR_LONG_ROW_ENTRIES):
             return None
-        long_rows = cls(capacity, device)
+        # Each long row's pieces: its entries over the piece size, plus at most one partial piece.
+        capacity = entries // int(kernel_linalg.CSR_LONG_ROW_PIECE) + entries // int(
+            kernel_linalg.CSR_LONG_ROW_ENTRIES
+        )
+        long_rows = cls(capacity, n_columns, device)
         long_rows.relist(matrix, n)
         return long_rows
 
@@ -4185,13 +4206,17 @@ class _LongRows:
             kernel_linalg.list_long_rows,
             dim=n,
             inputs=[matrix.offsets],
-            outputs=[self.rows, self.count],
+            outputs=[self.pieces, self.count],
             device=self.device,
         )
         # Host readback: whether the round launches the long-row kernels, and with how many
         # blocks, is the host's to decide when it records or issues the round.
-        listed = min(int(read_scalar(self.count, 0)), self.rows.size)
+        listed = min(int(read_scalar(self.count, 0)), self.pieces.size)
         self.blocks = min(listed, _LONG_ROW_BLOCKS)
+        if self.blocks > 0 and self.partials is None:
+            slots = self.n_columns * self.pieces.size
+            self.partials = _launch.empty(slots, dtype=wp.float64, device=self.device)
+            self.tickets = _launch.zeros(slots, dtype=wp.int32, device=self.device)
         return self.active != was_active
 
 
@@ -5309,7 +5334,7 @@ class _ChebyshevApply:
                     inputs=[
                         wp.int32(self._stride),
                         wp.int32(long_rows.blocks),
-                        long_rows.rows,
+                        long_rows.pieces,
                         long_rows.count,
                         steps,
                         wp.int32(index),
@@ -5321,6 +5346,8 @@ class _ChebyshevApply:
                         source,
                         current,
                         previous,
+                        long_rows.partials,
+                        long_rows.tickets,
                     ],
                     outputs=[target],
                     block_dim=_LONG_ROW_LANES,

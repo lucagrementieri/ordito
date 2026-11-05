@@ -929,7 +929,14 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   over 13 meshes (5 k to 870 k faces) and 81 solver benchmark rows, worst 1.13x against 1.31x
   (ARAP, Tutte, harmonic: small solves are mostly steps). Only the CG state's matrix and its
   Jacobi-Chebyshev polynomial take it; the squared-Laplacian polynomial, the multigrid V-cycle
-  and the one-block solve still walk a long row in a thread.
+  and the one-block solve still walk a long row in a thread. **A block a row is one SM's
+  bandwidth:** 820 KB a 41 k-entry row held each long-row launch at 49-55 us (the step beside it
+  5.5 us), and four interleaved accumulators a lane only reached 37 us. A block a piece of
+  `CSR_LONG_ROW_PIECE` (1 024) entries, its partial stored and the row folded in piece order by
+  the block drawing the row's last ticket, runs at 9-11 us at every piece of 512-2 048 and 128 or
+  256 lanes: `fan_hub` `heat_geodesic` 746 -> 201 ms, `min_quad_with_fixed` 261 -> 84 ms, a
+  fairing pass 61 -> 49 ms; no-long-row meshes and the census unchanged (the partials and tickets
+  are allocated by the first listing that finds a piece).
 - **Solvers:** a single-level polynomial preconditioner wins on long solves; a Chebyshev multigrid smoother loses (no single `(degree, interval)` is robust). A small synthetic system can mislead.
 - **Refuted, do not re-propose:** a single-block BFS drain, a one-block hole-fill DP and merged-level blocked interval DPs (the grid must stay full); voxel aggregation for multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches.
 - **Producer-consumer fusion:** always fuse consecutive same-`dim` launches where the consumer reads the producer only at its own index; every pair measured was faster. Price the fused region, not the call containing it, and cross-check kernel and allocation counts. Also fold a map into its consumer, merge two launches of one kernel into a wider one, and walk-and-reduce neighbour lists in one thread per query. A fusion that changes a slot or box index needs a debug-mode run. Inline single-caller helpers it leaves behind; fold-on-read loses on dependent chases.
@@ -1002,11 +1009,8 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   (§14) say to expect a loss wherever the kernel has work of its own.
 - **Long rows on `fan_hub` beyond the CG state** (2026-11-05). Callers found: `min_quad_with_fixed`
   on `fan_hub`'s negated cotangent Laplacian, 1 % pinned (40 k free rows), 263-280 ms a call
-  against `sphere_med`'s 5 ms (350 rounds against 40). (a) The long-row kernels themselves:
-  `chebyshev_long_rows` and `csr_long_rows_matvec` take 49-55 us a launch, 10x the 5.5 us step,
-  80 % of that solve's device time: a block a row puts 820 KB of a 41 k-entry row on one SM. Four
-  interleaved accumulators took the Chebyshev one only to 37 us (reverted); split a row over
-  blocks (chunk partials, a fixed-order fold) instead. (b) One-off row-a-thread kernels around the
+  against `sphere_med`'s 5 ms (350 rounds against 40); 84 ms since the long-row kernels take a
+  piece a block (§14). (b) One-off row-a-thread kernels around the
   solve walk the hub too: `interior_partition_system` 14 ms, `refresh_pooled_operator_bound` 8 ms,
   `cg_initial` 6 ms, `backward_error_exceeds` 5 ms. (c) `preconditioner="multigrid"` there: the
   V-cycle apply is not the cost; its setup is (`count_row_entries` 32 ms,
