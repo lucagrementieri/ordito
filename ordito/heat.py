@@ -595,6 +595,13 @@ FastMarchingMethod = Literal["meshlib", "meshlab"]
 the edge-and-plane-wave front (``"meshlib"``) or the face-unfolding one (``"meshlab"``)."""
 
 
+# The round pairs a replayed body of ``fast_marching_distance``'s loop runs between reads of its
+# condition, for its conditional node and ``loop_advance`` once in that many; a round past the
+# fixpoint changes nothing. Two against one: 0.90-0.97x on icospheres of 4 and 7 subdivisions,
+# bunny and dragon, one source and sixteen; four no better.
+_FRONT_ROUND_PAIRS = 2
+
+
 def fast_marching_distance(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -740,7 +747,7 @@ def fast_marching_distance(
         # Two rounds, ``labels`` into ``relaxed`` and back: a captured body replays the pointers it
         # recorded, so the buffers cannot swap names between bodies, and the second round leaves
         # the answer in ``labels``. A round past the fixpoint changes nothing.
-        for source, target in ((labels, relaxed), (relaxed, labels)):
+        for source, target in ((labels, relaxed), (relaxed, labels)) * _FRONT_ROUND_PAIRS:
             _launch.launch(
                 kernel_heat.fast_marching_pass,
                 dim=n_faces,
