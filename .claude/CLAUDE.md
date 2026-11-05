@@ -993,7 +993,12 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   each; sphere_med: 37 rounds, milliseconds), `filter_implicit_fairing` the same. A long row
   split across a warp or block, short rows kept a thread, would bound a round by the mean row,
   not the longest. Price on `fan_hub`, `sphere_med` and dragon (the split's test must not cost
-  the uniform meshes).
+  the uniform meshes). Tried: eight interleaved accumulators in `csr_row_dot` for rows of 1 024
+  entries or more (no readback, no launch) took `heat_geodesic` 87 -> 57 s only, so one thread's
+  load issue, not the add chain, bounds the hub row; it needs lanes. The existing heavy-row path
+  (`linalg.CG_HEAVY_ROW_ENTRIES`, `bsr_mv` block-per-row) gates on the *mean* row length (~7
+  here). A lane split needs the long rows known on the host (a readback per solver state, which
+  small host-bound solves pay) or a launch per step (which uniform meshes pay): the user decides.
 - **`hessian_energy` / `curved_hessian_energy` on a hub** (2026-11-05). `hessian_star_mask` dedupes
   a vertex's star corner against every earlier corner with no early exit, ~7.5e9 loads in one
   thread for `fan_hub`'s hub (`hessian_energy_counts` had not returned after 5 minutes). The
