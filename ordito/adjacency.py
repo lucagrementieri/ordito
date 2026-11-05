@@ -362,11 +362,18 @@ def vertex_face_adjacency(
             _launch.zeros(row_count + 1, dtype=wp.int32, device=device),
         )
 
+    deterministic = is_deterministic()
+    if deterministic and not wp.get_device(device).is_cpu:
+        # The rows and their offsets come off one stable sort of the face buffer: no corner counts
+        # and no scan. Both share one allocation (a CSR pair is held and dropped together), written
+        # whole by the emit.
+        offsets, vertex_faces = _launch.carve(wp.int32, (row_count + 1, 3 * n_faces), device)
+        _fill_sorted_vertex_faces(faces, row_count, vertex_faces, offsets)
+        return vertex_faces, offsets
     # A flat face buffer *is* the corner -> vertex map, so one launch over all 3 * n_faces corners
     # gives each vertex its incident-face count. The counts are taken in the offsets' own buffer
     # and scanned there in place: behind the leading zero for the sorted fill, one slot further
     # on for the scatter, whose atomics advance each row's start to its end.
-    deterministic = is_deterministic()
     lead = 1 if deterministic else 2
     # The rows share the offsets' allocation (a CSR pair is held and dropped together); only the
     # counts are zeroed, as the rows are written whole before they are read.
@@ -448,16 +455,25 @@ def vertex_face_adjacency_from_counts(
     device = faces.device
     n_faces = faces.size // 3
     row_count = counts.size
-    offsets = _launch.zeros(row_count + 1, dtype=wp.int32, device=device)
     if n_faces == 0 or row_count == 0:
-        return _launch.zeros(3 * n_faces, dtype=wp.int32, device=device), offsets
+        return (
+            _launch.zeros(3 * n_faces, dtype=wp.int32, device=device),
+            _launch.zeros(row_count + 1, dtype=wp.int32, device=device),
+        )
     vertex_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    deterministic = is_deterministic()
+    if deterministic and not wp.get_device(device).is_cpu:
+        # The sort gives the offsets as well, so the counts go unread.
+        offsets = _launch.empty(row_count + 1, dtype=wp.int32, device=device)
+        _fill_sorted_vertex_faces(faces, row_count, vertex_faces, offsets)
+        return vertex_faces, offsets
+    offsets = _launch.zeros(row_count + 1, dtype=wp.int32, device=device)
     # Deliberately NOT od.array.counts_to_offsets: that helper always reads the total back, and
     # this function never needs it (it is 3 * n_faces, known on the host). Converting for
     # symmetry would add a device synchronization where there is currently none.
     tail = _launch.view(offsets, 1, row_count + 1)
     _launch.array_scan(counts, out_array=tail, inclusive=True)
-    if is_deterministic():
+    if deterministic:
         _fill_sorted_vertex_faces(faces, row_count, vertex_faces)
         return vertex_faces, offsets
     # The counts are spent once scanned, so their buffer becomes the scatter's per-row cursor,
@@ -472,17 +488,34 @@ def vertex_face_adjacency_from_counts(
 
 
 def _fill_sorted_vertex_faces(
-    faces: wp.array[wp.int32], row_count: int, out_vertex_faces: wp.array[wp.int32]
+    faces: wp.array[wp.int32],
+    row_count: int,
+    out_vertex_faces: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32] | None = None,
 ) -> None:
     """
-    Fill the vertex-face rows in ascending face order, from one stable sort of the face buffer.
+    Fill the vertex-face rows in ascending face order, and on CUDA their offsets, from one sort.
 
-    The sort lists each vertex's corners in ascending order, so its permutation's faces are the
-    rows in ascending face order: the same on every run, where the atomic scatter fills each row
-    in the order its atomics commit.
+    The stable sort of the face buffer lists each vertex's corners in ascending order, so its
+    permutation's faces are the rows in ascending face order -- the same on every run, where the
+    atomic scatter fills each row in the order its atomics commit -- and each row starts at the
+    first sorted corner reaching its vertex. ``out_offsets`` is CUDA's: the CPU omits it, taking
+    the offsets from the corner counts' scan, and fills the rows by a map
+    (``kernels/adjacency.emit_sorted_vertex_faces`` says why).
     """
-    _, corner_order = od.array.sort_and_argsort(faces, end_bit=_launch.key_bits(row_count))
-    _launch.map(kernel_adjacency.corner_face, corner_order, out=out_vertex_faces)
+    sorted_vertices, corner_order = od.array.sort_and_argsort(
+        faces, end_bit=_launch.key_bits(row_count)
+    )
+    if out_offsets is None:
+        _launch.map(kernel_adjacency.corner_face, corner_order, out=out_vertex_faces)
+        return
+    _launch.launch(
+        kernel_adjacency.emit_sorted_vertex_faces,
+        dim=max(faces.size, out_offsets.size),
+        inputs=[sorted_vertices, corner_order],
+        outputs=[out_vertex_faces, out_offsets],
+        device=faces.device,
+    )
 
 
 def face_adjacency_unshared(

@@ -2,7 +2,13 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT
 from ordito.kernels.algorithms.connected_components import ecl_hook_pair
-from ordito.kernels.array import declare_map_signatures, map_probe, pack_edge_key, scanned_count
+from ordito.kernels.array import (
+    binary_search_index_left,
+    declare_map_signatures,
+    map_probe,
+    pack_edge_key,
+    scanned_count,
+)
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import vector_angle
 from ordito.kernels.triangles import corner_triple, face_normals_and_area
@@ -364,9 +370,10 @@ def scatter_vertex_faces(
     out_vertex_faces: wp.array[wp.int32],
 ) -> None:
     # Vertex-to-face CSR payload. Row order is thread-order and therefore arbitrary: the wrapper's
-    # path when ``ordito.config`` does not ask for reproducible results (``corner_face`` below is
-    # the other). A rotational order would need halfedge twins and would refuse a
-    # vertex-non-manifold mesh, which the decimator that consumes this must not do.
+    # path when ``ordito.config`` does not ask for reproducible results (``corner_face`` and
+    # ``emit_sorted_vertex_faces`` below are the other). A rotational order would need halfedge
+    # twins and would refuse a vertex-non-manifold mesh, which the decimator that consumes this
+    # must not do.
     #
     # ``cursor`` is the counting pass's per-vertex count and counts *down*, as in
     # ``graph.scatter_neighbor_lists``: the atomic returns how many slots of the row are still
@@ -396,8 +403,35 @@ def scatter_vertex_faces_to_offsets(
 def corner_face(corner: wp.int32) -> wp.int32:
     """Return the face a flat face-buffer corner belongs to."""
     # Mapped over the stable sort of the face buffer, it gives ``scatter_vertex_faces``' payload
-    # with every row in ascending face order: its reproducible form.
+    # with every row in ascending face order: its reproducible form on the CPU
+    # (``emit_sorted_vertex_faces`` is CUDA's).
     return corner // 3
+
+
+@wp.kernel
+def emit_sorted_vertex_faces(
+    sorted_vertices: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    out_vertex_faces: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+) -> None:
+    # ``scatter_vertex_faces``' CSR in its reproducible form on CUDA, off one stable sort of the
+    # face buffer: sorted position ``i`` is corner ``order[i]`` (``corner_face``), so the payload
+    # lists every row in ascending face order, and row ``v`` starts at the first sorted position
+    # whose vertex reaches ``v``. Launched over ``max(3 * n_faces, n_vertices + 1)``, so the corner
+    # counts, their scan and a separate payload map are never needed. Each start is searched: a
+    # fill from the sorted side (``polyline.write_cell_starts``) writes a run of unreferenced
+    # vertices from one thread.
+    #
+    # Not on the CPU, which keeps the counts, their scan and the ``corner_face`` map: there the
+    # searches cost 1.4-1.6x the call from 20 k faces, a serial walk over the sorted corners
+    # 1.1x, and even this kernel launched for the payload alone 1.08-1.10x the map (a body the CPU
+    # compiler no longer inlines into its per-thread loop).
+    t = wp.int32(wp.tid())
+    if t < sorted_vertices.shape[0]:
+        out_vertex_faces[t] = corner_face(order[t])
+    if t < out_offsets.shape[0]:
+        out_offsets[t] = binary_search_index_left(sorted_vertices, t)
 
 
 @wp.func
