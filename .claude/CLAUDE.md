@@ -955,6 +955,9 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   refresh, the backward error, `cg_initial`, the Jacobi diagonal and bound, and the free-free
   extraction: `fan_hub` `heat_geodesic` 193 -> 117-121 ms, `min_quad_with_fixed` 82 -> 41 ms, a
   fairing pass 44 -> 4.2 ms (`reference/component-status.md`, "Hub rows outside the solver steps").
+  The multigrid V-cycle takes long rows at every level by pieces and its setup by deferral, and a
+  long row stays out of the prolongator's smoothing: `fan_hub`'s explicit multigrid solve went
+  from 1 000 unconverged rounds to 18, 266 -> 31 ms ("Multigrid on a hub").
 - **Solvers:** a single-level polynomial preconditioner wins on long solves; a Chebyshev multigrid smoother loses (no single `(degree, interval)` is robust). A small synthetic system can mislead.
 - **Refuted, do not re-propose:** a single-block BFS drain, a one-block hole-fill DP and merged-level blocked interval DPs (the grid must stay full); voxel aggregation for multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches.
 - **Producer-consumer fusion:** always fuse consecutive same-`dim` launches where the consumer reads the producer only at its own index; every pair measured was faster. Price the fused region, not the call containing it, and cross-check kernel and allocation counts. Also fold a map into its consumer, merge two launches of one kernel into a wider one, and walk-and-reduce neighbour lists in one thread per query. A fusion that changes a slot or box index needs a debug-mode run. Inline single-caller helpers it leaves behind; fold-on-read loses on dependent chases.

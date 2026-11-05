@@ -245,8 +245,11 @@ def test_min_quad_with_fixed_solvers_agree(
     assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-8, atol=1e-8)
 
 
+@pytest.mark.parametrize("preconditioner", ["adaptive", "multigrid"])
 @pytest.mark.parametrize("pin_hub", [False, True])
-def test_min_quad_with_fixed_on_a_hub_matches_a_direct_solve(device: str, pin_hub: bool) -> None:
+def test_min_quad_with_fixed_on_a_hub_matches_a_direct_solve(
+    device: str, pin_hub: bool, preconditioner: str
+) -> None:
     """
     Class A, against ``scipy.sparse.linalg.spsolve`` of the interior block, on a hub's long row.
 
@@ -255,7 +258,8 @@ def test_min_quad_with_fixed_on_a_hub_matches_a_direct_solve(device: str, pin_hu
     pinned columns to the right-hand side with a whole block, keeping the surviving entries in
     order (an exclusive scan per chunk). Every third rim vertex is pinned, so the hub row loses
     columns; with ``pin_hub`` the hub is pinned too and its column moves out of every rim row.
-    Two right-hand sides.
+    Two right-hand sides. Under ``"multigrid"`` the V-cycle's levels sum the hub's rows by pieces
+    and its prolongator leaves them out of the smoothing.
     """
     spokes = 1500
     n = spokes + 1
@@ -282,6 +286,7 @@ def test_min_quad_with_fixed_on_a_hub_matches_a_direct_solve(device: str, pin_hu
         scipy_to_bsr(system_np, device=device),
         wp.array(fixed_np, dtype=wp.bool, device=device),
         wp.array(values_np, dtype=wp.float64, device=device),
+        preconditioner=preconditioner,
     )
     assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-6, atol=1e-6)
 

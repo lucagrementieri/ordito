@@ -811,15 +811,16 @@ def jacobi_row(
 
 
 @wp.func
-def jacobi_row_block(
+def csr_row_diagonal_block(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.Float],
     i: wp.int32,
     lane: wp.int32,
 ) -> tuple[wp.Float, wp.Float]:
-    # ``jacobi_row`` by a whole block, its lanes striding the row and the block summing the
-    # diagonal and the off-diagonal magnitudes in a fixed tree (every lane must call it).
+    # ``csr_row_diagonal`` by a whole block, its lanes striding the row and the block summing the
+    # diagonal and the off-diagonal magnitudes in a fixed tree (every lane must call it; every lane
+    # gets the sums).
     diagonal = values.dtype(0.0)
     off_sum = values.dtype(0.0)
     for e in range(offsets[i] + lane, offsets[i + 1], wp.block_dim()):
@@ -827,8 +828,19 @@ def jacobi_row_block(
             diagonal += values[e]
         else:
             off_sum += wp.abs(values[e])
-    diagonal = block_sum(diagonal)
-    off_sum = block_sum(off_sum)
+    return block_sum(diagonal), block_sum(off_sum)
+
+
+@wp.func
+def jacobi_row_block(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.Float],
+    i: wp.int32,
+    lane: wp.int32,
+) -> tuple[wp.Float, wp.Float]:
+    # ``jacobi_row`` by a whole block (``csr_row_diagonal_block``; every lane must call it).
+    diagonal, off_sum = csr_row_diagonal_block(offsets, columns, values, i, lane)
     return inverse_or_one(diagonal), dominance_ratio(diagonal, off_sum)
 
 

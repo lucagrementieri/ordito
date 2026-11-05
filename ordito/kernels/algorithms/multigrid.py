@@ -49,15 +49,22 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import TILE_1D
-from ordito.kernels.array import csr_key_nonzero, element_priority, inverse_or_one, sqrt_abs
+from ordito.kernels.array import (
+    OverloadTable,
+    csr_key_nonzero,
+    element_priority,
+    inverse_or_one,
+    sqrt_abs,
+)
 from ordito.kernels.linalg import (
     csr_row_diagonal,
+    csr_row_diagonal_block,
     csr_row_dot,
     csr_row_long,
     listed_long_pieces,
     long_row_piece_total,
 )
-from ordito.kernels.reduce import block_chunk, block_sum
+from ordito.kernels.reduce import block_barrier, block_chunk, block_max, block_sum
 
 wp.set_module_options({"enable_backward": False})
 
@@ -182,6 +189,37 @@ def mis_ball_max(
     return best
 
 
+# Rows a block of a multigrid level's setup kernels holds, a row a lane on CUDA: a lane takes its
+# rows in order, and a long row (``linalg.csr_row_long``, a fan's hub) is left to the whole block
+# after, its lanes striding the row, so a block without one pays one reduction. On the CPU device
+# the block's one lane walks them all.
+MG_ROWS_PER_BLOCK = 256
+
+
+@wp.func
+def mis_ball_max_block(
+    i: wp.int32,
+    from_state: wp.int32,
+    key: wp.array[wp.int64],
+    state: wp.array[wp.int32],
+    priority: wp.array[wp.uint32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    scaled_diagonal: wp.array[wp.float64],
+    theta: wp.float64,
+    lane: wp.int32,
+) -> wp.int64:
+    # ``mis_ball_max`` by a whole block, its lanes striding the row (every lane must call it). A
+    # maximum, so the same value whatever the order.
+    best = mis_entry_key(i, from_state, key, state, priority)
+    for k in range(offsets[i] + lane, offsets[i + 1], wp.block_dim()):
+        j = columns[k]
+        if mg_strong_neighbor(i, j, values[k], scaled_diagonal, theta):
+            best = wp.max(best, mis_entry_key(j, from_state, key, state, priority))
+    return block_max(best)
+
+
 @wp.kernel
 def mis_propagate_states(
     state: wp.array[wp.int32],
@@ -197,13 +235,62 @@ def mis_propagate_states(
     # A round's first hop, reading every key straight from ``(state, priority, index)``: the packed
     # key is an elementwise function of the state, so no seeding pass writes it first.
     # ``mis_propagate_decide`` is the round's second hop; the undecided counter it increments is
-    # cleared here, the launch before, so no memset runs per round.
-    i = wp.int32(wp.tid())
-    if i == 0:
-        out_undecided[0] = 0
-    out_key[i] = mis_ball_max(
-        i, wp.int32(1), out_key, state, priority, offsets, columns, values, scaled_diagonal, theta
-    )
+    # cleared here, the launch before, so no memset runs per round. Launch tiled over
+    # ``MG_ROWS_PER_BLOCK`` rows a block.
+    blk, lane = wp.tid()
+    first, rows = block_chunk(offsets.shape[0] - 1, blk, MG_ROWS_PER_BLOCK)
+    if rows <= 0:
+        return
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        if i == 0:
+            out_undecided[0] = 0
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
+        out_key[i] = mis_ball_max(
+            i, wp.int32(1), out_key, state, priority, offsets, columns, values, scaled_diagonal,
+            theta,
+        )  # fmt: skip
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = first + r
+        if csr_row_long(offsets, i):
+            best = mis_ball_max_block(
+                i, wp.int32(1), out_key, state, priority, offsets, columns, values,
+                scaled_diagonal, theta, lane,
+            )  # fmt: skip
+            if lane == 0:
+                out_key[i] = best
+
+
+@wp.func
+def mis_decide(
+    i: wp.int32,
+    current: wp.int32,
+    best: wp.int64,
+    priority: wp.array[wp.uint32],
+    out_state: wp.array[wp.int32],
+    out_root_flags: wp.array[wp.int32],
+    out_undecided: wp.array[wp.int32],
+) -> None:
+    # An undecided node's verdict from its two-hop maximum ``best`` (``mis_propagate_decide``).
+    verdict = MG_UNDECIDED
+    if wp.int32(best >> _MG_STATE_SHIFT) == MG_ROOT:
+        verdict = MG_EXCLUDED
+    elif best == mis_key(current, priority[i], i):
+        verdict = MG_ROOT
+    out_state[i] = verdict
+    out_root_flags[i] = mis_root_flag(verdict)
+    if verdict == MG_UNDECIDED:
+        wp.atomic_add(out_undecided, 0, wp.int32(1))
+    elif verdict == MG_ROOT:
+        # The roots so far, in the counter's second slot (cleared by ``mis_level_setup``): with the
+        # nodes still undecided, which become aggregates of their own, it is the aggregate count,
+        # read with the undecided count rather than off the flags' scan.
+        wp.atomic_add(out_undecided, 1, wp.int32(1))
 
 
 @wp.kernel
@@ -231,28 +318,38 @@ def mis_propagate_decide(
     # (and by every round a node stays undecided): a decided node's flag never changes, so after
     # whichever round ends the loop it holds every node's final flag, with no map over the final
     # state.
-    i = wp.int32(wp.tid())
-    current = state[i]
-    if current != MG_UNDECIDED:
-        out_state[i] = current
+    #
+    # Launch tiled over ``MG_ROWS_PER_BLOCK`` rows a block.
+    blk, lane = wp.tid()
+    first, rows = block_chunk(offsets.shape[0] - 1, blk, MG_ROWS_PER_BLOCK)
+    if rows <= 0:
         return
-    best = mis_ball_max(
-        i, wp.int32(0), key, state, priority, offsets, columns, values, scaled_diagonal, theta
-    )
-    verdict = MG_UNDECIDED
-    if wp.int32(best >> _MG_STATE_SHIFT) == MG_ROOT:
-        verdict = MG_EXCLUDED
-    elif best == mis_key(current, priority[i], i):
-        verdict = MG_ROOT
-    out_state[i] = verdict
-    out_root_flags[i] = mis_root_flag(verdict)
-    if verdict == MG_UNDECIDED:
-        wp.atomic_add(out_undecided, 0, wp.int32(1))
-    elif verdict == MG_ROOT:
-        # The roots so far, in the counter's second slot (cleared by ``mis_level_setup``): with the
-        # nodes still undecided, which become aggregates of their own, it is the aggregate count,
-        # read with the undecided count rather than off the flags' scan.
-        wp.atomic_add(out_undecided, 1, wp.int32(1))
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        current = state[i]
+        if current != MG_UNDECIDED:
+            out_state[i] = current
+            continue
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
+        best = mis_ball_max(
+            i, wp.int32(0), key, state, priority, offsets, columns, values, scaled_diagonal, theta
+        )
+        mis_decide(i, current, best, priority, out_state, out_root_flags, out_undecided)
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = first + r
+        current = state[i]
+        if current == MG_UNDECIDED and csr_row_long(offsets, i):
+            best = mis_ball_max_block(
+                i, wp.int32(0), key, state, priority, offsets, columns, values,
+                scaled_diagonal, theta, lane,
+            )  # fmt: skip
+            if lane == 0:
+                mis_decide(i, current, best, priority, out_state, out_root_flags, out_undecided)
 
 
 @wp.func
@@ -403,6 +500,74 @@ def emit_scaled_row(
     return slot
 
 
+@wp.func
+def smoothed_prolongator_row(
+    i: wp.int32,
+    start: wp.int32,
+    step: wp.int32,
+    with_identity: wp.bool,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    label: wp.array[wp.int32],
+    sizes: wp.array[wp.int32],
+    weights: wp.array[wp.int32],
+    damped_inverse_diagonal: wp.array[wp.float64],
+    n_aggregates: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+) -> None:
+    # ``smoothed_prolongator_keys``' contributions of row ``i``'s entries ``start``, ``start +
+    # step``, ... (each at its own slot), and with ``with_identity`` the identity's.
+    n = offsets.shape[0] - 1
+    scale = -damped_inverse_diagonal[i]
+    for e in range(start, offsets[i + 1], step):
+        j = columns[e]
+        aggregate = label[j]
+        # An unaggregated node (``mis_level_setup``) has no column in ``P0``: its slot emits an
+        # exact zero, which the assembly drops.
+        contribution = wp.float64(0.0)
+        # An off-diagonal entry of a long row or column (``csr_row_long``, a fan's hub) does not
+        # smooth the prolongator. A hub's entries are weak (each about ``1 / sqrt(valence)`` of its
+        # diagonals' geometric mean, far under ``linalg._MULTIGRID_THETA``); smoothing through
+        # them, ``fan_hub``'s 1 %-pinned solve ran 1 000 rounds without converging, and 18 with
+        # them left out (13 on ``sphere_med``).
+        hub = j != i and (csr_row_long(offsets, i) or csr_row_long(offsets, j))
+        if aggregate != MG_UNAGGREGATED and not hub:
+            contribution = (
+                scale * values[e] * tentative_scale(weights, j) / tentative_norm(sizes, aggregate)
+            )
+        emit_entry(
+            i,
+            wp.max(aggregate, wp.int32(0)),
+            contribution,
+            e,
+            n,
+            n_aggregates,
+            out_keys,
+            out_order,
+            out_values,
+        )
+    if not with_identity:
+        return
+    own = label[i]
+    identity = wp.float64(0.0)
+    if own != MG_UNAGGREGATED:
+        identity = tentative_scale(weights, i) / tentative_norm(sizes, own)
+    emit_entry(
+        i,
+        wp.max(own, wp.int32(0)),
+        identity,
+        offsets[n] + i,
+        n,
+        n_aggregates,
+        out_keys,
+        out_order,
+        out_values,
+    )
+
+
 @wp.kernel
 def smoothed_prolongator_keys(
     offsets: wp.array[wp.int32],
@@ -425,45 +590,49 @@ def smoothed_prolongator_keys(
     # in, and the identity's ``P0_i`` one more, after all of ``A``'s. The key sum that follows is
     # the whole product, where ``bsr_mm`` against ``P0`` then a row scale and a ``bsr_axpy``
     # against ``P0`` was three sparse passes, each allocating its result.
-    i = wp.int32(wp.tid())
+    # Launch tiled over ``MG_ROWS_PER_BLOCK`` rows a block.
+    blk, lane = wp.tid()
     n = offsets.shape[0] - 1
-    scale = -damped_inverse_diagonal[i]
-    for e in range(offsets[i], offsets[i + 1]):
-        j = columns[e]
-        aggregate = label[j]
-        # An unaggregated node (``mis_level_setup``) has no column in ``P0``: its slot emits an
-        # exact zero, which the assembly drops.
-        contribution = wp.float64(0.0)
-        if aggregate != MG_UNAGGREGATED:
-            contribution = (
-                scale * values[e] * tentative_scale(weights, j) / tentative_norm(sizes, aggregate)
-            )
-        emit_entry(
-            i,
-            wp.max(aggregate, wp.int32(0)),
-            contribution,
-            e,
-            n,
-            n_aggregates,
-            out_keys,
-            out_order,
-            out_values,
-        )
-    own = label[i]
-    identity = wp.float64(0.0)
-    if own != MG_UNAGGREGATED:
-        identity = tentative_scale(weights, i) / tentative_norm(sizes, own)
-    emit_entry(
-        i,
-        wp.max(own, wp.int32(0)),
-        identity,
-        offsets[n] + i,
-        n,
-        n_aggregates,
-        out_keys,
-        out_order,
-        out_values,
-    )
+    first, rows = block_chunk(n, blk, MG_ROWS_PER_BLOCK)
+    if rows <= 0:
+        return
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
+        smoothed_prolongator_row(
+            i, offsets[i], 1, True, offsets, columns, values, label, sizes, weights,
+            damped_inverse_diagonal, n_aggregates, out_keys, out_order, out_values,
+        )  # fmt: skip
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = first + r
+        if csr_row_long(offsets, i):
+            smoothed_prolongator_row(
+                i, offsets[i] + lane, wp.block_dim(), lane == 0, offsets, columns, values, label,
+                sizes, weights, damped_inverse_diagonal, n_aggregates, out_keys, out_order,
+                out_values,
+            )  # fmt: skip
+
+
+@wp.func
+def product_row_count(
+    i: wp.int32,
+    start: wp.int32,
+    step: wp.int32,
+    a_offsets: wp.array[wp.int32],
+    a_columns: wp.array[wp.int32],
+    p_offsets: wp.array[wp.int32],
+) -> wp.int64:
+    # ``product_triplet_counts``' count over row ``i``'s entries ``start``, ``start + step``, ...
+    count = wp.int64(0)
+    for e in range(start, a_offsets[i + 1], step):
+        j = a_columns[e]
+        count += wp.int64(p_offsets[j + 1] - p_offsets[j])
+    return count
 
 
 @wp.kernel
@@ -476,15 +645,33 @@ def product_triplet_counts(
     # Row ``i`` of ``A P`` has one product ``A_ij P_jl`` per stored ``A_ij`` per entry of ``P``'s
     # row ``j``. Counted in 64 bits, as ``galerkin_triplet_counts`` is: on a level that coarsened
     # badly the total passes ``2^31`` and an ``int32`` scan wraps, sometimes to a small positive
-    # total that a budget test cannot tell from a real one.
-    i = wp.int32(wp.tid())
-    count = wp.int64(0)
-    for e in range(a_offsets[i], a_offsets[i + 1]):
-        j = a_columns[e]
-        count += wp.int64(p_offsets[j + 1] - p_offsets[j])
-    out_counts[i + 1] = count
-    if i == 0:
-        out_counts[0] = wp.int64(0)
+    # total that a budget test cannot tell from a real one. Launch tiled over
+    # ``MG_ROWS_PER_BLOCK`` rows a block.
+    blk, lane = wp.tid()
+    first, rows = block_chunk(a_offsets.shape[0] - 1, blk, MG_ROWS_PER_BLOCK)
+    if rows <= 0:
+        return
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        if i == 0:
+            out_counts[0] = wp.int64(0)
+        if csr_row_long(a_offsets, i):
+            found = 1
+            continue
+        out_counts[i + 1] = product_row_count(i, a_offsets[i], 1, a_offsets, a_columns, p_offsets)
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = first + r
+        if csr_row_long(a_offsets, i):
+            count = block_sum(
+                product_row_count(
+                    i, a_offsets[i] + lane, wp.block_dim(), a_offsets, a_columns, p_offsets
+                )
+            )
+            if lane == 0:
+                out_counts[i + 1] = count
 
 
 @wp.kernel
@@ -504,25 +691,49 @@ def product_keys(
 ) -> None:
     # ``A P`` as keyed contributions, one thread a row, at ``starts[i]``: the key sum that follows
     # replaces ``bsr_mm`` (1.7x on the product at the bunny Laplacians, 1.04x at dragon's 9 M
-    # contributions) and leaves no structural zeros behind.
-    i = wp.int32(wp.tid())
-    slot = wp.int32(starts[i])  # the wrapper capped the total below ``2^30``
-    for e in range(a_offsets[i], a_offsets[i + 1]):
-        j = a_columns[e]
-        slot = emit_scaled_row(
-            i,
-            a_values[e],
-            p_offsets[j],
-            p_offsets[j + 1],
-            p_columns,
-            p_values,
-            slot,
-            n_rows,
-            n_cols,
-            out_keys,
-            out_order,
-            out_values,
-        )
+    # contributions) and leaves no structural zeros behind. Launch tiled over
+    # ``MG_ROWS_PER_BLOCK`` rows a block; a long row's block places each entry's run by an
+    # exclusive scan of the runs' lengths, a chunk of ``block_dim`` entries at a time.
+    blk, lane = wp.tid()
+    first, rows = block_chunk(a_offsets.shape[0] - 1, blk, MG_ROWS_PER_BLOCK)
+    if rows <= 0:
+        return
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        if csr_row_long(a_offsets, i):
+            found = 1
+            continue
+        slot = wp.int32(starts[i])  # the wrapper capped the total below ``2^30``
+        for e in range(a_offsets[i], a_offsets[i + 1]):
+            j = a_columns[e]
+            slot = emit_scaled_row(
+                i, a_values[e], p_offsets[j], p_offsets[j + 1], p_columns, p_values, slot,
+                n_rows, n_cols, out_keys, out_order, out_values,
+            )  # fmt: skip
+    if block_sum(found) == 0:
+        return
+    lanes = wp.block_dim()
+    for r in range(rows):
+        i = first + r
+        if not csr_row_long(a_offsets, i):
+            continue
+        slot = wp.int32(starts[i])
+        end = a_offsets[i + 1]
+        for chunk in range(a_offsets[i], end, lanes):
+            e = chunk + lane
+            run = wp.int32(0)
+            j = wp.int32(0)
+            if e < end:
+                j = a_columns[e]
+                run = p_offsets[j + 1] - p_offsets[j]
+            before = wp.untile(wp.tile_scan_exclusive(wp.tile(run)))
+            if e < end:
+                emit_scaled_row(
+                    i, a_values[e], p_offsets[j], p_offsets[j + 1], p_columns, p_values,
+                    slot + before, n_rows, n_cols, out_keys, out_order, out_values,
+                )  # fmt: skip
+            slot += block_sum(run)
 
 
 @wp.kernel
@@ -531,12 +742,16 @@ def galerkin_triplet_counts(
 ) -> None:
     # Row ``i`` of ``A P`` meets row ``i`` of ``P`` in every product ``P_ik (A P)_il``. Written at
     # ``i + 1`` of an ``n + 1`` buffer, so the inclusive scan of it is the starts and the total.
-    i = wp.int32(wp.tid())
-    out_counts[i + 1] = wp.int64(p_offsets[i + 1] - p_offsets[i]) * wp.int64(
-        ap_offsets[i + 1] - ap_offsets[i]
-    )
-    if i == 0:
-        out_counts[0] = wp.int64(0)
+    # Launch tiled over ``MG_ROWS_PER_BLOCK`` rows a block, as ``galerkin_keys`` is.
+    blk, lane = wp.tid()
+    first, rows = block_chunk(p_offsets.shape[0] - 1, blk, MG_ROWS_PER_BLOCK)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        out_counts[i + 1] = wp.int64(p_offsets[i + 1] - p_offsets[i]) * wp.int64(
+            ap_offsets[i + 1] - ap_offsets[i]
+        )
+        if i == 0:
+            out_counts[0] = wp.int64(0)
 
 
 @wp.kernel
@@ -556,24 +771,66 @@ def galerkin_keys(
 ) -> None:
     # ``P^T (A P)`` as keyed contributions, one thread a fine row: ``(P^T A P)_kl`` is the sum over
     # fine rows ``i`` of ``P_ik (A P)_il``, so row ``i`` emits the outer product of its two sparse
-    # rows at ``starts[i]``. No transpose is formed and no second product runs.
-    i = wp.int32(wp.tid())
-    slot = wp.int32(starts[i])  # the wrapper capped the total below ``2^30``
+    # rows at ``starts[i]``. No transpose is formed and no second product runs. Launch tiled over
+    # ``MG_ROWS_PER_BLOCK`` rows a block; a row whose ``A P`` row is long (a hub's) is left to the
+    # whole block, its lanes striding that row (every slot is positional).
+    blk, lane = wp.tid()
+    first, rows = block_chunk(p_offsets.shape[0] - 1, blk, MG_ROWS_PER_BLOCK)
+    if rows <= 0:
+        return
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        if csr_row_long(ap_offsets, i):
+            found = 1
+            continue
+        slot = wp.int32(starts[i])  # the wrapper capped the total below ``2^30``
+        for a in range(p_offsets[i], p_offsets[i + 1]):
+            slot = emit_scaled_row(
+                p_columns[a], p_values[a], ap_offsets[i], ap_offsets[i + 1], ap_columns,
+                ap_values, slot, n_rows, n_cols, out_keys, out_order, out_values,
+            )  # fmt: skip
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = first + r
+        if not csr_row_long(ap_offsets, i):
+            continue
+        width = ap_offsets[i + 1] - ap_offsets[i]
+        base = wp.int32(starts[i])
+        for a in range(p_offsets[i], p_offsets[i + 1]):
+            row = p_columns[a]
+            weight = p_values[a]
+            for b in range(lane, width, wp.block_dim()):
+                k = ap_offsets[i] + b
+                emit_entry(
+                    row, ap_columns[k], weight * ap_values[k], base + b, n_rows, n_cols,
+                    out_keys, out_order, out_values,
+                )  # fmt: skip
+            base += width
+
+
+@wp.func
+def galerkin_dense_row(
+    i: wp.int32,
+    start: wp.int32,
+    step: wp.int32,
+    p_offsets: wp.array[wp.int32],
+    p_columns: wp.array[wp.int32],
+    p_values: wp.array[wp.float64],
+    ap_offsets: wp.array[wp.int32],
+    ap_columns: wp.array[wp.int32],
+    ap_values: wp.array[wp.float64],
+    n_coarse: wp.int32,
+    out_dense: wp.array[wp.float64],
+) -> None:
+    # ``galerkin_dense``' products of fine row ``i``, its ``A P`` entries ``start``, ``start +
+    # step``, ... against every entry of its ``P`` row.
     for a in range(p_offsets[i], p_offsets[i + 1]):
-        slot = emit_scaled_row(
-            p_columns[a],
-            p_values[a],
-            ap_offsets[i],
-            ap_offsets[i + 1],
-            ap_columns,
-            ap_values,
-            slot,
-            n_rows,
-            n_cols,
-            out_keys,
-            out_order,
-            out_values,
-        )
+        row = p_columns[a] * n_coarse
+        weight = p_values[a]
+        for b in range(start, ap_offsets[i + 1], step):
+            wp.atomic_add(out_dense, row + ap_columns[b], weight * ap_values[b])
 
 
 @wp.kernel
@@ -591,13 +848,31 @@ def galerkin_dense(
     # thread a fine row: ``galerkin_keys``' outer product of its two sparse rows, summed by atomics
     # rather than keyed and sorted, for the coarsest level, which only the dense inverse reads
     # (``linalg._multigrid_galerkin``). Arrival order decides the sums' rounding, so it serves
-    # the deterministic setting's off mode only.
-    i = wp.int32(wp.tid())
-    for a in range(p_offsets[i], p_offsets[i + 1]):
-        row = p_columns[a] * n_coarse
-        weight = p_values[a]
-        for b in range(ap_offsets[i], ap_offsets[i + 1]):
-            wp.atomic_add(out_dense, row + ap_columns[b], weight * ap_values[b])
+    # the deterministic setting's off mode only. Launch tiled over ``MG_ROWS_PER_BLOCK`` rows a
+    # block; a row whose ``A P`` row is long is the whole block's, its lanes striding that row.
+    blk, lane = wp.tid()
+    first, rows = block_chunk(p_offsets.shape[0] - 1, blk, MG_ROWS_PER_BLOCK)
+    if rows <= 0:
+        return
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        if csr_row_long(ap_offsets, i):
+            found = 1
+            continue
+        galerkin_dense_row(
+            i, ap_offsets[i], 1, p_offsets, p_columns, p_values, ap_offsets, ap_columns,
+            ap_values, n_coarse, out_dense,
+        )  # fmt: skip
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = first + r
+        if csr_row_long(ap_offsets, i):
+            galerkin_dense_row(
+                i, ap_offsets[i] + lane, wp.block_dim(), p_offsets, p_columns, p_values,
+                ap_offsets, ap_columns, ap_values, n_coarse, out_dense,
+            )  # fmt: skip
 
 
 @wp.kernel
@@ -919,6 +1194,7 @@ def _cycle_rows(
 
     def _sweep(
         stride: wp.int32,
+        skip_long: wp.int32,
         inv_diag: wp.array[wp.float64],
         offsets: wp.array[wp.int32],
         columns: wp.array[wp.int32],
@@ -929,8 +1205,11 @@ def _cycle_rows(
     ) -> None:
         # ``csr_matvec`` then ``jacobi_sweep`` (the damping folded into ``inv_diag``) in one pass,
         # to the bit. ``out_x`` must not alias ``x``: the row dot reads ``x`` at other rows, so the
-        # cycle ping-pongs a level's iterate between two buffers.
+        # cycle ping-pongs a level's iterate between two buffers. Under ``skip_long`` a long row
+        # (``csr_row_long``) is ``cycle_long_rows``'.
         row = wp.int32(wp.tid())
+        if skip_long != 0 and csr_row_long(offsets, row):
+            return
         ax = row_dots(row, stride, offsets, columns, values, x)
         scale = inv_diag[row]
         for column in range(n_columns):
@@ -939,6 +1218,7 @@ def _cycle_rows(
 
     def _residual(
         stride: wp.int32,
+        skip_long: wp.int32,
         offsets: wp.array[wp.int32],
         columns: wp.array[wp.int32],
         values: wp.array[wp.float64],
@@ -946,8 +1226,11 @@ def _cycle_rows(
         x: wp.array[wp.float64],
         out_residual: wp.array[wp.float64],
     ) -> None:
-        # ``csr_matvec`` then ``residual`` in one pass, to the bit.
+        # ``csr_matvec`` then ``residual`` in one pass, to the bit; a long row under ``skip_long``
+        # is ``cycle_long_rows``'.
         row = wp.int32(wp.tid())
+        if skip_long != 0 and csr_row_long(offsets, row):
+            return
         ax = row_dots(row, stride, offsets, columns, values, x)
         for column in range(n_columns):
             slot = column * stride + row
@@ -993,6 +1276,45 @@ CYCLE_ROWS = {n_columns: _cycle_rows(n_columns) for n_columns in ROWS_COLUMNS}
 CYCLE_ROWS_NARROW = {n_columns: _cycle_rows(n_columns, wp.float32) for n_columns in ROWS_COLUMNS}
 
 
+# Launched at its own width (``linalg._LONG_ROW_LANES``), so in a module of its own (§12.4).
+@wp.kernel(module="unique")
+def cycle_long_rows(
+    stride: wp.int32,
+    launch_blocks: wp.int32,
+    residual: wp.int32,
+    pieces: wp.array[wp.vec3i],
+    count: wp.array[wp.int32],
+    inv_diag: wp.array[wp.float64],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.Float],
+    rhs: wp.array[wp.float64],
+    x: wp.array[wp.float64],
+    partials: wp.array[wp.float64],
+    tickets: wp.array[wp.int32],
+    out_x: wp.array[wp.float64],
+) -> None:
+    # A fused cycle sweep (``residual`` zero) or residual at the long rows ``linalg.list_long_rows``
+    # listed, which the fused passes skip under ``skip_long``: a block a piece and column sums the
+    # row (``linalg.long_row_piece_total``) and the block folding it writes the slot, the sweep's
+    # ``jacobi_update`` or ``rhs - A x``. Launch tiled over ``(n_columns, launch_blocks)``; the
+    # blocks stride the listed pieces. Same aliasing rules as the fused passes.
+    column, blk, lane = wp.tid()
+    base = column * stride
+    slots = column * pieces.shape[0]
+    for b in range(blk, listed_long_pieces(pieces, count), launch_blocks):
+        piece = pieces[b]
+        last, ax = long_row_piece_total(
+            piece, base, slots, lane, offsets, columns, values, x, partials, tickets
+        )
+        if last != 0:
+            slot = base + piece[0]
+            if residual != 0:
+                out_x[slot] = rhs[slot] - ax
+            else:
+                out_x[slot] = jacobi_update(x[slot], inv_diag[piece[0]], rhs[slot], ax)
+
+
 # A cycle level below ``CYCLE_ROWS_FROM`` rows on CUDA runs ``CYCLE_ROWS``' fused passes one thread
 # a row and column instead (a thread a row would leave such a level too few threads), still with
 # the mat-vec in the sweep's and the residual's thread, so a sweep is one launch, not two. Same
@@ -1003,6 +1325,7 @@ CYCLE_ROWS_NARROW = {n_columns: _cycle_rows(n_columns, wp.float32) for n_columns
 def cycle_sweep_slots(
     n_rows: wp.int32,
     stride: wp.int32,
+    skip_long: wp.int32,
     inv_diag: wp.array[wp.float64],
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
@@ -1014,6 +1337,8 @@ def cycle_sweep_slots(
     t = wp.int32(wp.tid())
     column = t // n_rows
     row = t % n_rows
+    if skip_long != 0 and csr_row_long(offsets, row):
+        return
     base = column * stride
     slot = base + row
     ax = csr_row_dot(row, base, offsets, columns, values, x)
@@ -1024,6 +1349,7 @@ def cycle_sweep_slots(
 def cycle_residual_slots(
     n_rows: wp.int32,
     stride: wp.int32,
+    skip_long: wp.int32,
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float64],
@@ -1034,6 +1360,8 @@ def cycle_residual_slots(
     t = wp.int32(wp.tid())
     column = t // n_rows
     row = t % n_rows
+    if skip_long != 0 and csr_row_long(offsets, row):
+        return
     base = column * stride
     slot = base + row
     out_residual[slot] = rhs[slot] - csr_row_dot(row, base, offsets, columns, values, x)
@@ -1297,6 +1625,66 @@ def power_row(
     return inverse_or_one(diagonal[i]) * total
 
 
+@wp.func
+def power_row_block(
+    seed: wp.int32,
+    from_signs: wp.int32,
+    diagonal: wp.array[wp.float64],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    x: wp.array[wp.float64],
+    i: wp.int32,
+    lane: wp.int32,
+) -> wp.float64:
+    # ``power_row`` by a whole block, its lanes striding the row and the block summing it in a
+    # fixed tree (every lane must call it; every lane gets the row).
+    total = wp.float64(0.0)
+    for k in range(offsets[i] + lane, offsets[i + 1], wp.block_dim()):
+        if from_signs != 0:
+            total += values[k] * random_sign(seed, columns[k])
+        else:
+            total += values[k] * x[columns[k]]
+    return inverse_or_one(diagonal[i]) * block_sum(total)
+
+
+@wp.func
+def mis_row_setup(
+    i: wp.int32,
+    seed: wp.int32,
+    l1_smoother: wp.int32,
+    diagonal: wp.float64,
+    off_sum: wp.float64,
+    out_diagonal: wp.array[wp.float64],
+    out_scaled_diagonal: wp.array[wp.float64],
+    out_priority: wp.array[wp.uint32],
+    out_state: wp.array[wp.int32],
+    out_root_flags: wp.array[wp.int32],
+) -> None:
+    # ``mis_level_setup``'s per-row writes from row ``i``'s diagonal and off-diagonal magnitude
+    # sum, all but the power iteration's first step.
+    #
+    # The l1 diagonal keeps the true one's sign, so a negative-definite operator (a cotangent
+    # Laplacian as ``cotmatrix`` returns it) smooths toward its solution rather than away from it.
+    l1 = wp.abs(diagonal) + off_sum
+    out_diagonal[i] = wp.where(
+        l1_smoother != 0, wp.where(diagonal < wp.float64(0.0), -l1, l1), diagonal
+    )
+    out_scaled_diagonal[i] = sqrt_abs(diagonal)
+    out_priority[i] = element_priority(seed, i)
+    # A row with no nonzero off-diagonal entry is left out of every aggregate: the smoother solves
+    # it exactly, and as an aggregate of its own it would stay an isolated row on every coarser
+    # level. Where much of a system is pinned (``min_quad_with_fixed`` with half its unknowns
+    # fixed at random) such rows multiply level by level -- 2 % of dragon's free rows, 81 % six
+    # levels down -- so coarsening stalls just under ``linalg._MULTIGRID_MIN_COARSENING`` while the
+    # rest densifies, and on lucy a level's product overran memory. It starts excluded, which no
+    # round revisits, with its root flag written here since no round writes it.
+    isolated = off_sum == wp.float64(0.0)
+    out_state[i] = wp.where(isolated, MG_EXCLUDED, MG_UNDECIDED)
+    if isolated:
+        out_root_flags[i] = wp.int32(0)
+
+
 @wp.kernel
 def mis_level_setup(
     seed: wp.int32,
@@ -1327,33 +1715,48 @@ def mis_level_setup(
     # plain Jacobi under one global damping over-relaxes the rows a non-M-matrix (a clamped
     # cotangent Laplacian) leaves far from diagonal dominance. The strength test keeps the true
     # diagonal.
-    i = wp.int32(wp.tid())
-    diagonal, off_sum = csr_row_diagonal(offsets, columns, values, i)
-    # The l1 diagonal keeps the true one's sign, so a negative-definite operator (a cotangent
-    # Laplacian as ``cotmatrix`` returns it) smooths toward its solution rather than away from it.
-    l1 = wp.abs(diagonal) + off_sum
-    out_diagonal[i] = wp.where(
-        l1_smoother != 0, wp.where(diagonal < wp.float64(0.0), -l1, l1), diagonal
-    )
-    out_scaled_diagonal[i] = sqrt_abs(diagonal)
-    out_priority[i] = element_priority(seed, i)
-    # A row with no nonzero off-diagonal entry is left out of every aggregate: the smoother solves
-    # it exactly, and as an aggregate of its own it would stay an isolated row on every coarser
-    # level. Where much of a system is pinned (``min_quad_with_fixed`` with half its unknowns
-    # fixed at random) such rows multiply level by level -- 2 % of dragon's free rows, 81 % six
-    # levels down -- so coarsening stalls just under ``linalg._MULTIGRID_MIN_COARSENING`` while the
-    # rest densifies, and on lucy a level's product overran memory. It starts excluded, which no
-    # round revisits, with its root flag written here since no round writes it.
-    isolated = off_sum == wp.float64(0.0)
-    out_state[i] = wp.where(isolated, MG_EXCLUDED, MG_UNDECIDED)
-    if isolated:
-        out_root_flags[i] = wp.int32(0)
-    out_power[i] = power_row(
-        seed, wp.int32(1), out_diagonal, offsets, columns, values, out_power, i
-    )
-    if i == 0:
-        # The rounds' root count (``mis_propagate_decide``); each round clears the undecided slot.
-        out_counts[1] = 0
+    #
+    # Launch tiled over ``MG_ROWS_PER_BLOCK`` rows a block.
+    blk, lane = wp.tid()
+    first, rows = block_chunk(offsets.shape[0] - 1, blk, MG_ROWS_PER_BLOCK)
+    if rows <= 0:
+        return
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        if i == 0:
+            # The rounds' root count (``mis_propagate_decide``); each round clears the undecided
+            # slot.
+            out_counts[1] = 0
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
+        diagonal, off_sum = csr_row_diagonal(offsets, columns, values, i)
+        mis_row_setup(
+            i, seed, l1_smoother, diagonal, off_sum, out_diagonal, out_scaled_diagonal,
+            out_priority, out_state, out_root_flags,
+        )  # fmt: skip
+        out_power[i] = power_row(
+            seed, wp.int32(1), out_diagonal, offsets, columns, values, out_power, i
+        )
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = first + r
+        if csr_row_long(offsets, i):
+            diagonal, off_sum = csr_row_diagonal_block(offsets, columns, values, i, lane)
+            if lane == 0:
+                mis_row_setup(
+                    i, seed, l1_smoother, diagonal, off_sum, out_diagonal, out_scaled_diagonal,
+                    out_priority, out_state, out_root_flags,
+                )  # fmt: skip
+            # Every lane reads the diagonal lane 0 wrote.
+            block_barrier()
+            power = power_row_block(
+                seed, wp.int32(1), out_diagonal, offsets, columns, values, out_power, i, lane
+            )
+            if lane == 0:
+                out_power[i] = power
 
 
 @wp.kernel
@@ -1369,9 +1772,27 @@ def power_step(
 ) -> None:
     # One ``power_row`` per thread. Writing a second buffer rather than updating ``x`` in place is
     # what lets a step be one launch; the caller swaps the two. The last step is
-    # ``power_step_partials``, which also measures the growth.
-    i = wp.int32(wp.tid())
-    out_y[i] = power_row(seed, from_signs, diagonal, offsets, columns, values, x, i)
+    # ``power_step_partials``, which also measures the growth. Launch tiled over
+    # ``MG_ROWS_PER_BLOCK`` rows a block.
+    blk, lane = wp.tid()
+    first, rows = block_chunk(offsets.shape[0] - 1, blk, MG_ROWS_PER_BLOCK)
+    if rows <= 0:
+        return
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
+        out_y[i] = power_row(seed, from_signs, diagonal, offsets, columns, values, x, i)
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = first + r
+        if csr_row_long(offsets, i):
+            y = power_row_block(seed, from_signs, diagonal, offsets, columns, values, x, i, lane)
+            if lane == 0:
+                out_y[i] = y
 
 
 @wp.kernel
@@ -1393,11 +1814,26 @@ def power_step_partials(
     block, lane = wp.tid()
     offset, count = power_block_rows(out_y.shape[0], block)
     partial = wp.float64(0.0)
+    found = wp.int32(0)
     for k in range(lane, count, wp.block_dim()):
         i = offset + k
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
         y = power_row(seed, from_signs, diagonal, offsets, columns, values, x, i)
         out_y[i] = y
         partial += y * y
+    # A long row (``csr_row_long``) is the whole block's, after the lanes' pass.
+    if block_sum(found) != 0:
+        for k in range(count):
+            i = offset + k
+            if csr_row_long(offsets, i):
+                y = power_row_block(
+                    seed, from_signs, diagonal, offsets, columns, values, x, i, lane
+                )
+                if lane == 0:
+                    out_y[i] = y
+                    partial += y * y
     total = block_sum(partial)
     if lane == 0:
         out_partials[block] = total
@@ -1488,3 +1924,27 @@ def dense_solve(
     total = block_sum(partial)
     if lane == 0:
         out_x[t] = total
+
+
+CYCLE_LONG_ROWS: OverloadTable
+
+
+def _register_overloads() -> None:
+    """Instantiate every concrete overload of this module's generic kernels."""
+    global CYCLE_LONG_ROWS
+    i32 = wp.array[wp.int32]
+    f64 = wp.array[wp.float64]
+    # Keyed on the operator values' dtype: a narrowed level reads ``float32`` copies.
+    CYCLE_LONG_ROWS = OverloadTable(
+        cycle_long_rows,
+        {
+            v: [
+                *(wp.int32, wp.int32, wp.int32, wp.array[wp.vec3i], i32, f64, i32, i32),
+                *(wp.array[v], f64, f64, f64, i32, f64),
+            ]
+            for v in (wp.float32, wp.float64)
+        },
+    )
+
+
+_register_overloads()

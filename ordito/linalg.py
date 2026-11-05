@@ -3486,6 +3486,10 @@ class _BatchedCg:
             # a slot a piece and column, cover both.
             assert self._cycle._n_columns == self._n_columns  # pyright: ignore[reportPrivateUsage]
             self._cycle.long_rows = self._long
+        elif isinstance(self._cycle, _MultigridCycle):
+            # The V-cycle's top level is this state's matrix: its fused passes skip the same long
+            # rows and sum them by pieces.
+            self._cycle.set_long_rows(self._long)
         self._list_cycle_long_rows()
 
         # The settle monitor ``solve_spd_settled`` runs (``check_rounds``, ``change_tolerance``,
@@ -5574,6 +5578,7 @@ class _SquaredMultigridApply:
                         dim=self._n,
                         inputs=[
                             wp.int32(self._stride),
+                            wp.int32(0),
                             operator.offsets,
                             operator.columns,
                             self._cycle.top_values,
@@ -6123,11 +6128,12 @@ def _multigrid_aggregate(
     counts = _launch.view(ints, 4 * n, 4 * n + 2)
     priority = _launch.empty(n, dtype=wp.uint32, device=device)
     power = _launch.empty(n, dtype=wp.float64, device=device)
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_mg.mis_level_setup,
-        dim=n,
+        dim=_mg_row_blocks(n),
         inputs=[wp.int32(seed), wp.int32(l1_smoother), offsets, columns, values],
         outputs=[diagonal, scaled_diagonal, priority, state, flags, power, counts],
+        block_dim=int(kernel_mg.MG_ROWS_PER_BLOCK),
         device=device,
     )
     starts = _launch.empty(n + 1, dtype=wp.int64, device=device)
@@ -6141,18 +6147,20 @@ def _multigrid_aggregate(
     for round_index in range(1, _MULTIGRID_MIS_ROUNDS + 1):
         # Two launches a round: the first hop forms every key from the state as it reads it, the
         # second hop decides as it reduces.
-        _launch.launch(
+        _launch.launch_tiled(
             kernel_mg.mis_propagate_states,
-            dim=n,
+            dim=_mg_row_blocks(n),
             inputs=[state, priority, offsets, columns, values, scaled_diagonal, theta],
             outputs=[key, counts],
+            block_dim=int(kernel_mg.MG_ROWS_PER_BLOCK),
             device=device,
         )
-        _launch.launch(
+        _launch.launch_tiled(
             kernel_mg.mis_propagate_decide,
-            dim=n,
+            dim=_mg_row_blocks(n),
             inputs=[key, priority, offsets, columns, values, scaled_diagonal, theta, state],
             outputs=[next_state, flags, counts],
+            block_dim=int(kernel_mg.MG_ROWS_PER_BLOCK),
             device=device,
         )
         state, next_state = next_state, state
@@ -6232,9 +6240,9 @@ def _multigrid_damped_diagonal(
     x = first_step
     y = spare
     for _ in range(1, _MULTIGRID_POWER_STEPS - 1):
-        _launch.launch(
+        _launch.launch_tiled(
             kernel_mg.power_step,
-            dim=n,
+            dim=_mg_row_blocks(n),
             inputs=[
                 wp.int32(seed),
                 wp.int32(0),
@@ -6245,6 +6253,7 @@ def _multigrid_damped_diagonal(
                 x,
             ],
             outputs=[y],
+            block_dim=int(kernel_mg.MG_ROWS_PER_BLOCK),
             device=device,
         )
         x, y = y, x
@@ -6333,9 +6342,9 @@ def _multigrid_prolongator(
     count = stored + n
     keys, order = od.array.csr_key_buffers(count, device)
     values = _launch.empty(count, dtype=wp.float64, device=device)
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_mg.smoothed_prolongator_keys,
-        dim=n,
+        dim=_mg_row_blocks(n),
         inputs=[
             matrix.offsets,
             matrix.columns,
@@ -6347,6 +6356,7 @@ def _multigrid_prolongator(
             wp.int32(n_aggregates),
         ],
         outputs=[keys, order, values],
+        block_dim=int(kernel_mg.MG_ROWS_PER_BLOCK),
         device=device,
     )
     return _synced(
@@ -6416,9 +6426,9 @@ def _multigrid_galerkin(
         product = odt.bsr_mm(matrix, p)
     elif dense:
         out = _launch.zeros(n_coarse * n_coarse, dtype=wp.float64, device=matrix.device)
-        _launch.launch(
+        _launch.launch_tiled(
             kernel_mg.galerkin_dense,
-            dim=n,
+            dim=_mg_row_blocks(n),
             inputs=[
                 p.offsets,
                 p.columns,
@@ -6429,6 +6439,7 @@ def _multigrid_galerkin(
                 wp.int32(n_coarse),
             ],
             outputs=[out],
+            block_dim=int(kernel_mg.MG_ROWS_PER_BLOCK),
             device=matrix.device,
         )
         # The coarsest matrix, read whole for the host's dense inverse: one copy in place of the
@@ -6487,7 +6498,14 @@ def _row_key_assembly(
     """
     # Counted and scanned in 64 bits: the budget test must see the true total, which an ``int32``
     # scan wraps on a dense level.
-    _launch.launch(count_kernel, dim=n, inputs=count_inputs, outputs=[starts], device=device)
+    _launch.launch_tiled(
+        count_kernel,
+        dim=_mg_row_blocks(n),
+        inputs=count_inputs,
+        outputs=[starts],
+        block_dim=int(kernel_mg.MG_ROWS_PER_BLOCK),
+        device=device,
+    )
     _launch.array_scan(starts, starts, inclusive=True)
     # The total sizes the key buffers, and decides the fallback.
     total = int(read_scalar(starts, n))
@@ -6496,11 +6514,12 @@ def _row_key_assembly(
     n_out = n if out_rows is None else out_rows
     keys, order = od.array.csr_key_buffers(total, device)
     values = _launch.empty(total, dtype=wp.float64, device=device)
-    _launch.launch(
+    _launch.launch_tiled(
         key_kernel,
-        dim=n,
+        dim=_mg_row_blocks(n),
         inputs=[*key_inputs, starts, wp.int32(n_out), wp.int32(n_cols)],
         outputs=[keys, order, values],
+        block_dim=int(kernel_mg.MG_ROWS_PER_BLOCK),
         device=device,
     )
     assembled = od.array.csr_from_coo_keys(
@@ -6745,6 +6764,12 @@ class _MultigridCycle:
         self._device = top.device
         self._n_columns = n_columns
         self._sweeps = max(1, int(sweeps))
+        # Each level's long rows (``_LongRows``), whose fused sweeps and residual skip them for
+        # ``kernel_mg.cycle_long_rows`` to sum by pieces: the top level's from a conjugate-gradient
+        # state over the same matrix (``set_long_rows``), and, once those are active, every coarser
+        # operator's -- a hub's aggregate couples to every aggregate around it, so each Galerkin
+        # level keeps its long rows. A mesh with none lists nothing below the top.
+        self._long_rows: list[_LongRows | None] = [None] * len(levels)
 
         # Every level's working vectors are views of one buffer, uninitialized: each is written
         # before it is read (the top level's padding is never read at all).
@@ -6813,6 +6838,18 @@ class _MultigridCycle:
             child = levels[depth + 1]
             level.restrict_dim = n_columns * child.n
             level.prolong_dim = n_columns * level.n
+
+    def set_long_rows(self, top: _LongRows | None) -> None:
+        """Take the top operator's long rows; once active, list every coarser level's too."""
+        self._long_rows[0] = top
+        if top is None or not top.active:
+            return
+        for depth in range(1, len(self._levels)):
+            level = self._levels[depth]
+            if level.operator is not None and level.prolongator is not None:
+                self._long_rows[depth] = _LongRows.build(
+                    level.operator, level.n, self._n_columns, self._device, False
+                )
 
     @property
     def grid(self) -> list[int]:
@@ -6999,8 +7036,10 @@ class _MultigridCycle:
             ],
             device=self._device,
         )
+        long_rows = self._long_rows[depth]
+        long_rows = long_rows if long_rows is not None and long_rows.active else None
         for _ in range(sweeps - 1):
-            self._sweep_rows(sweep, level, operator, operator_values, current, other)
+            self._sweep_rows(sweep, level, operator, operator_values, current, other, long_rows)
             current, other = other, current
         self._fused(
             residual,
@@ -7008,6 +7047,7 @@ class _MultigridCycle:
             level.n,
             [
                 wp.int32(level.stride),
+                wp.int32(long_rows is not None),
                 operator.offsets,
                 operator.columns,
                 operator_values,
@@ -7016,6 +7056,10 @@ class _MultigridCycle:
                 level.r,
             ],
         )
+        if long_rows is not None:
+            self._long_rows_pass(
+                long_rows, 1, level, operator, operator_values, level.b, level.x, level.r
+            )
         self._fused(
             matvec,
             level,
@@ -7051,7 +7095,7 @@ class _MultigridCycle:
             ],
         )
         for _ in range(sweeps):
-            self._sweep_rows(sweep, level, operator, operator_values, current, other)
+            self._sweep_rows(sweep, level, operator, operator_values, current, other, long_rows)
             current, other = other, current
 
     def _sweep_rows(
@@ -7062,6 +7106,7 @@ class _MultigridCycle:
         values: wp.array[Any],
         x: wp.array[wp.float64],
         out_x: wp.array[wp.float64],
+        long_rows: _LongRows | None,
     ) -> None:
         self._fused(
             sweep,
@@ -7069,6 +7114,7 @@ class _MultigridCycle:
             level.n,
             [
                 wp.int32(level.stride),
+                wp.int32(long_rows is not None),
                 level.inverse_diagonal,
                 operator.offsets,
                 operator.columns,
@@ -7077,6 +7123,43 @@ class _MultigridCycle:
                 x,
                 out_x,
             ],
+        )
+        if long_rows is not None:
+            self._long_rows_pass(long_rows, 0, level, operator, values, level.b, x, out_x)
+
+    def _long_rows_pass(
+        self,
+        long_rows: _LongRows,
+        residual: int,
+        level: _MultigridLevel,
+        operator: odt.BsrMatrix[wp.float64],
+        values: wp.array[Any],
+        rhs: wp.array[wp.float64],
+        x: wp.array[wp.float64],
+        out: wp.array[wp.float64],
+    ) -> None:
+        """Issue the fused sweep's (``residual`` 0) or residual's long rows, by pieces."""
+        _launch.launch_tiled(
+            kernel_mg.CYCLE_LONG_ROWS[values.dtype],
+            dim=(self._n_columns, long_rows.blocks),
+            inputs=[
+                wp.int32(level.stride),
+                wp.int32(long_rows.blocks),
+                wp.int32(residual),
+                long_rows.pieces,
+                long_rows.count,
+                level.inverse_diagonal,
+                operator.offsets,
+                operator.columns,
+                values,
+                rhs,
+                x,
+                long_rows.partials,
+                long_rows.tickets,
+            ],
+            outputs=[out],
+            block_dim=_LONG_ROW_LANES,
+            device=self._device,
         )
 
     def _fused(
@@ -7181,4 +7264,10 @@ def _backward_error_blocks(n: int) -> int:
 def _interior_row_blocks(n: int) -> int:
     """Row blocks the free-free extraction's kernels are launched over, for ``n`` rows."""
     rows = int(kernel_linalg.INTERIOR_ROWS_PER_BLOCK)
+    return (n + rows - 1) // rows
+
+
+def _mg_row_blocks(n: int) -> int:
+    """Row blocks a multigrid level's setup kernels are launched over, for ``n`` rows."""
+    rows = int(kernel_mg.MG_ROWS_PER_BLOCK)
     return (n + rows - 1) // rows
