@@ -6192,10 +6192,9 @@ surface out. It is what
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>(nx, ny, nz)</code> lattice of scalar values, with <code>x</code> the slowest axis: <code>wp.float32</code>, or
-under <code>method="lewiner"</code> also <code>wp.float64</code>. The surface is
-extracted where the field crosses <code>iso</code>; the sign convention is the caller's, and the
-winding follows it (with ordito's outside-positive
+                <p><code>(nx, ny, nz)</code> lattice of scalar values, with <code>x</code> the slowest axis: <code>wp.float32</code> or
+<code>wp.float64</code>. The surface is extracted where the field crosses <code>iso</code>; the sign
+convention is the caller's, and the winding follows it (with ordito's outside-positive
 <a class="autorefs autorefs-internal" title="signed_distance_on_mesh" href="../proximity/#ordito.proximity.signed_distance_on_mesh"><code>signed_distance_on_mesh</code></a> convention the
 normals come out pointing outward).</p>
               </div>
@@ -6340,8 +6339,7 @@ cross <code>iso</code>.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>If <code>field</code> is not a rank-3 <code>wp.float32</code> array, or under <code>method="lewiner"</code> a rank-3
-<code>wp.float32</code> or <code>wp.float64</code> one.</p>
+                <p>If <code>field</code> is not a rank-3 <code>wp.float32</code> or <code>wp.float64</code> array.</p>
               </div>
             </td>
           </tr>
@@ -6376,12 +6374,15 @@ below 2, <code>edge_margin</code> is outside <code>[0, 0.5)</code> (or not <code
   <p>Under <code>method="classic"</code> the triangulation is Warp's
 <code>warp.geometry.IsoSurfaceMarchingCubes</code>: its case tables, its
 vertex numbering (one vertex per crossing lattice edge, in row-major order of the edge's lower
-node and then by axis), its triangle order and its interpolation, so on a field without NaN
-the result equals <code>IsoSurfaceMarchingCubes.extract</code> on the same lattice and bounds bit for
-bit, buffer order included. A NaN sample is on neither side of <code>iso</code>: no edge from it
-crosses and no cell it is a corner of emits a triangle, so the surface has a hole around it
-and every face index names a vertex. Warp's extraction instead triangulates such a cell as if
-the sample were below <code>iso</code> and gives the edges from it, which have no vertex, index <code>-1</code>.
+node and then by axis), its triangle order and its interpolation, so on a <code>wp.float32</code> field
+without NaN the result equals <code>IsoSurfaceMarchingCubes.extract</code> on the same lattice and
+bounds bit for bit, buffer order included. A <code>wp.float64</code> field is extracted the same way
+with the node positions, the spacing and the interpolation in <code>float64</code> (<code>bounds</code> read at
+that precision), each vertex rounded to <code>float32</code> once, at the end. A NaN sample is on
+neither side of <code>iso</code>: no edge from it crosses and no cell it is a corner of emits a
+triangle, so the surface has a hole around it and every face index names a vertex. Warp's
+extraction instead triangulates such a cell as if the sample were below <code>iso</code> and gives the
+edges from it, which have no vertex, index <code>-1</code>.
 A vertex on a crossing edge all of whose cells have a NaN corner is kept, unreferenced, so
 the vertex numbering stays Warp's. What differs otherwise is the scratch it needs: on a large
 lattice a bit per node and a pair of counters per node the surface passes through, a small
@@ -6684,7 +6685,8 @@ node.</p>
 <span class="normal">389</span>
 <span class="normal">390</span>
 <span class="normal">391</span>
-<span class="normal">392</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">marching_cubes</span><span class="p">(</span>
+<span class="normal">392</span>
+<span class="normal">393</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">marching_cubes</span><span class="p">(</span>
     <span class="n">field</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat</span><span class="p">,</span>
     <span class="n">iso</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -6704,10 +6706,9 @@ node.</p>
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
 <span class="sd">    field</span>
-<span class="sd">        ``(nx, ny, nz)`` lattice of scalar values, with ``x`` the slowest axis: ``wp.float32``, or</span>
-<span class="sd">        under ``method="lewiner"`` also ``wp.float64``. The surface is</span>
-<span class="sd">        extracted where the field crosses ``iso``; the sign convention is the caller's, and the</span>
-<span class="sd">        winding follows it (with ordito's outside-positive</span>
+<span class="sd">        ``(nx, ny, nz)`` lattice of scalar values, with ``x`` the slowest axis: ``wp.float32`` or</span>
+<span class="sd">        ``wp.float64``. The surface is extracted where the field crosses ``iso``; the sign</span>
+<span class="sd">        convention is the caller's, and the winding follows it (with ordito's outside-positive</span>
 <span class="sd">        [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh] convention the</span>
 <span class="sd">        normals come out pointing outward).</span>
 <span class="sd">    iso</span>
@@ -6749,8 +6750,7 @@ node.</p>
 <span class="sd">    Raises</span>
 <span class="sd">    ------</span>
 <span class="sd">    TypeError</span>
-<span class="sd">        If ``field`` is not a rank-3 ``wp.float32`` array, or under ``method="lewiner"`` a rank-3</span>
-<span class="sd">        ``wp.float32`` or ``wp.float64`` one.</span>
+<span class="sd">        If ``field`` is not a rank-3 ``wp.float32`` or ``wp.float64`` array.</span>
 <span class="sd">    ValueError</span>
 <span class="sd">        If ``method`` is not ``"classic"`` or ``"lewiner"``, any of ``field``'s dimensions is</span>
 <span class="sd">        below 2, ``edge_margin`` is outside ``[0, 0.5)`` (or not ``0`` under ``"lewiner"``),</span>
@@ -6770,12 +6770,15 @@ node.</p>
 <span class="sd">    Under ``method="classic"`` the triangulation is Warp's</span>
 <span class="sd">    ``warp.geometry.IsoSurfaceMarchingCubes``: its case tables, its</span>
 <span class="sd">    vertex numbering (one vertex per crossing lattice edge, in row-major order of the edge's lower</span>
-<span class="sd">    node and then by axis), its triangle order and its interpolation, so on a field without NaN</span>
-<span class="sd">    the result equals ``IsoSurfaceMarchingCubes.extract`` on the same lattice and bounds bit for</span>
-<span class="sd">    bit, buffer order included. A NaN sample is on neither side of ``iso``: no edge from it</span>
-<span class="sd">    crosses and no cell it is a corner of emits a triangle, so the surface has a hole around it</span>
-<span class="sd">    and every face index names a vertex. Warp's extraction instead triangulates such a cell as if</span>
-<span class="sd">    the sample were below ``iso`` and gives the edges from it, which have no vertex, index ``-1``.</span>
+<span class="sd">    node and then by axis), its triangle order and its interpolation, so on a ``wp.float32`` field</span>
+<span class="sd">    without NaN the result equals ``IsoSurfaceMarchingCubes.extract`` on the same lattice and</span>
+<span class="sd">    bounds bit for bit, buffer order included. A ``wp.float64`` field is extracted the same way</span>
+<span class="sd">    with the node positions, the spacing and the interpolation in ``float64`` (``bounds`` read at</span>
+<span class="sd">    that precision), each vertex rounded to ``float32`` once, at the end. A NaN sample is on</span>
+<span class="sd">    neither side of ``iso``: no edge from it crosses and no cell it is a corner of emits a</span>
+<span class="sd">    triangle, so the surface has a hole around it and every face index names a vertex. Warp's</span>
+<span class="sd">    extraction instead triangulates such a cell as if the sample were below ``iso`` and gives the</span>
+<span class="sd">    edges from it, which have no vertex, index ``-1``.</span>
 <span class="sd">    A vertex on a crossing edge all of whose cells have a NaN corner is kept, unreferenced, so</span>
 <span class="sd">    the vertex numbering stays Warp's. What differs otherwise is the scratch it needs: on a large</span>
 <span class="sd">    lattice a bit per node and a pair of counters per node the surface passes through, a small</span>
@@ -6819,7 +6822,13 @@ node.</p>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"method must be 'classic' or 'lewiner', got </span><span class="si">{</span><span class="n">method</span><span class="si">!r}</span><span class="s2">"</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">method</span> <span class="o">==</span> <span class="s2">"lewiner"</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">_marching_cubes_lewiner</span><span class="p">(</span><span class="n">field</span><span class="p">,</span> <span class="n">iso</span><span class="p">,</span> <span class="n">bounds</span><span class="p">,</span> <span class="n">edge_margin</span><span class="p">)</span>
-    <span class="n">field</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array3d</span><span class="p">(</span><span class="n">cast</span><span class="p">(</span><span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat32</span><span class="p">,</span> <span class="n">field</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">field</span><span class="o">.</span><span class="n">dtype</span> <span class="ow">not</span> <span class="ow">in</span> <span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">TypeError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"marching_cubes takes a float32 or float64 field, got </span><span class="si">{</span><span class="n">field</span><span class="o">.</span><span class="n">dtype</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+    <span class="n">field</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">odt</span><span class="o">.</span><span class="n">as_array3d</span><span class="p">(</span><span class="n">cast</span><span class="p">(</span><span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat64</span><span class="p">,</span> <span class="n">field</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">field</span><span class="o">.</span><span class="n">dtype</span> <span class="o">==</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span>
+        <span class="k">else</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array3d</span><span class="p">(</span><span class="n">cast</span><span class="p">(</span><span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat32</span><span class="p">,</span> <span class="n">field</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+    <span class="p">)</span>
     <span class="n">shape</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">dim</span><span class="p">)</span> <span class="k">for</span> <span class="n">dim</span> <span class="ow">in</span> <span class="n">field</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>
     <span class="k">if</span> <span class="nb">min</span><span class="p">(</span><span class="n">shape</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mi">2</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"field must be at least 2 wide along every axis, got </span><span class="si">{</span><span class="n">shape</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
@@ -6830,18 +6839,22 @@ node.</p>
     <span class="k">if</span> <span class="n">nx</span> <span class="o">*</span> <span class="n">ny</span> <span class="o">*</span> <span class="n">nz</span> <span class="o">&gt;</span> <span class="n">_INT32_MAX</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"field has </span><span class="si">{</span><span class="n">nx</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">ny</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="n">nz</span><span class="si">}</span><span class="s2"> nodes, past the int32 limit of </span><span class="si">{</span><span class="n">_INT32_MAX</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
 
+    <span class="c1"># The corners and spacing at the field's precision. A ``float32`` field's are formed as</span>
+    <span class="c1"># ``IsoSurfaceMarchingCubes.extract`` forms them (Warp's ``resolve_domain_bounds``: a float32</span>
+    <span class="c1"># difference divided by the cell count), so every interpolated vertex rounds as Warp's does.</span>
+    <span class="n">precision</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">float64</span> <span class="k">if</span> <span class="n">field</span><span class="o">.</span><span class="n">dtype</span> <span class="o">==</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span> <span class="k">else</span> <span class="n">np</span><span class="o">.</span><span class="n">float32</span>
+    <span class="n">vector</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3d</span> <span class="k">if</span> <span class="n">field</span><span class="o">.</span><span class="n">dtype</span> <span class="o">==</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span> <span class="k">else</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span>
+    <span class="n">scalar</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span> <span class="k">if</span> <span class="n">field</span><span class="o">.</span><span class="n">dtype</span> <span class="o">==</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span> <span class="k">else</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span>
     <span class="k">if</span> <span class="n">bounds</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">lower</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
-        <span class="n">upper</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">nx</span> <span class="o">-</span> <span class="mi">1</span><span class="p">),</span> <span class="nb">float</span><span class="p">(</span><span class="n">ny</span> <span class="o">-</span> <span class="mi">1</span><span class="p">),</span> <span class="nb">float</span><span class="p">(</span><span class="n">nz</span> <span class="o">-</span> <span class="mi">1</span><span class="p">))</span>
+        <span class="n">lower_np</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">precision</span><span class="p">)</span>
+        <span class="n">upper_np</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">((</span><span class="n">nx</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="n">ny</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="n">nz</span> <span class="o">-</span> <span class="mi">1</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">precision</span><span class="p">)</span>
     <span class="k">else</span><span class="p">:</span>
-        <span class="n">lower</span><span class="p">,</span> <span class="n">upper</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="n">bounds</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="n">bounds</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
-    <span class="c1"># The spacing as ``IsoSurfaceMarchingCubes.extract`` forms it (Warp's ``resolve_domain_bounds``:</span>
-    <span class="c1"># a float32 difference divided by the cell count), so every interpolated vertex rounds as</span>
-    <span class="c1"># Warp's does.</span>
-    <span class="n">cells_np</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">((</span><span class="n">nx</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="n">ny</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="n">nz</span> <span class="o">-</span> <span class="mi">1</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
-    <span class="n">delta</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span>
-        <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">upper</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span> <span class="o">-</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">lower</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">))</span> <span class="o">/</span> <span class="n">cells_np</span>
-    <span class="p">)</span>
+        <span class="n">lower_np</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">bounds</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">precision</span><span class="p">)</span>
+        <span class="n">upper_np</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">asarray</span><span class="p">(</span><span class="n">bounds</span><span class="p">[</span><span class="mi">1</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">precision</span><span class="p">)</span>
+    <span class="n">cells_np</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">((</span><span class="n">nx</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="n">ny</span> <span class="o">-</span> <span class="mi">1</span><span class="p">,</span> <span class="n">nz</span> <span class="o">-</span> <span class="mi">1</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">precision</span><span class="p">)</span>
+    <span class="n">lower</span> <span class="o">=</span> <span class="n">vector</span><span class="p">(</span><span class="o">*</span><span class="n">lower_np</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+    <span class="n">delta</span> <span class="o">=</span> <span class="n">vector</span><span class="p">(</span><span class="o">*</span><span class="p">((</span><span class="n">upper_np</span> <span class="o">-</span> <span class="n">lower_np</span><span class="p">)</span> <span class="o">/</span> <span class="n">cells_np</span><span class="p">)</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+    <span class="n">iso_value</span> <span class="o">=</span> <span class="n">scalar</span><span class="p">(</span><span class="n">iso</span><span class="p">)</span>
 
     <span class="n">device</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">get_device</span><span class="p">(</span><span class="n">field</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
     <span class="n">table</span> <span class="o">=</span> <span class="n">_marching_cubes_table</span><span class="p">(</span><span class="n">device</span><span class="o">.</span><span class="n">alias</span><span class="p">)</span>
@@ -6857,9 +6870,9 @@ node.</p>
         <span class="n">words</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view_as</span><span class="p">(</span><span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">bits</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">n_words</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">uint32</span><span class="p">)</span>
         <span class="n">word_ranks</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">bits</span><span class="p">,</span> <span class="n">n_words</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n_words</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_levelset</span><span class="o">.</span><span class="n">marching_cubes_active</span><span class="p">,</span>
+            <span class="n">kernel_levelset</span><span class="o">.</span><span class="n">MARCHING_CUBES_ACTIVE</span><span class="p">[</span><span class="n">field</span><span class="o">.</span><span class="n">dtype</span><span class="p">],</span>
             <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">nx</span><span class="p">,</span> <span class="n">ny</span><span class="p">,</span> <span class="n">nz</span><span class="p">),</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">field</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">iso</span><span class="p">),</span> <span class="n">table</span><span class="p">,</span> <span class="n">words</span><span class="p">,</span> <span class="n">word_ranks</span><span class="p">],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">field</span><span class="p">,</span> <span class="n">iso_value</span><span class="p">,</span> <span class="n">table</span><span class="p">,</span> <span class="n">words</span><span class="p">,</span> <span class="n">word_ranks</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="c1"># Sizes the active nodes' counts.</span>
@@ -6872,17 +6885,17 @@ node.</p>
         <span class="n">nodes</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_active</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="n">counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_active</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2i</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_levelset</span><span class="o">.</span><span class="n">marching_cubes_active_counts</span><span class="p">,</span>
+            <span class="n">kernel_levelset</span><span class="o">.</span><span class="n">MARCHING_CUBES_ACTIVE_COUNTS</span><span class="p">[</span><span class="n">field</span><span class="o">.</span><span class="n">dtype</span><span class="p">],</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">n_active</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">field</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">iso</span><span class="p">),</span> <span class="n">table</span><span class="p">,</span> <span class="n">words</span><span class="p">,</span> <span class="n">word_ranks</span><span class="p">,</span> <span class="n">nodes</span><span class="p">,</span> <span class="n">counts</span><span class="p">],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">field</span><span class="p">,</span> <span class="n">iso_value</span><span class="p">,</span> <span class="n">table</span><span class="p">,</span> <span class="n">words</span><span class="p">,</span> <span class="n">word_ranks</span><span class="p">,</span> <span class="n">nodes</span><span class="p">,</span> <span class="n">counts</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
     <span class="k">else</span><span class="p">:</span>
         <span class="n">counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_nodes</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2i</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_levelset</span><span class="o">.</span><span class="n">marching_cubes_counts</span><span class="p">,</span>
+            <span class="n">kernel_levelset</span><span class="o">.</span><span class="n">MARCHING_CUBES_COUNTS</span><span class="p">[</span><span class="n">field</span><span class="o">.</span><span class="n">dtype</span><span class="p">],</span>
             <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">nx</span><span class="p">,</span> <span class="n">ny</span><span class="p">,</span> <span class="n">nz</span><span class="p">),</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">field</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">iso</span><span class="p">),</span> <span class="n">table</span><span class="p">],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">field</span><span class="p">,</span> <span class="n">iso_value</span><span class="p">,</span> <span class="n">table</span><span class="p">],</span>
             <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">counts</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
@@ -6904,14 +6917,14 @@ node.</p>
     <span class="c1"># can be non-zero.</span>
     <span class="k">if</span> <span class="n">nodes</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_levelset</span><span class="o">.</span><span class="n">marching_cubes_emit_active</span><span class="p">,</span>
+            <span class="n">kernel_levelset</span><span class="o">.</span><span class="n">MARCHING_CUBES_EMIT_ACTIVE</span><span class="p">[</span><span class="n">field</span><span class="o">.</span><span class="n">dtype</span><span class="p">],</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">nodes</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
             <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
                 <span class="n">field</span><span class="p">,</span>
-                <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">iso</span><span class="p">),</span>
+                <span class="n">iso_value</span><span class="p">,</span>
                 <span class="n">lower</span><span class="p">,</span>
                 <span class="n">delta</span><span class="p">,</span>
-                <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">edge_margin</span><span class="p">),</span>
+                <span class="n">scalar</span><span class="p">(</span><span class="n">edge_margin</span><span class="p">),</span>
                 <span class="n">table</span><span class="p">,</span>
                 <span class="n">words</span><span class="p">,</span>
                 <span class="n">word_ranks</span><span class="p">,</span>
@@ -6923,19 +6936,9 @@ node.</p>
         <span class="p">)</span>
     <span class="k">elif</span> <span class="n">n_vertices</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">n_faces</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_levelset</span><span class="o">.</span><span class="n">marching_cubes_emit</span><span class="p">,</span>
+            <span class="n">kernel_levelset</span><span class="o">.</span><span class="n">MARCHING_CUBES_EMIT</span><span class="p">[</span><span class="n">field</span><span class="o">.</span><span class="n">dtype</span><span class="p">],</span>
             <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">nx</span><span class="p">,</span> <span class="n">ny</span><span class="p">,</span> <span class="n">nz</span><span class="p">),</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
-                <span class="n">field</span><span class="p">,</span>
-                <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">iso</span><span class="p">),</span>
-                <span class="n">lower</span><span class="p">,</span>
-                <span class="n">delta</span><span class="p">,</span>
-                <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">edge_margin</span><span class="p">),</span>
-                <span class="n">table</span><span class="p">,</span>
-                <span class="n">counts</span><span class="p">,</span>
-                <span class="kc">None</span><span class="p">,</span>
-                <span class="kc">None</span><span class="p">,</span>
-            <span class="p">],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">field</span><span class="p">,</span> <span class="n">iso_value</span><span class="p">,</span> <span class="n">lower</span><span class="p">,</span> <span class="n">delta</span><span class="p">,</span> <span class="n">scalar</span><span class="p">(</span><span class="n">edge_margin</span><span class="p">),</span> <span class="n">table</span><span class="p">,</span> <span class="n">counts</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">],</span>
             <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
@@ -7213,8 +7216,7 @@ node by node rather than through the octree its Notes describe.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/levelset.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">484</span>
-<span class="normal">485</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">485</span>
 <span class="normal">486</span>
 <span class="normal">487</span>
 <span class="normal">488</span>
@@ -7369,7 +7371,8 @@ node by node rather than through the octree its Notes describe.</p>
 <span class="normal">637</span>
 <span class="normal">638</span>
 <span class="normal">639</span>
-<span class="normal">640</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">offset_mesh</span><span class="p">(</span>
+<span class="normal">640</span>
+<span class="normal">641</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">offset_mesh</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">distance</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -7546,7 +7549,7 @@ node by node rather than through the octree its Notes describe.</p>
     <span class="n">iso</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
     <span class="n">shape</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
-    <span class="n">bounds</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">vec3</span><span class="p">,</span> <span class="n">vec3</span><span class="p">],</span>
+    <span class="n">bounds</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">vec3</span><span class="p">,</span> <span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">vec3d</span><span class="p">,</span> <span class="n">vec3d</span><span class="p">],</span>
     <span class="n">sign_mode</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"parity"</span><span class="p">,</span> <span class="s2">"winding"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"winding"</span><span class="p">,</span>
     <span class="n">edge_margin</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]</span>
@@ -7644,12 +7647,14 @@ it. It is the extraction behind <a class="autorefs autorefs-internal" title="off
                 <code>bounds</code>
             </td>
             <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple">tuple</a>[<span title="warp.vec3">vec3</span>, <span title="warp.vec3">vec3</span>]</code>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple">tuple</a>[<span title="warp.vec3">vec3</span>, <span title="warp.vec3">vec3</span>] | <a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple">tuple</a>[<span title="warp.vec3d">vec3d</span>, <span title="warp.vec3d">vec3d</span>]</code>
             </td>
             <td>
               <div class="doc-md-description">
                 <p><code>(lower, upper)</code> corners the lattice spans: sample <code>(0, 0, 0)</code> sits on <code>lower</code> and
-sample <code>(nx - 1, ny - 1, nz - 1)</code> on <code>upper</code>. The spacing may differ per axis.</p>
+sample <code>(nx - 1, ny - 1, nz - 1)</code> on <code>upper</code>. The spacing may differ per axis. A
+<code>wp.vec3d</code> pair places the lattice, and forms the distances marching cubes interpolates
+and their crossings, in <code>float64</code> (see <code>Notes</code>).</p>
               </div>
             </td>
             <td>
@@ -7782,6 +7787,14 @@ differently, equally validly. An input with a boundary or an inconsistent windin
 node: there the sign of its distance can jump away from the surface, across the region a hole
 spans, and such a field is not bounded by the distance travelled, so the octree could discard
 cells the dense extraction keeps.</p>
+<p><code>bounds</code> given as <code>wp.vec3d</code> corners extract the surface a <code>float64</code> pipeline marches,
+as libigl's <code>offset_surface</code> does: every node a crossing edge can end at takes its exact
+distance to the mesh at its <code>float64</code> position, and each crossing is interpolated in
+<code>float64</code> and rounded to <code>float32</code> once.
+In <code>float32</code> a crossing on an edge nearly tangent to the level moves by hundreds of times
+the field's own rounding, since both of the edge's values lie close to <code>iso</code>; in <code>float64</code>
+it moves by no more than the output's rounding. The signs, and so the topology, are the
+<code>float32</code> field's; the lattice is always sampled node by node.</p>
 </details>
 
 <p><span class="doc-section-title">Examples:</span></p>
@@ -7810,8 +7823,7 @@ sphere):</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/levelset.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">643</span>
-<span class="normal">644</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">644</span>
 <span class="normal">645</span>
 <span class="normal">646</span>
 <span class="normal">647</span>
@@ -7969,13 +7981,47 @@ sphere):</p>
 <span class="normal">799</span>
 <span class="normal">800</span>
 <span class="normal">801</span>
-<span class="normal">802</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_level_set</span><span class="p">(</span>
+<span class="normal">802</span>
+<span class="normal">803</span>
+<span class="normal">804</span>
+<span class="normal">805</span>
+<span class="normal">806</span>
+<span class="normal">807</span>
+<span class="normal">808</span>
+<span class="normal">809</span>
+<span class="normal">810</span>
+<span class="normal">811</span>
+<span class="normal">812</span>
+<span class="normal">813</span>
+<span class="normal">814</span>
+<span class="normal">815</span>
+<span class="normal">816</span>
+<span class="normal">817</span>
+<span class="normal">818</span>
+<span class="normal">819</span>
+<span class="normal">820</span>
+<span class="normal">821</span>
+<span class="normal">822</span>
+<span class="normal">823</span>
+<span class="normal">824</span>
+<span class="normal">825</span>
+<span class="normal">826</span>
+<span class="normal">827</span>
+<span class="normal">828</span>
+<span class="normal">829</span>
+<span class="normal">830</span>
+<span class="normal">831</span>
+<span class="normal">832</span>
+<span class="normal">833</span>
+<span class="normal">834</span>
+<span class="normal">835</span>
+<span class="normal">836</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">signed_distance_level_set</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">iso</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
     <span class="n">shape</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">,</span> <span class="nb">int</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
-    <span class="n">bounds</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
+    <span class="n">bounds</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3d</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3d</span><span class="p">],</span>
     <span class="n">sign_mode</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"parity"</span><span class="p">,</span> <span class="s2">"winding"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"winding"</span><span class="p">,</span>
     <span class="n">edge_margin</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
@@ -8002,7 +8048,9 @@ sphere):</p>
 <span class="sd">        ``(nx, ny, nz)`` lattice samples per axis, each at least 2.</span>
 <span class="sd">    bounds</span>
 <span class="sd">        ``(lower, upper)`` corners the lattice spans: sample ``(0, 0, 0)`` sits on ``lower`` and</span>
-<span class="sd">        sample ``(nx - 1, ny - 1, nz - 1)`` on ``upper``. The spacing may differ per axis.</span>
+<span class="sd">        sample ``(nx - 1, ny - 1, nz - 1)`` on ``upper``. The spacing may differ per axis. A</span>
+<span class="sd">        ``wp.vec3d`` pair places the lattice, and forms the distances marching cubes interpolates</span>
+<span class="sd">        and their crossings, in ``float64`` (see ``Notes``).</span>
 <span class="sd">    sign_mode</span>
 <span class="sd">        How the distance is signed, as in</span>
 <span class="sd">        [`ordito.proximity.signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh].</span>
@@ -8057,6 +8105,15 @@ sphere):</p>
 <span class="sd">    spans, and such a field is not bounded by the distance travelled, so the octree could discard</span>
 <span class="sd">    cells the dense extraction keeps.</span>
 
+<span class="sd">    ``bounds`` given as ``wp.vec3d`` corners extract the surface a ``float64`` pipeline marches,</span>
+<span class="sd">    as libigl's ``offset_surface`` does: every node a crossing edge can end at takes its exact</span>
+<span class="sd">    distance to the mesh at its ``float64`` position, and each crossing is interpolated in</span>
+<span class="sd">    ``float64`` and rounded to ``float32`` once.</span>
+<span class="sd">    In ``float32`` a crossing on an edge nearly tangent to the level moves by hundreds of times</span>
+<span class="sd">    the field's own rounding, since both of the edge's values lie close to ``iso``; in ``float64``</span>
+<span class="sd">    it moves by no more than the output's rounding. The signs, and so the topology, are the</span>
+<span class="sd">    ``float32`` field's; the lattice is always sampled node by node.</span>
+
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
 <span class="sd">    The level set 0.2 outside a unit icosphere is close to a sphere of radius 1.2, of volume</span>
@@ -8083,15 +8140,24 @@ sphere):</p>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"shape must be at least 2 along every axis, got </span><span class="si">{</span><span class="n">shape</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="mf">0.0</span> <span class="o">&lt;=</span> <span class="n">edge_margin</span> <span class="o">&lt;</span> <span class="mf">0.5</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"edge_margin must be in [0, 0.5), got </span><span class="si">{</span><span class="n">edge_margin</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-    <span class="n">lower</span><span class="p">,</span> <span class="n">upper</span> <span class="o">=</span> <span class="n">bounds</span>
+    <span class="c1"># ``wp.vec3d`` corners take the ``float64`` band over the ``float32`` field of the same lattice.</span>
+    <span class="n">precise</span> <span class="o">=</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">bounds</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3d</span><span class="p">)</span>
+    <span class="n">lower</span><span class="p">,</span> <span class="n">upper</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="n">bounds</span><span class="p">[</span><span class="mi">0</span><span class="p">]),</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="n">bounds</span><span class="p">[</span><span class="mi">1</span><span class="p">]))</span>
+        <span class="k">if</span> <span class="n">precise</span>
+        <span class="k">else</span> <span class="n">cast</span><span class="p">(</span><span class="s2">"tuple[wp.vec3, wp.vec3]"</span><span class="p">,</span> <span class="n">bounds</span><span class="p">)</span>
+    <span class="p">)</span>
     <span class="n">n_nodes</span> <span class="o">=</span> <span class="n">math</span><span class="o">.</span><span class="n">prod</span><span class="p">(</span><span class="n">shape</span><span class="p">)</span>
+    <span class="n">field</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array3dFloat32</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="k">if</span> <span class="n">sign_mode</span> <span class="o">==</span> <span class="s2">"winding"</span> <span class="ow">and</span> <span class="n">n_nodes</span> <span class="o">&lt;</span> <span class="n">_LATTICE_WINDING_BELOW_NODES</span><span class="p">:</span>
-        <span class="n">field</span> <span class="o">=</span> <span class="n">_winding_band_field</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">iso</span><span class="p">,</span> <span class="n">shape</span><span class="p">,</span> <span class="n">bounds</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">field</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">levelset</span><span class="o">.</span><span class="n">marching_cubes</span><span class="p">(</span><span class="n">field</span><span class="p">,</span> <span class="n">iso</span><span class="p">,</span> <span class="n">bounds</span><span class="o">=</span><span class="n">bounds</span><span class="p">,</span> <span class="n">edge_margin</span><span class="o">=</span><span class="n">edge_margin</span><span class="p">)</span>
+        <span class="n">field</span> <span class="o">=</span> <span class="n">_winding_band_field</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">iso</span><span class="p">,</span> <span class="n">shape</span><span class="p">,</span> <span class="p">(</span><span class="n">lower</span><span class="p">,</span> <span class="n">upper</span><span class="p">))</span>
+    <span class="k">if</span> <span class="n">field</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">precise</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">levelset</span><span class="o">.</span><span class="n">marching_cubes</span><span class="p">(</span><span class="n">field</span><span class="p">,</span> <span class="n">iso</span><span class="p">,</span> <span class="n">bounds</span><span class="o">=</span><span class="n">bounds</span><span class="p">,</span> <span class="n">edge_margin</span><span class="o">=</span><span class="n">edge_margin</span><span class="p">)</span>
     <span class="c1"># Warp's sparse extractor has no edge margin, so a positive one takes the dense path below.</span>
     <span class="k">if</span> <span class="p">(</span>
-        <span class="n">edge_margin</span> <span class="o">==</span> <span class="mf">0.0</span>
+        <span class="n">field</span> <span class="ow">is</span> <span class="kc">None</span>
+        <span class="ow">and</span> <span class="ow">not</span> <span class="n">precise</span>
+        <span class="ow">and</span> <span class="n">edge_margin</span> <span class="o">==</span> <span class="mf">0.0</span>
         <span class="ow">and</span> <span class="n">n_nodes</span> <span class="o">&gt;=</span> <span class="n">_SPARSE_LEVEL_SET_FROM_NODES</span>
         <span class="ow">and</span> <span class="n">_is_closed_and_consistent</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
     <span class="p">):</span>
@@ -8117,18 +8183,31 @@ sphere):</p>
             <span class="p">),</span>
         <span class="p">)</span>
 
-    <span class="c1"># ``signed_distance_on_mesh`` at every node, each formed in its thread rather than stored.</span>
-    <span class="n">mesh</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">support_winding_number</span><span class="o">=</span><span class="n">sign_mode</span> <span class="o">==</span> <span class="s2">"winding"</span><span class="p">)</span>
-    <span class="n">lower_node</span><span class="p">,</span> <span class="n">step</span> <span class="o">=</span> <span class="n">kernel_array</span><span class="o">.</span><span class="n">lattice_lower_and_step</span><span class="p">(</span><span class="n">shape</span><span class="p">,</span> <span class="n">bounds</span><span class="p">)</span>
-    <span class="n">field</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_3d</span><span class="p">(</span><span class="n">shape</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">kernel</span><span class="p">,</span> <span class="n">parameters</span> <span class="o">=</span> <span class="n">kernel_proximity</span><span class="o">.</span><span class="n">signed_distance_lattice_kernel</span><span class="p">(</span><span class="n">sign_mode</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">shape</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">mesh</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">lower_node</span><span class="p">,</span> <span class="n">step</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">inf</span><span class="p">),</span> <span class="o">*</span><span class="n">parameters</span><span class="p">,</span> <span class="n">field</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
+    <span class="c1"># The ``float64`` band reads only closest points, which need no winding-number support.</span>
+    <span class="n">mesh</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span>
+        <span class="n">points</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span>
+        <span class="n">indices</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span>
+        <span class="n">support_winding_number</span><span class="o">=</span><span class="n">field</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">sign_mode</span> <span class="o">==</span> <span class="s2">"winding"</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">levelset</span><span class="o">.</span><span class="n">marching_cubes</span><span class="p">(</span><span class="n">field</span><span class="p">,</span> <span class="n">iso</span><span class="p">,</span> <span class="n">bounds</span><span class="o">=</span><span class="n">bounds</span><span class="p">,</span> <span class="n">edge_margin</span><span class="o">=</span><span class="n">edge_margin</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">field</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="c1"># ``signed_distance_on_mesh`` at every node, each formed in its thread rather than stored.</span>
+        <span class="n">lower_node</span><span class="p">,</span> <span class="n">step</span> <span class="o">=</span> <span class="n">kernel_array</span><span class="o">.</span><span class="n">lattice_lower_and_step</span><span class="p">(</span><span class="n">shape</span><span class="p">,</span> <span class="p">(</span><span class="n">lower</span><span class="p">,</span> <span class="n">upper</span><span class="p">))</span>
+        <span class="n">field</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">empty_3d</span><span class="p">(</span><span class="n">shape</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">kernel</span><span class="p">,</span> <span class="n">parameters</span> <span class="o">=</span> <span class="n">kernel_proximity</span><span class="o">.</span><span class="n">signed_distance_lattice_kernel</span><span class="p">(</span><span class="n">sign_mode</span><span class="p">)</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">shape</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">mesh</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">lower_node</span><span class="p">,</span> <span class="n">step</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">math</span><span class="o">.</span><span class="n">inf</span><span class="p">),</span> <span class="o">*</span><span class="n">parameters</span><span class="p">,</span> <span class="n">field</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">precise</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">levelset</span><span class="o">.</span><span class="n">marching_cubes</span><span class="p">(</span><span class="n">field</span><span class="p">,</span> <span class="n">iso</span><span class="p">,</span> <span class="n">bounds</span><span class="o">=</span><span class="n">bounds</span><span class="p">,</span> <span class="n">edge_margin</span><span class="o">=</span><span class="n">edge_margin</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">levelset</span><span class="o">.</span><span class="n">marching_cubes</span><span class="p">(</span>
+        <span class="n">_float64_band_field</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">field</span><span class="p">,</span> <span class="n">iso</span><span class="p">,</span> <span class="n">shape</span><span class="p">,</span> <span class="n">bounds</span><span class="p">),</span>
+        <span class="n">iso</span><span class="p">,</span>
+        <span class="n">bounds</span><span class="o">=</span><span class="n">bounds</span><span class="p">,</span>
+        <span class="n">edge_margin</span><span class="o">=</span><span class="n">edge_margin</span><span class="p">,</span>
+    <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -8376,78 +8455,7 @@ triangles over each of its 16 boundary edges:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/levelset.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1101</span>
-<span class="normal">1102</span>
-<span class="normal">1103</span>
-<span class="normal">1104</span>
-<span class="normal">1105</span>
-<span class="normal">1106</span>
-<span class="normal">1107</span>
-<span class="normal">1108</span>
-<span class="normal">1109</span>
-<span class="normal">1110</span>
-<span class="normal">1111</span>
-<span class="normal">1112</span>
-<span class="normal">1113</span>
-<span class="normal">1114</span>
-<span class="normal">1115</span>
-<span class="normal">1116</span>
-<span class="normal">1117</span>
-<span class="normal">1118</span>
-<span class="normal">1119</span>
-<span class="normal">1120</span>
-<span class="normal">1121</span>
-<span class="normal">1122</span>
-<span class="normal">1123</span>
-<span class="normal">1124</span>
-<span class="normal">1125</span>
-<span class="normal">1126</span>
-<span class="normal">1127</span>
-<span class="normal">1128</span>
-<span class="normal">1129</span>
-<span class="normal">1130</span>
-<span class="normal">1131</span>
-<span class="normal">1132</span>
-<span class="normal">1133</span>
-<span class="normal">1134</span>
-<span class="normal">1135</span>
-<span class="normal">1136</span>
-<span class="normal">1137</span>
-<span class="normal">1138</span>
-<span class="normal">1139</span>
-<span class="normal">1140</span>
-<span class="normal">1141</span>
-<span class="normal">1142</span>
-<span class="normal">1143</span>
-<span class="normal">1144</span>
-<span class="normal">1145</span>
-<span class="normal">1146</span>
-<span class="normal">1147</span>
-<span class="normal">1148</span>
-<span class="normal">1149</span>
-<span class="normal">1150</span>
-<span class="normal">1151</span>
-<span class="normal">1152</span>
-<span class="normal">1153</span>
-<span class="normal">1154</span>
-<span class="normal">1155</span>
-<span class="normal">1156</span>
-<span class="normal">1157</span>
-<span class="normal">1158</span>
-<span class="normal">1159</span>
-<span class="normal">1160</span>
-<span class="normal">1161</span>
-<span class="normal">1162</span>
-<span class="normal">1163</span>
-<span class="normal">1164</span>
-<span class="normal">1165</span>
-<span class="normal">1166</span>
-<span class="normal">1167</span>
-<span class="normal">1168</span>
-<span class="normal">1169</span>
-<span class="normal">1170</span>
-<span class="normal">1171</span>
-<span class="normal">1172</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1172</span>
 <span class="normal">1173</span>
 <span class="normal">1174</span>
 <span class="normal">1175</span>
@@ -8504,7 +8512,78 @@ triangles over each of its 16 boundary edges:</p>
 <span class="normal">1226</span>
 <span class="normal">1227</span>
 <span class="normal">1228</span>
-<span class="normal">1229</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">thicken_mesh</span><span class="p">(</span>
+<span class="normal">1229</span>
+<span class="normal">1230</span>
+<span class="normal">1231</span>
+<span class="normal">1232</span>
+<span class="normal">1233</span>
+<span class="normal">1234</span>
+<span class="normal">1235</span>
+<span class="normal">1236</span>
+<span class="normal">1237</span>
+<span class="normal">1238</span>
+<span class="normal">1239</span>
+<span class="normal">1240</span>
+<span class="normal">1241</span>
+<span class="normal">1242</span>
+<span class="normal">1243</span>
+<span class="normal">1244</span>
+<span class="normal">1245</span>
+<span class="normal">1246</span>
+<span class="normal">1247</span>
+<span class="normal">1248</span>
+<span class="normal">1249</span>
+<span class="normal">1250</span>
+<span class="normal">1251</span>
+<span class="normal">1252</span>
+<span class="normal">1253</span>
+<span class="normal">1254</span>
+<span class="normal">1255</span>
+<span class="normal">1256</span>
+<span class="normal">1257</span>
+<span class="normal">1258</span>
+<span class="normal">1259</span>
+<span class="normal">1260</span>
+<span class="normal">1261</span>
+<span class="normal">1262</span>
+<span class="normal">1263</span>
+<span class="normal">1264</span>
+<span class="normal">1265</span>
+<span class="normal">1266</span>
+<span class="normal">1267</span>
+<span class="normal">1268</span>
+<span class="normal">1269</span>
+<span class="normal">1270</span>
+<span class="normal">1271</span>
+<span class="normal">1272</span>
+<span class="normal">1273</span>
+<span class="normal">1274</span>
+<span class="normal">1275</span>
+<span class="normal">1276</span>
+<span class="normal">1277</span>
+<span class="normal">1278</span>
+<span class="normal">1279</span>
+<span class="normal">1280</span>
+<span class="normal">1281</span>
+<span class="normal">1282</span>
+<span class="normal">1283</span>
+<span class="normal">1284</span>
+<span class="normal">1285</span>
+<span class="normal">1286</span>
+<span class="normal">1287</span>
+<span class="normal">1288</span>
+<span class="normal">1289</span>
+<span class="normal">1290</span>
+<span class="normal">1291</span>
+<span class="normal">1292</span>
+<span class="normal">1293</span>
+<span class="normal">1294</span>
+<span class="normal">1295</span>
+<span class="normal">1296</span>
+<span class="normal">1297</span>
+<span class="normal">1298</span>
+<span class="normal">1299</span>
+<span class="normal">1300</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">thicken_mesh</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">thickness</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
