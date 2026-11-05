@@ -52,6 +52,8 @@ mesh: a serial scatter has nothing to contend on.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import igl
 import numpy as np
 import pytest
@@ -294,3 +296,35 @@ def test_vertex_normals_precomputed(bench_case: BenchCase) -> None:
         )
     )
     assert result.shape == (n_vertices,)
+
+
+@pytest.mark.benchmark(group="vertex_normals_one_table")
+@pytest.mark.benchaxis("valence")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("weighting", ["area", "angle"])
+@pytest.mark.parametrize("supplied", ["face_normals", "face_weights"])
+def test_vertex_normals_one_table(bench_case: BenchCase, weighting: str, supplied: str) -> None:
+    """
+    The scatter with one of the two per-face tables supplied: what ``Trimesh.vertex_normals`` does.
+
+    The property passes whichever of its ``face_normals`` / ``face_angles`` caches is filled, and
+    one of the two often is. The missing quantity is formed inside the scatter, so this should sit
+    at ``vertex_normals_precomputed``'s cost; a gap above it is a per-face pass written first.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    face_normals, face_areas = _face_normals_and_areas(bench_case)
+    mode: Literal["area", "angle"] = "angle" if weighting == "angle" else "area"
+    if supplied == "face_normals":
+        result = bench_case.run(
+            lambda: od.vertices.vertex_normals(
+                vertices, faces, weighting=mode, face_normals=face_normals
+            )
+        )
+    else:
+        weights = od.triangles.face_angles(vertices, faces) if mode == "angle" else face_areas
+        result = bench_case.run(
+            lambda: od.vertices.vertex_normals(
+                vertices, faces, weighting=mode, face_weights=weights
+            )
+        )
+    assert result.shape == (bench_case.n_vertices,)

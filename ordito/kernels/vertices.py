@@ -4,6 +4,7 @@ from ordito.kernels.array import OverloadTable
 from ordito.kernels.scatter import add_corner_triple, peer_summed_add_vec3
 from ordito.kernels.triangles import (
     corner_triple,
+    face_area,
     face_corner_angles,
     face_normals_and_area,
     triangle_cross,
@@ -199,18 +200,35 @@ def scatter_unit_normals(
     add_to_face_corners(out_sums, faces, f, normal, normal, normal)
 
 
-@wp.kernel
-def scatter_scaled_normals(
-    face_normals: wp.array[wp.vec3],
-    face_areas: wp.array[wp.float32],
-    faces: wp.array[wp.int32],
-    out_sums: wp.array2d[wp.Float],
-) -> None:
-    # The same scatter when the caller supplied either table: the product is formed here rather
-    # than by a ``wp.map(wp.mul)`` into a buffer only this kernel reads.
-    f = wp.int32(wp.tid())
-    value = face_normals[f] * face_areas[f]
-    add_to_face_corners(out_sums, faces, f, value, value, value)
+def _supplied_area_weighted_scatter(normals_supplied: bool, areas_supplied: bool) -> wp.Kernel:
+    # ``scatter_area_weighted_normals`` when the caller supplied one table or both: a supplied table
+    # is read and a missing one (launched as ``None``) formed in the thread, bit for bit the table
+    # the wrapper used to write for it first, and the product formed here rather than by a
+    # ``wp.map(wp.mul)``. The kernels differ only in which quantities they read; ``wp.static``
+    # drops the other branch, because a runtime test on an empty table made a kernel the CPU device
+    # ran 1.06-1.16x slower (no longer inlined into its per-thread loop), where these run the
+    # areas-only case 0.89-0.92x the two launches it replaced.
+    def _kernel(
+        vertices: wp.array[wp.vec3],
+        faces: wp.array[wp.int32],
+        face_normals: wp.array[wp.vec3],
+        face_areas: wp.array[wp.float32],
+        out_sums: wp.array2d[wp.Float],
+    ) -> None:
+        f = wp.int32(wp.tid())
+        if wp.static(normals_supplied):
+            normal = face_normals[f]
+        else:
+            normal, _area = face_normals_and_area(vertices, faces, f)
+        if wp.static(areas_supplied):
+            area = face_areas[f]
+        else:
+            area = face_area(vertices, faces, f)
+        value = normal * area
+        add_to_face_corners(out_sums, faces, f, value, value, value)
+
+    name = f"scatter_supplied_area_weighted_normals_{int(normals_supplied)}{int(areas_supplied)}"
+    return wp.kernel(_kernel, name=name)
 
 
 @wp.kernel
@@ -238,6 +256,34 @@ def scatter_angle_weighted_normals(
     normal, _area = face_normals_and_area(vertices, faces, f)
     a0, a1, a2 = face_corner_angles(vertices, faces, f)
     add_to_face_corners(out_sums, faces, f, normal * a0, normal * a1, normal * a2)
+
+
+def _supplied_angle_weighted_scatter(normals_supplied: bool, angles_supplied: bool) -> wp.Kernel:
+    # ``scatter_angle_weighted_normals`` when the caller supplied one table or both, as
+    # ``_supplied_area_weighted_scatter`` is the area kernel's. With both supplied this is
+    # ``scatter.scatter_weighted_sum_vec`` over them, product for product.
+    def _kernel(
+        vertices: wp.array[wp.vec3],
+        faces: wp.array[wp.int32],
+        face_normals: wp.array[wp.vec3],
+        face_angles: wp.array2d[wp.float32],
+        out_sums: wp.array2d[wp.Float],
+    ) -> None:
+        f = wp.int32(wp.tid())
+        if wp.static(normals_supplied):
+            normal = face_normals[f]
+        else:
+            normal, _area = face_normals_and_area(vertices, faces, f)
+        if wp.static(angles_supplied):
+            a0 = face_angles[f, 0]
+            a1 = face_angles[f, 1]
+            a2 = face_angles[f, 2]
+        else:
+            a0, a1, a2 = face_corner_angles(vertices, faces, f)
+        add_to_face_corners(out_sums, faces, f, normal * a0, normal * a1, normal * a2)
+
+    name = f"scatter_supplied_angle_weighted_normals_{int(normals_supplied)}{int(angles_supplied)}"
+    return wp.kernel(_kernel, name=name)
 
 
 @wp.func
@@ -299,8 +345,10 @@ _ACCUMULATOR_DTYPES = (wp.float64,)
 NORMALIZE_ACCUMULATED_ROWS: OverloadTable
 SCATTER_AREA_WEIGHTED_NORMALS: OverloadTable
 SCATTER_UNIT_NORMALS: OverloadTable
-SCATTER_SCALED_NORMALS: OverloadTable
 SCATTER_ANGLE_WEIGHTED_NORMALS: OverloadTable
+# Keyed by ``(normals supplied, weights supplied)``; ``(False, False)`` is the derived kernel above.
+SCATTER_SUPPLIED_AREA_WEIGHTED_NORMALS: dict[tuple[bool, bool], OverloadTable]
+SCATTER_SUPPLIED_ANGLE_WEIGHTED_NORMALS: dict[tuple[bool, bool], OverloadTable]
 SCATTER_MAX_WEIGHTED_NORMALS: OverloadTable
 SCATTER_MAX_WEIGHTED_UNIT_NORMALS: OverloadTable
 
@@ -308,7 +356,8 @@ SCATTER_MAX_WEIGHTED_UNIT_NORMALS: OverloadTable
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global NORMALIZE_ACCUMULATED_ROWS, SCATTER_AREA_WEIGHTED_NORMALS, SCATTER_UNIT_NORMALS
-    global SCATTER_SCALED_NORMALS, SCATTER_ANGLE_WEIGHTED_NORMALS
+    global SCATTER_ANGLE_WEIGHTED_NORMALS
+    global SCATTER_SUPPLIED_AREA_WEIGHTED_NORMALS, SCATTER_SUPPLIED_ANGLE_WEIGHTED_NORMALS
     global SCATTER_MAX_WEIGHTED_NORMALS, SCATTER_MAX_WEIGHTED_UNIT_NORMALS
     NORMALIZE_ACCUMULATED_ROWS = OverloadTable(
         normalize_accumulated_rows,
@@ -331,13 +380,27 @@ def _register_overloads() -> None:
         scatter_max_weighted_unit_normals,
         {d: [*geometry, wp.array[wp.vec3], wp.array2d[d]] for d in _ACCUMULATOR_DTYPES},
     )
-    SCATTER_SCALED_NORMALS = OverloadTable(
-        scatter_scaled_normals,
-        {
-            d: [wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.int32], wp.array2d[d]]
-            for d in _ACCUMULATOR_DTYPES
-        },
-    )
+    supplied = ((True, False), (False, True), (True, True))
+    SCATTER_SUPPLIED_AREA_WEIGHTED_NORMALS = {
+        key: OverloadTable(
+            _supplied_area_weighted_scatter(*key),
+            {
+                d: [*geometry, wp.array[wp.vec3], wp.array[wp.float32], wp.array2d[d]]
+                for d in _ACCUMULATOR_DTYPES
+            },
+        )
+        for key in supplied
+    }
+    SCATTER_SUPPLIED_ANGLE_WEIGHTED_NORMALS = {
+        key: OverloadTable(
+            _supplied_angle_weighted_scatter(*key),
+            {
+                d: [*geometry, wp.array[wp.vec3], wp.array2d[wp.float32], wp.array2d[d]]
+                for d in _ACCUMULATOR_DTYPES
+            },
+        )
+        for key in supplied
+    }
 
 
 _register_overloads()

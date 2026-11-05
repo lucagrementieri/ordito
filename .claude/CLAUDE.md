@@ -974,6 +974,14 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
+- **Peer pooling for the other per-corner scatters** (2026-11-05 `vertices` sweep, awaiting
+  approval). `kernels/scatter.add_corner_triple` still commits a plain atomic per corner at 12 sites
+  (`energies` 3, `heat` 2, `laplacian`, `remesh`, `smoothing`, `scatter` 3,
+  `vertices.scatter_corner_angles`); routing it through `peer_summed_add` would carry §14's peer
+  item to them (expected: 0.1x on hub meshes, 0.85-0.93x on large scans for `float64` targets,
+  but a `float32` target risks dragon's 1.2x). Price each on `fan_hub`, dragon and lucy. Also open:
+  whether `scatter.arrival_order_add*` (`reduce.scatter_sum`) should test peers rather than a
+  uniform warp; its uniform form was priced on one hot group, components and random groups.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

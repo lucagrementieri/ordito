@@ -27,7 +27,6 @@ from typing import Literal
 
 import warp as wp
 
-import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import require_same_device
@@ -35,7 +34,6 @@ from ordito.config import is_deterministic
 from ordito.kernels import array as kernel_array
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import scatter as kernel_scatter
-from ordito.kernels import triangles as kernel_triangles
 from ordito.kernels import vertices as kernel_vertices
 
 # The precision the vertex-normal accumulator runs at, and the key both of
@@ -187,7 +185,7 @@ def _accumulate_and_normalize(
     n_vertices: int,
     faces: wp.array[wp.int32],
     scatter_table: kernel_array.OverloadTable,
-    inputs: list[odt.ArrayNd],
+    inputs: list[odt.ArrayNd | None],
 ) -> wp.array[wp.vec3]:
     """
     Scatter per-face vectors onto their corners and unit-normalize the sums.
@@ -378,46 +376,29 @@ def vertex_normals(
             [vertices, faces, face_normals],
         )
 
-    if weighting == "angle":
-        if face_normals is None and face_weights is None:
-            # Nothing supplied: one kernel derives each face's normal and corner angles in
-            # registers and scatters their products, so neither per-face table is written.
-            return _accumulate_and_normalize(
-                n_vertices, faces, kernel_vertices.SCATTER_ANGLE_WEIGHTED_NORMALS, [vertices, faces]
-            )
-        if face_normals is None:
-            face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
-        angles = od.triangles.face_angles(vertices, faces) if face_weights is None else face_weights
-        return weighted_vertex_normals(
-            n_vertices, faces, face_normals, odt.as_array2d(angles, wp.float32)
-        )
-
-    # "area": each face contributes its normal scaled by its area to all three corners -- the
-    # weight is per *face* here rather than per corner, so this is the cheaper of the two paths.
-    # With nothing supplied one kernel derives and scatters the product in registers; otherwise
-    # the missing table is derived and the product is still formed inside the scatter.
+    # With nothing supplied one kernel per weighting derives each face's normal and weights in
+    # registers and scatters their products, so no per-face table is written. With one table or
+    # both supplied, the kernel built for that combination reads what was passed and forms the
+    # rest in the thread (a missing table launches as ``None``), bit for bit the table it would
+    # otherwise have written first. "area" weights per *face* rather than per corner, so it is
+    # the cheaper of the two.
     if face_normals is None and face_weights is None:
-        return _accumulate_and_normalize(
-            n_vertices, faces, kernel_vertices.SCATTER_AREA_WEIGHTED_NORMALS, [vertices, faces]
+        derived = (
+            kernel_vertices.SCATTER_ANGLE_WEIGHTED_NORMALS
+            if weighting == "angle"
+            else kernel_vertices.SCATTER_AREA_WEIGHTED_NORMALS
         )
-    # One of the two tables is supplied (both missing returned above); derive the other.
-    if face_weights is None:
-        # The areas alone, ``face_normals_and_areas``' bit for bit, with no normal table beside.
-        face_weights = _launch.empty(n_faces, dtype=wp.float32, device=device)
-        _launch.launch(
-            kernel_triangles.face_areas,
-            dim=n_faces,
-            inputs=[vertices, faces, face_weights],
-            device=device,
-        )
-    if face_normals is None:
-        face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
+        return _accumulate_and_normalize(n_vertices, faces, derived, [vertices, faces])
+    key = (face_normals is not None, face_weights is not None)
+    if weighting == "angle":
+        supplied = kernel_vertices.SCATTER_SUPPLIED_ANGLE_WEIGHTED_NORMALS[key]
+        if face_weights is not None:
+            face_weights = odt.as_array2d(face_weights, wp.float32)
+    else:
+        supplied = kernel_vertices.SCATTER_SUPPLIED_AREA_WEIGHTED_NORMALS[key]
     _require_face_rows(n_faces, face_normals=face_normals, face_weights=face_weights)
     return _accumulate_and_normalize(
-        n_vertices,
-        faces,
-        kernel_vertices.SCATTER_SCALED_NORMALS,
-        [face_normals, face_weights, faces],
+        n_vertices, faces, supplied, [vertices, faces, face_normals, face_weights]
     )
 
 
@@ -512,7 +493,7 @@ def vertex_defects(
     return defects
 
 
-def _require_face_rows(n_faces: int, **named: odt.ArrayNd) -> None:
+def _require_face_rows(n_faces: int, **named: odt.ArrayNd | None) -> None:
     """
     Check that every named per-face table has one row per triangle.
 
@@ -527,7 +508,8 @@ def _require_face_rows(n_faces: int, **named: odt.ArrayNd) -> None:
     n_faces
         Triangle count the tables must match, derived from the caller's ``faces`` buffer.
     named
-        Per-face arrays, keyed by the public argument name they arrived under.
+        Per-face arrays, keyed by the public argument name they arrived under; ``None`` (a table
+        not supplied) is skipped.
 
     Raises
     ------
@@ -535,6 +517,8 @@ def _require_face_rows(n_faces: int, **named: odt.ArrayNd) -> None:
         If any named array's leading dimension is not ``n_faces``.
     """
     for name, array in named.items():
+        if array is None:
+            continue
         rows = int(array.shape[0])
         if rows != n_faces:
             raise ValueError(

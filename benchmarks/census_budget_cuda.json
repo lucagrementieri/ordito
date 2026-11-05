@@ -7958,6 +7958,62 @@
    "memset": 1
   }
  },
+ "benchmarks/test_vertices.py::test_vertex_normals_one_table[fan_hub-ordito-cuda-face_normals-angle]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "memset": 1
+  }
+ },
+ "benchmarks/test_vertices.py::test_vertex_normals_one_table[fan_hub-ordito-cuda-face_normals-area]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "memset": 1
+  }
+ },
+ "benchmarks/test_vertices.py::test_vertex_normals_one_table[fan_hub-ordito-cuda-face_weights-angle]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "memset": 1
+  }
+ },
+ "benchmarks/test_vertices.py::test_vertex_normals_one_table[fan_hub-ordito-cuda-face_weights-area]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "memset": 1
+  }
+ },
+ "benchmarks/test_vertices.py::test_vertex_normals_one_table[sphere_med-ordito-cuda-face_normals-angle]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "memset": 1
+  }
+ },
+ "benchmarks/test_vertices.py::test_vertex_normals_one_table[sphere_med-ordito-cuda-face_normals-area]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "memset": 1
+  }
+ },
+ "benchmarks/test_vertices.py::test_vertex_normals_one_table[sphere_med-ordito-cuda-face_weights-angle]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "memset": 1
+  }
+ },
+ "benchmarks/test_vertices.py::test_vertex_normals_one_table[sphere_med-ordito-cuda-face_weights-area]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2,
+   "memset": 1
+  }
+ },
  "benchmarks/test_vertices.py::test_vertex_normals_precomputed[fan_hub-ordito-cuda]": {
   "counts": {
    "launch": 2,
