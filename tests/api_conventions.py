@@ -805,6 +805,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.convex_hull", "growth_round_serial"): frozenset({"offsets"}),
     ("algorithms.convex_hull", "start_tetrahedron"): frozenset({"tri", "adj", "best", "counters"}),
     ("repair", "emit_degree3_replacement"): frozenset({"cursor"}),
+    # ``cursor`` is the slot write head the long fans' face keys are handed out with.
+    ("energies", "curved_long_ring_keys"): frozenset({"cursor"}),
     ("repair", "emit_straighten_faces"): frozenset({"cursor"}),
     # ``counter`` and ``overflow`` are the work list the capped first pass hands the tiled second
     # one -- scratch, not the answer.

@@ -1023,63 +1023,91 @@ def curved_hessian_keys(
             )
 
 
+# Faces from which a vertex's fan is *long* for ``curved_hessian_rows``: its row then walks a
+# sorted list of its faces (``curved_long_ring_keys``) instead of finding each next face by a scan
+# of the fan, which is quadratic in it: ~2e10 reads in one thread for ``fan_hub``'s 40 960-face
+# hubs, past 5 minutes. Mesh fans stay far below it, so scan meshes never build the list.
+CURVED_LONG_RING_FACES = wp.int32(64)
+
+# The faces ``curved_hessian_rows`` visits per face of a fan: the face and the faces on both
+# sides of its three edges (itself among them).
+CURVED_RING_CANDIDATES = 7
+
+
+@wp.func
+def curved_ring_long(vf_offsets: wp.array[wp.int32], i: wp.int32) -> wp.bool:
+    return vf_offsets[i + 1] - vf_offsets[i] >= CURVED_LONG_RING_FACES
+
+
 @wp.kernel
-def curved_hessian_rows(
+def curved_long_ring_count(vf_offsets: wp.array[wp.int32], out_flags: wp.array[wp.int32]) -> None:
+    # The keys ``curved_long_ring_keys`` writes, ``CURVED_RING_CANDIDATES`` a face of each long
+    # fan, added into ``out_flags[1]`` beside the edge-manifold flag, which one read takes both.
+    i = wp.int32(wp.tid())
+    if curved_ring_long(vf_offsets, i):
+        wp.atomic_add(out_flags, 1, CURVED_RING_CANDIDATES * (vf_offsets[i + 1] - vf_offsets[i]))
+
+
+@wp.kernel
+def curved_long_ring_keys(
+    inverse: wp.array[wp.int32],
+    edge_halfedges: wp.array2d[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    n_faces: wp.int32,
+    cursor: wp.array[wp.int32],
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # A long fan's row ``i`` takes from each face at ``i`` and the faces across its edges: one key
+    # ``(i, face)`` each, a missing side the sentinel, in a slot range taken in arrival order. The
+    # sort (``array.csr_from_keys``) leaves each row's faces ascending and once each, the order
+    # ``curved_hessian_rows``' scan visits them in.
+    i = wp.int32(wp.tid())
+    if not curved_ring_long(vf_offsets, i):
+        return
+    start = vf_offsets[i]
+    end = vf_offsets[i + 1]
+    slot = wp.atomic_add(cursor, 0, CURVED_RING_CANDIDATES * (end - start))
+    for a in range(start, end):
+        h = vertex_faces[a]
+        store_coo_key(slot, i, h, n_vertices, n_faces, out_keys, out_order)
+        slot += 1
+        for c in range(3):
+            edge = inverse[h * 3 + c]
+            for side in range(2):
+                halfedge = edge_halfedges[edge, side]
+                across = wp.where(halfedge >= 0, halfedge // 3, -1)
+                store_coo_key(slot, i, across, n_vertices, n_faces, out_keys, out_order)
+                slot += 1
+
+
+@wp.func
+def curved_row_face(
+    i: wp.int32,
+    f: wp.int32,
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     inverse: wp.array[wp.int32],
     angles: wp.array2d[wp.float64],
     angle_sums: wp.array[wp.float64],
     mass: wp.array[wp.float64],
-    edge_halfedges: wp.array2d[wp.int32],
     edge_vertex_slots: wp.array2d[wp.int32],
     par: wp.array2d[wp.float64],
     perp: wp.array2d[wp.float64],
-    vf_offsets: wp.array[wp.int32],
-    vertex_faces: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
+    row_start: wp.int32,
+    row_end: wp.int32,
     columns: wp.array[wp.int32],
     out_values: wp.array[wp.Float],
-) -> None:
-    # One thread per row ``i`` of ``curved_hessian_keys``' pattern, its values arriving at
-    # ``-0.0``, the identity of floating-point addition. Row ``i`` takes from a face that holds
-    # ``i`` or lies across an edge of one that does (an edge's gradient row touches the vertices of
-    # its two faces; the mesh is edge-manifold), in ascending face order, then each face's ordered
-    # edge-slot pairs ``(alpha, beta)``, the slot of edge ``alpha`` holding ``i`` and each slot of
-    # edge ``beta``, each contribution searched into the row. That is the order an entry's
-    # contributions held when one thread a face emitted its 144 triplets and their sort summed
-    # each run, so each entry is that sum bit for bit, with no triplet stored.
-    i = wp.int32(wp.tid())
-    row_start = offsets[i]
-    row_end = offsets[i + 1]
-    if row_start == row_end:
-        return
-    ring_start = vf_offsets[i]
-    ring_end = vf_offsets[i + 1]
-    previous = wp.int32(-1)
-    while True:
-        # The next face above ``previous`` among those at ``i`` and those across their edges.
-        f = wp.int32(-1)
-        for a in range(ring_start, ring_end):
-            h = vertex_faces[a]
-            if h > previous and (f < 0 or h < f):
-                f = h
-            for c in range(3):
-                edge = inverse[h * 3 + c]
-                for side in range(2):
-                    halfedge = edge_halfedges[edge, side]
-                    if halfedge >= 0:
-                        across = halfedge // 3
-                        if across > previous and (f < 0 or across < f):
-                            f = across
-        if f < 0:
-            break
-        previous = f
-        valid, eids, ims, diag, pp, pq = curved_face_terms(
-            vertices, faces, inverse, angles, angle_sums, mass, f
-        )
-        if not valid:
-            continue
+):
+    # Face ``f``'s contributions to row ``i``: its ordered edge-slot pairs ``(alpha, beta)``, the
+    # slot of edge ``alpha`` holding ``i`` and each slot of edge ``beta``, each searched into the
+    # row.
+    valid, eids, ims, diag, pp, pq = curved_face_terms(
+        vertices, faces, inverse, angles, angle_sums, mass, f
+    )
+    if valid:
         for alpha in range(3):
             edge_a = eids[alpha]
             mi_a = ims[alpha]
@@ -1109,6 +1137,74 @@ def curved_hessian_rows(
                                     wp.lower_bound(columns, row_start, row_end, col),
                                     type(out_values[0])(value),
                                 )
+
+
+@wp.kernel
+def curved_hessian_rows(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    inverse: wp.array[wp.int32],
+    angles: wp.array2d[wp.float64],
+    angle_sums: wp.array[wp.float64],
+    mass: wp.array[wp.float64],
+    edge_halfedges: wp.array2d[wp.int32],
+    edge_vertex_slots: wp.array2d[wp.int32],
+    par: wp.array2d[wp.float64],
+    perp: wp.array2d[wp.float64],
+    vf_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    long_offsets: wp.array[wp.int32],
+    long_faces: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    out_values: wp.array[wp.Float],
+) -> None:
+    # One thread per row ``i`` of ``curved_hessian_keys``' pattern, its values arriving at
+    # ``-0.0``, the identity of floating-point addition. Row ``i`` takes from a face that holds
+    # ``i`` or lies across an edge of one that does (an edge's gradient row touches the vertices of
+    # its two faces; the mesh is edge-manifold), in ascending face order, then each face's ordered
+    # edge-slot pairs (``curved_row_face``). That is the order an entry's contributions held when
+    # one thread a face emitted its 144 triplets and their sort summed each run, so each entry is
+    # that sum bit for bit, with no triplet stored. A long fan's faces come sorted in
+    # ``long_offsets`` / ``long_faces`` (empty when no fan is long); a short one finds each next
+    # face by a scan of the fan.
+    i = wp.int32(wp.tid())
+    row_start = offsets[i]
+    row_end = offsets[i + 1]
+    if row_start == row_end:
+        return
+    if long_offsets.shape[0] > 0 and curved_ring_long(vf_offsets, i):
+        for e in range(long_offsets[i], long_offsets[i + 1]):
+            curved_row_face(
+                i, long_faces[e], vertices, faces, inverse, angles, angle_sums, mass,
+                edge_vertex_slots, par, perp, row_start, row_end, columns, out_values,
+            )  # fmt: skip
+        return
+    ring_start = vf_offsets[i]
+    ring_end = vf_offsets[i + 1]
+    previous = wp.int32(-1)
+    while True:
+        # The next face above ``previous`` among those at ``i`` and those across their edges.
+        f = wp.int32(-1)
+        for a in range(ring_start, ring_end):
+            h = vertex_faces[a]
+            if h > previous and (f < 0 or h < f):
+                f = h
+            for c in range(3):
+                edge = inverse[h * 3 + c]
+                for side in range(2):
+                    halfedge = edge_halfedges[edge, side]
+                    if halfedge >= 0:
+                        across = halfedge // 3
+                        if across > previous and (f < 0 or across < f):
+                            f = across
+        if f < 0:
+            break
+        previous = f
+        curved_row_face(
+            i, f, vertices, faces, inverse, angles, angle_sums, mass, edge_vertex_slots, par,
+            perp, row_start, row_end, columns, out_values,
+        )  # fmt: skip
 
 
 # The "no further column" sentinel of ``crouzeix_raviart_next_column``.
@@ -1542,6 +1638,8 @@ def _register_overloads() -> None:
                 wp.array2d[wp.int32],
                 wp.array2d[wp.float64],
                 wp.array2d[wp.float64],
+                i32,
+                i32,
                 i32,
                 i32,
                 i32,

@@ -1568,7 +1568,7 @@
  },
  "benchmarks/test_energies.py::test_curved_hessian_energy[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 12,
+   "launch": 13,
    "alloc": 13,
    "memset": 5,
    "d2d": 1,

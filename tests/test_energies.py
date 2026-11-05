@@ -477,6 +477,29 @@ def test_hessian_energy_matches_igl_past_its_corner_mask(device: str, hub_faces:
     )
 
 
+@pytest.mark.parametrize("hub_faces", [63, 64, 200])
+@pytest.mark.parity("curved_hessian_energy", "igl")
+def test_curved_hessian_energy_matches_igl_on_a_long_fan(device: str, hub_faces: int) -> None:
+    """
+    Class A: ``igl.curved_hessian_energy`` on a closed double cone whose hubs' fans are long.
+
+    From ``CURVED_LONG_RING_FACES`` (64) faces a row walks its fan's faces from a sorted list
+    rather than finding each by a scan of the fan, which is quadratic in it (minutes on a
+    40 960-face hub); 63 faces stays on the scan. Both visit the same faces in the same order, so
+    the assembly is the scan's bit for bit (checked against the scan on 64 and 200, both devices).
+    """
+    vertices_np, faces_np = _double_cone_np(hub_faces)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    energy_igl = igl.curved_hessian_energy(vertices_np.astype(np.float64), faces_np)
+    assert energy_igl.nnz > (hub_faces + 2) * 2
+    assert sparse_allclose(
+        bsr_to_csr(od.energies.curved_hessian_energy(vertices_wp, faces_wp)),
+        energy_igl,
+        rtol=1e-7,
+        atol=1e-7 * float(abs(energy_igl).max()),
+    )
+
+
 def test_hessian_energy_refuses_a_fan_past_its_corner_bound(device: str) -> None:
     """
     Not a library comparison: the corner bound of ``hessian_energy``'s count pass.

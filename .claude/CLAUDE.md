@@ -1021,11 +1021,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   (2 401 vertices) and 2.5 s at 1 900, against 0.15 / 0.38 s with the hub pinned too; how much is
   the hub row's step and how much its rounds is not yet split. The one-block solve cannot hold a long row on CUDA (at most 1 024 rows) and walks every
   row in one lane on the CPU anyway: not open.
-- **`curved_hessian_energy` on a hub** (2026-11-05): runs past 5 minutes on `fan_hub`, though its
-  pattern is sparse (36 keys a face). `curved_hessian_rows` finds each row's next face by
-  rescanning the row's whole ring and its across faces, about 41 k x 7 reads for each of the hub
-  row's ~82 k faces in one thread. A per-row sorted face list (one key sort of (row, face)) would
-  make it linear; price it on scan meshes, where the gather is latency-bound already.
+- **`curved_hessian_energy`'s hub row is one thread** (2026-11-05): `fan_hub` 3.8 s warm (3 ms on
+  `sphere_med`) since a long fan's row walks its sorted faces, all of it the hub rows' threads
+  walking ~82 k faces each. A block a row would break the face order every entry's sum follows
+  (the triplet sort's, bit for bit); an entry-owning lane split keeps it only by walking every
+  face per lane. Open if a hub caller appears.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

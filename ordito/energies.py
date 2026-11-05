@@ -50,7 +50,13 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device, scan_count, scan_count_checked
+from ordito._device import (
+    read_scalar,
+    read_values,
+    require_same_device,
+    scan_count,
+    scan_count_checked,
+)
 from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX
 from ordito.edges import edges_unique, edges_unique_length
@@ -916,8 +922,9 @@ def curved_hessian_energy(
     )
     # Each unique edge's two halfedges are recorded by the same face pass.
     edge_halfedges = _launch.full((n_edges, 2), -1, dtype=wp.int32, device=device)
-    # Each unique edge's halfedge count, and the edge-manifold flag of the launch after.
-    cursor, nonmanifold = _launch.carve(wp.int32, (n_edges, 1), device, zeroed=True)
+    # Each unique edge's halfedge count; the edge-manifold flag of the launch after, and the long
+    # fans' key count (``kernels/energies.curved_long_ring_count``) beside it for the same read.
+    cursor, flags = _launch.carve(wp.int32, (n_edges, 2), device, zeroed=True)
     _launch.launch(
         kernel_energies.internal_angles_and_sums,
         dim=n_faces,
@@ -938,11 +945,21 @@ def curved_hessian_energy(
         kernel_energies.zero_at_boundary_edges,
         dim=n_edges,
         inputs=[unique_edges, cursor],
-        outputs=[angle_sums, nonmanifold],
+        outputs=[angle_sums, flags],
         device=device,
     )
-    # The validation raises on the host, so its flag is read back.
-    if int(read_scalar(nonmanifold, 0)) != 0:
+    vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    _launch.launch(
+        kernel_energies.curved_long_ring_count,
+        dim=n_vertices,
+        inputs=[vf_offsets],
+        outputs=[flags],
+        device=device,
+    )
+    # The validation raises on the host, so its flag is read back, and the long fans' key count
+    # sizes their face lists.
+    nonmanifold, n_long_keys = read_values(flags, 0, 2)
+    if int(nonmanifold) != 0:
         raise ValueError(
             "mesh must be edge-manifold (every edge shared by at most two faces); the "
             "Crouzeix-Raviart discretization curved_hessian_energy is built on is undefined "
@@ -980,7 +997,30 @@ def curved_hessian_energy(
         wp.copy(columns, key_columns, count=n_entries)
     # The key buffers and the key-sized columns go before the values arrive.
     del keys, order, key_columns, _starts
-    vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    # A long fan's row walks its faces sorted (``kernels/energies.CURVED_LONG_RING_FACES``); no
+    # list is built when no fan is long.
+    long_offsets = long_faces = _launch.empty(0, dtype=wp.int32, device=device)
+    if n_long_keys > 0:
+        long_keys, long_order = od.array.csr_key_buffers(int(n_long_keys), device)
+        _launch.launch(
+            kernel_energies.curved_long_ring_keys,
+            dim=n_vertices,
+            inputs=[
+                inverse,
+                edge_halfedges,
+                vf_offsets,
+                vf_indices,
+                wp.int32(n_vertices),
+                wp.int32(n_faces),
+                _launch.zeros(1, dtype=wp.int32, device=device),
+            ],
+            outputs=[long_keys, long_order],
+            device=device,
+        )
+        long_offsets, long_faces, _ = od.array.csr_from_keys(
+            long_keys, long_order, int(n_long_keys), n_vertices, n_faces
+        )
+        del long_keys, long_order
     # ``-0.0``: the identity of floating-point addition, so each entry is its contributions' sum
     # from the first one on.
     values = _launch.full(n_entries, -0.0, dtype=dtype, device=device)
@@ -1001,6 +1041,8 @@ def curved_hessian_energy(
                 perp,
                 vf_offsets,
                 vf_indices,
+                long_offsets,
+                long_faces,
                 offsets,
                 columns,
                 values,
