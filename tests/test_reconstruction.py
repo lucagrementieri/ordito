@@ -2075,7 +2075,7 @@ def test_resample_uniform_matches_igl(sphere_irregular: tuple[tm.Trimesh, wp.Mes
     assert symmetric_surface_distance(out_tm, sphere_tm)[0] < 0.065 * voxel_size
 
 
-@pytest.mark.parametrize("offset", [0.0, -0.05])
+@pytest.mark.parametrize("offset", [0.0, -0.05, 0.05, 0.1])
 @pytest.mark.parity("resample_uniform", "igl")
 def test_resample_uniform_igl_method_matches_igl_offset_surface(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], offset: float
@@ -2087,8 +2087,9 @@ def test_resample_uniform_igl_method_matches_igl_offset_surface(
     padding, the box grown by ``offset``, centred), the field sampled with the default sign mode
     (``PSEUDONORMAL`` agrees with it, see the test above) and the extraction returned as marched.
     Compared with [`meshes_allclose`][ordito.equality.meshes_allclose]: the same counts and the
-    same oriented faces under the nearest-vertex map. ``offset`` takes the two levels
-    ``test_signed_distance_level_set_matches_igl_offset_surface`` holds Class A on.
+    same oriented faces under the nearest-vertex map. ``offset`` takes the levels
+    ``test_signed_distance_level_set_matches_igl_offset_surface`` holds Class A on at ``float64``,
+    which ``method="igl"`` samples and interpolates at, ``0.1``'s near-tangent edge included.
     """
     sphere_tm, sphere_wp = sphere_irregular
     voxel_size = 0.06

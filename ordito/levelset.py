@@ -154,10 +154,9 @@ def marching_cubes(
     Parameters
     ----------
     field
-        ``(nx, ny, nz)`` lattice of scalar values, with ``x`` the slowest axis: ``wp.float32``, or
-        under ``method="lewiner"`` also ``wp.float64``. The surface is
-        extracted where the field crosses ``iso``; the sign convention is the caller's, and the
-        winding follows it (with ordito's outside-positive
+        ``(nx, ny, nz)`` lattice of scalar values, with ``x`` the slowest axis: ``wp.float32`` or
+        ``wp.float64``. The surface is extracted where the field crosses ``iso``; the sign
+        convention is the caller's, and the winding follows it (with ordito's outside-positive
         [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh] convention the
         normals come out pointing outward).
     iso
@@ -199,8 +198,7 @@ def marching_cubes(
     Raises
     ------
     TypeError
-        If ``field`` is not a rank-3 ``wp.float32`` array, or under ``method="lewiner"`` a rank-3
-        ``wp.float32`` or ``wp.float64`` one.
+        If ``field`` is not a rank-3 ``wp.float32`` or ``wp.float64`` array.
     ValueError
         If ``method`` is not ``"classic"`` or ``"lewiner"``, any of ``field``'s dimensions is
         below 2, ``edge_margin`` is outside ``[0, 0.5)`` (or not ``0`` under ``"lewiner"``),
@@ -220,12 +218,15 @@ def marching_cubes(
     Under ``method="classic"`` the triangulation is Warp's
     ``warp.geometry.IsoSurfaceMarchingCubes``: its case tables, its
     vertex numbering (one vertex per crossing lattice edge, in row-major order of the edge's lower
-    node and then by axis), its triangle order and its interpolation, so on a field without NaN
-    the result equals ``IsoSurfaceMarchingCubes.extract`` on the same lattice and bounds bit for
-    bit, buffer order included. A NaN sample is on neither side of ``iso``: no edge from it
-    crosses and no cell it is a corner of emits a triangle, so the surface has a hole around it
-    and every face index names a vertex. Warp's extraction instead triangulates such a cell as if
-    the sample were below ``iso`` and gives the edges from it, which have no vertex, index ``-1``.
+    node and then by axis), its triangle order and its interpolation, so on a ``wp.float32`` field
+    without NaN the result equals ``IsoSurfaceMarchingCubes.extract`` on the same lattice and
+    bounds bit for bit, buffer order included. A ``wp.float64`` field is extracted the same way
+    with the node positions, the spacing and the interpolation in ``float64`` (``bounds`` read at
+    that precision), each vertex rounded to ``float32`` once, at the end. A NaN sample is on
+    neither side of ``iso``: no edge from it crosses and no cell it is a corner of emits a
+    triangle, so the surface has a hole around it and every face index names a vertex. Warp's
+    extraction instead triangulates such a cell as if the sample were below ``iso`` and gives the
+    edges from it, which have no vertex, index ``-1``.
     A vertex on a crossing edge all of whose cells have a NaN corner is kept, unreferenced, so
     the vertex numbering stays Warp's. What differs otherwise is the scratch it needs: on a large
     lattice a bit per node and a pair of counters per node the surface passes through, a small
@@ -269,7 +270,13 @@ def marching_cubes(
         raise ValueError(f"method must be 'classic' or 'lewiner', got {method!r}")
     if method == "lewiner":
         return _marching_cubes_lewiner(field, iso, bounds, edge_margin)
-    field = odt.as_array3d(cast(odt.ArrayNdFloat32, field), wp.float32)
+    if field.dtype not in (wp.float32, wp.float64):
+        raise TypeError(f"marching_cubes takes a float32 or float64 field, got {field.dtype}")
+    field = (
+        odt.as_array3d(cast(odt.ArrayNdFloat64, field), wp.float64)
+        if field.dtype == wp.float64
+        else odt.as_array3d(cast(odt.ArrayNdFloat32, field), wp.float32)
+    )
     shape = tuple(int(dim) for dim in field.shape)
     if min(shape) < 2:
         raise ValueError(f"field must be at least 2 wide along every axis, got {shape}")
@@ -280,18 +287,22 @@ def marching_cubes(
     if nx * ny * nz > _INT32_MAX:
         raise ValueError(f"field has {nx * ny * nz} nodes, past the int32 limit of {_INT32_MAX}")
 
+    # The corners and spacing at the field's precision. A ``float32`` field's are formed as
+    # ``IsoSurfaceMarchingCubes.extract`` forms them (Warp's ``resolve_domain_bounds``: a float32
+    # difference divided by the cell count), so every interpolated vertex rounds as Warp's does.
+    precision = np.float64 if field.dtype == wp.float64 else np.float32
+    vector = wp.vec3d if field.dtype == wp.float64 else wp.vec3
+    scalar = wp.float64 if field.dtype == wp.float64 else wp.float32
     if bounds is None:
-        lower = wp.vec3(0.0, 0.0, 0.0)
-        upper = wp.vec3(float(nx - 1), float(ny - 1), float(nz - 1))
+        lower_np = np.zeros(3, dtype=precision)
+        upper_np = np.array((nx - 1, ny - 1, nz - 1), dtype=precision)
     else:
-        lower, upper = wp.vec3(bounds[0]), wp.vec3(bounds[1])
-    # The spacing as ``IsoSurfaceMarchingCubes.extract`` forms it (Warp's ``resolve_domain_bounds``:
-    # a float32 difference divided by the cell count), so every interpolated vertex rounds as
-    # Warp's does.
-    cells_np = np.array((nx - 1, ny - 1, nz - 1), dtype=np.float32)
-    delta = wp.vec3(
-        (np.asarray(upper, dtype=np.float32) - np.asarray(lower, dtype=np.float32)) / cells_np
-    )
+        lower_np = np.asarray(bounds[0], dtype=precision)
+        upper_np = np.asarray(bounds[1], dtype=precision)
+    cells_np = np.array((nx - 1, ny - 1, nz - 1), dtype=precision)
+    lower = vector(*lower_np.tolist())
+    delta = vector(*((upper_np - lower_np) / cells_np).tolist())
+    iso_value = scalar(iso)
 
     device = wp.get_device(field.device)
     table = _marching_cubes_table(device.alias)
@@ -307,9 +318,9 @@ def marching_cubes(
         words = _launch.view_as(_launch.view(bits, 0, n_words), wp.uint32)
         word_ranks = _launch.view(bits, n_words, 2 * n_words)
         _launch.launch(
-            kernel_levelset.marching_cubes_active,
+            kernel_levelset.MARCHING_CUBES_ACTIVE[field.dtype],
             dim=(nx, ny, nz),
-            inputs=[field, wp.float32(iso), table, words, word_ranks],
+            inputs=[field, iso_value, table, words, word_ranks],
             device=device,
         )
         # Sizes the active nodes' counts.
@@ -322,17 +333,17 @@ def marching_cubes(
         nodes = _launch.empty(n_active, dtype=wp.int32, device=device)
         counts = _launch.empty(n_active, dtype=wp.vec2i, device=device)
         _launch.launch(
-            kernel_levelset.marching_cubes_active_counts,
+            kernel_levelset.MARCHING_CUBES_ACTIVE_COUNTS[field.dtype],
             dim=n_active,
-            inputs=[field, wp.float32(iso), table, words, word_ranks, nodes, counts],
+            inputs=[field, iso_value, table, words, word_ranks, nodes, counts],
             device=device,
         )
     else:
         counts = _launch.empty(n_nodes, dtype=wp.vec2i, device=device)
         _launch.launch(
-            kernel_levelset.marching_cubes_counts,
+            kernel_levelset.MARCHING_CUBES_COUNTS[field.dtype],
             dim=(nx, ny, nz),
-            inputs=[field, wp.float32(iso), table],
+            inputs=[field, iso_value, table],
             outputs=[counts],
             device=device,
         )
@@ -354,14 +365,14 @@ def marching_cubes(
     # can be non-zero.
     if nodes is not None:
         _launch.launch(
-            kernel_levelset.marching_cubes_emit_active,
+            kernel_levelset.MARCHING_CUBES_EMIT_ACTIVE[field.dtype],
             dim=nodes.size,
             inputs=[
                 field,
-                wp.float32(iso),
+                iso_value,
                 lower,
                 delta,
-                wp.float32(edge_margin),
+                scalar(edge_margin),
                 table,
                 words,
                 word_ranks,
@@ -373,19 +384,9 @@ def marching_cubes(
         )
     elif n_vertices > 0 or n_faces > 0:
         _launch.launch(
-            kernel_levelset.marching_cubes_emit,
+            kernel_levelset.MARCHING_CUBES_EMIT[field.dtype],
             dim=(nx, ny, nz),
-            inputs=[
-                field,
-                wp.float32(iso),
-                lower,
-                delta,
-                wp.float32(edge_margin),
-                table,
-                counts,
-                None,
-                None,
-            ],
+            inputs=[field, iso_value, lower, delta, scalar(edge_margin), table, counts, None, None],
             outputs=[vertices, faces],
             device=device,
         )
@@ -646,7 +647,7 @@ def signed_distance_level_set(
     iso: float,
     shape: tuple[int, int, int],
     *,
-    bounds: tuple[wp.vec3, wp.vec3],
+    bounds: tuple[wp.vec3, wp.vec3] | tuple[wp.vec3d, wp.vec3d],
     sign_mode: Literal["parity", "winding"] = "winding",
     edge_margin: float = 0.0,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
@@ -673,7 +674,9 @@ def signed_distance_level_set(
         ``(nx, ny, nz)`` lattice samples per axis, each at least 2.
     bounds
         ``(lower, upper)`` corners the lattice spans: sample ``(0, 0, 0)`` sits on ``lower`` and
-        sample ``(nx - 1, ny - 1, nz - 1)`` on ``upper``. The spacing may differ per axis.
+        sample ``(nx - 1, ny - 1, nz - 1)`` on ``upper``. The spacing may differ per axis. A
+        ``wp.vec3d`` pair places the lattice, and forms the distances marching cubes interpolates
+        and their crossings, in ``float64`` (see ``Notes``).
     sign_mode
         How the distance is signed, as in
         [`ordito.proximity.signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh].
@@ -728,6 +731,15 @@ def signed_distance_level_set(
     spans, and such a field is not bounded by the distance travelled, so the octree could discard
     cells the dense extraction keeps.
 
+    ``bounds`` given as ``wp.vec3d`` corners extract the surface a ``float64`` pipeline marches,
+    as libigl's ``offset_surface`` does: every node a crossing edge can end at takes its exact
+    distance to the mesh at its ``float64`` position, and each crossing is interpolated in
+    ``float64`` and rounded to ``float32`` once.
+    In ``float32`` a crossing on an edge nearly tangent to the level moves by hundreds of times
+    the field's own rounding, since both of the edge's values lie close to ``iso``; in ``float64``
+    it moves by no more than the output's rounding. The signs, and so the topology, are the
+    ``float32`` field's; the lattice is always sampled node by node.
+
     Examples
     --------
     The level set 0.2 outside a unit icosphere is close to a sphere of radius 1.2, of volume
@@ -754,15 +766,24 @@ def signed_distance_level_set(
         raise ValueError(f"shape must be at least 2 along every axis, got {shape}")
     if not 0.0 <= edge_margin < 0.5:
         raise ValueError(f"edge_margin must be in [0, 0.5), got {edge_margin}")
-    lower, upper = bounds
+    # ``wp.vec3d`` corners take the ``float64`` band over the ``float32`` field of the same lattice.
+    precise = isinstance(bounds[0], wp.vec3d)
+    lower, upper = (
+        (wp.vec3(bounds[0]), wp.vec3(bounds[1]))
+        if precise
+        else cast("tuple[wp.vec3, wp.vec3]", bounds)
+    )
     n_nodes = math.prod(shape)
+    field: odt.Array3dFloat32 | None = None
     if sign_mode == "winding" and n_nodes < _LATTICE_WINDING_BELOW_NODES:
-        field = _winding_band_field(vertices, faces, iso, shape, bounds)
-        if field is not None:
-            return od.levelset.marching_cubes(field, iso, bounds=bounds, edge_margin=edge_margin)
+        field = _winding_band_field(vertices, faces, iso, shape, (lower, upper))
+    if field is not None and not precise:
+        return od.levelset.marching_cubes(field, iso, bounds=bounds, edge_margin=edge_margin)
     # Warp's sparse extractor has no edge margin, so a positive one takes the dense path below.
     if (
-        edge_margin == 0.0
+        field is None
+        and not precise
+        and edge_margin == 0.0
         and n_nodes >= _SPARSE_LEVEL_SET_FROM_NODES
         and _is_closed_and_consistent(vertices, faces)
     ):
@@ -788,18 +809,68 @@ def signed_distance_level_set(
             ),
         )
 
-    # ``signed_distance_on_mesh`` at every node, each formed in its thread rather than stored.
-    mesh = wp.Mesh(points=vertices, indices=faces, support_winding_number=sign_mode == "winding")
-    lower_node, step = kernel_array.lattice_lower_and_step(shape, bounds)
-    field = odt.empty_3d(shape, wp.float32, device=vertices.device)
-    kernel, parameters = kernel_proximity.signed_distance_lattice_kernel(sign_mode)
-    _launch.launch(
-        kernel,
-        dim=shape,
-        inputs=[mesh.id, lower_node, step, wp.float32(math.inf), *parameters, field],
-        device=vertices.device,
+    # The ``float64`` band reads only closest points, which need no winding-number support.
+    mesh = wp.Mesh(
+        points=vertices,
+        indices=faces,
+        support_winding_number=field is None and sign_mode == "winding",
     )
-    return od.levelset.marching_cubes(field, iso, bounds=bounds, edge_margin=edge_margin)
+    if field is None:
+        # ``signed_distance_on_mesh`` at every node, each formed in its thread rather than stored.
+        lower_node, step = kernel_array.lattice_lower_and_step(shape, (lower, upper))
+        field = odt.empty_3d(shape, wp.float32, device=vertices.device)
+        kernel, parameters = kernel_proximity.signed_distance_lattice_kernel(sign_mode)
+        _launch.launch(
+            kernel,
+            dim=shape,
+            inputs=[mesh.id, lower_node, step, wp.float32(math.inf), *parameters, field],
+            device=vertices.device,
+        )
+    if not precise:
+        return od.levelset.marching_cubes(field, iso, bounds=bounds, edge_margin=edge_margin)
+    return od.levelset.marching_cubes(
+        _float64_band_field(mesh, field, iso, shape, bounds),
+        iso,
+        bounds=bounds,
+        edge_margin=edge_margin,
+    )
+
+
+def _float64_band_field(
+    mesh: wp.Mesh,
+    field: odt.Array3dFloat32,
+    iso: float,
+    shape: tuple[int, int, int],
+    bounds: tuple[wp.vec3, wp.vec3] | tuple[wp.vec3d, wp.vec3d],
+) -> odt.Array3dFloat64:
+    """
+    Return ``field`` in ``float64``, exact at every node an edge crossing ``iso`` can end at.
+
+    ``kernels/levelset.float64_band_field``. A node is in doubt within a tenth of the shortest
+    lattice edge of ``iso``: the ``float32`` field is off by the closest-point query's error, a
+    few ``1e-5`` of the mesh's extent on a needle at worst, and its lattice by a ``float32``
+    rounding of each node, both far under any edge the lattice can resolve a surface with.
+    """
+    lower_np = np.asarray(bounds[0], dtype=np.float64)
+    upper_np = np.asarray(bounds[1], dtype=np.float64)
+    step_np = (upper_np - lower_np) / (np.asarray(shape, dtype=np.float64) - 1.0)
+    doubt = 0.1 * float(step_np.min())
+    out_field = odt.empty_3d(shape, wp.float64, device=field.device)
+    _launch.launch(
+        kernel_levelset.float64_band_field,
+        dim=shape,
+        inputs=[
+            mesh.id,
+            field,
+            wp.float64(iso),
+            wp.float64(doubt),
+            wp.vec3d(*lower_np.tolist()),
+            wp.vec3d(*step_np.tolist()),
+        ],
+        outputs=[out_field],
+        device=field.device,
+    )
+    return out_field
 
 
 def _winding_band_field(

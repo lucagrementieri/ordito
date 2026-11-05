@@ -1,8 +1,11 @@
+from typing import Any
+
 import warp as wp
 from warp.geometry import IsoSurfaceMarchingCubes
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE, TOLERANCE_MERGE_CONSTANT
 from ordito.kernels.array import (
+    OverloadTable,
     append_slot,
     bit_rank,
     lattice_position,
@@ -12,6 +15,7 @@ from ordito.kernels.array import (
     unravel_index,
 )
 from ordito.kernels.halfedge import halfedge_endpoints, mate_halfedge
+from ordito.kernels.proximity import closest_offset_d, closest_point_query
 from ordito.kernels.triangles import corner_triple, face_vertices
 from ordito.kernels.vertices import normalized_accumulated_row
 
@@ -712,6 +716,66 @@ def resolve_crossing_endpoints(
     out_field[i, j, k] = result
 
 
+@wp.func
+def may_cross(here: wp.float64, there: wp.float64, iso: wp.float64, doubt: wp.float64) -> wp.bool:
+    # Whether a lattice edge between ``float32`` values ``here`` and ``there`` can cross ``iso`` in
+    # the exact field: its ends lie on opposite sides, or either lies within ``doubt`` of the level,
+    # where the ``float32`` value's error can put it on the wrong side.
+    return (
+        (here >= iso) != (there >= iso)
+        or wp.abs(here - iso) <= doubt
+        or wp.abs(there - iso) <= doubt
+    )
+
+
+@wp.kernel
+def float64_band_field(
+    mesh: wp.uint64,
+    field: wp.array3d[wp.float32],
+    iso: wp.float64,
+    doubt: wp.float64,
+    lower: wp.vec3d,
+    step: wp.vec3d,
+    out_field: wp.array3d[wp.float64],
+) -> None:
+    # ``signed_distance_level_set``'s ``float64`` lattice, from the ``float32`` field of the same
+    # lattice. Marching cubes reads a node's value only where an edge from it crosses ``iso``, so
+    # a node that ends an edge which can cross in the exact field (``may_cross``, over its six
+    # edges) takes its exact unsigned distance in ``float64`` at its ``float64`` position, signed
+    # as the ``float32`` field signs it. Every other node is farther than ``doubt`` from the level,
+    # past the ``float32`` value's error, so its side of ``iso`` is the exact field's, and it keeps
+    # its ``float32`` value: no edge from it crosses unless the other end is refined.
+    #
+    # The cost is ``closest_offset_d``'s re-search, about three quarters of this launch on bunny
+    # (CUDA). Measured there: the six-edge test refines 0.55-0.7x the time of refining every node
+    # within 1.5 edges of ``iso``; a ``float64`` bounding-box bound skipping the exact distance of
+    # faces no nearer than the best so far changed nothing (1.04x), so the walk, not the
+    # ``float64`` arithmetic, is what costs; and the ``float32`` query's face alone, without the
+    # re-search, moves a vertex of ``sphere_irregular`` at ``-0.05`` (worst 1.7e-7 -> 2.2e-7), its
+    # face not the nearest on a needle.
+    i, j, k = wp.tid()
+    value = field[i, j, k]
+    result = wp.float64(value)
+    refine = False
+    for axis in range(3):
+        for direction in range(2):
+            offset = 2 * direction - 1
+            ni = i + wp.where(axis == 0, offset, 0)
+            nj = j + wp.where(axis == 1, offset, 0)
+            nk = k + wp.where(axis == 2, offset, 0)
+            if ni >= 0 and nj >= 0 and nk >= 0:
+                if ni < field.shape[0] and nj < field.shape[1] and nk < field.shape[2]:
+                    there = wp.float64(field[ni, nj, nk])
+                    refine = refine or may_cross(result, there, iso, doubt)
+    if refine:
+        p = lattice_position(lower, step, i, j, k)
+        _closest, _distance, face = closest_point_query(mesh, wp.vec3(p), FLOAT32_INF_CONSTANT)
+        if face >= 0:
+            distance = wp.length(closest_offset_d(mesh, face, p))
+            result = wp.where(value < 0.0, -distance, distance)
+    out_field[i, j, k] = result
+
+
 # ---------------------------------------------------------------------------------------------
 # thicken_mesh
 # ---------------------------------------------------------------------------------------------
@@ -766,7 +830,7 @@ MARCHING_CUBES_TABLE = (
 
 
 @wp.func
-def mc_side(value: wp.float32, iso: wp.float32) -> wp.int32:
+def mc_side(value: wp.Float, iso: wp.Float) -> wp.int32:
     # A lattice value's side of ``iso``: 1 at or above it, 0 below, -1 for NaN, which is on
     # neither. The one classification both the edge test and the case code read, so a cell's case
     # names exactly the edges that cross and every triangle finds its vertices.
@@ -779,7 +843,7 @@ def mc_side(value: wp.float32, iso: wp.float32) -> wp.int32:
 
 
 @wp.func
-def mc_values_cross(here: wp.float32, there: wp.float32, iso: wp.float32) -> wp.int32:
+def mc_values_cross(here: wp.Float, there: wp.Float, iso: wp.Float) -> wp.int32:
     # 1 when an edge whose ends hold ``here`` and ``there`` straddles ``iso`` (``>=`` on one end,
     # ``<`` on the other: Warp's test, so a NaN end never crosses). Shared with the narrow-band
     # extraction in ``kernels/algorithms/poisson_band``, which reads a composite field.
@@ -802,34 +866,35 @@ def mc_node_emits(offsets: wp.array[wp.vec2i], n: wp.int32) -> wp.bool:
 
 @wp.func
 def mc_edge_vertex(
-    lower: wp.vec3,
-    delta: wp.vec3,
+    lower: Any,
+    delta: Any,
     i: wp.int32,
     j: wp.int32,
     k: wp.int32,
     axis: wp.int32,
-    here: wp.float32,
-    there: wp.float32,
-    iso: wp.float32,
-    margin: wp.float32,
+    here: wp.Float,
+    there: wp.Float,
+    iso: wp.Float,
+    margin: wp.Float,
 ) -> wp.vec3:
     # The vertex on the crossing edge from node ``(i, j, k)`` along ``axis``: Warp's
     # ``extract_vertices_kernel`` arithmetic statement for statement, which is what keeps the dense
     # extraction bit-identical to it. ``margin`` 0 is Warp's ``clamp(t, 0, 1)`` exactly; above 0
     # it keeps the vertex that fraction of the edge off both nodes (``marching_cubes``'
-    # ``edge_margin``).
+    # ``edge_margin``). Generic over the precision: a ``float64`` field takes ``wp.vec3d``
+    # ``lower`` and ``delta`` and rounds the vertex to ``float32`` once, at the end.
     io = i + wp.where(axis == 0, 1, 0)
     jo = j + wp.where(axis == 1, 1, 0)
     ko = k + wp.where(axis == 2, 1, 0)
     t = (iso - here) / (there - here)
-    t = wp.clamp(t, margin, 1.0 - margin)
-    here_pos = lower + wp.vec3(
-        wp.float32(i) * delta.x, wp.float32(j) * delta.y, wp.float32(k) * delta.z
+    t = wp.clamp(t, margin, type(margin)(1.0) - margin)
+    here_pos = lower + type(lower)(
+        type(t)(i) * delta[0], type(t)(j) * delta[1], type(t)(k) * delta[2]
     )
-    there_pos = lower + wp.vec3(
-        wp.float32(io) * delta.x, wp.float32(jo) * delta.y, wp.float32(ko) * delta.z
+    there_pos = lower + type(lower)(
+        type(t)(io) * delta[0], type(t)(jo) * delta[1], type(t)(ko) * delta[2]
     )
-    return wp.lerp(here_pos, there_pos, t)
+    return wp.vec3(wp.lerp(here_pos, there_pos, t))
 
 
 @wp.func
@@ -842,8 +907,8 @@ def mc_triangle_edge(table: wp.array[wp.int32], slot: wp.int32) -> wp.vec4i:
 
 @wp.func
 def mc_edge_crosses(
-    field: wp.array3d[wp.float32],
-    iso: wp.float32,
+    field: wp.array3d[wp.Float],
+    iso: wp.Float,
     i: wp.int32,
     j: wp.int32,
     k: wp.int32,
@@ -860,7 +925,7 @@ def mc_edge_crosses(
 
 
 @wp.func
-def mc_case_corner(code: wp.int32, value: wp.float32, iso: wp.float32, bit: wp.int32) -> wp.int32:
+def mc_case_corner(code: wp.int32, value: wp.Float, iso: wp.Float, bit: wp.int32) -> wp.int32:
     # Fold one corner into a running case code: ``bit`` added at or above ``iso``, nothing below,
     # and a NaN corner (on neither side, ``mc_side``) poisons the code negative for good -- the
     # eight additions reach at most 255. ``mc_case_final`` turns a poisoned code into case 0. The
@@ -884,7 +949,7 @@ def mc_case_final(code: wp.int32) -> wp.int32:
 
 @wp.func
 def mc_case_code(
-    field: wp.array3d[wp.float32], iso: wp.float32, i: wp.int32, j: wp.int32, k: wp.int32
+    field: wp.array3d[wp.Float], iso: wp.Float, i: wp.int32, j: wp.int32, k: wp.int32
 ) -> wp.int32:
     # The cell at node ``(i, j, k)``'s 8-bit case: bit ``c`` set when corner ``c`` is at or above
     # ``iso``, corners in ``CUBE_CORNER_OFFSETS`` order; case 0 with a NaN corner.
@@ -905,8 +970,8 @@ def mc_case_code(
 
 @wp.func
 def mc_cell_triangles(
-    field: wp.array3d[wp.float32],
-    iso: wp.float32,
+    field: wp.array3d[wp.Float],
+    iso: wp.Float,
     table: wp.array[wp.int32],
     i: wp.int32,
     j: wp.int32,
@@ -923,8 +988,8 @@ def mc_cell_triangles(
 
 @wp.func
 def mc_node_counts(
-    field: wp.array3d[wp.float32],
-    iso: wp.float32,
+    field: wp.array3d[wp.Float],
+    iso: wp.Float,
     table: wp.array[wp.int32],
     i: wp.int32,
     j: wp.int32,
@@ -943,8 +1008,8 @@ def mc_node_counts(
 
 @wp.kernel
 def marching_cubes_counts(
-    field: wp.array3d[wp.float32],
-    iso: wp.float32,
+    field: wp.array3d[wp.Float],
+    iso: wp.Float,
     table: wp.array[wp.int32],
     out_counts: wp.array[wp.vec2i],
 ) -> None:
@@ -972,11 +1037,11 @@ def mc_vertex_end(
 
 @wp.func
 def mc_emit_node(
-    field: wp.array3d[wp.float32],
-    iso: wp.float32,
-    lower: wp.vec3,
-    delta: wp.vec3,
-    margin: wp.float32,
+    field: wp.array3d[wp.Float],
+    iso: wp.Float,
+    lower: Any,
+    delta: Any,
+    margin: wp.Float,
     table: wp.array[wp.int32],
     offsets: wp.array[wp.vec2i],
     words: wp.array[wp.uint32],
@@ -1033,11 +1098,11 @@ def mc_emit_node(
 
 @wp.kernel
 def marching_cubes_emit(
-    field: wp.array3d[wp.float32],
-    iso: wp.float32,
-    lower: wp.vec3,
-    delta: wp.vec3,
-    margin: wp.float32,
+    field: wp.array3d[wp.Float],
+    iso: wp.Float,
+    lower: Any,
+    delta: Any,
+    margin: wp.Float,
     table: wp.array[wp.int32],
     offsets: wp.array[wp.vec2i],
     no_words: wp.array[wp.uint32],
@@ -1066,8 +1131,8 @@ def marching_cubes_emit(
 # it to the extra readback. CPU 1.00x at 128**3, 0.86x at 256**3.
 @wp.kernel
 def marching_cubes_active(
-    field: wp.array3d[wp.float32],
-    iso: wp.float32,
+    field: wp.array3d[wp.Float],
+    iso: wp.Float,
     table: wp.array[wp.int32],
     out_words: wp.array[wp.uint32],
     out_word_counts: wp.array[wp.int32],
@@ -1087,8 +1152,8 @@ def marching_cubes_active(
 
 @wp.kernel
 def marching_cubes_active_counts(
-    field: wp.array3d[wp.float32],
-    iso: wp.float32,
+    field: wp.array3d[wp.Float],
+    iso: wp.Float,
     table: wp.array[wp.int32],
     words: wp.array[wp.uint32],
     word_ranks: wp.array[wp.int32],
@@ -1106,11 +1171,11 @@ def marching_cubes_active_counts(
 
 @wp.kernel
 def marching_cubes_emit_active(
-    field: wp.array3d[wp.float32],
-    iso: wp.float32,
-    lower: wp.vec3,
-    delta: wp.vec3,
-    margin: wp.float32,
+    field: wp.array3d[wp.Float],
+    iso: wp.Float,
+    lower: Any,
+    delta: Any,
+    margin: wp.Float,
     table: wp.array[wp.int32],
     words: wp.array[wp.uint32],
     word_ranks: wp.array[wp.int32],
@@ -1217,3 +1282,48 @@ def shell_mesh(
         shell_face(faces, n_vertices, t - n_vertices, out_faces)
     else:
         shell_band(boundary_edges, n_vertices, 6 * n_faces, t - n_vertices - n_faces, out_faces)
+
+
+# The classic extraction's kernels at each field precision, keyed by the field's dtype: a
+# ``float32`` field with ``wp.vec3`` corners (Warp's arithmetic), a ``float64`` one with
+# ``wp.vec3d``.
+MARCHING_CUBES_COUNTS: OverloadTable
+MARCHING_CUBES_EMIT: OverloadTable
+MARCHING_CUBES_ACTIVE: OverloadTable
+MARCHING_CUBES_ACTIVE_COUNTS: OverloadTable
+MARCHING_CUBES_EMIT_ACTIVE: OverloadTable
+
+
+def _register_overloads() -> None:
+    """Instantiate every concrete overload of this module's generic kernels."""
+    global MARCHING_CUBES_COUNTS, MARCHING_CUBES_EMIT, MARCHING_CUBES_ACTIVE
+    global MARCHING_CUBES_ACTIVE_COUNTS, MARCHING_CUBES_EMIT_ACTIVE
+    i32 = wp.array[wp.int32]
+    u32 = wp.array[wp.uint32]
+    pairs = wp.array[wp.vec2i]
+    out = [wp.array[wp.vec3], i32]
+    precisions = {wp.float32: wp.vec3, wp.float64: wp.vec3d}
+    MARCHING_CUBES_COUNTS = OverloadTable(
+        marching_cubes_counts, {d: [wp.array3d[d], d, i32, pairs] for d in precisions}
+    )
+    MARCHING_CUBES_EMIT = OverloadTable(
+        marching_cubes_emit,
+        {d: [wp.array3d[d], d, v, v, d, i32, pairs, u32, i32, *out] for d, v in precisions.items()},
+    )
+    MARCHING_CUBES_ACTIVE = OverloadTable(
+        marching_cubes_active, {d: [wp.array3d[d], d, i32, u32, i32] for d in precisions}
+    )
+    MARCHING_CUBES_ACTIVE_COUNTS = OverloadTable(
+        marching_cubes_active_counts,
+        {d: [wp.array3d[d], d, i32, u32, i32, i32, pairs] for d in precisions},
+    )
+    MARCHING_CUBES_EMIT_ACTIVE = OverloadTable(
+        marching_cubes_emit_active,
+        {
+            d: [wp.array3d[d], d, v, v, d, i32, u32, i32, i32, pairs, *out]
+            for d, v in precisions.items()
+        },
+    )
+
+
+_register_overloads()

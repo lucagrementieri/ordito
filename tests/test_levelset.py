@@ -563,6 +563,60 @@ def test_marching_cubes_lewiner_matches_classic_where_nothing_is_ambiguous(devic
     assert np.array_equal(wide_faces_wp.numpy(), faces_wp.numpy())
 
 
+def test_marching_cubes_float64_field_interpolates_in_float64(device: str) -> None:
+    """
+    Not a library comparison: no reference marches a ``float64`` field with Warp's tables.
+
+    The oracle is NumPy: one vertex per crossing edge, in Warp's order (row-major by the edge's
+    lower node, then by axis), at the ``float64`` crossing of the edge's two node positions,
+    rounded to ``float32``. The faces equal the ``float32`` extraction's of the same field rounded,
+    which has the same sides of ``iso`` at every node (asserted), so ``float64`` changes only
+    where a vertex sits on its edge. The bound is half a ``float32`` ulp at the coordinates' scale
+    of 1, 6e-8. Measured: 3.0e-8 worst (CPU bit-equal to the rounded oracle, CUDA on 97 % of the
+    vertices, its fused multiply-adds rounding the rest once less), where the ``float32``
+    extraction of the same field, interpolated in ``float32`` on ``float32`` corners, is 1.9e-7
+    off and fails it.
+    """
+    rng = np.random.default_rng(11)
+    shape = (17, 15, 13)
+    lower_np = np.array([-1.1, -0.9, -1.05])
+    upper_np = np.array([1.05, 1.2, 0.95])
+    axes_np = [np.linspace(lower_np[a], upper_np[a], shape[a]) for a in range(3)]
+    x_np, y_np, z_np = np.meshgrid(*axes_np, indexing="ij")
+    field_np = np.sqrt(x_np**2 + y_np**2 + z_np**2) - 0.7 + 1e-3 * rng.standard_normal(shape)
+    iso = 0.0123456789
+    bounds = (wp.vec3d(*lower_np.tolist()), wp.vec3d(*upper_np.tolist()))
+
+    vertices_wp, faces_wp = od.levelset.marching_cubes(
+        wp.array(field_np, dtype=wp.float64, device=device), iso, bounds=bounds
+    )
+    narrow_vertices_wp, narrow_faces_wp = od.levelset.marching_cubes(
+        wp.array(field_np, dtype=wp.float32, device=device), iso, bounds=bounds
+    )
+
+    above_np = field_np >= iso
+    assert np.array_equal(above_np, field_np.astype(np.float32) >= np.float32(iso))
+    step_np = (upper_np - lower_np) / (np.array(shape) - 1)
+    expected_np = []
+    for node in np.ndindex(*shape):
+        for axis in range(3):
+            other = list(node)
+            other[axis] += 1
+            if other[axis] >= shape[axis] or above_np[node] == above_np[tuple(other)]:
+                continue
+            here, there = field_np[node], field_np[tuple(other)]
+            t = (iso - here) / (there - here)
+            here_pos = lower_np + np.array(node) * step_np
+            there_pos = lower_np + np.array(other) * step_np
+            expected_np.append(here_pos + t * (there_pos - here_pos))
+    expected_np = np.array(expected_np)
+
+    assert expected_np.shape[0] > 400
+    assert np.allclose(vertices_wp.numpy(), expected_np, rtol=0.0, atol=6e-8)
+    assert not np.allclose(narrow_vertices_wp.numpy(), expected_np, rtol=0.0, atol=6e-8)
+    assert np.array_equal(faces_wp.numpy(), narrow_faces_wp.numpy())
+
+
 @pytest.mark.parametrize(
     ("shape", "dtype", "options", "error", "match"),
     [
@@ -588,7 +642,7 @@ def test_marching_cubes_lewiner_matches_classic_where_nothing_is_ambiguous(devic
         pytest.param(
             (9, 9, 9), np.float32, {"edge_margin": 0.5}, ValueError, "edge_margin", id="margin-half"
         ),
-        pytest.param((9, 9, 9), np.float64, {}, TypeError, None, id="classic-float64"),
+        pytest.param((9, 9, 9), np.int32, {}, TypeError, "float32 or float64", id="classic-int32"),
         pytest.param(
             (9, 9, 9),
             np.int32,
@@ -611,8 +665,8 @@ def test_marching_cubes_rejects_invalid_arguments(
     """
     Not a library comparison: the method menu, what each method takes, and the lattice's extent.
 
-    ``edge_margin`` must lie in ``[0, 0.5)``; the classic extraction takes only ``float32`` and
-    ``method="lewiner"`` a float field; a lattice must be at least two nodes wide on every axis.
+    ``edge_margin`` must lie in ``[0, 0.5)``; both methods take a ``float32`` or ``float64``
+    field; a lattice must be at least two nodes wide on every axis.
     """
     field_np = np.zeros(shape) if shape[0] < 2 else _sphere_field(shape[0], 0.7)
     field_wp = wp.array(field_np.astype(dtype), dtype=wp.dtype_from_numpy(dtype), device=device)
@@ -908,9 +962,15 @@ def test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice(
     "chooses its own lattice from a cell count, so a timed row would price two different grids. "
     "Its timed rows are in the resample_uniform group.",
 )
-@pytest.mark.parametrize("iso", [0.0, -0.05, 0.05])
+@pytest.mark.parametrize(
+    ("iso", "precision"),
+    [
+        *((iso, "float32") for iso in (0.0, -0.05, 0.05)),
+        *((iso, "float64") for iso in (0.0, -0.05, 0.05, 0.1)),
+    ],
+)
 def test_signed_distance_level_set_matches_igl_offset_surface(
-    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh], iso: float
+    device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh], iso: float, precision: str
 ) -> None:
     """
     Class A (up to numbering): ``igl.offset_surface``'s mesh, extracted on igl's own lattice.
@@ -927,23 +987,26 @@ def test_signed_distance_level_set_matches_igl_offset_surface(
     nearest neighbour: marching cubes puts one vertex on each crossed edge, so the edge *is* the
     vertex's identity in both extractions. A nearest-vertex map is not a bijection at ``0.05``,
     where two crossings sit 5e-6 of a cell from one node and so nearer each other than the
-    tolerance (6 faces mapped wrongly). Measured, worst vertex over both devices: 1.9e-05 at
-    ``0``, 8.9e-06 at ``-0.05``, 2.6e-05 at ``0.05`` (CUDA; 1.9e-05 CPU), against a tolerance of
-    at least 1.7e-06 + 1e-5 of the vertex's distance from the origin; the fields agree to 5.9e-07.
-    ``0.1`` matches the same way, counts and faces included, but one vertex lands 4.8e-05 away,
-    on a lattice edge whose two nodes both lie within 1.8e-4 of the level (a near-tangent edge),
-    so the crossing moves about 225 times as far as the field does (a 2.9e-4 step over a 0.066
-    cell). Ordito's field there is 2e-7 from igl's, but a ``float64`` field would not close it:
-    igl's own distance at the lattice ``float32`` ``bounds`` describe (each node 1.2e-7 from
-    igl's) still puts that vertex 2.8e-5 away, and a second one 4.7e-5. Only igl's ``float64``
-    lattice itself reproduces them (traced on both devices).
-    [`resample_uniform`][ordito.reconstruction.resample_uniform] builds this lattice itself under
-    ``method="igl"`` (``test_resample_uniform_igl_method_matches_igl_offset_surface``); its default
-    ``3``-cell padding keeps a Class C comparison.
+    tolerance (6 faces mapped wrongly).
+
+    ``bounds`` are handed at both precisions. As ``wp.vec3`` corners (the lattice rounded to
+    ``float32``) the worst vertex over both devices measured 1.9e-05 at ``0``, 8.9e-06 at
+    ``-0.05``, 2.6e-05 at ``0.05`` (CUDA; 1.9e-05 CPU), against a tolerance of at least 1.7e-06 +
+    1e-5 of the vertex's distance from the origin. ``0.1`` is out of reach there: one vertex lands
+    4.8e-05 away, on a lattice edge whose two nodes both lie within 1.8e-4 of the level (a
+    near-tangent edge), so the crossing moves about 225 times as far as the ``float32`` field and
+    lattice do. As igl's own ``float64`` corners (the ``float64`` band) the worst vertex is
+    1.7e-07 to 2.4e-07 at every level, ``0.1`` included, on both devices: the output's rounding to
+    ``float32``. That arm also holds the vertices within 1e-6 of igl's, about 4x the measured
+    worst.
 
     Non-vacuity is the surface itself. Mutation probe: ordito's lattice shifted half a cell along
     ``x`` fails the vertex count at every level. A whole node does not: the padded lattice samples
-    the same interior nodes and extracts the same mesh at ``0`` and ``-0.05``.
+    the same interior nodes and extracts the same mesh at ``0`` and ``-0.05``. Mutation probe of
+    the ``float64`` band, measured: no node refined (a reach of 0, so the ``float32`` values on
+    ``float64`` nodes) fails the 1e-6 bound at every level (8.6e-06 to 4.9e-05) and the tolerance
+    at ``0.1``. A reach of half an edge does not (worst 3.0e-07): it misses only nodes far along
+    their edge from the crossing, whose error moves a vertex least.
     """
     mesh_tm, mesh_wp = sphere_irregular
     vertices_igl, faces_igl = mesh_igl(mesh_tm)
@@ -957,11 +1020,15 @@ def test_signed_distance_level_set_matches_igl_offset_surface(
     grid_igl = igl.voxel_grid(vertices_igl, iso, cells, 1)
     lattice_igl, side_igl = np.asarray(grid_igl[0]), grid_igl[1]
     shape = cast("tuple[int, int, int]", tuple(int(n) for n in np.asarray(side_igl).ravel()))
-    lower = wp.vec3(*lattice_igl.min(axis=0).astype(np.float32).tolist())
-    upper = wp.vec3(*lattice_igl.max(axis=0).astype(np.float32).tolist())
+    lower_np, upper_np = lattice_igl.min(axis=0).tolist(), lattice_igl.max(axis=0).tolist()
+    bounds = (
+        (wp.vec3d(*lower_np), wp.vec3d(*upper_np))
+        if precision == "float64"
+        else (wp.vec3(*lower_np), wp.vec3(*upper_np))
+    )
 
     level_vertices_wp, level_faces_wp = od.levelset.signed_distance_level_set(
-        mesh_wp.points, mesh_wp.indices, iso, shape, bounds=(lower, upper)
+        mesh_wp.points, mesh_wp.indices, iso, shape, bounds=bounds
     )
 
     assert offset_faces_igl.shape[0] > 1000
@@ -971,6 +1038,8 @@ def test_signed_distance_level_set_matches_igl_offset_surface(
     distances = np.linalg.norm(level_vertices_np - matched_igl, axis=1)
     bound = ALLCLOSE_ATOL + ALLCLOSE_RTOL * np.linalg.norm(matched_igl, axis=1)
     assert np.all(distances <= bound)
+    if precision == "float64":
+        assert distances.max() < 1e-6
     faces_wp = wp.array(to_igl[level_faces_wp.numpy()].astype(np.int32), device=device)
     reference_faces_wp = wp.array(offset_faces_igl.ravel().astype(np.int32), device=device)
     assert od.equality.faces_equal(

@@ -2403,9 +2403,7 @@ def unpack_nearest_index(key: wp.int64) -> wp.int32:
 
 
 @wp.func
-def lattice_position(
-    lower: wp.vec3, step: wp.vec3, i: wp.int32, j: wp.int32, k: wp.int32
-) -> wp.vec3:
+def lattice_position(lower: Any, step: Any, i: wp.int32, j: wp.int32, k: wp.int32) -> Any:
     # World position of node ``(i, j, k)`` of a dense lattice whose node 0 sits at ``lower``.
     #
     # A **node** lattice, not a cell-centre one: there is no half-step shift, so a lattice of
@@ -2420,8 +2418,9 @@ def lattice_position(
     #
     # It differs from the two kernels that share it only in the *destination's rank* -- a flat
     # row-major buffer against a ``wp.array3d`` -- so each keeps its own indexing and shares the
-    # arithmetic.
-    return lower + wp.cw_mul(step, wp.vec3(wp.float32(i), wp.float32(j), wp.float32(k)))
+    # arithmetic. Generic over the precision: ``wp.vec3d`` corners give a ``float64`` position.
+    x = step[0]
+    return lower + wp.cw_mul(step, type(step)(type(x)(i), type(x)(j), type(x)(k)))
 
 
 def lattice_lower_and_step(

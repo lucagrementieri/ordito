@@ -26,6 +26,7 @@ from ordito.kernels.predicates import (
     closest_point_on_segment,
     is_in_aabb,
     is_strictly_inside_aabb,
+    point_triangle_offset,
     segment_aabb,
     triangle_aabb,
     triangle_triangle_distance_sq,
@@ -105,6 +106,41 @@ def closest_point_query(
         closest = wp.mesh_eval_position(mesh_id, query.face, query.u, query.v)
         return closest, wp.length(p - closest), query.face
     return p, max_dist, wp.int32(-1)
+
+
+@wp.func
+def face_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3d:
+    # ``p`` minus its closest point on one mesh face, in ``float64``.
+    corner = face * 3
+    a = wp.vec3d(wp.mesh_get_point(mesh_id, corner))
+    b = wp.vec3d(wp.mesh_get_point(mesh_id, corner + 1))
+    c = wp.vec3d(wp.mesh_get_point(mesh_id, corner + 2))
+    return point_triangle_offset(p, a, b, c)
+
+
+@wp.func
+def closest_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3d:
+    # ``p`` minus its exact closest point on the mesh, in ``float64``, from ``face``, the face a
+    # ``float32`` query of ``p`` answered (``closest_point_query``). That query is not exact: its
+    # face can be one whose true distance is a few 1e-5 longer, on a needle. So the face only
+    # bounds the answer: every face nearer than it meets the box of that radius about ``p``, and
+    # the nearest of those in ``float64`` is the closest point. The box grows by a relative
+    # ``1e-6`` to cover its own rounding to ``float32``. Shared by ``registration``'s landmark
+    # matches and ``levelset``'s ``float64`` lattice band.
+    best = face_offset_d(mesh_id, face, p)
+    best_sq = wp.length_sq(best)
+    radius = wp.sqrt(best_sq)
+    margin = wp.float64(1e-6) * (radius + wp.max(wp.abs(p[0]), wp.max(wp.abs(p[1]), wp.abs(p[2]))))
+    reach = wp.vec3d(radius + margin, radius + margin, radius + margin)
+    query = wp.mesh_query_aabb(mesh_id, wp.vec3(p - reach), wp.vec3(p + reach))
+    candidate = wp.int32(0)
+    while wp.mesh_query_next(query, candidate):
+        offset = face_offset_d(mesh_id, candidate, p)
+        offset_sq = wp.length_sq(offset)
+        if offset_sq < best_sq:
+            best = offset
+            best_sq = offset_sq
+    return best
 
 
 @wp.kernel

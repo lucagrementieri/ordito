@@ -4447,8 +4447,9 @@ def resample_uniform(
         ``offset`` and keeps every vertex off the lattice nodes, then cleans the extraction (see
         ``Notes``). ``"igl"`` is ``igl.offset_surface``'s: ``round(longest_extent / voxel_size)``
         nodes along the box's longest axis, one of them padding at each end, the box grown by
-        ``offset``, the lattice centred on it; the extraction is returned as marched, as igl does.
-        Its spacing is therefore near ``voxel_size`` rather than equal to it. ``"meshlib"`` is a
+        ``offset``, the lattice centred on it; the field is sampled and its crossings interpolated
+        in ``float64``, and the extraction is returned as marched, as igl does. Its spacing is
+        therefore near ``voxel_size`` rather than equal to it. ``"meshlib"`` is a
         voxel-centred lattice of exactly ``voxel_size``: the box grown by ``|offset|`` and then
         by two voxels a side, ``floor(width / voxel_size) + 1`` voxels an axis, a sample at each
         voxel's centre (all in ``float32``), the extraction returned as marched. ``"meshlab"``
@@ -4601,7 +4602,7 @@ def resample_uniform(
 
 def _igl_offset_lattice(
     lower: wp.vec3, upper: wp.vec3, offset: float, voxel_size: float
-) -> tuple[tuple[int, int, int], tuple[wp.vec3, wp.vec3]]:
+) -> tuple[tuple[int, int, int], tuple[wp.vec3d, wp.vec3d]]:
     """
     ``igl::voxel_grid(V, offset, s, 1)``'s node counts and corner nodes, with ``s`` from a spacing.
 
@@ -4609,7 +4610,8 @@ def _igl_offset_lattice(
     which is ``igl.offset_surface``'s ``s`` for that spacing. The box grows by ``offset``; its
     longest axis takes ``s - 2`` nodes and every other ``ceil`` of its share, one node of padding
     is added at each end, and the lattice, scaled by the axis that needs the widest spacing, is
-    centred on the box. Host arithmetic in ``float64``, as igl forms it.
+    centred on the box. Host arithmetic in ``float64``, as igl forms it, and the corners returned
+    at that precision, so the level set is sampled and interpolated in ``float64`` as igl's is.
     """
     low = [component - offset for component in odt.vec3_floats(lower)]
     high = [component + offset for component in odt.vec3_floats(upper)]
@@ -4633,8 +4635,8 @@ def _igl_offset_lattice(
     widest = max(range(3), key=lambda axis: (stretch[axis], -axis))
     span = [stretch[widest] * (side[axis] - 1.0) / (side[widest] - 1.0) for axis in range(3)]
     centre = [0.5 * (low[axis] + high[axis]) for axis in range(3)]
-    grid_lower = wp.vec3(*(centre[axis] - 0.5 * span[axis] for axis in range(3)))
-    grid_upper = wp.vec3(*(centre[axis] + 0.5 * span[axis] for axis in range(3)))
+    grid_lower = wp.vec3d(*(centre[axis] - 0.5 * span[axis] for axis in range(3)))
+    grid_upper = wp.vec3d(*(centre[axis] + 0.5 * span[axis] for axis in range(3)))
     return (side[0], side[1], side[2]), (grid_lower, grid_upper)
 
 

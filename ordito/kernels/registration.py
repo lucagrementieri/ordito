@@ -5,8 +5,8 @@ import warp as wp
 from ordito.constants import FLOAT32_INF_CONSTANT
 from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, binary_search_index_left
 from ordito.kernels.neighbors import bvh_nearest_point
-from ordito.kernels.predicates import normalize_or_zero, point_triangle_offset
-from ordito.kernels.proximity import closest_point_query
+from ordito.kernels.predicates import normalize_or_zero
+from ordito.kernels.proximity import closest_offset_d, closest_point_query
 from ordito.kernels.reduce import (
     ITEMS_PER_BLOCK_1D,
     block_chunk_1d,
@@ -820,45 +820,20 @@ vec6d = wp.types.vector(length=6, dtype=wp.float64)
 
 
 @wp.func
-def face_offset_d(mesh_id: wp.uint64, face: wp.int32, p: wp.vec3d) -> wp.vec3d:
-    # ``p`` minus its closest point on one mesh face, in ``float64``.
-    corner = face * 3
-    a = wp.vec3d(wp.mesh_get_point(mesh_id, corner))
-    b = wp.vec3d(wp.mesh_get_point(mesh_id, corner + 1))
-    c = wp.vec3d(wp.mesh_get_point(mesh_id, corner + 2))
-    return point_triangle_offset(p, a, b, c)
-
-
-@wp.func
 def landmark_match(
     index_id: wp.uint64, target_points: wp.array[wp.vec3], cloud: wp.bool, p: wp.vec3d
 ) -> wp.vec3d:
     # ``p``'s match on the target in ``float64``: the nearest target point, or the exact closest
     # point on the surface. ``icp_match``'s ``float32`` mesh query is not exact (its face can be
     # one whose true distance is a few 1e-5 longer, on a needle), and one landmark sent to another
-    # face moved a converging saddle by 1e-3 where VTK's exact locator did not. So its face only
-    # bounds the answer: every face nearer than it meets the box of that radius about ``p``, and
-    # the nearest of those in ``float64`` is the match. The box grows by a relative ``1e-6`` to
-    # cover its own rounding to ``float32``.
+    # face moved a converging saddle by 1e-3 where VTK's exact locator did not, so its face only
+    # seeds ``closest_offset_d``'s exact search.
     closest, _distance, index = icp_match(
         index_id, target_points, cloud, wp.vec3(p), FLOAT32_INF_CONSTANT
     )
     if cloud or index < 0:
         return wp.vec3d(closest)
-    best = face_offset_d(index_id, index, p)
-    best_sq = wp.length_sq(best)
-    radius = wp.sqrt(best_sq)
-    margin = wp.float64(1e-6) * (radius + wp.max(wp.abs(p[0]), wp.max(wp.abs(p[1]), wp.abs(p[2]))))
-    reach = wp.vec3d(radius + margin, radius + margin, radius + margin)
-    query = wp.mesh_query_aabb(index_id, wp.vec3(p - reach), wp.vec3(p + reach))
-    face = wp.int32(0)
-    while wp.mesh_query_next(query, face):
-        offset = face_offset_d(index_id, face, p)
-        offset_sq = wp.length_sq(offset)
-        if offset_sq < best_sq:
-            best = offset
-            best_sq = offset_sq
-    return p - best
+    return p - closest_offset_d(index_id, index, p)
 
 
 @wp.func

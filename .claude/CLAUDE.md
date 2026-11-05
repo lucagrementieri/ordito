@@ -965,10 +965,6 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **`signed_distance_level_set` against `igl.offset_surface` at `iso = 0.1`.** One vertex 4.8e-5
-  off on a near-tangent lattice edge; only igl's `float64` lattice reproduces it. Proposed: an
-  opt-in `float64` path through the whole extraction (`bounds`, node positions, distances,
-  `marching_cubes` interpolation), priced first (`float64` runs at 1/64 rate, §13.2).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

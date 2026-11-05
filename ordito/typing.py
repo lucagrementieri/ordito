@@ -68,6 +68,7 @@ if TYPE_CHECKING:
     Array2dFloat64: TypeAlias = wp.array[wp.float64, Literal[2]]
     Array2dVec3: TypeAlias = wp.array[wp.vec3, Literal[2]]
     Array3dFloat32: TypeAlias = wp.array[wp.float32, Literal[3]]
+    Array3dFloat64: TypeAlias = wp.array[wp.float64, Literal[3]]
     Array3dBool: TypeAlias = wp.array[wp.bool, Literal[3]]
 
     # wp.Int / wp.Float / wp.Scalar are TypeVars; subscripting wp.array[...] with them
@@ -131,6 +132,7 @@ else:
     Array2dFloat64 = wp.array
     Array2dVec3 = wp.array
     Array3dFloat32 = wp.array
+    Array3dFloat64 = wp.array
     Array3dBool = wp.array
     Array1dInt = wp.array
     Array2dInt = wp.array
@@ -306,6 +308,7 @@ __all__ = [
     "Array2dVec3",
     "Array3dBool",
     "Array3dFloat32",
+    "Array3dFloat64",
     "ArrayNd",
     "ArrayNdFloat",
     "ArrayNdFloat32",
