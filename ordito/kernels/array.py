@@ -399,6 +399,13 @@ def to_vec3(v: wp.vec3d) -> wp.vec3:
 
 
 @wp.func
+def next_up(x: wp.float32) -> wp.float32:
+    # The next ``float32`` above a finite non-negative ``x`` (``std::nextafter(x, FLT_MAX)``): one
+    # step of the bit pattern, which orders like the value for non-negative floats.
+    return wp.cast(wp.cast(x, wp.int32) + 1, wp.float32)
+
+
+@wp.func
 def ordered_float_bits(x: wp.float32) -> wp.uint32:
     """
     ``x``'s bits as an unsigned key ordered like the float, for a radix sort.

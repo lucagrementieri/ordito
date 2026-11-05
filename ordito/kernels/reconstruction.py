@@ -24,6 +24,7 @@ from ordito.kernels.array import (
     append_slot_if,
     cube_corner_offset,
     is_positive_finite,
+    next_up,
     ordered_float_bits,
     pack_triangle_key,
     ravel_index,
@@ -797,6 +798,19 @@ def build_local_triangulations(
     out_counts[v] = count
     out_grown_radius[v] = grown
     out_grown_flags[v] = wp.where(grown != 0.0, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def grown_query_radii(
+    grown_points: wp.array[wp.int32],
+    grown_radii: wp.array[wp.float32],
+    out_radii: wp.array[wp.float32],
+) -> None:
+    # Each grown fan's neighbour search stops one float above its own grown radius (whatever the
+    # walk's boundary test): the rows agree inside the radius with any wider search's, and the
+    # fan reads nothing past it.
+    i = wp.int32(wp.tid())
+    out_radii[i] = next_up(grown_radii[grown_points[i]])
 
 
 @wp.kernel(enable_backward=False)

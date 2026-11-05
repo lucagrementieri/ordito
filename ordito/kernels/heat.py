@@ -29,6 +29,7 @@ from ordito.kernels.array import (
     cross2,
     csr_key,
     divide_if_positive,
+    next_up,
     sorted_run_end,
     to_vec2,
     to_vec2d,
@@ -1028,13 +1029,6 @@ def seed_front_sources(
     if flag_out_of_range(v, out_labels.shape[0], out_invalid):
         return
     out_labels[v] = wp.float32(0.0)
-
-
-@wp.func
-def next_up(x: wp.float32) -> wp.float32:
-    # The next ``float32`` above a finite non-negative ``x`` (``std::nextafter(x, FLT_MAX)``): one
-    # step of the bit pattern, which orders like the value for non-negative floats.
-    return wp.cast(wp.cast(x, wp.int32) + 1, wp.float32)
 
 
 @wp.func

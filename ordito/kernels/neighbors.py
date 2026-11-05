@@ -588,6 +588,18 @@ def next_search_radius(worst: wp.float32, r: wp.float32, r_hard: wp.float32) -> 
 
 
 @wp.func
+def row_max_radius(
+    max_radius: wp.float32, row_radii: wp.array[wp.float32], row: wp.int32
+) -> wp.float32:
+    # Query ``row``'s search radius: ``max_radius``, or the row's own entry of ``row_radii`` when
+    # the caller gave one a row (an empty array otherwise), whichever is smaller.
+    radius = max_radius
+    if row_radii.shape[0] > 0:
+        radius = wp.min(max_radius, row_radii[row])
+    return radius
+
+
+@wp.func
 def search_radius_bounds(
     q: wp.vec3,
     min_bound: wp.vec3,
@@ -617,7 +629,8 @@ def query_bvh_nearest_neighbors(
     queries: wp.array[wp.vec3],
     bvh_id: wp.uint64,
     k: wp.int32,
-    max_radius: wp.float32,
+    query_max_radius: wp.float32,
+    row_radii: wp.array[wp.float32],
     initial_radius: wp.float32,
     min_bound: wp.vec3,
     max_bound: wp.vec3,
@@ -629,6 +642,7 @@ def query_bvh_nearest_neighbors(
     # this global-row form serves only ``k`` above the largest bucket, where the grid never
     # defers, so it takes the argument and ignores it.
     tid = wp.int32(wp.tid())
+    max_radius = row_max_radius(query_max_radius, row_radii, tid)
     q = queries[tid]
     out_indices_row = out_indices[tid]
     out_distances_row = out_distances[tid]
@@ -825,9 +839,13 @@ def _row_helpers(row_size: int) -> _RowHelpers:
 _ROW_HELPERS = {row_size: _row_helpers(row_size) for row_size in KNN_ROW_BUCKETS}
 
 
-def _bvh_nearest_row_kernel(row_size: int, name: str, deferred: bool):
+def _bvh_nearest_row_kernel(row_size: int, name: str, deferred: bool, per_row: bool = True):
     """
     ``K = row_size`` register-row variant of ``query_bvh_nearest_neighbors``.
+
+    ``per_row`` builds the variant that reads a per-row radius (``row_max_radius``); without it the
+    radius stays the launch's parameter, as the walk's inner test reads it: a radius computed into
+    a register for that test cost the 500 000-query ``k = 8`` walk 1.11x.
 
     ``deferred`` builds the variant that finishes a grid search's deferred rows (see ``finish``
     below). It is a separate kernel rather than a runtime branch because the closest-point query it
@@ -842,7 +860,8 @@ def _bvh_nearest_row_kernel(row_size: int, name: str, deferred: bool):
         queries: wp.array[wp.vec3],
         tree_id: wp.uint64,
         k: wp.int32,
-        max_radius: wp.float32,
+        query_max_radius: wp.float32,
+        row_radii: wp.array[wp.float32],
         initial_radius: wp.float32,
         min_bound: wp.vec3,
         max_bound: wp.vec3,
@@ -855,6 +874,10 @@ def _bvh_nearest_row_kernel(row_size: int, name: str, deferred: bool):
         # ``finish``, seeded as ``DEFERRED_ROW`` describes; for ``DEFERRED_FAR_ROW`` rows the
         # seed is the nearest-point descent over the same tree.
         tid = wp.int32(wp.tid())
+        if wp.static(per_row):
+            max_radius = row_max_radius(query_max_radius, row_radii, tid)
+        else:
+            max_radius = query_max_radius
         if wp.static(deferred):
             if out_indices[tid, 0] != finish:
                 return  # the grid already certified this row
@@ -927,7 +950,13 @@ def _bvh_nearest_row_kernel(row_size: int, name: str, deferred: bool):
 
 _BVH_NEAREST_ROW_KERNELS = {
     row_size: _bvh_nearest_row_kernel(
-        row_size, f"query_bvh_nearest_neighbors_row{row_size}", deferred=False
+        row_size, f"query_bvh_nearest_neighbors_row{row_size}", deferred=False, per_row=False
+    )
+    for row_size in KNN_ROW_BUCKETS
+}
+_BVH_NEAREST_PER_ROW_KERNELS = {
+    row_size: _bvh_nearest_row_kernel(
+        row_size, f"query_bvh_nearest_neighbors_per_row{row_size}", deferred=False
     )
     for row_size in KNN_ROW_BUCKETS
 }
@@ -939,11 +968,16 @@ _BVH_DEFERRED_ROW_KERNELS = {
 }
 
 
-def bvh_nearest_kernel(k: int) -> wp.Kernel:
-    """Register-row BVH k-NN kernel for the smallest bucket fitting ``k``, else global-row."""
+def bvh_nearest_kernel(k: int, per_row: bool = False) -> wp.Kernel:
+    """
+    Register-row BVH k-NN kernel for the smallest bucket fitting ``k``, else global-row.
+
+    ``per_row`` picks the row variant that reads a per-row radius (``_bvh_nearest_row_kernel``).
+    """
+    table = _BVH_NEAREST_PER_ROW_KERNELS if per_row else _BVH_NEAREST_ROW_KERNELS
     for row_size in KNN_ROW_BUCKETS:
         if k <= row_size:
-            return _BVH_NEAREST_ROW_KERNELS[row_size]
+            return table[row_size]
     return query_bvh_nearest_neighbors
 
 
@@ -1010,7 +1044,8 @@ def query_hashgrid_nearest_neighbors(
     queries: wp.array[wp.vec3],
     grid_id: wp.uint64,
     k: wp.int32,
-    max_radius: wp.float32,
+    query_max_radius: wp.float32,
+    row_radii: wp.array[wp.float32],
     initial_radius: wp.float32,
     widest: wp.float32,
     min_bound: wp.vec3,
@@ -1032,6 +1067,7 @@ def query_hashgrid_nearest_neighbors(
     if thread % lanes != 0:
         return
     tid = thread // lanes
+    max_radius = row_max_radius(query_max_radius, row_radii, tid)
     q = queries[tid]
     out_indices_row = out_indices[tid]
     out_distances_row = out_distances[tid]
@@ -1060,7 +1096,8 @@ def _hashgrid_nearest_row_kernel(row_size: int, name: str):
         queries: wp.array[wp.vec3],
         grid_id: wp.uint64,
         k: wp.int32,
-        max_radius: wp.float32,
+        query_max_radius: wp.float32,
+        row_radii: wp.array[wp.float32],
         initial_radius: wp.float32,
         widest: wp.float32,
         min_bound: wp.vec3,
@@ -1073,6 +1110,7 @@ def _hashgrid_nearest_row_kernel(row_size: int, name: str):
         out_distances: wp.array2d[wp.float32],
     ) -> None:
         tid = wp.int32(wp.tid())
+        max_radius = row_max_radius(query_max_radius, row_radii, tid)
         q = queries[tid]
         row_indices = vec_indices()
         row_distances = vec_distances()
@@ -1199,13 +1237,15 @@ def nearest_point_via_bvh(
     bvh_id: wp.uint64,
     points: wp.array[wp.vec3],
     queries: wp.array[wp.vec3],
-    max_radius: wp.float32,
+    query_max_radius: wp.float32,
+    row_radii: wp.array[wp.float32],
     out_indices: wp.array2d[wp.int32],
     out_distances: wp.array2d[wp.float32],
 ) -> None:
     # The ``k = 1`` rows the grid deferred, all ``DEFERRED_FAR_ROW`` (a nearest point inside the
     # walk certifies a ``k = 1`` row); ``query_nearest_via_bvh`` answers every row instead.
     tid = wp.int32(wp.tid())
+    max_radius = row_max_radius(query_max_radius, row_radii, tid)
     if out_indices[tid, 0] != DEFERRED_FAR_ROW:
         return
     index, distance = bvh_nearest_point(bvh_id, points, queries[tid], max_radius)
@@ -1232,7 +1272,8 @@ def query_nearest_via_bvh(
     bvh_id: wp.uint64,
     points: wp.array[wp.vec3],
     queries: wp.array[wp.vec3],
-    max_radius: wp.float32,
+    query_max_radius: wp.float32,
+    row_radii: wp.array[wp.float32],
     out_indices: wp.array2d[wp.int32],
     out_distances: wp.array2d[wp.float32],
 ) -> None:
@@ -1240,6 +1281,7 @@ def query_nearest_via_bvh(
     # Differs from ``nearest_point_via_bvh`` only in answering every row rather than the grid's
     # deferred ones, which saves a ``DEFERRED_FAR_ROW`` pre-fill of the output.
     tid = wp.int32(wp.tid())
+    max_radius = row_max_radius(query_max_radius, row_radii, tid)
     index, distance = bvh_nearest_point(bvh_id, points, queries[tid], max_radius)
     out_indices[tid, 0] = index
     out_distances[tid, 0] = distance

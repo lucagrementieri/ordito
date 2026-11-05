@@ -486,22 +486,26 @@ def _rebuild_grown_fans(
         return
     k_grown = min(max(2 * k, kernel_reconstruction.GROWN_NEIGHBOURS_MIN), points.size - 1)
     queries = od.array.gather(points, grown_points)
-    # Each fan keeps only the neighbours inside its own grown radius, so the search stops at the
-    # largest of them (one float above, whatever the walk's boundary test): the rows agree inside
-    # every fan's radius and the slots past it stay unfilled, which the fan skips. The few grown
-    # fans' walks otherwise run on to all ``k_grown`` neighbours, about 3x the query's time on
-    # 8 192-point crown clouds (fewer than 80 neighbours inside any grown radius).
-    largest_radius = od.reduce.max(od.array.gather(grown_radii, grown_points))
+    # Each fan keeps only the neighbours inside its own grown radius, so its search stops there
+    # (``kernel_reconstruction.grown_query_radii``): the rows agree inside the radius and the
+    # slots past it stay unfilled, which the fan skips. The walks otherwise run on to all
+    # ``k_grown`` neighbours, about 3x the query's time on 8 192-point crown clouds (fewer than 80
+    # neighbours inside any grown radius); stopped at the largest grown radius instead, a scanned
+    # cloud's queries took 4.5-5.2x (dragon, happy_buddha: the largest is 3-4x the median).
+    query_radii = _launch.empty(n_grown, dtype=wp.float32, device=points.device)
+    _launch.launch(
+        kernel_reconstruction.grown_query_radii,
+        dim=n_grown,
+        inputs=[grown_points, grown_radii],
+        outputs=[query_radii],
+        device=points.device,
+    )
     # Few grown fans get a warp each, so their serial optimizations do not wait on one another in
     # a shared warp. Measured on the rebuild kernel (CUDA): 182 fans (a crown cloud) 6.9 ms at one
     # lane, 1.35 at 32; 12 762 fans 5.6 at one, 3.7 at 8; 99 778 fans 7.4 at one, 9.5 at two.
     lanes = _launch.walk_lanes(n_grown)
     neighbor_idx, neighbor_dist = od.neighbors.query_nearest(
-        points,
-        queries,
-        k=k_grown + 1,
-        bounds=bounds,
-        max_radius=float(np.nextafter(np.float32(largest_radius), np.float32(np.inf))),
+        points, queries, k=k_grown + 1, bounds=bounds, max_radius=query_radii
     )
     _launch.launch(
         kernel_reconstruction.rebuild_grown_local_triangulations,

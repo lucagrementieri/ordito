@@ -688,6 +688,66 @@ def test_query_nearest_batch(
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
+@pytest.mark.parametrize("k", [1, 10, 70])
+@pytest.mark.parity("query_nearest_bvh_k7", "scipy")
+@pytest.mark.parity("query_nearest_hashgrid_k7", "scipy")
+def test_query_nearest_per_query_radius(device: str, backend: Literal["bvh", "hashgrid"], k: int):
+    """
+    Class A: a ``(m,)`` ``max_radius`` caps each row at its own radius, against ``KDTree.query``.
+
+    Each row is compared with SciPy's query of that row alone at its own
+    ``distance_upper_bound`` (a negative radius taken as empty, which SciPy reads as unbounded).
+    The radii span negative (nothing in range), zero, a few neighbours,
+    more than ``k`` and unbounded, so rows end filled, part-filled and empty (asserted). Half the
+    queries sit a cloud's width off a 20 000-point cloud, so under ``"hashgrid"`` the rows the
+    walk cannot certify go to the deferred finishes, which must read the row's radius too; ``k``
+    covers the single-neighbour descent, a register-row bucket and the global row past them.
+    Which slots are filled is compared exactly, the indices through the distances they name.
+    """
+    rng = np.random.default_rng(31)
+    points = rng.random((20_000, 3), dtype=np.float32)
+    queries = rng.random((300, 3), dtype=np.float32)
+    queries[150:] += np.float32(2.0)
+    nearest_kd = KDTree(points).query(queries, k=1)[0]
+    radii = (nearest_kd * rng.uniform(0.0, 6.0, size=queries.shape[0])).astype(np.float32)
+    radii[::7] = -1.0
+    radii[1::11] = 0.0
+    radii[2::13] = np.inf
+    kdtree = KDTree(points)
+    # SciPy answers a negative bound as if unbounded; a negative radius fills nothing here.
+    bounds_kd = np.maximum(radii, 0.0)
+    rows = [
+        kdtree.query(q, k=k, distance_upper_bound=r)
+        for q, r in zip(queries, bounds_kd, strict=True)
+    ]
+    distances_kd = np.array([np.atleast_1d(row[0]) for row in rows], dtype=np.float64)
+    indices_kd = np.array([np.atleast_1d(row[1]) for row in rows], dtype=np.int64)
+    indices_kd[indices_kd == points.shape[0]] = -1
+    indices_kd[radii < 0.0] = -1
+    distances_kd[radii < 0.0] = np.inf
+    filled = np.count_nonzero(indices_kd >= 0, axis=1)
+    assert (filled == 0).any()
+    assert (filled == k).any()
+    assert k == 1 or ((filled > 0) & (filled < k)).any()
+
+    indices_wp, distances_wp = od.neighbors.query_nearest(
+        points_to_warp(points, device),
+        points_to_warp(queries, device),
+        k=k,
+        backend=backend,
+        max_radius=wp.array(radii, dtype=wp.float32, device=device),
+    )
+    indices_np = indices_wp.numpy().reshape(queries.shape[0], k)
+    distances_np = distances_wp.numpy().reshape(queries.shape[0], k)
+    assert np.array_equal(indices_np >= 0, indices_kd >= 0)
+    assert np.allclose(distances_np, distances_kd, rtol=1e-5, atol=1e-5)
+    # Indices through the distance they name: a float32 near-tie among the far rows' neighbours
+    # may order two differently from the float64 tree, which the distance row cannot see.
+    named = np.linalg.norm(points[np.maximum(indices_np, 0)] - queries[:, None], axis=2)
+    assert np.allclose(named[indices_np >= 0], distances_kd[indices_kd >= 0], rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
 @pytest.mark.parametrize("k", [1, 4, 8, 9, 16, 17, 32, 33, 64, 65])
 @pytest.mark.parity("query_nearest_bvh_k7", "scipy")
 @pytest.mark.parity("query_nearest_hashgrid_k7", "scipy")
@@ -1069,6 +1129,7 @@ def test_knn_sorted_insert_rejects_nan_instead_of_writing_past_its_row(device: s
             grid.id,
             wp.int32(k),
             wp.float32(1e30),
+            None,  # no per-row radius
             wp.float32(0.05),
             wp.float32(1.0),
             wp.vec3(0.0, 0.0, 0.0),

@@ -1109,7 +1109,7 @@ def query_nearest(
     *,
     accelerator: wp.HashGrid | wp.Bvh | None = ...,
     backend: QueryBackend | None = ...,
-    max_radius: float = ...,
+    max_radius: float | wp.array[wp.float32] = ...,
     grid_bins: int | None = ...,
     leaf_size: int | None = ...,
     initial_radius: float | None = ...,
@@ -1123,7 +1123,7 @@ def query_nearest(
     *,
     accelerator: wp.HashGrid | wp.Bvh | None = ...,
     backend: QueryBackend | None = ...,
-    max_radius: float = ...,
+    max_radius: float | wp.array[wp.float32] = ...,
     grid_bins: int | None = ...,
     leaf_size: int | None = ...,
     initial_radius: float | None = ...,
@@ -1139,7 +1139,7 @@ def query_nearest(
     *,
     accelerator: wp.HashGrid | wp.Bvh | None = ...,
     backend: QueryBackend | None = ...,
-    max_radius: float = ...,
+    max_radius: float | wp.array[wp.float32] = ...,
     grid_bins: int | None = ...,
     leaf_size: int | None = ...,
     initial_radius: float | None = ...,
@@ -1152,7 +1152,7 @@ def query_nearest(
     *,
     accelerator: wp.HashGrid | wp.Bvh | None = None,
     backend: QueryBackend | None = None,
-    max_radius: float = math.inf,
+    max_radius: float | wp.array[wp.float32] = math.inf,
     grid_bins: int | None = None,
     leaf_size: int | None = None,
     initial_radius: float | None = None,
@@ -1205,7 +1205,9 @@ def query_nearest(
         above.
     max_radius
         Stop deepening past this distance and leave the remaining slots unfilled (index ``-1``,
-        distance ``inf``). Defaults to unbounded.
+        distance ``inf``). Defaults to unbounded. A ``(m,)`` ``float32`` array gives each query
+        its own (``(1,)`` for a single ``wp.vec3`` query); a negative entry fills nothing in its
+        row. The rows inside a smaller radius are those a larger one finds, cut there.
     grid_bins
         Grid resolution when building a hash grid; ``None`` sizes it from the point count, as in
         [`hashgrid_from_points`][ordito.neighbors.hashgrid_from_points]. Ignored under
@@ -1248,11 +1250,14 @@ def query_nearest(
 
     Raises
     ------
+    TypeError
+        If ``max_radius`` is an array but not ``float32``.
     ValueError
-        If ``k < 1``, ``max_radius < 0``, ``initial_radius < 0``, or ``backend`` is neither name or
-        contradicts the type of ``accelerator``.
+        If ``k < 1``, ``max_radius < 0``, ``initial_radius < 0``, ``backend`` is neither name or
+        contradicts the type of ``accelerator``, or ``max_radius`` is an array but not ``(m,)``.
     RuntimeError
-        If ``points``, ``queries`` and ``accelerator`` are not all on one device.
+        If ``points``, ``queries``, ``accelerator`` and a ``max_radius`` array are not all on one
+        device.
 
     See Also
     --------
@@ -1297,9 +1302,15 @@ def query_nearest(
     print(distances.numpy()[1].tolist())  # [1.0, inf, inf]
     ```
     """
-    require_same_device(points=points, queries=queries, accelerator=accelerator)
+    # Every kernel takes the radius as a bound and, per row, the smaller of it and the row's entry
+    # (``kernel_neighbors.row_max_radius``); ``None`` is the empty array that leaves the bound.
+    row_radii = max_radius if isinstance(max_radius, wp.array) else None
+    bound = math.inf if isinstance(max_radius, wp.array) else float(max_radius)
+    require_same_device(
+        points=points, queries=queries, accelerator=accelerator, max_radius=row_radii
+    )
     kind, resolved = _resolve_accelerator(accelerator, backend)
-    _validate_nearest(k, max_radius, initial_radius)
+    _validate_nearest(k, bound, initial_radius)
 
     device = points.device
     single_query = not isinstance(queries, wp.array)
@@ -1308,6 +1319,11 @@ def query_nearest(
 
     m = queries.size
     n = points.size
+    if row_radii is not None:
+        if row_radii.dtype != wp.float32:
+            raise TypeError(f"a max_radius array must be float32, got {row_radii.dtype}")
+        if row_radii.ndim != 1 or row_radii.size != m:
+            raise ValueError(f"a max_radius array must be ({m},), got {row_radii.shape}")
 
     # Both degenerate inputs answer "every slot unfilled" over `(m, k)`, which is empty of its own
     # accord when there are no queries -- and both must go through the same shaping as the general
@@ -1329,7 +1345,7 @@ def query_nearest(
         _launch.launch(
             kernel_neighbors.query_nearest_via_bvh,
             dim=m,
-            inputs=[tree.id, points, queries, wp.float32(max_radius)],
+            inputs=[tree.id, points, queries, wp.float32(bound), row_radii],
             outputs=[neighbor_indices, neighbor_distances],
             device=device,
             block_dim=_descent_block_dim(m, device),
@@ -1343,13 +1359,13 @@ def query_nearest(
     if initial_radius is None:
         initial_radius = knn_initial_radius(points, k, bounds=bounds)
     search = [points, queries]
-    shared = [wp.int32(k), wp.float32(max_radius), wp.float32(initial_radius)]
+    shared = [wp.int32(k), wp.float32(bound), row_radii, wp.float32(initial_radius)]
     outputs = [neighbor_indices, neighbor_distances]
     if kind == "bvh":
         bvh = resolved if resolved is not None else _nearest_bvh(points, leaf_size)
         # The BVH follows an unbounded radius, so it needs no linear-scan cutover argument.
         _launch.launch(
-            kernel_neighbors.bvh_nearest_kernel(k),
+            kernel_neighbors.bvh_nearest_kernel(k, per_row=row_radii is not None),
             dim=m,
             inputs=[*search, bvh.id, *shared, min_bound, max_bound, wp.int32(0), *outputs],
             device=device,
@@ -1456,7 +1472,8 @@ def query_nearest(
             points,
             queries,
             k,
-            max_radius,
+            bound,
+            row_radii,
             initial_radius,
             (min_bound, max_bound),
             leaf_size,
@@ -1488,6 +1505,7 @@ def _finish_deferred_nearest(
     queries: wp.array[wp.vec3],
     k: int,
     max_radius: float,
+    row_radii: wp.array[wp.float32] | None,
     initial_radius: float,
     bounds: tuple[wp.vec3, wp.vec3],
     leaf_size: int | None,
@@ -1502,7 +1520,8 @@ def _finish_deferred_nearest(
     whole cloud: a query set the grid certified in full pays only that read. A row
     whose walk held a point goes to the BVH's ball search seeded from the walk; a row with no point
     inside the walk goes to a nearest-point descent of a point tree with one point a leaf -- the
-    whole answer at ``k = 1``, the ball's seed above it, walked over the same tree.
+    whole answer at ``k = 1``, the ball's seed above it, walked over the same tree. ``row_radii``
+    is [`query_nearest`][ordito.neighbors.query_nearest]'s per-row radius, or ``None``.
     """
     # The one sync deferral adds, and it decides whether a whole-cloud build is needed.
     if k == 1:
@@ -1519,7 +1538,7 @@ def _finish_deferred_nearest(
         _launch.launch(
             kernel_neighbors.nearest_point_via_bvh,
             dim=m,
-            inputs=[tree.id, points, queries, wp.float32(max_radius)],
+            inputs=[tree.id, points, queries, wp.float32(max_radius), row_radii],
             outputs=[neighbor_indices, neighbor_distances],
             device=device,
         )
@@ -1542,6 +1561,7 @@ def _finish_deferred_nearest(
                 tree.id,
                 wp.int32(k),
                 wp.float32(max_radius),
+                row_radii,
                 wp.float32(initial_radius),
                 bounds[0],
                 bounds[1],
