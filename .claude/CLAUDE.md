@@ -942,6 +942,10 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   valence 1 200, `harmonic(k=2)`, steps 123 -> 4 us; with `kernels/energies.sandwich_long_rows`
   (the biharmonic product's 1.44 M-triplet hub row a block, 124 ms a thread) the call 985 -> 68 ms,
   byte-identical operator. The one-block solve cannot hold a long row on CUDA (1 024 rows at most).
+  The pieces' last block folds with every lane (one lane's fold waited on each partial): 9.5 ->
+  8.8 us a launch, the floor being the fence-and-ticket chain of a small launch, 1.7x the 5.2 us
+  step beside it. Row-a-thread work that runs once a call is declined on a hub: §16's closing
+  inventory is in `reference/component-status.md` ("Hub rows outside the solver steps").
 - **Solvers:** a single-level polynomial preconditioner wins on long solves; a Chebyshev multigrid smoother loses (no single `(degree, interval)` is robust). A small synthetic system can mislead.
 - **Refuted, do not re-propose:** a single-block BFS drain, a one-block hole-fill DP and merged-level blocked interval DPs (the grid must stay full); voxel aggregation for multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches.
 - **Producer-consumer fusion:** always fuse consecutive same-`dim` launches where the consumer reads the producer only at its own index; every pair measured was faster. Price the fused region, not the call containing it, and cross-check kernel and allocation counts. Also fold a map into its consumer, merge two launches of one kernel into a wider one, and walk-and-reduce neighbour lists in one thread per query. A fusion that changes a slot or box index needs a debug-mode run. Inline single-caller helpers it leaves behind; fold-on-read loses on dependent chases.
@@ -1012,17 +1016,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   component sums): whether it should test peers (`warp_peer_lanes`) rather than a uniform warp.
   The uniform form was priced on one hot group, components and random groups; the corner sites
   (§14) say to expect a loss wherever the kernel has work of its own.
-- **Hub rows outside the solver steps** (2026-11-05). `min_quad_with_fixed` on `fan_hub`'s
-  negated cotangent Laplacian, 1 % pinned (40 k free rows), 84 ms a call against `sphere_med`'s
-  5 ms: 350 rounds against 40, and one-off row-a-thread kernels around the solve that walk the
-  hub (`interior_partition_system` 14 ms, `refresh_pooled_operator_bound` 8 ms, `cg_initial` 6 ms,
-  `backward_error_exceeds` 5 ms). `preconditioner="multigrid"` there: its setup, not the V-cycle
-  apply, is the cost (`count_row_entries` 32 ms, `smoothed_prolongator_keys` 25,
-  `write_structure_paths` 22, `mis_propagate_states` 7 x 10, `power_step`), and the solve reached
-  1 000 rounds and fell back to a factorization. `harmonic(k=2)` on a disk fan of hub valence
-  1 200: 68 ms against 31 ms with the hub pinned (the rest of the gap). Each is a row-a-thread
-  kernel to give a block-per-long-row sibling (§14's long-row item and the sandwich's form); none
-  is a solver step, so each costs once a call.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

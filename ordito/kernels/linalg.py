@@ -491,9 +491,10 @@ def long_row_piece_total(
     # A block's piece of a long row against one column of ``x`` (every lane must call it): its
     # lanes stride the piece and the block sums them, lane 0 stores the sum in its slot of
     # ``partials`` (``slot_offset`` past the column's) and takes a ticket on the row's counter.
-    # The block drawing the row's last ticket folds its pieces in piece order and resets the
+    # The block drawing the row's last ticket folds its pieces in a fixed tree and resets the
     # counter: returns 1 and the row's sum in that block's lane 0, 0 elsewhere. A fixed order, so
-    # the result repeats; it differs from the one-thread order in its last bits.
+    # the result repeats; it differs from the one-thread order in its last bits. Block-collective:
+    # every lane of every block reaches it.
     row = piece[0]
     first = slot_offset + piece[1]
     start = offsets[row] + piece[2] * CSR_LONG_ROW_PIECE
@@ -502,19 +503,25 @@ def long_row_piece_total(
     for k in range(start + lane, end, wp.block_dim()):
         partial += x.dtype(values[k]) * x[x_offset + columns[k]]
     total = block_sum(partial)
+    n_pieces = long_row_piece_count(offsets, row)
     last = wp.int32(0)
     if lane == 0:
         partials[first + piece[2]] = wp.float64(total)
-        n_pieces = long_row_piece_count(offsets, row)
         thread_fence()
         if wp.atomic_add(tickets, first, 1) == n_pieces - 1:
-            thread_fence()
-            folded = wp.float64(0.0)
-            for k in range(n_pieces):
-                folded += partials[first + k]
-            tickets[first] = 0
-            total = x.dtype(folded)
             last = 1
+    # Every lane of the last block folds: its lanes load the pieces at once (one lane walking them
+    # waited on each load in turn, 9.5 us a launch at 41 pieces) and the block sums them in a fixed
+    # tree.
+    last = block_sum(last)
+    if last != 0:
+        thread_fence()
+        folded = wp.float64(0.0)
+        for k in range(lane, n_pieces, wp.block_dim()):
+            folded += partials[first + k]
+        total = x.dtype(block_sum(folded))
+        if lane == 0:
+            tickets[first] = 0
     return last, total
 
 
