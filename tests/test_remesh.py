@@ -1524,8 +1524,8 @@ def test_cluster_decimate_average_is_reproducible_when_deterministic(
     ``float32`` round-off and, on the CPU device, bit for bit, since the fixed order there is the
     ascending vertex order its atomics commit in. Without it every CUDA call returned different
     positions. The fine cells hold up to 23 vertices, each added by one thread; the coarsest cell
-    holds 139, past ``kernels/remesh.CLUSTER_SERIAL_MAX``, so a block's strided lanes and fold add
-    it. MeshLab's mean adds a cell's face corners, three a face, in the same two forms.
+    holds 139, past ``kernels/scatter.SORTED_RUN_SERIAL_MAX``, so a block's strided lanes and fold
+    add it. MeshLab's mean adds a cell's face corners, three a face, in the same two forms.
     """
     mesh_tm, mesh_wp = sphere_irregular
     voxel_size = voxel_fraction * float(np.linalg.norm(mesh_tm.extents))

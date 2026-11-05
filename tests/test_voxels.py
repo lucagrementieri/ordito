@@ -43,6 +43,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
+from ordito.kernels import scatter as kernel_scatter
 from tests.comparisons import assert_nonconstant, lexsort_rows
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -521,14 +522,22 @@ def test_voxel_down_sample_pooling_modes(
     assert np.allclose(total, average.numpy() * counts[:, None], rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("voxel_size", [0.15, 0.8])
 def test_voxel_down_sample_mean_is_reproducible(
-    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str, voxel_size: float
 ):
-    """The deterministic branch is bitwise stable: no float atomics in the ``mean`` reduce."""
+    """
+    Not a library comparison: the ``mean`` reduce is bitwise stable run to run.
+
+    No float atomics: each voxel is added in a fixed order, by one thread or, past
+    ``kernels/scatter.SORTED_RUN_SERIAL_MAX`` points (the 0.8 voxels, asserted), by a block.
+    """
     mesh_tm, _vertices_wp, _faces_wp = sphere
-    _points_np, points_wp = _cloud(mesh_tm, device, n=8000)
-    first = od.voxels.voxel_down_sample(points_wp, 0.15).numpy()
-    second = od.voxels.voxel_down_sample(points_wp, 0.15).numpy()
+    points_np, points_wp = _cloud(mesh_tm, device, n=8000)
+    crowded = np.unique(np.floor(points_np / voxel_size), axis=0, return_counts=True)[1].max()
+    assert (crowded > kernel_scatter.SORTED_RUN_SERIAL_MAX) == (voxel_size > 0.5)
+    first = od.voxels.voxel_down_sample(points_wp, voxel_size).numpy()
+    second = od.voxels.voxel_down_sample(points_wp, voxel_size).numpy()
     assert np.array_equal(first, second)
 
 
@@ -562,8 +571,9 @@ def test_voxel_down_sample_spanning_root_tiles_matches_numpy(device: str):
 
 
 @pytest.mark.parametrize("pooling", ["min", "max", "mean"])
+@pytest.mark.parametrize("n_points", [500, 20_000])
 def test_pool_by_voxel_matches_a_numpy_group_by(
-    device: str, pooling: Literal["min", "max", "mean"]
+    device: str, pooling: Literal["min", "max", "mean"], n_points: int
 ):
     """
     Class B: ``min`` / ``max`` / ``mean`` pooling is a NumPy group-by, matched through cell rows.
@@ -571,11 +581,12 @@ def test_pool_by_voxel_matches_a_numpy_group_by(
     The payload is independent of the positions, every voxel but one is reached, and one point lies
     outside the grid carrying a large value, so a sentinel bucket leak (an outside point must
     contribute nothing), a missed reset of an unreached voxel (it must read zero, not ``+-inf`` or
-    a ``0 / 0``) or a swapped reduction all fail.
+    a ``0 / 0``) or a swapped reduction all fail. At 20 000 points every voxel holds past
+    ``kernels/scatter.SORTED_RUN_SERIAL_MAX`` (asserted), so the mean is a block's strided sum.
     """
     rng = np.random.default_rng(32)
-    points_np = rng.uniform(0.0, 3.0, (500, 3)).astype(np.float32)
-    values_np = rng.normal(size=(500, 3)).astype(np.float32)
+    points_np = rng.uniform(0.0, 3.0, (n_points, 3)).astype(np.float32)
+    values_np = rng.normal(size=(n_points, 3)).astype(np.float32)
     cells_np = np.floor(points_np).astype(np.int32)
     grid_cells_np = np.vstack((np.unique(cells_np, axis=0), [[9, 9, 9]])).astype(np.int32)
     grid = od.voxels.from_cells(
@@ -602,6 +613,8 @@ def test_pool_by_voxel_matches_a_numpy_group_by(
     }
     reference[(9, 9, 9)] = np.zeros(3)
     assert len(reference) == 28  # non-vacuity: 27 reached voxels plus the unreached one
+    smallest_np = np.unique(cells_np, axis=0, return_counts=True)[1].min()
+    assert (smallest_np > kernel_scatter.SORTED_RUN_SERIAL_MAX) == (n_points > 500)
     expected_np = np.array([reference[row] for row in rows])
     assert np.allclose(pooled_wp, expected_np, rtol=1e-5, atol=1e-5)
 

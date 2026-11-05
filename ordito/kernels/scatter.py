@@ -4,6 +4,7 @@ import warp as wp
 
 from ordito.kernels.array import (
     OverloadTable,
+    append_slot,
     atomic_min_packed_box,
     binary_search_index_left,
     mark_at,
@@ -17,6 +18,7 @@ from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next
 from ordito.kernels.reduce import (
     GroupSumPass,
     add_group_sum_term,
+    block_sum,
     device_is_cpu,
     group_sum_field,
     group_sum_group_field,
@@ -1040,3 +1042,112 @@ def _register_overloads() -> None:
 
 
 _register_overloads()
+
+
+# --------------------------------------------------------------------------------------
+# Sorted runs added in a fixed order
+#
+# A stably sorted key list groups each output's items in ascending order, a run per output; the run
+# sums below add each run in one fixed order, so the result repeats bit for bit run to run without
+# a float atomic. A run of at most ``SORTED_RUN_SERIAL_MAX`` items is added by one thread
+# (``sorted_run_sums``), a longer one by a block of ``HEAVY_RUN_BLOCK_DIM`` lanes
+# (``heavy_run_sums``), at most ``HEAVY_RUN_BLOCKS`` blocks striding the list of long runs. Swept on
+# CUDA over cells of 2 and 6 mean edges and of 10 % and 30 % of the diagonal on ``dragon`` and
+# ``lucy`` (``remesh.cluster_decimate``): a block per run at every size cost 1.6-3.3x the atomic
+# scatter on fine cells (32-256 lanes, mostly idle over a few items), a thread per run up to 40x on
+# coarse ones (one serial walk over most of the mesh); split at 128 the ordered mean costs
+# 1.05-1.17x the scatter on fine cells and 0.1-0.7x on coarse ones, where the scatter's atomics
+# pile onto a few addresses. Serial bounds of 16-32 handed too many short runs to blocks (up to
+# 2.3x at ``lucy`` / 6 edges); 64-256 measured alike. The split decides each run's summation
+# order, so it is a fixed constant, not a device query. The CPU device runs one lane a block,
+# which adds a long run in ascending order like a short one.
+# --------------------------------------------------------------------------------------
+SORTED_RUN_SERIAL_MAX = 128
+HEAVY_RUN_BLOCK_DIM = 256
+HEAVY_RUN_BLOCKS = 4096
+
+
+@wp.func
+def sorted_run(sorted_keys: wp.array[wp.int32], r: wp.int32) -> tuple[wp.int32, wp.int32]:
+    # Output ``r``'s run ``[start, stop)`` in a stably sorted key list, empty when no item has it.
+    return binary_search_index_left(sorted_keys, r), binary_search_index_left(sorted_keys, r + 1)
+
+
+@wp.func
+def strided_run_sum(
+    values: wp.array[wp.vec3],
+    order: wp.array[wp.int32],
+    first: wp.int32,
+    stop: wp.int32,
+    stride: wp.int32,
+) -> wp.vec3:
+    # Every ``stride``-th item of a sorted run from ``first``, added in ascending order from zero:
+    # the whole run at stride one, one lane's share of it at the block's width.
+    total = wp.vec3(0.0)
+    for i in range(first, stop, stride):
+        total += values[order[i]]
+    return total
+
+
+@wp.func
+def mean_from_sum(total: wp.vec3, count: wp.int32) -> wp.vec3:
+    # A group's mean from its sum and count, dividing by the count converted in place rather than
+    # by a separately materialised ``float32`` copy of the counts.
+    return total / wp.float32(count)
+
+
+@wp.func
+def finish_run_sum(total: wp.vec3, count: wp.int32, average: wp.bool) -> wp.vec3:
+    # A run's sum, or with ``average`` its mean; an empty run stays zero.
+    result = total
+    if average and count > 0:
+        result = mean_from_sum(total, count)
+    return result
+
+
+@wp.kernel
+def sorted_run_sums(
+    values: wp.array[wp.vec3],
+    sorted_keys: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    serial_max: wp.int32,
+    average: wp.bool,
+    out_values: wp.array[wp.vec3],
+    out_heavy_count: wp.array[wp.int32],
+    out_heavy: wp.array[wp.int32],
+) -> None:
+    # A thread per output: a run of at most ``serial_max`` items is added here in ascending order,
+    # and a longer one is appended to ``out_heavy`` (``out_heavy_count`` caller-zeroed) for
+    # ``heavy_run_sums``. The list's arrival order reaches no sum: each long run is added by one
+    # block in its own fixed order, whichever block takes it.
+    r = wp.int32(wp.tid())
+    start, stop = sorted_run(sorted_keys, r)
+    if stop - start > serial_max:
+        out_heavy[append_slot(out_heavy_count, 0)] = r
+        return
+    total = strided_run_sum(values, order, start, stop, wp.int32(1))
+    out_values[r] = finish_run_sum(total, stop - start, average)
+
+
+@wp.kernel
+def heavy_run_sums(
+    values: wp.array[wp.vec3],
+    sorted_keys: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    heavy_count: wp.array[wp.int32],
+    heavy: wp.array[wp.int32],
+    n_blocks: wp.int32,
+    average: wp.bool,
+    out_values: wp.array[wp.vec3],
+) -> None:
+    # The runs ``sorted_run_sums`` left, a block per run over ``n_blocks`` blocks striding the list:
+    # each lane adds every ``wp.block_dim()``-th item of the run in ascending order, and the block
+    # folds the lanes' sums in its fixed tree. The list's length is uniform over a block, so every
+    # lane reaches the fold.
+    b, lane = wp.tid()
+    for k in range(b, heavy_count[0], n_blocks):
+        r = heavy[k]
+        start, stop = sorted_run(sorted_keys, r)
+        total = block_sum(strided_run_sum(values, order, start + lane, stop, wp.block_dim()))
+        if lane == 0:
+            out_values[r] = finish_run_sum(total, stop - start, average)

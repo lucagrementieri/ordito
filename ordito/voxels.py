@@ -386,9 +386,11 @@ def voxel_down_sample(
     Notes
     -----
     ``"mean"`` and ``"sum"`` are bitwise reproducible run to run: they sort the points by voxel and
-    reduce each segment in index order rather than accumulating with float atomics, whose ordering
-    varies between launches. That costs one radix sort over the point count. ``"min"`` and ``"max"``
-    use atomics directly, since those are order-independent for floats.
+    add each voxel's points in one fixed order rather than accumulating with float atomics, whose
+    ordering varies between launches. That costs one radix sort over the point count. A voxel of up
+    to 128 points is added in index order; a more crowded one is split across parallel lanes, also
+    in a fixed order, so on CUDA its last bits can differ from the CPU device's. ``"min"`` and
+    ``"max"`` use atomics directly, since those are order-independent for floats.
 
     Examples
     --------
@@ -689,12 +691,14 @@ def _segment_pool(
     average: bool,
 ) -> wp.array[wp.vec3]:
     """
-    Sort the bucketed points by voxel and reduce each voxel's segment in index order.
+    Sort the bucketed points by voxel and reduce each voxel's segment in a fixed order.
 
     The mean/sum tail shared by [`pool_by_voxel`][ordito.voxels.pool_by_voxel] and
     [`voxel_down_sample`][ordito.voxels.voxel_down_sample]: ``buckets`` / ``order`` are the two
     ``2 * n_points`` sort buffers their bucketing launch seeded, a point outside the grid in the
-    sentinel bucket ``n_voxels``. The segments are read off the sorted buckets, so no histogram.
+    sentinel bucket ``n_voxels``. The segments are read off the sorted buckets, so no histogram. A
+    voxel of a few points is added by one thread and a crowded one by a block, each in its own
+    fixed order (``kernels/scatter.sorted_run_sums``).
     """
     n_points = values.size
     # Stable, so each voxel's segment lists its points in index order.
@@ -702,14 +706,37 @@ def _segment_pool(
     _launch.radix_sort_pairs(
         buckets, order, count=n_points, end_bit=max(1, int(n_voxels).bit_length())
     )
-    pooled = _launch.empty(n_voxels, dtype=wp.vec3, device=values.device)
+    device = values.device
+    pooled = _launch.empty(n_voxels, dtype=wp.vec3, device=device)
+    sorted_buckets = _launch.view(buckets, 0, n_points)
+    # The long runs' list and its count take the sort's free upper halves (a voxel holds a point,
+    # so there are never more voxels than points).
+    heavy = _launch.view(buckets, n_points, 2 * n_points)
+    heavy_count = _launch.view(order, n_points, n_points + 1)
+    _launch.zero_(heavy_count)
     _launch.launch(
-        kernel_voxels.segment_reduce_vec3,
+        kernel_scatter.sorted_run_sums,
         dim=n_voxels,
-        inputs=[order, values, buckets[:n_points], average],
-        outputs=[pooled],
-        device=values.device,
+        inputs=[values, sorted_buckets, order, kernel_scatter.SORTED_RUN_SERIAL_MAX, average],
+        outputs=[pooled, heavy_count, heavy],
+        device=device,
     )
+    # At most this many voxels hold more points than the serial bound, and a grid this wide
+    # strides them.
+    n_blocks = min(
+        n_voxels,
+        n_points // (kernel_scatter.SORTED_RUN_SERIAL_MAX + 1),
+        kernel_scatter.HEAVY_RUN_BLOCKS,
+    )
+    if n_blocks > 0:
+        _launch.launch_tiled(
+            kernel_scatter.heavy_run_sums,
+            dim=n_blocks,
+            inputs=[values, sorted_buckets, order, heavy_count, heavy, n_blocks, average],
+            outputs=[pooled],
+            device=device,
+            block_dim=kernel_scatter.HEAVY_RUN_BLOCK_DIM,
+        )
     return pooled
 
 

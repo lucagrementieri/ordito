@@ -2515,7 +2515,7 @@ def _cluster_sorted_means(
     cell) and then, from ``2 * n_items``, its vertex, the stable sort's double-width keys and
     payload. An item is a vertex or a face corner (``cluster_decimate``'s ``method``). The sort
     lists every cell's items in ascending order; a short run is added by one thread and a long one
-    by a block (``kernel_remesh.cluster_sorted_means``), whose list is kept in the sort's free
+    by a block (``kernel_scatter.sorted_run_sums``), whose list is kept in the sort's free
     second half of the keys and counted at ``counters[2]``.
     """
     device = vertices.device
@@ -2532,26 +2532,32 @@ def _cluster_sorted_means(
     heavy_count = odt.as_dense(counters[2:])
     heavy = odt.as_dense(staged[n_items : 2 * n_items])
     _launch.launch(
-        kernel_remesh.cluster_sorted_means,
+        kernel_scatter.sorted_run_sums,
         dim=n_kept,
-        inputs=[vertices, sorted_clusters, sorted_vertices, kernel_remesh.CLUSTER_SERIAL_MAX],
+        inputs=[
+            vertices,
+            sorted_clusters,
+            sorted_vertices,
+            kernel_scatter.SORTED_RUN_SERIAL_MAX,
+            True,
+        ],
         outputs=[out_vertices, heavy_count, heavy],
         device=device,
     )
     # At most this many runs are longer than the serial bound, and a grid this wide strides them.
     n_blocks = min(
         n_kept,
-        n_items // (kernel_remesh.CLUSTER_SERIAL_MAX + 1),
-        kernel_remesh.CLUSTER_HEAVY_BLOCKS,
+        n_items // (kernel_scatter.SORTED_RUN_SERIAL_MAX + 1),
+        kernel_scatter.HEAVY_RUN_BLOCKS,
     )
     if n_blocks > 0:
         _launch.launch_tiled(
-            kernel_remesh.cluster_heavy_means,
+            kernel_scatter.heavy_run_sums,
             dim=n_blocks,
-            inputs=[vertices, sorted_clusters, sorted_vertices, heavy_count, heavy, n_blocks],
+            inputs=[vertices, sorted_clusters, sorted_vertices, heavy_count, heavy, n_blocks, True],
             outputs=[out_vertices],
             device=device,
-            block_dim=kernel_remesh.CLUSTER_HEAVY_BLOCK_DIM,
+            block_dim=kernel_scatter.HEAVY_RUN_BLOCK_DIM,
         )
 
 

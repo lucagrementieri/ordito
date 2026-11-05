@@ -27,7 +27,6 @@ from ordito.kernels.algorithms.connected_components import ecl_hook_edge, find_r
 from ordito.kernels.array import (
     append_slot,
     binary_search_index,
-    binary_search_index_left,
     cube_corner_offset,
     lattice_position,
     ravel_index,
@@ -433,9 +432,9 @@ def write_point_bucket(
     # ``out_buckets`` / ``out_order`` the leading halves of ``radix_sort_pairs``' two double
     # buffers, keys and identity payload, so the sort needs no key copy and no separate payload
     # seed (the upper halves are scratch the sort fills before reading). No histogram: the
-    # segments are read off the sorted buckets (``segment_reduce_vec3``), so the per-point atomic
-    # into a few hot counters -- most of this launch at a coarse pitch -- is not paid. Shared by
-    # ``bucket_point_slots`` and ``bucket_table_slots``, which differ only in the probe.
+    # segments are read off the sorted buckets (``scatter.sorted_run_sums``), so the per-point
+    # atomic into a few hot counters -- most of this launch at a coarse pitch -- is not paid.
+    # Shared by ``bucket_point_slots`` and ``bucket_table_slots``, which differ only in the probe.
     if out_slots.shape[0] > 0:
         out_slots[p] = slot
     out_buckets[p] = wp.where(slot < 0, n_voxels, slot)
@@ -663,34 +662,6 @@ def bucket_table_slots(
     p = wp.int32(wp.tid())
     slot = table_point_slot(points[p], translation, inverse_size, zero, mask, table, row_cells)
     write_point_bucket(slot, p, n_voxels, out_slots, out_buckets, out_order)
-
-
-@wp.kernel
-def segment_reduce_vec3(
-    order: wp.array[wp.int32],
-    values: wp.array[wp.vec3],
-    buckets: wp.array[wp.int32],
-    average: wp.bool,
-    out_values: wp.array[wp.vec3],
-) -> None:
-    # One thread per voxel walking its segment in index order: the sum is bitwise reproducible,
-    # which a float ``wp.atomic_add`` over the points would not be. ``buckets`` is the sorted
-    # bucket prefix, so voxel ``v``'s segment is ``[lower_bound(v), lower_bound(v + 1))`` -- the
-    # same bounds the old histogram's inclusive scan carried, two binary searches per voxel
-    # instead of an atomic per point, a zeroed buffer and a scan launch.
-    #
-    # Serial per voxel on purpose, and starved at a coarse pitch (a few thousand voxels over
-    # millions of points): a lane-strided block sum would fill the device but sum in a different
-    # order, and the mean's bits are this function's contract.
-    v = wp.int32(wp.tid())
-    start = binary_search_index_left(buckets, v)
-    end = binary_search_index_left(buckets, v + 1)
-    total = wp.vec3(0.0, 0.0, 0.0)
-    for j in range(start, end):
-        total = total + values[order[j]]
-    if average and end > start:
-        total = total / wp.float32(end - start)
-    out_values[v] = total
 
 
 @wp.kernel
