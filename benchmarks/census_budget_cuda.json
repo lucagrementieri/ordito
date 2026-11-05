@@ -1791,12 +1791,12 @@
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path_potpourri3d[sphere_med-ordito-cuda-64]": {
   "counts": {
-   "launch": 17,
-   "alloc": 45,
+   "launch": 24,
+   "alloc": 135,
    "memset": 9,
    "h2d": 7,
    "d2h": 13,
-   "h2h": 4,
+   "h2h": 38,
    "scan": 3
   }
  },
@@ -2266,7 +2266,7 @@
  },
  "benchmarks/test_heat.py::test_fast_marching_distance[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 4,
+   "launch": 6,
    "alloc": 4,
    "memset": 2,
    "d2d": 1,
