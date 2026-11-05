@@ -1,7 +1,7 @@
 import warp as wp
 
 from ordito.kernels.array import OverloadTable
-from ordito.kernels.scatter import add_corner_triple, atomic_add_vec3
+from ordito.kernels.scatter import add_corner_triple, peer_summed_add_vec3
 from ordito.kernels.triangles import (
     corner_triple,
     face_corner_angles,
@@ -167,9 +167,9 @@ def add_to_face_corners(
     # which is what keeps the fused kernels below byte-identical to the scatter they replace on the
     # CPU device, where the atomics serialize.
     i0, i1, i2 = corner_triple(faces, f)
-    atomic_add_vec3(out_sums, i0, v0)
-    atomic_add_vec3(out_sums, i1, v1)
-    atomic_add_vec3(out_sums, i2, v2)
+    peer_summed_add_vec3(out_sums, i0, v0)
+    peer_summed_add_vec3(out_sums, i1, v1)
+    peer_summed_add_vec3(out_sums, i2, v2)
 
 
 @wp.kernel

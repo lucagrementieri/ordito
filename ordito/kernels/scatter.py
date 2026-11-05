@@ -26,6 +26,7 @@ from ordito.kernels.reduce import (
     raise_group_sum_field,
     warp_lane_leads,
     warp_lanes_sum_float,
+    warp_peer_lanes,
     warp_uniform_lanes,
 )
 from ordito.kernels.triangles import corner_triple, face_normals_and_area
@@ -306,6 +307,48 @@ def atomic_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec3) ->
     wp.atomic_add(out_sum, row, 2, out_sum.dtype(v[2]))
 
 
+# ``wp.atomic_add`` and ``atomic_add_vec3`` for a per-vertex scatter: the lanes of a warp adding to
+# one slot (``reduce.warp_peer_lanes``) sum their values in ``float64`` across the warp and the
+# lowest commits once; a lane with no peer, and every lane on the CPU device, takes the plain
+# atomic, so CPU bits are unchanged. A sum of ``float32`` values in ``float64`` stays exact, so
+# ``scatter_sum_exact`` keeps its order-free result. The hub of a fan sits in every other face
+# (trimesh's cone), where the warp-*uniform* test of ``arrival_order_add`` never fires.
+#
+# Device time against the plain atomics (``fan_hub``: two hubs of valence 40 960): the ``float64``
+# vector scatter 0.09x on the hub, 0.79-0.85x on dragon, happy_buddha and lucy (consecutive faces
+# share a slot's vertex in pairs there), 0.84-1.03x on sphere and bunny; the exact ``float64``
+# scalar 0.10x on the hub and 0.85-0.93x large. The ``float32`` scalar takes 0.10x on the hub and
+# 0.87x on lucy but 1.2x on dragon and happy_buddha, where the match costs more than the
+# cheap atomics it saves; pooling only four or more lanes lost lucy's gain and still cost 1.1x
+# there, and ``float32`` shuffles changed nothing, so one rule serves all four. The match is not
+# ``kernels/reduce``'s declined one: that pooled the exact group sum's two integer words.
+@wp.func
+def peer_summed_add(out_sum: wp.array[Any], index: wp.int32, value: wp.Float):
+    lanes = warp_peer_lanes(index)
+    if lanes == 0:
+        wp.atomic_add(out_sum, index, value)
+    else:
+        total = type(value)(warp_lanes_sum_float(lanes, wp.float64(value)))
+        if warp_lane_leads(lanes) != 0:
+            wp.atomic_add(out_sum, index, total)
+
+
+@wp.func
+def peer_summed_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec3) -> None:
+    # ``peer_summed_add`` into row ``row`` of an ``(n, 3)`` accumulator, as ``atomic_add_vec3``.
+    lanes = warp_peer_lanes(row)
+    if lanes == 0:
+        atomic_add_vec3(out_sum, row, v)
+    else:
+        x = warp_lanes_sum_float(lanes, wp.float64(v[0]))
+        y = warp_lanes_sum_float(lanes, wp.float64(v[1]))
+        z = warp_lanes_sum_float(lanes, wp.float64(v[2]))
+        if warp_lane_leads(lanes) != 0:
+            wp.atomic_add(out_sum, row, 0, out_sum.dtype(x))
+            wp.atomic_add(out_sum, row, 1, out_sum.dtype(y))
+            wp.atomic_add(out_sum, row, 2, out_sum.dtype(z))
+
+
 @wp.kernel
 def count_occurrences(indices: wp.array[wp.int32], out_counts: wp.array[wp.int32]) -> None:
     # Histogram of ``indices``: one atomic increment per entry. Launch over ``indices.shape[0]``.
@@ -349,7 +392,7 @@ def scatter_sum_scalar(
     tid = wp.int32(wp.tid())
     index = indices[tid]
     for j in range(indices.shape[1]):
-        wp.atomic_add(out_sum, index[j], values[tid, j])
+        peer_summed_add(out_sum, index[j], values[tid, j])
 
 
 @wp.kernel
@@ -360,7 +403,7 @@ def scatter_sum_vec(
     index = indices[tid]
     value = values[tid]
     for j in range(indices.shape[1]):
-        atomic_add_vec3(out_sum, index[j], value)
+        peer_summed_add_vec3(out_sum, index[j], value)
 
 
 @wp.kernel
@@ -374,7 +417,7 @@ def scatter_weighted_sum_vec(
     index = indices[tid]
     value = values[tid]
     for j in range(indices.shape[1]):
-        atomic_add_vec3(out_sum, index[j], value * weights[tid, j])
+        peer_summed_add_vec3(out_sum, index[j], value * weights[tid, j])
 
 
 @wp.func
@@ -493,7 +536,7 @@ def scatter_sum_exact(
     tid = wp.int32(wp.tid())
     index = indices[tid]
     for j in range(indices.shape[1]):
-        wp.atomic_add(out_sum, index[j], wp.float64(values[tid, j]))
+        peer_summed_add(out_sum, index[j], wp.float64(values[tid, j]))
 
 
 @wp.kernel

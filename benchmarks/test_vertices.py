@@ -16,11 +16,12 @@ Two axes, because the module has two different kinds of function:
 names that name *this* module — the group name is the cross-suite key every ``parity`` marker cites,
 so it does not move with the file.
 
-Across the contention axis both groups stay **under 2x** -- which is the useful result. Two vertices
-absorbing tens of thousands of atomics each cost less than doubling, so CUDA's atomic aggregation is
-doing its job and contention is not a hot spot worth engineering around. The axis
-stays because it is the only thing that would catch a regression here (a switch to
-sort-and-segment-reduce, say, would show up as a large swing), not because it currently hurts.
+Across the contention axis the hub cost ``vertex_normals`` 9x and ``vertex_defects`` 3x the
+uniform mesh while each lane committed its own atomics: trimesh's cone puts a hub in every other
+face, so half of each warp hit one slot, and the ``float64`` accumulator serialized there. The
+scatters now pool the lanes of a warp that share a vertex (``kernels/scatter.peer_summed_add``),
+which took the hub rows to 0.10-0.27x and leaves them about 1.4x the uniform mesh on CUDA. The axis
+is what would catch that regressing.
 
 References
 ----------
@@ -45,10 +46,8 @@ so they run against the shared MeshSet with no build inside the timed region.
 the ball-integrated measure of the same name) and **trimesh** answers it too, so that group is the
 module's only three-way one.
 
-The reference **agrees with this module's headline result independently**: across the valence axis
-it is also flat, and if anything marginally *faster* on the hub mesh. Two implementations with
-nothing in common both saying valence is not a cost driver here is a stronger statement than
-ordito's own under-2x spread on its own.
+The reference is flat across the valence axis, and if anything marginally *faster* on the hub
+mesh: a serial scatter has nothing to contend on.
 """
 
 from __future__ import annotations

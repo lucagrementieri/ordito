@@ -591,7 +591,8 @@ def store_sum_and_count(
 # 10 M terms into one slot ran 0.011x the time of the per-term ``float32`` atomic. Declined:
 # matching any subset of lanes (``__match_any_sync``), 1.5x the plain commit on coherent runs of
 # six and no gain on few randomly ordered groups (512 cells, 2 M terms), whose collisions are
-# across warps, not within one.
+# across warps, not within one. A per-vertex float scatter does take it
+# (``kernels/scatter.peer_summed_add``): its commit is one float atomic a component.
 #
 # **Cost against the forms it may replace** (CUDA, deterministic setting on; small = 20 k faces or
 # 100 k points, large = 5.2 M faces or 2 M points). It wins against ``repair``'s single-word
@@ -725,6 +726,21 @@ if (__popc(active) > 1 && __all_sync(active, __shfl_sync(active, key, __ffs(acti
 return 0;
 """
 
+# ``warp_uniform_lanes`` for a warp whose lanes add to several slots at once: the active lanes
+# sharing this lane's ``key`` (``__match_any_sync``), when they are more than one, else 0. Each
+# group then sums over its own mask with ``warp_lanes_sum`` and its lowest lane commits, as a
+# labelled partition does, so a slot that half a warp hits (a fan's hub in every other face) takes
+# one atomic a warp, not sixteen. 0 on the CPU device and before ``sm_70``.
+_WARP_PEER_LANES = """
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 700
+const unsigned peers = __match_any_sync(__activemask(), key);
+if (__popc(peers) > 1) {
+    return (int)peers;
+}
+#endif
+return 0;
+"""
+
 _WARP_LANES_SUM = """
 #if defined(__CUDA_ARCH__)
 const unsigned active = (unsigned)lanes;
@@ -777,6 +793,10 @@ return value;
 
 @wp.func_native(_WARP_UNIFORM_LANES)
 def warp_uniform_lanes(key: wp.int32) -> wp.int32: ...
+
+
+@wp.func_native(_WARP_PEER_LANES)
+def warp_peer_lanes(key: wp.int32) -> wp.int32: ...
 
 
 @wp.func_native(_WARP_MIN_AT_LEAD)
