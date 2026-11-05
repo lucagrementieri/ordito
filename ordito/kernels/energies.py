@@ -259,6 +259,20 @@ NORMAL_CONSISTENCY_SUM = term_sum_1d(
 SMOOTHING_NORM_SUM = term_sum_1d(smoothing_norm_term, SmoothingNormTerms, "smoothing_norm_sum")
 
 
+# Triplets from which a row of the diagonal sandwich is *long*: ``sandwich_row_triplets`` skips it
+# and ``sandwich_long_rows`` writes it a block a row, its lanes striding the row's pairs. A row a
+# thread wrote a 1 201-entry hub row's 1.44 M triplets in 124 ms; mesh rows hold a few dozen.
+SANDWICH_LONG_ROW_TRIPLETS = wp.int32(4096)
+
+# Blocks ``sandwich_long_rows`` is launched with, striding the listed rows.
+SANDWICH_LONG_ROW_BLOCKS = 64
+
+
+@wp.func
+def sandwich_row_long(count: wp.int32) -> wp.bool:
+    return count >= SANDWICH_LONG_ROW_TRIPLETS
+
+
 @wp.kernel
 def sandwich_row_counts(
     a_offsets: wp.array[wp.int32],
@@ -267,21 +281,50 @@ def sandwich_row_counts(
     invert: wp.int32,
     out_counts: wp.array[wp.int32],
     out_inv_mass: wp.array[wp.Float],
+    out_long: wp.array[wp.int32],
 ) -> None:
     # Triplets emitted by row ``t`` of the product ``A diag(inv_mass) B``: the full outer product
     # of the two CSR rows, or nothing when the diagonal weight is zero. With ``invert`` set,
     # ``weights`` is the mass and the row forms its own ``reciprocal_or_zero`` weight, storing it
     # in ``out_inv_mass`` for the emission pass and every later sandwich; otherwise ``weights`` is
-    # already ``inv_mass`` and ``out_inv_mass`` is not written.
+    # already ``inv_mass`` and ``out_inv_mass`` is not written. A long row (``sandwich_row_long``)
+    # is appended to ``out_long``: its count in slot 0, its rows after, in arrival order (each is
+    # written whole by one block, so the order decides nothing).
     t = wp.int32(wp.tid())
     weight = weights[t]
     if invert != 0:
         weight = reciprocal_or_zero(weight)
         out_inv_mass[t] = weight
+    count = wp.int32(0)
     if weight > type(weight)(0.0):
-        out_counts[t] = (a_offsets[t + 1] - a_offsets[t]) * (b_offsets[t + 1] - b_offsets[t])
-    else:
-        out_counts[t] = 0
+        count = (a_offsets[t + 1] - a_offsets[t]) * (b_offsets[t + 1] - b_offsets[t])
+        if sandwich_row_long(count):
+            slot = wp.atomic_add(out_long, 0, 1)
+            if slot + 1 < out_long.shape[0]:
+                out_long[slot + 1] = t
+    out_counts[t] = count
+
+
+@wp.func
+def sandwich_store(
+    cursor: wp.int32,
+    a: wp.int32,
+    b: wp.int32,
+    weight: wp.Float,
+    a_columns: wp.array[wp.int32],
+    a_values: wp.array[wp.Float],
+    b_columns: wp.array[wp.int32],
+    b_values: wp.array[wp.Float],
+    sign: wp.Float,
+    n_rows: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+    out_vals: wp.array[wp.Float],
+):
+    # The triplet of a row's pair ``(a, b)`` at ``cursor``: entry ``(a_columns[a], b_columns[b])``,
+    # ``A``'s value scaled by the row's weight times ``sign`` times ``B``'s.
+    store_coo_key(cursor, a_columns[a], b_columns[b], n_rows, n_rows, out_keys, out_order)
+    out_vals[cursor] = (a_values[a] * weight) * (sign * b_values[b])
 
 
 @wp.kernel
@@ -306,7 +349,8 @@ def sandwich_row_triplets(
     # ``bsr_mm`` nondeterminism this originally avoided was a triplet-capacity defect of this
     # package, not a Warp bug — see ``k_harmonic`` in ``ordito/energies.py``.) ``sign`` (``1`` or
     # ``-1``) multiplies each ``B`` entry exactly, so ``k_harmonic`` passes ``L`` where its product
-    # wants ``-L`` and keeps no negated copy.
+    # wants ``-L`` and keeps no negated copy. A long row is ``sandwich_long_rows``', which writes
+    # the same triplets into the same slots.
     t = wp.int32(wp.tid())
     weight = inv_mass[t]
     # The negation of ``sandwich_row_counts``'s own gate, not an independent ``<=`` -- a NaN
@@ -316,13 +360,53 @@ def sandwich_row_triplets(
     if not (weight > type(inv_mass[0])(0.0)):
         return
     cursor = segment_offsets[t]
+    if sandwich_row_long(segment_offsets[t + 1] - cursor):
+        return
     for a in range(a_offsets[t], a_offsets[t + 1]):
-        row = a_columns[a]
-        left = a_values[a] * weight
         for b in range(b_offsets[t], b_offsets[t + 1]):
-            store_coo_key(cursor, row, b_columns[b], n_rows, n_rows, out_keys, out_order)
-            out_vals[cursor] = left * (sign * b_values[b])
+            sandwich_store(
+                cursor, a, b, weight, a_columns, a_values, b_columns, b_values, sign, n_rows,
+                out_keys, out_order, out_vals,
+            )  # fmt: skip
             cursor += 1
+
+
+# Launched tiled at its own width, so in a module of its own (§12.4).
+@wp.kernel(module="unique")
+def sandwich_long_rows(
+    a_offsets: wp.array[wp.int32],
+    a_columns: wp.array[wp.int32],
+    a_values: wp.array[wp.Float],
+    b_offsets: wp.array[wp.int32],
+    b_columns: wp.array[wp.int32],
+    b_values: wp.array[wp.Float],
+    inv_mass: wp.array[wp.Float],
+    sign: wp.Float,
+    segment_offsets: wp.array[wp.int32],
+    long_rows: wp.array[wp.int32],
+    n_rows: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+    out_vals: wp.array[wp.Float],
+) -> None:
+    # ``sandwich_row_triplets`` at the long rows ``sandwich_row_counts`` listed, a block a row:
+    # pair ``p`` of the row's ``(a, b)`` grid goes to slot ``segment_offsets[t] + p``, the slot
+    # the row's thread would have written it to. Launch tiled over ``SANDWICH_LONG_ROW_BLOCKS``
+    # blocks, which stride the listed rows; with none listed they return at once.
+    blk, lane = wp.tid()
+    listed = wp.min(long_rows[0], long_rows.shape[0] - 1)
+    for r in range(blk, listed, SANDWICH_LONG_ROW_BLOCKS):
+        t = long_rows[r + 1]
+        weight = inv_mass[t]
+        a_start = a_offsets[t]
+        b_start = b_offsets[t]
+        n_b = b_offsets[t + 1] - b_start
+        cursor = segment_offsets[t]
+        for p in range(lane, segment_offsets[t + 1] - cursor, wp.block_dim()):
+            sandwich_store(
+                cursor + p, a_start + p // n_b, b_start + p % n_b, weight, a_columns, a_values,
+                b_columns, b_values, sign, n_rows, out_keys, out_order, out_vals,
+            )  # fmt: skip
 
 
 @wp.func
@@ -1553,6 +1637,7 @@ CROUZEIX_RAVIART_MASS_DIAG: OverloadTable
 CROUZEIX_RAVIART_CSR: OverloadTable
 SANDWICH_ROW_COUNTS: OverloadTable
 SANDWICH_ROW_TRIPLETS: OverloadTable
+SANDWICH_LONG_ROWS: OverloadTable
 HESSIAN_ENERGY_ROWS: OverloadTable
 CURVED_HESSIAN_ROWS: OverloadTable
 LSCM_LAPLACIAN_ROWS_AND_COUNTS: OverloadTable
@@ -1561,7 +1646,7 @@ LSCM_LAPLACIAN_ROWS_AND_COUNTS: OverloadTable
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global CROUZEIX_RAVIART_MASS_DIAG, CROUZEIX_RAVIART_CSR
-    global SANDWICH_ROW_COUNTS, SANDWICH_ROW_TRIPLETS
+    global SANDWICH_ROW_COUNTS, SANDWICH_ROW_TRIPLETS, SANDWICH_LONG_ROWS
     global HESSIAN_ENERGY_ROWS, CURVED_HESSIAN_ROWS, LSCM_LAPLACIAN_ROWS_AND_COUNTS
     i32 = wp.array[wp.int32]
     CROUZEIX_RAVIART_MASS_DIAG = OverloadTable(
@@ -1584,7 +1669,29 @@ def _register_overloads() -> None:
     )
     SANDWICH_ROW_COUNTS = OverloadTable(
         sandwich_row_counts,
-        {d: [i32, i32, wp.array[d], wp.int32, i32, wp.array[d]] for d in _MATRIX_DTYPES},
+        {d: [i32, i32, wp.array[d], wp.int32, i32, wp.array[d], i32] for d in _MATRIX_DTYPES},
+    )
+    SANDWICH_LONG_ROWS = OverloadTable(
+        sandwich_long_rows,
+        {
+            d: [
+                i32,
+                i32,
+                wp.array[d],
+                i32,
+                i32,
+                wp.array[d],
+                wp.array[d],
+                d,
+                i32,
+                i32,
+                wp.int32,
+                wp.array[wp.uint64],
+                i32,
+                wp.array[d],
+            ]
+            for d in _MATRIX_DTYPES
+        },
     )
     SANDWICH_ROW_TRIPLETS = OverloadTable(
         sandwich_row_triplets,

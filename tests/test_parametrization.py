@@ -347,6 +347,49 @@ def test_polyharmonic_matches_reference(request: pytest.FixtureRequest, mesh_nam
     assert np.allclose(uv_wp.numpy(), uv_ref, rtol=tolerance, atol=tolerance)
 
 
+def test_biharmonic_on_a_hub_matches_a_direct_solve(device: str):
+    """
+    Class B against ``_polyharmonic_reference`` on a planar disk fan whose centre is a hub.
+
+    The hub's 1 100-entry Laplacian row is long (``kernels/linalg.CSR_LONG_ROW_ENTRIES``), so on
+    CUDA the squared-Laplacian polynomial steps it by pieces, and the sandwich assembling the
+    biharmonic system writes its 1.2 M-triplet row a block at a time
+    (``kernels/energies.SANDWICH_LONG_ROW_TRIPLETS``); 1 101 free rows keep the solve off the
+    one-block path. The named transform is the mass, as in ``test_polyharmonic_matches_reference``.
+    """
+    spokes, rings = 1100, 2
+    points = [np.zeros(3)]
+    for ring in range(1, rings + 1):
+        angles = 2.0 * np.pi * (np.arange(spokes) + 0.5 * (ring % 2)) / spokes
+        points += list(
+            np.stack([ring * np.cos(angles), ring * np.sin(angles), np.zeros(spokes)], axis=1)
+        )
+    vertices_np = np.array(points, dtype=np.float32).astype(np.float64)
+    spoke = np.arange(spokes)
+    following = (spoke + 1) % spokes
+    inner, outer = 1 + spoke, 1 + spokes + spoke
+    faces_np = np.concatenate(
+        [
+            np.stack([np.zeros(spokes, dtype=np.int64), 1 + spoke, 1 + following], axis=1),
+            np.stack([inner, outer, 1 + spokes + following], axis=1),
+            np.stack([inner, 1 + spokes + following, 1 + following], axis=1),
+        ]
+    )
+    boundary_np = 1 + spokes + spoke
+    boundary_uv_np = vertices_np[boundary_np, :2] / rings
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    uv_wp = od.parametrization.harmonic(
+        vertices_wp,
+        faces_wp,
+        wp.array(boundary_np.astype(np.int32), dtype=wp.int32, device=device),
+        wp.array(boundary_uv_np.astype(np.float32), dtype=wp.vec2, device=device),
+        k=2,
+    )
+    uv_ref = _polyharmonic_reference(vertices_np, faces_np, boundary_np, boundary_uv_np, 2)
+    assert np.ptp(uv_ref[: 1 + spokes]) > 1.0
+    assert np.allclose(uv_wp.numpy(), uv_ref, rtol=1e-5, atol=1e-5)
+
+
 def test_biharmonic_on_a_graded_patch_matches_a_direct_solve(device: str):
     """
     Class B against ``_polyharmonic_reference`` on the graded saddle, at 2e-4 of the UV range.

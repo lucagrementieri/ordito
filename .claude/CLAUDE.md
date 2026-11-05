@@ -936,7 +936,12 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   the block drawing the row's last ticket, runs at 9-11 us at every piece of 512-2 048 and 128 or
   256 lanes: `fan_hub` `heat_geodesic` 746 -> 201 ms, `min_quad_with_fixed` 261 -> 84 ms, a
   fairing pass 61 -> 49 ms; no-long-row meshes and the census unchanged (the partials and tickets
-  are allocated by the first listing that finds a piece).
+  are allocated by the first listing that finds a piece). The squared-Laplacian polynomial lists
+  its two factors the same way once the state's own matrix has a long row (a long Laplacian row
+  implies one in the squared system), so nothing is listed on a mesh with none: a disk fan of hub
+  valence 1 200, `harmonic(k=2)`, steps 123 -> 4 us; with `kernels/energies.sandwich_long_rows`
+  (the biharmonic product's 1.44 M-triplet hub row a block, 124 ms a thread) the call 985 -> 68 ms,
+  byte-identical operator. The one-block solve cannot hold a long row on CUDA (1 024 rows at most).
 - **Solvers:** a single-level polynomial preconditioner wins on long solves; a Chebyshev multigrid smoother loses (no single `(degree, interval)` is robust). A small synthetic system can mislead.
 - **Refuted, do not re-propose:** a single-block BFS drain, a one-block hole-fill DP and merged-level blocked interval DPs (the grid must stay full); voxel aggregation for multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches.
 - **Producer-consumer fusion:** always fuse consecutive same-`dim` launches where the consumer reads the producer only at its own index; every pair measured was faster. Price the fused region, not the call containing it, and cross-check kernel and allocation counts. Also fold a map into its consumer, merge two launches of one kernel into a wider one, and walk-and-reduce neighbour lists in one thread per query. A fusion that changes a slot or box index needs a debug-mode run. Inline single-caller helpers it leaves behind; fold-on-read loses on dependent chases.
@@ -1007,20 +1012,17 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   component sums): whether it should test peers (`warp_peer_lanes`) rather than a uniform warp.
   The uniform form was priced on one hot group, components and random groups; the corner sites
   (§14) say to expect a loss wherever the kernel has work of its own.
-- **Long rows on `fan_hub` beyond the CG state** (2026-11-05). Callers found: `min_quad_with_fixed`
-  on `fan_hub`'s negated cotangent Laplacian, 1 % pinned (40 k free rows), 263-280 ms a call
-  against `sphere_med`'s 5 ms (350 rounds against 40); 84 ms since the long-row kernels take a
-  piece a block (§14). (b) One-off row-a-thread kernels around the
-  solve walk the hub too: `interior_partition_system` 14 ms, `refresh_pooled_operator_bound` 8 ms,
-  `cg_initial` 6 ms, `backward_error_exceeds` 5 ms. (c) `preconditioner="multigrid"` there: the
-  V-cycle apply is not the cost; its setup is (`count_row_entries` 32 ms,
-  `smoothed_prolongator_keys` 25, `write_structure_paths` 22, `mis_propagate_states` 7 x 10,
-  `power_step`), and the solve reached 1 000 rounds and fell back to a factorization. The
-  squared-Laplacian polynomial is reached by `harmonic(k=2)` below 4 000 vertices: a planar disk
-  fan (a hub, two rings of `V`, the outer one mapped to the circle) took 0.91 s at `V = 1 200`
-  (2 401 vertices) and 2.5 s at 1 900, against 0.15 / 0.38 s with the hub pinned too; how much is
-  the hub row's step and how much its rounds is not yet split. The one-block solve cannot hold a long row on CUDA (at most 1 024 rows) and walks every
-  row in one lane on the CPU anyway: not open.
+- **Hub rows outside the solver steps** (2026-11-05). `min_quad_with_fixed` on `fan_hub`'s
+  negated cotangent Laplacian, 1 % pinned (40 k free rows), 84 ms a call against `sphere_med`'s
+  5 ms: 350 rounds against 40, and one-off row-a-thread kernels around the solve that walk the
+  hub (`interior_partition_system` 14 ms, `refresh_pooled_operator_bound` 8 ms, `cg_initial` 6 ms,
+  `backward_error_exceeds` 5 ms). `preconditioner="multigrid"` there: its setup, not the V-cycle
+  apply, is the cost (`count_row_entries` 32 ms, `smoothed_prolongator_keys` 25,
+  `write_structure_paths` 22, `mis_propagate_states` 7 x 10, `power_step`), and the solve reached
+  1 000 rounds and fell back to a factorization. `harmonic(k=2)` on a disk fan of hub valence
+  1 200: 68 ms against 31 ms with the hub pinned (the rest of the gap). Each is a row-a-thread
+  kernel to give a block-per-long-row sibling (§14's long-row item and the sandwich's form); none
+  is a solver step, so each costs once a call.
 - **`curved_hessian_energy`'s hub row is one thread** (2026-11-05): `fan_hub` 3.8 s warm (3 ms on
   `sphere_med`) since a long fan's row walks its sorted faces, all of it the hub rows' threads
   walking ~82 k faces each. A block a row would break the face order every entry's sum follows

@@ -3478,6 +3478,7 @@ class _BatchedCg:
             # a slot a piece and column, cover both.
             assert self._cycle._n_columns == self._n_columns  # pyright: ignore[reportPrivateUsage]
             self._cycle.long_rows = self._long
+        self._list_cycle_long_rows()
 
         # The settle monitor ``solve_spd_settled`` runs (``check_rounds``, ``change_tolerance``,
         # ``settle_rounds``): every ``check_rounds`` rounds ``cg_settle_change`` compares the
@@ -3567,6 +3568,21 @@ class _BatchedCg:
         if self._long is not None and self._long.relist(self._matrix, self._n):
             # Whether any row is long changed, so the recorded round is stale.
             self._graph = None
+        if self._list_cycle_long_rows():
+            self._graph = None
+
+    def _list_cycle_long_rows(self) -> bool:
+        """
+        List the squared-Laplacian factors' long rows once this state's matrix has one, or again.
+
+        Returns whether any factor's ``active`` changed, which makes a recorded round stale.
+        """
+        cycle = self._cycle
+        if not isinstance(cycle, _SquaredLaplacianApply):
+            return False
+        if cycle.listed or (self._long is not None and self._long.active):
+            return cycle.list_long_rows()
+        return False
 
     def _settle_check(self) -> None:
         """Issue the settle monitor's two launches, after a block of ``check_rounds`` rounds."""
@@ -5241,11 +5257,13 @@ class _ChebyshevApply:
         source: wp.array[wp.float64],
         destination: wp.array[wp.float64],
         row_scale: wp.array[wp.float64] | None = None,
+        long_rows: _LongRows | None = None,
     ) -> None:
         """
         ``destination = p(factor) source``, one launch per Chebyshev step (on the CPU, one).
 
         With ``row_scale``, ``p(diag(row_scale) factor) source`` instead, scaled inside each step.
+        ``long_rows`` lists ``factor``'s long rows (``self.long_rows`` when not given).
         """
         steps = self._steps
         if self._serial:
@@ -5297,7 +5315,9 @@ class _ChebyshevApply:
             if rows_kernel is None
             else (rows_kernel, self._n, [])
         )
-        long_rows = self.long_rows if self.long_rows is not None and self.long_rows.active else None
+        if long_rows is None:
+            long_rows = self.long_rows
+        long_rows = long_rows if long_rows is not None and long_rows.active else None
         skip_long = wp.int32(0 if long_rows is None else 1)
         for index in range(n_steps):
             if index == last:
@@ -5369,16 +5389,51 @@ class _SquaredLaplacianApply(_ChebyshevApply):
         super().__init__(owner._n, n_columns, stride, owner._steps, owner._device, free)  # pyright: ignore[reportPrivateUsage]
         self._owner = owner
         self._middle = self._work
+        # Each factor's long rows (a hub of the Laplacian), stepped by pieces on CUDA as the CG
+        # state's own matrix is (``_LongRows``); ``Bᵀ``'s pattern is ``B``'s when they share one.
+        # Listed only once the state's own matrix has a long row (``list_long_rows``), which a long
+        # Laplacian row implies in the squared system, so a mesh with none pays nothing.
+        self._long: _LongRows | None = None
+        self._long_t: _LongRows | None = None
+        self._listed = False
+
+    def list_long_rows(self) -> bool:
+        """List both factors' long rows, or again; return whether either's ``active`` changed."""
+        owner = self._owner
+        factor, factor_t, n = owner._factor, owner._factor_t, owner._n  # pyright: ignore[reportPrivateUsage]
+        if not self._listed:
+            self._listed = True
+            self._long = _LongRows.build(factor, n, self._n_columns, self._device, False)
+            self._long_t = (
+                self._long
+                if owner._shares_pattern()  # pyright: ignore[reportPrivateUsage]
+                else _LongRows.build(factor_t, n, self._n_columns, self._device, False)
+            )
+            return any(
+                listing is not None and listing.active for listing in (self._long, self._long_t)
+            )
+        changed = False
+        if self._long is not None:
+            changed = self._long.relist(factor, n)
+        if self._long_t is not None and self._long_t is not self._long:
+            changed = self._long_t.relist(factor_t, n) or changed
+        return changed
 
     @property
     def owner(self) -> SquaredLaplacianPreconditioner:
         """The preconditioner whose arrays the recorded polynomial reads."""
         return self._owner
 
+    @property
+    def listed(self) -> bool:
+        """Whether the factors' long rows have been listed."""
+        return self._listed
+
     def apply(self, source: wp.array[wp.float64], destination: wp.array[wp.float64]) -> None:
         """``destination = B Bᵀ source``: ``Bᵀ`` first, then ``B``."""
-        self._polynomial(self._owner._factor_t, source, self._middle)  # pyright: ignore[reportPrivateUsage]
-        self._polynomial(self._owner._factor, self._middle, destination)  # pyright: ignore[reportPrivateUsage]
+        owner = self._owner
+        self._polynomial(owner._factor_t, source, self._middle, long_rows=self._long_t)  # pyright: ignore[reportPrivateUsage]
+        self._polynomial(owner._factor, self._middle, destination, long_rows=self._long)  # pyright: ignore[reportPrivateUsage]
 
 
 # l1-Jacobi sweeps per half-cycle of the squared form's V-cycle. With the carried near-nullspace

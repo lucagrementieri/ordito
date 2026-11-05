@@ -563,8 +563,13 @@ def _diagonal_sandwich(
     n_rows = int(a.nrow)
     device = inverse_mass.device
     # Each row's count lands in the offsets' buffer past its leading zero and is scanned in place;
-    # the trailing slot flags a scan that wrapped (``_device.scan_count_checked``).
-    segment_offsets = _launch.zeros(n_rows + 2, dtype=wp.int32, device=device)
+    # the trailing slot flags a scan that wrapped (``_device.scan_count_checked``). The long rows'
+    # list follows in the same zeroed buffer, its count first: a long row has a factor row of 64
+    # entries or more (``kernels/energies.SANDWICH_LONG_ROW_TRIPLETS``), which bounds their number.
+    capacity = (a.columns.size + b.columns.size) // 64
+    buffer = _launch.zeros(n_rows + 3 + capacity, dtype=wp.int32, device=device)
+    segment_offsets = _launch.view(buffer, 0, n_rows + 2)
+    long_rows = _launch.view(buffer, n_rows + 2, n_rows + 3 + capacity)
     n_triplets = 0
     if n_rows > 0:
         counts = _launch.view(segment_offsets, 1, n_rows + 1)
@@ -577,7 +582,7 @@ def _diagonal_sandwich(
                 inverse_mass if mass is None else mass,
                 wp.int32(mass is not None),
             ],
-            outputs=[counts, None if mass is None else inverse_mass],
+            outputs=[counts, None if mass is None else inverse_mass, long_rows],
             device=device,
         )
         n_triplets = scan_count_checked(segment_offsets, "the operator")
@@ -602,6 +607,28 @@ def _diagonal_sandwich(
                 wp.int32(n_rows),
             ],
             outputs=[keys, order, vals],
+            device=device,
+        )
+        # The long rows a block each, with no readback of whether any is listed: their blocks
+        # return at once when none is.
+        _launch.launch_tiled(
+            kernel_energies.SANDWICH_LONG_ROWS[dtype],
+            dim=(kernel_energies.SANDWICH_LONG_ROW_BLOCKS,),
+            inputs=[
+                a.offsets,
+                a.columns,
+                a.values,
+                b.offsets,
+                b.columns,
+                b.values,
+                inverse_mass,
+                dtype(sign),
+                segment_offsets,
+                long_rows,
+                wp.int32(n_rows),
+            ],
+            outputs=[keys, order, vals],
+            block_dim=256,
             device=device,
         )
     return od.array.csr_from_coo_keys(n_rows, n_rows, keys, order, vals)

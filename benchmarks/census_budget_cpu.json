@@ -1525,7 +1525,7 @@
  },
  "benchmarks/test_energies.py::test_k_harmonic[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 4,
+   "launch": 5,
    "alloc": 7,
    "readback": 1,
    "scan": 1,
@@ -4491,7 +4491,7 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[hemisphere-ordito-cpu-2]": {
   "counts": {
-   "launch": 176,
+   "launch": 177,
    "alloc": 52,
    "readback": 5,
    "scan": 20,
@@ -4509,7 +4509,7 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[saddle_small-ordito-cpu-2]": {
   "counts": {
-   "launch": 147,
+   "launch": 148,
    "alloc": 52,
    "readback": 5,
    "scan": 18,
