@@ -2676,7 +2676,7 @@
  },
  "benchmarks/test_holes.py::test_fill_smooth[holes_many-ordito-cpu-refined]": {
   "counts": {
-   "launch": 55,
+   "launch": 56,
    "alloc": 47,
    "h2h": 2,
    "readback": 17,
@@ -2696,7 +2696,7 @@
  },
  "benchmarks/test_holes.py::test_fill_smooth[rim_short-ordito-cpu-refined]": {
   "counts": {
-   "launch": 236,
+   "launch": 237,
    "alloc": 51,
    "h2h": 2,
    "readback": 73,
@@ -2706,7 +2706,7 @@
  },
  "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_dense-ordito-cpu-derived]": {
   "counts": {
-   "launch": 58,
+   "launch": 59,
    "alloc": 50,
    "h2h": 2,
    "readback": 17,
@@ -2716,7 +2716,7 @@
  },
  "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_dense-ordito-cpu-explicit]": {
   "counts": {
-   "launch": 58,
+   "launch": 59,
    "alloc": 50,
    "h2h": 2,
    "readback": 16,
@@ -2726,7 +2726,7 @@
  },
  "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_many-ordito-cpu-derived]": {
   "counts": {
-   "launch": 55,
+   "launch": 56,
    "alloc": 47,
    "h2h": 2,
    "readback": 17,
@@ -2736,7 +2736,7 @@
  },
  "benchmarks/test_holes.py::test_fill_smooth_target_edge[holes_many-ordito-cpu-explicit]": {
   "counts": {
-   "launch": 55,
+   "launch": 56,
    "alloc": 47,
    "h2h": 2,
    "readback": 16,
@@ -2793,7 +2793,7 @@
  },
  "benchmarks/test_holes.py::test_refill_region[sphere_small-ordito-cpu-refined]": {
   "counts": {
-   "launch": 141,
+   "launch": 142,
    "alloc": 96,
    "h2h": 3,
    "readback": 46,
@@ -2840,7 +2840,7 @@
  },
  "benchmarks/test_holes.py::test_stitch_smooth[rim_short-ordito-cpu]": {
   "counts": {
-   "launch": 73,
+   "launch": 74,
    "alloc": 60,
    "h2h": 3,
    "readback": 18,
@@ -6676,7 +6676,7 @@
  },
  "benchmarks/test_smoothing.py::test_refine_and_smooth_region[hemisphere-ordito-cpu]": {
   "counts": {
-   "launch": 209,
+   "launch": 210,
    "alloc": 53,
    "readback": 65,
    "scan": 17,
@@ -6685,7 +6685,7 @@
  },
  "benchmarks/test_smoothing.py::test_refine_and_smooth_region[saddle_small-ordito-cpu]": {
   "counts": {
-   "launch": 256,
+   "launch": 257,
    "alloc": 65,
    "readback": 81,
    "scan": 21,
@@ -6721,7 +6721,7 @@
  },
  "benchmarks/test_smoothing.py::test_smooth_region[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 20,
+   "launch": 21,
    "alloc": 16,
    "readback": 4,
    "scan": 6,

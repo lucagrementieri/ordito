@@ -511,6 +511,43 @@ def scan_count(flags: wp.array[Any]) -> int:
     return int(read_scalar(flags))
 
 
+def scan_count_checked(offsets: wp.array[wp.int32], what: str) -> int:
+    """
+    Scan the counts in ``offsets[1:-1]`` in place and return their total, refusing a wrapped scan.
+
+    ``offsets`` is ``(n + 2,)`` and zeroed but for the counts: a leading zero, the ``n`` counts,
+    and a trailing slot that ``kernels/array.flag_wrapped_scan`` sets when the ``int32`` scan
+    wrapped, read back with the total in one copy. A total past ``2**32`` wraps all the way round
+    to a small positive count, so its sign alone does not tell. ``offsets[: n + 1]`` are then the
+    total-terminated offsets. Use it, not [`scan_count`][ordito._device.scan_count], wherever the
+    counts are per-row products that can pass ``2**31`` and the total sizes a buffer.
+
+    Raises
+    ------
+    ValueError
+        If the counts sum past ``2**31 - 1``; the message names ``what``.
+    """
+    from ordito.kernels import array as kernel_array
+
+    n = offsets.size - 2
+    counts = _launch.view(offsets, 1, n + 1)
+    _launch.array_scan(counts, out_array=counts, inclusive=True)
+    _launch.launch(
+        kernel_array.flag_wrapped_scan,
+        dim=n,
+        inputs=[counts, _launch.view(offsets, n + 1, n + 2)],
+        device=offsets.device,
+    )
+    # Host readback: only the device knows the scan total, and the caller sizes buffers from it.
+    total, wrapped = read_values(offsets, n, 2)
+    if wrapped:
+        raise ValueError(
+            f"{what} has more entries than int32 indices address; process a coarser mesh or "
+            "smaller pieces"
+        )
+    return int(total)
+
+
 def offsets_buffer(n: int, device: wp.DeviceLike) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Allocate zeroed ``(n + 1,)`` offsets and return them with their tail view ``offsets[1:]``.

@@ -61,7 +61,14 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch, laplacian
-from ordito._device import offsets_buffer, read_scalar, read_values, require_same_device, scan_count
+from ordito._device import (
+    offsets_buffer,
+    read_scalar,
+    read_values,
+    require_same_device,
+    scan_count,
+    scan_count_checked,
+)
 from ordito.cholesky import SparseCholesky, sparse_cholesky
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
@@ -3178,7 +3185,10 @@ def smooth_region(
     Raises
     ------
     ValueError
-        If ``edge_weights`` is not ``"cotan"`` or ``"unit"``.
+        If ``edge_weights`` is not ``"cotan"`` or ``"unit"``, or if the normal equations would
+        hold more terms than ``int32`` indices address: each neighbour of a vertex gathers that
+        vertex's whole row, so the count grows as the square of the largest valences (a fan whose
+        apex has tens of thousands of edges).
     RuntimeError
         If ``vertices``, ``faces``, ``free_mask``, ``unique_edges`` and ``inverse`` are not all on
         one device.
@@ -3309,7 +3319,9 @@ def refine_and_smooth_region(
     Raises
     ------
     ValueError
-        If ``refine`` is neither ``"max_edge"`` nor ``"density"``.
+        If ``refine`` is neither ``"max_edge"`` nor ``"density"``, or if the smoothing's normal
+        equations would hold more terms than ``int32`` indices address
+        ([`smooth_region`][ordito.smoothing.smooth_region]).
     RuntimeError
         If ``vertices``, ``faces`` and ``patch_face_mask`` are not all on one device.
 
@@ -3727,7 +3739,7 @@ def _solve_region_smooth(
     atb = atb_flat.reshape((3, n_free))
     sol = sol_flat.reshape((3, n_free))
     free_degrees, term_offsets, system_offsets, anchored, rim_distance = _launch.carve(
-        wp.int32, (n, n_free + 1, n_free + 1, n_free, n_free if banded else 0), device, zeroed=True
+        wp.int32, (n, n_free + 2, n_free + 1, n_free, n_free if banded else 0), device, zeroed=True
     )
     _launch.launch(
         kernel_smoothing.least_squares_rows,
@@ -3736,7 +3748,9 @@ def _solve_region_smooth(
         outputs=[row_sums, row_rhs, free_degrees],
         device=device,
     )
-    term_counts = odt.as_dense(term_offsets[1:])
+    # The counts past the leading zero; the trailing slot flags a scan that wrapped
+    # (``_device.scan_count_checked``).
+    term_counts = _launch.view(term_offsets, 1, n_free + 1)
     rim = _SMOOTH_REGION_RIM_UNIT if unit else _SMOOTH_REGION_RIM_COTAN
     # Each free vertex's ring counted from the rim, for the preconditioner's lift; none (an empty
     # distance table) below the polynomial form's gate.
@@ -3790,10 +3804,11 @@ def _solve_region_smooth(
         ],
         device=device,
     )
-    _launch.array_scan(term_counts, term_counts, inclusive=True)
     # The one readback of the assembly: how many terms the product gathers, which sizes the term
     # buffer and bounds the product's entry count, so its CSR is allocated without a second one.
-    n_terms = max(int(read_scalar(term_offsets, n_free)), 1)
+    # A row's terms are its neighbours' row lengths summed, so a vertex next to a hub that shares
+    # an edge with most of a large region (a fan's apex) passes ``2**31`` and wraps the scan.
+    n_terms = max(scan_count_checked(term_offsets, "the region's normal equations"), 1)
     # The gathered terms and the product's CSR, each in one allocation: the terms are dead once
     # the product is written, and are released before the solve, where the call peaks.
     row_columns, row_values = _launch.carve_typed(

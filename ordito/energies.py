@@ -50,11 +50,10 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device, scan_count
+from ordito._device import read_scalar, require_same_device, scan_count, scan_count_checked
 from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX
 from ordito.edges import edges_unique, edges_unique_length
-from ordito.kernels import array as kernel_array
 from ordito.kernels import energies as kernel_energies
 from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import reduce as kernel_reduce
@@ -558,7 +557,7 @@ def _diagonal_sandwich(
     n_rows = int(a.nrow)
     device = inverse_mass.device
     # Each row's count lands in the offsets' buffer past its leading zero and is scanned in place;
-    # the trailing slot flags a scan that wrapped (``_scanned_triplet_count``).
+    # the trailing slot flags a scan that wrapped (``_device.scan_count_checked``).
     segment_offsets = _launch.zeros(n_rows + 2, dtype=wp.int32, device=device)
     n_triplets = 0
     if n_rows > 0:
@@ -575,7 +574,7 @@ def _diagonal_sandwich(
             outputs=[counts, None if mass is None else inverse_mass],
             device=device,
         )
-        n_triplets = _scanned_triplet_count(segment_offsets)
+        n_triplets = scan_count_checked(segment_offsets, "the operator")
 
     dtype = a.values.dtype
     keys, order = od.array.csr_key_buffers(n_triplets, device)
@@ -733,7 +732,7 @@ def hessian_energy(
     else:
         vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
     # Each vertex's count lands in the offsets' buffer past its leading zero, scanned in place;
-    # the trailing slot flags a scan that wrapped (``_scanned_triplet_count``).
+    # the trailing slot flags a scan that wrapped (``_device.scan_count_checked``).
     segment_offsets = _launch.zeros(n_vertices + 2, dtype=wp.int32, device=device)
     counts = _launch.view(segment_offsets, 1, n_vertices + 1)
     _launch.launch(
@@ -745,7 +744,7 @@ def hessian_energy(
     # The pattern first: one key per pair of an active vertex's star vertices, sorted into the
     # rows; the values are then gathered a row a thread in the order a triplet sort would have
     # summed them (``kernels/energies.hessian_energy_rows``), so no triplet is stored.
-    n_keys = _scanned_triplet_count(segment_offsets)
+    n_keys = scan_count_checked(segment_offsets, "the operator")
     keys, order = od.array.csr_key_buffers(n_keys, device)
     if n_keys > 0:
         _launch.launch(
@@ -794,34 +793,6 @@ def hessian_energy(
             device=device,
         )
     return od.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values, nnz=n_entries)
-
-
-def _scanned_triplet_count(segment_offsets: wp.array[wp.int32]) -> int:
-    """
-    Scan the per-row triplet counts in ``segment_offsets[1:-1]`` in place; return their total.
-
-    ``segment_offsets`` is ``(n_rows + 2,)``, zeroed: a leading zero, the counts, and a trailing
-    slot that ``kernels/array.flag_wrapped_scan`` sets when the ``int32`` scan wrapped. Both come
-    back in the one readback, which sizes the triplet buffers.
-    """
-    n_rows = segment_offsets.size - 2
-    device = segment_offsets.device
-    counts = _launch.view(segment_offsets, 1, n_rows + 1)
-    _launch.array_scan(counts, out_array=counts, inclusive=True)
-    _launch.launch(
-        kernel_array.flag_wrapped_scan,
-        dim=n_rows,
-        inputs=[counts, _launch.view(segment_offsets, n_rows + 1, n_rows + 2)],
-        device=device,
-    )
-    # Host readback: only the device knows the scan total, and it sizes the triplet buffers.
-    total, wrapped = read_values(segment_offsets, n_rows, 2)
-    if wrapped:
-        raise ValueError(
-            "the operator has more triplets than int32 indices address; assemble it from a "
-            "coarser mesh or in pieces"
-        )
-    return int(total)
 
 
 def curved_hessian_energy(

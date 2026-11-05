@@ -2480,6 +2480,27 @@ def test_smooth_region_rejects_unknown_edge_weights_and_skips_a_faceless_mesh(de
     assert np.array_equal(result_np, vertices_np.astype(np.float32))
 
 
+def test_smooth_region_refuses_normal_equations_past_int32(device: str) -> None:
+    """
+    Not a library comparison: a region whose product has more terms than ``int32`` addresses.
+
+    Each rim vertex of a 40 960-section cone neighbours both hubs and gathers their whole rows,
+    about ``2 * 40 960**2`` terms, so the term scan wraps. Unguarded, the wrapped total sized the
+    term buffers short and the row kernel wrote past them (CUDA error 700; an out-of-bounds
+    assertion in CPU debug mode); a cone of 64 sections still smooths.
+    """
+    for sections, raises in ((40_960, True), (64, False)):
+        cone = tm.creation.cone(radius=1.0, height=1.0, sections=sections)
+        v_wp, f_wp = numpy_to_warp(cone.vertices, cone.faces, device)
+        free_np = np.arange(cone.vertices.shape[0]) % 7 != 0
+        free_wp = wp.array(free_np, dtype=wp.bool, device=device)
+        if raises:
+            with pytest.raises(ValueError, match="int32"):
+                od.smoothing.smooth_region(v_wp, f_wp, free_wp)
+        else:
+            assert np.isfinite(od.smoothing.smooth_region(v_wp, f_wp, free_wp).numpy()).all()
+
+
 def test_smooth_region_is_reproducible_on_non_manifold_edges(device: str) -> None:
     """
     Not a parity assert: under the deterministic setting repeated cotangent solves agree exactly.
