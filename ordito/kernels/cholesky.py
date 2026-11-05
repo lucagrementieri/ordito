@@ -37,7 +37,7 @@ from ordito.kernels.array import (
     ordered_float_bits,
     scanned_count,
 )
-from ordito.kernels.linalg import residual_and_scale
+from ordito.kernels.linalg import csr_row_long, residual_and_scale
 from ordito.kernels.reduce import block_barrier, block_sum, last_ticket, take_ticket
 
 wp.set_module_options({"enable_backward": False})
@@ -1295,6 +1295,10 @@ def live_count(segment_start: wp.array[wp.int32]) -> wp.int32:
 DISSECTION_NODES = wp.int32(0)
 DISSECTION_DEPTH = wp.int32(1)
 
+# ``dissection_sides``' tag of a long row: negative, so no side's tag (``base + 2 s + upper``)
+# equals it and the crossing pass skips it.
+DISSECTION_DENSE_TAG = wp.int32(-2)
+
 
 @wp.func
 def dissection_task(
@@ -1449,20 +1453,28 @@ def dissection_sides(
     keys: wp.array[wp.uint64],
     vertices: wp.array[wp.int32],
     segment_start: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
     state: wp.array[wp.int32],
     out_tag: wp.array[wp.int32],
 ) -> None:
     # Each sorted vertex's side of its segment's median, as ``base + 2 segment + upper`` with
     # ``base`` the depth times twice the segment slots: tags of earlier depths are all below it, so
-    # the array needs no reset between depths.
+    # the array needs no reset between depths. A long row (``linalg.csr_row_long``, a fan's hub)
+    # takes ``DISSECTION_DENSE_TAG`` instead, which no side's tag equals: its edges cross no split
+    # and it is never a separator's, so it rides its half to a leaf, from which
+    # ``dissection_long_rows`` moves it into the dense root.
     p = wp.int32(wp.tid())
     if p >= live_count(segment_start):
+        return
+    v = vertices[p]
+    if csr_row_long(offsets, v):
+        out_tag[v] = DISSECTION_DENSE_TAG
         return
     base = 2 * (segment_start.shape[0] - 1) * state[DISSECTION_DEPTH]
     s = sorted_segment(keys, p)
     start = segment_start[s]
     upper = median_side(p, start, segment_start[s + 1] - start)
-    out_tag[vertices[p]] = base + 2 * s + upper
+    out_tag[v] = base + 2 * s + upper
 
 
 @wp.kernel
@@ -1488,7 +1500,7 @@ def dissection_crossings(
     u = vertices[p]
     t = tag[u]
     s = sorted_segment(keys, p)
-    if (t & 1) != 0:
+    if t < 0 or (t & 1) != 0:
         return
     crossing = wp.int32(0)
     for e in range(offsets[u], offsets[u + 1]):
@@ -1850,6 +1862,60 @@ HEADER_COMPONENTS = wp.int32(4)
 HEADER_STORED = wp.int32(5)
 HEADER_ASYMMETRIC = wp.int32(6)
 HEADER_SLOTS = 7
+
+
+@wp.kernel
+def dissection_long_rows(
+    offsets: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    out_node: wp.array[wp.int32],
+    out_tree: wp.array2d[wp.int32],
+    out_dense_root: wp.array[wp.int32],
+) -> None:
+    # A long row (``dissection_sides``' dense tag) leaves the leaf it rode into for the dense root,
+    # node ``state[DISSECTION_NODES]`` (past every node the dissection made), each node's row count
+    # moving with it. ``out_dense_root[0]`` (zeroed) records the root plus one for
+    # ``dissection_dense_root``. Elimination last is what keeps a hub's neighbours from becoming
+    # a dense front: on ``fan_hub`` the hubs' edges crossed every split, and its separators held
+    # ~20 k rows each.
+    v = wp.int32(wp.tid())
+    if not csr_row_long(offsets, v):
+        return
+    root = state[DISSECTION_NODES]
+    wp.atomic_add(out_tree, out_node[v], 1, -1)
+    wp.atomic_add(out_tree, root, 1, 1)
+    out_node[v] = root
+    out_dense_root[0] = root + 1
+
+
+@wp.kernel
+def dissection_dense_root(
+    n: wp.int32,
+    dense_root: wp.array[wp.int32],
+    out_tree: wp.array2d[wp.int32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # With a dense root (``dissection_long_rows``), the tree one level deeper under it: every
+    # node's root is it and every former root its child, and its interval sorts after every other
+    # node's (first position ``n``), so its rows are eliminated last. A node a thread; the root's
+    # own thread writes its row and counts it.
+    t = wp.int32(wp.tid())
+    if dense_root[0] == 0:
+        return
+    root = dense_root[0] - 1
+    if t > root:
+        return
+    if t == root:
+        out_tree[t, 0] = n
+        out_tree[t, 2] = -1
+        out_tree[t, 3] = 0
+        out_tree[t, 4] = t
+        out_state[DISSECTION_NODES] = root + 1
+        return
+    if out_tree[t, 2] < 0:
+        out_tree[t, 2] = root
+    out_tree[t, 3] = out_tree[t, 3] + 1
+    out_tree[t, 4] = root
 
 
 @wp.kernel

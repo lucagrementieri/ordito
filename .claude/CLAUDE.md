@@ -958,6 +958,8 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   The multigrid V-cycle takes long rows at every level by pieces and its setup by deferral, and a
   long row stays out of the prolongator's smoothing: `fan_hub`'s explicit multigrid solve went
   from 1 000 unconverged rounds to 18, 266 -> 31 ms ("Multigrid on a hub").
+  A sparse Cholesky ordering leaves long rows out of the nested dissection for a root eliminated
+  last ("Cholesky ordering with dense rows").
 - **Solvers:** a single-level polynomial preconditioner wins on long solves; a Chebyshev multigrid smoother loses (no single `(degree, interval)` is robust). A small synthetic system can mislead.
 - **Refuted, do not re-propose:** a single-block BFS drain, a one-block hole-fill DP and merged-level blocked interval DPs (the grid must stay full); voxel aggregation for multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches.
 - **Producer-consumer fusion:** always fuse consecutive same-`dim` launches where the consumer reads the producer only at its own index; every pair measured was faster. Price the fused region, not the call containing it, and cross-check kernel and allocation counts. Also fold a map into its consumer, merge two launches of one kernel into a wider one, and walk-and-reduce neighbour lists in one thread per query. A fusion that changes a slot or box index needs a debug-mode run. Inline single-caller helpers it leaves behind; fold-on-read loses on dependent chases.
@@ -1028,14 +1030,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   component sums): whether it should test peers (`warp_peer_lanes`) rather than a uniform warp.
   The uniform form was priced on one hot group, components and random groups; the corner sites
   (§14) say to expect a loss wherever the kernel has work of its own.
-- **Cholesky ordering with dense rows** (2026-11-05). `sparse_cholesky` refuses `fan_hub`'s
-  `M - L` at 11.6 GB (budget 4 GB; `sphere_med` 35 MB): every face touches one of the two hubs,
-  so every vertex is adjacent to both, and the geometric median split crosses ~20 k hub edges on
-  each side, giving separators of ~20 k rows (largest front 20 483, `sum front^2` 8.4e8) where
-  the graph's true separator is the two hubs. The usual remedy is to leave long rows out of the
-  dissection and eliminate them last (a dense root node above the tree), which changes the
-  device-built tree (`_nested_dissection`, `dissection_crossings`). Today the refusal is clean
-  and the callers iterate (fairing's refactor attempt costs its analysis, ~90 ms, once).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

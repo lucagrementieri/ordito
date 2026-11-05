@@ -96,6 +96,28 @@ def test_sparse_cholesky_matches_spsolve(
     assert backward_error(tight.numpy()) <= 2.0 * backward_error(expected) + 1e-16
 
 
+def test_sparse_cholesky_eliminates_a_hub_last(device: str) -> None:
+    """
+    Class A, against ``scipy.sparse.linalg.spsolve``, on a 3 000-spoke double cone's heat system.
+
+    Every face of ``trimesh.creation.cone`` touches its apex or its base centre, so every vertex
+    neighbours both hubs and a geometric split crossed ~1 500 hub edges a side: separators of half
+    the ring, and the factorization held 27.5 MB (72 MB of fronts at 12 000 spokes; ``fan_hub``'s
+    40 960 needed 11.6 GB and was refused). The long rows now leave the dissection for a root
+    eliminated last: 2.3 MB.
+    """
+    mesh = tm.creation.cone(radius=1.0, height=1.0, sections=3000)
+    vertices_wp, faces_wp = numpy_to_warp(np.asarray(mesh.vertices), np.asarray(mesh.faces), device)
+    system = od.heat.heat_operators(vertices_wp, faces_wp)[0]
+    factor = od.cholesky.sparse_cholesky(system, vertices_wp)
+    assert factor.nbytes < 8_000_000
+    rhs_np = np.random.default_rng(31).standard_normal(int(system.nrow))
+    solution = wp.zeros(int(system.nrow), dtype=wp.float64, device=device)
+    factor.solve(wp.array(rhs_np, dtype=wp.float64, device=device), solution)
+    expected_np = spla.spsolve(bsr_to_csr(system).tocsc(), rhs_np)
+    assert np.allclose(solution.numpy(), expected_np, rtol=1e-8, atol=1e-8)
+
+
 def test_sparse_cholesky_solves_columns_together(
     device: str, sphere_irregular: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
@@ -344,6 +366,9 @@ def test_refinement_never_passes_a_nan_residual(
     exact_np = spla.spsolve(bsr_to_csr(system).tocsc(), rhs_np)
     rhs = wp.array(rhs_np, dtype=wp.float64, device=device)
     factor = od.cholesky.sparse_cholesky(system, mesh_wp.points)
+    # ``backward_error_exceeds`` is launched tiled, ``BACKWARD_ERROR_ROWS`` rows a block.
+    rows = int(kernel_linalg.BACKWARD_ERROR_ROWS)
+    blocks = (n + rows - 1) // rows
     for guess_np, rounds, flagged in (
         (np.where(np.arange(n) == 5, np.nan, exact_np), od.cholesky.CHOLESKY_REFINE_ROUNDS + 1, 1),
         (exact_np, 1, 0),
@@ -354,13 +379,14 @@ def test_refinement_never_passes_a_nan_residual(
         assert state[int(kernel_cholesky.REFINE_ROUND)] == rounds
         flag = wp.zeros(1, dtype=wp.int32, device=device)
         nothing = wp.zeros(0, dtype=wp.float64, device=device)
-        wp.launch(
+        wp.launch_tiled(
             kernel_linalg.backward_error_exceeds,
-            dim=(n, 1),
+            dim=(blocks, 1),
             inputs=[system.offsets, system.columns, system.values,
                     wp.array(guess_np, dtype=wp.float64, device=device), rhs, wp.int32(n),
                     wp.float64(1e-10), nothing, nothing, wp.int32(0)],
             outputs=[flag],
+            block_dim=rows,
             device=device,
         )  # fmt: skip
         assert int(flag.numpy()[0]) == flagged
@@ -371,13 +397,14 @@ def test_refinement_never_passes_a_nan_residual(
         for base in (0, 4):
             if base == 0:
                 flag.zero_()
-            wp.launch(
+            wp.launch_tiled(
                 kernel_linalg.backward_error_exceeds,
-                dim=(n, 1),
+                dim=(blocks, 1),
                 inputs=[system.offsets, system.columns, system.values,
                         wp.array(exact_np, dtype=wp.float64, device=device), rhs, wp.int32(n),
                         wp.float64(1e-10), residual, threshold, wp.int32(base)],
                 outputs=[flag],
+                block_dim=rows,
                 device=device,
             )  # fmt: skip
             assert int(flag.numpy()[0]) == base + int(kernel_linalg.BACKWARD_ERROR_UNCONVERGED)

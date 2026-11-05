@@ -23,7 +23,9 @@ gradient gives from the same guess on a consistent right-hand side.
 Notes
 -----
 The ordering is geometric nested dissection when vertex coordinates are given and the same
-bisection over breadth-first distances from three mutually far vertices otherwise. The numeric
+bisection over breadth-first distances from three mutually far vertices otherwise. Rows of 1 024
+entries or more (a fan's hub) take no part in the bisection and are eliminated last, so a vertex
+whose neighbours span the mesh does not turn every separator into half of them. The numeric
 factorization is multifrontal (Liu 1992); each supernode stores the inverse of its diagonal block
 and the product of that inverse with its off-diagonal rows, so both triangular solves are
 level-scheduled products with no substitution inside a level (the partitioned inverse of Alvarado,
@@ -1986,10 +1988,10 @@ def _nested_dissection(
     # at least one), with the state counting its nodes.
     (node, order, order_segment, tag, lower_mark, upper_mark, vertices, crossings_and_tickets, keep,
      next_segment, separator_side, separator_node, child_next, child_leaf, table_a, table_b,
-     segment_a, segment_b, tree_rows, state) = _carve(
+     segment_a, segment_b, tree_rows, state, dense_root) = _carve(
         wp.int32,
         [n, n, n, n, n, n, 2 * n, 3 * slots, n, n, slots, slots, 2 * slots, 2 * slots,
-         2 * (slots + 1), 2 * (slots + 1), 4 * slots, 4 * slots, 5 * n, 2],
+         2 * (slots + 1), 2 * (slots + 1), 4 * slots, 4 * slots, 5 * n, 2, 1],
         device,
     )  # fmt: skip
     partials = _launch.empty(max_tasks, dtype=kernel_cholesky.moment_vector, device=device)
@@ -2052,7 +2054,7 @@ def _nested_dissection(
         _launch.launch(
             kernel_cholesky.dissection_sides,
             dim=n,
-            inputs=[keys, vertices, segment_start, state],
+            inputs=[keys, vertices, segment_start, offsets, state],
             outputs=[tag],
             device=device,
         )
@@ -2095,7 +2097,25 @@ def _nested_dissection(
     for depth in range(depths):
         split(depth, tables[depth % 2], segments[depth % 2],
               tables[(depth + 1) % 2], segments[(depth + 1) % 2])  # fmt: skip
-    return node, tree, state, depths
+    # The long rows (``kernels/linalg.csr_row_long``), which no split saw, into a dense root
+    # eliminated last, a level above every tree: one launch over the rows, one over the nodes,
+    # nothing read back. A pattern with no long row leaves the tree as it was.
+    _launch.launch(
+        kernel_cholesky.dissection_long_rows,
+        dim=n,
+        inputs=[offsets, state],
+        outputs=[node, tree, dense_root],
+        device=device,
+    )
+    _launch.launch(
+        kernel_cholesky.dissection_dense_root,
+        dim=n,
+        inputs=[wp.int32(n), dense_root],
+        outputs=[tree, state],
+        device=device,
+    )
+    # The dense root's level: the depths' bound covers it.
+    return node, tree, state, depths + 1
 
 
 def _carve(
