@@ -45,7 +45,7 @@ def vertex_tangent_frames(
     Orthonormal tangent frame at every vertex as ``(basis_x, basis_y, normal)``.
 
     ``normal`` is the angle-weighted vertex normal
-    ([`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="angle"``);
+    ([`vertex_normals`][ordito.normals.vertex_normals] at ``weighting="angle"``);
     ``basis_x`` is where [`halfedge_tangent_angles`][ordito.tangent_space.halfedge_tangent_angles]
     puts polar angle ``0``, fitted to the whole fan: each incident edge, projected into the tangent
     plane and rotated back by its polar angle, summed and normalized (a boundary vertex adds its
@@ -89,7 +89,7 @@ def vertex_tangent_frames(
     See Also
     --------
     [`halfedge_tangent_angles`][ordito.tangent_space.halfedge_tangent_angles]
-    [`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="angle"``
+    [`vertex_normals`][ordito.normals.vertex_normals] at ``weighting="angle"``
     [`vertex_one_rings`][ordito.halfedge.vertex_one_rings]
 
     Examples

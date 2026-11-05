@@ -44,7 +44,7 @@ def run(device: str) -> dict[str, Any]:
 
     vertices, faces = data.load("buddha", device)
     mesh = wp.Mesh(points=vertices, indices=faces)
-    normals = od.vertices.vertex_normals(vertices, faces)
+    normals = od.normals.vertex_normals(vertices, faces)
     diagonal = od.bounds.enclosing_diagonal(vertices)
 
     occlusion = od.visibility.ambient_occlusion(mesh, vertices, normals=normals)

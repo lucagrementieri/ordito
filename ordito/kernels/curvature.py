@@ -3,6 +3,7 @@ import warp as wp
 from ordito.constants import TOLERANCE_MERGE_CONSTANT, TOLERANCE_ZERO_CONSTANT
 from ordito.kernels.adjacency import unshared_projection, unshared_vertex
 from ordito.kernels.algorithms.bfs import ball_row_bounds
+from ordito.kernels.array import declare_map_signatures, map_probe
 from ordito.kernels.halfedge import halfedge_destination, halfedge_prev
 from ordito.kernels.linalg import solve_normal_equations
 from ordito.kernels.neighbors import in_ball
@@ -13,7 +14,13 @@ from ordito.kernels.predicates import (
     segment_aabb,
     vector_angle,
 )
-from ordito.kernels.triangles import face_normals_and_area, face_vertices_vec3d, local_corner
+from ordito.kernels.scatter import peer_summed_add_corner_triple
+from ordito.kernels.triangles import (
+    face_corner_angles,
+    face_normals_and_area,
+    face_vertices_vec3d,
+    local_corner,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -783,6 +790,36 @@ def normal_cycle_principal_curvatures(
     out_pv2[v] = wp.float32(smaller)
 
 
+# ---------------------------------------------------------------------------
+# vertex_defects: a full turn less the corner angles incident to each vertex
+# ---------------------------------------------------------------------------
+
+
+@wp.func
+def angle_defect_rounded(angle_sum: wp.float64) -> wp.float32:
+    """``angle_defect`` of a ``float64`` angle sum, formed in ``float64`` and rounded once."""
+    return wp.float32(angle_defect(angle_sum))
+
+
+@wp.kernel
+def scatter_corner_angles(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_angle_sums: wp.array[wp.float32]
+) -> None:
+    # Each vertex's sum of incident corner angles, the angles formed in the thread
+    # (``triangles.face_corner_angles``, the ``angles`` kernel's body) and added corner by corner in
+    # ``scatter.scatter_sum_scalar``'s order, so no ``(n_faces, 3)`` angle table is written. The
+    # defect's angle sums from positions, for a caller holding no angle table
+    # (``smoothing.filter_spikes``, which tests the defect against its threshold).
+    f = wp.int32(wp.tid())
+    a0, a1, a2 = face_corner_angles(vertices, faces, f)
+    peer_summed_add_corner_triple(out_angle_sums, faces, f, a0, a1, a2)
+
+
+# ---------------------------------------------------------------------------
+# discrete_gaussian_curvature: the defects summed over a ball
+# ---------------------------------------------------------------------------
+
+
 @wp.kernel
 def vertex_angle_sums(
     face_angles: wp.array2d[wp.float32], faces: wp.array[wp.int32], out_sum: wp.array[wp.float64]
@@ -809,7 +846,7 @@ def ball_angle_defect_sum(
     # branch, so a query folds exactly the vertices a ball-query CSR would list, in its order --
     # with no defect pass, count pass, scan, readback or neighbour-sized buffers in between, and one
     # sequential sum per query where a scatter over that CSR added the same terms by atomics. The
-    # defect is ``predicates.angle_defect``, the rule ``vertices.vertex_defects`` applies.
+    # defect is ``predicates.angle_defect``, the rule ``curvature.vertex_defects`` applies.
     #
     # In ``float64``, angle sums and ball total alike: a defect is a full turn less an angle sum
     # close to it, so in ``float32`` each carries an absolute error of a few ulp of 2 pi, and a
@@ -1509,3 +1546,18 @@ def rimls_principal_curvature(
     out_pd2[i] = pd2
     out_pv1[i] = pv1
     out_pv2[i] = pv2
+
+
+def _declare_map_kernels() -> None:
+    """
+    Pre-declare this module's forking ``wp.map`` signatures so each builds one module, not three.
+
+    See ``kernels/array.py::declare_map_signatures`` for why this exists, how the table was
+    derived and what forks a ``wp.map`` module; only this module's *own* forking ops belong
+    here (the shared builtins are declared there).
+    """
+    dense = map_probe
+    declare_map_signatures([(angle_defect_rounded, (dense(wp.float64),), wp.float32)])
+
+
+_declare_map_kernels()

@@ -88,7 +88,7 @@ def test_vertex_tangent_frames_derived_normals_match_supplied(
     _, mesh_wp = request.getfixturevalue(mesh_name)
     vertices, faces = mesh_wp.points, mesh_wp.indices
     derived = od.tangent_space.vertex_tangent_frames(vertices, faces)
-    normals = od.vertices.vertex_normals(vertices, faces, weighting="angle")
+    normals = od.normals.vertex_normals(vertices, faces, weighting="angle")
     supplied = od.tangent_space.vertex_tangent_frames(vertices, faces, normals=normals)
 
     assert np.array_equal(derived[2].numpy(), normals.numpy())

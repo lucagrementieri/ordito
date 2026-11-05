@@ -113,7 +113,7 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshDat
     import ordito as od
 
     vertices, faces = od.creation.box()
-    normals = od.vertices.vertex_normals(vertices, faces).numpy()
+    normals = od.normals.vertex_normals(vertices, faces).numpy()
     mesh = meshio.Mesh(
         vertices.numpy(),
         [("triangle", faces.numpy().reshape(-1, 3))],

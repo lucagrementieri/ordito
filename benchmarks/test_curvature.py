@@ -17,6 +17,8 @@ Three functions, three cost profiles:
   defects. Cheap, memory-bound, dominated by the query.
 * ``discrete_mean_curvature`` — the same query shape over *edges*, so it also pays face adjacency
   and the per-edge dihedral angles.
+* ``vertex_defects`` — the pointwise angle defect, one ``3F``-into-``V`` scatter and no
+  neighborhood, so it has no radius and runs on the **valence** axis, where a hub contends.
 
 Why the clean spheres rather than the scan meshes
 -------------------------------------------------
@@ -33,6 +35,9 @@ References
 **libigl**: ``igl.principal_curvature(..., useKring=False)`` is the sphere-neighborhood variant
 ordito reproduces — the ``useKring=True`` default collects a combinatorial k-ring instead, a
 different neighborhood and so a different amount of work — timed at the same radius multiplier.
+
+**libigl** and **trimesh** also answer ``vertex_defects`` (``igl.gaussian_curvature`` is the
+pointwise angle defect, not the ball-integrated measure of the same name).
 
 **trimesh** is the reference for the two Cohen-Steiner / Morvan measures, given the same query
 points and radius. **open3d** has no curvature estimation at all, and does not even expose vertex
@@ -85,6 +90,7 @@ import numpy as np
 import pymeshlab as ml
 import pytest
 import trimesh as tm
+from meshlib import mrmeshnumpy as mn
 
 import ordito as od
 import ordito.typing as odt
@@ -219,7 +225,7 @@ def test_point_principal_curvature(bench_case: BenchCase) -> None:
     values (each is a separate filter call).
     """
     vertices = bench_case.vertices_wp
-    normals = od.vertices.vertex_normals(vertices, bench_case.faces_wp)
+    normals = od.normals.vertex_normals(vertices, bench_case.faces_wp)
     if bench_case.kind == "pymeshlab":
         points_np = bench_case.vertices_np.astype(np.float64)
         normals_np = normals.numpy().astype(np.float64)
@@ -312,6 +318,68 @@ def test_vertex_curvatures(bench_case: BenchCase) -> None:
         lambda: od.curvature.vertex_curvatures(vertices, faces), rounds=_HEAVY_ROUNDS
     )
     assert mean.shape == (bench_case.n_vertices,)
+
+
+@pytest.mark.benchmark(group="vertex_defects")
+@pytest.mark.benchaxis("valence")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl", "pyvista", "meshlib")
+def test_vertex_defects(bench_case: BenchCase) -> None:
+    """
+    The angle defect ``2π - Σθ``: the accumulation axis's cheapest member.
+
+    The same ``3F``-into-``V`` scatter as ``test_normals.py``'s normals, over scalars instead of
+    vectors, so it sits on their **valence** axis rather than this module's scale axis.
+
+    ordito takes the per-face angles as an *argument*, so the row includes computing them (the
+    references do the same internally and there is no way to hand them either one). All three
+    agree element-wise including at boundary vertices -- ``igl.gaussian_curvature`` is the
+    pointwise angle defect, **not** the ball-integrated Cohen-Steiner/Morvan measure
+    ``curvature.discrete_gaussian_curvature`` computes, and confusing the two is the trap this
+    group's name is chosen against.
+
+    ``igl.gaussian_curvature`` is one of the ``(V, F)``-family functions, so it returns ``len(V)``
+    rows rather than ``F.max() + 1`` and lines up with ordito on a mesh with unreferenced
+    vertices. That is why it can be a row here where ``igl.adjacency_matrix``-family functions need
+    a padding transform.
+
+    **pyvista does more**: ``curvature('gaussian')`` is the defect divided by the barycentric lumped
+    area, so its row includes an area pass and a division. The transform is named and asserted in
+    ``tests/test_curvature.py``; here it means the row is not a floor but a ceiling.
+
+    meshlib's ``mn.getNumpyGaussianCurvature`` is the batched form and the one to use: its
+    per-vertex ``mm.discreteGaussianCurvature`` gives bit-identical values but needs a Python loop,
+    which is orders of magnitude slower and would time the loop rather than MeshLib.
+    """
+    if bench_case.kind == "meshlib":
+        mesh_ml = bench_case.new_mesh_ml()
+        n_vertices = bench_case.n_vertices
+        defects_ml = bench_case.run(lambda: mn.getNumpyGaussianCurvature(mesh_ml))
+        assert defects_ml.shape == (n_vertices,)
+        return
+    n_vertices = bench_case.n_vertices
+    if bench_case.kind == "pyvista":
+        mesh_pv = bench_case.mesh_pv
+        gaussian_pv = bench_case.run(lambda: mesh_pv.curvature("gaussian"))
+        assert np.asarray(gaussian_pv).shape == (n_vertices,)
+        return
+    if bench_case.kind == "ordito":
+        vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+        defects = bench_case.run(
+            lambda: od.curvature.vertex_defects(
+                n_vertices, faces, od.triangles.face_angles(vertices, faces)
+            )
+        )
+        assert defects.shape == (n_vertices,)
+    elif bench_case.kind == "igl":
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        defects_igl = bench_case.run(lambda: igl.gaussian_curvature(vertices_np, faces_np))
+        assert defects_igl.ravel().shape == (n_vertices,)
+    else:
+        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
+        defects_tm = bench_case.run(
+            lambda: tm.curvature.vertex_defects(tm.Trimesh(vertices_np, faces_np, process=False))
+        )
+        assert defects_tm.shape == (n_vertices,)
 
 
 def _run_discrete_curvature_pml(
@@ -447,7 +515,7 @@ def _bench_mls_principal_curvature(bench_case: BenchCase, method: Literal["apss"
         bench_case.run(colorize, rounds=_HEAVY_ROUNDS)
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    normals = od.vertices.vertex_normals(vertices, faces)
+    normals = od.normals.vertex_normals(vertices, faces)
     *_, pv1, _pv2 = bench_case.run(
         lambda: od.curvature.mls_principal_curvature(vertices, normals, method),
         rounds=_HEAVY_ROUNDS,

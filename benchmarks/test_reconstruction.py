@@ -8,7 +8,7 @@ cached: they are the *input*, not part of the operation being timed.
 **open3d** is the reference for ball pivoting
 (``create_from_point_cloud_ball_pivoting``, Bernardini's BPA at the identical radius); it gets the
 same points and computes its own area-weighted normals, the same quantity
-[`vertex_normals`][ordito.vertices.vertex_normals] produces.
+[`vertex_normals`][ordito.normals.vertex_normals] produces.
 
 **pymeshlab** is the third BPA implementation, and worth a row because
 ``generate_surface_reconstruction_ball_pivoting`` is VCGlib's original BPA — so its row and open3d's
@@ -133,7 +133,7 @@ def _normals(bench_case: BenchCase) -> wp.array[wp.vec3]:
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _normals_cache:
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        _normals_cache[key] = od.vertices.vertex_normals(vertices, faces)
+        _normals_cache[key] = od.normals.vertex_normals(vertices, faces)
     return _normals_cache[key]
 
 

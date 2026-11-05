@@ -896,12 +896,12 @@ class Trimesh:
 
         See Also
         --------
-        [`vertices.vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="angle"``
+        [`normals.vertex_normals`][ordito.normals.vertex_normals] at ``weighting="angle"``
         [`trimesh.Trimesh.vertex_normals`][]
         """
         # Only tables already held are passed: a missing one is formed inside the scatter, bit for
         # bit the property's own, rather than written to a cache slot just to be read back once.
-        return od.vertices.vertex_normals(
+        return od.normals.vertex_normals(
             self._vertices,
             self._faces,
             weighting="angle",
@@ -916,7 +916,7 @@ class Trimesh:
 
         See Also
         --------
-        [`ordito.vertices.vertex_defects`][]
+        [`ordito.curvature.vertex_defects`][]
 
         Examples
         --------
@@ -929,7 +929,7 @@ class Trimesh:
         print(f"{mesh.vertex_defects.numpy().sum():.4f}")  # 12.5664
         ```
         """
-        return od.vertices.vertex_defects(self.n_vertices, self._faces, self.face_angles)
+        return od.curvature.vertex_defects(self.n_vertices, self._faces, self.face_angles)
 
     @_CachedProperty
     def nondegenerate_faces(self) -> wp.array[wp.bool]:

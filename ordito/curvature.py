@@ -13,8 +13,11 @@ Several quantities computed several ways, because on a mesh "curvature" is not o
   fit on a point cloud with normals, over each point's nearest neighbours.
 - [`vertex_curvatures`][ordito.curvature.vertex_curvatures] is the pointwise mean and Gaussian
   curvature over one ring (Meyer et al.), per unit mixed area.
-- [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature] is the angle
-  defect: purely *intrinsic*, exact rather than fitted, and computable from the angles alone.
+- [`vertex_defects`][ordito.curvature.vertex_defects] is the angle defect, ``2 * pi`` minus the
+  incident angle sum: the Gaussian curvature concentrated at each vertex, purely *intrinsic*, exact
+  rather than fitted, and computable from the angles alone.
+- [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature] sums those defects
+  over a ball around each query point, the measure that converges under refinement.
 - [`discrete_mean_curvature`][ordito.curvature.discrete_mean_curvature] sums dihedral angle times
   edge length over the one ring, which is the integrated mean curvature rather than a pointwise one.
 - [`mls_principal_curvature`][ordito.curvature.mls_principal_curvature] is the principal pair of
@@ -34,8 +37,11 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import require_same_device
+from ordito.config import is_deterministic
 from ordito.kernels import curvature as kernel_curvature
-from ordito.vertices import vertex_normals as _vertex_normals
+from ordito.kernels import predicates as kernel_predicates
+from ordito.kernels import scatter as kernel_scatter
+from ordito.normals import vertex_normals as _vertex_normals
 
 
 def principal_curvature(
@@ -412,7 +418,7 @@ def vertex_curvatures(
     --------
     [`principal_curvature`][ordito.curvature.principal_curvature]
         Its ``method="meyer"`` is the principal pair these imply, ``H +- sqrt(H^2 - K)``.
-    [`ordito.vertices.vertex_defects`][ordito.vertices.vertex_defects]
+    [`vertex_defects`][ordito.curvature.vertex_defects]
         The angle defect alone, not divided by an area.
 
     Examples
@@ -447,6 +453,97 @@ def vertex_curvatures(
         device=device,
     )
     return mean, gaussian
+
+
+def vertex_defects(
+    n_vertices: int, faces: wp.array[wp.int32], face_angles: odt.Array2dFloat32
+) -> wp.array[wp.float32]:
+    """
+    Discrete angle defect per vertex: ``2π`` minus the sum of incident corner angles.
+
+    For each vertex, interior angles from every triangle corner that references that vertex
+    are accumulated on ``faces.device``, then subtracted from a full turn. Under
+    [`is_deterministic`][ordito.config.is_deterministic] the sum is formed exactly in ``float64``
+    and rounded once, so it is the same on every run; otherwise it is accumulated in ``float32`` in
+    the atomics' arrival order.
+    This is the standard piecewise-linear angle defect (related to discrete Gaussian
+    curvature via the Gauss—Bonnet viewpoint on triangle meshes).
+
+    Parameters
+    ----------
+    n_vertices
+        Number of vertices indexed by ``faces`` (output length).
+    faces
+        ``(3 * n_faces,)`` triangle indices, interpreted as ``(n_faces, 3)`` via
+        ``reshape((-1, 3))`` (row-major flat layout is fine).
+    face_angles
+        ``(n_faces, 3)`` interior angles at the three corners of each triangle, with rows aligned
+        with ``faces``.
+
+    Returns
+    -------
+    wp.array[wp.float32]
+        ``(n_vertices,)`` device array ``2π - Σ angles`` at each vertex. Vertices not
+        referenced by any face have defect ``2π`` (empty angle sum).
+
+    Raises
+    ------
+    ValueError
+        If ``face_angles`` does not have one row per triangle in ``faces``.
+    RuntimeError
+        If ``faces`` and ``face_angles`` are not all on one device.
+
+    See Also
+    --------
+    [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature]
+        The same quantity at a *scale*: the Cohen-Steiner/Morvan ball measure sums these defects
+        over a ball of given radius, where this is the pointwise value at one vertex. The ball
+        measure is what converges under refinement; the pointwise defect does not.
+    [`face_angles`][ordito.triangles.face_angles]
+        The angles this sums.
+
+    Examples
+    --------
+    Each cube corner meets three right angles, so its defect is ``pi / 2``, and the defects sum to
+    ``4 * pi`` on any closed genus-0 surface (Gauss-Bonnet):
+
+    ```python
+    import ordito as od
+
+    vertices, faces = od.creation.box()
+    angles = od.triangles.face_angles(vertices, faces)
+    defects = od.curvature.vertex_defects(vertices.shape[0], faces, angles)
+    print(f"{defects.numpy()[0]:.4f}")  # 1.5708
+    print(f"{defects.numpy().sum():.4f}")  # 12.5664
+    ```
+    """
+    require_same_device(faces=faces, face_angles=face_angles)
+    n_faces = faces.size // 3
+    _require_face_angle_rows(n_faces, face_angles)
+    if not is_deterministic():
+        angle_sum = _launch.zeros(n_vertices, dtype=wp.float32, device=faces.device)
+        _launch.launch(
+            kernel_scatter.SCATTER_SUM_SCALAR[face_angles.dtype],
+            dim=n_faces,
+            inputs=[face_angles, faces.reshape((-1, 3)), angle_sum],
+            device=faces.device,
+        )
+        # In place over the accumulator: ``angle_sum`` is scratch, and the operator spelling
+        # ``TWO_PI - angle_sum`` would run the same wp.map into a second allocation.
+        _launch.map(kernel_predicates.angle_defect, angle_sum, out=angle_sum)
+        return angle_sum
+    # A ``float32`` angle is exact in ``float64``, and so is the sum, so the atomics' commit order
+    # changes no bit: reproducible for the price of the ``float32`` output's own allocation.
+    exact_sum = _launch.zeros(n_vertices, dtype=wp.float64, device=faces.device)
+    _launch.launch(
+        kernel_scatter.scatter_sum_exact,
+        dim=n_faces,
+        inputs=[face_angles, faces.reshape((-1, 3)), exact_sum],
+        device=faces.device,
+    )
+    defects = _launch.empty(n_vertices, dtype=wp.float32, device=faces.device)
+    _launch.map(kernel_curvature.angle_defect_rounded, exact_sum, out=defects)
+    return defects
 
 
 def discrete_gaussian_curvature(
@@ -491,7 +588,7 @@ def discrete_gaussian_curvature(
 
     See Also
     --------
-    [`vertex_defects`][ordito.vertices.vertex_defects]
+    [`vertex_defects`][ordito.curvature.vertex_defects]
         The pointwise angle defect this integrates. Same quantity, no scale: at ``radius = 0`` with
         the vertices as query points the two agree, and it is the ball measure rather than the
         pointwise defect that converges under refinement.
@@ -518,11 +615,7 @@ def discrete_gaussian_curvature(
     require_same_device(points=points, vertices=vertices, faces=faces, face_angles=face_angles)
     device = points.device
     n_faces = faces.size // 3
-    if face_angles.shape[0] != n_faces:
-        raise ValueError(
-            f"face_angles must have one row per triangle, got {face_angles.shape[0]} rows for "
-            f"{n_faces} faces"
-        )
+    _require_face_angle_rows(n_faces, face_angles)
     if points.size == 0 or vertices.size == 0:
         return _launch.zeros(points.size, dtype=wp.float32, device=device)
     # Each vertex's incident-angle sum, in float64; the ball walk forms its defect as it reads it.
@@ -543,6 +636,33 @@ def discrete_gaussian_curvature(
         device=device,
     )
     return gauss_curvature
+
+
+def _require_face_angle_rows(n_faces: int, face_angles: odt.Array2dFloat32) -> None:
+    """
+    Check that a corner-angle table has one row per triangle.
+
+    The angle scatters index ``face_angles`` by the face id they read ``faces`` with, so a short
+    table is read out of range: an illegal access on the CUDA device and a heap read on the host,
+    never an exception.
+
+    Parameters
+    ----------
+    n_faces
+        Triangle count the table must match, derived from the caller's ``faces`` buffer.
+    face_angles
+        ``(n_faces, 3)`` interior angles per face.
+
+    Raises
+    ------
+    ValueError
+        If ``face_angles`` does not have ``n_faces`` rows.
+    """
+    rows = int(face_angles.shape[0])
+    if rows != n_faces:
+        raise ValueError(
+            f"face_angles must have one row per triangle, got {rows} rows for {n_faces} faces"
+        )
 
 
 def discrete_mean_curvature(

@@ -298,7 +298,7 @@ def atomic_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec3) ->
     # rounding boundary could still round both ways.
     #
     # Cost: the scatter kernel itself is within noise of the float32 one, and
-    # ``vertices.vertex_normals`` end to end wins on a small mesh -- the fused narrow-and-normalize
+    # ``normals.vertex_normals`` end to end wins on a small mesh -- the fused narrow-and-normalize
     # tail removes a launch, since a float32 accumulator could reach ``wp.vec3`` through a zero-copy
     # ``array_cast`` and a float64 one cannot -- and loses slightly on a large one, where the wider
     # atomics start to show. The (n, 3) buffer doubles.
@@ -424,7 +424,7 @@ def scatter_weighted_sum_vec(
 # edges through a halfedge map). ``add_corner_triple`` commits a plain atomic per corner;
 # ``peer_summed_add_corner_triple`` pools a warp's lanes that share a slot (``peer_summed_add``).
 # The pooled form serves the kernels whose work is the scatter (``scatter_face_areas_exact``,
-# ``scatter_face_thirds``, ``laplacian.add_face_area_exact``, ``vertices.scatter_corner_angles``):
+# ``scatter_face_thirds``, ``laplacian.add_face_area_exact``, ``curvature.scatter_corner_angles``):
 # device time new/old 0.09-0.10x on ``fan_hub``, 0.83-0.85x on lucy, 0.91-0.95x on dragon but
 # 1.11-1.23x for its ``float32`` thirds and angles, and +0.5-1 us on 80 k-face meshes. Declined in
 # the kernels with work of their own, where the match's registers cost more than the atomics it
@@ -960,7 +960,7 @@ def divide_by_density(
 # scatters follow their wrapper's precision keyword.
 _VALUE_DTYPES = (wp.float32, wp.float64)
 # The two vector scatters get a set of **one**, for the same reason: their only caller is
-# ``vertices._accumulate_and_normalize``, which accumulates at ``wp.float64`` so that the summation
+# ``normals._accumulate_and_normalize``, which accumulates at ``wp.float64`` so that the summation
 # order the atomics pick cannot reach the answer (see ``atomic_add_vec3``). The kernels stay generic
 # over the accumulator anyway, so a float32 caller is a row here rather than a second kernel -- but
 # registering that row today would be an overload nothing launches, paid for on every rebuild.

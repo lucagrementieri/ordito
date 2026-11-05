@@ -1355,7 +1355,7 @@ def _smooth_pass(
     n_vertices = vertices.size
     if unique_edges is None:
         unique_edges, _ = _edges_unique(faces, n_vertices)
-    # ``vertices.vertex_normals`` and ``laplacian.mass_matrix_entries`` from one pass over the
+    # ``normals.vertex_normals`` and ``laplacian.mass_matrix_entries`` from one pass over the
     # faces, into one zeroed ``float64`` buffer: the normals' rows, then the exact area sums. Each
     # reader finishes them where it reads them, so neither table is narrowed by a launch of its own.
     face_sums = _launch.zeros(4 * n_vertices, dtype=wp.float64, device=device)

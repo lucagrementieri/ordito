@@ -192,7 +192,7 @@ def test_transform_normals(bench_case: BenchCase) -> None:
         )
         assert moved_pv.n_points == bench_case.n_vertices
         return
-    normals_wp = od.vertices.vertex_normals(bench_case.vertices_wp, bench_case.faces_wp)
+    normals_wp = od.normals.vertex_normals(bench_case.vertices_wp, bench_case.faces_wp)
     moved_wp = bench_case.run(lambda: od.transform.transform_normals(normals_wp, _MATRIX_WP))
     assert moved_wp.shape == normals_wp.shape
     # Unit *or* zero: the scan meshes carry unreferenced vertices whose normal is zero, and the

@@ -2,13 +2,13 @@ import warp as wp
 
 from ordito.constants import PI, TOLERANCE_ZERO_CONSTANT, TWO_PI
 from ordito.kernels.halfedge import halfedge_destination, halfedge_prev
+from ordito.kernels.normals import gathered_angle_weighted_sums, normalized_narrowed
 from ordito.kernels.predicates import any_perpendicular, reference_tangent, world_to_tangent
 from ordito.kernels.triangles import (
     face_corner_angles_d,
     face_normals_and_area,
     halfedge_corner_angle,
 )
-from ordito.kernels.vertices import gathered_angle_weighted_sums, normalized_narrowed
 
 wp.set_module_options({"enable_backward": False})
 
@@ -141,7 +141,7 @@ def ring_angle_total(
     vertex: wp.int32,
 ) -> wp.float32:
     # Total corner angle Theta_v of ``vertex``'s ring, summed in ring order from angles formed on
-    # demand (``triangles.halfedge_corner_angle``). ``vertices.gathered_angle_weighted_sums`` forms
+    # demand (``triangles.halfedge_corner_angle``). ``normals.gathered_angle_weighted_sums`` forms
     # the same sum, bit for bit, on its normal walk.
     total = wp.float32(0.0)
     for j in range(ring_offsets[vertex], ring_offsets[vertex + 1]):
@@ -275,7 +275,7 @@ def vertex_tangent_frames_gathered(
     out_normals: wp.array[wp.vec3],
 ) -> None:
     # ``vertex_tangent_frames`` with the angle-weighted normal gathered over the ring the frame
-    # walks (``vertices.gathered_angle_weighted_sums``), in place of a ``float64`` scatter, its
+    # walks (``normals.gathered_angle_weighted_sums``), in place of a ``float64`` scatter, its
     # zeroed accumulator and a launch; the same walk totals the corner angles the frame's scale
     # reads, which the caller-normal kernel walks for alone. The normal written is
     # ``vertex_normals``' up to the order its ``float64`` sum is taken in.

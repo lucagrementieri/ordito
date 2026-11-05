@@ -891,7 +891,7 @@ def curved_hessian_energy(
     --------
     [`hessian_energy`][ordito.energies.hessian_energy]
     [`crouzeix_raviart_cotmatrix`][ordito.energies.crouzeix_raviart_cotmatrix]
-    [`vertex_defects`][ordito.vertices.vertex_defects]
+    [`vertex_defects`][ordito.curvature.vertex_defects]
 
     Examples
     --------

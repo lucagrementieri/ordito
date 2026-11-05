@@ -206,7 +206,7 @@ def test_corner_normals_degenerate_crease_sets_are_exact(
     by different code and must agree to float32 and not to a tolerance:
 
     * **no creases** -- every rotation completes, so each corner gets its *vertex's* normal under
-      the same weighting, compared against ``ordito.vertices``' own function;
+      the same weighting, compared against ``ordito.normals``' own function;
     * **every edge a crease** -- no rotation moves at all, so each corner gets its own *face's*
       normal, whatever the weighting.
 
@@ -220,9 +220,9 @@ def test_corner_normals_degenerate_crease_sets_are_exact(
 
     smooth_np = od.triangles.corner_normals(vertices_wp, faces_wp, weighting=weighting).numpy()
     vertex_normals_wp = (
-        od.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle")
+        od.normals.vertex_normals(vertices_wp, faces_wp, weighting="angle")
         if weighting == "angle"
-        else od.vertices.vertex_normals(vertices_wp, faces_wp)
+        else od.normals.vertex_normals(vertices_wp, faces_wp)
     )
     assert np.allclose(smooth_np, vertex_normals_wp.numpy()[faces_np], rtol=1e-5, atol=1e-5)
 

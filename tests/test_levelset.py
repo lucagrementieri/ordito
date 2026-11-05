@@ -1523,7 +1523,7 @@ def test_thicken_mesh_displaces_along_the_angle_weighted_normals(
     shell_vertices_wp, _ = od.levelset.thicken_mesh(
         vertices_wp, faces_wp, thickness, outside=outside
     )
-    normals_np = od.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle").numpy()
+    normals_np = od.normals.vertex_normals(vertices_wp, faces_wp, weighting="angle").numpy()
     vertices_np = vertices_wp.numpy()
     shell_np = shell_vertices_wp.numpy()
     n_vertices = vertices_wp.size

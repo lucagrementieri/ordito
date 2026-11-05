@@ -14,7 +14,7 @@ META = Meta(
     summary="""
     Four ways to put normals on a machined part, coloured by direction (red, green, blue for
     the x, y, z components). [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]
-    gives one flat normal per face. [`vertex_normals`][ordito.vertices.vertex_normals] averages
+    gives one flat normal per face. [`vertex_normals`][ordito.normals.vertex_normals] averages
     them per vertex, weighted by face area or by the corner angle: area weighting leans towards
     the long triangles of a flat side, angle weighting does not depend on how a flat side was
     triangulated. Both smear a crease. [`corner_normals`][ordito.triangles.corner_normals] keeps
@@ -42,8 +42,8 @@ def run(device: str) -> dict[str, Any]:
 
     vertices, faces = data.load("cad_part", device)
     face_normals, _ = od.triangles.face_normals_and_areas(vertices, faces)
-    area_weighted = od.vertices.vertex_normals(vertices, faces, weighting="area")
-    angle_weighted = od.vertices.vertex_normals(vertices, faces, weighting="angle")
+    area_weighted = od.normals.vertex_normals(vertices, faces, weighting="area")
+    angle_weighted = od.normals.vertex_normals(vertices, faces, weighting="angle")
     creases = od.seams.crease_edges(vertices, faces, angle=30.0)
     corner = od.triangles.corner_normals(vertices, faces, creases)  # (n_faces, 3) normals
 

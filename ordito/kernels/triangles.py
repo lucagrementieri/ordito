@@ -316,7 +316,7 @@ def face_normals_and_area(
     mesh scale.** ``|cross|`` scales as ``h^2``, so an absolute floor of
     ``TOLERANCE_ZERO_CONSTANT`` (which this used to carry) puts *every* face of a small enough mesh
     below it and hands back the raw cross product as a "unit" normal of magnitude ``2 * area``.
-    Nothing downstream reads that as an error: ``vertices.vertex_normals`` then area-weights those,
+    Nothing downstream reads that as an error: ``normals.vertex_normals`` then area-weights those,
     squaring the smallness, and ``wp.normalize`` sees a vector whose ``length_sq`` has underflowed
     ``float32`` to exactly zero -- so every vertex normal on the mesh comes back zero, and with them
     every curvature, every smoothing normal and every sign test built on one. Dividing by ``norm``
@@ -386,7 +386,7 @@ def face_corner_angles(
     Interior angles at the three corners of face ``face_index``; all zero for a degenerate face.
 
     The body of the ``angles`` kernel, named so a kernel that weights by corner angle can take them
-    in registers rather than through an ``(n_faces, 3)`` table -- ``vertices.vertex_normals``'
+    in registers rather than through an ``(n_faces, 3)`` table -- ``normals.vertex_normals``'
     ``"angle"`` path is the one that does.
     """
     edges = triangle_edges(vertices, faces, face_index)

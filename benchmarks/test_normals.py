@@ -1,5 +1,5 @@
 """
-Benchmarks for ``ordito.vertices``: the vertex-normal weightings and the angle defect.
+Benchmarks for ``ordito.normals``: the vertex-normal weightings and their accumulators.
 
 Two axes, because the module has two different kinds of function:
 
@@ -16,9 +16,9 @@ Two axes, because the module has two different kinds of function:
 names that name *this* module — the group name is the cross-suite key every ``parity`` marker cites,
 so it does not move with the file.
 
-Across the contention axis the hub cost ``vertex_normals`` 9x and ``vertex_defects`` 3x the
-uniform mesh while each lane committed its own atomics: trimesh's cone puts a hub in every other
-face, so half of each warp hit one slot, and the ``float64`` accumulator serialized there. The
+Across the contention axis the hub cost ``vertex_normals`` 9x and ``curvature.vertex_defects`` 3x
+the uniform mesh while each lane committed its own atomics: trimesh's cone puts a hub in every
+other face, so half of each warp hit one slot, and the ``float64`` accumulator serialized there. The
 scatters now pool the lanes of a warp that share a vertex (``kernels/scatter.peer_summed_add``),
 which took the hub rows to 0.10-0.27x and leaves them about 1.4x the uniform mesh on CUDA. The axis
 is what would catch that regressing.
@@ -42,10 +42,6 @@ implements four weighting schemes behind one filter, two of which are exactly or
 Both write only the vertex-normal attribute and are idempotent,
 so they run against the shared MeshSet with no build inside the timed region.
 
-**libigl** answers ``vertex_defects`` (``igl.gaussian_curvature`` is the pointwise angle defect, not
-the ball-integrated measure of the same name) and **trimesh** answers it too, so that group is the
-module's only three-way one.
-
 The reference is flat across the valence axis, and if anything marginally *faster* on the hub
 mesh: a serial scatter has nothing to contend on.
 """
@@ -54,14 +50,12 @@ from __future__ import annotations
 
 from typing import Literal
 
-import igl
 import numpy as np
 import pytest
 import pytorch3d.structures as p3d_structures
 import torch
 import trimesh as tm
 import warp as wp
-from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
 import ordito as od
@@ -114,9 +108,7 @@ def test_mean_vertex_normals(bench_case: BenchCase) -> None:
     face_normals, _areas = _face_normals_and_areas(bench_case)
     n_vertices = bench_case.n_vertices
     faces = bench_case.faces_wp
-    result = bench_case.run(
-        lambda: od.vertices.mean_vertex_normals(n_vertices, faces, face_normals)
-    )
+    result = bench_case.run(lambda: od.normals.mean_vertex_normals(n_vertices, faces, face_normals))
     assert result.shape == (n_vertices,)
 
 
@@ -128,7 +120,7 @@ def test_weighted_vertex_normals(bench_case: BenchCase) -> None:
 
     The weights are the corner angles, the scheme ``vertex_normals(weighting="angle")`` derives,
     and like the face normals they are *inputs* built outside the timed region on both sides.
-    ``trimesh.geometry.weighted_vertex_normals`` is the reference ``tests/test_vertices.py``
+    ``trimesh.geometry.weighted_vertex_normals`` is the reference ``tests/test_normals.py``
     compares against, fed trimesh's own face normals and angles there as here.
     """
     n_vertices = bench_case.n_vertices
@@ -144,7 +136,7 @@ def test_weighted_vertex_normals(bench_case: BenchCase) -> None:
     face_normals, _areas = _face_normals_and_areas(bench_case)
     face_angles = od.triangles.face_angles(vertices, faces)
     result = bench_case.run(
-        lambda: od.vertices.weighted_vertex_normals(n_vertices, faces, face_normals, face_angles)
+        lambda: od.normals.weighted_vertex_normals(n_vertices, faces, face_normals, face_angles)
     )
     assert result.shape == (n_vertices,)
 
@@ -158,12 +150,12 @@ def test_vertex_normals(bench_case: BenchCase) -> None:
 
     meshlib's ``computePerVertNormals`` is this weighting exactly -- 1.19e-07, and its
     angle-weighted sibling ``computePerVertPseudoNormals`` is 6.8e-03 away, which is what
-    tests/test_vertices.py::test_vertex_normal_weightings_match_meshlib pins. It is also the only
+    tests/test_normals.py::test_vertex_normal_weightings_match_meshlib pins. It is also the only
     **multi-threaded** row in this group, so read the ratio against ``ordito-cuda`` and not against
     ``ordito-cpu``. Pure, so the mesh is built once outside the timed callable.
 
     **pytorch3d**'s ``verts_normals_packed`` is the same area weighting (1.19e-07, pinned in
-    tests/test_vertices.py::test_vertex_normals_match_pytorch3d), but it is a **memoized accessor
+    tests/test_normals.py::test_vertex_normals_match_pytorch3d), but it is a **memoized accessor
     on an immutable container**, so unlike every other row here the ``Meshes`` has to be built
     *inside* the timed callable -- reading it twice on a shared object prices nothing. That means
     the row carries the container construction as well -- a small share on the host and about a
@@ -199,7 +191,7 @@ def test_vertex_normals(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        result = bench_case.run(lambda: od.vertices.vertex_normals(vertices, faces))
+        result = bench_case.run(lambda: od.normals.vertex_normals(vertices, faces))
         assert result.shape == (n_vertices,)
     elif bench_case.kind == "trimesh":
         # trimesh vertex_normals are area-weighted; rebuild inside (cached property)
@@ -213,67 +205,6 @@ def test_vertex_normals(bench_case: BenchCase) -> None:
         mesh_o3d = bench_case.mesh_o3d
         result_o3d = bench_case.run(mesh_o3d.compute_vertex_normals)
         assert np.asarray(result_o3d.vertex_normals).shape == (n_vertices, 3)
-
-
-@pytest.mark.benchmark(group="vertex_defects")
-@pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("ordito", "trimesh", "igl", "pyvista", "meshlib")
-def test_vertex_defects(bench_case: BenchCase) -> None:
-    """
-    The angle defect ``2π - Σθ``: the accumulation axis's cheapest member.
-
-    The same ``3F``-into-``V`` scatter as the normals above, over scalars instead of vectors.
-
-    ordito takes the per-face angles as an *argument*, so the row includes computing them (the
-    references do the same internally and there is no way to hand them either one). All three
-    agree element-wise including at boundary vertices -- ``igl.gaussian_curvature`` is the
-    pointwise angle defect, **not** the ball-integrated Cohen-Steiner/Morvan measure
-    ``curvature.discrete_gaussian_curvature`` computes, and confusing the two is the trap this
-    group's name is chosen against.
-
-    ``igl.gaussian_curvature`` is one of the ``(V, F)``-family functions, so it returns ``len(V)``
-    rows rather than ``F.max() + 1`` and lines up with ordito on a mesh with unreferenced
-    vertices. That is why it can be a row here where ``igl.adjacency_matrix``-family functions need
-    a padding transform.
-
-    **pyvista does more**: ``curvature('gaussian')`` is the defect divided by the barycentric lumped
-    area, so its row includes an area pass and a division. The transform is named and asserted in
-    ``tests/test_vertices.py``; here it means the row is not a floor but a ceiling.
-
-    meshlib's ``mn.getNumpyGaussianCurvature`` is the batched form and the one to use: its
-    per-vertex ``mm.discreteGaussianCurvature`` gives bit-identical values but needs a Python loop,
-    which is orders of magnitude slower and would time the loop rather than MeshLib.
-    """
-    if bench_case.kind == "meshlib":
-        mesh_ml = bench_case.new_mesh_ml()
-        n_vertices = bench_case.n_vertices
-        defects_ml = bench_case.run(lambda: mn.getNumpyGaussianCurvature(mesh_ml))
-        assert defects_ml.shape == (n_vertices,)
-        return
-    n_vertices = bench_case.n_vertices
-    if bench_case.kind == "pyvista":
-        mesh_pv = bench_case.mesh_pv
-        gaussian_pv = bench_case.run(lambda: mesh_pv.curvature("gaussian"))
-        assert np.asarray(gaussian_pv).shape == (n_vertices,)
-        return
-    if bench_case.kind == "ordito":
-        vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        defects = bench_case.run(
-            lambda: od.vertices.vertex_defects(
-                n_vertices, faces, od.triangles.face_angles(vertices, faces)
-            )
-        )
-        assert defects.shape == (n_vertices,)
-    elif bench_case.kind == "igl":
-        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
-        defects_igl = bench_case.run(lambda: igl.gaussian_curvature(vertices_np, faces_np))
-        assert defects_igl.ravel().shape == (n_vertices,)
-    else:
-        vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
-        defects_tm = bench_case.run(
-            lambda: tm.curvature.vertex_defects(tm.Trimesh(vertices_np, faces_np, process=False))
-        )
-        assert defects_tm.shape == (n_vertices,)
 
 
 @pytest.mark.benchmark(group="vertex_normals_precomputed")
@@ -291,7 +222,7 @@ def test_vertex_normals_precomputed(bench_case: BenchCase) -> None:
     n_vertices = bench_case.n_vertices
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     result = bench_case.run(
-        lambda: od.vertices.vertex_normals(
+        lambda: od.normals.vertex_normals(
             vertices, faces, face_normals=face_normals, face_weights=face_areas
         )
     )
@@ -316,15 +247,13 @@ def test_vertex_normals_one_table(bench_case: BenchCase, weighting: str, supplie
     mode: Literal["area", "angle"] = "angle" if weighting == "angle" else "area"
     if supplied == "face_normals":
         result = bench_case.run(
-            lambda: od.vertices.vertex_normals(
+            lambda: od.normals.vertex_normals(
                 vertices, faces, weighting=mode, face_normals=face_normals
             )
         )
     else:
         weights = od.triangles.face_angles(vertices, faces) if mode == "angle" else face_areas
         result = bench_case.run(
-            lambda: od.vertices.vertex_normals(
-                vertices, faces, weighting=mode, face_weights=weights
-            )
+            lambda: od.normals.vertex_normals(vertices, faces, weighting=mode, face_weights=weights)
         )
     assert result.shape == (bench_case.n_vertices,)

@@ -50,9 +50,9 @@ from ordito._device import read_scalar, require_same_device, scan_count
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import levelset as kernel_levelset
+from ordito.kernels import normals as kernel_normals
 from ordito.kernels import proximity as kernel_proximity
 from ordito.kernels import scatter as kernel_scatter
-from ordito.kernels import vertices as kernel_vertices
 from ordito.kernels.algorithms import marching_cubes_33 as kernel_mc33
 
 # Bounds on the automatic ``voxel_size``, both expressed as a sample count across a span, and both
@@ -1238,13 +1238,13 @@ def thicken_mesh(
 
     The normals are **angle-weighted** (the pseudonormal), which is the weighting that makes the
     displacement independent of how the incident triangles happen to be subdivided;
-    [`ordito.vertices`][ordito.vertices] documents the three choices.
+    [`ordito.normals`][ordito.normals] documents the three choices.
 
     See Also
     --------
     [`offset_mesh`][ordito.levelset.offset_mesh]
         The resampling offset, for a shell that must not self-intersect.
-    [`vertices.vertex_normals`][ordito.vertices.vertex_normals] at `weighting="angle"`
+    [`normals.vertex_normals`][ordito.normals.vertex_normals] at `weighting="angle"`
         The displacement direction.
     [`ordito.boundary.oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges]
         Where the band's orientation comes from.
@@ -1280,7 +1280,7 @@ def thicken_mesh(
     # kernel, which normalizes each vertex's row as it displaces it.
     normal_sums = _launch.zeros((n_vertices, 3), dtype=wp.float64, device=device)
     _launch.launch(
-        kernel_vertices.SCATTER_ANGLE_WEIGHTED_NORMALS[wp.float64],
+        kernel_normals.SCATTER_ANGLE_WEIGHTED_NORMALS[wp.float64],
         dim=n_faces,
         inputs=[vertices, faces, normal_sums],
         device=device,

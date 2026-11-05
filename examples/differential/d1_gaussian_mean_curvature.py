@@ -11,7 +11,7 @@ META = Meta(
     title="Gaussian and mean curvature",
     summary="""
     Three curvature fields on the Stanford dragon.
-    [`vertex_defects`][ordito.vertices.vertex_defects] is the pointwise angle defect, `2pi` minus
+    [`vertex_defects`][ordito.curvature.vertex_defects] is the pointwise angle defect, `2pi` minus
     the corner angles at a vertex, the discrete Gaussian curvature integrated over the vertex's
     neighbourhood; it is sharp and noisy on a scan.
     [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature] and
@@ -44,7 +44,7 @@ def run(device: str) -> dict[str, Any]:
 
     vertices, faces = data.load("dragon", device)
     angles = od.triangles.face_angles(vertices, faces)
-    defects = od.vertices.vertex_defects(vertices.shape[0], faces, angles)
+    defects = od.curvature.vertex_defects(vertices.shape[0], faces, angles)
 
     radius = 4.0 * od.edges.mean_edge_length(vertices, faces)
     gaussian = od.curvature.discrete_gaussian_curvature(vertices, vertices, faces, angles, radius)

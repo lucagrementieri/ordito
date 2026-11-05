@@ -15,9 +15,9 @@ from ordito.kernels.array import (
     unravel_index,
 )
 from ordito.kernels.halfedge import halfedge_endpoints, mate_halfedge
+from ordito.kernels.normals import normalized_accumulated_row
 from ordito.kernels.proximity import closest_offset_d, closest_point_query
 from ordito.kernels.triangles import corner_triple, face_vertices
-from ordito.kernels.vertices import normalized_accumulated_row
 
 
 def lattice_edge_margin(spacing: float) -> float:

@@ -8,7 +8,7 @@ Three axes, because the module holds three different kinds of function:
   high-valence hubs serialises where a regular one does not. ``fan_hub`` is the extreme: identical
   vertex *and* face count to ``sphere_med``, but its cone apex and base centre have valence 40 960
   against a uniform 6. The finding these rows exist to keep visible is that it does **not** cost
-  much -- see ``test_vertices.py``, whose normals scatters read under 2x across the same axis.
+  much -- see ``test_normals.py``, whose normals scatters read under 2x across the same axis.
 * **scale** for ``transfer_onto_vertices``, which is not a scatter at all: it is a closest-point
   query per target vertex plus a barycentric blend, so its cost is the BVH's and nothing this module
   owns.
@@ -20,7 +20,7 @@ Three axes, because the module holds three different kinds of function:
   ball-query CSR of several gigabytes.
 
 ``average_onto_vertices`` and ``transfer_onto_vertices`` were previously timed in
-[`test_vertices.py`](test_vertices.py). They moved here with their group names unchanged, because
+[`test_normals.py`](test_normals.py). They moved here with their group names unchanged, because
 the ``benchmark(group=)`` name is a cross-suite key every ``parity`` marker cites -- renaming one
 would break the gate rather than relocate a row.
 

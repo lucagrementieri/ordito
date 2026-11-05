@@ -1,7 +1,7 @@
 import warp as wp
 
 from ordito.kernels.array import OverloadTable
-from ordito.kernels.scatter import peer_summed_add_corner_triple, peer_summed_add_vec3
+from ordito.kernels.scatter import peer_summed_add_vec3
 from ordito.kernels.triangles import (
     corner_triple,
     face_area,
@@ -133,7 +133,7 @@ def normalize_accumulated_rows(sums: wp.array2d[wp.Float], out_normals: wp.array
     """
     Unit-normalize each row of an ``(n, 3)`` accumulator into a ``wp.vec3``.
 
-    The tail of ``vertices._accumulate_and_normalize``, and the reason its accumulator can be
+    The tail of ``normals._accumulate_and_normalize``, and the reason its accumulator can be
     ``float64`` while its answer is ``float32``: it narrows and normalizes in one pass, where the
     ``float32`` accumulator it replaced could reach the same answer with a zero-copy
     ``wp.utils.array_cast`` reinterpretation plus a ``wp.map(wp.normalize, ...)``. One launch
@@ -191,7 +191,7 @@ def scatter_area_weighted_normals(
 def scatter_unit_normals(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_sums: wp.array2d[wp.Float]
 ) -> None:
-    # ``vertices.mean_vertex_normals`` of the derived face normals: the unit normal
+    # ``normals.mean_vertex_normals`` of the derived face normals: the unit normal
     # ``face_normals_and_areas`` writes, scattered onto the corners as ``scatter_sum_vec`` adds it,
     # with no ``(n_faces,)`` normal or area table in between. Differs from
     # ``scatter_area_weighted_normals`` only in not scaling by the area.
@@ -229,18 +229,6 @@ def _supplied_area_weighted_scatter(normals_supplied: bool, areas_supplied: bool
 
     name = f"scatter_supplied_area_weighted_normals_{int(normals_supplied)}{int(areas_supplied)}"
     return wp.kernel(_kernel, name=name)
-
-
-@wp.kernel
-def scatter_corner_angles(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_angle_sums: wp.array[wp.float32]
-) -> None:
-    # Each vertex's sum of incident corner angles, the angles formed in the thread
-    # (``triangles.face_corner_angles``, the ``angles`` kernel's body) and added corner by corner in
-    # ``scatter.scatter_sum_scalar``'s order, so no ``(n_faces, 3)`` angle table is written.
-    f = wp.int32(wp.tid())
-    a0, a1, a2 = face_corner_angles(vertices, faces, f)
-    peer_summed_add_corner_triple(out_angle_sums, faces, f, a0, a1, a2)
 
 
 @wp.kernel
@@ -335,7 +323,7 @@ def scatter_max_weighted_unit_normals(
     )
 
 
-# The accumulator precision ``vertices._accumulate_and_normalize`` allocates, and the only one
+# The accumulator precision ``normals._accumulate_and_normalize`` allocates, and the only one
 # registered: float64, so that the order the scatter's atomics pick cannot reach the answer
 # (``kernels.scatter.atomic_add_vec3`` carries the measurement). Mirrors
 # ``kernels/scatter._VECTOR_ACCUMULATOR_DTYPES``, which must list the same set -- the two kernels

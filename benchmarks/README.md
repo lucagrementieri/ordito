@@ -665,7 +665,7 @@ these rows are drawn from. Eight of the groups they land in **had no reference o
 | `test_smoothing` | `filter_taubin`, `filter_humphrey_meshlab` (new groups) | `apply_coord_taubin_smoothing`, `apply_coord_hc_laplacian_smoothing` | two ordito filters that were unbenchmarked; MeshLab's HC adds the neighbours' mean correction where the paper subtracts it, hence `method="meshlab"` |
 | `test_remesh` | `isotropic_remesh` | `meshing_isotropic_explicit_remeshing` | 3.3× across `quality` against ordito's **flat** 123 ms — the fixed-pass loop is not adapting |
 | `test_reduce` | `median` | `get_scalar_statistics_per_vertex` | six statistics in one call, 2.5 / 11 / 110× |
-| `test_vertices` | `average_onto_vertices` | `compute_scalar_transfer_face_to_vertex` | also *faster* on `fan_hub` — valence is not a hot spot, independently |
+| `test_interpolation` | `average_onto_vertices` | `compute_scalar_transfer_face_to_vertex` | also *faster* on `fan_hub` — valence is not a hot spot, independently |
 | `test_repair` | `remove_non_manifold_faces_meshlab` | `meshing_repair_non_manifold_edges` | nothing else in the set removes non-manifold faces at all; it keeps each edge's two largest faces, `method="meshlab"` |
 
 The rest are second or third independent implementations:
@@ -692,7 +692,7 @@ The rest are second or third independent implementations:
 | `test_triangles` | `compute_normal_per_face` |
 | `test_measures` | `get_geometric_measures` (`shell_barycenter` = `surface_centroid`) |
 | `test_validation` | `get_topological_measures` + `compute_selection_by_self_intersections_per_face` — the same composition open3d does in **13.8 s** and MeshLab in 140.8 ms; plus `compute_selection_by_non_manifold_per_vertex` |
-| `test_vertices` | `compute_normal_per_vertex` at `weightmode='Simple Average'` and `'By Area'` — one filter covering both normal groups |
+| `test_normals` | `compute_normal_per_vertex` at `weightmode='Simple Average'` and `'By Area'` — one filter covering both normal groups |
 
 #### Ported gaps: rows where pymeshlab is the *source*, not the reference
 
@@ -707,7 +707,7 @@ the port is the newer code:
 | `platonic_solids`, `grid`, `sphere_cap` | `test_creation` | `create_{tetrahedron,octahedron,dodecahedron,grid,sphere_cap}` | fixed-cost ties on the tables; the cap is flat in resolution where MeshLab's per-vertex loop is not |
 | `filter_scalar_laplacian` | `test_smoothing` | `apply_scalar_smoothing_per_vertex` | 0.41 ms against 7.4 ms on `bunny_decimated` |
 | `shortest_path_envelope` | `test_graph` | `apply_scalar_saturation_per_vertex` | 0.17 ms against 5.3 ms on a spike-seeded Lipschitz projection |
-| `transfer_onto_vertices` | `test_vertices` | `transfer_attributes_per_vertex` | closest-point plus barycentric blend, against a serial closest-point walk |
+| `transfer_onto_vertices` | `test_interpolation` | `transfer_attributes_per_vertex` | closest-point plus barycentric blend, against a serial closest-point walk |
 | `cluster_decimate` | `test_remesh` | `meshing_decimation_clustering` | exact agreement with `open3d.simplify_vertex_clustering` on face *and* vertex count |
 | `ambient_occlusion`, `shape_diameter` | `test_visibility` | `compute_scalar_ambient_occlusion`, `..._shape_diameter_function_per_vertex` | **9.3 ms against 662 ms** on `bunny` at 64 rays — the largest ratio in the suite |
 | `flip_by_objective` | `test_remesh` | `meshing_edge_flip_by_planar_optimization` | 2.0 ms against 28.6 ms on `saddle_graded` |
@@ -1017,9 +1017,9 @@ Two mechanics that differ from the other references:
 | module | groups | VTK entry points |
 |---|---|---|
 | `test_triangles` | `face_quality`, `face_angles`, `face_centroids`, `face_normals_and_areas` | `cell_quality` (Verdict), `cell_centers`, `compute_normals` + `compute_cell_sizes` |
-| `test_vertices` | `mean_vertex_normals`, `vertex_defects` | `compute_normals` (point), `curvature('gaussian')` |
+| `test_normals` | `mean_vertex_normals` | `compute_normals` (point) |
 | `test_laplacian` | `face_gradients` | `compute_derivative(gradient=True)` |
-| `test_curvature` | `principal_curvature` (exempt) | `curvature('maximum')` — algebra on VTK's own K and H |
+| `test_curvature` | `principal_curvature` (exempt), `vertex_defects` | `curvature('maximum')` — algebra on VTK's own K and H; `curvature('gaussian')` |
 | `test_edges` / `test_seams` / `test_boundary` | `edges_unique`, `crease_edges`, `boundary_edges` | `extract_all_edges`, `extract_feature_edges` with one class on |
 | `test_validation` / `test_adjacency` | `is_edge_manifold`, `face_connected_component_labels` | `is_manifold`, `connectivity('all')` |
 | `test_interpolation` | `average_onto_vertices`, `average_onto_faces` | `cell_data_to_point_data`, `point_data_to_cell_data` |
@@ -1164,7 +1164,7 @@ millisecond.
 | `test_holes` | `open3d.t.geometry.TriangleMesh.fill_holes` |
 | `test_repair` | `remove_duplicated_triangles`, `remove_duplicated_vertices`, `remove_unreferenced_vertices` |
 | `test_validation` | `is_watertight`, `is_edge_manifold` (same `allow_boundary_edges` switch), `is_vertex_manifold` (connectivity-based: agrees with ordito exactly on edge-manifold input, passes vertices on a non-manifold edge that the fan definition fails) |
-| `test_vertices` | `compute_vertex_normals` |
+| `test_normals` | `compute_vertex_normals` |
 | `test_bounds` | `get_axis_aligned_bounding_box` (`aabb`), `get_minimal_oriented_bounding_box` (hull-based, trimesh's algorithm family — not the PCA `get_oriented_bounding_box`, which minimizes nothing), `AxisAlignedBoundingBox.get_point_indices_within_bounding_box` (`points_in_aabb`), `PointCloud.crop` (`crop_points`) and `TriangleMesh.crop` (`crop_mesh`) — the three query rows, all of them crossovers rather than ratios, and the only reference of the ten that answers the query half at all |
 | `test_points` | `PointCloud.estimate_normals` (`KDTreeSearchParamKNN`), `remove_statistical_outlier`, `remove_radius_outlier` (**nondeterministic** — a shared `KDTreeFlann` across an OpenMP loop; three keep sets over eight reps, so the correctness comparison queries that tree serially instead), `remove_duplicated_points`, `farthest_point_down_sample` (its `SelectByIndex` sorts, so only the selected *set* is comparable) |
 | `test_metrics` | `PointCloud.compute_point_cloud_distance` (the non-differentiable Chamfer / Hausdorff cases) |
@@ -1242,7 +1242,7 @@ Where the reference is not algorithmically identical, the module docstring says 
 | `test_points` | `ops.sample_farthest_points`, `ops.estimate_pointcloud_normals` |
 | `test_voxels` | `ops.add_points_features_to_volume_densities_features`, and `torch.nn.functional.grid_sample` for the gather half |
 | `test_triangles` | `ops.mesh_face_areas_normals` — the only reference in that group that answers *both* halves in one call, like ordito |
-| `test_vertices` | `Meshes.verts_normals_packed` |
+| `test_normals` | `Meshes.verts_normals_packed` |
 | `test_edges` | `Meshes.edges_packed`, `Meshes.faces_packed_to_edges_packed` |
 | `test_remesh` | `ops.SubdivideMeshes` |
 | `test_levelset` | `ops.marching_cubes.marching_cubes` — the fifth implementation of that case table, and the only one needing no lattice-convention fix |

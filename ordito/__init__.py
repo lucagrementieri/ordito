@@ -63,6 +63,7 @@ if TYPE_CHECKING:
         mesh,
         metrics,
         neighbors,
+        normals,
         parametrization,
         points,
         polyline,
@@ -83,7 +84,6 @@ if TYPE_CHECKING:
         triangles,
         typing,
         validation,
-        vertices,
         visibility,
         voxels,
     )
@@ -124,6 +124,7 @@ __all__ = [
     "mesh",
     "metrics",
     "neighbors",
+    "normals",
     "parametrization",
     "points",
     "polyline",
@@ -145,7 +146,6 @@ __all__ = [
     "triangles",
     "typing",
     "validation",
-    "vertices",
     "visibility",
     "voxels",
 ]

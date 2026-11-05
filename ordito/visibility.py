@@ -111,7 +111,7 @@ def ambient_occlusion(
         ([`normals_at_closest_faces`][ordito.proximity.normals_at_closest_faces]), which is right
         for points on the surface and meaningless for points far off it — pass them explicitly in
         that case. For a smooth result on the mesh's own vertices, pass
-        [`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="area"`` instead:
+        [`vertex_normals`][ordito.normals.vertex_normals] at ``weighting="area"`` instead:
         face normals make the field piecewise constant across each vertex's ring.
     n_rays
         Directions per point. Error falls as ``1 / sqrt(n_rays)``; MeshLab's default is ``64``,
@@ -390,7 +390,7 @@ def shape_diameter(
     normals
         ``(m,)`` **outward** unit normals; the cone opens along ``-normals``. When ``None`` they are
         taken from the closest face of ``mesh``. Pass
-        [`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="area"`` for a smooth
+        [`vertex_normals`][ordito.normals.vertex_normals] at ``weighting="area"`` for a smooth
         field over a mesh's own vertices.
     n_rays
         Rays per point. MeshLab's default is ``64``, which is this one. Note that the single ray of
@@ -453,7 +453,7 @@ def shape_diameter(
 
     vertices, faces = od.creation.icosphere(subdivisions=3)
     mesh = wp.Mesh(points=vertices, indices=faces)
-    normals = od.vertices.vertex_normals(vertices, faces)
+    normals = od.normals.vertex_normals(vertices, faces)
     diameter = od.visibility.shape_diameter(mesh, vertices, normals=normals, cone_angle=0.1)
     print(f"{diameter.numpy().min():.2f} {diameter.numpy().max():.2f}")  # 1.99 1.99
     diameter = od.visibility.shape_diameter(mesh, vertices, normals=normals)

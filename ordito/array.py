@@ -2769,7 +2769,7 @@ def astype(values: odt.ArrayNd, dtype: type[DType]) -> wp.array[DType, Any]:
     The output keeps ``values``' shape, so this is not a reinterpretation that changes rank: an
     ``(n, 3)`` ``float32`` read as ``(n,)`` ``wp.vec3`` is a different operation, a ``view`` of a
     contiguous table, as [`hash_rows`][ordito.grouping.hash_rows] and
-    [`mean_vertex_normals`][ordito.vertices.mean_vertex_normals] do.
+    [`mean_vertex_normals`][ordito.normals.mean_vertex_normals] do.
 
     See Also
     --------

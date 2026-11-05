@@ -51,6 +51,7 @@ from ordito.kernels.grouping import (
     sorted_run_of_length,
 )
 from ordito.kernels.halfedge import halfedge_endpoints, halfedge_next, halfedge_prev
+from ordito.kernels.normals import add_to_face_corners, normalized_accumulated_row
 from ordito.kernels.predicates import (
     delone_metrics,
     dihedral_angle,
@@ -96,7 +97,6 @@ from ordito.kernels.triangles import (
     write_corner_triple,
     write_row_triple,
 )
-from ordito.kernels.vertices import add_to_face_corners, normalized_accumulated_row
 from ordito.kernels.voxels import voxel_cell_axes, voxel_cell_center
 
 wp.set_module_options({"enable_backward": False})
@@ -3241,7 +3241,7 @@ def scatter_normal_and_area_sums(
     out_area_sums: wp.array[wp.float64],
 ) -> None:
     # The smoothing pass's two per-vertex face sums from one evaluation of each face, over zeroed
-    # ``float64`` sums: ``vertices.scatter_area_weighted_normals``' area-weighted normal and
+    # ``float64`` sums: ``normals.scatter_area_weighted_normals``' area-weighted normal and
     # ``scatter.scatter_face_areas_exact``'s area, each added exactly as those kernels add it. Their
     # readers finish them where they read them -- ``normalized_accumulated_row`` for the normal,
     # ``vertex_mass`` for the barycentric mass -- so neither is narrowed by a pass of its own.

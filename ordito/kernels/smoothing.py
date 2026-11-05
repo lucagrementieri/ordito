@@ -30,6 +30,7 @@ from ordito.kernels.linalg import (
     shifted_scalar_entry,
     solve_normal_equations,
 )
+from ordito.kernels.normals import gathered_area_weighted_normal
 from ordito.kernels.predicates import angle_defect, closest_point_on_segment, plane_basis
 from ordito.kernels.reduce import (
     block_barrier,
@@ -41,7 +42,6 @@ from ordito.kernels.reduce import (
 )
 from ordito.kernels.scatter import add_corner_triple
 from ordito.kernels.triangles import corner_triple, local_corner
-from ordito.kernels.vertices import gathered_area_weighted_normal
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1495,7 +1495,7 @@ def mark_spikes(
     out_count: wp.array[wp.int32],
 ) -> None:
     # A spike is a vertex whose angle *defect* ``2 pi - angle_sum`` exceeds ``min_defect``
-    # (``vertices.vertex_defects``' quantity, ``array.greater``'s test), counted into the zeroed
+    # (``curvature.vertex_defects``' quantity, ``array.greater``'s test), counted into the zeroed
     # ``out_count[slot]`` (a slot per pass, so no pass clears one). In place: the sum is re-zeroed
     # once read, so the next pass's scatter needs no fill.
     v = wp.int32(wp.tid())
@@ -2841,7 +2841,7 @@ def inflate_displace(
     out_displaced_wide: wp.array[wp.vec3d],
 ) -> None:
     # One inflation step: each vertex moved along its area-weighted normal, gathered over its
-    # incident faces as it is read (``vertices.vertex_normals``' arithmetic, so the normals are
+    # incident faces as it is read (``normals.vertex_normals``' arithmetic, so the normals are
     # never written and no accumulator is zeroed and scattered per pass), stored at both
     # precisions -- the ``float32`` copy feeds the centre-of-mass integrals, the exact ``float64``
     # widening the diffusion and its volume.

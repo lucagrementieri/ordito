@@ -74,16 +74,17 @@ from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import boundary as kernel_boundary
+from ordito.kernels import curvature as kernel_curvature
 from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import measures as kernel_measures
+from ordito.kernels import normals as kernel_normals
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import selection as kernel_selection
 from ordito.kernels import smoothing as kernel_smoothing
 from ordito.kernels import triangles as kernel_triangles
-from ordito.kernels import vertices as kernel_vertices
+from ordito.normals import mean_vertex_normals
 from ordito.triangles import face_normals_and_areas
-from ordito.vertices import mean_vertex_normals
 
 # Free-vertex count from which ``smooth_region`` preconditions its normal equations with a V-cycle
 # on the free rows' Laplacian (``squared_laplacian_preconditioner(method="multigrid")``) instead of
@@ -650,7 +651,7 @@ def inflate(
     Inflate a surface under uniform pressure: normal displacement alternating with smoothing.
 
     The "balloon" flow. Each pass moves every vertex along its own
-    [`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="area"`` and then relaxes
+    [`vertex_normals`][ordito.normals.vertex_normals] at ``weighting="area"`` and then relaxes
     with one Laplacian pass, which is what keeps the triangles from shearing as the surface grows.
     Uses of it: puffing a thin shell out to a printable thickness, opening a collapsed scan, and
     supplying a starting surface a fitting loop can shrink back onto data.
@@ -1003,7 +1004,7 @@ def filter_spikes(
     --------
     [`filter_neighborhood_average`][ordito.smoothing.filter_neighborhood_average]
         The unrestricted version of the move this makes, over every vertex.
-    [`vertex_defects`][ordito.vertices.vertex_defects]
+    [`vertex_defects`][ordito.curvature.vertex_defects]
         ``2 * pi`` minus the same angle sum, which is what the threshold is read against.
     [`validation.face_defective_mask`][ordito.validation.face_defective_mask]
         Flags the *faces* a spike produces, where this flags the vertex itself.
@@ -1065,11 +1066,11 @@ def filter_spikes(
     n_faces = faces.size // 3
     # The spike test is ``angle_sum < min_angle_sum``, applied to the angle *defect*
     # ``2 * pi - angle_sum`` instead: ``defect > 2 * pi - min_angle_sum``, the quantity
-    # ``vertices.vertex_defects`` returns.
+    # ``curvature.vertex_defects`` returns.
     min_defect = wp.float32(2.0 * math.pi - min_angle_sum)
     for index in range(max_iter):
         _launch.launch(
-            kernel_vertices.scatter_corner_angles,
+            kernel_curvature.scatter_corner_angles,
             dim=n_faces,
             inputs=[positions, faces, angle_sums],
             device=device,
@@ -2367,14 +2368,14 @@ def filter_mut_dif_laplacian(
         normal_sums = normal_sums_flat.reshape((n, 3))
         n_faces = faces.size // 3
         _launch.launch(
-            kernel_vertices.SCATTER_UNIT_NORMALS[wp.float64],
+            kernel_normals.SCATTER_UNIT_NORMALS[wp.float64],
             dim=n_faces,
             inputs=[vertices, faces, normal_sums],
             device=device,
         )
         normals = _launch.empty(n, dtype=wp.vec3, device=device)
         _launch.launch(
-            kernel_vertices.NORMALIZE_ACCUMULATED_ROWS[wp.float64],
+            kernel_normals.NORMALIZE_ACCUMULATED_ROWS[wp.float64],
             dim=n,
             inputs=[normal_sums, normals],
             device=device,

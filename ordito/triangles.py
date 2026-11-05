@@ -171,8 +171,8 @@ def corner_normals(
     how it is tested:
 
     * with **no** creases, every corner of a vertex gets that vertex's normal under the matching
-      weighting -- [`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="angle"``
-      or [`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="area"``;
+      weighting -- [`vertex_normals`][ordito.normals.vertex_normals] at ``weighting="angle"``
+      or [`vertex_normals`][ordito.normals.vertex_normals] at ``weighting="area"``;
     * with **every** edge a crease, every corner gets its own face's normal, whatever the weighting.
 
     Parameters
@@ -187,7 +187,7 @@ def corner_normals(
         the fully smooth case above and costs one comparison per rotation step rather than a branch.
     weighting
         Per-corner weight for the average, named as in
-        [`ordito.vertices`][ordito.vertices]' four vertex-normal functions: ``"angle"`` is the
+        [`ordito.normals`][ordito.normals]' four vertex-normal functions: ``"angle"`` is the
         corner angle (Thuerrner & Wuethrich) and ``"area"`` is the face's own area, constant across
         its three corners. Both are offered because the two reference implementations disagree --
         the one that computes per-corner normals directly is the **area** one.
@@ -214,7 +214,7 @@ def corner_normals(
     odt.Array2dVec3
         ``(n_faces, 3)`` unit normals on ``faces.device``; entry ``(f, k)`` belongs to corner
         ``k`` of face ``f``. A corner whose weighted sum cancels to zero comes back as the zero
-        vector, matching [`weighted_vertex_normals`][ordito.vertices.weighted_vertex_normals].
+        vector, matching [`weighted_vertex_normals`][ordito.normals.weighted_vertex_normals].
 
     Raises
     ------
@@ -234,7 +234,7 @@ def corner_normals(
     --------
     [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas]
         The flat weighting: one normal per face.
-    [`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="angle"``
+    [`vertex_normals`][ordito.normals.vertex_normals] at ``weighting="angle"``
         The smooth weighting this reduces to when there are no creases.
     [`crease_edges`][ordito.seams.crease_edges]
         Produces the hard-edge set.

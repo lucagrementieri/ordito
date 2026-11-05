@@ -36,14 +36,14 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | work with an object that caches derived quantities | [`Trimesh`][ordito.mesh.Trimesh] |
 | **Inspect** | |
 | face normals, areas, angles, centroids | [`triangles.face_normals_and_areas`][ordito.triangles.face_normals_and_areas], [`face_angles`][ordito.triangles.face_angles], [`face_centroids`][ordito.triangles.face_centroids] |
-| vertex normals | [`vertices.vertex_normals`][ordito.vertices.vertex_normals] |
+| vertex normals | [`normals.vertex_normals`][ordito.normals.vertex_normals] |
 | volume, centre of mass, inertia, Euler characteristic | [`measures`][ordito.measures]: [`volume`][ordito.measures.volume], [`moments`][ordito.measures.moments], [`euler_characteristic`][ordito.measures.euler_characteristic] |
 | is it watertight / manifold / orientable / self-intersecting? | [`validation`][ordito.validation]: [`is_watertight`][ordito.validation.is_watertight], [`is_edge_manifold`][ordito.validation.is_edge_manifold], [`is_orientable`][ordito.validation.is_orientable], [`is_self_intersecting`][ordito.validation.is_self_intersecting] |
 | are two meshes the same up to vertex and face numbering? | [`comparison.meshes_allclose`][ordito.equality.meshes_allclose], [`faces_equal`][ordito.equality.faces_equal] |
 | unique edges and their lengths | [`edges.edges_unique`][ordito.edges.edges_unique], [`edges_unique_length`][ordito.edges.edges_unique_length] |
 | boundary edges and hole rims | [`boundary.boundary_edges`][ordito.boundary.boundary_edges], [`boundary_loops`][ordito.boundary.boundary_loops] |
 | neighbouring faces and connected components | [`adjacency.face_adjacency`][ordito.adjacency.face_adjacency], [`face_connected_component_labels`][ordito.adjacency.face_connected_component_labels], [`combine.split`][ordito.combine.split] |
-| curvature | [`curvature`][ordito.curvature]: [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature], [`discrete_mean_curvature`][ordito.curvature.discrete_mean_curvature], [`principal_curvature`][ordito.curvature.principal_curvature], [`mls_principal_curvature`][ordito.curvature.mls_principal_curvature] |
+| curvature | [`curvature`][ordito.curvature]: [`vertex_defects`][ordito.curvature.vertex_defects], [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature], [`discrete_mean_curvature`][ordito.curvature.discrete_mean_curvature], [`principal_curvature`][ordito.curvature.principal_curvature], [`mls_principal_curvature`][ordito.curvature.mls_principal_curvature] |
 | bounding boxes | [`bounds.aabb`][ordito.bounds.aabb], [`bounds.oriented_bounding_box`][ordito.bounds.oriented_bounding_box] |
 | triangle quality | [`triangles.face_quality`][ordito.triangles.face_quality] |
 | **Repair** | |
@@ -105,7 +105,7 @@ Three conventions hold across the whole reference (see [Concepts](concepts.md) f
 | Module | Contents |
 |---|---|
 | [mesh](api/ordito/mesh.md) | The optional [`Trimesh`][ordito.mesh.Trimesh] container, which caches derived quantities. |
-| [vertices](api/ordito/vertices.md) | Per-vertex quantities: normals under three weighting rules, and the angle defect. |
+| [normals](api/ordito/normals.md) | Vertex normals under three weighting rules, and the accumulators beneath them. |
 | [edges](api/ordito/edges.md) | Triangle edges: the directed corner edges, the deduplicated undirected set, and their lengths. |
 | [triangles](api/ordito/triangles.md) | Quantities carried by one triangle at a time: its normal, area, angles, shape and barycentre. |
 | [halfedge](api/ordito/halfedge.md) | Implicit halfedge connectivity: edge twins and counter-clockwise vertex one-rings. |

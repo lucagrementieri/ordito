@@ -665,7 +665,7 @@ def test_inflate_grows_the_volume_along_the_normals(
         ).mean()
     )
     rest_wp = od.smoothing.inflate(vertices_wp, faces_wp, 0.0)
-    rest_normals_np = od.vertices.vertex_normals(rest_wp, faces_wp).numpy()
+    rest_normals_np = od.normals.vertex_normals(rest_wp, faces_wp).numpy()
 
     volumes = []
     for scale in (0.0, 0.1, 0.5):
@@ -832,7 +832,7 @@ def test_filter_spikes_matches_meshlib(
     n_vertices = vertices_wp.size
     min_angle_sum = threshold_turns * 2.0 * math.pi
 
-    defects_np = od.vertices.vertex_defects(
+    defects_np = od.curvature.vertex_defects(
         n_vertices, faces_wp, od.triangles.face_angles(vertices_wp, faces_wp)
     ).numpy()
     spikes_np = (2.0 * np.pi - defects_np) < min_angle_sum
@@ -863,7 +863,7 @@ def test_filter_spikes_matches_meshlib(
     assert int(moved_ml.sum()) == int(moved_np.sum())
 
     # And the repair worked: recomputed on the new positions, nothing is a spike any more.
-    after_np = od.vertices.vertex_defects(
+    after_np = od.curvature.vertex_defects(
         n_vertices, faces_wp, od.triangles.face_angles(repaired_wp, faces_wp)
     ).numpy()
     assert not np.any((2.0 * np.pi - after_np) < min_angle_sum)

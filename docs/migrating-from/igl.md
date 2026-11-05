@@ -23,9 +23,9 @@ import ordito as od  # after
 |---|---|
 | `igl.cotmatrix(V, F)` | [`laplacian.cotmatrix(vertices, faces)`][ordito.laplacian.cotmatrix] |
 | `igl.massmatrix(V, F)` | [`laplacian.mass_matrix(vertices, faces)`][ordito.laplacian.mass_matrix] |
-| `igl.gaussian_curvature(V, F)` | [`vertices.vertex_defects(vertices, faces)`][ordito.vertices.vertex_defects] |
+| `igl.gaussian_curvature(V, F)` | [`curvature.vertex_defects(vertices, faces)`][ordito.curvature.vertex_defects] |
 | `igl.principal_curvature(V, F)` | [`curvature.principal_curvature`][ordito.curvature.principal_curvature] |
-| `igl.per_vertex_normals(V, F)` | [`vertices.vertex_normals`][ordito.vertices.vertex_normals] / [`mean_vertex_normals`][ordito.vertices.mean_vertex_normals] / [`weighted_vertex_normals`][ordito.vertices.weighted_vertex_normals] |
+| `igl.per_vertex_normals(V, F)` | [`normals.vertex_normals`][ordito.normals.vertex_normals] / [`mean_vertex_normals`][ordito.normals.mean_vertex_normals] / [`weighted_vertex_normals`][ordito.normals.weighted_vertex_normals] |
 | `igl.per_face_normals(V, F, Z)` | [`triangles.face_normals_and_areas`][ordito.triangles.face_normals_and_areas] (normals and areas together) |
 | `igl.doublearea(V, F) / 2` | [`triangles.face_normals_and_areas`][ordito.triangles.face_normals_and_areas]'s area output |
 | `igl.heat_geodesics_precompute` + `igl.heat_geodesics_solve` | `mesh = od.Trimesh(vertices, faces)` + [`heat.heat_geodesic(mesh, sources)`][ordito.heat.heat_geodesic] (the mesh keeps the precompute) |

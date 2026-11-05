@@ -134,9 +134,7 @@ def _vertex_normals_wp(bench_case: BenchCase) -> wp.array[wp.vec3]:
     """Smooth outward normals over the mesh's own vertices -- an *input* of the bundle queries."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _normals_cache:
-        _normals_cache[key] = od.vertices.vertex_normals(
-            bench_case.vertices_wp, bench_case.faces_wp
-        )
+        _normals_cache[key] = od.normals.vertex_normals(bench_case.vertices_wp, bench_case.faces_wp)
     return _normals_cache[key]
 
 
@@ -322,7 +320,7 @@ def test_thickness_at_vertices(bench_case: BenchCase) -> None:
         assert thickness_ml is not None
         return
     mesh, points = _mesh_wp(bench_case), bench_case.vertices_wp
-    normals = od.vertices.vertex_normals(
+    normals = od.normals.vertex_normals(
         bench_case.vertices_wp, bench_case.faces_wp, weighting="angle"
     )
     thickness = bench_case.run(

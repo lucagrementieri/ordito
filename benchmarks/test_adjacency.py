@@ -249,7 +249,7 @@ def test_vertex_face_adjacency(bench_case: BenchCase, known_nv: bool) -> None:
     On the **valence** axis rather than the scan sweep, because the scatter is ``3F`` atomic
     increments of a per-vertex cursor -- ``fan_hub``'s two valence-40 960 hubs take 40 960 atomics
     each on the same address, which is the one input shape that could serialise it. (The
-    ``test_vertices.py`` scatters say it does not; this asks it for the widest-row case.)
+    ``test_normals.py`` scatters say it does not; this asks it for the widest-row case.)
 
     ``inferred`` pays a host readback to learn the row count, ``known_nv`` is handed it -- the same
     escape hatch ``face_adjacency`` has, and the same reason: a caller who knows ``n_vertices``

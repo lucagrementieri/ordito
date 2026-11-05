@@ -10,7 +10,7 @@ gathers over the incident elements, while vertex-to-face
 corners and needs no adjacency at all.
 
 These are unweighted means. For an area- or angle-weighted transfer of *normals* specifically, see
-[`ordito.vertices`][ordito.vertices]; for a UV-space resampling, see
+[`ordito.normals`][ordito.normals]; for a UV-space resampling, see
 [`ordito.texture`][ordito.texture].
 
 [`transfer_onto_vertices`][ordito.interpolation.transfer_onto_vertices] moves a field between two

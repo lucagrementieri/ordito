@@ -232,7 +232,7 @@ def test_launches_name_their_device() -> None:
     An omitted one resolves to Warp's current device -- ``cuda:0`` whenever CUDA is present -- so
     with CPU arrays the kernel runs on the GPU over host pointers. Warp permits that by design
     where the GPU can address host memory, and it returns the *correct answer*, which is why
-    ``vertices.mean_vertex_normals`` shipped it: the launch acquires no ordering, the host buffers
+    ``normals.mean_vertex_normals`` shipped it: the launch acquires no ordering, the host buffers
     are freed at scope exit while the kernel still reads them, and the process aborts later inside
     glibc (20/20 aborts with a free and no synchronize, 0/20 with either).
 

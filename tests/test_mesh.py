@@ -117,7 +117,7 @@ def test_traced_mesh_traces_the_rays_warp_mesh_traces(
     """
     _mesh_tm, mesh_wp = sphere_irregular_hollow
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
-    normals = od.vertices.vertex_normals(mesh.vertices, mesh.faces)
+    normals = od.normals.vertex_normals(mesh.vertices, mesh.faces)
     occlusion_wp = od.visibility.ambient_occlusion(mesh.warp_mesh, mesh.vertices, normals=normals)
     traced_occlusion_wp = od.visibility.ambient_occlusion(
         mesh.traced_mesh, mesh.vertices, normals=normals

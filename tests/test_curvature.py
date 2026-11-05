@@ -11,6 +11,7 @@ import pymeshlab as ml
 import pytest
 import trimesh as tm
 import warp as wp
+from meshlib import mrmeshnumpy as mn
 
 import ordito as od
 import ordito.typing as odt
@@ -23,8 +24,10 @@ from tests.conftest import (
     round_frame_coordinates,
 )
 from tests.conversions import (
+    faces_igl,
     numpy_to_warp,
     points_to_warp,
+    trimesh_to_meshlib,
     trimesh_to_pymeshlab,
     trimesh_to_pyvista,
 )
@@ -550,7 +553,7 @@ def test_vertex_curvatures_match_pymeshlab(request: pytest.FixtureRequest, mesh_
         np.abs(mean_np[rim]), np.abs(mean_pml[rim]), rtol=1e-5, atol=5e-5 * mean_scale
     )
 
-    defects_np = od.vertices.vertex_defects(
+    defects_np = od.curvature.vertex_defects(
         mesh_tm.vertices.shape[0],
         mesh_wp.indices,
         od.triangles.face_angles(mesh_wp.points, mesh_wp.indices),
@@ -566,6 +569,135 @@ def test_vertex_curvatures_match_pymeshlab(request: pytest.FixtureRequest, mesh_
     )
 
 
+@pytest.mark.parametrize("mesh_name", ["saddle_graded", "sphere_irregular"])
+@pytest.mark.parity("vertex_defects", "trimesh", "igl", "meshlib", "pyvista")
+def test_vertex_defects(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Class A on trimesh, igl and MeshLib, Class B on pyvista, on open fixtures and a closed one.
+
+    ``igl.gaussian_curvature`` and MeshLib's ``mn.getNumpyGaussianCurvature`` are both the
+    *pointwise* angle defect ``2π - Σθ`` -- the same quantity ``tm.curvature.vertex_defects``
+    returns and emphatically **not** the ball-integrated Cohen-Steiner/Morvan measure
+    ``curvature.discrete_gaussian_curvature`` computes, which is exempted from parity against
+    MeshLab for exactly that reason. Sharing a name with a different measure is the whole hazard
+    here, so the comparison is worth having several times over -- and MeshLib is the one to be
+    careful with, because it is the reference whose *name* says curvature while its value is the
+    defect.
+
+    MeshLib's batched ``mn.getNumpyGaussianCurvature`` is used rather than the per-vertex
+    ``mm.discreteGaussianCurvature``; the two are bit-identical (measured 0.0) and the batched form
+    is 49-67x faster, which is why its per-vertex entry points are not looped.
+
+    Open and closed fixtures are both needed because the interesting disagreement would be at the
+    **boundary**: a reference could reasonably use ``π - Σθ`` there. Measured, none of them does --
+    ``half_torus``'s 56 boundary vertices agree element-wise with the closed ``icosahedron``'s
+    interior ones -- so the assert is a plain ``allclose`` over every vertex.
+
+    pyvista is Class B: VTK's ``curvature('gaussian')`` is this defect divided by the lumped area.
+    ``vtkCurvatures`` returns a *density* -- the angle defect over the barycentric lumped area,
+    ``sum of incident face areas / 3`` -- so the named transform is a multiplication by that area,
+    which is read off ``compute_cell_sizes`` on the same mesh rather than recomputed. Measured
+    element-wise agreement 2.7e-07 / 1.2e-06 / 5.1e-07 on the three fixtures. ``atol`` carries
+    that comparison rather than ``rtol``: a flat vertex has zero defect, so a relative tolerance is
+    meaningless there. The residual is ordito's ``float32`` vertex buffer and not the reference's
+    -- pyvista's curvature comes back float64, and the same comparison against vedo's float32
+    points measures the same 5e-05 on a larger mesh.
+
+    The call runs with the CPU as Warp's current device, so on a CUDA run it must still answer on
+    its inputs' device: the ordinary tests run with the arrays' device already current, which hid
+    a launch that forwarded no ``device=`` in this function once.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+
+    n_vertices = mesh_tm.vertices.shape[0]
+    vertex_defects_tm = tm.curvature.vertex_defects(mesh_tm)
+    vertex_defects_igl = np.asarray(
+        igl.gaussian_curvature(
+            np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64), faces_igl(mesh_tm)
+        )
+    ).ravel()
+    vertex_defects_ml = mn.getNumpyGaussianCurvature(trimesh_to_meshlib(mesh_tm))
+
+    mesh_pv = trimesh_to_pyvista(mesh_tm)
+    gaussian_pv = np.asarray(mesh_pv.curvature("gaussian"))
+    areas_pv = np.asarray(
+        mesh_pv.compute_cell_sizes(length=False, area=True, volume=False).cell_data["Area"]
+    )
+    lumped_pv = np.zeros(n_vertices)
+    np.add.at(lumped_pv, mesh_tm.faces.ravel(), np.repeat(areas_pv / 3.0, 3))
+
+    face_angles_wp = _face_angles_wp(mesh_tm, mesh_wp.device)
+    with wp.ScopedDevice("cpu"):
+        vertex_defects_wp = od.curvature.vertex_defects(n_vertices, mesh_wp.indices, face_angles_wp)
+    assert str(vertex_defects_wp.device) == str(mesh_wp.device)
+
+    # Non-vacuity: an implementation returning zeros passes any allclose against another one, and
+    # on a nearly-flat patch that is what the true answer looks like. Neither the spread nor the
+    # minimum is the check -- an icosahedron is regular so all 12 read pi/3, and half_torus has
+    # genuinely near-flat vertices at 4e-05 -- so the claim is that the answer is not all zero.
+    assert np.abs(vertex_defects_tm).max() > 1e-2
+    assert np.abs(vertex_defects_wp.numpy()).max() > 1e-2
+    assert np.allclose(vertex_defects_wp.numpy(), vertex_defects_tm, rtol=1e-5, atol=1e-5)
+    assert np.allclose(vertex_defects_wp.numpy(), vertex_defects_igl, rtol=1e-5, atol=1e-5)
+    assert np.allclose(vertex_defects_wp.numpy(), vertex_defects_ml, rtol=1e-5, atol=1e-5)
+    assert np.allclose(vertex_defects_wp.numpy(), gaussian_pv * lumped_pv, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize(
+    ("mesh_name", "chi"), [("sphere_irregular", 2), ("boy_surface", 1), ("bohemian_dome", 0)]
+)
+def test_vertex_defects_satisfy_gauss_bonnet(
+    request: pytest.FixtureRequest, mesh_name: str, chi: int
+) -> None:
+    """
+    Not a library comparison: the defects of a closed mesh sum to ``2π χ``, at any genus.
+
+    No reference: this is the discrete Gauss-Bonnet theorem, and it is a stronger statement about
+    the defects than a per-vertex comparison because it couples every vertex at once. The point of
+    running it on these three fixtures is the **odd** characteristic: Boy's surface is the only
+    input in the suite with χ = 1, so it is the only one that can catch a defect convention that is
+    right up to a factor of two, or a sign that is right only on an orientable mesh.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    assert mesh_tm.is_watertight
+    assert od.measures.euler_characteristic(mesh_wp.indices) == chi
+
+    defects_wp = od.curvature.vertex_defects(
+        mesh_tm.vertices.shape[0], mesh_wp.indices, _face_angles_wp(mesh_tm, mesh_wp.device)
+    )
+    assert np.isclose(defects_wp.numpy().sum(), 2.0 * np.pi * chi, rtol=1e-4, atol=1e-3)
+
+
+def test_vertex_defects_are_reproducible_when_deterministic(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a parity assert: under ``ordito.config``'s deterministic mode two calls agree bit for bit.
+
+    The angle sums are formed exactly in ``float64``, so the atomics' commit order changes no bit;
+    the off mode's ``float32`` arrival-order sums agree with them to ``float32`` round-off.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    face_angles_wp = _face_angles_wp(mesh_tm, mesh_wp.device)
+    n_vertices = mesh_tm.vertices.shape[0]
+    with od.config.deterministic(True):
+        first_np = od.curvature.vertex_defects(n_vertices, mesh_wp.indices, face_angles_wp).numpy()
+        second_np = od.curvature.vertex_defects(n_vertices, mesh_wp.indices, face_angles_wp).numpy()
+    assert np.array_equal(first_np, second_np)
+    with od.config.deterministic(False):
+        arrival_np = od.curvature.vertex_defects(
+            n_vertices, mesh_wp.indices, face_angles_wp
+        ).numpy()
+    assert np.allclose(arrival_np, first_np, rtol=1e-5, atol=1e-5)
+
+
+def _face_angles_wp(mesh_tm: tm.Trimesh, device: wp.DeviceLike) -> odt.Array2dFloat32:
+    """Upload trimesh's ``(n_faces, 3)`` corner angles as the ``face_angles`` table ordito takes."""
+    return odt.as_array2d(
+        wp.array(mesh_tm.face_angles, dtype=wp.float32, device=device), wp.float32
+    )
+
+
 @pytest.mark.parametrize("radius", [0.1, 0.5])
 @pytest.mark.parity("discrete_gaussian_curvature", "trimesh")
 def test_discrete_gaussian_curvature(
@@ -578,7 +710,7 @@ def test_discrete_gaussian_curvature(
     rather than re-testing [`triangles.face_angles`], which has its own oracle. The call runs with
     the CPU as Warp's current device, so on a CUDA run it must still answer on its inputs' device: a
     launch that forwarded no ``device=`` once went unseen, because the ordinary tests run with the
-    arrays' device already current (companion to ``test_vertices.py``'s scatter-wrapper case).
+    arrays' device already current (companion to ``test_vertex_defects``).
     """
     mesh_tm, mesh_wp = saddle_graded
     points_tm = mesh_tm.vertices
@@ -823,7 +955,7 @@ def test_principal_directions_stay_orthogonal_on_an_axis_aligned_field(
     # ``principal_curvature`` builds internally -- not trimesh's, which weights differently and
     # sits 0.010 away on this lattice's boundary vertices. Tangency is a claim about the plane the
     # function fitted in, so it has to be read against that plane.
-    normal_np = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy()
+    normal_np = od.normals.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy()
     assert np.allclose(np.linalg.norm(pd1_np, axis=1), 1.0, atol=1e-5)
     assert np.allclose(np.linalg.norm(pd2_np, axis=1), 1.0, atol=1e-5)
     assert np.abs(np.einsum("ij,ij->i", normal_np, pd1_np)).max() < 1e-5
@@ -891,7 +1023,7 @@ def test_principal_directions_are_a_frame_at_an_umbilic_point(
     assert np.allclose(np.linalg.norm(pd2_np, axis=1), 1.0, atol=1e-5)
     assert np.abs(np.einsum("ij,ij->i", pd1_np, pd2_np)).max() < 1e-3
     # ...and tangent to the plane the fit used, which is the area-weighted vertex normal.
-    normal_np = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy()
+    normal_np = od.normals.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy()
     assert np.abs(np.einsum("ij,ij->i", normal_np, pd1_np)).max() < 1e-5
     assert np.abs(np.einsum("ij,ij->i", normal_np, pd2_np)).max() < 1e-5
     # The discrete normal is itself the exact radial one on a sphere, to within the tessellation:
@@ -1001,7 +1133,7 @@ def test_principal_curvature_is_reproducible(saddle_graded: tuple[tm.Trimesh, wp
     swings of up to **7.96e-04** absolute and **77 % relative** on ``half_torus`` -- at 19 of 544
     vertices, and not as a swap of ``PV1`` with ``PV2`` (the *sorted* pair moved by the same
     amount). ``saddle_graded`` keeps the near-flat vertices that amplify it (its saddle centre).
-    ``vertices.vertex_normals`` accumulates in ``float64`` now, which is where the fix is;
+    ``normals.vertex_normals`` accumulates in ``float64`` now, which is where the fix is;
     ``test_vertex_normals_are_reproducible`` guards that layer directly.
     """
     _, mesh_wp = saddle_graded
@@ -1064,7 +1196,7 @@ def test_principal_curvature_is_scale_equivariant(
     The smallest scale pins a *second*, independent break that lived one layer down and is
     fixed in ``kernels.triangles.face_normals_and_area``: an absolute floor on ``|cross|`` there
     zeroed every vertex normal at ``h <= 3e-6``, and a zero normal is a zero frame and so a zero
-    curvature. ``test_vertices.py::test_vertex_normals_area_matches_igl_at_any_scale`` is that
+    curvature. ``test_normals.py::test_vertex_normals_area_matches_igl_at_any_scale`` is that
     layer's own guard; this one is the consumer that found it.
     """
     mesh_tm, mesh_wp = sphere_round

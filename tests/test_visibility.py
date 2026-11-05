@@ -46,7 +46,7 @@ def ellipsoid(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
 
 def _vertex_normals_wp(mesh_wp: wp.Mesh) -> wp.array[wp.vec3]:
     """Smooth outward normals; face normals would make the field piecewise constant per ring."""
-    return od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
+    return od.normals.vertex_normals(mesh_wp.points, mesh_wp.indices)
 
 
 @pytest.mark.parametrize("weight", ["cosine", "uniform"])
@@ -367,7 +367,7 @@ def _sphere_wp(device: str, radius: float, subdivisions: int = 3):
     """
     sphere_tm = tm.creation.icosphere(subdivisions=subdivisions, radius=radius)
     mesh_wp = trimesh_to_warp(sphere_tm, device)
-    normals_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
+    normals_wp = od.normals.vertex_normals(mesh_wp.points, mesh_wp.indices)
     return sphere_tm, mesh_wp, normals_wp
 
 
@@ -407,7 +407,7 @@ def test_shape_diameter_measures_a_slab(device: str) -> None:
     """On a 1 x 1 x 4 box the large faces are 1 apart, and the cone must say so."""
     box_tm = tm.creation.box(extents=[1.0, 1.0, 4.0]).subdivide().subdivide().subdivide()
     mesh_wp = trimesh_to_warp(box_tm, device)
-    normals_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
+    normals_wp = od.normals.vertex_normals(mesh_wp.points, mesh_wp.indices)
     diameter_np = od.visibility.shape_diameter(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=128, cone_angle=np.deg2rad(10.0)
     ).numpy()
@@ -442,7 +442,7 @@ def test_shape_diameter_trimming_rejects_the_escaping_rays(device: str) -> None:
     shell_tm = tm.util.concatenate([outer_tm, inner_tm])
     assert isinstance(shell_tm, tm.Trimesh)
     mesh_wp = trimesh_to_warp(shell_tm, device)
-    normals_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
+    normals_wp = od.normals.vertex_normals(mesh_wp.points, mesh_wp.indices)
     trimmed_np = od.visibility.shape_diameter(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=128, trim=1.0
     ).numpy()
@@ -496,7 +496,7 @@ def test_shape_diameter_agrees_with_pymeshlab_on_which_part_is_thinner(device: s
     diameter_pml = meshset_pml.current_mesh().vertex_scalar_array()
 
     mesh_wp = trimesh_to_warp(dumbbell_tm, device)
-    normals_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
+    normals_wp = od.normals.vertex_normals(mesh_wp.points, mesh_wp.indices)
     diameter_np = od.visibility.shape_diameter(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=256
     ).numpy()
@@ -553,7 +553,7 @@ def test_shape_diameter_collapses_onto_meshlibs_single_ray(
     """
     mesh_tm, mesh_wp = ellipsoid
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle")
+    normals_wp = od.normals.vertex_normals(vertices_wp, faces_wp, weighting="angle")
 
     thickness_ml = meshlib_scalars_to_numpy(
         mm.computeRayThicknessAtVertices(trimesh_to_meshlib(mesh_tm))
@@ -638,7 +638,7 @@ def test_thickness_at_vertices_matches_meshlib(ellipsoid: tuple[tm.Trimesh, wp.M
     The pairing is exact only with the right normals, and that is the substance of this test rather
     than an incidental detail. MeshLib's ``MeshPoint::set`` takes the direction from the
     *pseudonormal*, which matches
-    [`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="angle"`` (1.19e-07).
+    [`vertex_normals`][ordito.normals.vertex_normals] at ``weighting="angle"`` (1.19e-07).
     Measured on the ellipsoid: **5.96e-07** absolute and 3.48e-07 relative with those normals,
     against **0.031** -- five orders worse -- with the area-weighted ones. So the second assert is
     what makes the first one a claim about the ray rather than about the tolerance.
@@ -665,7 +665,7 @@ def test_thickness_at_vertices_matches_meshlib(ellipsoid: tuple[tm.Trimesh, wp.M
     # non-vacuity: on a sphere every ray would read 2 * radius
     assert_nonconstant(thickness_ml, tol=1.0)
 
-    angle_normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle")
+    angle_normals_wp = od.normals.vertex_normals(vertices_wp, faces_wp, weighting="angle")
     thickness_wp = od.visibility.thickness(
         mesh_wp, vertices_wp, method="ray", normals=angle_normals_wp
     ).numpy()
@@ -673,7 +673,7 @@ def test_thickness_at_vertices_matches_meshlib(ellipsoid: tuple[tm.Trimesh, wp.M
     assert np.allclose(thickness_wp, thickness_ml, rtol=1e-5, atol=1e-5)
 
     # The other weighting is not the pairing, and the gap is five orders of magnitude.
-    area_normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp)
+    area_normals_wp = od.normals.vertex_normals(vertices_wp, faces_wp)
     thickness_area_np = od.visibility.thickness(
         mesh_wp, vertices_wp, method="ray", normals=area_normals_wp
     ).numpy()
@@ -820,7 +820,7 @@ def test_max_tangent_sphere_matches_meshlib(ellipsoid: tuple[tm.Trimesh, wp.Mesh
     """
     mesh_tm, mesh_wp = ellipsoid
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle")
+    normals_wp = od.normals.vertex_normals(vertices_wp, faces_wp, weighting="angle")
     extent_np = mesh_tm.bounds[1] - mesh_tm.bounds[0]
 
     settings_ml = mm.InSphereSearchSettings()
@@ -862,7 +862,7 @@ def test_max_tangent_sphere_normalizes_a_non_unit_normal(
     """
     _mesh_tm, mesh_wp = sphere_irregular
     points_wp = mesh_wp.points
-    unit_normals_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
+    unit_normals_wp = od.normals.vertex_normals(mesh_wp.points, mesh_wp.indices)
     # Scaled on the host: a ``wp.map(wp.mul, ...)`` over ``vec3`` here would add a signature to the
     # ``map_mul`` module the package declares at import and rebuild it.
     scaled_normals_wp = points_to_warp(unit_normals_wp.numpy() * 2.0, mesh_wp.device)
@@ -893,7 +893,7 @@ def test_max_tangent_sphere_seed_is_half_the_longest_ray(
     points_wp = mesh_wp.points
     # Scaled off unit length on the host, so the kernel's own normalization is exercised; the
     # reference normalizes with the same ``wp.normalize`` and applies the sign exactly.
-    normals_np = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy() * 3.0
+    normals_np = od.normals.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy() * 3.0
     unit_wp = warp_empty(points_wp.size, wp.vec3, mesh_wp.device)
     wp.map(wp.normalize, points_to_warp(normals_np, mesh_wp.device), out=unit_wp)
     directions_np = unit_wp.numpy() * np.float32(-1.0 if inwards else 1.0)

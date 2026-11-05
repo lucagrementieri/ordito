@@ -160,7 +160,7 @@ def _unit_normals_wp(bench_case: BenchCase) -> wp.array[wp.vec3]:
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _normals_wp_cache:
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        _normals_wp_cache[key] = od.vertices.vertex_normals(vertices, faces)
+        _normals_wp_cache[key] = od.normals.vertex_normals(vertices, faces)
     return _normals_wp_cache[key]
 
 

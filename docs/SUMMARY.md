@@ -49,7 +49,7 @@ Shelving decisions that are not obvious from the section titles:
         * [creation](benchmarks/creation.md)
     * Mesh structure & topology
         * [mesh](benchmarks/mesh.md)
-        * [vertices](benchmarks/vertices.md)
+        * [normals](benchmarks/normals.md)
         * [edges](benchmarks/edges.md)
         * [triangles](benchmarks/triangles.md)
         * [adjacency](benchmarks/adjacency.md)
@@ -105,7 +105,7 @@ Shelving decisions that are not obvious from the section titles:
         * [creation](api/ordito/creation.md)
     * Mesh structure & topology
         * [mesh](api/ordito/mesh.md)
-        * [vertices](api/ordito/vertices.md)
+        * [normals](api/ordito/normals.md)
         * [edges](api/ordito/edges.md)
         * [triangles](api/ordito/triangles.md)
         * [halfedge](api/ordito/halfedge.md)

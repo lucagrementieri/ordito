@@ -1665,7 +1665,7 @@ def launch_device_problems() -> list[str]:
     pass it), and the kernel returns the correct answer. What it does not get is ordering, so the
     host buffers are freed at scope exit while the kernel is still reading them, and the process
     aborts later inside glibc -- measured on the reduced reproducer at 20/20 aborts with a free and
-    no synchronize against 0/20 with either. ``vertices.mean_vertex_normals`` shipped this way.
+    no synchronize against 0/20 with either. ``normals.mean_vertex_normals`` shipped this way.
 
     This is the static half of the guard and it is the half that carries the load. The runtime half
     (``tests/conftest.py`` sets ``LaunchArrayAccessMode.STRICT``) only bites when the arrays are not

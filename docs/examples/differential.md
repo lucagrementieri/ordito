@@ -11,7 +11,7 @@ Curvature, gradients, Laplace-type equations, and per-vertex shape descriptors.
 ## Gaussian and mean curvature {#d1}
 
 Three curvature fields on the Stanford dragon.
-[`vertex_defects`][ordito.vertices.vertex_defects] is the pointwise angle defect, `2pi` minus
+[`vertex_defects`][ordito.curvature.vertex_defects] is the pointwise angle defect, `2pi` minus
 the corner angles at a vertex, the discrete Gaussian curvature integrated over the vertex's
 neighbourhood; it is sharp and noisy on a scan.
 [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature] and
@@ -29,7 +29,7 @@ from examples import data
 
 vertices, faces = data.load("dragon", device)
 angles = od.triangles.face_angles(vertices, faces)
-defects = od.vertices.vertex_defects(vertices.shape[0], faces, angles)
+defects = od.curvature.vertex_defects(vertices.shape[0], faces, angles)
 
 radius = 4.0 * od.edges.mean_edge_length(vertices, faces)
 gaussian = od.curvature.discrete_gaussian_curvature(vertices, vertices, faces, angles, radius)
@@ -404,7 +404,7 @@ from examples import data
 
 vertices, faces = data.load("buddha", device)
 mesh = wp.Mesh(points=vertices, indices=faces)
-normals = od.vertices.vertex_normals(vertices, faces)
+normals = od.normals.vertex_normals(vertices, faces)
 diagonal = od.bounds.enclosing_diagonal(vertices)
 
 occlusion = od.visibility.ambient_occlusion(mesh, vertices, normals=normals)

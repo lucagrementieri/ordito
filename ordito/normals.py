@@ -1,24 +1,19 @@
 """
-Per-vertex quantities: normals under three weighting rules, and the angle defect.
+Vertex normals under three weighting rules, and the accumulators beneath them.
 
 A vertex has no normal of its own -- only the faces around it do -- so a vertex normal is always a
 weighted average of incident face normals, and the weight is a modelling choice rather than a
-detail. [`vertex_normals`][ordito.vertices.vertex_normals] is the entry point, and its
+detail. [`vertex_normals`][ordito.normals.vertex_normals] is the entry point, and its
 ``weighting=`` keyword *is* that choice: by face area, by incident angle (the one invariant to how a
 neighbouring polygon happened to be triangulated), or by Nelson Max's sine-and-edge-length
 reciprocals.
 
 Two **accumulators** sit underneath it and are public in their own right:
-[`weighted_vertex_normals`][ordito.vertices.weighted_vertex_normals] takes a caller-supplied
-per-corner weight table and [`mean_vertex_normals`][ordito.vertices.mean_vertex_normals] is the
+[`weighted_vertex_normals`][ordito.normals.weighted_vertex_normals] takes a caller-supplied
+per-corner weight table and [`mean_vertex_normals`][ordito.normals.mean_vertex_normals] is the
 same thing with unit weights. They know no geometry -- they take no ``vertices`` at all, which is
 why they keep an explicit ``n_vertices`` argument where ``vertex_normals`` derives it. That
 asymmetry is the visible marker of which of the two layers you are in.
-
-[`vertex_defects`][ordito.vertices.vertex_defects] is the odd one out and not a normal at all:
-``2 * pi`` minus the incident angle sum, which is the intrinsic curvature concentrated at that
-vertex and the quantity
-[`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature] reports.
 """
 
 from __future__ import annotations
@@ -30,11 +25,9 @@ import warp as wp
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import require_same_device
-from ordito.config import is_deterministic
 from ordito.kernels import array as kernel_array
-from ordito.kernels import predicates as kernel_predicates
+from ordito.kernels import normals as kernel_normals
 from ordito.kernels import scatter as kernel_scatter
-from ordito.kernels import vertices as kernel_vertices
 
 # The precision the vertex-normal accumulator runs at, and the key both of
 # ``_accumulate_and_normalize``'s launches look their kernel up by. ``float64`` so that the order
@@ -80,9 +73,9 @@ def mean_vertex_normals(
 
     See Also
     --------
-    [`weighted_vertex_normals`][ordito.vertices.weighted_vertex_normals]
+    [`weighted_vertex_normals`][ordito.normals.weighted_vertex_normals]
         The same accumulator with a per-corner weight table; this is that with unit weights.
-    [`vertex_normals`][ordito.vertices.vertex_normals]
+    [`vertex_normals`][ordito.normals.vertex_normals]
         The geometry-aware entry point, which derives a weight table and calls one of these two.
 
     Examples
@@ -97,7 +90,7 @@ def mean_vertex_normals(
 
     vertices, faces = od.creation.box()
     face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
-    normals = od.vertices.mean_vertex_normals(vertices.shape[0], faces, face_normals)
+    normals = od.normals.mean_vertex_normals(vertices.shape[0], faces, face_normals)
     print(normals.shape)  # (8,)
     print(np.round(normals.numpy()[0], 3))  # [-0.816 -0.408 -0.408]
     ```
@@ -149,9 +142,9 @@ def weighted_vertex_normals(
 
     See Also
     --------
-    [`mean_vertex_normals`][ordito.vertices.mean_vertex_normals]
+    [`mean_vertex_normals`][ordito.normals.mean_vertex_normals]
         This with unit weights.
-    [`vertex_normals`][ordito.vertices.vertex_normals]
+    [`vertex_normals`][ordito.normals.vertex_normals]
         The geometry-aware entry point, which derives a weight table and calls this.
 
     Examples
@@ -167,7 +160,7 @@ def weighted_vertex_normals(
     vertices, faces = od.creation.box()
     face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
     angles = od.triangles.face_angles(vertices, faces)
-    normals = od.vertices.weighted_vertex_normals(vertices.shape[0], faces, face_normals, angles)
+    normals = od.normals.weighted_vertex_normals(vertices.shape[0], faces, face_normals, angles)
     print(np.round(normals.numpy()[0], 3))  # [-0.577 -0.577 -0.577]
     ```
     """
@@ -211,7 +204,7 @@ def _accumulate_and_normalize(
         Flat ``wp.int32`` triangle index buffer; reshaped to ``(f, 3)`` for the scatter.
     scatter_table
         Overload table of a kernel launched one thread per face that takes ``(*inputs,
-        out_sums)`` -- a ``kernels.scatter`` accumulator or one of ``kernels.vertices``' fused
+        out_sums)`` -- a ``kernels.scatter`` accumulator or one of ``kernels.normals``' fused
         ones. All of them are generic over the accumulator's precision, so the table is keyed by
         it.
     inputs
@@ -237,7 +230,7 @@ def _accumulate_and_normalize(
     )
     vec_normals = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     _launch.launch(
-        kernel_vertices.NORMALIZE_ACCUMULATED_ROWS[_ACCUMULATOR_DTYPE],
+        kernel_normals.NORMALIZE_ACCUMULATED_ROWS[_ACCUMULATOR_DTYPE],
         dim=n_vertices,
         inputs=[sums, vec_normals],
         device=device,
@@ -318,9 +311,9 @@ def vertex_normals(
 
     See Also
     --------
-    [`weighted_vertex_normals`][ordito.vertices.weighted_vertex_normals]
+    [`weighted_vertex_normals`][ordito.normals.weighted_vertex_normals]
         The accumulator underneath: a caller-supplied per-corner weight table, no geometry.
-    [`mean_vertex_normals`][ordito.vertices.mean_vertex_normals]
+    [`mean_vertex_normals`][ordito.normals.mean_vertex_normals]
         The same accumulator with unit weights.
     [`ordito.triangles.face_normals_and_areas`][ordito.triangles.face_normals_and_areas]
         Produces the ``face_normals`` / ``face_weights`` the ``"area"`` path derives.
@@ -338,8 +331,8 @@ def vertex_normals(
     import ordito as od
 
     vertices, faces = od.creation.box()
-    by_area = od.vertices.vertex_normals(vertices, faces)
-    by_angle = od.vertices.vertex_normals(vertices, faces, weighting="angle")
+    by_area = od.normals.vertex_normals(vertices, faces)
+    by_angle = od.normals.vertex_normals(vertices, faces, weighting="angle")
     print(by_area.shape)  # (8,)
     print(np.round(by_area.numpy()[0], 3))  # [-0.816 -0.408 -0.408]
     print(np.round(by_angle.numpy()[0], 3))  # [-0.577 -0.577 -0.577]
@@ -366,13 +359,13 @@ def vertex_normals(
         # their products, so no normal or weight table is written.
         if face_normals is None:
             return _accumulate_and_normalize(
-                n_vertices, faces, kernel_vertices.SCATTER_MAX_WEIGHTED_NORMALS, [vertices, faces]
+                n_vertices, faces, kernel_normals.SCATTER_MAX_WEIGHTED_NORMALS, [vertices, faces]
             )
         _require_face_rows(n_faces, face_normals=face_normals)
         return _accumulate_and_normalize(
             n_vertices,
             faces,
-            kernel_vertices.SCATTER_MAX_WEIGHTED_UNIT_NORMALS,
+            kernel_normals.SCATTER_MAX_WEIGHTED_UNIT_NORMALS,
             [vertices, faces, face_normals],
         )
 
@@ -384,113 +377,22 @@ def vertex_normals(
     # the cheaper of the two.
     if face_normals is None and face_weights is None:
         derived = (
-            kernel_vertices.SCATTER_ANGLE_WEIGHTED_NORMALS
+            kernel_normals.SCATTER_ANGLE_WEIGHTED_NORMALS
             if weighting == "angle"
-            else kernel_vertices.SCATTER_AREA_WEIGHTED_NORMALS
+            else kernel_normals.SCATTER_AREA_WEIGHTED_NORMALS
         )
         return _accumulate_and_normalize(n_vertices, faces, derived, [vertices, faces])
     key = (face_normals is not None, face_weights is not None)
     if weighting == "angle":
-        supplied = kernel_vertices.SCATTER_SUPPLIED_ANGLE_WEIGHTED_NORMALS[key]
+        supplied = kernel_normals.SCATTER_SUPPLIED_ANGLE_WEIGHTED_NORMALS[key]
         if face_weights is not None:
             face_weights = odt.as_array2d(face_weights, wp.float32)
     else:
-        supplied = kernel_vertices.SCATTER_SUPPLIED_AREA_WEIGHTED_NORMALS[key]
+        supplied = kernel_normals.SCATTER_SUPPLIED_AREA_WEIGHTED_NORMALS[key]
     _require_face_rows(n_faces, face_normals=face_normals, face_weights=face_weights)
     return _accumulate_and_normalize(
         n_vertices, faces, supplied, [vertices, faces, face_normals, face_weights]
     )
-
-
-def vertex_defects(
-    n_vertices: int, faces: wp.array[wp.int32], face_angles: odt.Array2dFloat32
-) -> wp.array[wp.float32]:
-    """
-    Discrete angle defect per vertex: ``2π`` minus the sum of incident corner angles.
-
-    For each vertex, interior angles from every triangle corner that references that vertex
-    are accumulated on ``faces.device``, then subtracted from a full turn. Under
-    [`is_deterministic`][ordito.config.is_deterministic] the sum is formed exactly in ``float64``
-    and rounded once, so it is the same on every run; otherwise it is accumulated in ``float32`` in
-    the atomics' arrival order.
-    This is the standard piecewise-linear angle defect (related to discrete Gaussian
-    curvature via the Gauss—Bonnet viewpoint on triangle meshes).
-
-    Parameters
-    ----------
-    n_vertices
-        Number of vertices indexed by ``faces`` (output length).
-    faces
-        ``(3 * n_faces,)`` triangle indices, interpreted as ``(n_faces, 3)`` via
-        ``reshape((-1, 3))`` (row-major flat layout is fine).
-    face_angles
-        ``(n_faces, 3)`` interior angles at the three corners of each triangle, with rows aligned
-        with ``faces``.
-
-    Returns
-    -------
-    wp.array[wp.float32]
-        ``(n_vertices,)`` device array ``2π - Σ angles`` at each vertex. Vertices not
-        referenced by any face have defect ``2π`` (empty angle sum).
-
-    Raises
-    ------
-    ValueError
-        If ``face_angles`` does not have one row per triangle in ``faces``.
-    RuntimeError
-        If ``faces`` and ``face_angles`` are not all on one device.
-
-    See Also
-    --------
-    [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature]
-        The same quantity at a *scale*: the Cohen-Steiner/Morvan ball measure sums these defects
-        over a ball of given radius, where this is the pointwise value at one vertex. The ball
-        measure is what converges under refinement; the pointwise defect does not.
-    [`face_angles`][ordito.triangles.face_angles]
-        The angles this sums.
-
-    Examples
-    --------
-    Each cube corner meets three right angles, so its defect is ``pi / 2``, and the defects sum to
-    ``4 * pi`` on any closed genus-0 surface (Gauss-Bonnet):
-
-    ```python
-    import ordito as od
-
-    vertices, faces = od.creation.box()
-    angles = od.triangles.face_angles(vertices, faces)
-    defects = od.vertices.vertex_defects(vertices.shape[0], faces, angles)
-    print(f"{defects.numpy()[0]:.4f}")  # 1.5708
-    print(f"{defects.numpy().sum():.4f}")  # 12.5664
-    ```
-    """
-    require_same_device(faces=faces, face_angles=face_angles)
-    n_faces = faces.size // 3
-    _require_face_rows(n_faces, face_angles=face_angles)
-    if not is_deterministic():
-        angle_sum = _launch.zeros(n_vertices, dtype=wp.float32, device=faces.device)
-        _launch.launch(
-            kernel_scatter.SCATTER_SUM_SCALAR[face_angles.dtype],
-            dim=n_faces,
-            inputs=[face_angles, faces.reshape((-1, 3)), angle_sum],
-            device=faces.device,
-        )
-        # In place over the accumulator: ``angle_sum`` is scratch, and the operator spelling
-        # ``TWO_PI - angle_sum`` would run the same wp.map into a second allocation.
-        _launch.map(kernel_predicates.angle_defect, angle_sum, out=angle_sum)
-        return angle_sum
-    # A ``float32`` angle is exact in ``float64``, and so is the sum, so the atomics' commit order
-    # changes no bit: reproducible for the price of the ``float32`` output's own allocation.
-    exact_sum = _launch.zeros(n_vertices, dtype=wp.float64, device=faces.device)
-    _launch.launch(
-        kernel_scatter.scatter_sum_exact,
-        dim=n_faces,
-        inputs=[face_angles, faces.reshape((-1, 3)), exact_sum],
-        device=faces.device,
-    )
-    defects = _launch.empty(n_vertices, dtype=wp.float32, device=faces.device)
-    _launch.map(kernel_predicates.angle_defect_rounded, exact_sum, out=defects)
-    return defects
 
 
 def _require_face_rows(n_faces: int, **named: odt.ArrayNd | None) -> None:

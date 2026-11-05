@@ -1374,6 +1374,18 @@
    "sort": 1
   }
  },
+ "benchmarks/test_curvature.py::test_vertex_defects[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_curvature.py::test_vertex_defects[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 2
+  }
+ },
  "benchmarks/test_edges.py::test_edge_length_sum[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 1,
@@ -4410,6 +4422,90 @@
    "readback": 1
   }
  },
+ "benchmarks/test_normals.py::test_mean_vertex_normals[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_normals.py::test_vertex_normals[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_normals.py::test_vertex_normals[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_normals.py::test_vertex_normals_one_table[fan_hub-ordito-cpu-face_normals-angle]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_normals.py::test_vertex_normals_one_table[fan_hub-ordito-cpu-face_normals-area]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_normals.py::test_vertex_normals_one_table[fan_hub-ordito-cpu-face_weights-angle]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_normals.py::test_vertex_normals_one_table[fan_hub-ordito-cpu-face_weights-area]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_normals.py::test_vertex_normals_one_table[sphere_med-ordito-cpu-face_normals-angle]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_normals.py::test_vertex_normals_one_table[sphere_med-ordito-cpu-face_normals-area]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_normals.py::test_vertex_normals_one_table[sphere_med-ordito-cpu-face_weights-angle]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_normals.py::test_vertex_normals_one_table[sphere_med-ordito-cpu-face_weights-area]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_normals.py::test_vertex_normals_precomputed[fan_hub-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_normals.py::test_vertex_normals_precomputed[sphere_med-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
+ "benchmarks/test_normals.py::test_weighted_vertex_normals[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 2,
+   "alloc": 2
+  }
+ },
  "benchmarks/test_parametrization.py::test_arap[hemisphere-ordito-cpu-10]": {
   "counts": {
    "launch": 41,
@@ -7226,102 +7322,6 @@
    "launch": 6,
    "alloc": 5,
    "sort": 1
-  }
- },
- "benchmarks/test_vertices.py::test_mean_vertex_normals[sphere_small-ordito-cpu]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_vertex_defects[fan_hub-ordito-cpu]": {
-  "counts": {
-   "launch": 3,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_vertex_defects[sphere_med-ordito-cpu]": {
-  "counts": {
-   "launch": 3,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_vertex_normals[fan_hub-ordito-cpu]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_vertex_normals[sphere_med-ordito-cpu]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_vertex_normals_one_table[fan_hub-ordito-cpu-face_normals-angle]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_vertex_normals_one_table[fan_hub-ordito-cpu-face_normals-area]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_vertex_normals_one_table[fan_hub-ordito-cpu-face_weights-angle]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_vertex_normals_one_table[fan_hub-ordito-cpu-face_weights-area]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_vertex_normals_one_table[sphere_med-ordito-cpu-face_normals-angle]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_vertex_normals_one_table[sphere_med-ordito-cpu-face_normals-area]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_vertex_normals_one_table[sphere_med-ordito-cpu-face_weights-angle]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_vertex_normals_one_table[sphere_med-ordito-cpu-face_weights-area]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_vertex_normals_precomputed[fan_hub-ordito-cpu]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_vertex_normals_precomputed[sphere_med-ordito-cpu]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 2
-  }
- },
- "benchmarks/test_vertices.py::test_weighted_vertex_normals[sphere_small-ordito-cpu]": {
-  "counts": {
-   "launch": 2,
-   "alloc": 2
   }
  },
  "benchmarks/test_visibility.py::test_ambient_occlusion[sphere_small-ordito-cpu-256]": {

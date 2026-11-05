@@ -327,7 +327,7 @@ def test_smooth_pass_is_the_area_weighted_centroid(device: str) -> None:
     free = codes_wp.numpy() == 0
     assert free.sum() > 1000  # non-vacuity: the pass has a real interior to move
 
-    normals_np = od.vertices.vertex_normals(vertices_wp, faces_wp).numpy().astype(np.float64)
+    normals_np = od.normals.vertex_normals(vertices_wp, faces_wp).numpy().astype(np.float64)
     delta = _area_weighted_ring_centroid(positions_np, faces_np) - positions_np
     expected = positions_np + delta - np.einsum("ij,ij->i", delta, normals_np)[:, None] * normals_np
 
