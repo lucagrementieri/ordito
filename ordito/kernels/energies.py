@@ -491,9 +491,36 @@ def row_vertex_on_boundary(
 
 
 # The Hessian energy's corner mask covers up to this many corners of a vertex's fan (a valence of
-# 21): past it a star vertex's first-occurrence flag is not kept, and its pattern keys pair each
-# star vertex with every corner, duplicates included, which the key sort folds.
+# 21): past it a star vertex's first-occurrence flag is not kept but tested again where the keys
+# are written (``star_corner_is_first``), and its pattern keys pair each star vertex with every
+# corner, duplicates included, which the key sort folds.
 HESSIAN_MASK_CORNERS = 64
+
+# The most corners a vertex's fan may have: its key count is at most the corner count squared,
+# which past this (``isqrt(2**31 - 1)``, a vertex in 15 447 faces) can wrap a vertex's ``int32``
+# count. Such a vertex's Hessian rows are dense over a star of thousands of vertices, and its
+# first-occurrence dedupe alone (``hessian_star_mask``, quadratic in the corners, in one thread)
+# would run for minutes before the count overflowed, so ``hessian_energy_counts`` refuses the fan
+# before the dedupe: it writes a negative count, which ``_device.scan_count_checked`` raises on.
+HESSIAN_MAX_CORNERS = 46340
+
+
+@wp.func
+def star_corner_is_first(
+    faces: wp.array[wp.int32],
+    vf_indices: wp.array[wp.int32],
+    start: wp.int32,
+    a: wp.int32,
+    c: wp.int32,
+) -> wp.bool:
+    # Whether corner ``c`` of the fan's ``a``-th face (a row starting at ``start``) is its vertex's
+    # first occurrence in the fan: no earlier corner holds the same vertex.
+    vertex = faces[vf_indices[a] * 3 + c]
+    for a2 in range(start, a + 1):
+        for c2 in range(3):
+            if (a2 < a or c2 < c) and faces[vf_indices[a2] * 3 + c2] == vertex:
+                return False
+    return True
 
 
 @wp.func
@@ -512,13 +539,7 @@ def hessian_star_mask(
     unique = wp.int32(0)
     for a in range(start, end):
         for c in range(3):
-            vertex = faces[vf_indices[a] * 3 + c]
-            seen = wp.bool(False)
-            for a2 in range(start, a + 1):
-                for c2 in range(3):
-                    if not seen and (a2 < a or c2 < c) and faces[vf_indices[a2] * 3 + c2] == vertex:
-                        seen = wp.bool(True)
-            if not seen:
+            if star_corner_is_first(faces, vf_indices, start, a, c):
                 unique += 1
                 bit = 3 * (a - start) + c
                 if bit < HESSIAN_MASK_CORNERS:
@@ -537,21 +558,27 @@ def hessian_energy_counts(
 ) -> None:
     # Vertex ``k`` couples every pair of vertices of its star (the vertices of its faces); a
     # killed degree of freedom (boundary vertex, zeroed mass) couples nothing. Its count is the
-    # pattern keys ``hessian_energy_keys`` writes for those pairs. The mass is defined only at
+    # pattern keys ``hessian_energy_keys`` writes for those pairs, or ``-1`` for a fan past
+    # ``HESSIAN_MAX_CORNERS``, boundary or not. The mass is defined only at
     # interior vertices, so a boundary vertex (``row_vertex_on_boundary``) inverts as a zero mass.
     # The mass inversion rides in the same launch: the gate reads the inverse it has just written,
     # which is the value ``hessian_energy_keys`` and ``hessian_energy_rows`` gate on.
     k = wp.int32(wp.tid())
+    corners = 3 * (vf_offsets[k + 1] - vf_offsets[k])
+    if corners > HESSIAN_MAX_CORNERS:
+        # Ahead of the boundary test too, which is quadratic in the corners as well.
+        out_inverse_mass[k] = wp.float64(0.0)
+        out_counts[k] = -1
+        return
     inverse = wp.float64(0.0)
     if not row_vertex_on_boundary(faces, vf_offsets, vf_indices, k):
         inverse = reciprocal_or_zero(mass[k])
     out_inverse_mass[k] = inverse
-    if inverse > wp.float64(0.0):
-        corners = 3 * (vf_offsets[k + 1] - vf_offsets[k])
+    if not (inverse > wp.float64(0.0)):
+        out_counts[k] = 0
+    else:
         _mask, unique = hessian_star_mask(faces, vf_offsets, vf_indices, k)
         out_counts[k] = unique * wp.where(corners <= HESSIAN_MASK_CORNERS, unique, corners)
-    else:
-        out_counts[k] = 0
 
 
 @wp.kernel
@@ -579,7 +606,14 @@ def hessian_energy_keys(
     cursor = segment_offsets[k]
     full = corners <= HESSIAN_MASK_CORNERS
     for p in range(corners):
-        if p < HESSIAN_MASK_CORNERS and (mask >> wp.uint64(p)) & wp.uint64(1) != wp.uint64(0):
+        first = wp.bool(False)
+        if p < HESSIAN_MASK_CORNERS:
+            first = (mask >> wp.uint64(p)) & wp.uint64(1) != wp.uint64(0)
+        else:
+            # Past the mask the first-occurrence test is made again, as ``hessian_star_mask``
+            # counted it.
+            first = star_corner_is_first(faces, vf_indices, start, start + p // 3, p % 3)
+        if first:
             row = faces[vf_indices[start + p // 3] * 3 + p % 3]
             for q in range(corners):
                 if not full or (mask >> wp.uint64(q)) & wp.uint64(1) != wp.uint64(0):

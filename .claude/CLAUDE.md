@@ -1000,16 +1000,28 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   component sums): whether it should test peers (`warp_peer_lanes`) rather than a uniform warp.
   The uniform form was priced on one hot group, components and random groups; the corner sites
   (§14) say to expect a loss wherever the kernel has work of its own.
-- **Long rows in the other solver paths** (2026-11-05): the squared-Laplacian polynomial, the
-  multigrid V-cycle (`csr_matvec`, the fused sweeps) and the one-block solve still walk a hub row
-  in one thread (§14's long-row item); `_LongRows` would carry to them. Find a caller that reaches
-  one with a hub first (`smooth_region`'s V-cycle on `fan_hub` refuses the region before solving).
-- **`hessian_energy` / `curved_hessian_energy` on a hub** (2026-11-05). `hessian_star_mask` dedupes
-  a vertex's star corner against every earlier corner with no early exit, ~7.5e9 loads in one
-  thread for `fan_hub`'s hub (`hessian_energy_counts` had not returned after 5 minutes). The
-  count it feeds (~5e9 keys) should then wrap and raise (not observed): the Hessian of a
-  40 960-valence fan is dense (~1.7e9 entries a hub). A bound before the
-  dedupe (the corner count squared past `INT32_MAX`) would raise in microseconds.
+- **Long rows on `fan_hub` beyond the CG state** (2026-11-05). Callers found: `min_quad_with_fixed`
+  on `fan_hub`'s negated cotangent Laplacian, 1 % pinned (40 k free rows), 263-280 ms a call
+  against `sphere_med`'s 5 ms (350 rounds against 40). (a) The long-row kernels themselves:
+  `chebyshev_long_rows` and `csr_long_rows_matvec` take 49-55 us a launch, 10x the 5.5 us step,
+  80 % of that solve's device time: a block a row puts 820 KB of a 41 k-entry row on one SM. Four
+  interleaved accumulators took the Chebyshev one only to 37 us (reverted); split a row over
+  blocks (chunk partials, a fixed-order fold) instead. (b) One-off row-a-thread kernels around the
+  solve walk the hub too: `interior_partition_system` 14 ms, `refresh_pooled_operator_bound` 8 ms,
+  `cg_initial` 6 ms, `backward_error_exceeds` 5 ms. (c) `preconditioner="multigrid"` there: the
+  V-cycle apply is not the cost; its setup is (`count_row_entries` 32 ms,
+  `smoothed_prolongator_keys` 25, `write_structure_paths` 22, `mis_propagate_states` 7 x 10,
+  `power_step`), and the solve reached 1 000 rounds and fell back to a factorization. The
+  squared-Laplacian polynomial is reached by `harmonic(k=2)` below 4 000 vertices: a planar disk
+  fan (a hub, two rings of `V`, the outer one mapped to the circle) took 0.91 s at `V = 1 200`
+  (2 401 vertices) and 2.5 s at 1 900, against 0.15 / 0.38 s with the hub pinned too; how much is
+  the hub row's step and how much its rounds is not yet split. The one-block solve cannot hold a long row on CUDA (at most 1 024 rows) and walks every
+  row in one lane on the CPU anyway: not open.
+- **`curved_hessian_energy` on a hub** (2026-11-05): runs past 5 minutes on `fan_hub`, though its
+  pattern is sparse (36 keys a face). `curved_hessian_rows` finds each row's next face by
+  rescanning the row's whole ring and its across faces, about 41 k x 7 reads for each of the hub
+  row's ~82 k faces in one thread. A per-row sorted face list (one key sort of (row, face)) would
+  make it linear; price it on scan meshes, where the gather is latency-bound already.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

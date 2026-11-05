@@ -245,7 +245,8 @@ def flag_wrapped_scan(inclusive: wp.array[wp.int32], out_flag: wp.array[wp.int32
     # Set ``out_flag[0]`` when an ``int32`` inclusive scan of non-negative counts wrapped. The
     # first partial sum past ``2**31 - 1`` is negative, so the scan steps down there, even where
     # the total wraps all the way round to a positive value -- which a test of the total alone
-    # misses, and which sized ``energies.hessian_energy``'s buffers short on ``lucy``.
+    # misses, and which sized ``energies.hessian_energy``'s buffers short on ``lucy``. A producer
+    # that knows a count of its own cannot be represented writes it negative, which flags the same.
     i = wp.int32(wp.tid())
     if inclusive[i] < 0 or (i > 0 and inclusive[i] < inclusive[i - 1]):
         out_flag[0] = 1

@@ -653,7 +653,8 @@ def hessian_energy(
     Raises
     ------
     ValueError
-        If the assembly needs more triplets than ``int32`` indices address.
+        If the assembly needs more triplets than ``int32`` indices address, or a vertex lies
+        in more than 15 446 faces (its rows would be dense over its star).
     RuntimeError
         If ``vertices``, ``faces`` and ``vertex_faces`` are not all on one device.
 

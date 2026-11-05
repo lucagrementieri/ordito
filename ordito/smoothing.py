@@ -2901,7 +2901,8 @@ class _FairingSolver:
     so a factorization's analysis is done once and each later pass refactors the new values. An
     iterated pass's Jacobi-Chebyshev round count decides, with one read: at or above
     ``_FAIRING_FACTOR_ITERATIONS`` a refactor and one refined solve cost less than the iteration,
-    and the later passes take them.
+    and the later passes take them. A pass that could still be factored iterates no further than
+    that count: one that reaches it is factored and solved directly from its iterate.
 
     With ``redecide`` (the ordinary flow) every iterated pass decides again until one reaches the
     threshold: as the surface pinches, its rebuilt cotangent system's iteration grows by orders of
@@ -2948,8 +2949,18 @@ class _FairingSolver:
             else:
                 self._factor.solve(rhs, solution, tol=twl.CG_TOLERANCE)
                 return
+        # A pass that may still be factored iterates only up to the round count that decides it:
+        # past that the factorization solves this pass too, from the iterate reached. A long first
+        # pass (a time step large against the mesh, whose system is then the Laplacian's) would
+        # otherwise iterate to convergence before the decision it has already settled.
+        probe = not self._decided and self._factor is None
         result = twl.solve_spd_columns(
-            system, rhs, solution, tol=twl.CG_TOLERANCE, maxiter=maxiter, preconditioner="chebyshev"
+            system,
+            rhs,
+            solution,
+            tol=twl.CG_TOLERANCE,
+            maxiter=min(maxiter, _FAIRING_FACTOR_ITERATIONS) if probe else maxiter,
+            preconditioner="chebyshev",
         )
         if self._decided:
             return
@@ -2978,6 +2989,17 @@ class _FairingSolver:
         except ValueError:
             self._refactor = False
             self._decided = True
+            # The probe stopped at its cap; the iteration finishes the pass from where it stopped.
+            twl.solve_spd_columns(
+                system,
+                rhs,
+                solution,
+                tol=twl.CG_TOLERANCE,
+                maxiter=maxiter,
+                preconditioner="chebyshev",
+            )
+        else:
+            self._factor.solve(rhs, solution, tol=twl.CG_TOLERANCE)
 
 
 # The fairing pass's Jacobi-Chebyshev iteration count at or above which the later passes refactor

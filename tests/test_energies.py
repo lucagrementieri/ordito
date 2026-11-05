@@ -453,6 +453,61 @@ def test_triplet_count_refuses_a_scan_that_wrapped(device: str) -> None:
     assert exact.numpy()[1:4].tolist() == [3, 3, 7]
 
 
+@pytest.mark.parametrize("hub_faces", [21, 30, 64])
+@pytest.mark.parity("hessian_energy", "igl")
+def test_hessian_energy_matches_igl_past_its_corner_mask(device: str, hub_faces: int) -> None:
+    """
+    Class A: ``igl.hessian_energy`` on a closed double cone whose hubs pass the corner mask.
+
+    A fan of more than 21 faces passes ``HESSIAN_MASK_CORNERS`` (64 corners), where a star
+    vertex's first occurrence is tested again as its keys are written. The wavy ring reaches
+    star vertices first seen past corner 64 from 22 faces on; before that test was made there,
+    their rows were missing from the pattern and the row gather wrote outside its row (CUDA error
+    700, a CPU crash). 21 faces stays inside the mask.
+    """
+    vertices_np, faces_np = _double_cone_np(hub_faces)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    energy_igl = igl.hessian_energy(vertices_np.astype(np.float64), faces_np)
+    assert energy_igl.nnz == (hub_faces + 2) ** 2
+    assert sparse_allclose(
+        bsr_to_csr(od.energies.hessian_energy(vertices_wp, faces_wp)),
+        energy_igl,
+        rtol=1e-7,
+        atol=1e-7 * float(abs(energy_igl).max()),
+    )
+
+
+def test_hessian_energy_refuses_a_fan_past_its_corner_bound(device: str) -> None:
+    """
+    Not a library comparison: the corner bound of ``hessian_energy``'s count pass.
+
+    Past 15 446 faces a hub's rows are dense over its star and its count can pass ``int32``, so
+    the count pass refuses the fan before its boundary test and star dedupe, both quadratic in the
+    corners in one thread (minutes on a 40 960-face fan, and 109 s here when the bound sat after
+    the boundary test). ``test_hessian_energy_matches_igl_past_its_corner_mask`` assembles cones
+    below it.
+    """
+    vertices_wp, faces_wp = numpy_to_warp(*_double_cone_np(15_447), device)
+    with pytest.raises(ValueError, match="int32"):
+        od.energies.hessian_energy(vertices_wp, faces_wp)
+
+
+def _double_cone_np(hub_faces: int) -> tuple[np.ndarray, np.ndarray]:
+    """Build a closed double cone: two hubs in ``hub_faces`` faces each, over a wavy ring."""
+    angles = 2.0 * np.pi * np.arange(hub_faces) / hub_faces
+    ring_np = np.stack([np.cos(angles), np.sin(angles), 0.1 * np.sin(5.0 * angles)], axis=1)
+    vertices_np = np.concatenate([[[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]], ring_np])
+    ring = 2 + np.arange(hub_faces)
+    following = 2 + (np.arange(hub_faces) + 1) % hub_faces
+    faces_np = np.concatenate(
+        [
+            np.stack([np.zeros(hub_faces, dtype=np.int64), ring, following], axis=1),
+            np.stack([np.ones(hub_faces, dtype=np.int64), following, ring], axis=1),
+        ]
+    )
+    return vertices_np.astype(np.float32), faces_np
+
+
 def test_curved_hessian_energy_refuses_more_keys_than_int32_addresses(
     icosahedron: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -7108,12 +7108,12 @@
  },
  "benchmarks/test_smoothing.py::test_filter_implicit_fairing[saddle_graded-ordito-cuda]": {
   "counts": {
-   "launch": 589,
+   "launch": 644,
    "alloc": 62,
-   "memset": 25,
+   "memset": 26,
    "d2d": 12,
-   "d2h": 18,
-   "sync": 2,
+   "d2h": 20,
+   "sync": 4,
    "scan": 21,
    "sort": 20
   }

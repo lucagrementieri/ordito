@@ -6474,7 +6474,7 @@
  },
  "benchmarks/test_smoothing.py::test_filter_implicit_fairing[saddle_graded-ordito-cpu]": {
   "counts": {
-   "launch": 631,
+   "launch": 684,
    "alloc": 61,
    "h2h": 11,
    "readback": 15,
