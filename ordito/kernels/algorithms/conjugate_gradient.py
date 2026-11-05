@@ -35,7 +35,7 @@ import warp as wp
 
 from ordito.kernels.algorithms.multigrid import chebyshev_polynomial_column, chebyshev_update
 from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, OverloadTable
-from ordito.kernels.linalg import csr_row_dot, jacobi_row
+from ordito.kernels.linalg import csr_row_dot, csr_row_long, jacobi_row
 from ordito.kernels.reduce import block_barrier, block_chunk_1d, block_max, block_sum
 
 wp.set_module_options({"enable_backward": False})
@@ -357,6 +357,7 @@ def cg_matvec_dots_block(
     n: wp.int32,
     stride: wp.int32,
     span: wp.int32,
+    skip_long: wp.int32,
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: Any,
@@ -378,7 +379,11 @@ def cg_matvec_dots_block(
         i = c * stride + local
         wi = w.dtype(0.0)
         if local < n:
-            wi = csr_row_dot(local, c * stride, offsets, columns, values, u)
+            if skip_long != 0 and csr_row_long(offsets, local):
+                # Formed by ``linalg.csr_long_rows_matvec`` ahead of this launch.
+                wi = w[i]
+            else:
+                wi = csr_row_dot(local, c * stride, offsets, columns, values, u)
         w[i] = wi
         acc += cg_round_terms(r[i], u[i], wi)
     total = cg_widen(block_sum(acc))
@@ -392,6 +397,7 @@ def cg_matvec_dots(
     n: wp.int32,
     stride: wp.int32,
     span: wp.int32,
+    skip_long: wp.int32,
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.Float],
@@ -423,8 +429,8 @@ def cg_matvec_dots(
     # count are ``cg_publish_round_dots``.
     c, blk, t = wp.tid()
     cg_matvec_dots_block(
-        c, blk, t, n, stride, span, offsets, columns, values, r, u, gamma_new, alpha_new, out_w,
-        out_partials, out_gamma_old, out_alpha_old, out_state,
+        c, blk, t, n, stride, span, skip_long, offsets, columns, values, r, u, gamma_new,
+        alpha_new, out_w, out_partials, out_gamma_old, out_alpha_old, out_state,
     )  # fmt: skip
 
 
@@ -846,7 +852,7 @@ def cg_round_serial_body(
     for c in range(n_columns):
         for blk in range(n_blocks):
             cg_matvec_dots_block(
-                c, blk, 0, n, stride, span, offsets, columns, values, r, u, gamma_new,
+                c, blk, 0, n, stride, span, 0, offsets, columns, values, r, u, gamma_new,
                 alpha_new, out_w, out_partials, gamma_old, alpha_old, state,
             )  # fmt: skip
     if fold == 0:
@@ -1526,7 +1532,7 @@ def _register_overloads() -> None:
     CG_MATVEC_DOTS = OverloadTable(
         cg_matvec_dots,
         {
-            (d, v): [wp.int32] * 3
+            (d, v): [wp.int32] * 4
             + [wp.array[wp.int32], wp.array[wp.int32], wp.array[v]]
             + [wp.array[d]] * 2
             + [wp.array[f64]] * 2

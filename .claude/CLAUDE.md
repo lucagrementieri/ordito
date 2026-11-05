@@ -917,6 +917,19 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
 - **Readbacks:** a device reduction wins on CUDA for mesh-sized arrays and loses on CPU; decide on CUDA, measure both. Keep the readback for bool masks and small non-scaling buffers (the real axis is often the loop count). In device loops a per-pass readback is cheaper than an extra pass, so trading passes for fewer syncs loses; `cg(check_every=0)` is not a lever in the harness.
 - **Per-device algorithm choice** only when the parallel form does asymptotically more work (pointer-doubled `polyline_downsample`, CUDA only above a size gate). `prefers_tiled_reduction` is a correctness branch, not a performance one.
 - **A CPU round loop runs as one launch** (2026-10-30 sweep): the CPU runs a launch's threads one after another, so a loop of launches (one per DP level, flip round, CG round, V-cycle node, ear-clip round, panel level) buys no parallelism there. Each round's body becomes a `@wp.func` taking its first lane, the CUDA kernels call it, and a CPU-only kernel runs every round lane by lane in launch order in one thread: bit-identical, 0.56-0.95x CPU wall (CG, Chebyshev, Cholesky panels, fill and stitch DP, ear clipping, fan flood, Poisson V-cycle, convex hull). CPU census launches 104 736 -> 38 813, readbacks 7 179 -> 3 125. Declined where the serial form lost: the Cholesky triangular solve as one launch a level (1.1-1.5x); `halfedge_mates` pairing by vertex-face rows on the CPU (5.7-8.3x the sort; CUDA takes it below `2**18` halfedges).
+- **Long rows in a row-a-thread solver step** (2026-11-05): a thread summing a hub row of 41 k
+  entries (`fan_hub`) held every Chebyshev step and CG mat-vec at ~7 ms, 85 % of a 95 s
+  `heat_geodesic`; the rounds were only 27x `sphere_med`'s. Eight interleaved accumulators in one
+  thread took it 87 -> 57 s only (one thread's load issue bounds it). Rows of
+  `kernels/linalg.CSR_LONG_ROW_ENTRIES` or more are now skipped by the thread-a-row kernels and
+  summed a block a row (`linalg._LongRows`), 88 -> 0.8 s at the same 1 005 rounds, answers within
+  summation order (7e-15 on the heat distance; the fairing passes to 1e-13 of SciPy's solve). The
+  host learns whether any row is long from one count read per listing (construction, `refresh`),
+  against launching the long-row kernels every step with no read: geomean 1.01 against 1.09-1.12
+  over 13 meshes (5 k to 870 k faces) and 81 solver benchmark rows, worst 1.13x against 1.31x
+  (ARAP, Tutte, harmonic: small solves are mostly steps). Only the CG state's matrix and its
+  Jacobi-Chebyshev polynomial take it; the squared-Laplacian polynomial, the multigrid V-cycle
+  and the one-block solve still walk a long row in a thread.
 - **Solvers:** a single-level polynomial preconditioner wins on long solves; a Chebyshev multigrid smoother loses (no single `(degree, interval)` is robust). A small synthetic system can mislead.
 - **Refuted, do not re-propose:** a single-block BFS drain, a one-block hole-fill DP and merged-level blocked interval DPs (the grid must stay full); voxel aggregation for multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches.
 - **Producer-consumer fusion:** always fuse consecutive same-`dim` launches where the consumer reads the producer only at its own index; every pair measured was faster. Price the fused region, not the call containing it, and cross-check kernel and allocation counts. Also fold a map into its consumer, merge two launches of one kernel into a wider one, and walk-and-reduce neighbour lists in one thread per query. A fusion that changes a slot or box index needs a debug-mode run. Inline single-caller helpers it leaves behind; fold-on-read loses on dependent chases.
@@ -987,18 +1000,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   component sums): whether it should test peers (`warp_peer_lanes`) rather than a uniform warp.
   The uniform form was priced on one hot group, components and random groups; the corner sites
   (§14) say to expect a loss wherever the kernel has work of its own.
-- **Hub rows in the CG mat-vec** (2026-11-05). `chebyshev_step` and `cg_matvec_dots` sum a row a
-  thread, so a vertex of valence 40 960 is one thread's 41 k dependent loads (~7 ms a launch):
-  `heat_geodesic` on `fan_hub` spends 83 of its 95 s in `chebyshev_step` (1 005 rounds, ~9 steps
-  each; sphere_med: 37 rounds, milliseconds), `filter_implicit_fairing` the same. A long row
-  split across a warp or block, short rows kept a thread, would bound a round by the mean row,
-  not the longest. Price on `fan_hub`, `sphere_med` and dragon (the split's test must not cost
-  the uniform meshes). Tried: eight interleaved accumulators in `csr_row_dot` for rows of 1 024
-  entries or more (no readback, no launch) took `heat_geodesic` 87 -> 57 s only, so one thread's
-  load issue, not the add chain, bounds the hub row; it needs lanes. The existing heavy-row path
-  (`linalg.CG_HEAVY_ROW_ENTRIES`, `bsr_mv` block-per-row) gates on the *mean* row length (~7
-  here). A lane split needs the long rows known on the host (a readback per solver state, which
-  small host-bound solves pay) or a launch per step (which uniform meshes pay): the user decides.
+- **Long rows in the other solver paths** (2026-11-05): the squared-Laplacian polynomial, the
+  multigrid V-cycle (`csr_matvec`, the fused sweeps) and the one-block solve still walk a hub row
+  in one thread (§14's long-row item); `_LongRows` would carry to them. Find a caller that reaches
+  one with a hub first (`smooth_region`'s V-cycle on `fan_hub` refuses the region before solving).
 - **`hessian_energy` / `curved_hessian_energy` on a hub** (2026-11-05). `hessian_star_mask` dedupes
   a vertex's star corner against every earlier corner with no early exit, ~7.5e9 loads in one
   thread for `fan_hub`'s hub (`hessian_energy_counts` had not returned after 5 minutes). The

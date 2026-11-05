@@ -35,7 +35,7 @@ from warp._src.types import array as array_type
 from warp._src.types import type_is_generic
 
 from ordito.kernels.array import OverloadTable, inverse_or_one
-from ordito.kernels.reduce import block_chunk_1d, block_max
+from ordito.kernels.reduce import block_chunk_1d, block_max, block_sum
 
 wp.set_module_options({"enable_backward": False})
 
@@ -417,6 +417,90 @@ def stacked_positions(
     out_positions[2 * v + 1] = position
     for k in range(n_scalars):
         out_positions[2 * n + k * n + v] = position
+
+
+# Entries from which a CSR row is *long*: on CUDA the row-a-thread solver kernels (Chebyshev steps,
+# the conjugate-gradient mat-vec) skip it under a nonzero ``skip_long`` and a block-per-row kernel
+# sums it instead (``csr_block_row_dot``). A row a thread is one thread's chain of dependent loads,
+# so a hub row (a fan's apex, 41 k entries) held every step for as long as the rest of the step
+# by a factor of ~1 000. Mesh and ``warp.fem`` rows stay far below it, so the threshold was not
+# swept. ``linalg._LongRows`` decides on the host, from one count read per listing, whether a
+# round launches the long-row kernels; launching them every step with no read instead (their
+# blocks returning at once with none listed) cost 1.0-1.31x where no row is long (geomean
+# 1.09-1.12 over 13 meshes and the solver rows of six benchmark files) against the read's
+# 0.98-1.13x (geomean 1.01-1.02; the worst a 1.7 ms call on 1 024 components): a small solve is
+# mostly steps, and the read is once a solve.
+# ``heat_geodesic`` on ``fan_hub``: 0.009x, the same 1 005 rounds.
+CSR_LONG_ROW_ENTRIES = wp.int32(1024)
+
+
+@wp.func
+def csr_row_long(offsets: wp.array[wp.int32], row: wp.int32) -> wp.bool:
+    return offsets[row + 1] - offsets[row] >= CSR_LONG_ROW_ENTRIES
+
+
+@wp.kernel
+def list_long_rows(
+    offsets: wp.array[wp.int32], out_rows: wp.array[wp.int32], out_count: wp.array[wp.int32]
+) -> None:
+    # The rows ``csr_row_long`` names, appended in arrival order: each is summed by a block of its
+    # own whose result does not depend on its slot. Launch over the row count; ``out_rows`` holds
+    # ``columns.size // CSR_LONG_ROW_ENTRIES``, which bounds their number.
+    row = wp.int32(wp.tid())
+    if csr_row_long(offsets, row):
+        slot = wp.atomic_add(out_count, 0, 1)
+        if slot < out_rows.shape[0]:
+            out_rows[slot] = row
+
+
+@wp.func
+def csr_block_row_dot(
+    row: wp.int32,
+    x_offset: wp.int32,
+    lane: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: Any,
+    x: Any,
+) -> Any:
+    # ``csr_row_dot`` by a whole block, its lanes striding the row and summed by the block
+    # (every lane must call it). A fixed order, so the result repeats; it differs from the
+    # one-thread order in its last bits.
+    partial = x.dtype(0.0)
+    for k in range(offsets[row] + lane, offsets[row + 1], wp.block_dim()):
+        partial += x.dtype(values[k]) * x[x_offset + columns[k]]
+    return block_sum(partial)
+
+
+@wp.func
+def listed_long_rows(rows: wp.array[wp.int32], count: wp.array[wp.int32]) -> wp.int32:
+    # How many of ``list_long_rows``' slots hold a row.
+    return wp.min(count[0], rows.shape[0])
+
+
+# Launched at its own width (``linalg._LONG_ROW_LANES``), so in a module of its own (§12.4).
+@wp.kernel(module="unique")
+def csr_long_rows_matvec(
+    stride: wp.int32,
+    launch_blocks: wp.int32,
+    rows: wp.array[wp.int32],
+    count: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.Float],
+    u: wp.array[wp.Float],
+    out_w: wp.array[wp.Float],
+) -> None:
+    # ``w = A u`` at the long rows ``list_long_rows`` listed, a block a row and column. Launch
+    # tiled over ``(n_columns, launch_blocks)``; the blocks stride the listed rows, so a launch
+    # with none listed returns at once (block uniform).
+    c, blk, lane = wp.tid()
+    base = c * stride
+    for b in range(blk, listed_long_rows(rows, count), launch_blocks):
+        row = rows[b]
+        total = csr_block_row_dot(row, base, lane, offsets, columns, values, u)
+        if lane == 0:
+            out_w[base + row] = total
 
 
 @wp.func
@@ -902,8 +986,22 @@ SHIFTED_SYSTEM_VALUES = {d: _shifted_system_values_kernel(d) for d in (wp.float6
 
 
 def _register_overloads() -> None:
-    """Instantiate ``jacobi_inverse_diagonal`` at the precisions ``_BatchedCg`` solves in."""
-    global JACOBI_INVERSE_DIAGONAL
+    """Instantiate the generic solver kernels at the precisions ``_BatchedCg`` solves in."""
+    global JACOBI_INVERSE_DIAGONAL, CSR_LONG_ROWS_MATVEC
+    # Keyed ``(vector dtype, value dtype)`` like ``conjugate_gradient.CG_MATVEC_DOTS``.
+    CSR_LONG_ROWS_MATVEC = OverloadTable(
+        csr_long_rows_matvec,
+        {
+            (d, v): [wp.int32, wp.int32]
+            + [wp.array[wp.int32]] * 4
+            + [wp.array[v], wp.array[d], wp.array[d]]
+            for d, v in (
+                (wp.float32, wp.float32),
+                (wp.float64, wp.float64),
+                (wp.float64, wp.float32),
+            )
+        },
+    )
     JACOBI_INVERSE_DIAGONAL = OverloadTable(
         jacobi_inverse_diagonal,
         {
@@ -950,4 +1048,5 @@ def register_bsr_mv_overloads(tile_size: int) -> None:
         register_warp_overload(make_bsr_mv_tiled_kernel(tile_size), scalar)
 
 
+CSR_LONG_ROWS_MATVEC: OverloadTable
 _register_overloads()

@@ -3467,6 +3467,12 @@ class _BatchedCg:
         # every launch in the body, plus the graph instantiation, for an identical graph. Only
         # ``_initialize``, which reads the caller's operands, is issued per call.
         self._graph = None
+        # Rows long enough to stall a row-a-thread kernel (``kernels/linalg.CSR_LONG_ROW_ENTRIES``),
+        # summed a block a row on CUDA (``_LongRows``); shared with a Jacobi-Chebyshev polynomial,
+        # which steps this same matrix.
+        self._long = _LongRows.build(self._matrix, self._n, self._device, self._heavy)
+        if isinstance(self._cycle, _JacobiChebyshevApply):
+            self._cycle.long_rows = self._long
 
         # The settle monitor ``solve_spd_settled`` runs (``check_rounds``, ``change_tolerance``,
         # ``settle_rounds``): every ``check_rounds`` rounds ``cg_settle_change`` compares the
@@ -3552,6 +3558,10 @@ class _BatchedCg:
         if isinstance(preconditioner, SquaredLaplacianPreconditioner):
             assert isinstance(self._cycle, _SquaredLaplacianApply)
             self._cycle.owner._assign(preconditioner)  # pyright: ignore[reportPrivateUsage]
+        # The pattern may differ from the one recorded: list its long rows again.
+        if self._long is not None and self._long.relist(self._matrix, self._n):
+            # Whether any row is long changed, so the recorded round is stale.
+            self._graph = None
 
     def _settle_check(self) -> None:
         """Issue the settle monitor's two launches, after a block of ``check_rounds`` rounds."""
@@ -3689,6 +3699,26 @@ class _BatchedCg:
                 device=self._device,
             )
         else:
+            long_rows = self._long if self._long is not None and self._long.active else None
+            if long_rows is not None:
+                # The long rows' ``w`` first, which the fused launch then reads instead of summing.
+                _launch.launch_tiled(
+                    kernel_linalg.CSR_LONG_ROWS_MATVEC[self._dtype, self._round_values.dtype],
+                    dim=(self._n_columns, long_rows.blocks),
+                    inputs=[
+                        wp.int32(self._stride),
+                        wp.int32(long_rows.blocks),
+                        long_rows.rows,
+                        long_rows.count,
+                        self._matrix.offsets,
+                        self._matrix.columns,
+                        self._round_values,
+                        self._u,
+                    ],
+                    outputs=[self._w],
+                    block_dim=_LONG_ROW_LANES,
+                    device=self._device,
+                )
             _launch.launch_tiled(
                 kernel_cg.CG_MATVEC_DOTS[self._dtype, self._round_values.dtype],
                 dim=grid,
@@ -3696,6 +3726,7 @@ class _BatchedCg:
                     wp.int32(self._n),
                     wp.int32(self._stride),
                     wp.int32(self._span),
+                    wp.int32(0 if long_rows is None else 1),
                     self._matrix.offsets,
                     self._matrix.columns,
                     self._round_values,
@@ -4100,6 +4131,68 @@ class _BatchedCg:
 # ``float64`` words at the head of a ``_BatchedCg``'s scalar buffer that hold its ``int32`` loop
 # state, iteration count and backward-error flag.
 _INT_WORDS = (kernel_array.LOOP_STATE_SIZE + 3) // 2
+
+
+# Lanes a long row is summed with, and the most blocks a long-row launch strides the listed rows
+# with.
+_LONG_ROW_LANES = 256
+_LONG_ROW_BLOCKS = 64
+
+
+class _LongRows:
+    """
+    A CG state's rows of ``CSR_LONG_ROW_ENTRIES`` entries or more, listed on the device.
+
+    The thread-a-row kernels of a round skip them and a block a row sums them on CUDA
+    (``kernels/linalg.csr_long_rows_matvec``, ``kernels/algorithms/multigrid.chebyshev_long_rows``).
+    Their count is read back once per listing (construction and ``refresh``), and the round
+    launches the long-row kernels only when it is nonzero, so a matrix with no long row runs the
+    round it always did (``kernels/linalg.CSR_LONG_ROW_ENTRIES`` prices the alternative).
+    """
+
+    def __init__(self, capacity: int, device: wp.DeviceLike) -> None:
+        self.rows = _launch.empty(capacity, dtype=wp.int32, device=device)
+        self.count = _launch.zeros(1, dtype=wp.int32, device=device)
+        self.device = device
+        self.blocks = 0
+
+    @property
+    def active(self) -> bool:
+        """Whether any row is long, so that the round launches the long-row kernels."""
+        return self.blocks > 0
+
+    @classmethod
+    def build(
+        cls, matrix: odt.CsrMatrix, n: int, device: wp.DeviceLike, heavy: bool
+    ) -> _LongRows | None:
+        """List ``matrix``'s long rows, or ``None`` where none can be or the device is the CPU."""
+        # The CPU device runs a round as one launch whose thread walks every row in turn
+        # (``cg_round_serial``), and a ``bsr_mv`` round already splits rows across lanes.
+        if heavy or not wp.get_device(device).is_cuda or n == 0:
+            return None
+        capacity = min(n, matrix.columns.size // int(kernel_linalg.CSR_LONG_ROW_ENTRIES))
+        if capacity == 0:
+            return None
+        long_rows = cls(capacity, device)
+        long_rows.relist(matrix, n)
+        return long_rows
+
+    def relist(self, matrix: odt.CsrMatrix, n: int) -> bool:
+        """List ``matrix``'s long rows again; return whether ``active`` changed."""
+        was_active = self.active
+        _launch.zero_(self.count)
+        _launch.launch(
+            kernel_linalg.list_long_rows,
+            dim=n,
+            inputs=[matrix.offsets],
+            outputs=[self.rows, self.count],
+            device=self.device,
+        )
+        # Host readback: whether the round launches the long-row kernels, and with how many
+        # blocks, is the host's to decide when it records or issues the round.
+        listed = min(int(read_scalar(self.count, 0)), self.rows.size)
+        self.blocks = min(listed, _LONG_ROW_BLOCKS)
+        return self.active != was_active
 
 
 def _head_ints(head: npt.NDArray[np.float64]) -> npt.NDArray[np.int32]:
@@ -5106,6 +5199,8 @@ class _ChebyshevApply:
             views = [_launch.zeros(0, dtype=wp.float64, device=device) for _ in range(n_spare + 1)]
         self._spare = views[:n_spare]
         self._work = views[n_spare]
+        # The CG state's long-row list, set by the state when this polynomial steps its matrix.
+        self.long_rows: _LongRows | None = None
 
     def serial_operands(
         self,
@@ -5177,6 +5272,8 @@ class _ChebyshevApply:
             if rows_kernel is None
             else (rows_kernel, self._n, [])
         )
+        long_rows = self.long_rows if self.long_rows is not None and self.long_rows.active else None
+        skip_long = wp.int32(0 if long_rows is None else 1)
         for index in range(n_steps):
             if index == last:
                 target = destination
@@ -5190,6 +5287,7 @@ class _ChebyshevApply:
                 inputs=[
                     *leading,
                     wp.int32(self._stride),
+                    skip_long,
                     steps,
                     wp.int32(index),
                     factor.offsets,
@@ -5204,6 +5302,30 @@ class _ChebyshevApply:
                 outputs=[target],
                 device=self._device,
             )
+            if long_rows is not None:
+                _launch.launch_tiled(
+                    kernel_mg.chebyshev_long_rows,
+                    dim=(self._n_columns, long_rows.blocks),
+                    inputs=[
+                        wp.int32(self._stride),
+                        wp.int32(long_rows.blocks),
+                        long_rows.rows,
+                        long_rows.count,
+                        steps,
+                        wp.int32(index),
+                        factor.offsets,
+                        factor.columns,
+                        factor.values,
+                        wp.int32(0 if row_scale is None else 1),
+                        row_scale,
+                        source,
+                        current,
+                        previous,
+                    ],
+                    outputs=[target],
+                    block_dim=_LONG_ROW_LANES,
+                    device=self._device,
+                )
             previous, current = current, target
 
 

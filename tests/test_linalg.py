@@ -606,6 +606,40 @@ def test_solve_spd_columns_across_the_reduction_tile_boundary(
     )
 
 
+@pytest.mark.parametrize("preconditioner", ["diag", "chebyshev"])
+@pytest.mark.usefixtures("batched_engine")
+def test_solve_spd_columns_with_hub_rows(device: str, preconditioner: str) -> None:
+    """
+    Class A, against ``scipy.sparse.linalg.spsolve``, on a system with two hub rows.
+
+    Every vertex of a 3 000-vertex ring also neighbours two hubs, so the hubs' rows hold 3 000
+    entries, past ``kernels/linalg.CSR_LONG_ROW_ENTRIES``: on CUDA the thread-a-row mat-vec and
+    Chebyshev steps skip them and a block a row sums them (``linalg._LongRows``). A long row that
+    was skipped and never summed, or summed into another row or column, would leave a wrong
+    solution; the CPU device sums every row in its one-launch round and is the same comparison.
+    """
+    n_ring = 3_000
+    ring = np.arange(n_ring)
+    rows = np.concatenate([np.zeros_like(ring), np.ones_like(ring), ring + 2])
+    cols = np.concatenate([ring + 2, ring + 2, (ring + 1) % n_ring + 2])
+    n = n_ring + 2
+    upper = sp.csr_matrix((np.ones(rows.size), (rows, cols)), shape=(n, n))
+    adjacency = sp.csr_matrix(upper + upper.T)
+    degrees = np.asarray(adjacency.sum(axis=1)).ravel()
+    system = sp.csr_matrix(sp.diags(degrees + 0.1) - adjacency)
+    assert np.diff(system.indptr).max() > int(kernel_linalg.CSR_LONG_ROW_ENTRIES)
+    matrix_wp = scipy_to_bsr(system.tocoo(), device)
+    rng = np.random.default_rng(7)
+    rhs_np = rng.standard_normal((3, n))
+    rhs_wp = odt.as_array2d(
+        wp.array(np.ascontiguousarray(rhs_np), dtype=wp.float64, device=device), wp.float64
+    )
+    solution_wp = odt.as_array2d(wp.zeros((3, n), dtype=wp.float64, device=device), wp.float64)
+    od.linalg.solve_spd_columns(matrix_wp, rhs_wp, solution_wp, preconditioner=preconditioner)
+    exact_np = np.stack([spla.spsolve(system.tocsc(), column) for column in rhs_np])
+    assert np.allclose(solution_wp.numpy(), exact_np, rtol=1e-5, atol=1e-5)
+
+
 @pytest.mark.parametrize("check_every", [0, 1])
 def test_solve_spd_columns_solves_no_column(device: str, check_every: int) -> None:
     """

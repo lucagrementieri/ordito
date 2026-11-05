@@ -50,7 +50,13 @@ import warp as wp
 
 from ordito.constants import TILE_1D
 from ordito.kernels.array import csr_key_nonzero, element_priority, inverse_or_one, sqrt_abs
-from ordito.kernels.linalg import csr_row_diagonal, csr_row_dot
+from ordito.kernels.linalg import (
+    csr_block_row_dot,
+    csr_row_diagonal,
+    csr_row_dot,
+    csr_row_long,
+    listed_long_rows,
+)
 from ordito.kernels.reduce import block_chunk, block_sum
 
 wp.set_module_options({"enable_backward": False})
@@ -696,6 +702,7 @@ def chebyshev_row(
 def chebyshev_step(
     n_rows: wp.int32,
     stride: wp.int32,
+    skip_long: wp.int32,
     steps: wp.array[wp.vec4d],
     index: wp.int32,
     offsets: wp.array[wp.int32],
@@ -730,11 +737,50 @@ def chebyshev_step(
     t = wp.int32(wp.tid())
     column = t // n_rows
     row = t % n_rows
+    if skip_long != 0 and csr_row_long(offsets, row):
+        # Stepped by ``chebyshev_long_rows``.
+        return
     base = column * stride
     out_x[base + row] = chebyshev_row(
         row, base, steps[index], offsets, columns, values, row_scaled, row_scale, source, x,
         x_previous,
     )  # fmt: skip
+
+
+# Launched at its own width (``linalg._LONG_ROW_LANES``), so in a module of its own (§12.4).
+@wp.kernel(module="unique")
+def chebyshev_long_rows(
+    stride: wp.int32,
+    launch_blocks: wp.int32,
+    rows: wp.array[wp.int32],
+    count: wp.array[wp.int32],
+    steps: wp.array[wp.vec4d],
+    index: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    row_scaled: wp.int32,
+    row_scale: wp.array[wp.float64],
+    source: wp.array[wp.float64],
+    x: wp.array[wp.float64],
+    x_previous: wp.array[wp.float64],
+    out_x: wp.array[wp.float64],
+) -> None:
+    # ``chebyshev_step`` at the long rows ``linalg.list_long_rows`` listed, which the thread-a-row
+    # steps skip under ``skip_long``: a block a row and column sums the row
+    # (``csr_block_row_dot``), its first lane updates. Launch tiled over
+    # ``(n_columns, launch_blocks)``; the blocks stride the listed rows, so a launch with none
+    # listed returns at once (block uniform). Same aliasing rules.
+    column, blk, lane = wp.tid()
+    step = steps[index]
+    for b in range(blk, listed_long_rows(rows, count), launch_blocks):
+        row = rows[b]
+        slot = column * stride + row
+        ax = csr_block_row_dot(row, column * stride, lane, offsets, columns, values, x)
+        if lane == 0:
+            out_x[slot] = chebyshev_scaled_update(
+                row, slot, step, ax, row_scaled, row_scale, source, x, x_previous
+            )
 
 
 # Row count from which a Chebyshev step over several columns runs one thread a row
@@ -799,6 +845,7 @@ def _chebyshev_step_rows(n_columns: int) -> wp.Kernel:
 
     def _kernel(
         stride: wp.int32,
+        skip_long: wp.int32,
         steps: wp.array[wp.vec4d],
         index: wp.int32,
         offsets: wp.array[wp.int32],
@@ -815,6 +862,8 @@ def _chebyshev_step_rows(n_columns: int) -> wp.Kernel:
         # summed off one walk of it (``csr_row_dots``), so the result is ``chebyshev_step``'s to
         # the bit.
         row = wp.int32(wp.tid())
+        if skip_long != 0 and csr_row_long(offsets, row):
+            return
         ax = row_dots(row, stride, offsets, columns, values, x)
         step = steps[index]
         for column in range(n_columns):
