@@ -98,7 +98,7 @@ def mean_vertex_normals(
     require_same_device(faces=faces, face_normals=face_normals)
     _require_face_rows(faces.size // 3, face_normals=face_normals)
     return _accumulate_and_normalize(
-        n_vertices, faces, kernel_scatter.SCATTER_SUM_VEC, [face_normals, faces.reshape((-1, 3))]
+        n_vertices, faces, kernel_scatter.SCATTER_SUM_VEC, [face_normals, faces]
     )
 
 
@@ -170,7 +170,7 @@ def weighted_vertex_normals(
         n_vertices,
         faces,
         kernel_scatter.SCATTER_WEIGHTED_SUM_VEC,
-        [face_normals, faces.reshape((-1, 3)), face_weights],
+        [face_normals, faces, face_weights],
     )
 
 

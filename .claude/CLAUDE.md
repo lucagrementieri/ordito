@@ -1002,11 +1002,12 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   face terms, the cover's, the Hessian face terms, the `vec3` unit-gradient scatter), and edge
   slots lose everywhere (1.03-1.26x): two consecutive faces rarely share an edge inside a warp.
   A corner scatter reads its three corners off the flat `faces` buffer, never by a loop over an
-  `(n, k)` index view (`index = indices[tid]`, `for j in range(indices.shape[1])`): the view's
-  loop cost the CPU 1.6-2.0x at every size (2026-11-06, `scatter.scatter_sum_exact`, bit-identical
-  sums; CUDA at par). The flat three-corner form also took `discrete_gaussian_curvature`'s angle
-  sums off plain `float64` atomics onto the pooled scatter: 0.10x on `fan_hub`, 0.86-0.90x on
-  dragon to lucy.
+  `(n, k)` index view (`for j in range(indices.shape[1])`): the dynamic trip count, not the view,
+  cost the CPU 1.45-2.1x at every size (2026-11-06; a view read entry by entry ran as fast as the
+  flat form), with bit-identical sums and CUDA at par. Taken by `scatter_sum_exact`,
+  `scatter_sum_scalar`, `scatter_sum_vec` and `scatter_weighted_sum_vec`. The flat form also took
+  `discrete_gaussian_curvature`'s angle sums off plain `float64` atomics onto the pooled scatter:
+  0.10x on `fan_hub`, 0.86-0.90x on dragon to lucy.
 
 ## 15. Benchmark and measurement traps
 
@@ -1036,10 +1037,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   component sums): whether it should test peers (`warp_peer_lanes`) rather than a uniform warp.
   The uniform form was priced on one hot group, components and random groups; the corner sites
   (§14) say to expect a loss wherever the kernel has work of its own.
-- **The `(n, k)` index-view scatters on the CPU** (`kernels/scatter.scatter_sum_scalar`, the
-  off mode of `vertex_defects`; `scatter_sum_vec` / `scatter_weighted_sum_vec`, the normal
-  accumulators): the same view loop `scatter_sum_exact` lost 1.6-2.0x of CPU time to (§14). Not
-  measured at these sites; take the flat three-corner form where it repeats.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

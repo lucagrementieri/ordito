@@ -385,41 +385,6 @@ def add_edge_valence(
     wp.atomic_add(out_valence, hi, 1)
 
 
-@wp.kernel
-def scatter_sum_scalar(
-    values: wp.array2d[wp.Scalar], indices: wp.array2d[wp.int32], out_sum: wp.array[wp.Scalar]
-) -> None:
-    tid = wp.int32(wp.tid())
-    index = indices[tid]
-    for j in range(indices.shape[1]):
-        peer_summed_add(out_sum, index[j], values[tid, j])
-
-
-@wp.kernel
-def scatter_sum_vec(
-    values: wp.array[wp.vec3], indices: wp.array2d[wp.int32], out_sum: wp.array2d[wp.Float]
-) -> None:
-    tid = wp.int32(wp.tid())
-    index = indices[tid]
-    value = values[tid]
-    for j in range(indices.shape[1]):
-        peer_summed_add_vec3(out_sum, index[j], value)
-
-
-@wp.kernel
-def scatter_weighted_sum_vec(
-    values: wp.array[wp.vec3],
-    indices: wp.array2d[wp.int32],
-    weights: wp.array2d[wp.float32],
-    out_sum: wp.array2d[wp.Float],
-) -> None:
-    tid = wp.int32(wp.tid())
-    index = indices[tid]
-    value = values[tid]
-    for j in range(indices.shape[1]):
-        peer_summed_add_vec3(out_sum, index[j], value * weights[tid, j])
-
-
 # A face's three corner values added to the slots ``indices`` names for its corners (vertices, or
 # edges through a halfedge map). ``add_corner_triple`` commits a plain atomic per corner;
 # ``peer_summed_add_corner_triple`` pools a warp's lanes that share a slot (``peer_summed_add``).
@@ -452,6 +417,47 @@ def peer_summed_add_corner_triple(
     peer_summed_add(out_sum, i0, a)
     peer_summed_add(out_sum, i1, b)
     peer_summed_add(out_sum, i2, c)
+
+
+# A per-corner ``(n_faces, 3)`` table, or one value a face, added to its three vertices. The three
+# corners are read off the flat ``faces`` buffer, never by a loop over an ``(n, k)`` index view:
+# that loop's dynamic trip count cost the CPU 2.1x (scalar), 1.6x (vector) and 1.45x (weighted)
+# at every size, where a view read entry by entry did not; CUDA at par (lucy 1.01-1.04x, inside
+# the 1.01-1.07x two identical bodies read there). The corners are added in the order the loop
+# added them, so CPU sums are bit-identical.
+@wp.kernel
+def scatter_sum_scalar(
+    values: wp.array2d[wp.Scalar], faces: wp.array[wp.int32], out_sum: wp.array[wp.Scalar]
+) -> None:
+    f = wp.int32(wp.tid())
+    peer_summed_add_corner_triple(out_sum, faces, f, values[f, 0], values[f, 1], values[f, 2])
+
+
+@wp.kernel
+def scatter_sum_vec(
+    values: wp.array[wp.vec3], faces: wp.array[wp.int32], out_sum: wp.array2d[wp.Float]
+) -> None:
+    f = wp.int32(wp.tid())
+    i0, i1, i2 = corner_triple(faces, f)
+    value = values[f]
+    peer_summed_add_vec3(out_sum, i0, value)
+    peer_summed_add_vec3(out_sum, i1, value)
+    peer_summed_add_vec3(out_sum, i2, value)
+
+
+@wp.kernel
+def scatter_weighted_sum_vec(
+    values: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    weights: wp.array2d[wp.float32],
+    out_sum: wp.array2d[wp.Float],
+) -> None:
+    f = wp.int32(wp.tid())
+    i0, i1, i2 = corner_triple(faces, f)
+    value = values[f]
+    peer_summed_add_vec3(out_sum, i0, value * weights[f, 0])
+    peer_summed_add_vec3(out_sum, i1, value * weights[f, 1])
+    peer_summed_add_vec3(out_sum, i2, value * weights[f, 2])
 
 
 @wp.func
@@ -1082,19 +1088,19 @@ def _register_overloads() -> None:
     )
     SCATTER_SUM_SCALAR = OverloadTable(
         scatter_sum_scalar,
-        {d: [wp.array2d[d], wp.array2d[wp.int32], wp.array[d]] for d in _VALUE_DTYPES},
+        {d: [wp.array2d[d], wp.array[wp.int32], wp.array[d]] for d in _VALUE_DTYPES},
     )
     SCATTER_SUM_VEC = OverloadTable(
         scatter_sum_vec,
         {
-            d: [wp.array[wp.vec3], wp.array2d[wp.int32], wp.array2d[d]]
+            d: [wp.array[wp.vec3], wp.array[wp.int32], wp.array2d[d]]
             for d in _VECTOR_ACCUMULATOR_DTYPES
         },
     )
     SCATTER_WEIGHTED_SUM_VEC = OverloadTable(
         scatter_weighted_sum_vec,
         {
-            d: [wp.array[wp.vec3], wp.array2d[wp.int32], wp.array2d[wp.float32], wp.array2d[d]]
+            d: [wp.array[wp.vec3], wp.array[wp.int32], wp.array2d[wp.float32], wp.array2d[d]]
             for d in _VECTOR_ACCUMULATOR_DTYPES
         },
     )

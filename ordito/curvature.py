@@ -525,7 +525,7 @@ def vertex_defects(
         _launch.launch(
             kernel_scatter.SCATTER_SUM_SCALAR[face_angles.dtype],
             dim=n_faces,
-            inputs=[face_angles, faces.reshape((-1, 3)), angle_sum],
+            inputs=[face_angles, faces, angle_sum],
             device=faces.device,
         )
         # In place over the accumulator: ``angle_sum`` is scratch, and the operator spelling
