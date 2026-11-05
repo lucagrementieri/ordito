@@ -823,9 +823,9 @@ class MinQuadWithFixedData:
         rhs = odt.as_array2d(
             _launch.empty((n_rhs, self.n_free), dtype=wp.float64, device=device), wp.float64
         )
-        _launch.launch(
+        _launch.launch_tiled(
             kernel_linalg.interior_row_counts,
-            dim=self.fixed_mask.size,
+            dim=_interior_row_blocks(self.fixed_mask.size),
             inputs=[
                 self.q.offsets,
                 self.q.columns,
@@ -838,6 +838,7 @@ class MinQuadWithFixedData:
                 counts,
                 rhs,
             ],
+            block_dim=int(kernel_linalg.INTERIOR_ROWS_PER_BLOCK),
             device=device,
         )
         self._solve_formed(rhs, solution, tol, check_every, preconditioner)
@@ -1114,9 +1115,9 @@ def assemble_interior_system(
         else _launch.empty(0, dtype=wp.int32, device=device)
     )
     rhs = _launch.empty((n_rhs, n_free), dtype=wp.float64, device=device)
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_linalg.interior_row_counts,
-        dim=n_dofs,
+        dim=_interior_row_blocks(n_dofs),
         inputs=[
             q.offsets,
             q.columns,
@@ -1129,6 +1130,7 @@ def assemble_interior_system(
             counts,
             rhs,
         ],
+        block_dim=int(kernel_linalg.INTERIOR_ROWS_PER_BLOCK),
         device=device,
     )
     # The total-terminated form *is* the CSR offsets array, and the one host read it costs is what
@@ -1138,9 +1140,9 @@ def assemble_interior_system(
         nnz_uu = scan_count(counts)
     columns = _launch.empty(nnz_uu, dtype=wp.int32, device=device)
     values = _launch.empty(nnz_uu, dtype=wp.float64, device=device)
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_linalg.interior_system_csr,
-        dim=n_dofs,
+        dim=_interior_row_blocks(n_dofs),
         inputs=[
             q.offsets,
             q.columns,
@@ -1152,6 +1154,7 @@ def assemble_interior_system(
             columns,
             values,
         ],
+        block_dim=int(kernel_linalg.INTERIOR_ROWS_PER_BLOCK),
         device=device,
     )
     # Hand the finished CSR to a compact ``BsrMatrix`` directly (``_bsr_over``).
@@ -1250,11 +1253,12 @@ def partitioned_interior_system(
         )
         return q_uu, rhs, free_map, n_free
     ranks = _launch.empty(n_dofs + 1, dtype=wp.vec2i, device=device)
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_linalg.interior_partition_counts,
-        dim=n_dofs,
+        dim=_interior_row_blocks(n_dofs),
         inputs=[q.offsets, q.columns, fixed_mask],
         outputs=[ranks],
+        block_dim=int(kernel_linalg.INTERIOR_ROWS_PER_BLOCK),
         device=device,
     )
     _launch.array_scan(ranks, ranks, inclusive=True)
@@ -1265,12 +1269,13 @@ def partitioned_interior_system(
     free_map, row_offsets, columns = _launch.carve(wp.int32, (n_dofs, n_free + 1, nnz_uu), device)
     values, rhs_entries = _launch.carve(wp.float64, (nnz_uu, n_rhs * n_free), device)
     rhs = rhs_entries.reshape((n_rhs, n_free))
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_linalg.interior_partition_system,
-        dim=n_dofs,
+        dim=_interior_row_blocks(n_dofs),
         inputs=[q.offsets, q.columns, q.values, fixed_mask, ranks, fixed_values,
                 wp.float64(scale), load],
         outputs=[free_map, row_offsets, columns, values, rhs],
+        block_dim=int(kernel_linalg.INTERIOR_ROWS_PER_BLOCK),
         device=device,
     )  # fmt: skip
     q_uu = _bsr_over(n_free, n_free, row_offsets, columns, values, nnz_uu)
@@ -1926,14 +1931,15 @@ def _verdict(
     n_columns, n = int(rhs.shape[0]), int(rhs.shape[1])
     flag = factorization._flag = _StampedFlag.reused(factorization._flag, device)  # pyright: ignore[reportPrivateUsage]
     on_device = isinstance(residual, wp.array)
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_linalg.backward_error_exceeds,
-        dim=(n, n_columns),
+        dim=(_backward_error_blocks(n), n_columns),
         inputs=[matrix.offsets, matrix.columns, matrix.values, solution.flatten(), rhs.flatten(),
                 wp.int32(n), wp.float64(max(VERIFIED_BACKWARD_ERROR, 100.0 * tol)),
                 residual if on_device else None, threshold if on_device else None,
                 wp.int32(flag.base)],
         outputs=[flag.word],
+        block_dim=int(kernel_linalg.BACKWARD_ERROR_ROWS),
         device=device,
     )  # fmt: skip
     return flag.verdict()
@@ -2534,13 +2540,14 @@ def solve_spd_settled(
     # direct factorization -- which reaches every entry with its own relative precision -- takes
     # over. One four-byte read: the decision to factor is the host's.
     flag = solver.flag = _StampedFlag.reused(solver.flag, rhs.device)
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_linalg.backward_error_exceeds,
-        dim=(int(scalar.nrow), n_columns),
+        dim=(_backward_error_blocks(int(scalar.nrow)), n_columns),
         inputs=[scalar.offsets, scalar.columns, scalar.values, solution_flat, rhs_flat,
                 wp.int32(int(scalar.nrow)), wp.float64(SETTLE_BACKWARD_ERROR), None, None,
                 wp.int32(flag.base)],
         outputs=[flag.word],
+        block_dim=int(kernel_linalg.BACKWARD_ERROR_ROWS),
         device=rhs.device,
     )  # fmt: skip
     if flag.verdict() == 0:
@@ -3448,11 +3455,12 @@ class _BatchedCg:
         self._scaled = self._u
         if self._cycle is None:
             self._inv_diag = _launch.empty(self._n, dtype=dtype, device=device)
-            _launch.launch(
+            _launch.launch_tiled(
                 kernel_linalg.JACOBI_INVERSE_DIAGONAL[dtype],
-                dim=self._n,
+                dim=_interior_row_blocks(self._n),
                 inputs=[matrix.offsets, matrix.columns, matrix.values],
                 outputs=[self._inv_diag],
+                block_dim=int(kernel_linalg.INTERIOR_ROWS_PER_BLOCK),
                 device=device,
             )
         elif isinstance(self._cycle, _JacobiChebyshevApply):
@@ -3511,10 +3519,9 @@ class _BatchedCg:
 
         One launch (``kernels/linalg.refresh_pooled_operator``) copies the pattern and the values
         and rewrites what construction derived from them -- the narrowed values, the Jacobi
-        inverse diagonal -- and, under the Jacobi-Chebyshev polynomial
-        (``refresh_pooled_operator_bound``), the largest Gershgorin ratio its interval is refitted
-        to on the device. A squared-Laplacian ``preconditioner`` is the
-        caller's own, so its arrays are copied into the state's copy of it. The recorded graph
+        inverse diagonal -- and, under the Jacobi-Chebyshev polynomial, the largest Gershgorin
+        ratio its interval is refitted to on the device. A squared-Laplacian ``preconditioner`` is
+        the caller's own, so its arrays are copied into the state's copy of it. The recorded graph
         reads these same arrays, so the state then solves ``matrix`` with no new recording. Only for
         a state built with ``own_storage``, whose operator and preconditioner have these shapes.
         """
@@ -3526,41 +3533,10 @@ class _BatchedCg:
             # and the refit reads it from there.
             owner = self._cycle.owner
             if self._n > 0:
-                _launch.launch_tiled(
-                    kernel_linalg.refresh_pooled_operator_bound,
-                    dim=[kernel_reduce.blocks_1d(self._n)],
-                    inputs=[
-                        matrix.offsets,
-                        matrix.columns,
-                        matrix.values,
-                        wp.int32(0 if narrowed is None else 1),
-                    ],
-                    outputs=[
-                        owned.offsets,
-                        owned.columns,
-                        owned.values,
-                        narrowed,
-                        self._inv_diag,
-                        owner.bound,
-                    ],
-                    block_dim=TILE_1D,
-                    device=self._device,
-                )
+                self._refresh_operator(matrix, narrowed, 2, owner.bound)
             owner.refit()
         elif self._n > 0:
-            _launch.launch(
-                kernel_linalg.refresh_pooled_operator,
-                dim=self._n,
-                inputs=[
-                    matrix.offsets,
-                    matrix.columns,
-                    matrix.values,
-                    wp.int32(0 if narrowed is None else 1),
-                    wp.int32(0 if self._inv_diag is None else 1),
-                ],
-                outputs=[owned.offsets, owned.columns, owned.values, narrowed, self._inv_diag],
-                device=self._device,
-            )
+            self._refresh_operator(matrix, narrowed, 0 if self._inv_diag is None else 1, None)
         if isinstance(preconditioner, SquaredLaplacianPreconditioner):
             assert isinstance(self._cycle, _SquaredLaplacianApply)
             self._cycle.owner._assign(preconditioner)  # pyright: ignore[reportPrivateUsage]
@@ -3570,6 +3546,34 @@ class _BatchedCg:
             self._graph = None
         if self._list_cycle_long_rows():
             self._graph = None
+
+    def _refresh_operator(
+        self,
+        matrix: odt.CsrMatrix,
+        narrowed: object,
+        derive: int,
+        bound: wp.array[wp.float64] | None,
+    ) -> None:
+        """Issue ``refresh``'s one launch: copy ``matrix`` in and re-derive, the bound if given."""
+        owned = self._matrix
+        # The bound's commit is one atomic a block, so its rows take the fold width; the plain copy
+        # takes a row a lane.
+        width = int(kernel_reduce.ITEMS_PER_BLOCK_1D) if bound is not None else int(TILE_1D)
+        _launch.launch_tiled(
+            kernel_linalg.refresh_pooled_operator,
+            dim=[(self._n + width - 1) // width],
+            inputs=[
+                matrix.offsets,
+                matrix.columns,
+                matrix.values,
+                wp.int32(0 if narrowed is None else 1),
+                wp.int32(derive),
+                wp.int32(width),
+            ],
+            outputs=[owned.offsets, owned.columns, owned.values, narrowed, self._inv_diag, bound],
+            block_dim=TILE_1D,
+            device=self._device,
+        )
 
     def _list_cycle_long_rows(self) -> bool:
         """
@@ -7166,3 +7170,15 @@ def _bsr_over(
     matrix.row_counts = row_counts
     matrix.notify_nnz_changed(nnz=nnz)
     return matrix
+
+
+def _backward_error_blocks(n: int) -> int:
+    """Row blocks ``kernels/linalg.backward_error_exceeds`` is launched over, for ``n`` rows."""
+    rows = int(kernel_linalg.BACKWARD_ERROR_ROWS)
+    return (n + rows - 1) // rows
+
+
+def _interior_row_blocks(n: int) -> int:
+    """Row blocks the free-free extraction's kernels are launched over, for ``n`` rows."""
+    rows = int(kernel_linalg.INTERIOR_ROWS_PER_BLOCK)
+    return (n + rows - 1) // rows

@@ -35,7 +35,7 @@ from warp._src.types import array as array_type
 from warp._src.types import type_is_generic
 
 from ordito.kernels.array import OverloadTable, inverse_or_one
-from ordito.kernels.reduce import block_chunk_1d, block_max, block_sum, thread_fence
+from ordito.kernels.reduce import block_chunk, block_chunk_1d, block_max, block_sum, thread_fence
 
 wp.set_module_options({"enable_backward": False})
 
@@ -175,31 +175,107 @@ def interior_rhs_row(
         out_rhs[c, ri] = acc
 
 
-@wp.kernel
-def interior_row_counts(
+# Rows a block of the free-free extraction's kernels holds, a row a lane on CUDA.
+INTERIOR_ROWS_PER_BLOCK = 256
+
+
+@wp.func
+def interior_kept_block(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    fixed_mask: wp.array[wp.bool],
+    i: wp.int32,
+    lane: wp.int32,
+) -> wp.int32:
+    # ``interior_kept`` by a whole block, its lanes striding the row (every lane must call it).
+    kept = wp.int32(0)
+    for e in range(offsets[i] + lane, offsets[i + 1], wp.block_dim()):
+        if not fixed_mask[columns[e]]:
+            kept += 1
+    return block_sum(kept)
+
+
+@wp.func
+def interior_rhs_row_block(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float64],
     fixed_mask: wp.array[wp.bool],
-    free_map: wp.array[wp.int32],
     fixed_values: wp.array2d[wp.float64],
     scale: wp.float64,
     load: wp.array2d[wp.float64],
+    i: wp.int32,
+    ri: wp.int32,
+    lane: wp.int32,
+    out_rhs: wp.array2d[wp.float64],
+) -> None:
+    # ``interior_rhs_row`` by a whole block, its lanes striding the row and the block summing the
+    # pinned columns in a fixed tree, lane 0 writing (every lane must call it).
+    for c in range(out_rhs.shape[0]):
+        acc = wp.float64(0.0)
+        if c < fixed_values.shape[0]:
+            for e in range(offsets[i] + lane, offsets[i + 1], wp.block_dim()):
+                j = columns[e]
+                if fixed_mask[j]:
+                    acc -= scale * values[e] * fixed_values[c, j]
+        acc = block_sum(acc)
+        if lane == 0:
+            seed = wp.float64(0.0)
+            if c < load.shape[0]:
+                seed = load[c, i]
+            out_rhs[c, ri] = seed + acc
+
+
+@wp.func
+def emit_interior_row_block(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    fixed_mask: wp.array[wp.bool],
+    scale: wp.float64,
+    i: wp.int32,
+    slot: wp.int32,
+    rank_table: wp.array[Any],
+    rank_of: wp.Function,
+    lane: wp.int32,
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+):
+    # ``emit_interior_row`` by a whole block (every lane must call it): the row a chunk of
+    # ``block_dim`` entries at a time, each kept entry's slot its rank among the chunk's kept
+    # entries (an exclusive scan) past those of the chunks before, so the row keeps its order.
+    lanes = wp.block_dim()
+    end = offsets[i + 1]
+    for chunk in range(offsets[i], end, lanes):
+        e = chunk + lane
+        kept = wp.int32(0)
+        if e < end:
+            if not fixed_mask[columns[e]]:
+                kept = 1
+        before = wp.untile(wp.tile_scan_exclusive(wp.tile(kept)))
+        if kept != 0:
+            out_columns[slot + before] = rank_of(rank_table, columns[e])
+            out_values[slot + before] = scale * values[e]
+        slot += block_sum(kept)
+
+
+@wp.func
+def interior_row_count_and_rhs(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    fixed_mask: wp.array[wp.bool],
+    fixed_values: wp.array2d[wp.float64],
+    scale: wp.float64,
+    load: wp.array2d[wp.float64],
+    i: wp.int32,
+    ri: wp.int32,
     out_counts: wp.array[wp.int32],
     out_rhs: wp.array2d[wp.float64],
 ) -> None:
-    # Pass 1 of the free-free extraction: one thread per row ``i`` of the operator ``Q`` (positive
-    # semi-definite), counting the entries of that row whose column also survives. The right-hand
-    # side rides along in the same launch because it needs the identical row scan and depends on
-    # nothing this pass produces: fixed-column contributions move to the right-hand side as
-    # ``Q_uu x_u = -Q_ub bc``, generalized to ``n_rhs`` columns (``fixed_values`` is
-    # ``(n_rhs, n_dofs)``, ``out_rhs`` is ``(n_rhs, n_free)``). Assembled in float64: the biharmonic
-    # (k > 1) operator squares the Laplacian condition number, beyond float32 CG's reach; LSCM's
-    # coupled u/v system is likewise ill-conditioned.
-    i = wp.int32(wp.tid())
-    ri = free_row(fixed_mask, free_map, i)
-    if ri < 0:
-        return
+    # Free row ``i``'s (compact row ``ri``) count and right-hand side in ``interior_row_counts``,
+    # by one lane.
+    #
     # A free row every one of whose columns is pinned counts 0 and becomes an *empty* CSR row, not a
     # dropped one -- the scan of these counts is what keeps the row offsets in step.
     out_counts[ri] = interior_kept(offsets, columns, fixed_mask, i)
@@ -224,6 +300,63 @@ def interior_row_counts(
     interior_rhs_row(
         offsets, columns, values, fixed_mask, fixed_values, scale, load, i, ri, out_rhs
     )
+
+
+@wp.kernel
+def interior_row_counts(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    fixed_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    fixed_values: wp.array2d[wp.float64],
+    scale: wp.float64,
+    load: wp.array2d[wp.float64],
+    out_counts: wp.array[wp.int32],
+    out_rhs: wp.array2d[wp.float64],
+) -> None:
+    # Pass 1 of the free-free extraction: one thread per row ``i`` of the operator ``Q`` (positive
+    # semi-definite), counting the entries of that row whose column also survives. The right-hand
+    # side rides along in the same launch because it needs the identical row scan and depends on
+    # nothing this pass produces: fixed-column contributions move to the right-hand side as
+    # ``Q_uu x_u = -Q_ub bc``, generalized to ``n_rhs`` columns (``fixed_values`` is
+    # ``(n_rhs, n_dofs)``, ``out_rhs`` is ``(n_rhs, n_free)``). Assembled in float64: the biharmonic
+    # (k > 1) operator squares the Laplacian condition number, beyond float32 CG's reach; LSCM's
+    # coupled u/v system is likewise ill-conditioned.
+    #
+    # Launch tiled over ``INTERIOR_ROWS_PER_BLOCK`` rows a block: a lane takes its rows in order; a
+    # long row (``csr_row_long``) is left to the whole block after, so a block without one pays
+    # one reduction.
+    blk, lane = wp.tid()
+    first, rows = block_chunk(fixed_mask.shape[0], blk, INTERIOR_ROWS_PER_BLOCK)
+    if rows <= 0:
+        return
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        ri = free_row(fixed_mask, free_map, i)
+        if ri < 0:
+            continue
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
+        interior_row_count_and_rhs(
+            offsets, columns, values, fixed_mask, fixed_values, scale, load, i, ri, out_counts,
+            out_rhs,
+        )  # fmt: skip
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = first + r
+        ri = free_row(fixed_mask, free_map, i)
+        if ri >= 0 and csr_row_long(offsets, i):
+            kept = interior_kept_block(offsets, columns, fixed_mask, i, lane)
+            if lane == 0:
+                out_counts[ri] = kept
+            interior_rhs_row_block(
+                offsets, columns, values, fixed_mask, fixed_values, scale, load, i, ri, lane,
+                out_rhs,
+            )  # fmt: skip
 
 
 @wp.func
@@ -281,23 +414,37 @@ def interior_system_csr(
     # destination range is exactly the right size and no two threads overlap. Column order is
     # inherited from ``Q``'s row and ``free_map`` is monotone non-decreasing, so the emitted row is
     # column-sorted by construction -- which is the whole reason this can skip a triplet sort.
-    i = wp.int32(wp.tid())
-    ri = free_row(fixed_mask, free_map, i)
-    if ri < 0:
+    #
+    # Launch tiled over ``INTERIOR_ROWS_PER_BLOCK`` rows a block: a lane takes its rows in order; a
+    # long row (``csr_row_long``) is left to the whole block after, so a block without one pays
+    # one reduction.
+    blk, lane = wp.tid()
+    first, rows = block_chunk(fixed_mask.shape[0], blk, INTERIOR_ROWS_PER_BLOCK)
+    if rows <= 0:
         return
-    emit_interior_row(
-        offsets,
-        columns,
-        values,
-        fixed_mask,
-        scale,
-        i,
-        row_offsets[ri],
-        free_map,
-        mapped_rank,
-        out_columns,
-        out_values,
-    )
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        ri = free_row(fixed_mask, free_map, i)
+        if ri < 0:
+            continue
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
+        emit_interior_row(
+            offsets, columns, values, fixed_mask, scale, i, row_offsets[ri], free_map,
+            mapped_rank, out_columns, out_values,
+        )  # fmt: skip
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = first + r
+        ri = free_row(fixed_mask, free_map, i)
+        if ri >= 0 and csr_row_long(offsets, i):
+            emit_interior_row_block(
+                offsets, columns, values, fixed_mask, scale, i, row_offsets[ri], free_map,
+                mapped_rank, lane, out_columns, out_values,
+            )  # fmt: skip
 
 
 @wp.kernel
@@ -311,13 +458,33 @@ def interior_partition_counts(
     # ``i``'s ``(free, kept entries)`` at ``i + 1`` of an ``n + 1`` buffer, ``(0, 0)`` for a pinned
     # row, and the leading zero by thread 0, so one inclusive scan of it holds every row's free
     # rank and output offset at once, and its last element both totals for one read.
-    i = wp.int32(wp.tid())
-    if i == 0:
-        out_ranks[0] = wp.vec2i(0, 0)
-    if fixed_mask[i]:
-        out_ranks[i + 1] = wp.vec2i(0, 0)
-    else:
-        out_ranks[i + 1] = wp.vec2i(1, interior_kept(offsets, columns, fixed_mask, i))
+    #
+    # Launch tiled over ``INTERIOR_ROWS_PER_BLOCK`` rows a block: a lane takes its rows in order; a
+    # long row (``csr_row_long``) is left to the whole block after, so a block without one pays
+    # one reduction.
+    blk, lane = wp.tid()
+    first, rows = block_chunk(fixed_mask.shape[0], blk, INTERIOR_ROWS_PER_BLOCK)
+    if rows <= 0:
+        return
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        if i == 0:
+            out_ranks[0] = wp.vec2i(0, 0)
+        if fixed_mask[i]:
+            out_ranks[i + 1] = wp.vec2i(0, 0)
+        elif csr_row_long(offsets, i):
+            found = 1
+        else:
+            out_ranks[i + 1] = wp.vec2i(1, interior_kept(offsets, columns, fixed_mask, i))
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = first + r
+        if not fixed_mask[i] and csr_row_long(offsets, i):
+            kept = interior_kept_block(offsets, columns, fixed_mask, i, lane)
+            if lane == 0:
+                out_ranks[i + 1] = wp.vec2i(1, kept)
 
 
 @wp.kernel
@@ -342,31 +509,48 @@ def interior_partition_system(
     # and its right-hand-side column (``interior_rhs_row``). ``interior_system_csr`` emits the same
     # entries from a map it is handed; the two differ only in where a column's rank comes from
     # (``emit_interior_row``'s ``rank_of``).
-    i = wp.int32(wp.tid())
+    #
+    # Launch tiled over ``INTERIOR_ROWS_PER_BLOCK`` rows a block: a lane takes its rows in order; a
+    # long row (``csr_row_long``) is left to the whole block after, so a block without one pays
+    # one reduction.
+    blk, lane = wp.tid()
     n = fixed_mask.shape[0]
-    rank = ranks[i][0]
-    out_free_map[i] = rank
-    if i == 0:
-        out_row_offsets[ranks[n][0]] = ranks[n][1]
-    if fixed_mask[i]:
+    first, rows = block_chunk(n, blk, INTERIOR_ROWS_PER_BLOCK)
+    if rows <= 0:
         return
-    out_row_offsets[rank] = ranks[i][1]
-    emit_interior_row(
-        offsets,
-        columns,
-        values,
-        fixed_mask,
-        scale,
-        i,
-        ranks[i][1],
-        ranks,
-        scanned_rank,
-        out_columns,
-        out_values,
-    )
-    interior_rhs_row(
-        offsets, columns, values, fixed_mask, fixed_values, scale, load, i, rank, out_rhs
-    )
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        rank = ranks[i][0]
+        out_free_map[i] = rank
+        if i == 0:
+            out_row_offsets[ranks[n][0]] = ranks[n][1]
+        if fixed_mask[i]:
+            continue
+        out_row_offsets[rank] = ranks[i][1]
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
+        emit_interior_row(
+            offsets, columns, values, fixed_mask, scale, i, ranks[i][1], ranks, scanned_rank,
+            out_columns, out_values,
+        )  # fmt: skip
+        interior_rhs_row(
+            offsets, columns, values, fixed_mask, fixed_values, scale, load, i, rank, out_rhs
+        )
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = first + r
+        if not fixed_mask[i] and csr_row_long(offsets, i):
+            emit_interior_row_block(
+                offsets, columns, values, fixed_mask, scale, i, ranks[i][1], ranks, scanned_rank,
+                lane, out_columns, out_values,
+            )  # fmt: skip
+            interior_rhs_row_block(
+                offsets, columns, values, fixed_mask, fixed_values, scale, load, i, ranks[i][0],
+                lane, out_rhs,
+            )  # fmt: skip
 
 
 @wp.kernel
@@ -626,6 +810,28 @@ def jacobi_row(
     return inverse_or_one(diagonal), dominance_ratio(diagonal, off_sum)
 
 
+@wp.func
+def jacobi_row_block(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.Float],
+    i: wp.int32,
+    lane: wp.int32,
+) -> tuple[wp.Float, wp.Float]:
+    # ``jacobi_row`` by a whole block, its lanes striding the row and the block summing the
+    # diagonal and the off-diagonal magnitudes in a fixed tree (every lane must call it).
+    diagonal = values.dtype(0.0)
+    off_sum = values.dtype(0.0)
+    for e in range(offsets[i] + lane, offsets[i + 1], wp.block_dim()):
+        if columns[e] == i:
+            diagonal += values[e]
+        else:
+            off_sum += wp.abs(values[e])
+    diagonal = block_sum(diagonal)
+    off_sum = block_sum(off_sum)
+    return inverse_or_one(diagonal), dominance_ratio(diagonal, off_sum)
+
+
 @wp.kernel
 def jacobi_dominance_bound(
     offsets: wp.array[wp.int32],
@@ -658,17 +864,33 @@ def jacobi_dominance_bound(
     # rejected every such row as "zero or negative" and reduced to a flat **0.000** -- a number
     # that reads like a well-conditioned operator and silently declines the gate. Caught on
     # ``min_quad_with_fixed`` driven with a raw ``cotmatrix``.
+    #
+    # A long row (``csr_row_long``, a fan's hub) is left to the whole block after the lanes' pass
+    # (``jacobi_row_block``), so a block without one pays one reduction.
     block, lane = wp.tid()
     base, count = block_chunk_1d(offsets.shape[0] - 1, block)
     if count <= 0:
         return
     local = wp.float64(-1.0e308)
+    found = wp.int32(0)
     for k in range(lane, count, wp.block_dim()):
         i = base + k
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
         inverse, ratio = jacobi_row(offsets, columns, values, i)
         if write_inverse != 0:
             out_inverse_diagonal[i] = inverse
         local = wp.max(local, ratio)
+    if block_sum(found) != 0:
+        for k in range(count):
+            i = base + k
+            if csr_row_long(offsets, i):
+                inverse, ratio = jacobi_row_block(offsets, columns, values, i, lane)
+                if lane == 0:
+                    if write_inverse != 0:
+                        out_inverse_diagonal[i] = inverse
+                    local = wp.max(local, ratio)
     bound = block_max(local)
     if lane == 0:
         wp.atomic_max(out_bound, 0, bound)
@@ -683,51 +905,77 @@ def jacobi_inverse_diagonal(
 ) -> None:
     # The Jacobi inverse diagonal of a scalar CSR operator in one launch, where
     # ``wps.bsr_get_diag`` followed by a ``wp.map`` of ``array.inverse_or_one`` is two and an
-    # intermediate buffer. The row's ratio is dead code here and compiles away.
-    i = wp.int32(wp.tid())
-    inverse, _ratio = jacobi_row(offsets, columns, values, i)
-    out_inverse_diagonal[i] = inverse
+    # intermediate buffer. The row's ratio is dead code here and compiles away. Launch tiled over
+    # ``INTERIOR_ROWS_PER_BLOCK`` rows a block; a long row (``csr_row_long``) is left to the whole
+    # block after (``jacobi_row_block``), so a block without one pays one reduction.
+    blk, lane = wp.tid()
+    first, rows = block_chunk(offsets.shape[0] - 1, blk, INTERIOR_ROWS_PER_BLOCK)
+    if rows <= 0:
+        return
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = first + r
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
+        inverse, _ratio = jacobi_row(offsets, columns, values, i)
+        out_inverse_diagonal[i] = inverse
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = first + r
+        if csr_row_long(offsets, i):
+            inverse, _ratio = jacobi_row_block(offsets, columns, values, i, lane)
+            if lane == 0:
+                out_inverse_diagonal[i] = inverse
+
+
+@wp.func
+def refresh_pooled_entries(
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    narrow: wp.int32,
+    i: wp.int32,
+    start: wp.int32,
+    end: wp.int32,
+    step: wp.int32,
+    out_columns: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+    out_narrowed: wp.array[wp.float32],
+) -> wp.vec2d:
+    # Entries ``start``, ``start + step``, ... below ``end`` of row ``i`` of a pooled
+    # conjugate-gradient state's refresh (``linalg._cached_solver``): copied into the state's own
+    # storage, with the ``float32`` copy the rounds read (``narrow``). Returns their share of the
+    # row's diagonal and ``sum_{j != i} |A_ij|`` (``csr_row_diagonal``), for ``refresh_pooled_row``.
+    sums = wp.vec2d()
+    for e in range(start, end, step):
+        value = values[e]
+        column = columns[e]
+        out_columns[e] = column
+        out_values[e] = value
+        if narrow != 0:
+            out_narrowed[e] = wp.float32(value)
+        if column == i:
+            sums[0] = sums[0] + value
+        else:
+            sums[1] = sums[1] + wp.abs(value)
+    return sums
 
 
 @wp.func
 def refresh_pooled_row(
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    values: wp.array[wp.float64],
-    narrow: wp.int32,
-    derive: wp.int32,
-    i: wp.int32,
-    out_offsets: wp.array[wp.int32],
-    out_columns: wp.array[wp.int32],
-    out_values: wp.array[wp.float64],
-    out_narrowed: wp.array[wp.float32],
-    out_inverse_diagonal: wp.array[wp.float64],
+    derive: wp.int32, i: wp.int32, sums: wp.vec2d, out_inverse_diagonal: wp.array[wp.float64]
 ) -> wp.float64:
-    # Row ``i`` of a pooled conjugate-gradient state's refresh (``linalg._cached_solver``): copy the
-    # scalar CSR row into the state's own storage and re-derive, from the same walk, what the state
-    # derived from its operator when it was built -- the ``float32`` copy of the values the rounds
-    # read (``narrow``) and the Jacobi inverse diagonal (``derive >= 1``). Returns the row's
-    # Gershgorin ratio, which the Jacobi-Chebyshev interval is refitted to (``derive == 2``; ``0``
-    # otherwise). Each is the same arithmetic as the kernel that built it
+    # Row ``i``'s refresh from its whole sums (``refresh_pooled_entries``): what the state derived
+    # from its operator when it was built -- the Jacobi inverse diagonal (``derive >= 1``) -- and
+    # the row's Gershgorin ratio, which the Jacobi-Chebyshev interval is refitted to
+    # (``derive == 2``; ``0`` otherwise). Each is the arithmetic of the kernel that built it
     # (``jacobi_inverse_diagonal`` / ``jacobi_dominance_bound``), so a refreshed state holds what a
-    # new one would. The arrays a flag leaves off may be ``None``. The last row also writes the
-    # terminating offset.
-    start = offsets[i]
-    end = offsets[i + 1]
-    out_offsets[i] = start
-    if i == out_offsets.shape[0] - 2:
-        out_offsets[i + 1] = end
-    for e in range(start, end):
-        value = values[e]
-        out_columns[e] = columns[e]
-        out_values[e] = value
-        if narrow != 0:
-            out_narrowed[e] = wp.float32(value)
+    # new one would.
     ratio = wp.float64(0.0)
     if derive != 0:
-        inverse, row_ratio = jacobi_row(offsets, columns, values, i)
-        out_inverse_diagonal[i] = inverse
-        ratio = row_ratio
+        out_inverse_diagonal[i] = inverse_or_one(sums[0])
+        ratio = dominance_ratio(sums[0], sums[1])
     return ratio
 
 
@@ -738,28 +986,7 @@ def refresh_pooled_operator(
     values: wp.array[wp.float64],
     narrow: wp.int32,
     derive: wp.int32,
-    out_offsets: wp.array[wp.int32],
-    out_columns: wp.array[wp.int32],
-    out_values: wp.array[wp.float64],
-    out_narrowed: wp.array[wp.float32],
-    out_inverse_diagonal: wp.array[wp.float64],
-) -> None:
-    # One thread per row of a pooled state's refresh (``refresh_pooled_row``), for a state with no
-    # interval to refit. ``refresh_pooled_operator_bound`` is the same rows under the
-    # Jacobi-Chebyshev polynomial, reducing their ratios as it goes.
-    i = wp.int32(wp.tid())
-    refresh_pooled_row(
-        offsets, columns, values, narrow, derive, i,
-        out_offsets, out_columns, out_values, out_narrowed, out_inverse_diagonal,
-    )  # fmt: skip
-
-
-@wp.kernel
-def refresh_pooled_operator_bound(
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    values: wp.array[wp.float64],
-    narrow: wp.int32,
+    width: wp.int32,
     out_offsets: wp.array[wp.int32],
     out_columns: wp.array[wp.int32],
     out_values: wp.array[wp.float64],
@@ -767,24 +994,50 @@ def refresh_pooled_operator_bound(
     out_inverse_diagonal: wp.array[wp.float64],
     out_bound: wp.array[wp.float64],
 ) -> None:
-    # ``refresh_pooled_operator`` at ``derive == 2`` with the rows' largest Gershgorin ratio
-    # committed into ``out_bound[0]``, which the caller holds at ``-inf`` (``chebyshev_steps``
-    # leaves it there), so the refit needs no reduction launch of its own. The block shape and the
-    # ``atomic_max`` commit are ``jacobi_dominance_bound``'s: a maximum is exact in any order.
+    # A pooled state's refresh, ``width`` rows a block (the arrays a flag leaves off may be
+    # ``None``). With a non-empty ``out_bound`` (``derive == 2``) the rows' largest Gershgorin
+    # ratio is committed into ``out_bound[0]``, which the caller holds at ``-inf``
+    # (``chebyshev_steps`` leaves it there), so the refit needs no reduction launch of its own: the
+    # ``atomic_max`` commit of ``jacobi_dominance_bound``, a maximum being exact in any order.
+    # A lane refreshes its rows in order; a long row (``csr_row_long``) is left to the whole block
+    # after, its lanes striding the entries and the block summing them in a fixed tree, so a block
+    # without one pays one reduction. Launch tiled.
     block, lane = wp.tid()
-    base, count = block_chunk_1d(offsets.shape[0] - 1, block)
-    if count <= 0:
+    n = offsets.shape[0] - 1
+    base, rows = block_chunk(n, block, width)
+    if rows <= 0:
         return
     local = wp.float64(-1.0e308)
-    for k in range(lane, count, wp.block_dim()):
-        ratio = refresh_pooled_row(
-            offsets, columns, values, narrow, wp.int32(2), base + k,
-            out_offsets, out_columns, out_values, out_narrowed, out_inverse_diagonal,
-        )  # fmt: skip
-        local = wp.max(local, ratio)
-    bound = block_max(local)
-    if lane == 0:
-        wp.atomic_max(out_bound, 0, bound)
+    found = wp.int32(0)
+    for k in range(lane, rows, wp.block_dim()):
+        i = base + k
+        start = offsets[i]
+        end = offsets[i + 1]
+        out_offsets[i] = start
+        if i == n - 1:
+            out_offsets[n] = end
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
+        sums = refresh_pooled_entries(
+            columns, values, narrow, i, start, end, 1, out_columns, out_values, out_narrowed
+        )
+        local = wp.max(local, refresh_pooled_row(derive, i, sums, out_inverse_diagonal))
+    if block_sum(found) != 0:
+        for k in range(rows):
+            i = base + k
+            if csr_row_long(offsets, i):
+                sums = refresh_pooled_entries(
+                    columns, values, narrow, i, offsets[i] + lane, offsets[i + 1],
+                    wp.block_dim(), out_columns, out_values, out_narrowed,
+                )  # fmt: skip
+                sums = block_sum(sums)
+                if lane == 0:
+                    local = wp.max(local, refresh_pooled_row(derive, i, sums, out_inverse_diagonal))
+    if out_bound.shape[0] > 0:
+        bound = block_max(local)
+        if lane == 0:
+            wp.atomic_max(out_bound, 0, bound)
 
 
 @wp.kernel
@@ -855,6 +1108,17 @@ def residual_and_scale(
 BACKWARD_ERROR_FAILED = wp.int32(1)
 BACKWARD_ERROR_UNCONVERGED = wp.int32(2)
 
+# Rows a block of ``backward_error_exceeds`` holds, a row a lane on CUDA.
+BACKWARD_ERROR_ROWS = 256
+
+
+@wp.func
+def raise_backward_error_flag(out_flag: wp.array[wp.int32], verdict: wp.int32) -> None:
+    # Raise ``backward_error_exceeds``' flag to ``verdict``, the plain read first sparing the atomic
+    # once it is set.
+    if out_flag[0] < verdict:
+        wp.atomic_max(out_flag, 0, verdict)
+
 
 @wp.kernel
 def backward_error_exceeds(
@@ -881,18 +1145,41 @@ def backward_error_exceeds(
     # maximum, so the read is the same whatever order the rows land in; the plain read first
     # spares the atomic once it is set). A word left at or below ``base`` reads as verified, so the
     # caller reuses it with a higher ``base`` instead of clearing it (``linalg._StampedFlag``).
-    i, column = wp.tid()
+    #
+    # Launch tiled over ``(blocks of BACKWARD_ERROR_ROWS rows, columns)``: a lane tests its rows in
+    # order; a long row (``csr_row_long``) is left to the whole block after, its lanes striding the
+    # entries and the block summing them in a fixed tree, so a block without one pays one
+    # reduction.
+    blk, column, lane = wp.tid()
     offset = column * n
-    total, scale = residual_and_scale(offsets, columns, values, solution, rhs, offset, i)
-    if not (wp.abs(total) <= tolerance * scale):
-        failed = base + BACKWARD_ERROR_FAILED
-        if out_flag[0] < failed:
-            wp.atomic_max(out_flag, 0, failed)
-    if i == 0 and residual.shape[0] > 0:
-        if not (residual[column] <= threshold[column]):
-            unconverged = base + BACKWARD_ERROR_UNCONVERGED
-            if out_flag[0] < unconverged:
-                wp.atomic_max(out_flag, 0, unconverged)
+    first, rows = block_chunk(offsets.shape[0] - 1, blk, BACKWARD_ERROR_ROWS)
+    if rows <= 0:
+        return
+    found = wp.int32(0)
+    for k in range(lane, rows, wp.block_dim()):
+        i = first + k
+        if i == 0 and residual.shape[0] > 0:
+            if not (residual[column] <= threshold[column]):
+                raise_backward_error_flag(out_flag, base + BACKWARD_ERROR_UNCONVERGED)
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
+        total, scale = residual_and_scale(offsets, columns, values, solution, rhs, offset, i)
+        if not (wp.abs(total) <= tolerance * scale):
+            raise_backward_error_flag(out_flag, base + BACKWARD_ERROR_FAILED)
+    if block_sum(found) == 0:
+        return
+    for k in range(rows):
+        i = first + k
+        if csr_row_long(offsets, i):
+            sums = wp.vec2d()
+            for e in range(offsets[i] + lane, offsets[i + 1], wp.block_dim()):
+                term = values[e] * solution[offset + columns[e]]
+                sums += wp.vec2d(term, wp.abs(term))
+            sums = block_sum(sums)
+            b = rhs[offset + i]
+            if lane == 0 and not (wp.abs(b - sums[0]) <= tolerance * (wp.abs(b) + sums[1])):
+                raise_backward_error_flag(out_flag, base + BACKWARD_ERROR_FAILED)
 
 
 @wp.kernel

@@ -94,6 +94,7 @@ A kernel whose lanes cooperate (`wp.tile_sum` / `tile_min` / `tile_max` per lane
 - A new per-group float sum goes through `kernels/scatter.scatter_add` / `scatter_add_vector` / `scatter_add_matrix` with a `_launch.group_sums` buffer (`launch_group_sums`, `finish_group_sums`): the buffer picks the mode, a plain `atomic_add` with the setting off and the exact fixed-point sum of `kernels/reduce` with it on (identical on CPU and CUDA). A kernel that consumes the sums reads them through `kernels/reduce.read_group_sum` from `group_sums(fused=True)` (no finish launch and no result buffer when on; repair's component sums). The public forms are `reduce.scatter_sum` and `reduce.segment_sum`. Keep a site's existing form where §14 prices it faster.
 - A per-vertex float scatter (`add_corner_triple`) obeys the same setting. `float32` values sum exactly into `float64` whatever the order (`scatter_sum_exact`, `scatter_face_areas_exact`); `float64` values are written per corner and summed by `kernels/scatter.sum_sorted_corner_values` over one stable sort of the faces, with the atomic scatter kept for the off mode. `vertex_face_adjacency` obeys it too (ascending rows from a stable corner sort; the atomic scatter when off), so a consumer emitting triplets in its row order is reproducible through it.
 - **A reproducibility fix is gated on the setting, never unconditional.** With it off (the default) the code is the fast arrival-order path it was: the same kernels, launches, allocations and buffer dtypes, non-reproducible by design. With it on, the output is bit-identical run to run. "Costs nothing measurable" or "exact anyway" does not justify making a fix unconditional. A reproducibility test claims the on mode only (`tests/conftest.py` sets it).
+- **Determinism is the requirement, not a particular summation order.** A sum may change order (a block's fixed tree for a hub row, a chunked fold) as long as the on mode repeats bit for bit; matching another form's or a triplet sort's order, or the CPU's, is never a reason to keep a slow shape. Compare against a reference at tolerance.
 
 ### 2.3 Block-per-item is an occupancy trade, not a shape choice
 
@@ -944,8 +945,16 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   byte-identical operator. The one-block solve cannot hold a long row on CUDA (1 024 rows at most).
   The pieces' last block folds with every lane (one lane's fold waited on each partial): 9.5 ->
   8.8 us a launch, the floor being the fence-and-ticket chain of a small launch, 1.7x the 5.2 us
-  step beside it. Row-a-thread work that runs once a call is declined on a hub: §16's closing
-  inventory is in `reference/component-status.md` ("Hub rows outside the solver steps").
+  step beside it. **A row-a-thread kernel takes a long row by deferring it to its block:** launch
+  tiled at 256 rows a block (a row a lane, a thread-a-row launch's occupancy; the CPU's one lane
+  walks them), a lane skipping a `csr_row_long` row, then one `block_sum` of the skipped count,
+  and only a block that holds one walks it with every lane, summing in a fixed tree and placing
+  compacted entries by an exclusive tile scan or a search of the sorted output. No list, launch,
+  allocation or readback: ordinary meshes 0.99-1.02x (fairing's 0.86 ms pass on `sphere_med`
+  1.02-1.06x). Taken by the heat and fairing system rows, the edge-length mean, the pooled
+  refresh, the backward error, `cg_initial`, the Jacobi diagonal and bound, and the free-free
+  extraction: `fan_hub` `heat_geodesic` 193 -> 117-121 ms, `min_quad_with_fixed` 82 -> 41 ms, a
+  fairing pass 44 -> 4.2 ms (`reference/component-status.md`, "Hub rows outside the solver steps").
 - **Solvers:** a single-level polynomial preconditioner wins on long solves; a Chebyshev multigrid smoother loses (no single `(degree, interval)` is robust). A small synthetic system can mislead.
 - **Refuted, do not re-propose:** a single-block BFS drain, a one-block hole-fill DP and merged-level blocked interval DPs (the grid must stay full); voxel aggregation for multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches.
 - **Producer-consumer fusion:** always fuse consecutive same-`dim` launches where the consumer reads the producer only at its own index; every pair measured was faster. Price the fused region, not the call containing it, and cross-check kernel and allocation counts. Also fold a map into its consumer, merge two launches of one kernel into a wider one, and walk-and-reduce neighbour lists in one thread per query. A fusion that changes a slot or box index needs a debug-mode run. Inline single-caller helpers it leaves behind; fold-on-read loses on dependent chases.

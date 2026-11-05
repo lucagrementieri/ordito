@@ -1714,9 +1714,9 @@ def vector_heat_operators(
             if transport_angles is None:
                 transport_angles, rings = _transport_angles_and_rings(vertices, faces)
             vector_values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
-            _launch.launch(
+            _launch.launch_tiled(
                 kernel_heat.VECTOR_HEAT_SYSTEM_ROWS[cot_entries.dtype],
-                dim=n_vertices,
+                dim=_heat_row_blocks(n_vertices),
                 inputs=[
                     offsets,
                     columns,
@@ -1898,6 +1898,7 @@ def _heat_operators(
                 areas,
                 lumped,
             ],
+            block_dim=int(kernel_heat.HEAT_ROWS_PER_BLOCK),
             device=device,
         )
     # The cotangent Laplacian, the heat system ``M - t L`` and the Poisson operator ``-L``, all
@@ -1926,9 +1927,9 @@ def _heat_operators(
         poisson_values = _launch.view(values, 2 * n_slots, 3 * n_slots)
         if transport_angles is not None:
             vector_values = tables[2]
-        _launch.launch(
+        _launch.launch_tiled(
             kernel_heat.HEAT_SYSTEM_ROWS[cot_entries.dtype],
-            dim=n_vertices,
+            dim=_heat_row_blocks(n_vertices),
             inputs=[
                 offsets,
                 columns,
@@ -1948,6 +1949,7 @@ def _heat_operators(
             ],
             # The lumped mass over its own area sums, in place.
             outputs=[laplacian_values, heat_values, poisson_values, lumped, vector_values],
+            block_dim=int(kernel_heat.HEAT_ROWS_PER_BLOCK),
             device=device,
         )
         laplacian = od.array.bsr_from_csr(
@@ -3529,9 +3531,9 @@ class HeatSolver:
         laplacian_values = _launch.view(values, 0, n_slots)
         heat_values = _launch.view(values, n_slots, 2 * n_slots)
         poisson_values = _launch.view(values, 2 * n_slots, 3 * n_slots)
-        _launch.launch(
+        _launch.launch_tiled(
             kernel_heat.HEAT_SYSTEM_ROWS[wp.float64],
-            dim=n_vertices,
+            dim=_heat_row_blocks(n_vertices),
             inputs=[
                 offsets,
                 columns,
@@ -3551,6 +3553,7 @@ class HeatSolver:
             ],
             # The lumped mass over its own area sums, in place.
             outputs=[laplacian_values, heat_values, poisson_values, mass, None],
+            block_dim=int(kernel_heat.HEAT_ROWS_PER_BLOCK),
             device=device,
         )
         laplacian = od.array.bsr_from_csr(
@@ -4543,3 +4546,9 @@ def _require_indices_in_range(
         raise ValueError(
             f"{caller}: every entry of {name} must be a vertex index in [0, {n_vertices})"
         )
+
+
+def _heat_row_blocks(n_vertices: int) -> int:
+    """Blocks of ``kernels/heat.HEAT_ROWS_PER_BLOCK`` rows the heat systems' row kernels take."""
+    rows = int(kernel_heat.HEAT_ROWS_PER_BLOCK)
+    return (n_vertices + rows - 1) // rows

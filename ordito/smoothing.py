@@ -2821,6 +2821,7 @@ def filter_implicit_fairing(
     # writes the other.
     current = vertices
     narrowed: list[wp.array[wp.vec3]] = []
+    rows_per_block = int(kernel_smoothing.FAIRING_ROWS_PER_BLOCK)
     for index in range(iterations):
         # Two launches assemble a pass: the face pass (half-cotangents of ``current`` -- the
         # ordinary flow re-linearises on the moving surface -- and the exact area sums), then one
@@ -2837,9 +2838,9 @@ def filter_implicit_fairing(
             values, first_values = first_values, None
         else:
             values = _launch.empty_like(template.values)
-        _launch.launch(
+        _launch.launch_tiled(
             kernel_smoothing.fairing_system_rows,
-            dim=n,
+            dim=(n + rows_per_block - 1) // rows_per_block,
             inputs=[
                 pattern.offsets,
                 pattern.columns,
@@ -2855,8 +2856,10 @@ def filter_implicit_fairing(
                 free_map,
                 positions,
                 template.offsets,
+                template.columns,
             ],
             outputs=[values, rhs, solution_2d],
+            block_dim=rows_per_block,
             device=device,
         )
         system = od.array.bsr_with_values(template, values)

@@ -1943,6 +1943,63 @@ def test_filter_implicit_fairing(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -
     assert np.allclose(smoothed_wp.numpy(), vertices_igl, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize("shape", ["cone", "disk_pinned_ring", "disk_free_ring"])
+def test_filter_implicit_fairing_on_a_hub_matches_igl(device: str, shape: str) -> None:
+    """
+    Class A against libigl's operators stepped by a direct solve, on fans whose hub row is long.
+
+    A hub of 1 100 spokes has a long row (``kernels/linalg.CSR_LONG_ROW_ENTRIES``), which
+    ``fairing_system_rows`` forms with a whole block: ``cone`` (closed, every vertex free),
+    ``disk_pinned_ring`` (one ring, pinned: the hub's every neighbour is subtracted into its
+    right-hand side) and ``disk_free_ring`` (two rings, the outer pinned: the hub's entries are
+    placed by searching the interior pattern).
+    """
+    spokes, lamb = 1100, 0.05
+    angles = 2.0 * np.pi * np.arange(spokes) / spokes
+    spoke = np.arange(spokes)
+    following = (spoke + 1) % spokes
+    rings = 2 if shape == "disk_free_ring" else 1
+    points = [np.array([0.0, 0.0, 0.3])]
+    for ring in range(1, rings + 1):
+        wave = 0.1 * np.sin(5.0 * angles + ring)
+        # A ring of uneven radius, so the pinned neighbours' pull on the hub does not cancel.
+        radius = ring * (1.0 + 0.3 * np.cos(angles))
+        points += list(np.stack([radius * np.cos(angles), radius * np.sin(angles), wave], axis=1))
+    hub_faces = np.stack([np.zeros(spokes, dtype=np.int64), 1 + spoke, 1 + following], axis=1)
+    faces = [hub_faces]
+    if rings == 2:
+        inner, outer = 1 + spoke, 1 + spokes + spoke
+        faces += [
+            np.stack([inner, outer, 1 + spokes + following], axis=1),
+            np.stack([inner, 1 + spokes + following, 1 + following], axis=1),
+        ]
+    if shape == "cone":
+        points.append(np.array([0.0, 0.0, -0.3]))
+        apex = np.full(spokes, len(points) - 1, dtype=np.int64)
+        faces.append(np.stack([apex, 1 + following, 1 + spoke], axis=1))
+    vertices_np = np.array(points, dtype=np.float32).astype(np.float64)
+    faces_np = np.concatenate(faces)
+
+    stiffness_igl = cast("sp.csc_matrix[np.float64]", igl.cotmatrix(vertices_np, faces_np))
+    mass_igl = igl.massmatrix(vertices_np, faces_np, igl.MASSMATRIX_TYPE_BARYCENTRIC)
+    system_igl = (mass_igl - lamb * stiffness_igl).tocsr()
+    rhs_igl = np.asarray(mass_igl.dot(vertices_np))
+    faired_igl = vertices_np.copy()
+    boundary = np.arange(1 + (rings - 1) * spokes, 1 + rings * spokes)
+    interior = np.arange(len(vertices_np))
+    if shape != "cone":
+        interior = np.setdiff1d(interior, boundary)
+        rhs_igl = rhs_igl - system_igl[:, boundary] @ vertices_np[boundary]
+    reduced = system_igl[interior][:, interior].tocsc()
+    solved = cast("np.ndarray", spla.spsolve(reduced, rhs_igl[interior]))
+    faired_igl[interior] = solved.reshape(-1, 3)
+
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    faired_wp = od.smoothing.filter_implicit_fairing(vertices_wp, faces_wp, lamb=lamb, iterations=1)
+    assert np.abs(faired_igl - vertices_np).max() > 1e-3
+    assert np.allclose(faired_wp.numpy(), faired_igl, rtol=1e-5, atol=1e-5)
+
+
 def _dumbbell(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     """Two unit spheres joined by a long neck of radius 0.2, which mean-curvature flow pinches."""
     heights = np.linspace(-3.0, 3.0, 121)

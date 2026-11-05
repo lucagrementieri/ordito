@@ -117,30 +117,54 @@ def cg_initial_block(
     out_s: Any,
     out_partials: wp.array3d[wp.float64],
 ) -> None:
-    # Block ``(c, blk)`` of ``cg_initial``, lane ``t``. Block-collective.
+    # Block ``(c, blk)`` of ``cg_initial``, lane ``t``. Block-collective. A long row
+    # (``linalg.csr_row_long``, a fan's hub) is left to the whole block after the lanes' pass, its
+    # lanes striding the row's dot and the block summing it in a fixed tree, so a block without
+    # one pays one reduction.
     acc = wp.float64(0.0)
+    found = wp.int32(0)
     for k in range(t, span, wp.block_dim()):
         local = blk * span + k
         i = c * stride + local
         b = wp.float64(0.0)
         r = wp.float64(0.0)
         u = wp.float64(0.0)
+        deferred = wp.bool(False)
         if local < n:
             b = wp.float64(rhs[c * n + local])
             if copy_x != 0:
                 out_x[c * n + local] = x[c * n + local]
-            r = b - wp.float64(csr_row_dot(local, c * n, offsets, columns, values, x))
+            if csr_row_long(offsets, local):
+                found = 1
+                deferred = wp.bool(True)
+            else:
+                r = b - wp.float64(csr_row_dot(local, c * n, offsets, columns, values, x))
+                if jacobi != 0:
+                    u = wp.float64(inv_diag[local]) * r
+        if not deferred:
+            out_r[i] = out_r.dtype(r)
             if jacobi != 0:
-                u = wp.float64(inv_diag[local]) * r
-        out_r[i] = out_r.dtype(r)
-        if jacobi != 0:
-            out_u[i] = out_u.dtype(u)
+                out_u[i] = out_u.dtype(u)
         out_p[i] = out_p.dtype(0.0)
         out_s[i] = out_s.dtype(0.0)
         acc += b * b
     total = block_sum(acc)
     if t == 0:
         out_partials[0, c, blk] = total
+    if block_sum(found) == 0:
+        return
+    for k in range(span):
+        local = blk * span + k
+        if local < n and csr_row_long(offsets, local):
+            dot = wp.float64(0.0)
+            for e in range(offsets[local] + t, offsets[local + 1], wp.block_dim()):
+                dot += wp.float64(values[e]) * wp.float64(x[c * n + columns[e]])
+            r = wp.float64(rhs[c * n + local]) - block_sum(dot)
+            if t == 0:
+                i = c * stride + local
+                out_r[i] = out_r.dtype(r)
+                if jacobi != 0:
+                    out_u[i] = out_u.dtype(wp.float64(inv_diag[local]) * r)
 
 
 @wp.kernel

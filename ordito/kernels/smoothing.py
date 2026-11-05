@@ -24,13 +24,21 @@ from ordito.kernels.laplacian import (
 )
 from ordito.kernels.linalg import (
     csr_row_dot,
+    csr_row_long,
     free_row,
     selected_row,
     shifted_scalar_entry,
     solve_normal_equations,
 )
 from ordito.kernels.predicates import angle_defect, closest_point_on_segment, plane_basis
-from ordito.kernels.reduce import block_chunk, block_chunk_1d, block_max, store_block_sum
+from ordito.kernels.reduce import (
+    block_barrier,
+    block_chunk,
+    block_chunk_1d,
+    block_max,
+    block_sum,
+    store_block_sum,
+)
 from ordito.kernels.scatter import add_corner_triple
 from ordito.kernels.triangles import corner_triple, local_corner
 from ordito.kernels.vertices import gathered_area_weighted_normal
@@ -917,6 +925,73 @@ def scatter_free_solution(
         out_points[v] = points[v]
 
 
+# Rows a block of ``fairing_system_rows`` holds, a row a lane on CUDA (the occupancy of a
+# thread-a-row launch); on the CPU device the block's one lane walks them all.
+FAIRING_ROWS_PER_BLOCK = 256
+
+
+@wp.func
+def fairing_entry(
+    e: wp.int32,
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.float32],
+    stiffness: wp.array[wp.float64],
+    scale: wp.float64,
+    m: wp.float64,
+) -> tuple[wp.float64, wp.float64]:
+    # Off-diagonal pattern entry ``e`` of a fairing pass's row: the stiffness ``raw`` (formed from
+    # the half-cotangents with ``stiffness`` empty) and the system's entry
+    # (``kernels/linalg.shifted_scalar_entry``).
+    raw = wp.float64(0.0)
+    if stiffness.shape[0] == 0:
+        raw = cotmatrix_offdiagonal(e, run_start, keys, count, order, cot_entries, raw)
+    else:
+        raw = stiffness[e]
+    return raw, shifted_scalar_entry(raw, scale, False, m)
+
+
+@wp.func
+def fairing_diagonal(
+    v: wp.int32,
+    e: wp.int32,
+    total: wp.float64,
+    columns: wp.array[wp.int32],
+    stiffness: wp.array[wp.float64],
+    scale: wp.float64,
+    m: wp.float64,
+) -> wp.float64:
+    # The system's diagonal entry of vertex ``v`` (pattern entry ``e``): minus the off-diagonal
+    # stiffness sum ``total``, or the stored stiffness. The flag is read off the pattern rather
+    # than written as the constant it is here, as ``kernels/heat.heat_system_rows`` explains: a
+    # constant lets the CUDA compiler fuse the mass's addition into the product's rounding.
+    raw = -total
+    if stiffness.shape[0] != 0:
+        raw = stiffness[e]
+    return shifted_scalar_entry(raw, scale, columns[e] == v, m)
+
+
+@wp.func
+def fairing_row_tail(
+    i: wp.int32,
+    m: wp.float64,
+    p: wp.vec3d,
+    pinned: wp.vec3d,
+    out_rhs: wp.array2d[wp.float64],
+    out_solution: wp.array2d[wp.float64],
+) -> None:
+    # A fairing row's right-hand side ``(M V)_u - A_ub x_b`` (``pinned`` the subtracted pinned
+    # columns, zero without them) and its CG seed, the vertex's current position.
+    out_rhs[0, i] = pinned[0] + m * p[0]
+    out_rhs[1, i] = pinned[1] + m * p[1]
+    out_rhs[2, i] = pinned[2] + m * p[2]
+    out_solution[0, i] = p[0]
+    out_solution[1, i] = p[1]
+    out_solution[2, i] = p[2]
+
+
 @wp.kernel
 def fairing_system_rows(
     offsets: wp.array[wp.int32],
@@ -933,93 +1008,138 @@ def fairing_system_rows(
     free_map: wp.array[wp.int32],
     positions: wp.array[wp.vec3d],
     system_offsets: wp.array[wp.int32],
+    system_columns: wp.array[wp.int32],
     out_values: wp.array[wp.float64],
     out_rhs: wp.array2d[wp.float64],
     out_solution: wp.array2d[wp.float64],
 ) -> None:
     # One implicit-fairing pass's system ``A = M + scale L`` (``scale = -lamb``), its right-hand
-    # side and its CG seed (the vertex's current position), one thread per vertex over a mesh
-    # operator pattern (``laplacian._mesh_operator_pattern``). The stiffness row is the input's
-    # ``stiffness`` values (the conformalized flow) or, with ``stiffness`` empty, formed in the
-    # thread from the half-cotangents ``laplacian.cotmatrix_entries_and_area_sums`` writes, as
+    # side and its CG seed (the vertex's current position) over a mesh operator pattern
+    # (``laplacian._mesh_operator_pattern``). The stiffness row is the input's ``stiffness``
+    # values (the conformalized flow) or, with ``stiffness`` empty, formed from the
+    # half-cotangents ``laplacian.cotmatrix_entries_and_area_sums`` writes, as
     # ``laplacian.cotmatrix_rows`` forms it (``cotmatrix_offdiagonal``; the diagonal minus the
-    # off-diagonal sum in column order), so the mesh-wide ``L`` is never stored. The mass is
-    # ``area_sums`` over three (``scatter.scale_face_sums``) and each entry is
+    # off-diagonal sum), so the mesh-wide ``L`` is never stored. The mass is ``area_sums`` over
+    # three (``scatter.scale_face_sums``) and each entry is
     # ``kernels/linalg.shifted_scalar_entry``'s.
     #
     # With ``fixed_mask`` empty every vertex is free and ``A`` is written over the pattern itself
     # with right-hand side ``M V``. Otherwise this is the Dirichlet pass: the free-free block of
     # ``A`` written into the interior pattern a ``linalg.assemble_interior_system`` call built once
-    # for the whole flow (``system_offsets``; its columns are that build's), and the right-hand
-    # side ``(M V)_u - A_ub x_b``, the pinned columns subtracted in row order before the mass term
-    # is added, as ``interior_row_counts`` / ``interior_system_csr`` extract it. A pinned vertex's
-    # value is its ``positions`` entry, which no pass writes.
+    # for the whole flow (``system_offsets`` / ``system_columns``), and the right-hand side
+    # ``(M V)_u - A_ub x_b``, the pinned columns subtracted before the mass term is added, as
+    # ``interior_row_counts`` / ``interior_system_csr`` extract it. A pinned vertex's value is its
+    # ``positions`` entry, which no pass writes.
     #
     # Each vertex's ``area_sums`` entry is cleared once read, pinned or not, so the next pass's
     # face pass adds into zeros with no clear of its own.
-    v = wp.int32(wp.tid())
-    area_sum = area_sums[v]
-    area_sums[v] = wp.float64(0.0)
+    #
+    # Launch tiled over ``FAIRING_ROWS_PER_BLOCK`` rows a block. A lane writes its rows' kept
+    # entries into consecutive slots in the row's order; a long row (``linalg.csr_row_long``, a
+    # fan's hub) is left to the whole block after, its lanes striding the entries -- each kept
+    # entry's slot searched in the system's sorted columns -- and the block summing the diagonal
+    # and the pinned columns in a fixed tree, so a block without one pays one reduction.
+    blk, lane = wp.tid()
+    base, rows = block_chunk(offsets.shape[0] - 1, blk, FAIRING_ROWS_PER_BLOCK)
+    if rows <= 0:
+        return
     dirichlet = fixed_mask.shape[0] > 0
-    i = v
-    if dirichlet:
-        i = free_row(fixed_mask, free_map, v)
-        if i < 0:
-            return
-    m = area_sum / wp.float64(3.0)
-    p = positions[v]
-    from_cot = stiffness.shape[0] == 0
-    slot = system_offsets[i]
-    acc0 = wp.float64(0.0)
-    acc1 = wp.float64(0.0)
-    acc2 = wp.float64(0.0)
-    total = wp.float64(0.0)
-    diagonal_entry = wp.int32(-1)
-    diagonal_slot = wp.int32(-1)
-    for e in range(offsets[v], offsets[v + 1]):
-        j = columns[e]
-        if j == v:
-            # Formed after the row: from the cotangents it is minus the off-diagonal sum.
-            diagonal_entry = e
-            diagonal_slot = slot
-            slot += 1
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        v = base + r
+        if csr_row_long(offsets, v):
+            found = 1
             continue
-        raw = wp.float64(0.0)
-        if from_cot:
-            raw = cotmatrix_offdiagonal(e, run_start, keys, count, order, cot_entries, raw)
+        area_sum = area_sums[v]
+        area_sums[v] = wp.float64(0.0)
+        i = v
+        if dirichlet:
+            i = free_row(fixed_mask, free_map, v)
+            if i < 0:
+                continue
+        m = area_sum / wp.float64(3.0)
+        slot = system_offsets[i]
+        pinned = wp.vec3d()
+        total = wp.float64(0.0)
+        diagonal_entry = wp.int32(-1)
+        diagonal_slot = wp.int32(-1)
+        for e in range(offsets[v], offsets[v + 1]):
+            j = columns[e]
+            if j == v:
+                # Formed after the row: from the cotangents it is minus the off-diagonal sum.
+                diagonal_entry = e
+                diagonal_slot = slot
+                slot += 1
+                continue
+            raw, value = fairing_entry(
+                e, run_start, keys, count, order, cot_entries, stiffness, scale, m
+            )
             total += raw
-        else:
-            raw = stiffness[e]
-        value = shifted_scalar_entry(raw, scale, j == v, m)
-        if dirichlet and fixed_mask[j]:
-            pinned = positions[j]
-            acc0 -= value * pinned[0]
-            acc1 -= value * pinned[1]
-            acc2 -= value * pinned[2]
-        else:
-            out_values[slot] = value
-            slot += 1
-    if diagonal_entry >= 0:
-        raw = -total
-        if not from_cot:
-            raw = stiffness[diagonal_entry]
-        # The flag is read off the pattern rather than written as the constant it is here, as
-        # ``kernels/heat.heat_system_rows`` explains: a constant lets the CUDA compiler fuse the
-        # mass's addition into the product's rounding.
-        out_values[diagonal_slot] = shifted_scalar_entry(
-            raw, scale, columns[diagonal_entry] == v, m
-        )
-    if dirichlet:
-        out_rhs[0, i] = acc0 + m * p[0]
-        out_rhs[1, i] = acc1 + m * p[1]
-        out_rhs[2, i] = acc2 + m * p[2]
-    else:
-        out_rhs[0, i] = m * p[0]
-        out_rhs[1, i] = m * p[1]
-        out_rhs[2, i] = m * p[2]
-    out_solution[0, i] = p[0]
-    out_solution[1, i] = p[1]
-    out_solution[2, i] = p[2]
+            if dirichlet and fixed_mask[j]:
+                pinned -= value * positions[j]
+            else:
+                out_values[slot] = value
+                slot += 1
+        if diagonal_entry >= 0:
+            out_values[diagonal_slot] = fairing_diagonal(
+                v, diagonal_entry, total, columns, stiffness, scale, m
+            )
+        fairing_row_tail(i, m, positions[v], pinned, out_rhs, out_solution)
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        v = base + r
+        if not csr_row_long(offsets, v):
+            continue
+        area_sum = area_sums[v]
+        i = v
+        if dirichlet:
+            i = free_row(fixed_mask, free_map, v)
+        if i >= 0:
+            m = area_sum / wp.float64(3.0)
+            start = offsets[v]
+            sys_start = system_offsets[i]
+            sys_end = system_offsets[i + 1]
+            sums = wp.vec4d()
+            diagonal_entry = wp.int32(-1)
+            for e in range(start + lane, offsets[v + 1], wp.block_dim()):
+                j = columns[e]
+                if j == v:
+                    diagonal_entry = e
+                    continue
+                raw, value = fairing_entry(
+                    e, run_start, keys, count, order, cot_entries, stiffness, scale, m
+                )
+                sums[0] = sums[0] + raw
+                if dirichlet and fixed_mask[j]:
+                    pinned = value * positions[j]
+                    sums[1] = sums[1] - pinned[0]
+                    sums[2] = sums[2] - pinned[1]
+                    sums[3] = sums[3] - pinned[2]
+                elif dirichlet:
+                    out_values[wp.lower_bound(system_columns, sys_start, sys_end, free_map[j])] = (
+                        value
+                    )
+                else:
+                    out_values[sys_start + (e - start)] = value
+            sums = block_sum(sums)
+            diagonal_entry = block_max(diagonal_entry)
+            if lane == 0:
+                if diagonal_entry >= 0:
+                    diagonal_slot = sys_start + (diagonal_entry - start)
+                    if dirichlet:
+                        diagonal_slot = wp.lower_bound(system_columns, sys_start, sys_end, i)
+                    out_values[diagonal_slot] = fairing_diagonal(
+                        v, diagonal_entry, sums[0], columns, stiffness, scale, m
+                    )
+                fairing_row_tail(
+                    i, m, positions[v], wp.vec3d(sums[1], sums[2], sums[3]), out_rhs,
+                    out_solution,
+                )  # fmt: skip
+        # Every lane has read the sum; the next pass's face pass adds into zeros.
+        block_barrier()
+        if lane == 0:
+            area_sums[v] = wp.float64(0.0)
 
 
 @wp.kernel

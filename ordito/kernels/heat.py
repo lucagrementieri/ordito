@@ -45,7 +45,12 @@ from ordito.kernels.laplacian import (
     face_half_cotangents_float64,
     pattern_row_on_rim,
 )
-from ordito.kernels.linalg import shift_factor, shifted_block_entry, shifted_scalar_entry
+from ordito.kernels.linalg import (
+    csr_row_long,
+    shift_factor,
+    shifted_block_entry,
+    shifted_scalar_entry,
+)
 from ordito.kernels.predicates import (
     stable_length,
     stable_normalize,
@@ -56,8 +61,10 @@ from ordito.kernels.predicates import (
 from ordito.kernels.reduce import (
     GroupSumPass,
     block_barrier,
+    block_chunk,
     block_chunk_1d,
     block_max,
+    block_sum,
     store_sum_and_count,
 )
 from ordito.kernels.scatter import add_corner_triple, add_or_store_corner_triple, scatter_add_vector
@@ -135,6 +142,35 @@ def half_cotangents_float64(
     out_cot[f, 2] = c2
 
 
+@wp.func
+def upper_edge_sums(
+    row: wp.int32,
+    start: wp.int32,
+    end: wp.int32,
+    step: wp.int32,
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    vertices: wp.array[wp.vec3],
+    face_edges: wp.int32,
+) -> wp.vec2d:
+    # ``upper_edge_length_sum_and_count``'s sum and count over row ``row``'s entries ``start``,
+    # ``start + step``, ... below ``end``.
+    sums = wp.vec2d()
+    for entry in range(start, end, step):
+        column = columns[entry]
+        if column > row:
+            weight = wp.float64(1.0)
+            if face_edges != 0:
+                weight = wp.float64(sorted_run_end(keys, run_start[entry], count))
+                weight -= wp.float64(run_start[entry])
+            sums += wp.vec2d(
+                weight * wp.float64(wp.length(vertices[column] - vertices[row])), weight
+            )
+    return sums
+
+
 @wp.kernel
 def upper_edge_length_sum_and_count(
     offsets: wp.array[wp.int32],
@@ -160,26 +196,39 @@ def upper_edge_length_sum_and_count(
     #
     # ``reduce``'s mask-shaped block fold over *rows*: lanes stride the block's rows by
     # ``wp.block_dim()`` (right on the CPU device too), and one tile sum per quantity is stored in
-    # the block's row (``store_sum_and_count``), added in a fixed order afterwards.
+    # the block's row (``store_sum_and_count``), added in a fixed order afterwards. A long row
+    # (``linalg.csr_row_long``, a fan's hub) is left to the whole block after, its lanes striding
+    # the entries into their own sums, so a block without one pays one reduction.
     i, t = wp.tid()
     n = offsets.shape[0] - 1
     base, remaining = block_chunk_1d(n, i)
     if remaining <= 0:
         return
-    total = wp.float64(0.0)
-    n_edges = wp.float64(0.0)
+    sums = wp.vec2d()
+    found = wp.int32(0)
     for k in range(t, remaining, wp.block_dim()):
         row = base + k
-        for entry in range(offsets[row], offsets[row + 1]):
-            column = columns[entry]
-            if column > row:
-                weight = wp.float64(1.0)
-                if face_edges != 0:
-                    weight = wp.float64(sorted_run_end(keys, run_start[entry], count))
-                    weight -= wp.float64(run_start[entry])
-                total += weight * wp.float64(wp.length(vertices[column] - vertices[row]))
-                n_edges += weight
-    store_sum_and_count(i, t, total, n_edges, out_sum_and_count, stride)
+        if csr_row_long(offsets, row):
+            found = 1
+        else:
+            sums += upper_edge_sums(
+                row, offsets[row], offsets[row + 1], 1, columns, run_start, keys, count,
+                vertices, face_edges,
+            )  # fmt: skip
+    if block_sum(found) != 0:
+        for k in range(remaining):
+            row = base + k
+            if csr_row_long(offsets, row):
+                sums += upper_edge_sums(
+                    row, offsets[row] + t, offsets[row + 1], wp.block_dim(), columns, run_start,
+                    keys, count, vertices, face_edges,
+                )  # fmt: skip
+    store_sum_and_count(i, t, sums[0], sums[1], out_sum_and_count, stride)
+
+
+# Rows a block of the heat systems' row kernels holds, a row a lane on CUDA (the occupancy of a
+# thread-a-row launch); on the CPU device the block's one lane walks them all.
+HEAT_ROWS_PER_BLOCK = 256
 
 
 @wp.func
@@ -187,6 +236,8 @@ def vector_heat_row(
     i: wp.int32,
     start: wp.int32,
     end: wp.int32,
+    lane: wp.int32,
+    lanes: wp.int32,
     columns: wp.array[wp.int32],
     run_start: wp.array[wp.int32],
     keys: wp.array[wp.uint64],
@@ -198,15 +249,16 @@ def vector_heat_row(
     m: wp.float64,
     factor: wp.float64,
     out_values: wp.array[wp.mat22d],
-) -> None:
-    # Row ``i`` (pattern entries ``start`` to ``end``, not empty) of the vector heat system
-    # ``M + factor L_connection``: ``laplacian.connection_laplacian_rows``' entries
-    # (``connection_offdiagonal``, the diagonal ``sum w * I``) shifted as they are formed
-    # (``linalg.shifted_block_entry``), ``m`` the vertex's scalar lumped mass, which both of its
-    # tangent unknowns take.
+) -> tuple[wp.float64, wp.int32]:
+    # This lane's share of row ``i`` (pattern entries ``start`` to ``end``, not empty) of the vector
+    # heat system ``M + factor L_connection``: entries ``start + lane``, every ``lanes``-th,
+    # ``laplacian.connection_laplacian_rows``' (``connection_offdiagonal``) shifted as they are
+    # formed (``linalg.shifted_block_entry``), ``m`` the vertex's scalar lumped mass, which both of
+    # its tangent unknowns take. Returns the share's diagonal weight and the diagonal's slot if the
+    # share holds it (``-1`` otherwise), for ``vector_heat_diagonal``.
     weight = wp.float64(0.0)
     slot = wp.int32(-1)
-    for k in range(start, end):
+    for k in range(start + lane, end, lanes):
         if columns[k] == i:
             slot = k
             continue
@@ -214,10 +266,86 @@ def vector_heat_row(
             i, k, run_start, keys, count, order, faces, cot_entries, transport_angles, weight
         )
         out_values[k] = shifted_block_entry(value, factor, False, m)
+    return weight, slot
+
+
+@wp.func
+def vector_heat_diagonal(
+    i: wp.int32,
+    slot: wp.int32,
+    weight: wp.float64,
+    columns: wp.array[wp.int32],
+    m: wp.float64,
+    factor: wp.float64,
+    out_values: wp.array[wp.mat22d],
+) -> None:
+    # The vector heat row's diagonal from its whole weight (``vector_heat_row``), at ``slot`` when
+    # the row has one. The flag is read off the pattern for the reason ``heat_system_rows`` gives.
     if slot >= 0:
-        # The flag read off the pattern for the reason ``heat_system_rows`` gives.
         diagonal = weight * wp.mat22d(1.0, 0.0, 0.0, 1.0)
         out_values[slot] = shifted_block_entry(diagonal, factor, columns[slot] == i, m)
+
+
+@wp.func
+def scalar_heat_row(
+    i: wp.int32,
+    start: wp.int32,
+    end: wp.int32,
+    lane: wp.int32,
+    lanes: wp.int32,
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.Float],
+    m: wp.float64,
+    factor: wp.float64,
+    out_laplacian: wp.array[wp.float64],
+    out_heat: wp.array[wp.float64],
+    out_poisson: wp.array[wp.float64],
+) -> tuple[wp.float64, wp.int32]:
+    # This lane's share of row ``i`` of ``heat_system_rows``' three scalar operators: its
+    # off-diagonal entries (``cotmatrix_offdiagonal``), their sum and the diagonal's slot if the
+    # share holds it, for ``scalar_heat_diagonal``.
+    total = wp.float64(0.0)
+    slot = wp.int32(-1)
+    for k in range(start + lane, end, lanes):
+        if columns[k] == i:
+            slot = k
+            continue
+        value = cotmatrix_offdiagonal(
+            k, run_start, keys, count, order, cot_entries, wp.float64(0.0)
+        )
+        out_laplacian[k] = value
+        total += value
+        out_heat[k] = shifted_scalar_entry(value, factor, False, m)
+        out_poisson[k] = -value
+    return total, slot
+
+
+@wp.func
+def scalar_heat_diagonal(
+    i: wp.int32,
+    slot: wp.int32,
+    total: wp.float64,
+    columns: wp.array[wp.int32],
+    m: wp.float64,
+    factor: wp.float64,
+    out_laplacian: wp.array[wp.float64],
+    out_heat: wp.array[wp.float64],
+    out_poisson: wp.array[wp.float64],
+) -> None:
+    # The scalar heat row's diagonal entries from its off-diagonal sum (``scalar_heat_row``).
+    if slot >= 0:
+        diagonal = -total
+        out_laplacian[slot] = diagonal
+        # The flag is read off the pattern rather than written as the constant it is here, so the
+        # entry is formed exactly as ``shifted_system_values`` forms it: a constant flag lets the
+        # CUDA compiler fuse the mass's addition into the product's rounding, which moves the last
+        # bit of the diagonal.
+        out_heat[slot] = shifted_scalar_entry(diagonal, factor, columns[slot] == i, m)
+        out_poisson[slot] = -diagonal
 
 
 @wp.kernel
@@ -243,68 +371,89 @@ def heat_system_rows(
     out_mass: wp.array[wp.float64],
     out_vector: wp.array[wp.mat22d],
 ) -> None:
-    # One row of the scalar heat method's three operators over a mesh operator pattern, one thread
-    # per vertex: the ``float64`` cotangent Laplacian ``L`` (``laplacian.cotmatrix_rows``' entries,
+    # The rows of the scalar heat method's three operators over a mesh operator pattern: the
+    # ``float64`` cotangent Laplacian ``L`` (``laplacian.cotmatrix_rows``' entries,
     # ``cotmatrix_offdiagonal``), the heat system ``M + factor L`` (``linalg.shift_factor`` and
     # ``shifted_scalar_entry``, ``factor = -t``) and the Poisson operator ``-L``
     # (``linalg.shifted_system_values``' with ``negate`` set). The three are formed from the one
     # walk, so ``L`` is not read back between them. ``out_mass`` is the lumped mass,
     # ``heat_face_terms``' exact ``area_sums`` over ``mass_divisor`` -- three for the barycentric
     # lumping (``scatter.scale_face_sums``), one for the Voronoi shares, already the mass -- and
-    # may be ``area_sums`` itself: each thread reads its own vertex's sum before it writes its mass.
+    # may be ``area_sums`` itself: each row's lane reads its own vertex's sum before it writes its
+    # mass, and a long row's block reads the mass written.
     #
     # A non-empty ``out_vector`` also takes the row of the vector heat system at ``t`` (``-scale``)
     # over the same pattern, ``vector_heat_system_rows``' (``vector_heat_row``), from the
     # ``float64`` table ``vector_cot`` (``heat_face_terms``), for a vector assembly that builds its
     # scalar bundle alongside: the two kernels differ only in that this one has the mass in hand
     # rather than reading it back.
-    i = wp.int32(wp.tid())
-    m = area_sums[i] / mass_divisor
-    out_mass[i] = m
-    start = offsets[i]
-    end = offsets[i + 1]
-    if end == start:
+    #
+    # Launch tiled over ``HEAT_ROWS_PER_BLOCK`` rows a block. A lane forms its row's entries in the
+    # row's order; a long row (``linalg.csr_row_long``, a fan's hub) is left to the whole block
+    # after, its lanes striding the entries and the block summing the diagonal in a fixed tree, so
+    # a block without one pays one reduction.
+    blk, lane = wp.tid()
+    base, rows = block_chunk(offsets.shape[0] - 1, blk, HEAT_ROWS_PER_BLOCK)
+    if rows <= 0:
         return
     factor = shift_factor(scale, edge_sum_and_count, from_edges)
-    if out_vector.shape[0] > 0:
-        vector_heat_row(
-            i,
-            start,
-            end,
-            columns,
-            run_start,
-            keys,
-            count,
-            order,
-            faces,
-            vector_cot,
-            transport_angles,
-            m,
-            shift_factor(-scale, edge_sum_and_count, from_edges),
-            out_vector,
-        )
-    total = wp.float64(0.0)
-    slot = wp.int32(-1)
-    for k in range(start, end):
-        if columns[k] == i:
-            slot = k
+    vector_factor = shift_factor(-scale, edge_sum_and_count, from_edges)
+    vector = out_vector.shape[0] > 0
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = base + r
+        m = area_sums[i] / mass_divisor
+        out_mass[i] = m
+        start = offsets[i]
+        end = offsets[i + 1]
+        if end == start:
             continue
-        value = cotmatrix_offdiagonal(
-            k, run_start, keys, count, order, cot_entries, wp.float64(0.0)
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
+        if vector:
+            weight, vector_slot = vector_heat_row(
+                i, start, end, 0, 1, columns, run_start, keys, count, order, faces, vector_cot,
+                transport_angles, m, vector_factor, out_vector,
+            )  # fmt: skip
+            vector_heat_diagonal(i, vector_slot, weight, columns, m, vector_factor, out_vector)
+        total, slot = scalar_heat_row(
+            i, start, end, 0, 1, columns, run_start, keys, count, order, cot_entries, m, factor,
+            out_laplacian, out_heat, out_poisson,
+        )  # fmt: skip
+        scalar_heat_diagonal(
+            i, slot, total, columns, m, factor, out_laplacian, out_heat, out_poisson
         )
-        out_laplacian[k] = value
-        total += value
-        out_heat[k] = shifted_scalar_entry(value, factor, False, m)
-        out_poisson[k] = -value
-    if slot >= 0:
-        diagonal = -total
-        out_laplacian[slot] = diagonal
-        # The flag is read off the pattern rather than written as the constant it is here, so the
-        # entry is formed exactly as ``shifted_system_values`` forms it: a constant flag lets the
-        # CUDA compiler fuse the mass's addition into the product's rounding, which moves the last
-        # bit of the diagonal.
-        out_heat[slot] = shifted_scalar_entry(diagonal, factor, columns[slot] == i, m)
-        out_poisson[slot] = -diagonal
+    if block_sum(found) == 0:
+        return
+    lanes = wp.block_dim()
+    for r in range(rows):
+        i = base + r
+        if csr_row_long(offsets, i):
+            start = offsets[i]
+            end = offsets[i + 1]
+            m = out_mass[i]
+            if vector:
+                weight, vector_slot = vector_heat_row(
+                    i, start, end, lane, lanes, columns, run_start, keys, count, order, faces,
+                    vector_cot, transport_angles, m, vector_factor, out_vector,
+                )  # fmt: skip
+                weight = block_sum(weight)
+                vector_slot = block_max(vector_slot)
+                if lane == 0:
+                    vector_heat_diagonal(
+                        i, vector_slot, weight, columns, m, vector_factor, out_vector
+                    )
+            total, slot = scalar_heat_row(
+                i, start, end, lane, lanes, columns, run_start, keys, count, order, cot_entries,
+                m, factor, out_laplacian, out_heat, out_poisson,
+            )  # fmt: skip
+            total = block_sum(total)
+            slot = block_max(slot)
+            if lane == 0:
+                scalar_heat_diagonal(
+                    i, slot, total, columns, m, factor, out_laplacian, out_heat, out_poisson
+                )
 
 
 @wp.kernel
@@ -379,31 +528,46 @@ def vector_heat_system_rows(
     from_edges: wp.int32,
     out_values: wp.array[wp.mat22d],
 ) -> None:
-    # One row of the vector heat system ``M + factor L_connection`` over a mesh operator pattern
+    # The rows of the vector heat system ``M + factor L_connection`` over a mesh operator pattern
     # (``vector_heat_row``, ``linalg.shift_factor`` with ``factor = t``), so the connection
     # Laplacian itself is never stored, beside a scalar bundle built earlier: ``mass`` is its
-    # lumped mass. ``heat_system_rows`` writes the same row when it builds that bundle alongside.
-    i = wp.int32(wp.tid())
-    start = offsets[i]
-    end = offsets[i + 1]
-    if end == start:
+    # lumped mass. ``heat_system_rows`` writes the same rows when it builds that bundle alongside,
+    # and is launched the same way: tiled over ``HEAT_ROWS_PER_BLOCK`` rows a block, a long row
+    # the block's.
+    blk, lane = wp.tid()
+    base, rows = block_chunk(offsets.shape[0] - 1, blk, HEAT_ROWS_PER_BLOCK)
+    if rows <= 0:
         return
-    vector_heat_row(
-        i,
-        start,
-        end,
-        columns,
-        run_start,
-        keys,
-        count,
-        order,
-        faces,
-        cot_entries,
-        transport_angles,
-        mass[i],
-        shift_factor(scale, edge_sum_and_count, from_edges),
-        out_values,
-    )
+    factor = shift_factor(scale, edge_sum_and_count, from_edges)
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = base + r
+        start = offsets[i]
+        end = offsets[i + 1]
+        if end == start:
+            continue
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
+        weight, slot = vector_heat_row(
+            i, start, end, 0, 1, columns, run_start, keys, count, order, faces, cot_entries,
+            transport_angles, mass[i], factor, out_values,
+        )  # fmt: skip
+        vector_heat_diagonal(i, slot, weight, columns, mass[i], factor, out_values)
+    if block_sum(found) == 0:
+        return
+    lanes = wp.block_dim()
+    for r in range(rows):
+        i = base + r
+        if csr_row_long(offsets, i):
+            weight, slot = vector_heat_row(
+                i, offsets[i], offsets[i + 1], lane, lanes, columns, run_start, keys, count,
+                order, faces, cot_entries, transport_angles, mass[i], factor, out_values,
+            )  # fmt: skip
+            weight = block_sum(weight)
+            slot = block_max(slot)
+            if lane == 0:
+                vector_heat_diagonal(i, slot, weight, columns, mass[i], factor, out_values)
 
 
 @wp.func

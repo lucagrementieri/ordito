@@ -245,6 +245,47 @@ def test_min_quad_with_fixed_solvers_agree(
     assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-8, atol=1e-8)
 
 
+@pytest.mark.parametrize("pin_hub", [False, True])
+def test_min_quad_with_fixed_on_a_hub_matches_a_direct_solve(device: str, pin_hub: bool) -> None:
+    """
+    Class A, against ``scipy.sparse.linalg.spsolve`` of the interior block, on a hub's long row.
+
+    The graph Laplacian (plus a unit diagonal) of a 1 500-spoke wheel: the hub's row is long
+    (``kernels/linalg.CSR_LONG_ROW_ENTRIES``), so the extraction counts, emits and moves its
+    pinned columns to the right-hand side with a whole block, keeping the surviving entries in
+    order (an exclusive scan per chunk). Every third rim vertex is pinned, so the hub row loses
+    columns; with ``pin_hub`` the hub is pinned too and its column moves out of every rim row.
+    Two right-hand sides.
+    """
+    spokes = 1500
+    n = spokes + 1
+    rim = np.arange(1, n)
+    rows = np.concatenate([np.zeros(spokes, dtype=np.int64), rim, rim])
+    cols = np.concatenate([rim, np.zeros(spokes, dtype=np.int64), 1 + (rim % spokes)])
+    edges = np.unique(np.sort(np.stack([rows, cols], axis=1), axis=1), axis=0)
+    both = np.concatenate([edges, edges[:, ::-1]])
+    adjacency = sp.csr_matrix((np.ones(len(both)), (both[:, 0], both[:, 1])), shape=(n, n))
+    degree = np.asarray(adjacency.sum(axis=1)).ravel()
+    system_np = sp.csr_matrix(sp.diags(degree + 1.0) - adjacency)
+    fixed_np = np.zeros(n, dtype=bool)
+    fixed_np[1::3] = True
+    fixed_np[0] = pin_hub
+    rng = np.random.default_rng(7)
+    values_np = rng.standard_normal((2, n))
+    free = np.flatnonzero(~fixed_np)
+    pinned = np.flatnonzero(fixed_np)
+    reduced = system_np[free][:, free].tocsc()
+    coupled = -(system_np[free][:, pinned] @ values_np[:, pinned].T)
+    expected_np = np.asarray(spla.spsolve(reduced, coupled)).T
+    assert np.ptp(expected_np) > 1e-2
+    solution_wp, _, _ = od.linalg.min_quad_with_fixed(
+        scipy_to_bsr(system_np, device=device),
+        wp.array(fixed_np, dtype=wp.bool, device=device),
+        wp.array(values_np, dtype=wp.float64, device=device),
+    )
+    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-6, atol=1e-6)
+
+
 def test_min_quad_with_fixed_factors_a_solve_that_misses_its_budget(
     device: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
