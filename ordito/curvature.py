@@ -538,7 +538,7 @@ def vertex_defects(
     _launch.launch(
         kernel_scatter.scatter_sum_exact,
         dim=n_faces,
-        inputs=[face_angles, faces.reshape((-1, 3)), exact_sum],
+        inputs=[face_angles, faces, exact_sum],
         device=faces.device,
     )
     defects = _launch.empty(n_vertices, dtype=wp.float32, device=faces.device)
@@ -621,10 +621,9 @@ def discrete_gaussian_curvature(
     # Each vertex's incident-angle sum, in float64; the ball walk forms its defect as it reads it.
     angle_sum = _launch.zeros(vertices.size, dtype=wp.float64, device=device)
     _launch.launch(
-        kernel_curvature.vertex_angle_sums,
+        kernel_scatter.scatter_sum_exact,
         dim=n_faces,
-        inputs=[face_angles, faces],
-        outputs=[angle_sum],
+        inputs=[face_angles, faces, angle_sum],
         device=device,
     )
     grid = od.neighbors.hashgrid_from_points(vertices, float(radius))

@@ -551,16 +551,26 @@ def scale_face_sums(
 
 @wp.kernel
 def scatter_sum_exact(
-    values: wp.array2d[wp.float32], indices: wp.array2d[wp.int32], out_sum: wp.array[wp.float64]
+    values: wp.array2d[wp.float32], faces: wp.array[wp.int32], out_sum: wp.array[wp.float64]
 ) -> None:
-    # ``scatter_sum_scalar`` for ``float32`` values summed in ``float64``: a ``float32`` value is
-    # exact in ``float64`` and so is a sum of them while one target's values span less than
-    # ``2^(29 - log2(values at it))``, so the atomic commit order changes no bit, as in
-    # ``scatter_face_areas_exact``.
-    tid = wp.int32(wp.tid())
-    index = indices[tid]
-    for j in range(indices.shape[1]):
-        peer_summed_add(out_sum, index[j], wp.float64(values[tid, j]))
+    # A per-corner ``(n_faces, 3)`` ``float32`` table summed into its vertices in ``float64``: a
+    # ``float32`` value is exact in ``float64`` and so is a sum of them while one vertex's values
+    # span less than ``2^(29 - log2(values at it))``, so the atomic commit order changes no bit, as
+    # in ``scatter_face_areas_exact``. The angle sums of ``curvature.vertex_defects`` and of
+    # ``curvature.discrete_gaussian_curvature``. Three corners off the flat ``faces`` buffer rather
+    # than a loop over an ``(n, k)`` index view: the view's dynamic loop cost the CPU 1.6-2.0x
+    # (bit-identical sums); and pooled (``peer_summed_add_corner_triple``) where the plain
+    # ``float64`` atomics it replaced in ``discrete_gaussian_curvature`` were not, device time
+    # new/old 0.10x on ``fan_hub``, 0.86-0.90x on dragon to lucy, at par below 100 k faces.
+    f = wp.int32(wp.tid())
+    peer_summed_add_corner_triple(
+        out_sum,
+        faces,
+        f,
+        wp.float64(values[f, 0]),
+        wp.float64(values[f, 1]),
+        wp.float64(values[f, 2]),
+    )
 
 
 @wp.kernel
