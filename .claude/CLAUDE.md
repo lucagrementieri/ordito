@@ -1028,6 +1028,14 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   component sums): whether it should test peers (`warp_peer_lanes`) rather than a uniform warp.
   The uniform form was priced on one hot group, components and random groups; the corner sites
   (§14) say to expect a loss wherever the kernel has work of its own.
+- **Cholesky ordering with dense rows** (2026-11-05). `sparse_cholesky` refuses `fan_hub`'s
+  `M - L` at 11.6 GB (budget 4 GB; `sphere_med` 35 MB): every face touches one of the two hubs,
+  so every vertex is adjacent to both, and the geometric median split crosses ~20 k hub edges on
+  each side, giving separators of ~20 k rows (largest front 20 483, `sum front^2` 8.4e8) where
+  the graph's true separator is the two hubs. The usual remedy is to leave long rows out of the
+  dissection and eliminate them last (a dense root node above the tree), which changes the
+  device-built tree (`_nested_dissection`, `dissection_crossings`). Today the refusal is clean
+  and the callers iterate (fairing's refactor attempt costs its analysis, ~90 ms, once).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
