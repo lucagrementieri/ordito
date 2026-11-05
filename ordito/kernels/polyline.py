@@ -35,6 +35,9 @@ from ordito.kernels.reduce import (
     last_ticket,
     store_block_sum,
     store_block_total,
+    warp_lane_leads,
+    warp_lanes_max_nonnegative,
+    warp_uniform_lanes,
 )
 
 wp.set_module_options({"enable_backward": False})
@@ -757,7 +760,16 @@ def rdp_measure_point(
     if lo >= 0:
         squared_distance = rdp_chord_squared_distance(polyline, i, lo, span_hi[i])
         squared_distances[i] = squared_distance
-        wp.atomic_max(span_max, lo, squared_distance)
+        # A span's points are contiguous, so a warp mostly shares one: its lanes commit their
+        # largest once (a NaN lane keys apart, and its warp commits lane by lane). On the first
+        # levels a few spans hold every point, whose single addresses serialized the launch.
+        lanes = warp_uniform_lanes(wp.where(squared_distance >= 0.0, lo, -2 - lo))
+        if lanes != 0:
+            largest = warp_lanes_max_nonnegative(lanes, squared_distance)
+            if warp_lane_leads(lanes) != 0:
+                wp.atomic_max(span_max, lo, largest)
+        else:
+            wp.atomic_max(span_max, lo, squared_distance)
 
 
 @wp.kernel

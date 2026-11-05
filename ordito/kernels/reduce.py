@@ -795,6 +795,22 @@ def warp_lanes_sum_float(lanes: wp.int32, value: wp.float64) -> wp.float64: ...
 def warp_lane_leads(lanes: wp.int32) -> wp.int32: ...
 
 
+# The largest non-negative ``value`` over the lanes in the ``lanes`` mask (from
+# ``warp_uniform_lanes``), to every one of them: a non-negative float orders like its bits, so the
+# integer warp reduction is exact. The CPU device returns ``value``.
+_WARP_LANES_MAX_NONNEGATIVE = """
+#if defined(__CUDA_ARCH__)
+return __int_as_float(__reduce_max_sync((unsigned)lanes, __float_as_int(value)));
+#else
+return value;
+#endif
+"""
+
+
+@wp.func_native(_WARP_LANES_MAX_NONNEGATIVE)
+def warp_lanes_max_nonnegative(lanes: wp.int32, value: wp.float32) -> wp.float32: ...
+
+
 @wp.func
 def commit_group_sum_word(sums: GroupSumPass, index: wp.int32, word: wp.int64):
     # One word of a term into ``sums.words[index]`` (a slot's high or low word): summed across the
