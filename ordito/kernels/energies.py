@@ -2,6 +2,7 @@ import warp as wp
 
 from ordito.kernels.array import (
     OverloadTable,
+    binary_search_index,
     sorted_run_end,
     sorted_run_start,
     store_coo_key,
@@ -15,7 +16,7 @@ from ordito.kernels.predicates import (
     squared_edge_lengths,
     triangle_double_area,
 )
-from ordito.kernels.reduce import term_sum_1d
+from ordito.kernels.reduce import block_sum, term_sum_1d
 from ordito.kernels.scatter import add_corner_triple, add_or_store_corner_triple, append_to_pair
 from ordito.kernels.triangles import face_vertices_vec3d, known_local_corner
 
@@ -1132,7 +1133,8 @@ def curved_long_ring_count(vf_offsets: wp.array[wp.int32], out_flags: wp.array[w
         wp.atomic_add(out_flags, 1, CURVED_RING_CANDIDATES * (vf_offsets[i + 1] - vf_offsets[i]))
 
 
-@wp.kernel
+# Launched tiled at its own width, so in a module of its own (§12.4).
+@wp.kernel(module="unique")
 def curved_long_ring_keys(
     inverse: wp.array[wp.int32],
     edge_halfedges: wp.array2d[wp.int32],
@@ -1147,30 +1149,63 @@ def curved_long_ring_keys(
     # A long fan's row ``i`` takes from each face at ``i`` and the faces across its edges: one key
     # ``(i, face)`` each, a missing side the sentinel, in a slot range taken in arrival order. The
     # sort (``array.csr_from_keys``) leaves each row's faces ascending and once each, the order
-    # ``curved_hessian_rows``' scan visits them in.
-    i = wp.int32(wp.tid())
+    # ``curved_hessian_rows``' scan visits them in. A block a vertex, its lanes striding the fan
+    # (a thread wrote ``fan_hub``'s hub's 287 k keys in 29 ms); a short fan's block returns.
+    i, lane = wp.tid()
     if not curved_ring_long(vf_offsets, i):
         return
     start = vf_offsets[i]
     end = vf_offsets[i + 1]
-    slot = wp.atomic_add(cursor, 0, CURVED_RING_CANDIDATES * (end - start))
-    for a in range(start, end):
+    base = wp.int32(0)
+    if lane == 0:
+        base = wp.atomic_add(cursor, 0, CURVED_RING_CANDIDATES * (end - start))
+    base = block_sum(base)
+    for a in range(start + lane, end, wp.block_dim()):
         h = vertex_faces[a]
+        slot = base + CURVED_RING_CANDIDATES * (a - start)
         store_coo_key(slot, i, h, n_vertices, n_faces, out_keys, out_order)
-        slot += 1
         for c in range(3):
             edge = inverse[h * 3 + c]
             for side in range(2):
                 halfedge = edge_halfedges[edge, side]
                 across = wp.where(halfedge >= 0, halfedge // 3, -1)
-                store_coo_key(slot, i, across, n_vertices, n_faces, out_keys, out_order)
-                slot += 1
+                store_coo_key(
+                    slot + 1 + 2 * c + side, i, across, n_vertices, n_faces, out_keys, out_order
+                )
+
+
+@wp.func
+def curved_next_face(
+    i: wp.int32,
+    previous: wp.int32,
+    inverse: wp.array[wp.int32],
+    edge_halfedges: wp.array2d[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+) -> wp.int32:
+    # The least face above ``previous`` among those at vertex ``i`` and those across their edges,
+    # or ``-1``: a scan of ``i``'s fan, which a short fan's walk repeats for each face it visits.
+    f = wp.int32(-1)
+    for a in range(vf_offsets[i], vf_offsets[i + 1]):
+        h = vertex_faces[a]
+        if h > previous and (f < 0 or h < f):
+            f = h
+        for c in range(3):
+            edge = inverse[h * 3 + c]
+            for side in range(2):
+                halfedge = edge_halfedges[edge, side]
+                if halfedge >= 0:
+                    across = halfedge // 3
+                    if across > previous and (f < 0 or across < f):
+                        f = across
+    return f
 
 
 @wp.func
 def curved_row_face(
     i: wp.int32,
     f: wp.int32,
+    only: wp.int32,
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     inverse: wp.array[wp.int32],
@@ -1183,11 +1218,14 @@ def curved_row_face(
     row_start: wp.int32,
     row_end: wp.int32,
     columns: wp.array[wp.int32],
+    commit: wp.int32,
     out_values: wp.array[wp.Float],
-):
+) -> wp.float64:
     # Face ``f``'s contributions to row ``i``: its ordered edge-slot pairs ``(alpha, beta)``, the
     # slot of edge ``alpha`` holding ``i`` and each slot of edge ``beta``, each searched into the
-    # row.
+    # row; with ``only`` a column (not ``-1``), only that column's, in the same order. With
+    # ``commit`` zero nothing is added: the contributions' sum, in that order, is returned instead.
+    total = wp.float64(0.0)
     valid, eids, ims, diag, pp, pq = curved_face_terms(
         vertices, faces, inverse, angles, angle_sums, mass, f
     )
@@ -1205,7 +1243,7 @@ def curved_row_face(
                         perp_u = perp[edge_a, u_slot]
                         for v_slot in range(4):
                             col = edge_vertex_slots[edge_b, v_slot]
-                            if col >= 0:
+                            if col >= 0 and (only < 0 or col == only):
                                 par_v = par[edge_b, v_slot]
                                 perp_v = perp[edge_b, v_slot]
                                 value = mimi * (
@@ -1213,18 +1251,68 @@ def curved_row_face(
                                     + b_pq * par_u * perp_v
                                     + b_qp * perp_u * par_v
                                 )
-                                # An atomic though the row is this thread's alone: each
-                                # contribution is rounded before it is added, as the triplets'
-                                # run sum added them, rather than fused into the add.
-                                wp.atomic_add(
-                                    out_values,
-                                    wp.lower_bound(columns, row_start, row_end, col),
-                                    type(out_values[0])(value),
-                                )
+                                if commit != 0:
+                                    # An atomic though the entry is this thread's alone: each
+                                    # contribution is rounded before it is added, as the
+                                    # triplets' run sum added them, rather than fused into the add.
+                                    wp.atomic_add(
+                                        out_values,
+                                        wp.lower_bound(columns, row_start, row_end, col),
+                                        type(out_values[0])(value),
+                                    )
+                                else:
+                                    total += value
+    return total
 
 
 @wp.kernel
 def curved_hessian_rows(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    inverse: wp.array[wp.int32],
+    angles: wp.array2d[wp.float64],
+    angle_sums: wp.array[wp.float64],
+    mass: wp.array[wp.float64],
+    edge_halfedges: wp.array2d[wp.int32],
+    edge_vertex_slots: wp.array2d[wp.int32],
+    par: wp.array2d[wp.float64],
+    perp: wp.array2d[wp.float64],
+    vf_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    long_offsets: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    out_values: wp.array[wp.Float],
+) -> None:
+    # One thread per row ``i`` of ``curved_hessian_keys``' pattern, its values arriving at
+    # ``-0.0``, the identity of floating-point addition. Row ``i`` takes from a face that holds
+    # ``i`` or lies across an edge of one that does (an edge's gradient row touches the vertices of
+    # its two faces; the mesh is edge-manifold), in ascending face order, then each face's ordered
+    # edge-slot pairs (``curved_row_face``). That is the order an entry's contributions held when
+    # one thread a face emitted its 144 triplets and their sort summed each run, so each entry is
+    # that sum bit for bit, with no triplet stored. A long fan's row is left to
+    # ``curved_hessian_long_rows`` (``long_offsets`` is empty when no fan is long).
+    i = wp.int32(wp.tid())
+    row_start = offsets[i]
+    row_end = offsets[i + 1]
+    if row_start == row_end:
+        return
+    if long_offsets.shape[0] > 0 and curved_ring_long(vf_offsets, i):
+        return
+    previous = wp.int32(-1)
+    while True:
+        f = curved_next_face(i, previous, inverse, edge_halfedges, vf_offsets, vertex_faces)
+        if f < 0:
+            break
+        previous = f
+        curved_row_face(
+            i, f, -1, vertices, faces, inverse, angles, angle_sums, mass, edge_vertex_slots, par,
+            perp, row_start, row_end, columns, 1, out_values,
+        )  # fmt: skip
+
+
+@wp.kernel
+def curved_hessian_long_rows(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     inverse: wp.array[wp.int32],
@@ -1243,52 +1331,90 @@ def curved_hessian_rows(
     columns: wp.array[wp.int32],
     out_values: wp.array[wp.Float],
 ) -> None:
-    # One thread per row ``i`` of ``curved_hessian_keys``' pattern, its values arriving at
-    # ``-0.0``, the identity of floating-point addition. Row ``i`` takes from a face that holds
-    # ``i`` or lies across an edge of one that does (an edge's gradient row touches the vertices of
-    # its two faces; the mesh is edge-manifold), in ascending face order, then each face's ordered
-    # edge-slot pairs (``curved_row_face``). That is the order an entry's contributions held when
-    # one thread a face emitted its 144 triplets and their sort summed each run, so each entry is
-    # that sum bit for bit, with no triplet stored. A long fan's faces come sorted in
-    # ``long_offsets`` / ``long_faces`` (empty when no fan is long); a short one finds each next
-    # face by a scan of the fan.
-    i = wp.int32(wp.tid())
+    # ``curved_hessian_rows`` at a long fan's row, a thread an entry. Face ``f`` adds to entry
+    # ``(i, j)`` only through an edge whose slots hold ``j``, so ``f`` is at ``j`` or across an
+    # edge of a face at ``j``: entry ``(i, j)`` walks ``j``'s candidate faces in ascending order
+    # (``j``'s sorted list when ``j``'s fan is long too, else ``curved_next_face``'s scan) and
+    # takes each face's contributions to its own column in ``curved_row_face``'s order -- the
+    # order the row's own thread added them to it, so the entry is bit for bit that sum. Launch over
+    # every stored entry; an entry of a short fan's row returns, and so does one whose column's
+    # fan is long too (the diagonal among them), which ``curved_hessian_long_columns`` sums.
+    e = wp.int32(wp.tid())
+    i = binary_search_index(offsets, e) - 1
+    if not curved_ring_long(vf_offsets, i):
+        return
+    j = columns[e]
+    if curved_ring_long(vf_offsets, j):
+        return
     row_start = offsets[i]
     row_end = offsets[i + 1]
-    if row_start == row_end:
-        return
-    if long_offsets.shape[0] > 0 and curved_ring_long(vf_offsets, i):
-        for e in range(long_offsets[i], long_offsets[i + 1]):
-            curved_row_face(
-                i, long_faces[e], vertices, faces, inverse, angles, angle_sums, mass,
-                edge_vertex_slots, par, perp, row_start, row_end, columns, out_values,
-            )  # fmt: skip
-        return
-    ring_start = vf_offsets[i]
-    ring_end = vf_offsets[i + 1]
     previous = wp.int32(-1)
     while True:
-        # The next face above ``previous`` among those at ``i`` and those across their edges.
-        f = wp.int32(-1)
-        for a in range(ring_start, ring_end):
-            h = vertex_faces[a]
-            if h > previous and (f < 0 or h < f):
-                f = h
-            for c in range(3):
-                edge = inverse[h * 3 + c]
-                for side in range(2):
-                    halfedge = edge_halfedges[edge, side]
-                    if halfedge >= 0:
-                        across = halfedge // 3
-                        if across > previous and (f < 0 or across < f):
-                            f = across
+        f = curved_next_face(j, previous, inverse, edge_halfedges, vf_offsets, vertex_faces)
         if f < 0:
             break
         previous = f
         curved_row_face(
-            i, f, vertices, faces, inverse, angles, angle_sums, mass, edge_vertex_slots, par,
-            perp, row_start, row_end, columns, out_values,
+            i, f, j, vertices, faces, inverse, angles, angle_sums, mass, edge_vertex_slots, par,
+            perp, row_start, row_end, columns, 1, out_values,
         )  # fmt: skip
+
+
+# Launched tiled at its own width, so in a module of its own (§12.4).
+@wp.kernel(module="unique")
+def curved_hessian_long_columns(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    inverse: wp.array[wp.int32],
+    angles: wp.array2d[wp.float64],
+    angle_sums: wp.array[wp.float64],
+    mass: wp.array[wp.float64],
+    edge_halfedges: wp.array2d[wp.int32],
+    edge_vertex_slots: wp.array2d[wp.int32],
+    par: wp.array2d[wp.float64],
+    perp: wp.array2d[wp.float64],
+    vf_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    long_offsets: wp.array[wp.int32],
+    long_faces: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    out_values: wp.array[wp.Float],
+) -> None:
+    # A long fan's entries whose column's fan is long too, the diagonal among them, a block a row:
+    # an entry ``(i, j)`` takes from ``j``'s sorted faces, every one of them for the diagonal, so a
+    # thread walking them in order held ``fan_hub``'s call at 0.9-1.2 s. For each such entry the
+    # lanes stride ``j``'s faces, each summing its faces' contributions in ``curved_row_face``'s
+    # order, and the block sums the lanes in a fixed tree: the result repeats, and differs from the
+    # triplet sort's order in its last bits. The row is scanned a chunk of ``block_dim`` entries
+    # at a time, the block counting the chunk's long columns first so that a chunk without one
+    # costs one reduction. Launch tiled over the vertices; a short fan's block returns.
+    i, lane = wp.tid()
+    if not curved_ring_long(vf_offsets, i):
+        return
+    row_start = offsets[i]
+    row_end = offsets[i + 1]
+    lanes = wp.block_dim()
+    for chunk in range(row_start, row_end, lanes):
+        mine = chunk + lane
+        found = wp.int32(0)
+        if mine < row_end and curved_ring_long(vf_offsets, columns[mine]):
+            found = 1
+        if block_sum(found) == 0:
+            continue
+        for e in range(chunk, wp.min(chunk + lanes, row_end)):
+            j = columns[e]
+            if not curved_ring_long(vf_offsets, j):
+                continue
+            partial = wp.float64(0.0)
+            for k in range(long_offsets[j] + lane, long_offsets[j + 1], lanes):
+                partial += curved_row_face(
+                    i, long_faces[k], j, vertices, faces, inverse, angles, angle_sums, mass,
+                    edge_vertex_slots, par, perp, row_start, row_end, columns, 0, out_values,
+                )  # fmt: skip
+            total = block_sum(partial)
+            if lane == 0:
+                out_values[e] = out_values[e] + type(out_values[0])(total)
 
 
 # The "no further column" sentinel of ``crouzeix_raviart_next_column``.
@@ -1640,6 +1766,8 @@ SANDWICH_ROW_TRIPLETS: OverloadTable
 SANDWICH_LONG_ROWS: OverloadTable
 HESSIAN_ENERGY_ROWS: OverloadTable
 CURVED_HESSIAN_ROWS: OverloadTable
+CURVED_HESSIAN_LONG_ROWS: OverloadTable
+CURVED_HESSIAN_LONG_COLUMNS: OverloadTable
 LSCM_LAPLACIAN_ROWS_AND_COUNTS: OverloadTable
 
 
@@ -1647,7 +1775,9 @@ def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global CROUZEIX_RAVIART_MASS_DIAG, CROUZEIX_RAVIART_CSR
     global SANDWICH_ROW_COUNTS, SANDWICH_ROW_TRIPLETS, SANDWICH_LONG_ROWS
-    global HESSIAN_ENERGY_ROWS, CURVED_HESSIAN_ROWS, LSCM_LAPLACIAN_ROWS_AND_COUNTS
+    global HESSIAN_ENERGY_ROWS, CURVED_HESSIAN_ROWS, CURVED_HESSIAN_LONG_ROWS
+    global CURVED_HESSIAN_LONG_COLUMNS
+    global LSCM_LAPLACIAN_ROWS_AND_COUNTS
     i32 = wp.array[wp.int32]
     CROUZEIX_RAVIART_MASS_DIAG = OverloadTable(
         crouzeix_raviart_mass_diag,
@@ -1734,25 +1864,21 @@ def _register_overloads() -> None:
     CURVED_HESSIAN_ROWS = OverloadTable(
         curved_hessian_rows,
         {
-            d: [
-                wp.array[wp.vec3],
-                i32,
-                i32,
-                wp.array2d[wp.float64],
-                wp.array[wp.float64],
-                wp.array[wp.float64],
-                wp.array2d[wp.int32],
-                wp.array2d[wp.int32],
-                wp.array2d[wp.float64],
-                wp.array2d[wp.float64],
-                i32,
-                i32,
-                i32,
-                i32,
-                i32,
-                i32,
-                wp.array[d],
-            ]
+            d: [*_curved_row_arguments(), i32, i32, i32, i32, i32, wp.array[d]]
+            for d in _MATRIX_DTYPES
+        },
+    )
+    CURVED_HESSIAN_LONG_ROWS = OverloadTable(
+        curved_hessian_long_rows,
+        {
+            d: [*_curved_row_arguments(), i32, i32, i32, i32, i32, i32, wp.array[d]]
+            for d in _MATRIX_DTYPES
+        },
+    )
+    CURVED_HESSIAN_LONG_COLUMNS = OverloadTable(
+        curved_hessian_long_columns,
+        {
+            d: [*_curved_row_arguments(), i32, i32, i32, i32, i32, i32, wp.array[d]]
             for d in _MATRIX_DTYPES
         },
     )
@@ -1775,6 +1901,22 @@ def _register_overloads() -> None:
             for d in _MATRIX_DTYPES
         },
     )
+
+
+def _curved_row_arguments() -> list[object]:
+    """Return the leading arguments both curved-Hessian row kernels take, through ``perp``."""
+    return [
+        wp.array[wp.vec3],
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        wp.array2d[wp.float64],
+        wp.array[wp.float64],
+        wp.array[wp.float64],
+        wp.array2d[wp.int32],
+        wp.array2d[wp.int32],
+        wp.array2d[wp.float64],
+        wp.array2d[wp.float64],
+    ]
 
 
 _register_overloads()

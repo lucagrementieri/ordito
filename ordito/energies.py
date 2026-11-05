@@ -1029,7 +1029,7 @@ def curved_hessian_energy(
     long_offsets = long_faces = _launch.empty(0, dtype=wp.int32, device=device)
     if n_long_keys > 0:
         long_keys, long_order = od.array.csr_key_buffers(int(n_long_keys), device)
-        _launch.launch(
+        _launch.launch_tiled(
             kernel_energies.curved_long_ring_keys,
             dim=n_vertices,
             inputs=[
@@ -1042,6 +1042,7 @@ def curved_hessian_energy(
                 _launch.zeros(1, dtype=wp.int32, device=device),
             ],
             outputs=[long_keys, long_order],
+            block_dim=256,
             device=device,
         )
         long_offsets, long_faces, _ = od.array.csr_from_keys(
@@ -1052,30 +1053,44 @@ def curved_hessian_energy(
     # from the first one on.
     values = _launch.full(n_entries, -0.0, dtype=dtype, device=device)
     if n_entries > 0:
+        # A long fan's row a thread an entry (``kernels/energies.curved_hessian_long_rows``) and
+        # its long columns a block a row (``curved_hessian_long_columns``); every other row a
+        # thread a row.
+        rows = [
+            vertices,
+            faces,
+            inverse,
+            angles,
+            angle_sums,
+            mass,
+            edge_halfedges,
+            vertex_slots,
+            par,
+            perp,
+            vf_offsets,
+            vf_indices,
+        ]
         _launch.launch(
             kernel_energies.CURVED_HESSIAN_ROWS[dtype],
             dim=n_vertices,
-            inputs=[
-                vertices,
-                faces,
-                inverse,
-                angles,
-                angle_sums,
-                mass,
-                edge_halfedges,
-                vertex_slots,
-                par,
-                perp,
-                vf_offsets,
-                vf_indices,
-                long_offsets,
-                long_faces,
-                offsets,
-                columns,
-                values,
-            ],
+            inputs=[*rows, long_offsets, offsets, columns, values],
             device=device,
         )
+        if n_long_keys > 0:
+            long_inputs = [*rows, long_offsets, long_faces, offsets, columns, values]
+            _launch.launch(
+                kernel_energies.CURVED_HESSIAN_LONG_ROWS[dtype],
+                dim=n_entries,
+                inputs=long_inputs,
+                device=device,
+            )
+            _launch.launch_tiled(
+                kernel_energies.CURVED_HESSIAN_LONG_COLUMNS[dtype],
+                dim=n_vertices,
+                inputs=long_inputs,
+                block_dim=256,
+                device=device,
+            )
     return od.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values, nnz=n_entries)
 
 

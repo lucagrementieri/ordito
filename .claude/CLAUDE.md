@@ -1023,11 +1023,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   1 200: 68 ms against 31 ms with the hub pinned (the rest of the gap). Each is a row-a-thread
   kernel to give a block-per-long-row sibling (§14's long-row item and the sandwich's form); none
   is a solver step, so each costs once a call.
-- **`curved_hessian_energy`'s hub row is one thread** (2026-11-05): `fan_hub` 3.8 s warm (3 ms on
-  `sphere_med`) since a long fan's row walks its sorted faces, all of it the hub rows' threads
-  walking ~82 k faces each. A block a row would break the face order every entry's sum follows
-  (the triplet sort's, bit for bit); an entry-owning lane split keeps it only by walking every
-  face per lane. Open if a hub caller appears.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

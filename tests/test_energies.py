@@ -483,10 +483,11 @@ def test_curved_hessian_energy_matches_igl_on_a_long_fan(device: str, hub_faces:
     """
     Class A: ``igl.curved_hessian_energy`` on a closed double cone whose hubs' fans are long.
 
-    From ``CURVED_LONG_RING_FACES`` (64) faces a row walks its fan's faces from a sorted list
-    rather than finding each by a scan of the fan, which is quadratic in it (minutes on a
-    40 960-face hub); 63 faces stays on the scan. Both visit the same faces in the same order, so
-    the assembly is the scan's bit for bit (checked against the scan on 64 and 200, both devices).
+    From ``CURVED_LONG_RING_FACES`` (64) faces a row is summed a thread an entry, each walking its
+    column's faces in the scan's order, and the entries whose column's fan is long too (here the
+    diagonals and the two hubs' coupling) a block each; 63 faces stays on the row scan. Measured
+    against the scan on 64 and 200 faces, both devices: those four entries differ by at most 2e-18
+    relative, every other one is bit for bit the same.
     """
     vertices_np, faces_np = _double_cone_np(hub_faces)
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
