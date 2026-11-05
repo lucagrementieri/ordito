@@ -891,8 +891,9 @@ def _potpourri3d_paths(
 
 @pytest.mark.parametrize("mesh_name", _FLIP_MESHES)
 @pytest.mark.parity("geodesic_path_potpourri3d", "potpourri3d")
+@pytest.mark.parametrize("ranges", [1, 16], ids=["one-range", "ranges"])
 def test_geodesic_path_potpourri3d_method_matches_potpourri3d(
-    request: pytest.FixtureRequest, mesh_name: str
+    request: pytest.FixtureRequest, mesh_name: str, ranges: int, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Class A: ``method="potpourri3d"`` equals ``EdgeFlipGeodesicSolver.find_geodesic_path``.
@@ -905,8 +906,10 @@ def test_geodesic_path_potpourri3d_method_matches_potpourri3d(
     which a heat descent does not reproduce (see the Class C sphere test above).
 
     Non-vacuity: most paths cross edges rather than follow them (points off every vertex), so the
-    flips and the trace both decide the answer.
+    flips and the trace both decide the answer. ``ranges`` caps the ranges of paths the
+    shortening splits into, each on a host thread: one range, or the default (40 paths make five).
     """
+    monkeypatch.setattr(od.geodesic_walk, "_FLIP_GROUPS", ranges)
     _, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = mesh_wp.points.numpy().astype(np.float64)
     faces_np = mesh_wp.indices.numpy().reshape(-1, 3)

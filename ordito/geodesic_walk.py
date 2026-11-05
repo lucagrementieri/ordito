@@ -29,11 +29,14 @@ that one solves a vector-heat system -- and geodesic *distance* by the heat meth
 
 from __future__ import annotations
 
+import concurrent.futures
 import math
+import os
 import warnings
 from collections.abc import Sequence
 from typing import Any, Literal, cast, overload
 
+import numpy as np
 import warp as wp
 
 # ``@wp.struct`` rebinds the decorated name to a ``Struct`` value, so a helper passing one around
@@ -1064,14 +1067,18 @@ def _flip_shorten_on_host(
     targets: wp.array[wp.int32],
 ) -> tuple[tuple[wp.array[Any], ...], int, int]:
     """
-    Shorten every path in one thread on the CPU device, each from the input triangulation.
+    Shorten every path on the CPU device, each from the input triangulation.
 
     Returns the path offsets and the entries (path, kind, tail, tip, trace vector) on the CPU
-    device, the entry count and how many paths the step bound cut off.
+    device, the entry count and how many paths the step bound cut off. Each path starts from the
+    input triangulation (``kernels/algorithms/flip_geodesics.shorten_paths`` rewinds its flips),
+    so the paths split into ranges, each shortened by one launch with a triangulation and pools of
+    its own, the ranges' launches on host threads (a CPU launch releases the interpreter), and
+    their entries joined in path order. A range whose pools ran out runs again, grown, from a
+    fresh copy of the input triangulation.
     """
     host = wp.get_device("cpu")
     n_paths = targets.size
-    n_halfedges = 2 * n_edges
 
     def on_host(array: wp.array[Any]) -> wp.array[Any]:
         return array if array.device == host else _launch.clone(array, device=host)
@@ -1089,99 +1096,175 @@ def _flip_shorten_on_host(
         setattr(host_mesh, name, on_host(getattr(input_mesh, name)))
     incoming_host = on_host(incoming)
     targets_host = on_host(targets)
-    tri = kernel_flip_geodesics.Intrinsic()
-    tri.next = _launch.clone(host_mesh.next, device=host)
-    tri.vertex = _launch.clone(host_mesh.vertex, device=host)
-    tri.length = _launch.clone(host_mesh.length, device=host)
-    tri.signpost = _launch.clone(host_mesh.signpost, device=host)
-    tri.original = _launch.full(n_edges, 1, dtype=wp.int32, device=host)
-
-    status = _launch.zeros(kernel_flip_geodesics.STATUS_SIZE, dtype=wp.int32, device=host)
-    path_offsets = _launch.empty(n_paths + 1, dtype=wp.int32, device=host)
-    heap_capacity = 2 * n_edges + _FLIP_HEAP_SLACK
-    segment_capacity = n_edges + _FLIP_SEGMENT_SLACK
-    entry_capacity = _FLIP_ENTRIES_PER_PATH * n_paths
-    while True:
-        net = kernel_flip_geodesics.Network()
-        (
-            net.segment_halfedge,
-            net.segment_prev,
-            net.segment_next,
-            net.segment_id,
-            net.stack_prev,
-            net.stack_next,
-            net.free,
-        ) = _launch.carve(wp.int32, (segment_capacity,) * 7, host)
-        net.heap_angle = _launch.empty(heap_capacity, dtype=wp.float64, device=host)
-        (
-            net.heap_turn,
-            net.heap_id,
-            net.heap_slot,
-            net.edge_front,
-            net.edge_back,
-            net.touched,
-            net.scratch,
-            net.state,
-        ) = _launch.carve(
-            wp.int32,
-            (
-                heap_capacity,
-                heap_capacity,
-                heap_capacity,
-                n_edges,
-                n_edges,
-                5 * n_edges + _FLIP_TOUCHED_SLACK,
-                n_halfedges,
-                kernel_flip_geodesics.STATE_SIZE,
-            ),
-            host,
-        )
-        entry_path, entry_kind, entry_tail, entry_tip = _launch.carve(
-            wp.int32, (entry_capacity,) * 4, host
-        )
-        entry_vector = _launch.empty(entry_capacity, dtype=wp.vec2d, device=host)
-        _launch.launch(
-            kernel_flip_geodesics.shorten_paths,
-            dim=1,
-            inputs=[host_mesh, tri, net, incoming_host, targets_host],
-            outputs=[
-                path_offsets,
-                entry_path,
-                entry_kind,
-                entry_tail,
-                entry_tip,
-                entry_vector,
-                status,
-            ],
-            device=host,
-        )
-        # Host readback, one copy: the entry count sizes the trace, and the flags say whether a
-        # pool ran out (the shortening then reruns with it grown).
-        n_entries, heap_overflow, segment_overflow, n_unconverged = (
-            int(v) for v in read_values(status, 0, kernel_flip_geodesics.STATUS_SIZE)
-        )
-        grow = False
-        if heap_overflow:
-            heap_capacity *= 4
-            grow = True
-        if segment_overflow:
-            segment_capacity *= 4
-            grow = True
-        if not grow and n_entries > entry_capacity:
-            entry_capacity = n_entries
-            grow = True
-        if not grow:
-            break
-        _launch.zero_(status)
+    n_groups = 1
+    if n_paths >= _FLIP_SPLIT_FROM:
+        n_groups = min(_FLIP_GROUPS, os.cpu_count() or 1, n_paths // _FLIP_GROUP_PATHS)
+    starts = [n_paths * g // n_groups for g in range(n_groups + 1)]
+    capacities = [
+        [2 * n_edges + _FLIP_HEAP_SLACK, n_edges + _FLIP_SEGMENT_SLACK, 0] for _ in range(n_groups)
+    ]
+    results: list[tuple[np.ndarray, ...] | None] = [None] * n_groups
+    unconverged = [0] * n_groups
+    single: tuple[wp.array[Any], ...] | None = None
+    pending = list(range(n_groups))
+    with concurrent.futures.ThreadPoolExecutor(n_groups) as pool:
+        while pending:
+            runs = [
+                _flip_group_run(
+                    host_mesh,
+                    (host_mesh.next, host_mesh.vertex, host_mesh.length, host_mesh.signpost),
+                    n_edges,
+                    incoming_host,
+                    _launch.view(targets_host, starts[g], starts[g + 1]),
+                    capacities[g],
+                )
+                for g in pending
+            ]
+            if len(runs) == 1:
+                runs[0][0].launch()
+            else:
+                list(pool.map(lambda run: run[0].launch(), runs))
+            still = []
+            for g, (_, outputs) in zip(pending, runs, strict=True):
+                # Host reads, one a range: its entry count, and whether a pool ran out.
+                status = outputs[-1].numpy()
+                n_entries, heap_overflow, segment_overflow, n_unconverged = (
+                    int(v) for v in status[: kernel_flip_geodesics.STATUS_SIZE]
+                )
+                heap, segment, entry = capacities[g]
+                grow = bool(heap_overflow or segment_overflow)
+                capacities[g] = [
+                    heap * 4 if heap_overflow else heap,
+                    segment * 4 if segment_overflow else segment,
+                    max(entry, n_entries) if not grow and n_entries > entry else entry,
+                ]
+                if grow or n_entries > entry:
+                    still.append(g)
+                    continue
+                unconverged[g] = n_unconverged
+                if n_groups == 1:
+                    # One range is the whole answer, already in place.
+                    single = (outputs[0], *(_launch.view(a, 0, n_entries) for a in outputs[1:-1]))
+                    break
+                offsets, path, kind, tail, tip, vector = (array.numpy() for array in outputs[:-1])
+                results[g] = (
+                    offsets,
+                    path[:n_entries] + starts[g],
+                    kind[:n_entries],
+                    tail[:n_entries],
+                    tip[:n_entries],
+                    vector[:n_entries],
+                )
+            pending = still
+    if single is not None:
+        return single, single[1].size, unconverged[0]
+    done = [result for result in results if result is not None]
+    bases = np.cumsum([0] + [len(result[1]) for result in done])
+    offsets_np = np.concatenate(
+        [[0]] + [result[0][1:] + base for result, base in zip(done, bases[:-1], strict=True)]
+    ).astype(np.int32)
+    n_entries = int(bases[-1])
+    n_unconverged = sum(unconverged)
     entries = (
-        path_offsets,
-        _launch.view(entry_path, 0, n_entries),
-        _launch.view(entry_kind, 0, n_entries),
-        _launch.view(entry_tail, 0, n_entries),
-        _launch.view(entry_tip, 0, n_entries),
-        _launch.view(entry_vector, 0, n_entries),
+        wp.array(offsets_np, dtype=wp.int32, device=host),
+        *(
+            wp.array(np.concatenate([result[k] for result in done]), dtype=dtype, device=host)
+            for k, dtype in ((1, wp.int32), (2, wp.int32), (3, wp.int32), (4, wp.int32))
+        ),
+        wp.array(
+            np.concatenate([result[5] for result in done]).reshape(-1, 2),
+            dtype=wp.vec2d,
+            device=host,
+        ),
     )
     return entries, n_entries, n_unconverged
+
+
+# The ranges of paths the shortening splits into: at most this many, of at least this many paths,
+# from this many paths on. A range's own triangulation and pools cost about what a few paths do:
+# two ranges of 8 took 16 paths 1.05x, of 12 paths 24 0.85x where ranges of 8 took them 0.74x
+# (an icosphere of six subdivisions; 64 paths 0.47x, 512 0.15x).
+_FLIP_GROUPS = 16
+_FLIP_GROUP_PATHS = 8
+_FLIP_SPLIT_FROM = 24
+
+
+def _flip_group_run(
+    host_mesh: StructInstance,
+    input_triangulation: tuple[wp.array[Any], ...],
+    n_edges: int,
+    incoming: wp.array[wp.int32],
+    targets: wp.array[wp.int32],
+    capacities: list[int],
+) -> tuple[Any, tuple[wp.array[Any], ...]]:
+    """
+    Record one range's ``shorten_paths`` launch on the CPU device; return it and its outputs.
+
+    The range's triangulation is a fresh copy of the input's (``input_triangulation``: its
+    ``next``, ``vertex``, ``length`` and ``signpost`` tables), and its pools are sized by
+    ``capacities`` (heap, segment and entry slots; an entry capacity of ``0`` starts at
+    ``_FLIP_ENTRIES_PER_PATH`` a path). The outputs end with the status words.
+    """
+    host = wp.get_device("cpu")
+    n_halfedges = 2 * n_edges
+    heap_capacity, segment_capacity, entry_capacity = capacities
+    entry_capacity = max(entry_capacity, _FLIP_ENTRIES_PER_PATH * targets.size)
+    capacities[2] = entry_capacity
+    tri = kernel_flip_geodesics.Intrinsic()
+    tri.next, tri.vertex, tri.length, tri.signpost = (
+        _launch.clone(table, device=host) for table in input_triangulation
+    )
+    tri.original = _launch.full(n_edges, 1, dtype=wp.int32, device=host)
+    net = kernel_flip_geodesics.Network()
+    (
+        net.segment_halfedge,
+        net.segment_prev,
+        net.segment_next,
+        net.segment_id,
+        net.stack_prev,
+        net.stack_next,
+        net.free,
+    ) = _launch.carve(wp.int32, (segment_capacity,) * 7, host)
+    net.heap_angle = _launch.empty(heap_capacity, dtype=wp.float64, device=host)
+    (
+        net.heap_turn,
+        net.heap_id,
+        net.heap_slot,
+        net.edge_front,
+        net.edge_back,
+        net.touched,
+        net.scratch,
+        net.state,
+    ) = _launch.carve(
+        wp.int32,
+        (
+            heap_capacity,
+            heap_capacity,
+            heap_capacity,
+            n_edges,
+            n_edges,
+            5 * n_edges + _FLIP_TOUCHED_SLACK,
+            n_halfedges,
+            kernel_flip_geodesics.STATE_SIZE,
+        ),
+        host,
+    )
+    path_offsets = _launch.empty(targets.size + 1, dtype=wp.int32, device=host)
+    entry_path, entry_kind, entry_tail, entry_tip = _launch.carve(
+        wp.int32, (entry_capacity,) * 4, host
+    )
+    entry_vector = _launch.empty(entry_capacity, dtype=wp.vec2d, device=host)
+    status = _launch.zeros(kernel_flip_geodesics.STATUS_SIZE, dtype=wp.int32, device=host)
+    outputs = (path_offsets, entry_path, entry_kind, entry_tail, entry_tip, entry_vector, status)
+    command = wp.launch(
+        kernel_flip_geodesics.shorten_paths,
+        dim=1,
+        inputs=[host_mesh, tri, net, incoming, targets],
+        outputs=list(outputs),
+        device=host,
+        record_cmd=True,
+    )
+    return command, outputs
 
 
 def shorten_loop(
