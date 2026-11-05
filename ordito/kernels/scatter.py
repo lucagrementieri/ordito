@@ -420,6 +420,20 @@ def scatter_weighted_sum_vec(
         peer_summed_add_vec3(out_sum, index[j], value * weights[tid, j])
 
 
+# A face's three corner values added to the slots ``indices`` names for its corners (vertices, or
+# edges through a halfedge map). ``add_corner_triple`` commits a plain atomic per corner;
+# ``peer_summed_add_corner_triple`` pools a warp's lanes that share a slot (``peer_summed_add``).
+# The pooled form serves the kernels whose work is the scatter (``scatter_face_areas_exact``,
+# ``scatter_face_thirds``, ``laplacian.add_face_area_exact``, ``vertices.scatter_corner_angles``):
+# device time new/old 0.09-0.10x on ``fan_hub``, 0.83-0.85x on lucy, 0.91-0.95x on dragon but
+# 1.11-1.23x for its ``float32`` thirds and angles, and +0.5-1 us on 80 k-face meshes. Declined in
+# the kernels with work of their own, where the match's registers cost more than the atomics it
+# saves on scan meshes (dragon new/old): ``heat`` divergences and face terms 1.04-1.18x, the
+# cover's 1.10-1.17x, ``energies.hessian_face_terms`` 1.03x and ``internal_angles_and_sums``
+# 1.05x, ``remesh``'s area sum 1.02x (1.18-1.27x small), ``heat``'s ``vec3`` unit-gradient scatter
+# 1.29x; and on edge slots (``crouzeix_raviart_mass_diag`` 1.04-1.16x, ``edge_cotan_add``
+# 0.97-1.26x), which two consecutive faces rarely share inside a warp. Lucy took 0.90x on the
+# heat face terms; the hub's gain there is moot, since its solves run for a minute.
 @wp.func
 def add_corner_triple(
     out_sum: wp.array[Any], indices: wp.array[wp.int32], row: wp.int32, a: Any, b: Any, c: Any
@@ -428,6 +442,16 @@ def add_corner_triple(
     wp.atomic_add(out_sum, i0, a)
     wp.atomic_add(out_sum, i1, b)
     wp.atomic_add(out_sum, i2, c)
+
+
+@wp.func
+def peer_summed_add_corner_triple(
+    out_sum: wp.array[Any], indices: wp.array[wp.int32], row: wp.int32, a: Any, b: Any, c: Any
+) -> None:
+    i0, i1, i2 = corner_triple(indices, row)
+    peer_summed_add(out_sum, i0, a)
+    peer_summed_add(out_sum, i1, b)
+    peer_summed_add(out_sum, i2, c)
 
 
 @wp.func
@@ -461,7 +485,7 @@ def scatter_face_thirds(
     # so a caller's areas of the other precision need no cast pass first.
     f = wp.int32(wp.tid())
     third = type(count)(areas[f]) / count
-    add_corner_triple(out_mass, faces, f, third, third, third)
+    peer_summed_add_corner_triple(out_mass, faces, f, third, third, third)
 
 
 @wp.kernel
@@ -512,7 +536,7 @@ def scatter_face_areas_exact(
     else:
         _normal, area = face_normals_and_area(vertices, faces, f)
     value = wp.float64(area)
-    add_corner_triple(out_sum, faces, f, value, value, value)
+    peer_summed_add_corner_triple(out_sum, faces, f, value, value, value)
 
 
 @wp.kernel

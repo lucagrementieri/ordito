@@ -951,6 +951,13 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   slot), at par small; `vertex_normals` end to end 0.10-0.12x on the hub, 0.82-0.89x large. The
   `float32` scalar scatter loses 1.2x on dragon and happy_buddha (+4 µs, hidden by host time) for
   0.10x on the hub and 0.87x on lucy; a minimum pool of four and `float32` shuffles both lost.
+  Carried to the per-corner scatters (2026-11-05, device time new/old): it pays only where the
+  kernel's work is the scatter (`scatter.peer_summed_add_corner_triple`: face areas and thirds,
+  the cotangent area sums, corner angles; 0.09-0.10x hub, 0.83-0.85x lucy, 0.91-0.95x dragon,
+  `float32` targets 1.11-1.23x there). In a kernel with work of its own the match's registers
+  cost more than the atomics it saves on scan meshes (dragon 1.03-1.29x: heat divergences and
+  face terms, the cover's, the Hessian face terms, the `vec3` unit-gradient scatter), and edge
+  slots lose everywhere (1.03-1.26x): two consecutive faces rarely share an edge inside a warp.
 
 ## 15. Benchmark and measurement traps
 
@@ -976,14 +983,23 @@ Per-component facts, design choices and measured declines live in `reference/com
 read the component's section there before optimizing or diagnosing it. This section lists only
 what is still open. Re-measure before acting on any of it, and delete an item when it closes.
 
-- **Peer pooling for the other per-corner scatters** (2026-11-05 `vertices` sweep, awaiting
-  approval). `kernels/scatter.add_corner_triple` still commits a plain atomic per corner at 12 sites
-  (`energies` 3, `heat` 2, `laplacian`, `remesh`, `smoothing`, `scatter` 3,
-  `vertices.scatter_corner_angles`); routing it through `peer_summed_add` would carry §14's peer
-  item to them (expected: 0.1x on hub meshes, 0.85-0.93x on large scans for `float64` targets,
-  but a `float32` target risks dragon's 1.2x). Price each on `fan_hub`, dragon and lucy. Also open:
-  whether `scatter.arrival_order_add*` (`reduce.scatter_sum`) should test peers rather than a
-  uniform warp; its uniform form was priced on one hot group, components and random groups.
+- **Peer test in `scatter.arrival_order_add*`** (`reduce.scatter_sum`, `segment_sum`, repair's
+  component sums): whether it should test peers (`warp_peer_lanes`) rather than a uniform warp.
+  The uniform form was priced on one hot group, components and random groups; the corner sites
+  (§14) say to expect a loss wherever the kernel has work of its own.
+- **Hub rows in the CG mat-vec** (2026-11-05). `chebyshev_step` and `cg_matvec_dots` sum a row a
+  thread, so a vertex of valence 40 960 is one thread's 41 k dependent loads (~7 ms a launch):
+  `heat_geodesic` on `fan_hub` spends 83 of its 95 s in `chebyshev_step` (1 005 rounds, ~9 steps
+  each; sphere_med: 37 rounds, milliseconds), `filter_implicit_fairing` the same. A long row
+  split across a warp or block, short rows kept a thread, would bound a round by the mean row,
+  not the longest. Price on `fan_hub`, `sphere_med` and dragon (the split's test must not cost
+  the uniform meshes).
+- **`hessian_energy` / `curved_hessian_energy` on a hub** (2026-11-05). `hessian_star_mask` dedupes
+  a vertex's star corner against every earlier corner with no early exit, ~7.5e9 loads in one
+  thread for `fan_hub`'s hub (`hessian_energy_counts` had not returned after 5 minutes). The
+  count it feeds (~5e9 keys) should then wrap and raise (not observed): the Hessian of a
+  40 960-valence fan is dense (~1.7e9 entries a hub). A bound before the
+  dedupe (the corner count squared past `INT32_MAX`) would raise in microseconds.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

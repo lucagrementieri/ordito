@@ -1,7 +1,7 @@
 import warp as wp
 
 from ordito.kernels.array import OverloadTable
-from ordito.kernels.scatter import add_corner_triple, peer_summed_add_vec3
+from ordito.kernels.scatter import peer_summed_add_corner_triple, peer_summed_add_vec3
 from ordito.kernels.triangles import (
     corner_triple,
     face_area,
@@ -240,7 +240,7 @@ def scatter_corner_angles(
     # ``scatter.scatter_sum_scalar``'s order, so no ``(n_faces, 3)`` angle table is written.
     f = wp.int32(wp.tid())
     a0, a1, a2 = face_corner_angles(vertices, faces, f)
-    add_corner_triple(out_angle_sums, faces, f, a0, a1, a2)
+    peer_summed_add_corner_triple(out_angle_sums, faces, f, a0, a1, a2)
 
 
 @wp.kernel

@@ -13,9 +13,9 @@ from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import doublearea_from_lengths, triangle_double_area
 from ordito.kernels.reduce import GroupSumPass, block_chunk_1d, block_min, device_is_cpu
 from ordito.kernels.scatter import (
-    add_corner_triple,
     arrival_order_add_vector,
     group_sum_vector_term,
+    peer_summed_add_corner_triple,
 )
 from ordito.kernels.triangles import face_normals_and_area, face_vertices, row_triple
 
@@ -133,7 +133,7 @@ def add_face_area_exact(
     # ``scatter.scatter_face_areas_exact`` forms it from the positions.
     _normal, area = face_normals_and_area(vertices, faces, f)
     value = wp.float64(area)
-    add_corner_triple(out_area_sums, faces, f, value, value, value)
+    peer_summed_add_corner_triple(out_area_sums, faces, f, value, value, value)
 
 
 @wp.kernel
