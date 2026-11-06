@@ -1408,8 +1408,8 @@
  },
  "benchmarks/test_curvature.py::test_principal_curvature_normal_cycles[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 7,
-   "alloc": 9,
+   "launch": 8,
+   "alloc": 10,
    "scan": 1,
    "sort": 1
   }

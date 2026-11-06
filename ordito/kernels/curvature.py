@@ -424,18 +424,20 @@ def extreme_curvatures(mean: wp.float64, gaussian: wp.float64) -> tuple[wp.float
 
 
 @wp.func
-def signed_dihedral_d(cross_f: wp.vec3d, cross_g: wp.vec3d, direction: wp.vec3d) -> wp.float64:
-    # The bending angle at an edge shared by faces ``f`` and ``g``, from their unnormalized
-    # normals: ``atan2((n_f x n_g) . e, n_f . n_g)``, ``e`` the edge's unit direction as ``f``
-    # walks it, positive where the surface bends away from the normals (a convex edge of an
-    # outward-wound solid). A face with no normal or an edge with no length reads zero. The rule
-    # of VTK's mean curvature and of the normal-cycle tensor alike.
-    normal_f = wp.vec3d()
-    normal_g = wp.vec3d()
-    if wp.length(cross_f) > wp.float64(0.0):
-        normal_f = wp.normalize(cross_f)
-    if wp.length(cross_g) > wp.float64(0.0):
-        normal_g = wp.normalize(cross_g)
+def unit_face_normal_d(cross: wp.vec3d) -> wp.vec3d:
+    # A face's unit normal from its unnormalized one, zero for a face with no normal.
+    normal = wp.vec3d()
+    if wp.length(cross) > wp.float64(0.0):
+        normal = wp.normalize(cross)
+    return normal
+
+
+@wp.func
+def signed_dihedral_of_normals(
+    normal_f: wp.vec3d, normal_g: wp.vec3d, direction: wp.vec3d
+) -> wp.float64:
+    # ``signed_dihedral_d`` from the two faces' unit normals (``unit_face_normal_d``), for a walk
+    # that reads them from a face table.
     length = wp.length(direction)
     cs = wp.dot(normal_f, normal_g)
     sn = wp.float64(0.0)
@@ -445,6 +447,18 @@ def signed_dihedral_d(cross_f: wp.vec3d, cross_g: wp.vec3d, direction: wp.vec3d)
     if sn != wp.float64(0.0) or cs != wp.float64(0.0):
         theta = wp.atan2(sn, cs)
     return theta
+
+
+@wp.func
+def signed_dihedral_d(cross_f: wp.vec3d, cross_g: wp.vec3d, direction: wp.vec3d) -> wp.float64:
+    # The bending angle at an edge shared by faces ``f`` and ``g``, from their unnormalized
+    # normals: ``atan2((n_f x n_g) . e, n_f . n_g)``, ``e`` the edge's unit direction as ``f``
+    # walks it, positive where the surface bends away from the normals (a convex edge of an
+    # outward-wound solid). A face with no normal or an edge with no length reads zero. The rule
+    # of VTK's mean curvature and of the normal-cycle tensor alike.
+    return signed_dihedral_of_normals(
+        unit_face_normal_d(cross_f), unit_face_normal_d(cross_g), direction
+    )
 
 
 @wp.func
@@ -831,12 +845,36 @@ def taubin_principal_curvatures(
 
 
 @wp.kernel
+def normal_cycle_face_terms(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_face_terms: wp.array2d[wp.float64]
+) -> None:
+    # Face ``f``'s unit normal (columns 0-2, ``unit_face_normal_d``) and area (column 3), which
+    # the normal-cycle walk read at each of the face's corners and, for the normal, again at each
+    # of its halfedges' mates. Bit-identical to forming them in the walk.
+    f = wp.int32(wp.tid())
+    p0, p1, p2 = face_vertices_vec3d(vertices, faces, f)
+    cross = wp.cross(p1 - p0, p2 - p0)
+    normal = unit_face_normal_d(cross)
+    out_face_terms[f, 0] = normal[0]
+    out_face_terms[f, 1] = normal[1]
+    out_face_terms[f, 2] = normal[2]
+    out_face_terms[f, 3] = wp.float64(0.5) * wp.length(cross)
+
+
+@wp.func
+def face_unit_normal_row(face_terms: wp.array2d[wp.float64], f: wp.int32) -> wp.vec3d:
+    # Face ``f``'s unit normal, read off its ``normal_cycle_face_terms`` row.
+    return wp.vec3d(face_terms[f, 0], face_terms[f, 1], face_terms[f, 2])
+
+
+@wp.kernel
 def normal_cycle_principal_curvatures(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
     vf_offsets: wp.array[wp.int32],
     mates: wp.array[wp.int32],
+    face_terms: wp.array2d[wp.float64],
     vertex_normals: wp.array[wp.vec3],
     gather_normals: wp.int32,
     out_pd1: wp.array[wp.vec3],
@@ -848,7 +886,8 @@ def normal_cycle_principal_curvatures(
     # vertex's barycentric cell, ``T = sum_e beta_e |e| e e^T / (2 A)``, gathered per vertex over
     # its face row in ``float64``. Each interior edge at ``v`` is the halfedge leaving ``v`` in
     # exactly one face, so it is met once; ``beta_e`` is its signed dihedral
-    # (``signed_dihedral_d``), half of it lies in the cell, and ``A`` is a third of the ring's area.
+    # (``signed_dihedral_d``, over ``normal_cycle_face_terms``' normals), half of it lies in the
+    # cell, and ``A`` is a third of the ring's area.
     # A rim edge bends nothing and adds nothing. vcg's ``PrincipalDirectionsNormalCycle`` sums the
     # same ``beta_e |e| e e^T`` (its ``beta_e`` an arcsine, equal below a right-angle fold) and
     # divides by nothing. Of ``T``'s three eigenvectors the one nearest the vertex normal is the
@@ -862,16 +901,17 @@ def normal_cycle_principal_curvatures(
     for slot in range(vf_offsets[v], vf_offsets[v + 1]):
         f = vertex_faces[slot]
         k = local_corner(faces, f, v)
-        p0, p1, p2 = face_vertices_vec3d(vertices, faces, f)
-        cross_f = wp.cross(p1 - p0, p2 - p0)
-        ring_area += wp.float64(0.5) * wp.length(cross_f)
+        ring_area += face_terms[f, 3]
         mate = mates[3 * f + k]
         if mate >= 0:
-            q0, q1, q2 = face_vertices_vec3d(vertices, faces, mate // 3)
-            direction = corner_at(p0, p1, p2, k + 1) - corner_at(p0, p1, p2, k)
+            direction = wp.vec3d(vertices[faces[3 * f + (k + 1) % 3]]) - wp.vec3d(vertices[v])
             length = wp.length(direction)
             if length > wp.float64(0.0):
-                beta = signed_dihedral_d(cross_f, wp.cross(q1 - q0, q2 - q0), direction)
+                beta = signed_dihedral_of_normals(
+                    face_unit_normal_row(face_terms, f),
+                    face_unit_normal_row(face_terms, mate // 3),
+                    direction,
+                )
                 unit = direction / length
                 tensor += (beta * length) * wp.outer(unit, unit)
                 edges += 1

@@ -282,7 +282,16 @@ def _one_ring_principal_curvatures(
     else:
         kernel = kernel_curvature.normal_cycle_principal_curvatures
         mates = od.halfedge.halfedge_mates(faces, vertex_faces=(vertex_faces, vf_offsets))
-        inputs = [vertices, faces, vertex_faces, vf_offsets, mates, normals, int(gather)]
+        face_terms = _launch.empty((faces.size // 3, 4), dtype=wp.float64, device=device)
+        _launch.launch(
+            kernel_curvature.normal_cycle_face_terms,
+            dim=faces.size // 3,
+            inputs=[vertices, faces],
+            outputs=[face_terms],
+            device=device,
+        )
+        inputs = [vertices, faces, vertex_faces, vf_offsets, mates, face_terms]
+        inputs += [normals, int(gather)]
     if n_vertices > 0:
         _launch.launch(
             kernel, dim=n_vertices, inputs=inputs, outputs=[pd1, pd2, pv1, pv2], device=device

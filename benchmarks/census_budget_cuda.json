@@ -1474,8 +1474,8 @@
  },
  "benchmarks/test_curvature.py::test_principal_curvature_normal_cycles[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 4,
-   "alloc": 6,
+   "launch": 5,
+   "alloc": 7,
    "memset": 1,
    "scan": 1
   }
