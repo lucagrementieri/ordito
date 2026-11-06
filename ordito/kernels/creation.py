@@ -3,7 +3,7 @@ import math
 import warp as wp
 
 from ordito.constants import TILE_1D, TOLERANCE_ZERO_CONSTANT
-from ordito.kernels.array import lift_vec2
+from ordito.kernels.array import device_is_cpu, lift_vec2
 from ordito.kernels.polyline import fan_face, segment_displacement
 from ordito.kernels.predicates import orient2d
 from ordito.kernels.reduce import block_chunk, last_ticket, store_block_total
@@ -1127,19 +1127,49 @@ def sweep_mesh(
 
 
 @wp.func
+def plane_projection(inverse: wp.mat44, planar: wp.vec3) -> wp.vec3:
+    # A point given in the truncation plane's frame (the plane is ``z = 0`` there), dropped onto
+    # the plane and carried back by ``inverse``.
+    return wp.transform_point(inverse, wp.vec3(planar[0], planar[1], 0.0))
+
+
+@wp.func
+def prism_flips(t0: wp.vec3, t1: wp.vec3, t2: wp.vec3) -> wp.bool:
+    # Whether a prism's template is reversed, from its source corners in the plane's frame: the
+    # source triangle faces the plane (trimesh's ``f_seq[cross > 0] = np.fliplr(f)``).
+    return wp.cross(t1 - t0, t2 - t0)[2] > 0.0
+
+
+@wp.func
+def prism_face_corners(slot: wp.int32) -> wp.vec3i:
+    # Triangle ``slot`` of a prism's 8-face template, as corners of its 6-vertex block (0-2 the
+    # source triangle, 3-5 its projection): the two ends, then the three side quads.
+    if slot == 0:
+        return wp.vec3i(2, 1, 0)
+    if slot == 1:
+        return wp.vec3i(3, 4, 5)
+    if slot == 2:
+        return wp.vec3i(0, 1, 4)
+    if slot == 3:
+        return wp.vec3i(1, 2, 5)
+    if slot == 4:
+        return wp.vec3i(2, 0, 3)
+    if slot == 5:
+        return wp.vec3i(4, 3, 0)
+    if slot == 6:
+        return wp.vec3i(5, 4, 1)
+    return wp.vec3i(3, 5, 2)
+
+
+@wp.func
 def write_prism_face(
-    slot: wp.int32,
-    offset: wp.int32,
-    a: wp.int32,
-    b: wp.int32,
-    c: wp.int32,
-    flip: wp.bool,
-    out_faces: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32], f: wp.int32, slot: wp.int32, flip: wp.bool
 ) -> None:
-    # One triangle of a prism's 8-face template, offset into its own 6-vertex block. `flip`
-    # reverses the winding for prisms whose source triangle faces the plane (trimesh's
-    # ``f_seq[cross > 0] = np.fliplr(f)``).
-    write_corner_triple_reversible(out_faces, slot, offset + a, offset + b, offset + c, flip)
+    # Template triangle ``slot`` of prism ``f``, offset into its block, into row ``8 f + slot``.
+    corners = prism_face_corners(slot) + wp.vec3i(6 * f, 6 * f, 6 * f)
+    write_corner_triple_reversible(
+        out_faces, 8 * f + slot, corners[0], corners[1], corners[2], flip
+    )
 
 
 @wp.kernel
@@ -1152,32 +1182,48 @@ def truncated_prism_geometry(
     out_faces: wp.array[wp.int32],
 ) -> None:
     # One independent watertight prism per input triangle: the triangle itself, its projection onto
-    # the truncation plane, and the six side triangles bridging them. Vertices 0-2 are the source
-    # triangle and 3-5 its projection.
-    f = wp.int32(wp.tid())
-    v0, v1, v2 = face_vertices(vertices, faces, f)
-    t0 = wp.transform_point(transform, v0)
-    t1 = wp.transform_point(transform, v1)
-    t2 = wp.transform_point(transform, v2)
-
-    base = f * 6
-    out_vertices[base + 0] = v0
-    out_vertices[base + 1] = v1
-    out_vertices[base + 2] = v2
-    out_vertices[base + 3] = wp.transform_point(inverse, wp.vec3(t0[0], t0[1], 0.0))
-    out_vertices[base + 4] = wp.transform_point(inverse, wp.vec3(t1[0], t1[1], 0.0))
-    out_vertices[base + 5] = wp.transform_point(inverse, wp.vec3(t2[0], t2[1], 0.0))
-
-    flip = wp.cross(t1 - t0, t2 - t0)[2] > 0.0
-    slot = f * 8
-    write_prism_face(slot + 0, base, 2, 1, 0, flip, out_faces)
-    write_prism_face(slot + 1, base, 3, 4, 5, flip, out_faces)
-    write_prism_face(slot + 2, base, 0, 1, 4, flip, out_faces)
-    write_prism_face(slot + 3, base, 1, 2, 5, flip, out_faces)
-    write_prism_face(slot + 4, base, 2, 0, 3, flip, out_faces)
-    write_prism_face(slot + 5, base, 4, 3, 0, flip, out_faces)
-    write_prism_face(slot + 6, base, 5, 4, 1, flip, out_faces)
-    write_prism_face(slot + 7, base, 3, 5, 2, flip, out_faces)
+    # the truncation plane, and the eight triangles of its ends and sides. Vertices 0-2 of a
+    # prism's block are the source triangle and 3-5 its projection.
+    #
+    # On CUDA, launched over the ``6 * n_faces`` output vertices, then the ``8 * n_faces`` output
+    # triangles, a thread each, so consecutive threads write consecutive slots (a thread a prism
+    # stores 72 and 96 bytes apart across a warp: 4x the device time at 262 144 faces); a triangle
+    # thread forms its prism's winding again. The CPU runs threads one after another, where that
+    # repeats the winding eight times for no coalescing (2-5x), so it keeps a thread a prism.
+    r = wp.int32(wp.tid())
+    if device_is_cpu() != 0:
+        v0, v1, v2 = face_vertices(vertices, faces, r)
+        t0 = wp.transform_point(transform, v0)
+        t1 = wp.transform_point(transform, v1)
+        t2 = wp.transform_point(transform, v2)
+        base = 6 * r
+        out_vertices[base + 0] = v0
+        out_vertices[base + 1] = v1
+        out_vertices[base + 2] = v2
+        out_vertices[base + 3] = plane_projection(inverse, t0)
+        out_vertices[base + 4] = plane_projection(inverse, t1)
+        out_vertices[base + 5] = plane_projection(inverse, t2)
+        flip = prism_flips(t0, t1, t2)
+        for slot in range(8):
+            write_prism_face(out_faces, r, slot, flip)
+        return
+    n_faces = faces.shape[0] // 3
+    if r < 6 * n_faces:
+        k = r % 6
+        corner = vertices[faces[3 * (r // 6) + k % 3]]
+        if k < 3:
+            out_vertices[r] = corner
+        else:
+            out_vertices[r] = plane_projection(inverse, wp.transform_point(transform, corner))
+        return
+    q = r - 6 * n_faces
+    v0, v1, v2 = face_vertices(vertices, faces, q // 8)
+    flip = prism_flips(
+        wp.transform_point(transform, v0),
+        wp.transform_point(transform, v1),
+        wp.transform_point(transform, v2),
+    )
+    write_prism_face(out_faces, q // 8, q % 8, flip)
 
 
 @wp.kernel

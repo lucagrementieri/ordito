@@ -2254,7 +2254,8 @@ def truncated_prisms(
     from_plane = _launch.mat44(np.linalg.inv(transform_np))
     _launch.launch(
         kernel_creation.truncated_prism_geometry,
-        dim=n_faces,
+        # A thread a prism on the CPU, a thread an output vertex or triangle on CUDA.
+        dim=n_faces if wp.get_device(device).is_cpu else 14 * n_faces,
         inputs=[vertices, faces, to_plane, from_plane, out_vertices, out_faces],
         device=device,
     )
