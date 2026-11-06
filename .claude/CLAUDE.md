@@ -1074,6 +1074,14 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   buffer read once would do; the one-component `split` pays `submesh_from_face_indices`' memset
   for an identity face order. Each is a few percent of the call at the benchmark sizes; price
   before acting.
+- **`creation` leftovers outside its scope (2026-11-06 sweep), awaiting approval:**
+  `transform._compose` (behind every transform builder) and `transform.py`'s inverse-transpose
+  still build matrices argument by argument, 3.5 us each, where `_launch.mat44` copies bytes (a
+  `mat33` / `mat33d` variant would also serve `measures.mass_properties`, `bounds` and `points`);
+  `remesh.subdivide_mesh` writes a face's four children 48 bytes apart a thread (149 us device,
+  444 GB/s at 1.3 M faces), the shape `truncated_prisms` took to a thread an output triangle;
+  `extrude_triangulation` is five launches, a sort, a scan and a readback (about 200 us), its
+  boundary emit a launch `extrude_faces` could absorb only through `boundary`'s internals.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
