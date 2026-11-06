@@ -550,12 +550,14 @@ def _copy_segments(array: wp.array[DType], bounds: Sequence[int]) -> list[wp.arr
 
     Each segment gets its own allocation rather than a view of one shared buffer, because a shared
     allocation would mean holding one segment pins the whole buffer alive -- the opposite of what
-    ``split(copy=True)`` promises. The allocations cannot be batched, but the copies can: from
-    ``PACK_SEGMENTS_KERNEL_FROM`` segments one launch over a descriptor table of the destinations
-    fills them all (``kernels.array.unpack_segment_words``, the packing kernel run backwards), in
-    place of one ``wp.clone`` -- an allocation and a copy -- per segment. Anything the word copy
-    cannot address clones per segment: a ``requires_grad`` base (a clone carries its own
-    gradient), a non-contiguous one, or a dtype whose itemsize is not a multiple of four.
+    ``split(copy=True)`` promises. The allocations cannot be batched, but the copies can: where
+    [`_launch.segments_in_one_launch`][ordito._launch.segments_in_one_launch] takes it (from
+    ``PACK_SEGMENTS_KERNEL_FROM`` segments, and on the CPU only for segments small on average),
+    one launch over a descriptor table of the destinations fills them all
+    (``kernels.array.unpack_segment_words``, the packing kernel run backwards), in place of one
+    ``wp.clone`` -- an allocation and a copy -- per segment. Anything the word copy cannot address
+    clones per segment: a ``requires_grad`` base (a clone carries its own gradient), a
+    non-contiguous one, or a dtype whose itemsize is not a multiple of four.
     """
     n_segments = len(bounds) - 1
     words_per_element = _words_per_element(array.dtype)

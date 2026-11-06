@@ -259,10 +259,11 @@ def test_pack_1d_arrays_past_the_one_launch_threshold_matches_numpy(
     """
     Class A: ``np.concatenate`` and a ``cumsum`` of the lengths, over forty separate allocations.
 
-    Forty segments is past ``PACK_SEGMENTS_KERNEL_FROM``, so ``int32`` and ``vec3`` take the
-    one-launch word copy, ``uint8`` (not whole 4-byte words) the per-segment copy loop at the same
-    count, and forty empty segments the descriptor-less early exit. The segments are fresh
-    allocations, so the ``copy=False`` alias path cannot answer instead.
+    Forty segments is past ``PACK_SEGMENTS_KERNEL_FROM``, and at most eight elements each are far
+    below the CPU's mean-size limit, so ``int32`` and ``vec3`` take the one-launch word copy on both
+    devices, ``uint8`` (not whole 4-byte words) the per-segment copy loop at the same count, and
+    forty empty segments the descriptor-less early exit. The segments are fresh allocations, so the
+    ``copy=False`` alias path cannot answer instead.
     """
     assert od.array.PACK_SEGMENTS_KERNEL_FROM <= 40
     rng = np.random.default_rng(23)
@@ -437,9 +438,10 @@ def test_split_copies_past_the_one_launch_threshold(device: str, dtype: type) ->
     """
     Ordito against NumPy: ``copy=True`` over enough segments for the one-launch copy is exact.
 
-    Forty segments -- past ``PACK_SEGMENTS_KERNEL_FROM`` -- with an interior and a trailing empty
-    one, each checked against the NumPy slice and for owning its storage: no copy may point into
-    the base, and rewriting the base afterwards must leave every copy unchanged. ``uint8``, whose
+    Forty short segments -- past ``PACK_SEGMENTS_KERNEL_FROM``, and below the CPU's mean-size
+    limit -- with an interior and a trailing empty one, each checked against the NumPy slice and
+    for owning its storage: no copy may point into the base, and rewriting the base afterwards must
+    leave every copy unchanged. ``uint8``, whose
     elements are not whole 4-byte words, is the per-segment clone fallback at the same count.
     """
     assert od.array.PACK_SEGMENTS_KERNEL_FROM <= 40

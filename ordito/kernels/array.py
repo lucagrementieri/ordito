@@ -2593,10 +2593,11 @@ def trilinear_weight(
 # ``wp.array`` field, and a ``wp.array`` of that struct is exactly a descriptor table, which
 # ``segments[s].data`` indexes from kernel scope.
 #
-# The kernel form is **flat in both the segment count and the data volume**, where the copy loop is
-# linear in the segment count, so the two cross at a couple of dozen segments and the kernel wins by
-# orders of magnitude above that. The whole choice is therefore a segment-count threshold; see
-# ``array.PACK_SEGMENTS_KERNEL_FROM``.
+# On CUDA the kernel form is **flat in both the segment count and the data volume**, where the copy
+# loop is linear in the segment count, so the two cross at a couple of dozen segments and the kernel
+# wins by orders of magnitude above that: a segment-count threshold. The CPU copies a word at a time
+# where ``wp.copy`` is a memcpy, so there large segments still copy faster one by one and the
+# threshold also weighs their mean size; see ``_launch.segments_in_one_launch``.
 #
 # **One kernel serves every dtype**, rather than a table of them. The descriptor's array field is
 # declared ``wp.array[wp.int32]`` and pointed at the segment's storage with a length in 4-byte

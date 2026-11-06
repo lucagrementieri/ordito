@@ -290,8 +290,11 @@ def test_concatenate(bench_case: BenchCase, n_segments: int) -> None:
     order of magnitude, ``many`` on ``bunny_decimated`` is under a kilobyte a segment.
 
     Above that threshold the loop is replaced by **one segmented-copy launch** over a ``@wp.struct``
-    descriptor table, which is flat in both the segment count and the total size -- so the two
-    points of this axis straddle the dispatch as well as the NumPy crossover.
+    descriptor table, which is flat in both the segment count and the total size -- so on CUDA the
+    two points of this axis straddle the dispatch as well as the NumPy crossover. The CPU takes the
+    launch only for segments averaging under ``_launch.SEGMENTS_IN_ONE_LAUNCH_CPU_MEAN_WORDS``
+    words, since there a word loop loses to ``wp.copy``'s memcpy on large segments; ``many`` on a
+    scan mesh can stay on the copy loop.
 
     **Graph capture is declined and this row is a floor for it**: recording the copy loop and
     replaying it once is a loss at every count, because a pack's pointers change per call so the
