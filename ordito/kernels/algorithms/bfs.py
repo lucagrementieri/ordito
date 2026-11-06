@@ -38,10 +38,20 @@ EXTRAS_CAPACITY = 64
 
 @wp.func
 def bfs_visited_insert(
-    visited: wp.array[wp.int32], mask: wp.int32, value: wp.int32, count: wp.int32
+    visited: wp.array[wp.int32],
+    mask: wp.int32,
+    value: wp.int32,
+    count: wp.int32,
+    tag: wp.int32,
+    tag_mask: wp.int32,
 ) -> tuple[wp.bool, wp.int32]:
     """
-    Insert ``value`` into the open-addressing ``visited`` row (empty slots hold ``-1``).
+    Insert ``value`` into the open-addressing ``visited`` row, stored as ``value | tag``.
+
+    A slot is empty when it holds ``-1`` or when its ``tag_mask`` bits are not ``tag``: an entry an
+    earlier walk left under another tag. Every entry of this walk carries its tag, so to this walk
+    the row reads exactly as a fresh one, and a pool needs refilling with ``-1`` only when the tags
+    run out (``neighbors.GeodesicBallWalk``). ``tag = tag_mask = 0`` is the untagged table.
 
     Returns ``(is_new, new_count)``: ``is_new`` is ``False`` when the value was already present.
     Beyond the load-factor fill bound the insert is dropped and the value reads as new, so dropped
@@ -49,15 +59,16 @@ def bfs_visited_insert(
     test still reads as full, so a caller learns whether anything was dropped from the final count
     alone rather than comparing counts around every insert.
     """
+    key = value | tag
     slot = kernel_grouping.hash_slot(value, mask)
     while True:
         stored = visited[slot]
-        if stored == value:
+        if stored == key:
             return False, count
-        if stored == wp.int32(-1):
+        if stored == wp.int32(-1) or (stored & tag_mask) != tag:
             if count >= _VISITED_MAX_FILL:
                 return True, _VISITED_MAX_FILL + wp.int32(1)
-            visited[slot] = value
+            visited[slot] = key
             return True, count + 1
         slot = kernel_grouping.next_slot(slot, mask)
 
@@ -128,18 +139,21 @@ def per_source_bfs_collect(
     visited: wp.array[wp.int32],
     ext_dist: wp.array[wp.float32],
     ext_idx: wp.array[wp.int32],
+    visited_tag: wp.int32,
+    visited_tag_mask: wp.int32,
     out_overflow: wp.array[wp.int32],
 ) -> wp.int32:
     """
     BFS over the CSR edge graph from source ``i``; returns the collected count.
 
     Traverses ``adj_offsets``/``adj_columns`` with a FIFO ``queue`` and an O(1) open-addressing
-    ``visited`` hash row — power-of-two length, pre-filled with ``-1`` by the caller before the
-    launch. When ``radius`` is finite the traversal is *geodesic* (libigl ``getSphere``): a
-    neighbor is enqueued only when within Euclidean ``radius`` of the center, and out-of-ball
-    neighbors feed a nearest fallback (``ext_dist``/``ext_idx``) drained to ``min_count``. When
-    ``radius`` is ``+inf`` the geometric predicate is disabled (``vertices`` is never read, so a
-    length-1 placeholder is fine); pass ``min_count = 0`` so the fallback never engages.
+    ``visited`` hash row — power-of-two length, holding ``-1`` or only entries of other tags
+    (``bfs_visited_insert``) when the launch starts. When ``radius`` is finite the traversal is
+    *geodesic* (libigl ``getSphere``): a neighbor is enqueued only when within Euclidean
+    ``radius`` of the center, and out-of-ball neighbors feed a nearest fallback
+    (``ext_dist``/``ext_idx``) drained to ``min_count``. When ``radius`` is ``+inf`` the geometric
+    predicate is disabled (``vertices`` is never read, so a length-1 placeholder is fine); pass
+    ``min_count = 0`` so the fallback never engages.
 
     On return the collected set *is* ``queue[:count]`` in BFS-then-backfill order (drained
     fallback candidates are appended to the queue), so ``count == q_tail <= queue capacity``
@@ -158,7 +172,9 @@ def per_source_bfs_collect(
 
     visited_n = wp.int32(0)
     is_new = wp.bool(True)
-    is_new, visited_n = bfs_visited_insert(visited, mask, i, visited_n)
+    is_new, visited_n = bfs_visited_insert(
+        visited, mask, i, visited_n, visited_tag, visited_tag_mask
+    )
     queue[0] = i
     q_head = wp.int32(0)
     q_tail = wp.int32(1)
@@ -183,7 +199,9 @@ def per_source_bfs_collect(
         end = adj_offsets[current + 1]
         for k in range(start, end):
             neighbor = adj_columns[k]
-            is_new, visited_n = bfs_visited_insert(visited, mask, neighbor, visited_n)
+            is_new, visited_n = bfs_visited_insert(
+                visited, mask, neighbor, visited_n, visited_tag, visited_tag_mask
+            )
             if not is_new:
                 continue
             distance = bfs_center_distance(vertices, use_geometry, center, neighbor)
@@ -222,7 +240,9 @@ def per_source_bfs_collect(
         end = adj_offsets[cand + 1]
         for k in range(start, end):
             neighbor = adj_columns[k]
-            is_new, visited_n = bfs_visited_insert(visited, mask, neighbor, visited_n)
+            is_new, visited_n = bfs_visited_insert(
+                visited, mask, neighbor, visited_n, visited_tag, visited_tag_mask
+            )
             if not is_new:
                 continue
             distance = bfs_center_distance(vertices, use_geometry, center, neighbor)

@@ -1512,13 +1512,16 @@ def query_geodesic_ball_collect(
     visited_pool: wp.array2d[wp.int32],
     ext_dist_pool: wp.array2d[wp.float32],
     ext_idx_pool: wp.array2d[wp.int32],
+    visited_tag: wp.int32,
+    visited_tag_mask: wp.int32,
     out_counts: wp.array[wp.int32],
     out_overflow: wp.array[wp.int32],
 ) -> None:
     # Scratch lives in wrapper-allocated global-memory pools (one row per thread of the current
-    # chunk) instead of kilobytes of per-thread local arrays; the wrapper pre-fills the visited pool
-    # with -1 before each launch. Single pass: after this kernel the thread's queue row holds
-    # the collected set (``queue_pool[t][:out_counts[chunk_start + t]]``) ready to gather.
+    # chunk) instead of kilobytes of per-thread local arrays; each launch tags its visited entries
+    # anew, so the pool reads empty without a refill (``bfs.bfs_visited_insert``). Single pass:
+    # after this kernel the thread's queue row holds the collected set
+    # (``queue_pool[t][:out_counts[chunk_start + t]]``) ready to gather.
     t = wp.int32(wp.tid())
     i = chunk_start + t
     out_counts[i] = kernel_bfs.per_source_bfs_collect(
@@ -1532,6 +1535,8 @@ def query_geodesic_ball_collect(
         visited_pool[t],
         ext_dist_pool[t],
         ext_idx_pool[t],
+        visited_tag,
+        visited_tag_mask,
         out_overflow,
     )
 

@@ -1081,10 +1081,7 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   The ball measures are latency-bound at few queries: `ball_mean_curvature` is 75 % of
   `discrete_mean_curvature`'s device time on `sphere_small` (345 us for 2 562 queries) and
   `ball_angle_defect_sum` 74 % of the Gaussian's; a cooperative walk meets §12.2's overfull-leaf
-  hazard. Outside the scope: `GeodesicBallWalk` refills its `chunk x 1024` visited pool before
-  every chunk (`neighbors.py`), 12 % of `principal_curvature`'s device time on `sphere_large` and
-  5 % on dragon, which a clear-on-exit by the walking thread would remove; and
-  `kernels/reconstruction.corner_angle_weighted_normals` re-forms each face's `float64` normal and
+  hazard. Outside the scope: `kernels/reconstruction.corner_angle_weighted_normals` re-forms each face's `float64` normal and
   edge units at all three corners (the face-table shape), inside a lattice-bound call.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;

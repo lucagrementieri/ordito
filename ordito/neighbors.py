@@ -2377,7 +2377,14 @@ class GeodesicBallWalk:
             _launch.zeros(1, dtype=wp.int32, device=device) if overflow is None else overflow
         )
         self._warned = False
-        self._visited_dirty = False
+        # Each chunk tags its visited entries ``epoch << bits`` above the vertex index's ``bits``,
+        # and an entry of another tag reads empty (``kernels/algorithms/bfs.bfs_visited_insert``),
+        # so the pool is refilled only when the epochs run out. A mesh whose indices leave no bit
+        # free walks untagged and refills before every chunk after the first.
+        bits = max(1, (n - 1).bit_length())
+        self._max_epoch = (1 << (31 - bits)) - 1 if bits < 31 else 0
+        self._tag_shift = bits
+        self._epoch = 0
 
     def chunks(self) -> Iterator[tuple[int, int]]:
         """
@@ -2396,11 +2403,16 @@ class GeodesicBallWalk:
         """
         for start in range(0, self._n, self.chunk):
             m = min(self.chunk, self._n - start)
-            # The pool is allocated holding -1; every later chunk, a second walk's first included,
-            # clears what the previous chunk left.
-            if self._visited_dirty:
+            # The pool is allocated holding -1; a chunk past the last epoch, a second walk's
+            # included, clears what the earlier ones left and starts the epochs over.
+            if self._epoch >= max(self._max_epoch, 1):
                 _launch.fill_(self._visited_pool, -1)
-            self._visited_dirty = True
+                self._epoch = 0
+            self._epoch += 1
+            if self._max_epoch > 0:
+                tag, tag_mask = self._epoch << self._tag_shift, -(1 << self._tag_shift)
+            else:
+                tag = tag_mask = 0
             _launch.launch(
                 kernel_neighbors.query_geodesic_ball_collect,
                 dim=m,
@@ -2415,6 +2427,8 @@ class GeodesicBallWalk:
                     self._visited_pool,
                     self._ext_dist_pool,
                     self._ext_idx_pool,
+                    tag,
+                    tag_mask,
                     self.counts,
                     self._overflow,
                 ],

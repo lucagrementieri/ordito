@@ -1428,7 +1428,7 @@
   "counts": {
    "launch": 12,
    "alloc": 16,
-   "memset": 6,
+   "memset": 4,
    "d2h": 2,
    "scan": 1,
    "sort": 1
@@ -1438,7 +1438,7 @@
   "counts": {
    "launch": 12,
    "alloc": 16,
-   "memset": 6,
+   "memset": 4,
    "d2h": 2,
    "scan": 1,
    "sort": 1

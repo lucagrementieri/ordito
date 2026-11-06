@@ -2160,16 +2160,18 @@ def test_geodesic_ball_refuses_a_list_past_its_offsets(
         od.neighbors.geodesic_ball(vertices_wp, faces_wp, radius)
 
 
+@pytest.mark.parametrize("max_epoch", [None, 3], ids=["tagged", "refilled"])
 @pytest.mark.parametrize("radius_scale", [3.0, 100.0], ids=["ball", "clipped"])
 def test_geodesic_ball_walk_rows_are_geodesic_ball(
-    device: str, monkeypatch: pytest.MonkeyPatch, radius_scale: float
+    device: str, monkeypatch: pytest.MonkeyPatch, radius_scale: float, max_epoch: int | None
 ) -> None:
     """
     Ordito against ordito: each chunk's rows are ``geodesic_ball``'s packed rows, entry for entry.
 
     ``geodesic_ball`` carries the oracle (the libigl and meshlib comparisons above); the walk is its
     streaming form. The chunk is forced below the mesh so three chunks reuse the rows, and the
-    clipped radius checks the walk warns once over two full walks.
+    clipped radius checks the walk warns once over two full walks. Its eight chunks share one
+    visited pool under eight tags, or, with the epochs capped at three, refill it twice.
     """
     mesh_tm = tm.creation.icosphere(subdivisions=4)
     vertices_wp, faces_wp = numpy_to_warp(
@@ -2184,6 +2186,8 @@ def test_geodesic_ball_walk_rows_are_geodesic_ball(
     packed_np, offsets_np = packed_wp.numpy(), offsets_wp.numpy()
     monkeypatch.setattr(od.neighbors, "_GEODESIC_BALL_CHUNK", 700)
     walk = od.neighbors.GeodesicBallWalk(vertices_wp, faces_wp, radius)
+    if max_epoch is not None:
+        walk._max_epoch = max_epoch  # pyright: ignore[reportPrivateUsage]
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         for _ in range(2):
