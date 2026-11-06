@@ -959,8 +959,13 @@ def curved_hessian_energy(
         outputs=[angles, angle_sums, edge_halfedges, mass],
         device=device,
     )
+    # Under the deterministic mode the angle sums' sort gives the vertex-face rows too, the ones
+    # ``vertex_face_adjacency`` would sort the same face buffer again for.
+    sorted_rows = None
     if deterministic:
-        angle_sums, _ = _sorted_vertex_corner_sums(faces, angles, n_vertices)
+        angle_sums, sorted_rows = _sorted_vertex_corner_sums(
+            faces, angles, n_vertices, with_rows=True
+        )
     # ``cursor`` now counts each unique edge's halfedges, which settles the topology the rest
     # needs: an edge on three or more faces fails the edge-manifold precondition (flagged by the
     # launch below), and an edge on one is a boundary edge.
@@ -975,7 +980,10 @@ def curved_hessian_energy(
         outputs=[angle_sums, flags],
         device=device,
     )
-    vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    if sorted_rows is not None:
+        vf_indices, vf_offsets = sorted_rows
+    else:
+        vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
     _launch.launch(
         kernel_energies.curved_long_ring_count,
         dim=n_vertices,
