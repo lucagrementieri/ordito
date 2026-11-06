@@ -30,7 +30,7 @@ Point-set acceleration structures (``wp.Bvh`` / ``wp.HashGrid``) and raw neighbo
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Literal, cast
 
 import numpy as np
 import warp as wp
@@ -58,6 +58,13 @@ from ordito.kernels import triangles as kernel_triangles
 # dimension already supplies the parallelism and a short slice only multiplies the atomic traffic.
 # This is not a sensitive knob: the optimum is flat over a fairly wide range.
 ITEMS_PER_QUERY_SLICE = 128
+
+# Few queries starve those two reductions instead (the tiled winding number runs below 128 queries,
+# and a tangent-sphere call often leaves a handful of escaped rays), so on CUDA their slices grow
+# toward ``QUERY_SLICE_FILL_THREADS`` threads, none shorter than ``QUERY_SLICE_MIN`` elements
+# (``kernels/array.RegisterBlockedTable.slice_count``).
+QUERY_SLICE_FILL_THREADS = 1 << 15
+QUERY_SLICE_MIN = 32
 
 # First search radius for [`closest_point_on_edges`][ordito.proximity.closest_point_on_edges], as a
 # fraction of the ``max_dist`` its deepening loop is capped at. The loop doubles from here and jumps
@@ -1305,7 +1312,14 @@ def winding_number(
         else _launch.empty(n_queries, dtype=wp.float32, device=device)
     )
     if tiled:
-        n_face_slices = max(1, (n_faces + ITEMS_PER_QUERY_SLICE - 1) // ITEMS_PER_QUERY_SLICE)
+        n_face_slices = kernel_proximity.WINDING_NUMBER_TILED.slice_count(
+            n_faces,
+            n_queries,
+            ITEMS_PER_QUERY_SLICE,
+            min_slice=QUERY_SLICE_MIN,
+            fill_threads=QUERY_SLICE_FILL_THREADS,
+            device=cast("wp.Device", device),
+        )
         kernel, dim = kernel_proximity.WINDING_NUMBER_TILED.launch_shape(n_queries, n_face_slices)
         _launch.launch(
             kernel,

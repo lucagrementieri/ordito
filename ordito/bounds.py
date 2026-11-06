@@ -44,7 +44,8 @@ ITEMS_PER_CANDIDATE_SLICE = 256
 # Shortest slice the extent reduction cuts a cloud into on CUDA when the frames alone would starve
 # the device: the refinement scores 512 frames a round, so a cloud of a few thousand points at
 # ``ITEMS_PER_CANDIDATE_SLICE`` a slice launches a few thousand threads. ``_extent_slices`` then
-# adds slices toward ``REGISTER_BLOCK_MIN_THREADS`` threads, none shorter than this.
+# adds slices toward ``REGISTER_BLOCK_MIN_THREADS`` threads
+# (``kernels/array.RegisterBlockedTable.slice_count``), none shorter than this.
 EXTENT_MIN_SLICE = 64
 
 # Cloud size at which [`oriented_bounding_box`][ordito.bounds.oriented_bounding_box] first runs
@@ -1010,18 +1011,15 @@ _BOX_OBJECTIVES: dict[str, wp.int32] = {
 
 
 def _extent_slices(n_points: int, n_frames: int, device: wp.Device) -> int:
-    """
-    Slices the extent reduction cuts ``n_points`` into when scoring ``n_frames`` frames.
-
-    ``ITEMS_PER_CANDIDATE_SLICE`` points a slice, unless that leaves the CUDA grid short of
-    ``REGISTER_BLOCK_MIN_THREADS`` threads: then more slices, down to ``EXTENT_MIN_SLICE`` points.
-    The corners are exact minima whatever the slicing, so the box does not change.
-    """
-    n_slices = max(1, -(-n_points // ITEMS_PER_CANDIDATE_SLICE))
-    if device.is_cuda:
-        starved = -(-kernel_array.REGISTER_BLOCK_MIN_THREADS // n_frames)
-        n_slices = max(n_slices, min(starved, -(-n_points // EXTENT_MIN_SLICE)))
-    return n_slices
+    """Slices the extent reduction cuts ``n_points`` into when scoring ``n_frames`` frames."""
+    return kernel_bounds.OBB_EXTENTS.slice_count(
+        n_points,
+        n_frames,
+        ITEMS_PER_CANDIDATE_SLICE,
+        min_slice=EXTENT_MIN_SLICE,
+        fill_threads=kernel_array.REGISTER_BLOCK_MIN_THREADS,
+        device=device,
+    )
 
 
 def _compact_masked_points(points: wp.array[wp.vec3], mask: wp.array[wp.bool]) -> wp.array[wp.vec3]:

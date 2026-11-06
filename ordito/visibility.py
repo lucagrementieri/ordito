@@ -35,7 +35,7 @@ five members.
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Literal, cast
 
 import warp as wp
 
@@ -45,7 +45,12 @@ from ordito._device import read_scalar, require_same_device
 from ordito.constants import TOLERANCE_PLANAR
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import visibility as kernel_visibility
-from ordito.proximity import ITEMS_PER_QUERY_SLICE, normals_at_closest_faces
+from ordito.proximity import (
+    ITEMS_PER_QUERY_SLICE,
+    QUERY_SLICE_FILL_THREADS,
+    QUERY_SLICE_MIN,
+    normals_at_closest_faces,
+)
 
 # Ray-origin offset along the normal, as a fraction of the query AABB diagonal. Without it every
 # ray would hit the surface it started on; the value is small enough not to shadow a real occluder
@@ -799,7 +804,14 @@ def _tangent_spheres(
     k = int(read_scalar(n_support, 0))
     if k > 0:
         support_indices = odt.as_dense(support_indices[:k])
-        n_vert_slices = max(1, (n_verts + ITEMS_PER_QUERY_SLICE - 1) // ITEMS_PER_QUERY_SLICE)
+        n_vert_slices = kernel_visibility.SUPPORT_ARGMAX_SLICED.slice_count(
+            n_verts,
+            k,
+            ITEMS_PER_QUERY_SLICE,
+            min_slice=QUERY_SLICE_MIN,
+            fill_threads=QUERY_SLICE_FILL_THREADS,
+            device=cast("wp.Device", device),
+        )
         packed_support = _launch.zeros(k, dtype=wp.uint64, device=device)
         kernel, dim = kernel_visibility.SUPPORT_ARGMAX_SLICED.launch_shape(k, n_vert_slices)
         _launch.launch(

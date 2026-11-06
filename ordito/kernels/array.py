@@ -1633,6 +1633,34 @@ class RegisterBlockedTable(KernelTable):
                 return self[width], (n_groups, n_slices)
         raise KeyError(f"{self._owner} has no register-blocked kernel")
 
+    @staticmethod
+    def slice_count(
+        n_elements: int,
+        n_items: int,
+        items_per_slice: int,
+        *,
+        min_slice: int,
+        fill_threads: int,
+        device: wp.Device,
+    ) -> int:
+        """
+        Return the slice count for reducing ``n_elements`` once per each of ``n_items`` items.
+
+        ``items_per_slice`` elements a slice, unless that leaves a CUDA grid of ``n_items x
+        n_slices`` short of ``fill_threads`` threads: then more slices, none shorter than
+        ``min_slice`` elements. Few outer items (a refinement round's frames, a handful of
+        winding-number queries or escaped rays) otherwise launch a few thousand threads that each
+        walk a long slice. The CPU device runs threads one after another, so it keeps the plain
+        slice. The target and floor are each kernel's own optimum: a target past it re-slices a
+        grid that was already full and costs up to 2x (the support arg-max over 437 k points at
+        eight rays, ``1 << 17`` threads).
+        """
+        n_slices = max(1, -(-n_elements // items_per_slice))
+        if device.is_cuda:
+            starved = min(-(-fill_threads // n_items), -(-n_elements // min_slice))
+            n_slices = max(n_slices, starved)
+        return n_slices
+
 
 # The conversions ``array.copyto`` launches from this module, keyed ``(source, target)``: the pairs
 # the package reaches most (the masks every compaction widens, the ``float32`` areas an energy or
