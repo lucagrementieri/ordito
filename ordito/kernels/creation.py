@@ -1887,6 +1887,13 @@ PROFILE_TORUS = wp.int32(4)
 
 HALF_PI_D = wp.float64(0.5 * math.pi)
 
+# ``revolve_uniform``'s vertex threads take runs of slices of one column: about this many run
+# threads (the best of runs 4, 8 and 16 at 0.13 M, 0.26 M and 0.52 M vertices, CUDA), and no run
+# longer than ``REVOLVE_SLICE_RUN_MAX``, past which a thread's serial writes cost more than the
+# shared profile evaluation saves (a run of 32 took 1.35x the device time of 16 at 0.52 M).
+REVOLVE_RUN_THREADS = wp.int32(1 << 15)
+REVOLVE_SLICE_RUN_MAX = wp.int32(16)
+
 
 @wp.func
 def closed_profile_point(
@@ -1949,6 +1956,36 @@ def closed_profile_point(
     return wp.vec2(wp.float32(x), wp.float32(y))
 
 
+@wp.func
+def revolve_uniform_column(
+    profile: wp.array[wp.vec2],
+    profile_kind: wp.int32,
+    column: wp.int32,
+    n_columns: wp.int32,
+    profile_params: wp.vec4d,
+) -> wp.vec2:
+    # Profile point of ``column`` under ``revolve_uniform``: ``profile``'s at ``PROFILE_TABLE``,
+    # closed form (``closed_profile_point``) otherwise.
+    if profile_kind == PROFILE_TABLE:
+        return profile[column]
+    return closed_profile_point(profile_kind, column, n_columns, profile_params)
+
+
+@wp.func
+def revolved_vertex(
+    point: wp.vec2,
+    slice_index: wp.int32,
+    n_slices: wp.int32,
+    angle: wp.float32,
+    matrix: wp.mat44,
+    transform_mode: wp.int32,
+) -> wp.vec3:
+    # Profile point ``point`` carried to ``slice_index`` and placed.
+    return place_point(
+        revolution_point(point[0], point[1], slice_index, n_slices, angle), matrix, transform_mode
+    )
+
+
 @wp.kernel
 def revolve_uniform(
     profile: wp.array[wp.vec2],
@@ -1988,23 +2025,49 @@ def revolve_uniform(
     # only the two end segments can be short, so every interior segment contributes exactly two.
     s, c = wp.tid()
     ring_base = axis_first
+    r = s * n_columns + c
+
+    # --- the vertices: thread ``(s, c)``'s own, or a run of ``slice_run`` of one column ---------
+    # A run is ``slice_run`` consecutive slices of one column, taken column-major from the flat
+    # index by the first ``n_columns * ceil(n_slices / slice_run)`` threads (the faces below take
+    # it slice-major). The column's profile point is evaluated once for the run. In closed form it
+    # is a ``float64`` evaluation, which at the ``float64`` rate cost more than the rest of the
+    # launch together when every slice repeated it (uv_sphere at 1024 x 512: 2.3x the launch with
+    # the profile held constant); a run costs a thread ``slice_run`` serial vertices instead, so
+    # it grows with the solid to keep the vertex threads near ``2**15`` (``REVOLVE_RUN_THREADS``),
+    # and is formed here rather than passed (an argument cost the small solids 1.02-1.06x). A
+    # small solid takes runs of 1, where each thread writes
+    # its own vertex with no remap and no loop: a flat launch's division and the run loop cost the
+    # CPU 1.2-1.5x there. A column's ring is a block of ``n_slices`` consecutive slots, so a run
+    # writes consecutive vertices. Every slot has exactly one writer, so the output does not depend
+    # on the run.
     on_axis_c = (c == 0 and axis_first != 0) or (c == n_columns - 1 and axis_last != 0)
-
-    # --- the vertex this thread owns ---------------------------------------------------------
-    # An on-axis column is one shared slot, written by slice 0 alone: ``revolution_point`` returns
-    # the same value for every slice there, and a single writer keeps it deterministic.
     here = revolve_uniform_slot(c, s, n_columns, n_slices, ring_base, axis_first, axis_last)
-    if not on_axis_c or s == 0:
-        point = wp.vec2()
-        if profile_kind == PROFILE_TABLE:
-            point = profile[c]
-        else:
-            point = closed_profile_point(profile_kind, c, n_columns, profile_params)
-        out_vertices[here] = place_point(
-            revolution_point(point[0], point[1], s, n_slices, angle), matrix, transform_mode
-        )
+    slice_run = wp.clamp((n_slices * n_columns) // REVOLVE_RUN_THREADS, 1, REVOLVE_SLICE_RUN_MAX)
+    if slice_run == 1:
+        # An on-axis column is one shared slot, written by slice 0 alone: ``revolution_point``
+        # returns the same value for every slice there, and a single writer keeps it deterministic.
+        if not on_axis_c or s == 0:
+            point = revolve_uniform_column(profile, profile_kind, c, n_columns, profile_params)
+            out_vertices[here] = revolved_vertex(point, s, n_slices, angle, matrix, transform_mode)
+    else:
+        runs = (n_slices + slice_run - 1) // slice_run
+        c_v = r // runs
+        first = (r % runs) * slice_run
+        last = wp.min(first + slice_run, n_slices)
+        # The same single writer for an on-axis column: the run holding slice 0.
+        if (c_v == 0 and axis_first != 0) or (c_v == n_columns - 1 and axis_last != 0):
+            last = wp.min(last, 1)
+        if c_v < n_columns and first < last:
+            point = revolve_uniform_column(profile, profile_kind, c_v, n_columns, profile_params)
+            for s_v in range(first, last):
+                out_vertices[
+                    revolve_uniform_slot(
+                        c_v, s_v, n_columns, n_slices, ring_base, axis_first, axis_last
+                    )
+                ] = revolved_vertex(point, s_v, n_slices, angle, matrix, transform_mode)
 
-    # --- the faces of the segment leaving this column ------------------------------------------
+    # --- the faces of the segment leaving column ``c`` in slice ``s`` -------------------------
     n_segments = n_columns - 1 + wrap
     if c >= n_segments:
         return
