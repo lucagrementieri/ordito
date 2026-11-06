@@ -976,6 +976,15 @@ def scatter_corner_angles(
 # ---------------------------------------------------------------------------
 
 
+# Below this many queries on CUDA, ``ball_angle_defect_sum``'s hash grid takes cells twice the
+# radius: a query's box is then one cell wide and meets 8 cells rather than up to 27, which
+# shortens each thread's chain of dependent loads, and with few queries that latency is the
+# launch. Walk plus build, cell 2r over r: 0.64-0.72x at 2.5 k queries, 0.87-0.98x at 10 k; at 40 k
+# 0.87-1.05x, and 1.1-1.5x on scrambled meshes from 160 k, where the larger cells' extra candidates
+# cost bandwidth. CPU 0.80-1.06x, kept at r.
+GAUSSIAN_WIDE_CELL_MAX_QUERIES = 1 << 14
+
+
 @wp.kernel
 def ball_angle_defect_sum(
     vertices: wp.array[wp.vec3],

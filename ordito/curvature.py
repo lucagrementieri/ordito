@@ -664,7 +664,10 @@ def discrete_gaussian_curvature(
         inputs=[face_angles, faces, angle_sum],
         device=device,
     )
-    grid = od.neighbors.hashgrid_from_points(vertices, float(radius))
+    # Few queries on CUDA take cells twice the radius, so each query meets fewer cells.
+    wide = points.size < kernel_curvature.GAUSSIAN_WIDE_CELL_MAX_QUERIES
+    cell = float(radius) * (2.0 if wide and not wp.get_device(device).is_cpu else 1.0)
+    grid = od.neighbors.hashgrid_from_points(vertices, cell)
     gauss_curvature = _launch.empty(points.size, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_curvature.ball_angle_defect_sum,
