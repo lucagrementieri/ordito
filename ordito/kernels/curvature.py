@@ -447,12 +447,46 @@ def signed_dihedral_d(cross_f: wp.vec3d, cross_g: wp.vec3d, direction: wp.vec3d)
 
 
 @wp.kernel
+def vtk_face_terms(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    out_face_terms: wp.array2d[wp.float64],
+) -> None:
+    # Everything ``vtk_principal_curvatures`` reads of face ``f`` besides its corner angles: column
+    # 0 its area, column ``1 + l`` the mean-curvature term of its halfedge ``l`` when ``f`` is the
+    # lower face of that edge (zero otherwise, never read). The term is
+    # ``3 |e| theta / (A_f + A_g)``, ``theta`` the dihedral signed by ``(n_f x n_g) . e`` with
+    # ``e`` walked as ``f`` walks it. Each area was formed at each of the face's three corners and
+    # each edge's term at both its ends: tabulated, bit-identical, kernel 0.43-0.64x on CUDA
+    # (2.5 k to 870 k faces) and 0.76x on CPU, for 32 bytes a face.
+    f = wp.int32(wp.tid())
+    p0, p1, p2 = face_vertices_vec3d(vertices, faces, f)
+    cross_f = wp.cross(p1 - p0, p2 - p0)
+    area_f = wp.float64(0.5) * wp.length(cross_f)
+    out_face_terms[f, 0] = area_f
+    for local in range(3):
+        mate = mates[3 * f + local]
+        term = wp.float64(0.0)
+        if mate >= 0 and mate // 3 > f:
+            q0, q1, q2 = face_vertices_vec3d(vertices, faces, mate // 3)
+            cross_g = wp.cross(q1 - q0, q2 - q0)
+            direction = corner_at(p0, p1, p2, local + 1) - corner_at(p0, p1, p2, local)
+            term = wp.length(direction) * signed_dihedral_d(cross_f, cross_g, direction)
+            areas = area_f + wp.float64(0.5) * wp.length(cross_g)
+            if areas != wp.float64(0.0):
+                term = term / areas * wp.float64(3.0)
+        out_face_terms[f, 1 + local] = term
+
+
+@wp.kernel
 def vtk_principal_curvatures(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
     vf_offsets: wp.array[wp.int32],
     mates: wp.array[wp.int32],
+    face_terms: wp.array2d[wp.float64],
     out_pv1: wp.array[wp.float32],
     out_pv2: wp.array[wp.float32],
 ) -> None:
@@ -460,9 +494,8 @@ def vtk_principal_curvatures(
     # negative), over its 1-ring ``K`` and ``H``, gathered per vertex over its face row:
     # - ``K``: three times the angle defect over the summed incident face areas (no rim term);
     # - ``H``: every edge shared by exactly two faces adds ``3 |e| theta / (A_f + A_g)`` to both
-    #   ends, ``theta`` the dihedral signed by ``(n_f x n_g) . e`` with ``e`` walked as the lower
-    #   face ``f`` walks it, and a vertex takes half the mean over those edges. Each edge at the
-    #   vertex is met from both its faces; it is counted from the lower one, as VTK counts it.
+    #   ends (``vtk_face_terms``), and a vertex takes half the mean over those edges. Each edge at
+    #   the vertex is met from both its faces; it is counted from the lower one, as VTK counts it.
     v = wp.int32(wp.tid())
     angle_sum = wp.float64(0.0)
     area_sum = wp.float64(0.0)
@@ -476,25 +509,13 @@ def vtk_principal_curvatures(
         after = corner_at(p0, p1, p2, k + 1)
         before = corner_at(p0, p1, p2, k + 2)
         angle_sum += unsigned_angle_d(after - here, before - here)
-        cross_f = wp.cross(p1 - p0, p2 - p0)
-        area_f = wp.float64(0.5) * wp.length(cross_f)
-        area_sum += area_f
+        area_sum += face_terms[f, 0]
         # The two edges at ``v`` in this face: ``k -> k + 1`` and ``k + 2 -> k``.
         for side in range(2):
             local = wp.where(side == 0, k, (k + 2) % 3)
             mate = mates[3 * f + local]
             if mate >= 0 and mate // 3 > f:
-                g = mate // 3
-                q0, q1, q2 = face_vertices_vec3d(vertices, faces, g)
-                cross_g = wp.cross(q1 - q0, q2 - q0)
-                tail = corner_at(p0, p1, p2, local)
-                head = corner_at(p0, p1, p2, local + 1)
-                direction = head - tail
-                term = wp.length(direction) * signed_dihedral_d(cross_f, cross_g, direction)
-                areas = area_f + wp.float64(0.5) * wp.length(cross_g)
-                if areas != wp.float64(0.0):
-                    term = term / areas * wp.float64(3.0)
-                mean_sum += term
+                mean_sum += face_terms[f, 1 + local]
                 edge_count += 1
     gaussian = wp.float64(0.0)
     if area_sum > wp.float64(0.0):

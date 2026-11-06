@@ -252,11 +252,18 @@ def _one_ring_principal_curvatures(
         if n_vertices > 0:
             if method == "pyvista":
                 kernel = kernel_curvature.vtk_principal_curvatures
-                inputs = [vertices, faces, vertex_faces, vf_offsets, mates]
+                face_terms = _launch.empty((faces.size // 3, 4), dtype=wp.float64, device=device)
+                _launch.launch(
+                    kernel_curvature.vtk_face_terms,
+                    dim=faces.size // 3,
+                    inputs=[vertices, faces, mates],
+                    outputs=[face_terms],
+                    device=device,
+                )
             else:
                 kernel = kernel_curvature.meyer_principal_curvatures
                 face_terms = _meyer_face_terms(vertices, faces)
-                inputs = [vertices, faces, vertex_faces, vf_offsets, mates, face_terms]
+            inputs = [vertices, faces, vertex_faces, vf_offsets, mates, face_terms]
             _launch.launch(kernel, dim=n_vertices, inputs=inputs, outputs=[pv1, pv2], device=device)
         directions = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
         return directions, _launch.zeros(n_vertices, dtype=wp.vec3, device=device), pv1, pv2

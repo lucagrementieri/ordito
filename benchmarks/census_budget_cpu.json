@@ -1416,8 +1416,8 @@
  },
  "benchmarks/test_curvature.py::test_principal_curvature_pyvista[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 5,
-   "alloc": 7,
+   "launch": 6,
+   "alloc": 8,
    "scan": 1,
    "sort": 1
   }
