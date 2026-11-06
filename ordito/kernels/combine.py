@@ -41,6 +41,12 @@ def offset_packed_faces(
     # nothing here — the owning piece is found by an upper-bound search over its start offsets
     # (``piece_starts[0]`` is 0, so the search never returns 0). Pieces contributing no faces share
     # a start with their successor; the upper bound skips them, which is the right answer.
+    #
+    # Its CPU speed depends on where the module's object places it: the same machine code ran
+    # 1.10-1.17x with its entry at 32 rather than 48 mod 64 (the layout beside
+    # ``pack_mesh_pieces``). Declined: ``-mllvm=-align-all-functions=6`` in
+    # ``cpu_compiler_flags``, which recovers this row (``concatenate`` of 8 pieces 0.78-0.82x) but
+    # moves nothing else (1 291 CPU rows, geomean 1.004 / 0.998, no correlation between passes).
     i = wp.int32(wp.tid())
     piece = kernel_array.binary_search_index(piece_starts, i) - 1
     faces[i] = faces[i] + vertex_offsets[piece]
