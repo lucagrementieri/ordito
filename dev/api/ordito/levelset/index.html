@@ -1724,14 +1724,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../benchmarks/vertices/" class="md-nav__link">
+      <a href="../../../benchmarks/normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -3776,14 +3776,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../vertices/" class="md-nav__link">
+      <a href="../normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -8418,14 +8418,14 @@ guarding is deliberate: the guard would be a whole-mesh intersection test on eve
 caller who needs it can run the one that names the faces.</p>
 <p>The normals are <strong>angle-weighted</strong> (the pseudonormal), which is the weighting that makes the
 displacement independent of how the incident triangles happen to be subdivided;
-<a class="autorefs autorefs-internal" title="ordito.vertices" href="../vertices/#ordito.vertices"><code>ordito.vertices</code></a> documents the three choices.</p>
+<a class="autorefs autorefs-internal" title="ordito.normals" href="../normals/#ordito.normals"><code>ordito.normals</code></a> documents the three choices.</p>
 </details>
 
 <details class="see-also" open>
   <summary>See Also</summary>
   <p><a class="autorefs autorefs-internal" title="offset_mesh" href="./#ordito.levelset.offset_mesh"><code>offset_mesh</code></a>
     The resampling offset, for a shell that must not self-intersect.
-<a class="autorefs autorefs-internal" title="vertex_normals" href="../vertices/#ordito.vertices.vertex_normals"><code>vertices.vertex_normals</code></a> at <code>weighting="angle"</code>
+<a class="autorefs autorefs-internal" title="vertex_normals" href="../normals/#ordito.normals.vertex_normals"><code>normals.vertex_normals</code></a> at <code>weighting="angle"</code>
     The displacement direction.
 <a class="autorefs autorefs-internal" title="oriented_boundary_edges" href="../boundary/#ordito.boundary.oriented_boundary_edges"><code>ordito.boundary.oriented_boundary_edges</code></a>
     Where the band's orientation comes from.</p>
@@ -8652,13 +8652,13 @@ triangles over each of its 16 boundary edges:</p>
 
 <span class="sd">    The normals are **angle-weighted** (the pseudonormal), which is the weighting that makes the</span>
 <span class="sd">    displacement independent of how the incident triangles happen to be subdivided;</span>
-<span class="sd">    [`ordito.vertices`][ordito.vertices] documents the three choices.</span>
+<span class="sd">    [`ordito.normals`][ordito.normals] documents the three choices.</span>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
 <span class="sd">    [`offset_mesh`][ordito.levelset.offset_mesh]</span>
 <span class="sd">        The resampling offset, for a shell that must not self-intersect.</span>
-<span class="sd">    [`vertices.vertex_normals`][ordito.vertices.vertex_normals] at `weighting="angle"`</span>
+<span class="sd">    [`normals.vertex_normals`][ordito.normals.vertex_normals] at `weighting="angle"`</span>
 <span class="sd">        The displacement direction.</span>
 <span class="sd">    [`ordito.boundary.oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges]</span>
 <span class="sd">        Where the band's orientation comes from.</span>
@@ -8694,7 +8694,7 @@ triangles over each of its 16 boundary edges:</p>
     <span class="c1"># kernel, which normalizes each vertex's row as it displaces it.</span>
     <span class="n">normal_sums</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="n">n_vertices</span><span class="p">,</span> <span class="mi">3</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_vertices</span><span class="o">.</span><span class="n">SCATTER_ANGLE_WEIGHTED_NORMALS</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
+        <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_ANGLE_WEIGHTED_NORMALS</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">],</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
         <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">normal_sums</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>

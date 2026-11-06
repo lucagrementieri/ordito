@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://lucagrementieri.github.io/ordito/dev/api/ordito/vertices/">
+        <link rel="canonical" href="https://lucagrementieri.github.io/ordito/dev/api/ordito/normals/">
       
       
       
@@ -26,7 +26,7 @@
       <link rel="icon" href="../../../assets/logo.svg">
       <meta name="generator" content="zensical-0.0.73">
     
-    <title>ordito.vertices API reference - ordito</title>
+    <title>ordito.normals API reference - ordito</title>
     
       
         
@@ -66,16 +66,16 @@
   <meta name="robots" content="noindex, follow">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="ordito">
-  <meta property="og:title" content="ordito.vertices API reference - ordito">
+  <meta property="og:title" content="ordito.normals API reference - ordito">
   <meta property="og:description" content="GPU mesh processing in Python: a CUDA library for triangle meshes and point clouds on NVIDIA Warp, covering geometry, topology, repair, remeshing, geodesics and reconstruction.">
-  <meta property="og:url" content="https://lucagrementieri.github.io/ordito/dev/api/ordito/vertices/">
+  <meta property="og:url" content="https://lucagrementieri.github.io/ordito/dev/api/ordito/normals/">
   <meta property="og:image" content="https://lucagrementieri.github.io/ordito/dev/assets/og-image.png">
   <meta property="og:image:type" content="image/png">
   <meta property="og:image:width" content="1200">
   <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="ordito: GPU mesh processing in Python">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="ordito.vertices API reference - ordito">
+  <meta name="twitter:title" content="ordito.normals API reference - ordito">
   <meta name="twitter:description" content="GPU mesh processing in Python: a CUDA library for triangle meshes and point clouds on NVIDIA Warp, covering geometry, topology, repair, remeshing, geodesics and reconstruction.">
   <meta name="twitter:image" content="https://lucagrementieri.github.io/ordito/dev/assets/og-image.png">
 
@@ -133,7 +133,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              vertices
+              normals
             
           </span>
         </div>
@@ -1724,14 +1724,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../benchmarks/vertices/" class="md-nav__link">
+      <a href="../../../benchmarks/normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -3794,7 +3794,7 @@
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -3811,7 +3811,7 @@
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -3837,7 +3837,7 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#ordito.vertices.mean_vertex_normals" class="md-nav__link">
+  <a href="#ordito.normals.mean_vertex_normals" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         mean_vertex_normals
@@ -3848,7 +3848,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#ordito.vertices.weighted_vertex_normals" class="md-nav__link">
+  <a href="#ordito.normals.weighted_vertex_normals" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         weighted_vertex_normals
@@ -3859,21 +3859,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#ordito.vertices.vertex_normals" class="md-nav__link">
+  <a href="#ordito.normals.vertex_normals" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         vertex_normals
-      </span>
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#ordito.vertices.vertex_defects" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        vertex_defects
       </span>
     </span>
   </a>
@@ -5962,7 +5951,7 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#ordito.vertices.mean_vertex_normals" class="md-nav__link">
+  <a href="#ordito.normals.mean_vertex_normals" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         mean_vertex_normals
@@ -5973,7 +5962,7 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#ordito.vertices.weighted_vertex_normals" class="md-nav__link">
+  <a href="#ordito.normals.weighted_vertex_normals" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         weighted_vertex_normals
@@ -5984,21 +5973,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#ordito.vertices.vertex_normals" class="md-nav__link">
+  <a href="#ordito.normals.vertex_normals" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
         vertex_normals
-      </span>
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#ordito.vertices.vertex_defects" class="md-nav__link">
-    <span class="md-ellipsis">
-      <span class="md-typeset">
-        vertex_defects
       </span>
     </span>
   </a>
@@ -6026,31 +6004,27 @@
 
 
 
-<h1 id="ordito.vertices" class="doc doc-heading">
-            <span class="doc doc-object-name doc-module-name">ordito.vertices</span>
+<h1 id="ordito.normals" class="doc doc-heading">
+            <span class="doc doc-object-name doc-module-name">ordito.normals</span>
 
 
 </h1>
 
     <div class="doc doc-contents first">
 
-        <p>Per-vertex quantities: normals under three weighting rules, and the angle defect.</p>
+        <p>Vertex normals under three weighting rules, and the accumulators beneath them.</p>
 <p>A vertex has no normal of its own -- only the faces around it do -- so a vertex normal is always a
 weighted average of incident face normals, and the weight is a modelling choice rather than a
-detail. <a class="autorefs autorefs-internal" title="vertex_normals" href="./#ordito.vertices.vertex_normals"><code>vertex_normals</code></a> is the entry point, and its
+detail. <a class="autorefs autorefs-internal" title="vertex_normals" href="./#ordito.normals.vertex_normals"><code>vertex_normals</code></a> is the entry point, and its
 <code>weighting=</code> keyword <em>is</em> that choice: by face area, by incident angle (the one invariant to how a
 neighbouring polygon happened to be triangulated), or by Nelson Max's sine-and-edge-length
 reciprocals.</p>
 <p>Two <strong>accumulators</strong> sit underneath it and are public in their own right:
-<a class="autorefs autorefs-internal" title="weighted_vertex_normals" href="./#ordito.vertices.weighted_vertex_normals"><code>weighted_vertex_normals</code></a> takes a caller-supplied
-per-corner weight table and <a class="autorefs autorefs-internal" title="mean_vertex_normals" href="./#ordito.vertices.mean_vertex_normals"><code>mean_vertex_normals</code></a> is the
+<a class="autorefs autorefs-internal" title="weighted_vertex_normals" href="./#ordito.normals.weighted_vertex_normals"><code>weighted_vertex_normals</code></a> takes a caller-supplied
+per-corner weight table and <a class="autorefs autorefs-internal" title="mean_vertex_normals" href="./#ordito.normals.mean_vertex_normals"><code>mean_vertex_normals</code></a> is the
 same thing with unit weights. They know no geometry -- they take no <code>vertices</code> at all, which is
 why they keep an explicit <code>n_vertices</code> argument where <code>vertex_normals</code> derives it. That
 asymmetry is the visible marker of which of the two layers you are in.</p>
-<p><a class="autorefs autorefs-internal" title="vertex_defects" href="./#ordito.vertices.vertex_defects"><code>vertex_defects</code></a> is the odd one out and not a normal at all:
-<code>2 * pi</code> minus the incident angle sum, which is the intrinsic curvature concentrated at that
-vertex and the quantity
-<a class="autorefs autorefs-internal" title="discrete_gaussian_curvature" href="../curvature/#ordito.curvature.discrete_gaussian_curvature"><code>discrete_gaussian_curvature</code></a> reports.</p>
 
           
     <details class="doc doc-backlinks ordito-backlinks">
@@ -6078,7 +6052,7 @@ vertex and the quantity
       </thead>
       <tbody>
             <tr class="doc-section-item">
-              <td><code><a class="autorefs autorefs-internal" title="mean_vertex_normals (ordito.vertices.mean_vertex_normals)" href="./#ordito.vertices.mean_vertex_normals">mean_vertex_normals</a></code></td>
+              <td><code><a class="autorefs autorefs-internal" title="mean_vertex_normals (ordito.normals.mean_vertex_normals)" href="./#ordito.normals.mean_vertex_normals">mean_vertex_normals</a></code></td>
               <td>
                 <div class="doc-md-description">
                   <p>Vertex normals as the (unnormalized) sum of incident face normals, then unit-length.</p>
@@ -6086,7 +6060,7 @@ vertex and the quantity
               </td>
             </tr>
             <tr class="doc-section-item">
-              <td><code><a class="autorefs autorefs-internal" title="weighted_vertex_normals (ordito.vertices.weighted_vertex_normals)" href="./#ordito.vertices.weighted_vertex_normals">weighted_vertex_normals</a></code></td>
+              <td><code><a class="autorefs autorefs-internal" title="weighted_vertex_normals (ordito.normals.weighted_vertex_normals)" href="./#ordito.normals.weighted_vertex_normals">weighted_vertex_normals</a></code></td>
               <td>
                 <div class="doc-md-description">
                   <p>Vertex normals from a weighted sum of incident face normals, then unit-length.</p>
@@ -6094,18 +6068,10 @@ vertex and the quantity
               </td>
             </tr>
             <tr class="doc-section-item">
-              <td><code><a class="autorefs autorefs-internal" title="vertex_normals (ordito.vertices.vertex_normals)" href="./#ordito.vertices.vertex_normals">vertex_normals</a></code></td>
+              <td><code><a class="autorefs autorefs-internal" title="vertex_normals (ordito.normals.vertex_normals)" href="./#ordito.normals.vertex_normals">vertex_normals</a></code></td>
               <td>
                 <div class="doc-md-description">
                   <p>Per-vertex unit normals, as a weighted average of the incident face normals.</p>
-                </div>
-              </td>
-            </tr>
-            <tr class="doc-section-item">
-              <td><code><a class="autorefs autorefs-internal" title="vertex_defects (ordito.vertices.vertex_defects)" href="./#ordito.vertices.vertex_defects">vertex_defects</a></code></td>
-              <td>
-                <div class="doc-md-description">
-                  <p>Discrete angle defect per vertex: <code>2π</code> minus the sum of incident corner angles.</p>
                 </div>
               </td>
             </tr>
@@ -6129,7 +6095,7 @@ vertex and the quantity
 <div class="doc doc-object doc-function">
 
 
-<h2 id="ordito.vertices.mean_vertex_normals" class="doc doc-heading">
+<h2 id="ordito.normals.mean_vertex_normals" class="doc doc-heading">
             <span class="doc doc-object-name doc-function-name">mean_vertex_normals</span>
 
 
@@ -6273,9 +6239,9 @@ non-zero; otherwise the corresponding entry is zero.</p>
 
 <details class="see-also" open>
   <summary>See Also</summary>
-  <p><a class="autorefs autorefs-internal" title="weighted_vertex_normals" href="./#ordito.vertices.weighted_vertex_normals"><code>weighted_vertex_normals</code></a>
+  <p><a class="autorefs autorefs-internal" title="weighted_vertex_normals" href="./#ordito.normals.weighted_vertex_normals"><code>weighted_vertex_normals</code></a>
     The same accumulator with a per-corner weight table; this is that with unit weights.
-<a class="autorefs autorefs-internal" title="vertex_normals" href="./#ordito.vertices.vertex_normals"><code>vertex_normals</code></a>
+<a class="autorefs autorefs-internal" title="vertex_normals" href="./#ordito.normals.vertex_normals"><code>vertex_normals</code></a>
     The geometry-aware entry point, which derives a weight table and calls one of these two.</p>
 </details>
 
@@ -6288,7 +6254,7 @@ triangles in one side leans towards that side:</p>
 
 <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">box</span><span class="p">()</span>
 <span class="n">face_normals</span><span class="p">,</span> <span class="n">_areas</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">face_normals_and_areas</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-<span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">mean_vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="p">)</span>
+<span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">normals</span><span class="o">.</span><span class="n">mean_vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">normals</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># (8,)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">normals</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">3</span><span class="p">))</span>  <span class="c1"># [-0.816 -0.408 -0.408]</span>
 </code></pre></div>
@@ -6297,15 +6263,24 @@ triangles in one side leans towards that side:</p>
     <details class="doc doc-backlinks ordito-backlinks">
       <summary>Referenced by 5 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../array/#ordito.array">array</a> › <a href="../array/#ordito.array.astype">astype</a></span> · <span class="ordito-backlink"><a href="./#ordito.vertices">vertices</a></span> · <span class="ordito-backlink"><a href="./#ordito.vertices">vertices</a> › <a href="./#ordito.vertices.vertex_normals">vertex_normals</a></span> · <span class="ordito-backlink"><a href="./#ordito.vertices">vertices</a> › <a href="./#ordito.vertices.weighted_vertex_normals">weighted_vertex_normals</a></span></p>
+<span class="ordito-backlink"><a href="../array/#ordito.array">array</a> › <a href="../array/#ordito.array.astype">astype</a></span> · <span class="ordito-backlink"><a href="./#ordito.normals">normals</a></span> · <span class="ordito-backlink"><a href="./#ordito.normals">normals</a> › <a href="./#ordito.normals.vertex_normals">vertex_normals</a></span> · <span class="ordito-backlink"><a href="./#ordito.normals">normals</a> › <a href="./#ordito.normals.weighted_vertex_normals">weighted_vertex_normals</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
 <span class="ordito-backlink"><a href="../../../migrating-from/igl/#migrating-from-libigl">Migrating from libigl</a> › <a href="../../../migrating-from/igl/#discrete-differential-geometry">Discrete differential geometry</a></span></p>
     </details>
 
 
             <details class="mkdocstrings-source">
-              <summary>Source code in <code>ordito/vertices.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 49</span>
+              <summary>Source code in <code>ordito/normals.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 40</span>
+<span class="normal"> 41</span>
+<span class="normal"> 42</span>
+<span class="normal"> 43</span>
+<span class="normal"> 44</span>
+<span class="normal"> 45</span>
+<span class="normal"> 46</span>
+<span class="normal"> 47</span>
+<span class="normal"> 48</span>
+<span class="normal"> 49</span>
 <span class="normal"> 50</span>
 <span class="normal"> 51</span>
 <span class="normal"> 52</span>
@@ -6358,16 +6333,7 @@ triangles in one side leans towards that side:</p>
 <span class="normal"> 99</span>
 <span class="normal">100</span>
 <span class="normal">101</span>
-<span class="normal">102</span>
-<span class="normal">103</span>
-<span class="normal">104</span>
-<span class="normal">105</span>
-<span class="normal">106</span>
-<span class="normal">107</span>
-<span class="normal">108</span>
-<span class="normal">109</span>
-<span class="normal">110</span>
-<span class="normal">111</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mean_vertex_normals</span><span class="p">(</span>
+<span class="normal">102</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mean_vertex_normals</span><span class="p">(</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">face_normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6403,9 +6369,9 @@ triangles in one side leans towards that side:</p>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
-<span class="sd">    [`weighted_vertex_normals`][ordito.vertices.weighted_vertex_normals]</span>
+<span class="sd">    [`weighted_vertex_normals`][ordito.normals.weighted_vertex_normals]</span>
 <span class="sd">        The same accumulator with a per-corner weight table; this is that with unit weights.</span>
-<span class="sd">    [`vertex_normals`][ordito.vertices.vertex_normals]</span>
+<span class="sd">    [`vertex_normals`][ordito.normals.vertex_normals]</span>
 <span class="sd">        The geometry-aware entry point, which derives a weight table and calls one of these two.</span>
 
 <span class="sd">    Examples</span>
@@ -6420,7 +6386,7 @@ triangles in one side leans towards that side:</p>
 
 <span class="sd">    vertices, faces = od.creation.box()</span>
 <span class="sd">    face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)</span>
-<span class="sd">    normals = od.vertices.mean_vertex_normals(vertices.shape[0], faces, face_normals)</span>
+<span class="sd">    normals = od.normals.mean_vertex_normals(vertices.shape[0], faces, face_normals)</span>
 <span class="sd">    print(normals.shape)  # (8,)</span>
 <span class="sd">    print(np.round(normals.numpy()[0], 3))  # [-0.816 -0.408 -0.408]</span>
 <span class="sd">    ```</span>
@@ -6428,7 +6394,7 @@ triangles in one side leans towards that side:</p>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="o">=</span><span class="n">face_normals</span><span class="p">)</span>
     <span class="n">_require_face_rows</span><span class="p">(</span><span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span><span class="p">,</span> <span class="n">face_normals</span><span class="o">=</span><span class="n">face_normals</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">_accumulate_and_normalize</span><span class="p">(</span>
-        <span class="n">n_vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">kernel_scatter</span><span class="o">.</span><span class="n">SCATTER_SUM_VEC</span><span class="p">,</span> <span class="p">[</span><span class="n">face_normals</span><span class="p">,</span> <span class="n">faces</span><span class="o">.</span><span class="n">reshape</span><span class="p">((</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">))]</span>
+        <span class="n">n_vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">kernel_scatter</span><span class="o">.</span><span class="n">SCATTER_SUM_VEC</span><span class="p">,</span> <span class="p">[</span><span class="n">face_normals</span><span class="p">,</span> <span class="n">faces</span><span class="p">]</span>
     <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -6439,7 +6405,7 @@ triangles in one side leans towards that side:</p>
 <div class="doc doc-object doc-function">
 
 
-<h2 id="ordito.vertices.weighted_vertex_normals" class="doc doc-heading">
+<h2 id="ordito.normals.weighted_vertex_normals" class="doc doc-heading">
             <span class="doc doc-object-name doc-function-name">weighted_vertex_normals</span>
 
 
@@ -6604,9 +6570,9 @@ non-zero; otherwise the corresponding entry is zero.</p>
 
 <details class="see-also" open>
   <summary>See Also</summary>
-  <p><a class="autorefs autorefs-internal" title="mean_vertex_normals" href="./#ordito.vertices.mean_vertex_normals"><code>mean_vertex_normals</code></a>
+  <p><a class="autorefs autorefs-internal" title="mean_vertex_normals" href="./#ordito.normals.mean_vertex_normals"><code>mean_vertex_normals</code></a>
     This with unit weights.
-<a class="autorefs autorefs-internal" title="vertex_normals" href="./#ordito.vertices.vertex_normals"><code>vertex_normals</code></a>
+<a class="autorefs autorefs-internal" title="vertex_normals" href="./#ordito.normals.vertex_normals"><code>vertex_normals</code></a>
     The geometry-aware entry point, which derives a weight table and calls this.</p>
 </details>
 
@@ -6620,7 +6586,7 @@ whatever the triangulation of the sides:</p>
 <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">box</span><span class="p">()</span>
 <span class="n">face_normals</span><span class="p">,</span> <span class="n">_areas</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">face_normals_and_areas</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
 <span class="n">angles</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">face_angles</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-<span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">weighted_vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="p">,</span> <span class="n">angles</span><span class="p">)</span>
+<span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">normals</span><span class="o">.</span><span class="n">weighted_vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="p">,</span> <span class="n">angles</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">normals</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">3</span><span class="p">))</span>  <span class="c1"># [-0.577 -0.577 -0.577]</span>
 </code></pre></div>
 
@@ -6628,15 +6594,24 @@ whatever the triangulation of the sides:</p>
     <details class="doc doc-backlinks ordito-backlinks">
       <summary>Referenced by 5 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../triangles/#ordito.triangles">triangles</a> › <a href="../triangles/#ordito.triangles.corner_normals">corner_normals</a></span> · <span class="ordito-backlink"><a href="./#ordito.vertices">vertices</a></span> · <span class="ordito-backlink"><a href="./#ordito.vertices">vertices</a> › <a href="./#ordito.vertices.mean_vertex_normals">mean_vertex_normals</a></span> · <span class="ordito-backlink"><a href="./#ordito.vertices">vertices</a> › <a href="./#ordito.vertices.vertex_normals">vertex_normals</a></span></p>
+<span class="ordito-backlink"><a href="./#ordito.normals">normals</a></span> · <span class="ordito-backlink"><a href="./#ordito.normals">normals</a> › <a href="./#ordito.normals.mean_vertex_normals">mean_vertex_normals</a></span> · <span class="ordito-backlink"><a href="./#ordito.normals">normals</a> › <a href="./#ordito.normals.vertex_normals">vertex_normals</a></span> · <span class="ordito-backlink"><a href="../triangles/#ordito.triangles">triangles</a> › <a href="../triangles/#ordito.triangles.corner_normals">corner_normals</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
 <span class="ordito-backlink"><a href="../../../migrating-from/igl/#migrating-from-libigl">Migrating from libigl</a> › <a href="../../../migrating-from/igl/#discrete-differential-geometry">Discrete differential geometry</a></span></p>
     </details>
 
 
             <details class="mkdocstrings-source">
-              <summary>Source code in <code>ordito/vertices.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">114</span>
+              <summary>Source code in <code>ordito/normals.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">105</span>
+<span class="normal">106</span>
+<span class="normal">107</span>
+<span class="normal">108</span>
+<span class="normal">109</span>
+<span class="normal">110</span>
+<span class="normal">111</span>
+<span class="normal">112</span>
+<span class="normal">113</span>
+<span class="normal">114</span>
 <span class="normal">115</span>
 <span class="normal">116</span>
 <span class="normal">117</span>
@@ -6696,16 +6671,7 @@ whatever the triangulation of the sides:</p>
 <span class="normal">171</span>
 <span class="normal">172</span>
 <span class="normal">173</span>
-<span class="normal">174</span>
-<span class="normal">175</span>
-<span class="normal">176</span>
-<span class="normal">177</span>
-<span class="normal">178</span>
-<span class="normal">179</span>
-<span class="normal">180</span>
-<span class="normal">181</span>
-<span class="normal">182</span>
-<span class="normal">183</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">weighted_vertex_normals</span><span class="p">(</span>
+<span class="normal">174</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">weighted_vertex_normals</span><span class="p">(</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">face_normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -6745,9 +6711,9 @@ whatever the triangulation of the sides:</p>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
-<span class="sd">    [`mean_vertex_normals`][ordito.vertices.mean_vertex_normals]</span>
+<span class="sd">    [`mean_vertex_normals`][ordito.normals.mean_vertex_normals]</span>
 <span class="sd">        This with unit weights.</span>
-<span class="sd">    [`vertex_normals`][ordito.vertices.vertex_normals]</span>
+<span class="sd">    [`vertex_normals`][ordito.normals.vertex_normals]</span>
 <span class="sd">        The geometry-aware entry point, which derives a weight table and calls this.</span>
 
 <span class="sd">    Examples</span>
@@ -6763,7 +6729,7 @@ whatever the triangulation of the sides:</p>
 <span class="sd">    vertices, faces = od.creation.box()</span>
 <span class="sd">    face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)</span>
 <span class="sd">    angles = od.triangles.face_angles(vertices, faces)</span>
-<span class="sd">    normals = od.vertices.weighted_vertex_normals(vertices.shape[0], faces, face_normals, angles)</span>
+<span class="sd">    normals = od.normals.weighted_vertex_normals(vertices.shape[0], faces, face_normals, angles)</span>
 <span class="sd">    print(np.round(normals.numpy()[0], 3))  # [-0.577 -0.577 -0.577]</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
@@ -6773,7 +6739,7 @@ whatever the triangulation of the sides:</p>
         <span class="n">n_vertices</span><span class="p">,</span>
         <span class="n">faces</span><span class="p">,</span>
         <span class="n">kernel_scatter</span><span class="o">.</span><span class="n">SCATTER_WEIGHTED_SUM_VEC</span><span class="p">,</span>
-        <span class="p">[</span><span class="n">face_normals</span><span class="p">,</span> <span class="n">faces</span><span class="o">.</span><span class="n">reshape</span><span class="p">((</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">)),</span> <span class="n">face_weights</span><span class="p">],</span>
+        <span class="p">[</span><span class="n">face_normals</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_weights</span><span class="p">],</span>
     <span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -6784,7 +6750,7 @@ whatever the triangulation of the sides:</p>
 <div class="doc doc-object doc-function">
 
 
-<h2 id="ordito.vertices.vertex_normals" class="doc doc-heading">
+<h2 id="ordito.normals.vertex_normals" class="doc doc-heading">
             <span class="doc doc-object-name doc-function-name">vertex_normals</span>
 
 
@@ -6998,9 +6964,9 @@ device.</p>
 
 <details class="see-also" open>
   <summary>See Also</summary>
-  <p><a class="autorefs autorefs-internal" title="weighted_vertex_normals" href="./#ordito.vertices.weighted_vertex_normals"><code>weighted_vertex_normals</code></a>
+  <p><a class="autorefs autorefs-internal" title="weighted_vertex_normals" href="./#ordito.normals.weighted_vertex_normals"><code>weighted_vertex_normals</code></a>
     The accumulator underneath: a caller-supplied per-corner weight table, no geometry.
-<a class="autorefs autorefs-internal" title="mean_vertex_normals" href="./#ordito.vertices.mean_vertex_normals"><code>mean_vertex_normals</code></a>
+<a class="autorefs autorefs-internal" title="mean_vertex_normals" href="./#ordito.normals.mean_vertex_normals"><code>mean_vertex_normals</code></a>
     The same accumulator with unit weights.
 <a class="autorefs autorefs-internal" title="face_normals_and_areas" href="../triangles/#ordito.triangles.face_normals_and_areas"><code>ordito.triangles.face_normals_and_areas</code></a>
     Produces the <code>face_normals</code> / <code>face_weights</code> the <code>"area"</code> path derives.
@@ -7016,8 +6982,8 @@ there; only <code>"angle"</code> returns the symmetric diagonal:</p>
 <span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
 
 <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">box</span><span class="p">()</span>
-<span class="n">by_area</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-<span class="n">by_angle</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">weighting</span><span class="o">=</span><span class="s2">"angle"</span><span class="p">)</span>
+<span class="n">by_area</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">normals</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+<span class="n">by_angle</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">normals</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">weighting</span><span class="o">=</span><span class="s2">"angle"</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">by_area</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>  <span class="c1"># (8,)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">by_area</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">3</span><span class="p">))</span>  <span class="c1"># [-0.816 -0.408 -0.408]</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="n">by_angle</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">],</span> <span class="mi">3</span><span class="p">))</span>  <span class="c1"># [-0.577 -0.577 -0.577]</span>
@@ -7027,7 +6993,7 @@ there; only <code>"angle"</code> returns the symmetric diagonal:</p>
     <details class="doc doc-backlinks ordito-backlinks">
       <summary>Referenced by 13 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../visibility/#ordito.visibility">visibility</a> › <a href="../visibility/#ordito.visibility.ambient_occlusion">ambient_occlusion</a></span> · <span class="ordito-backlink"><a href="../visibility/#ordito.visibility">visibility</a> › <a href="../visibility/#ordito.visibility.shape_diameter">shape_diameter</a></span> · <span class="ordito-backlink"><a href="../levelset/#ordito.levelset">levelset</a> › <a href="../levelset/#ordito.levelset.thicken_mesh">thicken_mesh</a></span> · <span class="ordito-backlink"><a href="../smoothing/#ordito.smoothing">smoothing</a> › <a href="../smoothing/#ordito.smoothing.inflate">inflate</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.vertex_normals">vertex_normals</a></span> · <span class="ordito-backlink"><a href="../tangent_space/#ordito.tangent_space">tangent_space</a> › <a href="../tangent_space/#ordito.tangent_space.vertex_tangent_frames">vertex_tangent_frames</a></span> · <span class="ordito-backlink"><a href="../triangles/#ordito.triangles">triangles</a> › <a href="../triangles/#ordito.triangles.corner_normals">corner_normals</a></span> · <span class="ordito-backlink"><a href="./#ordito.vertices">vertices</a></span> · <span class="ordito-backlink"><a href="./#ordito.vertices">vertices</a> › <a href="./#ordito.vertices.mean_vertex_normals">mean_vertex_normals</a></span> · <span class="ordito-backlink"><a href="./#ordito.vertices">vertices</a> › <a href="./#ordito.vertices.weighted_vertex_normals">weighted_vertex_normals</a></span></p>
+<span class="ordito-backlink"><a href="../../../reference/#api-reference">API reference</a> › <a href="../../../reference/#find-a-function-by-task">Find a function by task</a></span> · <span class="ordito-backlink"><a href="../visibility/#ordito.visibility">visibility</a> › <a href="../visibility/#ordito.visibility.ambient_occlusion">ambient_occlusion</a></span> · <span class="ordito-backlink"><a href="../visibility/#ordito.visibility">visibility</a> › <a href="../visibility/#ordito.visibility.shape_diameter">shape_diameter</a></span> · <span class="ordito-backlink"><a href="../levelset/#ordito.levelset">levelset</a> › <a href="../levelset/#ordito.levelset.thicken_mesh">thicken_mesh</a></span> · <span class="ordito-backlink"><a href="../smoothing/#ordito.smoothing">smoothing</a> › <a href="../smoothing/#ordito.smoothing.inflate">inflate</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.vertex_normals">vertex_normals</a></span> · <span class="ordito-backlink"><a href="./#ordito.normals">normals</a></span> · <span class="ordito-backlink"><a href="./#ordito.normals">normals</a> › <a href="./#ordito.normals.mean_vertex_normals">mean_vertex_normals</a></span> · <span class="ordito-backlink"><a href="./#ordito.normals">normals</a> › <a href="./#ordito.normals.weighted_vertex_normals">weighted_vertex_normals</a></span> · <span class="ordito-backlink"><a href="../tangent_space/#ordito.tangent_space">tangent_space</a> › <a href="../tangent_space/#ordito.tangent_space.vertex_tangent_frames">vertex_tangent_frames</a></span> · <span class="ordito-backlink"><a href="../triangles/#ordito.triangles">triangles</a> › <a href="../triangles/#ordito.triangles.corner_normals">corner_normals</a></span></p>
         <p><span class="ordito-backlinks-section">Examples</span>
 <span class="ordito-backlink"><a href="../../../examples/inspect/#inspecting-meshes">Inspecting meshes</a> › <a href="../../../examples/inspect/#i6">Normals: per face, per vertex, per corner</a></span></p>
         <p><span class="ordito-backlinks-section">Migrating from another library</span>
@@ -7036,8 +7002,17 @@ there; only <code>"angle"</code> returns the symmetric diagonal:</p>
 
 
             <details class="mkdocstrings-source">
-              <summary>Source code in <code>ordito/vertices.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">250</span>
+              <summary>Source code in <code>ordito/normals.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">241</span>
+<span class="normal">242</span>
+<span class="normal">243</span>
+<span class="normal">244</span>
+<span class="normal">245</span>
+<span class="normal">246</span>
+<span class="normal">247</span>
+<span class="normal">248</span>
+<span class="normal">249</span>
+<span class="normal">250</span>
 <span class="normal">251</span>
 <span class="normal">252</span>
 <span class="normal">253</span>
@@ -7182,33 +7157,7 @@ there; only <code>"angle"</code> returns the symmetric diagonal:</p>
 <span class="normal">392</span>
 <span class="normal">393</span>
 <span class="normal">394</span>
-<span class="normal">395</span>
-<span class="normal">396</span>
-<span class="normal">397</span>
-<span class="normal">398</span>
-<span class="normal">399</span>
-<span class="normal">400</span>
-<span class="normal">401</span>
-<span class="normal">402</span>
-<span class="normal">403</span>
-<span class="normal">404</span>
-<span class="normal">405</span>
-<span class="normal">406</span>
-<span class="normal">407</span>
-<span class="normal">408</span>
-<span class="normal">409</span>
-<span class="normal">410</span>
-<span class="normal">411</span>
-<span class="normal">412</span>
-<span class="normal">413</span>
-<span class="normal">414</span>
-<span class="normal">415</span>
-<span class="normal">416</span>
-<span class="normal">417</span>
-<span class="normal">418</span>
-<span class="normal">419</span>
-<span class="normal">420</span>
-<span class="normal">421</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_normals</span><span class="p">(</span>
+<span class="normal">395</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_normals</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7281,9 +7230,9 @@ there; only <code>"angle"</code> returns the symmetric diagonal:</p>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
-<span class="sd">    [`weighted_vertex_normals`][ordito.vertices.weighted_vertex_normals]</span>
+<span class="sd">    [`weighted_vertex_normals`][ordito.normals.weighted_vertex_normals]</span>
 <span class="sd">        The accumulator underneath: a caller-supplied per-corner weight table, no geometry.</span>
-<span class="sd">    [`mean_vertex_normals`][ordito.vertices.mean_vertex_normals]</span>
+<span class="sd">    [`mean_vertex_normals`][ordito.normals.mean_vertex_normals]</span>
 <span class="sd">        The same accumulator with unit weights.</span>
 <span class="sd">    [`ordito.triangles.face_normals_and_areas`][ordito.triangles.face_normals_and_areas]</span>
 <span class="sd">        Produces the ``face_normals`` / ``face_weights`` the ``"area"`` path derives.</span>
@@ -7301,8 +7250,8 @@ there; only <code>"angle"</code> returns the symmetric diagonal:</p>
 <span class="sd">    import ordito as od</span>
 
 <span class="sd">    vertices, faces = od.creation.box()</span>
-<span class="sd">    by_area = od.vertices.vertex_normals(vertices, faces)</span>
-<span class="sd">    by_angle = od.vertices.vertex_normals(vertices, faces, weighting="angle")</span>
+<span class="sd">    by_area = od.normals.vertex_normals(vertices, faces)</span>
+<span class="sd">    by_angle = od.normals.vertex_normals(vertices, faces, weighting="angle")</span>
 <span class="sd">    print(by_area.shape)  # (8,)</span>
 <span class="sd">    print(np.round(by_area.numpy()[0], 3))  # [-0.816 -0.408 -0.408]</span>
 <span class="sd">    print(np.round(by_angle.numpy()[0], 3))  # [-0.577 -0.577 -0.577]</span>
@@ -7329,430 +7278,40 @@ there; only <code>"angle"</code> returns the symmetric diagonal:</p>
         <span class="c1"># their products, so no normal or weight table is written.</span>
         <span class="k">if</span> <span class="n">face_normals</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
             <span class="k">return</span> <span class="n">_accumulate_and_normalize</span><span class="p">(</span>
-                <span class="n">n_vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">kernel_vertices</span><span class="o">.</span><span class="n">SCATTER_MAX_WEIGHTED_NORMALS</span><span class="p">,</span> <span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">]</span>
+                <span class="n">n_vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_MAX_WEIGHTED_NORMALS</span><span class="p">,</span> <span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">]</span>
             <span class="p">)</span>
         <span class="n">_require_face_rows</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="o">=</span><span class="n">face_normals</span><span class="p">)</span>
         <span class="k">return</span> <span class="n">_accumulate_and_normalize</span><span class="p">(</span>
             <span class="n">n_vertices</span><span class="p">,</span>
             <span class="n">faces</span><span class="p">,</span>
-            <span class="n">kernel_vertices</span><span class="o">.</span><span class="n">SCATTER_MAX_WEIGHTED_UNIT_NORMALS</span><span class="p">,</span>
+            <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_MAX_WEIGHTED_UNIT_NORMALS</span><span class="p">,</span>
             <span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="p">],</span>
         <span class="p">)</span>
 
-    <span class="k">if</span> <span class="n">weighting</span> <span class="o">==</span> <span class="s2">"angle"</span><span class="p">:</span>
-        <span class="k">if</span> <span class="n">face_normals</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">face_weights</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="c1"># Nothing supplied: one kernel derives each face's normal and corner angles in</span>
-            <span class="c1"># registers and scatters their products, so neither per-face table is written.</span>
-            <span class="k">return</span> <span class="n">_accumulate_and_normalize</span><span class="p">(</span>
-                <span class="n">n_vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">kernel_vertices</span><span class="o">.</span><span class="n">SCATTER_ANGLE_WEIGHTED_NORMALS</span><span class="p">,</span> <span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">]</span>
-            <span class="p">)</span>
-        <span class="k">if</span> <span class="n">face_normals</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">face_normals</span><span class="p">,</span> <span class="n">_areas</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">face_normals_and_areas</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-        <span class="n">angles</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">face_angles</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span> <span class="k">if</span> <span class="n">face_weights</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">face_weights</span>
-        <span class="k">return</span> <span class="n">weighted_vertex_normals</span><span class="p">(</span>
-            <span class="n">n_vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">angles</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
-        <span class="p">)</span>
-
-    <span class="c1"># "area": each face contributes its normal scaled by its area to all three corners -- the</span>
-    <span class="c1"># weight is per *face* here rather than per corner, so this is the cheaper of the two paths.</span>
-    <span class="c1"># With nothing supplied one kernel derives and scatters the product in registers; otherwise</span>
-    <span class="c1"># the missing table is derived and the product is still formed inside the scatter.</span>
+    <span class="c1"># With nothing supplied one kernel per weighting derives each face's normal and weights in</span>
+    <span class="c1"># registers and scatters their products, so no per-face table is written. With one table or</span>
+    <span class="c1"># both supplied, the kernel built for that combination reads what was passed and forms the</span>
+    <span class="c1"># rest in the thread (a missing table launches as ``None``), bit for bit the table it would</span>
+    <span class="c1"># otherwise have written first. "area" weights per *face* rather than per corner, so it is</span>
+    <span class="c1"># the cheaper of the two.</span>
     <span class="k">if</span> <span class="n">face_normals</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">face_weights</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">_accumulate_and_normalize</span><span class="p">(</span>
-            <span class="n">n_vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">kernel_vertices</span><span class="o">.</span><span class="n">SCATTER_AREA_WEIGHTED_NORMALS</span><span class="p">,</span> <span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">]</span>
+        <span class="n">derived</span> <span class="o">=</span> <span class="p">(</span>
+            <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_ANGLE_WEIGHTED_NORMALS</span>
+            <span class="k">if</span> <span class="n">weighting</span> <span class="o">==</span> <span class="s2">"angle"</span>
+            <span class="k">else</span> <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_AREA_WEIGHTED_NORMALS</span>
         <span class="p">)</span>
-    <span class="c1"># One of the two tables is supplied (both missing returned above); derive the other.</span>
-    <span class="k">if</span> <span class="n">face_weights</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="c1"># The areas alone, ``face_normals_and_areas``' bit for bit, with no normal table beside.</span>
-        <span class="n">face_weights</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_triangles</span><span class="o">.</span><span class="n">face_areas</span><span class="p">,</span>
-            <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_weights</span><span class="p">],</span>
-            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-        <span class="p">)</span>
-    <span class="k">if</span> <span class="n">face_normals</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">face_normals</span><span class="p">,</span> <span class="n">_areas</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">face_normals_and_areas</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">_accumulate_and_normalize</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">derived</span><span class="p">,</span> <span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">])</span>
+    <span class="n">key</span> <span class="o">=</span> <span class="p">(</span><span class="n">face_normals</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">,</span> <span class="n">face_weights</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">weighting</span> <span class="o">==</span> <span class="s2">"angle"</span><span class="p">:</span>
+        <span class="n">supplied</span> <span class="o">=</span> <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_SUPPLIED_ANGLE_WEIGHTED_NORMALS</span><span class="p">[</span><span class="n">key</span><span class="p">]</span>
+        <span class="k">if</span> <span class="n">face_weights</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+            <span class="n">face_weights</span> <span class="o">=</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span><span class="n">face_weights</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">supplied</span> <span class="o">=</span> <span class="n">kernel_normals</span><span class="o">.</span><span class="n">SCATTER_SUPPLIED_AREA_WEIGHTED_NORMALS</span><span class="p">[</span><span class="n">key</span><span class="p">]</span>
     <span class="n">_require_face_rows</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="o">=</span><span class="n">face_normals</span><span class="p">,</span> <span class="n">face_weights</span><span class="o">=</span><span class="n">face_weights</span><span class="p">)</span>
     <span class="k">return</span> <span class="n">_accumulate_and_normalize</span><span class="p">(</span>
-        <span class="n">n_vertices</span><span class="p">,</span>
-        <span class="n">faces</span><span class="p">,</span>
-        <span class="n">kernel_vertices</span><span class="o">.</span><span class="n">SCATTER_SCALED_NORMALS</span><span class="p">,</span>
-        <span class="p">[</span><span class="n">face_normals</span><span class="p">,</span> <span class="n">face_weights</span><span class="p">,</span> <span class="n">faces</span><span class="p">],</span>
+        <span class="n">n_vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">supplied</span><span class="p">,</span> <span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">face_normals</span><span class="p">,</span> <span class="n">face_weights</span><span class="p">]</span>
     <span class="p">)</span>
-</code></pre></div></td></tr></table></div>
-            </details>
-    </div>
-
-</div>
-
-<div class="doc doc-object doc-function">
-
-
-<h2 id="ordito.vertices.vertex_defects" class="doc doc-heading">
-            <span class="doc doc-object-name doc-function-name">vertex_defects</span>
-
-
-</h2>
-<div class="doc-signature highlight"><pre><span></span><code><span class="nf">vertex_defects</span><span class="p">(</span>
-    <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
-    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
-    <span class="n">face_angles</span><span class="p">:</span> <span class="n">Array2dFloat32</span><span class="p">,</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span>
-</code></pre></div>
-
-    <div class="doc doc-contents ">
-
-        <p>Discrete angle defect per vertex: <code>2π</code> minus the sum of incident corner angles.</p>
-<p>For each vertex, interior angles from every triangle corner that references that vertex
-are accumulated on <code>faces.device</code>, then subtracted from a full turn. Under
-<a class="autorefs autorefs-internal" title="is_deterministic" href="../config/#ordito.config.is_deterministic"><code>is_deterministic</code></a> the sum is formed exactly in <code>float64</code>
-and rounded once, so it is the same on every run; otherwise it is accumulated in <code>float32</code> in
-the atomics' arrival order.
-This is the standard piecewise-linear angle defect (related to discrete Gaussian
-curvature via the Gauss—Bonnet viewpoint on triangle meshes).</p>
-
-
-<p><span class="doc-section-title">Parameters:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Type</th>
-          <th>Description</th>
-          <th>Default</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                <code>n_vertices</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>Number of vertices indexed by <code>faces</code> (output length).</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>faces</code>
-            </td>
-            <td>
-                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p><code>(3 * n_faces,)</code> triangle indices, interpreted as <code>(n_faces, 3)</code> via
-<code>reshape((-1, 3))</code> (row-major flat layout is fine).</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                <code>face_angles</code>
-            </td>
-            <td>
-                  <code><a class="autorefs autorefs-internal" title="Array2dFloat32
-
-
-  
-      module-attribute
-   (ordito.typing.Array2dFloat32)" href="../typing/#ordito.typing.Array2dFloat32">Array2dFloat32</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p><code>(n_faces, 3)</code> interior angles at the three corners of each triangle, with rows aligned
-with <code>faces</code>.</p>
-              </div>
-            </td>
-            <td>
-                <em>required</em>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-    <p><span class="doc-section-title">Returns:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><span title="warp.array">array</span>[<span title="warp.float32">float32</span>]</code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p><code>(n_vertices,)</code> device array <code>2π - Σ angles</code> at each vertex. Vertices not
-referenced by any face have defect <code>2π</code> (empty angle sum).</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-<p><span class="doc-section-title">Raises:</span></p>
-    <table>
-      <thead>
-        <tr>
-          <th>Type</th>
-          <th>Description</th>
-        </tr>
-      </thead>
-      <tbody>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>If <code>face_angles</code> does not have one row per triangle in <code>faces</code>.</p>
-              </div>
-            </td>
-          </tr>
-          <tr class="doc-section-item">
-            <td>
-                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#RuntimeError">RuntimeError</a></code>
-            </td>
-            <td>
-              <div class="doc-md-description">
-                <p>If <code>faces</code> and <code>face_angles</code> are not all on one device.</p>
-              </div>
-            </td>
-          </tr>
-      </tbody>
-    </table>
-
-
-<details class="see-also" open>
-  <summary>See Also</summary>
-  <p><a class="autorefs autorefs-internal" title="discrete_gaussian_curvature" href="../curvature/#ordito.curvature.discrete_gaussian_curvature"><code>discrete_gaussian_curvature</code></a>
-    The same quantity at a <em>scale</em>: the Cohen-Steiner/Morvan ball measure sums these defects
-    over a ball of given radius, where this is the pointwise value at one vertex. The ball
-    measure is what converges under refinement; the pointwise defect does not.
-<a class="autorefs autorefs-internal" title="face_angles" href="../triangles/#ordito.triangles.face_angles"><code>face_angles</code></a>
-    The angles this sums.</p>
-</details>
-
-<p><span class="doc-section-title">Examples:</span></p>
-    <p>Each cube corner meets three right angles, so its defect is <code>pi / 2</code>, and the defects sum to
-<code>4 * pi</code> on any closed genus-0 surface (Gauss-Bonnet):</p>
-<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
-
-<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">box</span><span class="p">()</span>
-<span class="n">angles</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">face_angles</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-<span class="n">defects</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">vertex_defects</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">faces</span><span class="p">,</span> <span class="n">angles</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">defects</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">]</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>  <span class="c1"># 1.5708</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">defects</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>  <span class="c1"># 12.5664</span>
-</code></pre></div>
-
-          
-    <details class="doc doc-backlinks ordito-backlinks">
-      <summary>Referenced by 9 places</summary>
-        <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../config/#ordito.config">config</a></span> · <span class="ordito-backlink"><a href="../curvature/#ordito.curvature">curvature</a> › <a href="../curvature/#ordito.curvature.discrete_gaussian_curvature">discrete_gaussian_curvature</a></span> · <span class="ordito-backlink"><a href="../curvature/#ordito.curvature">curvature</a> › <a href="../curvature/#ordito.curvature.vertex_curvatures">vertex_curvatures</a></span> · <span class="ordito-backlink"><a href="../smoothing/#ordito.smoothing">smoothing</a> › <a href="../smoothing/#ordito.smoothing.filter_spikes">filter_spikes</a></span> · <span class="ordito-backlink"><a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a> › <a href="../mesh/#ordito.mesh.Trimesh.vertex_defects">vertex_defects</a></span> · <span class="ordito-backlink"><a href="./#ordito.vertices">vertices</a></span> · <span class="ordito-backlink"><a href="../energies/#ordito.energies">energies</a> › <a href="../energies/#ordito.energies.curved_hessian_energy">curved_hessian_energy</a></span></p>
-        <p><span class="ordito-backlinks-section">Examples</span>
-<span class="ordito-backlink"><a href="../../../examples/differential/#curvature-and-differential-operators">Curvature and differential operators</a> › <a href="../../../examples/differential/#d1">Gaussian and mean curvature</a></span></p>
-        <p><span class="ordito-backlinks-section">Migrating from another library</span>
-<span class="ordito-backlink"><a href="../../../migrating-from/igl/#migrating-from-libigl">Migrating from libigl</a> › <a href="../../../migrating-from/igl/#discrete-differential-geometry">Discrete differential geometry</a></span></p>
-    </details>
-
-
-            <details class="mkdocstrings-source">
-              <summary>Source code in <code>ordito/vertices.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">424</span>
-<span class="normal">425</span>
-<span class="normal">426</span>
-<span class="normal">427</span>
-<span class="normal">428</span>
-<span class="normal">429</span>
-<span class="normal">430</span>
-<span class="normal">431</span>
-<span class="normal">432</span>
-<span class="normal">433</span>
-<span class="normal">434</span>
-<span class="normal">435</span>
-<span class="normal">436</span>
-<span class="normal">437</span>
-<span class="normal">438</span>
-<span class="normal">439</span>
-<span class="normal">440</span>
-<span class="normal">441</span>
-<span class="normal">442</span>
-<span class="normal">443</span>
-<span class="normal">444</span>
-<span class="normal">445</span>
-<span class="normal">446</span>
-<span class="normal">447</span>
-<span class="normal">448</span>
-<span class="normal">449</span>
-<span class="normal">450</span>
-<span class="normal">451</span>
-<span class="normal">452</span>
-<span class="normal">453</span>
-<span class="normal">454</span>
-<span class="normal">455</span>
-<span class="normal">456</span>
-<span class="normal">457</span>
-<span class="normal">458</span>
-<span class="normal">459</span>
-<span class="normal">460</span>
-<span class="normal">461</span>
-<span class="normal">462</span>
-<span class="normal">463</span>
-<span class="normal">464</span>
-<span class="normal">465</span>
-<span class="normal">466</span>
-<span class="normal">467</span>
-<span class="normal">468</span>
-<span class="normal">469</span>
-<span class="normal">470</span>
-<span class="normal">471</span>
-<span class="normal">472</span>
-<span class="normal">473</span>
-<span class="normal">474</span>
-<span class="normal">475</span>
-<span class="normal">476</span>
-<span class="normal">477</span>
-<span class="normal">478</span>
-<span class="normal">479</span>
-<span class="normal">480</span>
-<span class="normal">481</span>
-<span class="normal">482</span>
-<span class="normal">483</span>
-<span class="normal">484</span>
-<span class="normal">485</span>
-<span class="normal">486</span>
-<span class="normal">487</span>
-<span class="normal">488</span>
-<span class="normal">489</span>
-<span class="normal">490</span>
-<span class="normal">491</span>
-<span class="normal">492</span>
-<span class="normal">493</span>
-<span class="normal">494</span>
-<span class="normal">495</span>
-<span class="normal">496</span>
-<span class="normal">497</span>
-<span class="normal">498</span>
-<span class="normal">499</span>
-<span class="normal">500</span>
-<span class="normal">501</span>
-<span class="normal">502</span>
-<span class="normal">503</span>
-<span class="normal">504</span>
-<span class="normal">505</span>
-<span class="normal">506</span>
-<span class="normal">507</span>
-<span class="normal">508</span>
-<span class="normal">509</span>
-<span class="normal">510</span>
-<span class="normal">511</span>
-<span class="normal">512</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_defects</span><span class="p">(</span>
-    <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">face_angles</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span>
-<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
-<span class="w">    </span><span class="sd">"""</span>
-<span class="sd">    Discrete angle defect per vertex: ``2π`` minus the sum of incident corner angles.</span>
-
-<span class="sd">    For each vertex, interior angles from every triangle corner that references that vertex</span>
-<span class="sd">    are accumulated on ``faces.device``, then subtracted from a full turn. Under</span>
-<span class="sd">    [`is_deterministic`][ordito.config.is_deterministic] the sum is formed exactly in ``float64``</span>
-<span class="sd">    and rounded once, so it is the same on every run; otherwise it is accumulated in ``float32`` in</span>
-<span class="sd">    the atomics' arrival order.</span>
-<span class="sd">    This is the standard piecewise-linear angle defect (related to discrete Gaussian</span>
-<span class="sd">    curvature via the Gauss—Bonnet viewpoint on triangle meshes).</span>
-
-<span class="sd">    Parameters</span>
-<span class="sd">    ----------</span>
-<span class="sd">    n_vertices</span>
-<span class="sd">        Number of vertices indexed by ``faces`` (output length).</span>
-<span class="sd">    faces</span>
-<span class="sd">        ``(3 * n_faces,)`` triangle indices, interpreted as ``(n_faces, 3)`` via</span>
-<span class="sd">        ``reshape((-1, 3))`` (row-major flat layout is fine).</span>
-<span class="sd">    face_angles</span>
-<span class="sd">        ``(n_faces, 3)`` interior angles at the three corners of each triangle, with rows aligned</span>
-<span class="sd">        with ``faces``.</span>
-
-<span class="sd">    Returns</span>
-<span class="sd">    -------</span>
-<span class="sd">    wp.array[wp.float32]</span>
-<span class="sd">        ``(n_vertices,)`` device array ``2π - Σ angles`` at each vertex. Vertices not</span>
-<span class="sd">        referenced by any face have defect ``2π`` (empty angle sum).</span>
-
-<span class="sd">    Raises</span>
-<span class="sd">    ------</span>
-<span class="sd">    ValueError</span>
-<span class="sd">        If ``face_angles`` does not have one row per triangle in ``faces``.</span>
-<span class="sd">    RuntimeError</span>
-<span class="sd">        If ``faces`` and ``face_angles`` are not all on one device.</span>
-
-<span class="sd">    See Also</span>
-<span class="sd">    --------</span>
-<span class="sd">    [`discrete_gaussian_curvature`][ordito.curvature.discrete_gaussian_curvature]</span>
-<span class="sd">        The same quantity at a *scale*: the Cohen-Steiner/Morvan ball measure sums these defects</span>
-<span class="sd">        over a ball of given radius, where this is the pointwise value at one vertex. The ball</span>
-<span class="sd">        measure is what converges under refinement; the pointwise defect does not.</span>
-<span class="sd">    [`face_angles`][ordito.triangles.face_angles]</span>
-<span class="sd">        The angles this sums.</span>
-
-<span class="sd">    Examples</span>
-<span class="sd">    --------</span>
-<span class="sd">    Each cube corner meets three right angles, so its defect is ``pi / 2``, and the defects sum to</span>
-<span class="sd">    ``4 * pi`` on any closed genus-0 surface (Gauss-Bonnet):</span>
-
-<span class="sd">    ```python</span>
-<span class="sd">    import ordito as od</span>
-
-<span class="sd">    vertices, faces = od.creation.box()</span>
-<span class="sd">    angles = od.triangles.face_angles(vertices, faces)</span>
-<span class="sd">    defects = od.vertices.vertex_defects(vertices.shape[0], faces, angles)</span>
-<span class="sd">    print(f"{defects.numpy()[0]:.4f}")  # 1.5708</span>
-<span class="sd">    print(f"{defects.numpy().sum():.4f}")  # 12.5664</span>
-<span class="sd">    ```</span>
-<span class="sd">    """</span>
-    <span class="n">require_same_device</span><span class="p">(</span><span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">face_angles</span><span class="o">=</span><span class="n">face_angles</span><span class="p">)</span>
-    <span class="n">n_faces</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span>
-    <span class="n">_require_face_rows</span><span class="p">(</span><span class="n">n_faces</span><span class="p">,</span> <span class="n">face_angles</span><span class="o">=</span><span class="n">face_angles</span><span class="p">)</span>
-    <span class="k">if</span> <span class="ow">not</span> <span class="n">is_deterministic</span><span class="p">():</span>
-        <span class="n">angle_sum</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">faces</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_scatter</span><span class="o">.</span><span class="n">SCATTER_SUM_SCALAR</span><span class="p">[</span><span class="n">face_angles</span><span class="o">.</span><span class="n">dtype</span><span class="p">],</span>
-            <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">face_angles</span><span class="p">,</span> <span class="n">faces</span><span class="o">.</span><span class="n">reshape</span><span class="p">((</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">)),</span> <span class="n">angle_sum</span><span class="p">],</span>
-            <span class="n">device</span><span class="o">=</span><span class="n">faces</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
-        <span class="p">)</span>
-        <span class="c1"># In place over the accumulator: ``angle_sum`` is scratch, and the operator spelling</span>
-        <span class="c1"># ``TWO_PI - angle_sum`` would run the same wp.map into a second allocation.</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">map</span><span class="p">(</span><span class="n">kernel_predicates</span><span class="o">.</span><span class="n">angle_defect</span><span class="p">,</span> <span class="n">angle_sum</span><span class="p">,</span> <span class="n">out</span><span class="o">=</span><span class="n">angle_sum</span><span class="p">)</span>
-        <span class="k">return</span> <span class="n">angle_sum</span>
-    <span class="c1"># A ``float32`` angle is exact in ``float64``, and so is the sum, so the atomics' commit order</span>
-    <span class="c1"># changes no bit: reproducible for the price of the ``float32`` output's own allocation.</span>
-    <span class="n">exact_sum</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">faces</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_scatter</span><span class="o">.</span><span class="n">scatter_sum_exact</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">face_angles</span><span class="p">,</span> <span class="n">faces</span><span class="o">.</span><span class="n">reshape</span><span class="p">((</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">)),</span> <span class="n">exact_sum</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">faces</span><span class="o">.</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="n">defects</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">faces</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">map</span><span class="p">(</span><span class="n">kernel_predicates</span><span class="o">.</span><span class="n">angle_defect_rounded</span><span class="p">,</span> <span class="n">exact_sum</span><span class="p">,</span> <span class="n">out</span><span class="o">=</span><span class="n">defects</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">defects</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

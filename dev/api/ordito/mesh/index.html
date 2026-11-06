@@ -17,7 +17,7 @@
         <link rel="prev" href="../creation/">
       
       
-        <link rel="next" href="../vertices/">
+        <link rel="next" href="../normals/">
       
       
         
@@ -1724,14 +1724,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../benchmarks/vertices/" class="md-nav__link">
+      <a href="../../../benchmarks/normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -4733,14 +4733,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../vertices/" class="md-nav__link">
+      <a href="../normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -10573,7 +10573,7 @@ mesh's own box.</p>
 
 <details class="see-also" open>
   <summary>See Also</summary>
-  <p><a class="autorefs autorefs-internal" title="vertex_normals" href="../vertices/#ordito.vertices.vertex_normals"><code>vertices.vertex_normals</code></a> at <code>weighting="angle"</code>
+  <p><a class="autorefs autorefs-internal" title="vertex_normals" href="../normals/#ordito.normals.vertex_normals"><code>normals.vertex_normals</code></a> at <code>weighting="angle"</code>
 <a class="autorefs autorefs-external" href="https://trimesh.org/trimesh.html#trimesh.Trimesh.vertex_normals"><code>trimesh.Trimesh.vertex_normals</code></a></p>
 </details>
           
@@ -10609,12 +10609,12 @@ mesh's own box.</p>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
-<span class="sd">    [`vertices.vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="angle"``</span>
+<span class="sd">    [`normals.vertex_normals`][ordito.normals.vertex_normals] at ``weighting="angle"``</span>
 <span class="sd">    [`trimesh.Trimesh.vertex_normals`][]</span>
 <span class="sd">    """</span>
     <span class="c1"># Only tables already held are passed: a missing one is formed inside the scatter, bit for</span>
     <span class="c1"># bit the property's own, rather than written to a cache slot just to be read back once.</span>
-    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span>
+    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">normals</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_vertices</span><span class="p">,</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="p">,</span>
         <span class="n">weighting</span><span class="o">=</span><span class="s2">"angle"</span><span class="p">,</span>
@@ -10645,7 +10645,7 @@ mesh's own box.</p>
 
 <details class="see-also" open>
   <summary>See Also</summary>
-  <p><a class="autorefs autorefs-internal" title="vertex_defects" href="../vertices/#ordito.vertices.vertex_defects"><code>ordito.vertices.vertex_defects</code></a></p>
+  <p><a class="autorefs autorefs-internal" title="vertex_defects" href="../curvature/#ordito.curvature.vertex_defects"><code>ordito.curvature.vertex_defects</code></a></p>
 </details>
 
 <p><span class="doc-section-title">Examples:</span></p>
@@ -10693,7 +10693,7 @@ mesh's own box.</p>
 
 <span class="sd">    See Also</span>
 <span class="sd">    --------</span>
-<span class="sd">    [`ordito.vertices.vertex_defects`][]</span>
+<span class="sd">    [`ordito.curvature.vertex_defects`][]</span>
 
 <span class="sd">    Examples</span>
 <span class="sd">    --------</span>
@@ -10706,7 +10706,7 @@ mesh's own box.</p>
 <span class="sd">    print(f"{mesh.vertex_defects.numpy().sum():.4f}")  # 12.5664</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
-    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">vertex_defects</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">n_vertices</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">face_angles</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">curvature</span><span class="o">.</span><span class="n">vertex_defects</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">n_vertices</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">_faces</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">face_angles</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>

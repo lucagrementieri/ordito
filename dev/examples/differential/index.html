@@ -1886,14 +1886,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../benchmarks/vertices/" class="md-nav__link">
+      <a href="../../benchmarks/normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -3927,14 +3927,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../api/ordito/vertices/" class="md-nav__link">
+      <a href="../../api/ordito/normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -6126,7 +6126,7 @@
 <p>Curvature, gradients, Laplace-type equations, and per-vertex shape descriptors.</p>
 <h2 id="d1">Gaussian and mean curvature</h2>
 <p>Three curvature fields on the Stanford dragon.
-<a class="autorefs autorefs-internal" title="vertex_defects" href="../../api/ordito/vertices/#ordito.vertices.vertex_defects"><code>vertex_defects</code></a> is the pointwise angle defect, <code>2pi</code> minus
+<a class="autorefs autorefs-internal" title="vertex_defects" href="../../api/ordito/curvature/#ordito.curvature.vertex_defects"><code>vertex_defects</code></a> is the pointwise angle defect, <code>2pi</code> minus
 the corner angles at a vertex, the discrete Gaussian curvature integrated over the vertex's
 neighbourhood; it is sharp and noisy on a scan.
 <a class="autorefs autorefs-internal" title="discrete_gaussian_curvature" href="../../api/ordito/curvature/#ordito.curvature.discrete_gaussian_curvature"><code>discrete_gaussian_curvature</code></a> and
@@ -6142,7 +6142,7 @@ stray patches put a few large values in the tails.</p>
 
 <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"dragon"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
 <span class="n">angles</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">face_angles</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-<span class="n">defects</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">vertex_defects</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">faces</span><span class="p">,</span> <span class="n">angles</span><span class="p">)</span>
+<span class="n">defects</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">curvature</span><span class="o">.</span><span class="n">vertex_defects</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">faces</span><span class="p">,</span> <span class="n">angles</span><span class="p">)</span>
 
 <span class="n">radius</span> <span class="o">=</span> <span class="mf">4.0</span> <span class="o">*</span> <span class="n">od</span><span class="o">.</span><span class="n">edges</span><span class="o">.</span><span class="n">mean_edge_length</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
 <span class="n">gaussian</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">curvature</span><span class="o">.</span><span class="n">discrete_gaussian_curvature</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">angles</span><span class="p">,</span> <span class="n">radius</span><span class="p">)</span>
@@ -6445,7 +6445,7 @@ BVH.</p>
 
 <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"buddha"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
 <span class="n">mesh</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
-<span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+<span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">normals</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
 <span class="n">diagonal</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">bounds</span><span class="o">.</span><span class="n">enclosing_diagonal</span><span class="p">(</span><span class="n">vertices</span><span class="p">)</span>
 
 <span class="n">occlusion</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">visibility</span><span class="o">.</span><span class="n">ambient_occlusion</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">normals</span><span class="o">=</span><span class="n">normals</span><span class="p">)</span>

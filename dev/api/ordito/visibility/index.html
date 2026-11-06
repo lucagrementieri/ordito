@@ -1724,14 +1724,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../benchmarks/vertices/" class="md-nav__link">
+      <a href="../../../benchmarks/normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -3776,14 +3776,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../vertices/" class="md-nav__link">
+      <a href="../normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -6308,7 +6308,7 @@ faster than <a class="autorefs autorefs-internal" title="warp_mesh" href="../mes
 (<a class="autorefs autorefs-internal" title="normals_at_closest_faces" href="../proximity/#ordito.proximity.normals_at_closest_faces"><code>normals_at_closest_faces</code></a>), which is right
 for points on the surface and meaningless for points far off it — pass them explicitly in
 that case. For a smooth result on the mesh's own vertices, pass
-<a class="autorefs autorefs-internal" title="vertex_normals" href="../vertices/#ordito.vertices.vertex_normals"><code>vertex_normals</code></a> at <code>weighting="area"</code> instead:
+<a class="autorefs autorefs-internal" title="vertex_normals" href="../normals/#ordito.normals.vertex_normals"><code>vertex_normals</code></a> at <code>weighting="area"</code> instead:
 face normals make the field piecewise constant across each vertex's ring.</p>
               </div>
             </td>
@@ -6617,7 +6617,7 @@ nothing but the sphere:</p>
 <span class="sd">        ([`normals_at_closest_faces`][ordito.proximity.normals_at_closest_faces]), which is right</span>
 <span class="sd">        for points on the surface and meaningless for points far off it — pass them explicitly in</span>
 <span class="sd">        that case. For a smooth result on the mesh's own vertices, pass</span>
-<span class="sd">        [`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="area"`` instead:</span>
+<span class="sd">        [`vertex_normals`][ordito.normals.vertex_normals] at ``weighting="area"`` instead:</span>
 <span class="sd">        face normals make the field piecewise constant across each vertex's ring.</span>
 <span class="sd">    n_rays</span>
 <span class="sd">        Directions per point. Error falls as ``1 / sqrt(n_rays)``; MeshLab's default is ``64``,</span>
@@ -7224,7 +7224,7 @@ faster than <a class="autorefs autorefs-internal" title="warp_mesh" href="../mes
               <div class="doc-md-description">
                 <p><code>(m,)</code> <strong>outward</strong> unit normals; the cone opens along <code>-normals</code>. When <code>None</code> they are
 taken from the closest face of <code>mesh</code>. Pass
-<a class="autorefs autorefs-internal" title="vertex_normals" href="../vertices/#ordito.vertices.vertex_normals"><code>vertex_normals</code></a> at <code>weighting="area"</code> for a smooth
+<a class="autorefs autorefs-internal" title="vertex_normals" href="../normals/#ordito.normals.vertex_normals"><code>vertex_normals</code></a> at <code>weighting="area"</code> for a smooth
 field over a mesh's own vertices.</p>
               </div>
             </td>
@@ -7395,7 +7395,7 @@ shorter chords:</p>
 
 <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">icosphere</span><span class="p">(</span><span class="n">subdivisions</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
 <span class="n">mesh</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
-<span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+<span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">normals</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
 <span class="n">diameter</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">visibility</span><span class="o">.</span><span class="n">shape_diameter</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">normals</span><span class="o">=</span><span class="n">normals</span><span class="p">,</span> <span class="n">cone_angle</span><span class="o">=</span><span class="mf">0.1</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">diameter</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">min</span><span class="p">()</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> </span><span class="si">{</span><span class="n">diameter</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">max</span><span class="p">()</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>  <span class="c1"># 1.99 1.99</span>
 <span class="n">diameter</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">visibility</span><span class="o">.</span><span class="n">shape_diameter</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">normals</span><span class="o">=</span><span class="n">normals</span><span class="p">)</span>
@@ -7609,7 +7609,7 @@ shorter chords:</p>
 <span class="sd">    normals</span>
 <span class="sd">        ``(m,)`` **outward** unit normals; the cone opens along ``-normals``. When ``None`` they are</span>
 <span class="sd">        taken from the closest face of ``mesh``. Pass</span>
-<span class="sd">        [`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="area"`` for a smooth</span>
+<span class="sd">        [`vertex_normals`][ordito.normals.vertex_normals] at ``weighting="area"`` for a smooth</span>
 <span class="sd">        field over a mesh's own vertices.</span>
 <span class="sd">    n_rays</span>
 <span class="sd">        Rays per point. MeshLab's default is ``64``, which is this one. Note that the single ray of</span>
@@ -7672,7 +7672,7 @@ shorter chords:</p>
 
 <span class="sd">    vertices, faces = od.creation.icosphere(subdivisions=3)</span>
 <span class="sd">    mesh = wp.Mesh(points=vertices, indices=faces)</span>
-<span class="sd">    normals = od.vertices.vertex_normals(vertices, faces)</span>
+<span class="sd">    normals = od.normals.vertex_normals(vertices, faces)</span>
 <span class="sd">    diameter = od.visibility.shape_diameter(mesh, vertices, normals=normals, cone_angle=0.1)</span>
 <span class="sd">    print(f"{diameter.numpy().min():.2f} {diameter.numpy().max():.2f}")  # 1.99 1.99</span>
 <span class="sd">    diameter = od.visibility.shape_diameter(mesh, vertices, normals=normals)</span>

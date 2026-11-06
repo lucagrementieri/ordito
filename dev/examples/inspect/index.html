@@ -1864,14 +1864,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../benchmarks/vertices/" class="md-nav__link">
+      <a href="../../benchmarks/normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -3905,14 +3905,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../api/ordito/vertices/" class="md-nav__link">
+      <a href="../../api/ordito/normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -6242,7 +6242,7 @@ slivers where the scanner's patches were stitched.</p>
 <h2 id="i6">Normals: per face, per vertex, per corner</h2>
 <p>Four ways to put normals on a machined part, coloured by direction (red, green, blue for
 the x, y, z components). <a class="autorefs autorefs-internal" title="face_normals_and_areas" href="../../api/ordito/triangles/#ordito.triangles.face_normals_and_areas"><code>face_normals_and_areas</code></a>
-gives one flat normal per face. <a class="autorefs autorefs-internal" title="vertex_normals" href="../../api/ordito/vertices/#ordito.vertices.vertex_normals"><code>vertex_normals</code></a> averages
+gives one flat normal per face. <a class="autorefs autorefs-internal" title="vertex_normals" href="../../api/ordito/normals/#ordito.normals.vertex_normals"><code>vertex_normals</code></a> averages
 them per vertex, weighted by face area or by the corner angle: area weighting leans towards
 the long triangles of a flat side, angle weighting does not depend on how a flat side was
 triangulated. Both smear a crease. <a class="autorefs autorefs-internal" title="corner_normals" href="../../api/ordito/triangles/#ordito.triangles.corner_normals"><code>corner_normals</code></a> keeps
@@ -6256,8 +6256,8 @@ needs.</p>
 
 <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"cad_part"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
 <span class="n">face_normals</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">face_normals_and_areas</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
-<span class="n">area_weighted</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">weighting</span><span class="o">=</span><span class="s2">"area"</span><span class="p">)</span>
-<span class="n">angle_weighted</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">weighting</span><span class="o">=</span><span class="s2">"angle"</span><span class="p">)</span>
+<span class="n">area_weighted</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">normals</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">weighting</span><span class="o">=</span><span class="s2">"area"</span><span class="p">)</span>
+<span class="n">angle_weighted</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">normals</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">weighting</span><span class="o">=</span><span class="s2">"angle"</span><span class="p">)</span>
 <span class="n">creases</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">seams</span><span class="o">.</span><span class="n">crease_edges</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">angle</span><span class="o">=</span><span class="mf">30.0</span><span class="p">)</span>
 <span class="n">corner</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">corner_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">creases</span><span class="p">)</span>  <span class="c1"># (n_faces, 3) normals</span>
 

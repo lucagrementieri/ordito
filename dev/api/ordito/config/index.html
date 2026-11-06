@@ -1722,14 +1722,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../benchmarks/vertices/" class="md-nav__link">
+      <a href="../../../benchmarks/normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -3774,14 +3774,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../vertices/" class="md-nav__link">
+      <a href="../normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -6035,7 +6035,7 @@ deterministic either way):</p>
   warns and the ratio it reports (each row summed exactly when on);</li>
 <li>the per-vertex sums of <a class="autorefs autorefs-internal" title="hessian_energy" href="../energies/#ordito.energies.hessian_energy"><code>hessian_energy</code></a>,
   <a class="autorefs autorefs-internal" title="curved_hessian_energy" href="../energies/#ordito.energies.curved_hessian_energy"><code>curved_hessian_energy</code></a> and
-  <a class="autorefs autorefs-internal" title="vertex_defects" href="../vertices/#ordito.vertices.vertex_defects"><code>vertex_defects</code></a>;</li>
+  <a class="autorefs autorefs-internal" title="vertex_defects" href="../curvature/#ordito.curvature.vertex_defects"><code>vertex_defects</code></a>;</li>
 <li>the rotation right-hand side of every local step of
   <a class="autorefs autorefs-internal" title="arap" href="../parametrization/#ordito.parametrization.arap"><code>arap</code></a> (each vertex's edge terms added in ascending face order
   when on);</li>
@@ -6374,7 +6374,7 @@ thread or task, or the process-wide default set by
     <details class="doc doc-backlinks ordito-backlinks">
       <summary>Referenced by 20 places</summary>
         <p><span class="ordito-backlinks-section">API Reference</span>
-<span class="ordito-backlink"><a href="../reduce/#ordito.reduce">reduce</a> › <a href="../reduce/#ordito.reduce.scatter_sum">scatter_sum</a></span> · <span class="ordito-backlink"><a href="../reduce/#ordito.reduce">reduce</a> › <a href="../reduce/#ordito.reduce.segment_sum">segment_sum</a></span> · <span class="ordito-backlink"><a href="../reduce/#ordito.reduce">reduce</a> › <a href="../reduce/#ordito.reduce.sum_of_terms">sum_of_terms</a></span> · <span class="ordito-backlink"><a href="../polyline/#ordito.polyline">polyline</a> › <a href="../polyline/#ordito.polyline.polyline_triangulate">polyline_triangulate</a></span> · <span class="ordito-backlink"><a href="../polyline/#ordito.polyline">polyline</a> › <a href="../polyline/#ordito.polyline.triangulate_polygon">triangulate_polygon</a></span> · <span class="ordito-backlink"><a href="../holes/#ordito.holes">holes</a> › <a href="../holes/#ordito.holes.stitch_smooth">stitch_smooth</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.quadric_decimate">quadric_decimate</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.subdivide_loop">subdivide_loop</a></span> · <span class="ordito-backlink"><a href="../repair/#ordito.repair">repair</a> › <a href="../repair/#ordito.repair.make_volume">make_volume</a></span> · <span class="ordito-backlink"><a href="../repair/#ordito.repair">repair</a> › <a href="../repair/#ordito.repair.make_winding_consistent">make_winding_consistent</a></span> · <span class="ordito-backlink"><a href="../repair/#ordito.repair">repair</a> › <a href="../repair/#ordito.repair.remove_small_components">remove_small_components</a></span> · <span class="ordito-backlink"><a href="../adjacency/#ordito.adjacency">adjacency</a> › <a href="../adjacency/#ordito.adjacency.vertex_face_adjacency">vertex_face_adjacency</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.loop_perimeters">loop_perimeters</a></span> · <span class="ordito-backlink"><a href="../edges/#ordito.edges">edges</a> › <a href="../edges/#ordito.edges.edge_length_sum">edge_length_sum</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_flip_mask">face_flip_mask</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_orientation_bits">face_orientation_bits</a></span> · <span class="ordito-backlink"><a href="../vertices/#ordito.vertices">vertices</a> › <a href="../vertices/#ordito.vertices.vertex_defects">vertex_defects</a></span> · <span class="ordito-backlink"><a href="../reconstruction/#ordito.reconstruction">reconstruction</a> › <a href="../reconstruction/#ordito.reconstruction.screened_poisson">screened_poisson</a></span> · <span class="ordito-backlink"><a href="../ray/#ordito.ray">ray</a> › <a href="../ray/#ordito.ray.intersects_location">intersects_location</a></span></p>
+<span class="ordito-backlink"><a href="../reduce/#ordito.reduce">reduce</a> › <a href="../reduce/#ordito.reduce.scatter_sum">scatter_sum</a></span> · <span class="ordito-backlink"><a href="../reduce/#ordito.reduce">reduce</a> › <a href="../reduce/#ordito.reduce.segment_sum">segment_sum</a></span> · <span class="ordito-backlink"><a href="../reduce/#ordito.reduce">reduce</a> › <a href="../reduce/#ordito.reduce.sum_of_terms">sum_of_terms</a></span> · <span class="ordito-backlink"><a href="../polyline/#ordito.polyline">polyline</a> › <a href="../polyline/#ordito.polyline.polyline_triangulate">polyline_triangulate</a></span> · <span class="ordito-backlink"><a href="../polyline/#ordito.polyline">polyline</a> › <a href="../polyline/#ordito.polyline.triangulate_polygon">triangulate_polygon</a></span> · <span class="ordito-backlink"><a href="../curvature/#ordito.curvature">curvature</a> › <a href="../curvature/#ordito.curvature.vertex_defects">vertex_defects</a></span> · <span class="ordito-backlink"><a href="../holes/#ordito.holes">holes</a> › <a href="../holes/#ordito.holes.stitch_smooth">stitch_smooth</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.quadric_decimate">quadric_decimate</a></span> · <span class="ordito-backlink"><a href="../remesh/#ordito.remesh">remesh</a> › <a href="../remesh/#ordito.remesh.subdivide_loop">subdivide_loop</a></span> · <span class="ordito-backlink"><a href="../repair/#ordito.repair">repair</a> › <a href="../repair/#ordito.repair.make_volume">make_volume</a></span> · <span class="ordito-backlink"><a href="../repair/#ordito.repair">repair</a> › <a href="../repair/#ordito.repair.make_winding_consistent">make_winding_consistent</a></span> · <span class="ordito-backlink"><a href="../repair/#ordito.repair">repair</a> › <a href="../repair/#ordito.repair.remove_small_components">remove_small_components</a></span> · <span class="ordito-backlink"><a href="../adjacency/#ordito.adjacency">adjacency</a> › <a href="../adjacency/#ordito.adjacency.vertex_face_adjacency">vertex_face_adjacency</a></span> · <span class="ordito-backlink"><a href="../boundary/#ordito.boundary">boundary</a> › <a href="../boundary/#ordito.boundary.loop_perimeters">loop_perimeters</a></span> · <span class="ordito-backlink"><a href="../edges/#ordito.edges">edges</a> › <a href="../edges/#ordito.edges.edge_length_sum">edge_length_sum</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_flip_mask">face_flip_mask</a></span> · <span class="ordito-backlink"><a href="../validation/#ordito.validation">validation</a> › <a href="../validation/#ordito.validation.face_orientation_bits">face_orientation_bits</a></span> · <span class="ordito-backlink"><a href="../reconstruction/#ordito.reconstruction">reconstruction</a> › <a href="../reconstruction/#ordito.reconstruction.screened_poisson">screened_poisson</a></span> · <span class="ordito-backlink"><a href="../ray/#ordito.ray">ray</a> › <a href="../ray/#ordito.ray.intersects_location">intersects_location</a></span></p>
         <p><span class="ordito-backlinks-section">Concepts</span>
 <span class="ordito-backlink"><a href="../../../reproducibility/#reproducible-results">Reproducible results</a> › <a href="../../../reproducibility/#turning-it-on">Turning it on</a></span></p>
     </details>

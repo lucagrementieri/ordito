@@ -1724,14 +1724,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../../benchmarks/vertices/" class="md-nav__link">
+      <a href="../../../benchmarks/normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -3778,14 +3778,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../vertices/" class="md-nav__link">
+      <a href="../normals/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-  vertices
+  normals
 
     
   </span>
@@ -6228,7 +6228,8 @@ list. Both give the same table and reject the same meshes.</p>
               <div class="doc-md-description">
                 <p>Total vertex count, which must exceed every index in <code>faces</code>: it sizes the per-vertex
 buckets, or bounds the sort keys. Passing it is an optimization rather than a requirement:
-when <code>None</code> the keys pack against
+when <code>None</code> a CUDA device reads it off <code>faces</code> (one host readback) for the buckets,
+and otherwise the keys pack against
 <a class="autorefs autorefs-internal" title="INDEX_RADIX_PAIR
 
 
@@ -6348,12 +6349,7 @@ synchronizes once.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/halfedge.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 47</span>
-<span class="normal"> 48</span>
-<span class="normal"> 49</span>
-<span class="normal"> 50</span>
-<span class="normal"> 51</span>
-<span class="normal"> 52</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 52</span>
 <span class="normal"> 53</span>
 <span class="normal"> 54</span>
 <span class="normal"> 55</span>
@@ -6435,7 +6431,16 @@ synchronizes once.</p>
 <span class="normal">131</span>
 <span class="normal">132</span>
 <span class="normal">133</span>
-<span class="normal">134</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_twins</span><span class="p">(</span>
+<span class="normal">134</span>
+<span class="normal">135</span>
+<span class="normal">136</span>
+<span class="normal">137</span>
+<span class="normal">138</span>
+<span class="normal">139</span>
+<span class="normal">140</span>
+<span class="normal">141</span>
+<span class="normal">142</span>
+<span class="normal">143</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_twins</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">validate</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6471,7 +6476,8 @@ synchronizes once.</p>
 <span class="sd">    n_vertices</span>
 <span class="sd">        Total vertex count, which must exceed every index in ``faces``: it sizes the per-vertex</span>
 <span class="sd">        buckets, or bounds the sort keys. Passing it is an optimization rather than a requirement:</span>
-<span class="sd">        when ``None`` the keys pack against</span>
+<span class="sd">        when ``None`` a CUDA device reads it off ``faces`` (one host readback) for the buckets,</span>
+<span class="sd">        and otherwise the keys pack against</span>
 <span class="sd">        [`constants.INDEX_RADIX_PAIR`][ordito.constants.INDEX_RADIX_PAIR], which bounds every</span>
 <span class="sd">        ``int32`` index without a reduction and orders the keys the same way.</span>
 <span class="sd">    validate</span>
@@ -6519,6 +6525,9 @@ synchronizes once.</p>
 <span class="sd">    print(int((twins.numpy() == -1).sum()))  # 0</span>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
+    <span class="c1"># The twin table takes the buckets at every size, so a count read off ``faces`` pays at every</span>
+    <span class="c1"># size on a device that buckets.</span>
+    <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">_pairing_vertex_bound</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
     <span class="n">twins</span><span class="p">,</span> <span class="n">defect_counts</span> <span class="o">=</span> <span class="n">_pair_halfedges</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">validate</span> <span class="ow">and</span> <span class="n">twins</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">_raise_twin_defects</span><span class="p">(</span><span class="n">read_values</span><span class="p">(</span><span class="n">defect_counts</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
@@ -6680,16 +6689,7 @@ halfedge 0 (<code>0 -&gt; 1</code>) with halfedge 1 (<code>1 -&gt; 2</code>) is 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/halfedge.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">137</span>
-<span class="normal">138</span>
-<span class="normal">139</span>
-<span class="normal">140</span>
-<span class="normal">141</span>
-<span class="normal">142</span>
-<span class="normal">143</span>
-<span class="normal">144</span>
-<span class="normal">145</span>
-<span class="normal">146</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">146</span>
 <span class="normal">147</span>
 <span class="normal">148</span>
 <span class="normal">149</span>
@@ -6764,7 +6764,16 @@ halfedge 0 (<code>0 -&gt; 1</code>) with halfedge 1 (<code>1 -&gt; 2</code>) is 
 <span class="normal">218</span>
 <span class="normal">219</span>
 <span class="normal">220</span>
-<span class="normal">221</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">require_matching_twins</span><span class="p">(</span><span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">twins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="normal">221</span>
+<span class="normal">222</span>
+<span class="normal">223</span>
+<span class="normal">224</span>
+<span class="normal">225</span>
+<span class="normal">226</span>
+<span class="normal">227</span>
+<span class="normal">228</span>
+<span class="normal">229</span>
+<span class="normal">230</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">require_matching_twins</span><span class="p">(</span><span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">twins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Raise unless a precomputed twin table really is one for ``faces``.</span>
 
@@ -7158,16 +7167,7 @@ vertex 0 lists its four outgoing halfedges, whose far ends circle it counter-clo
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/halfedge.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">246</span>
-<span class="normal">247</span>
-<span class="normal">248</span>
-<span class="normal">249</span>
-<span class="normal">250</span>
-<span class="normal">251</span>
-<span class="normal">252</span>
-<span class="normal">253</span>
-<span class="normal">254</span>
-<span class="normal">255</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">255</span>
 <span class="normal">256</span>
 <span class="normal">257</span>
 <span class="normal">258</span>
@@ -7317,7 +7317,16 @@ vertex 0 lists its four outgoing halfedges, whose far ends circle it counter-clo
 <span class="normal">402</span>
 <span class="normal">403</span>
 <span class="normal">404</span>
-<span class="normal">405</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_one_rings</span><span class="p">(</span>
+<span class="normal">405</span>
+<span class="normal">406</span>
+<span class="normal">407</span>
+<span class="normal">408</span>
+<span class="normal">409</span>
+<span class="normal">410</span>
+<span class="normal">411</span>
+<span class="normal">412</span>
+<span class="normal">413</span>
+<span class="normal">414</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_one_rings</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">twins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7574,10 +7583,11 @@ lower halfedge (<code>h &lt; mates[h]</code>). Nothing is checked and nothing is
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Total vertex count, which must exceed every index in <code>faces</code>. When it is given, a CUDA
-device pairs a large mesh's halfedges through per-vertex buckets; otherwise, and on the
+                <p>Total vertex count, which must exceed every index in <code>faces</code>. A CUDA device pairs a
+large mesh's halfedges through per-vertex buckets, reading the count off <code>faces</code> (one
+host readback) when it is not given and no key order is asked for; otherwise, and on the
 CPU, through a sort of the edge keys, which is correct for any non-negative indices
-without it. Both give the same table.</p>
+without it. All give the same table.</p>
               </div>
             </td>
             <td>
@@ -7720,16 +7730,7 @@ Adding a third face on that edge makes it non-manifold, and all three halfedges 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/halfedge.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">497</span>
-<span class="normal">498</span>
-<span class="normal">499</span>
-<span class="normal">500</span>
-<span class="normal">501</span>
-<span class="normal">502</span>
-<span class="normal">503</span>
-<span class="normal">504</span>
-<span class="normal">505</span>
-<span class="normal">506</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">506</span>
 <span class="normal">507</span>
 <span class="normal">508</span>
 <span class="normal">509</span>
@@ -7846,7 +7847,19 @@ Adding a third face on that edge makes it non-manifold, and all three halfedges 
 <span class="normal">620</span>
 <span class="normal">621</span>
 <span class="normal">622</span>
-<span class="normal">623</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_mates</span><span class="p">(</span>
+<span class="normal">623</span>
+<span class="normal">624</span>
+<span class="normal">625</span>
+<span class="normal">626</span>
+<span class="normal">627</span>
+<span class="normal">628</span>
+<span class="normal">629</span>
+<span class="normal">630</span>
+<span class="normal">631</span>
+<span class="normal">632</span>
+<span class="normal">633</span>
+<span class="normal">634</span>
+<span class="normal">635</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_mates</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7873,10 +7886,11 @@ Adding a third face on that edge makes it non-manifold, and all three halfedges 
 <span class="sd">    faces</span>
 <span class="sd">        ``(3 * n_faces,)`` triangle index buffer.</span>
 <span class="sd">    n_vertices</span>
-<span class="sd">        Total vertex count, which must exceed every index in ``faces``. When it is given, a CUDA</span>
-<span class="sd">        device pairs a large mesh's halfedges through per-vertex buckets; otherwise, and on the</span>
+<span class="sd">        Total vertex count, which must exceed every index in ``faces``. A CUDA device pairs a</span>
+<span class="sd">        large mesh's halfedges through per-vertex buckets, reading the count off ``faces`` (one</span>
+<span class="sd">        host readback) when it is not given and no key order is asked for; otherwise, and on the</span>
 <span class="sd">        CPU, through a sort of the edge keys, which is correct for any non-negative indices</span>
-<span class="sd">        without it. Both give the same table.</span>
+<span class="sd">        without it. All give the same table.</span>
 <span class="sd">    return_key_order</span>
 <span class="sd">        Also return the sort's permutation when the pairing sorted the edge keys, for a caller</span>
 <span class="sd">        that wants some of the halfedges in key order</span>
@@ -7949,6 +7963,8 @@ Adding a third face on that edge makes it non-manifold, and all three halfedges 
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="k">return</span> <span class="n">mates</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">return_key_order</span><span class="p">:</span>
+        <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">_pairing_vertex_bound</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">_INFERRED_BOUND_FROM_HALFEDGES</span><span class="p">)</span>
     <span class="n">sorted_pairing</span> <span class="o">=</span> <span class="n">_sorted_pairing</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_halfedges</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">key_order</span> <span class="o">=</span> <span class="n">mates</span>
@@ -8222,19 +8238,7 @@ halfedges back in the row order of <a class="autorefs autorefs-internal" title="
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/halfedge.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">649</span>
-<span class="normal">650</span>
-<span class="normal">651</span>
-<span class="normal">652</span>
-<span class="normal">653</span>
-<span class="normal">654</span>
-<span class="normal">655</span>
-<span class="normal">656</span>
-<span class="normal">657</span>
-<span class="normal">658</span>
-<span class="normal">659</span>
-<span class="normal">660</span>
-<span class="normal">661</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">661</span>
 <span class="normal">662</span>
 <span class="normal">663</span>
 <span class="normal">664</span>
@@ -8347,7 +8351,21 @@ halfedges back in the row order of <a class="autorefs autorefs-internal" title="
 <span class="normal">771</span>
 <span class="normal">772</span>
 <span class="normal">773</span>
-<span class="normal">774</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">key_ordered_halfedges</span><span class="p">(</span>
+<span class="normal">774</span>
+<span class="normal">775</span>
+<span class="normal">776</span>
+<span class="normal">777</span>
+<span class="normal">778</span>
+<span class="normal">779</span>
+<span class="normal">780</span>
+<span class="normal">781</span>
+<span class="normal">782</span>
+<span class="normal">783</span>
+<span class="normal">784</span>
+<span class="normal">785</span>
+<span class="normal">786</span>
+<span class="normal">787</span>
+<span class="normal">788</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">key_ordered_halfedges</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">words</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">uint32</span><span class="p">],</span>
     <span class="n">word_ranks</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -8449,10 +8467,11 @@ halfedges back in the row order of <a class="autorefs autorefs-internal" title="
     <span class="k">if</span> <span class="n">key_order</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">halfedges</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="k">if</span> <span class="n">count</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">dim</span><span class="p">,</span> <span class="n">by_rank</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">set_bit_launch</span><span class="p">(</span><span class="n">n_classes</span> <span class="o">*</span> <span class="n">row_bits</span><span class="p">,</span> <span class="n">count</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
             <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
                 <span class="n">kernel_halfedge</span><span class="o">.</span><span class="n">flagged_key_ordered_halfedges</span><span class="p">,</span>
-                <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">n_classes</span><span class="p">,</span> <span class="n">n</span><span class="p">),</span>
-                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">words</span><span class="p">,</span> <span class="n">word_ranks</span><span class="p">,</span> <span class="n">key_order</span><span class="p">,</span> <span class="n">row_bits</span><span class="p">,</span> <span class="n">halfedges</span><span class="p">],</span>
+                <span class="n">dim</span><span class="o">=</span><span class="n">dim</span><span class="p">,</span>
+                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">words</span><span class="p">,</span> <span class="n">word_ranks</span><span class="p">,</span> <span class="n">by_rank</span><span class="p">,</span> <span class="n">key_order</span><span class="p">,</span> <span class="n">row_bits</span><span class="p">,</span> <span class="n">halfedges</span><span class="p">],</span>
                 <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
             <span class="p">)</span>
         <span class="k">return</span> <span class="n">halfedges</span>
@@ -8463,10 +8482,11 @@ halfedges back in the row order of <a class="autorefs autorefs-internal" title="
     <span class="n">keys</span><span class="p">,</span> <span class="n">order</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">sort_buffers</span><span class="p">(</span><span class="n">count</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">order</span>
+    <span class="n">dim</span><span class="p">,</span> <span class="n">by_rank</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">set_bit_launch</span><span class="p">(</span><span class="n">n_classes</span> <span class="o">*</span> <span class="n">row_bits</span><span class="p">,</span> <span class="n">count</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_halfedge</span><span class="o">.</span><span class="n">flagged_halfedge_keys</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="n">n_classes</span><span class="p">,</span> <span class="n">n</span><span class="p">),</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">words</span><span class="p">,</span> <span class="n">word_ranks</span><span class="p">,</span> <span class="n">row_bits</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">),</span> <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">],</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">dim</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">words</span><span class="p">,</span> <span class="n">word_ranks</span><span class="p">,</span> <span class="n">by_rank</span><span class="p">,</span> <span class="n">row_bits</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">),</span> <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">radix_sort_pairs</span><span class="p">(</span>

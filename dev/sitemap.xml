@@ -97,6 +97,9 @@
         <loc>https://lucagrementieri.github.io/ordito/dev/api/ordito/neighbors/</loc>
       </url>
       <url>
+        <loc>https://lucagrementieri.github.io/ordito/dev/api/ordito/normals/</loc>
+      </url>
+      <url>
         <loc>https://lucagrementieri.github.io/ordito/dev/api/ordito/parametrization/</loc>
       </url>
       <url>
@@ -155,9 +158,6 @@
       </url>
       <url>
         <loc>https://lucagrementieri.github.io/ordito/dev/api/ordito/validation/</loc>
-      </url>
-      <url>
-        <loc>https://lucagrementieri.github.io/ordito/dev/api/ordito/vertices/</loc>
       </url>
       <url>
         <loc>https://lucagrementieri.github.io/ordito/dev/api/ordito/visibility/</loc>
@@ -241,6 +241,9 @@
         <loc>https://lucagrementieri.github.io/ordito/dev/benchmarks/neighbors/</loc>
       </url>
       <url>
+        <loc>https://lucagrementieri.github.io/ordito/dev/benchmarks/normals/</loc>
+      </url>
+      <url>
         <loc>https://lucagrementieri.github.io/ordito/dev/benchmarks/parametrization/</loc>
       </url>
       <url>
@@ -293,9 +296,6 @@
       </url>
       <url>
         <loc>https://lucagrementieri.github.io/ordito/dev/benchmarks/validation/</loc>
-      </url>
-      <url>
-        <loc>https://lucagrementieri.github.io/ordito/dev/benchmarks/vertices/</loc>
       </url>
       <url>
         <loc>https://lucagrementieri.github.io/ordito/dev/benchmarks/visibility/</loc>
