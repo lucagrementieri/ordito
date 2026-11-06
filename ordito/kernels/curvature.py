@@ -446,6 +446,24 @@ def signed_dihedral_d(cross_f: wp.vec3d, cross_g: wp.vec3d, direction: wp.vec3d)
     return theta
 
 
+@wp.func
+def write_directionless_principal_curvature(
+    v: wp.int32,
+    first: wp.float64,
+    second: wp.float64,
+    out_pd1: wp.array[wp.vec3],
+    out_pd2: wp.array[wp.vec3],
+    out_pv1: wp.array[wp.float32],
+    out_pv2: wp.array[wp.float32],
+) -> None:
+    # The answer of a 1-ring method that forms no directions (VTK's, Meyer et al.'s): its extreme
+    # curvatures rounded once, and zero ``PD1`` and ``PD2``.
+    out_pd1[v] = wp.vec3()
+    out_pd2[v] = wp.vec3()
+    out_pv1[v] = wp.float32(first)
+    out_pv2[v] = wp.float32(second)
+
+
 @wp.kernel
 def vtk_face_terms(
     vertices: wp.array[wp.vec3],
@@ -487,6 +505,8 @@ def vtk_principal_curvatures(
     vf_offsets: wp.array[wp.int32],
     mates: wp.array[wp.int32],
     face_terms: wp.array2d[wp.float64],
+    out_pd1: wp.array[wp.vec3],
+    out_pd2: wp.array[wp.vec3],
     out_pv1: wp.array[wp.float32],
     out_pv2: wp.array[wp.float32],
 ) -> None:
@@ -496,6 +516,7 @@ def vtk_principal_curvatures(
     # - ``H``: every edge shared by exactly two faces adds ``3 |e| theta / (A_f + A_g)`` to both
     #   ends (``vtk_face_terms``), and a vertex takes half the mean over those edges. Each edge at
     #   the vertex is met from both its faces; it is counted from the lower one, as VTK counts it.
+    # VTK forms no directions, so ``PD1`` and ``PD2`` are written zero here, sparing their fill.
     v = wp.int32(wp.tid())
     angle_sum = wp.float64(0.0)
     area_sum = wp.float64(0.0)
@@ -524,8 +545,7 @@ def vtk_principal_curvatures(
     if edge_count > 0:
         mean = wp.float64(0.5) * mean_sum / wp.float64(edge_count)
     first, second = extreme_curvatures(mean, gaussian)
-    out_pv1[v] = wp.float32(first)
-    out_pv2[v] = wp.float32(second)
+    write_directionless_principal_curvature(v, first, second, out_pd1, out_pd2, out_pv1, out_pv2)
 
 
 @wp.func
@@ -688,17 +708,19 @@ def meyer_principal_curvatures(
     vf_offsets: wp.array[wp.int32],
     mates: wp.array[wp.int32],
     face_terms: wp.array2d[wp.float64],
+    out_pd1: wp.array[wp.vec3],
+    out_pd2: wp.array[wp.vec3],
     out_pv1: wp.array[wp.float32],
     out_pv2: wp.array[wp.float32],
 ) -> None:
-    # ``principal_curvature(method="meyer")``: the extremes of ``meyer_curvatures``, rounded once.
+    # ``principal_curvature(method="meyer")``: the extremes of ``meyer_curvatures``, rounded once,
+    # and zero directions (Meyer et al. form none).
     v = wp.int32(wp.tid())
     mean, gaussian = meyer_curvatures(
         vertices, faces, vertex_faces, vf_offsets, mates, face_terms, v
     )
     first, second = extreme_curvatures(mean, gaussian)
-    out_pv1[v] = wp.float32(first)
-    out_pv2[v] = wp.float32(second)
+    write_directionless_principal_curvature(v, first, second, out_pd1, out_pd2, out_pv1, out_pv2)
 
 
 @wp.func

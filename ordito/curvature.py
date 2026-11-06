@@ -244,10 +244,13 @@ def _one_ring_principal_curvatures(
     device = vertices.device
     n_vertices = vertices.size
     vertex_faces, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    # ``wp.empty``: every kernel below writes all four at every vertex, the zero directions of
+    # ``"pyvista"`` and ``"meyer"`` and the zero answer of the tensors included.
+    pd1 = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    pd2 = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     pv1 = _launch.empty(n_vertices, dtype=wp.float32, device=device)
     pv2 = _launch.empty(n_vertices, dtype=wp.float32, device=device)
     if method in ("pyvista", "meyer"):
-        # VTK and Meyer et al. form no directions: zero ones, and the kernel writes the values.
         mates = od.halfedge.halfedge_mates(faces, vertex_faces=(vertex_faces, vf_offsets))
         if n_vertices > 0:
             if method == "pyvista":
@@ -264,13 +267,11 @@ def _one_ring_principal_curvatures(
                 kernel = kernel_curvature.meyer_principal_curvatures
                 face_terms = _meyer_face_terms(vertices, faces)
             inputs = [vertices, faces, vertex_faces, vf_offsets, mates, face_terms]
-            _launch.launch(kernel, dim=n_vertices, inputs=inputs, outputs=[pv1, pv2], device=device)
-        directions = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
-        return directions, _launch.zeros(n_vertices, dtype=wp.vec3, device=device), pv1, pv2
+            _launch.launch(
+                kernel, dim=n_vertices, inputs=inputs, outputs=[pd1, pd2, pv1, pv2], device=device
+            )
+        return pd1, pd2, pv1, pv2
     normals = _vertex_normals(vertices, faces, weighting="angle")
-    # ``wp.empty``: both tensor kernels write all four at every vertex, the zero answer included.
-    pd1 = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
-    pd2 = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     if method == "taubin":
         kernel = kernel_curvature.taubin_principal_curvatures
         inputs = [vertices, faces, vertex_faces, vf_offsets, normals]

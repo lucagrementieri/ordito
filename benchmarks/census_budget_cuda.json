@@ -1468,7 +1468,7 @@
   "counts": {
    "launch": 5,
    "alloc": 7,
-   "memset": 3,
+   "memset": 1,
    "scan": 1
   }
  },
@@ -1484,7 +1484,7 @@
   "counts": {
    "launch": 5,
    "alloc": 7,
-   "memset": 3,
+   "memset": 1,
    "scan": 1
   }
  },
