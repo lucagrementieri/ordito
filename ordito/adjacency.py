@@ -709,10 +709,14 @@ def face_adjacency_angles(
     if n_faces == 0:
         return _launch.empty(0, dtype=wp.float32, device=device)
 
-    if face_adjacency is None and face_normals is None:
-        return _sorted_pair_values(kernel_adjacency.emit_sorted_angles, vertices, faces, wp.float32)
     if face_adjacency is None:
-        face_adjacency = od.adjacency.face_adjacency(faces, n_vertices=vertices.size)
+        # The pairs come off the sorted halfedge keys, so no pair table is written; the normals
+        # are read from ``face_normals`` or formed from the positions where they are read.
+        if face_normals is None:
+            kernel, table = kernel_adjacency.emit_sorted_angles, vertices
+        else:
+            kernel, table = kernel_adjacency.emit_sorted_normal_angles, face_normals
+        return _sorted_pair_values(kernel, table, faces, vertices.size, wp.float32)
 
     m = int(face_adjacency.shape[0])
     if m == 0:
@@ -827,7 +831,7 @@ def face_adjacency_projections(
     )
     if _no_tables(face_adjacency, face_adjacency_edges, face_adjacency_unshared, face_normals):
         return _sorted_pair_values(
-            kernel_adjacency.emit_sorted_projections, vertices, faces, wp.float32
+            kernel_adjacency.emit_sorted_projections, vertices, faces, vertices.size, wp.float32
         )
     tables = _projection_tables(
         vertices, faces, face_adjacency, face_adjacency_edges, face_adjacency_unshared, face_normals
@@ -927,7 +931,12 @@ def face_adjacency_convex(
     )
     if _no_tables(face_adjacency, face_adjacency_edges, face_adjacency_unshared, face_normals):
         return _sorted_pair_values(
-            kernel_adjacency.emit_sorted_convex, vertices, faces, wp.bool, TOLERANCE_MERGE_CONSTANT
+            kernel_adjacency.emit_sorted_convex,
+            vertices,
+            faces,
+            vertices.size,
+            wp.bool,
+            TOLERANCE_MERGE_CONSTANT,
         )
     tables = _projection_tables(
         vertices, faces, face_adjacency, face_adjacency_edges, face_adjacency_unshared, face_normals
@@ -954,31 +963,33 @@ def _no_tables(*tables: object) -> bool:
 
 def _sorted_pair_values(
     kernel: odt.Kernel,
-    vertices: wp.array[wp.vec3],
+    table: wp.array[Any],
     faces: wp.array[wp.int32],
+    n_vertices: int,
     dtype: type,
     *params: object,
 ) -> wp.array[Any]:
     """
     One value per adjacency row, emitted straight off the sorted halfedge keys.
 
-    The no-tables path of [`face_adjacency_angles`][ordito.adjacency.face_adjacency_angles],
+    The no-adjacency path of [`face_adjacency_angles`][ordito.adjacency.face_adjacency_angles],
     [`face_adjacency_projections`][ordito.adjacency.face_adjacency_projections] and
     [`face_adjacency_convex`][ordito.adjacency.face_adjacency_convex]: ``kernel`` is an
-    ``emit_sorted_*`` kernel reading the pair's faces, normals and unshared vertices in the thread,
-    so the adjacency, shared-edge, unshared and normal tables are never written. Rows align with
-    [`face_adjacency`][ordito.adjacency.face_adjacency]'s, which sorts the same keys.
+    ``emit_sorted_*`` kernel reading ``table`` (the vertex positions, or held face normals) and
+    the pair's faces in the thread, so the adjacency, shared-edge and unshared tables are never
+    written. Rows align with [`face_adjacency`][ordito.adjacency.face_adjacency]'s, which sorts
+    the same keys. ``n_vertices`` is the keys' radix.
     """
     device = faces.device
     if faces.size // 3 == 0:
         return _launch.empty(0, dtype=dtype, device=device)
-    order, inclusive, m = _sorted_pair_scan(faces, vertices.size)
+    order, inclusive, m = _sorted_pair_scan(faces, n_vertices)
     out = _launch.empty(m, dtype=dtype, device=device)
     if m > 0:
         _launch.launch(
             kernel,
             dim=inclusive.size,
-            inputs=[vertices, faces, inclusive, order, *params, out],
+            inputs=[table, faces, inclusive, order, *params, out],
             device=device,
         )
     return out

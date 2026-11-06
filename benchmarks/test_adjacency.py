@@ -9,8 +9,10 @@ one is the ``n_vertices`` axis below: same answer, one less serialisation point,
 between the two ids is what that keyword buys.
 
 ``face_adjacency_unshared`` and ``face_adjacency_angles`` are each one launch over an existing
-adjacency table, so they are timed with the table precomputed. Timing them from raw faces would
-just re-measure ``face_adjacency`` three times.
+adjacency table, so they are timed with the table precomputed. Each also has one id without the
+table (``from_faces``; ``normals``, normals held but no pairs), where the pairs come off the sorted
+halfedge keys and no table is written: the gap to ``face_adjacency`` plus the tabled id is what
+that saves.
 
 trimesh is the host reference for all three. Its ``Trimesh`` properties are cached, so each round
 builds a fresh mesh; ``benchmarks/test_mesh.py`` covers the warm-cache side under
@@ -219,23 +221,53 @@ def test_face_connected_component_labels(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="face_adjacency_angles")
 @pytest.mark.benchlibs("ordito", "trimesh")
-def test_face_adjacency_angles(bench_case: BenchCase) -> None:
-    """Dihedral angle per adjacent pair, from a precomputed adjacency table and fresh normals."""
+@pytest.mark.parametrize("given", ["adjacency", "normals"])
+def test_face_adjacency_angles(bench_case: BenchCase, given: str) -> None:
+    """
+    Dihedral angle per adjacent pair, from a precomputed adjacency table or precomputed normals.
+
+    ``adjacency`` forms each pair's normals from the positions over a held table; ``normals``
+    reads held normals but derives the pairs from the face buffer, what a caller holding
+    ``Trimesh.face_normals`` but no adjacency pays.
+    """
     if bench_case.kind == "ordito":
         vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
-        adjacency, _ = _adjacency(bench_case)
-        angles = bench_case.run(
-            lambda: od.adjacency.face_adjacency_angles(
-                vertices_wp, faces_wp, face_adjacency=adjacency
+        if given == "adjacency":
+            adjacency, _ = _adjacency(bench_case)
+            angles = bench_case.run(
+                lambda: od.adjacency.face_adjacency_angles(
+                    vertices_wp, faces_wp, face_adjacency=adjacency
+                )
             )
-        )
+        else:
+            normals = _normals(bench_case)
+            angles = bench_case.run(
+                lambda: od.adjacency.face_adjacency_angles(
+                    vertices_wp, faces_wp, face_normals=normals
+                )
+            )
         assert angles.shape[0] > 0
         return
+    if given != "adjacency":
+        pytest.skip("trimesh's angles take no precomputed normals apart from its cache")
     vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
     angles_tm = bench_case.run(
         lambda: tm.Trimesh(vertices_np, faces_np, process=False).face_adjacency_angles
     )
     assert len(angles_tm) > 0
+
+
+_normals_cache: dict[tuple[str, str], wp.array[wp.vec3]] = {}
+
+
+def _normals(bench_case: BenchCase) -> wp.array[wp.vec3]:
+    """Precomputed unit face normals for ``test_face_adjacency_angles``' ``normals`` id."""
+    key = (bench_case.mesh_name, str(bench_case.device))
+    if key not in _normals_cache:
+        _normals_cache[key], _ = od.triangles.face_normals_and_areas(
+            bench_case.vertices_wp, bench_case.faces_wp
+        )
+    return _normals_cache[key]
 
 
 @pytest.mark.benchmark(group="vertex_face_adjacency")

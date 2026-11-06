@@ -143,6 +143,15 @@ def write_edge_row(
 
 
 @wp.func
+def sorted_pair_faces(edge_0: wp.int32, edge_1: wp.int32) -> tuple[wp.int32, wp.int32]:
+    # The faces owning two grouped halfedges, lower first: edge ``e`` belongs to face ``e // 3``,
+    # and the ascending pair is the row ``face_adjacency`` writes for them.
+    f0 = edge_0 // 3
+    f1 = edge_1 // 3
+    return wp.min(f0, f1), wp.max(f0, f1)
+
+
+@wp.func
 def write_adjacency_row(
     faces: wp.array[wp.int32],
     edges_sorted: wp.array2d[wp.int32],
@@ -159,10 +168,9 @@ def write_adjacency_row(
     # ``edges_sorted`` row when one is given (a null descriptor otherwise), else recovered from
     # the halfedge index through ``edge_endpoints``, so no ``(3 * n_faces, 2)`` edge table has to
     # exist to gather it from. Both selectors are warp-uniform.
-    f0 = edge_0 // 3
-    f1 = edge_1 // 3
-    out_adjacency[row, 0] = wp.min(f0, f1)
-    out_adjacency[row, 1] = wp.max(f0, f1)
+    low, high = sorted_pair_faces(edge_0, edge_1)
+    out_adjacency[row, 0] = low
+    out_adjacency[row, 1] = high
     if out_edges.shape[0] > 0:
         if edges_sorted.shape[0] > 0:
             out_edges[row, 0] = edges_sorted[edge_0, 0]
@@ -336,6 +344,14 @@ def emit_sorted_unshared(
         out_unshared[row, 1] = unshared_0
 
 
+@wp.func
+def normal_pair_angle(face_normals: wp.array[wp.vec3], f0: wp.int32, f1: wp.int32) -> wp.float32:
+    # The angle between two faces' held unit normals: what ``face_adjacency_angles`` returns for a
+    # row, whether the row comes from a table (``face_adjacency_angles``) or off the sorted keys
+    # (``emit_sorted_normal_angles``).
+    return vector_angle(face_normals[f0], face_normals[f1])
+
+
 @wp.kernel
 def face_adjacency_angles(
     face_normals: wp.array[wp.vec3],
@@ -343,9 +359,30 @@ def face_adjacency_angles(
     out_angles: wp.array[wp.float32],
 ) -> None:
     tid = wp.int32(wp.tid())
-    normal_a = face_normals[face_adjacency[tid, 0]]
-    normal_b = face_normals[face_adjacency[tid, 1]]
-    out_angles[tid] = vector_angle(normal_a, normal_b)
+    out_angles[tid] = normal_pair_angle(
+        face_normals, face_adjacency[tid, 0], face_adjacency[tid, 1]
+    )
+
+
+@wp.kernel
+def emit_sorted_normal_angles(
+    face_normals: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    inclusive: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    out_angles: wp.array[wp.float32],
+) -> None:
+    # ``face_adjacency_angles`` for a caller holding normals but no table: the pairs compacted off
+    # the sorted halfedge keys as ``emit_sorted_face_pairs`` compacts them, lower face first, so
+    # the rows align with ``face_adjacency``'s and no pair table is written. ``emit_sorted_angles``
+    # is the same emit forming the normals from the positions; ``faces`` is unread here and keeps
+    # the two signatures one (``adjacency._sorted_pair_values``).
+    i = wp.int32(wp.tid())
+    row, count = scanned_count(inclusive, i)
+    if count == 0:
+        return
+    low, high = sorted_pair_faces(order[i], order[i + 1])
+    out_angles[row] = normal_pair_angle(face_normals, low, high)
 
 
 @wp.kernel

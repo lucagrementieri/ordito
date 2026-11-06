@@ -17,10 +17,19 @@
    "sort": 1
   }
  },
- "benchmarks/test_adjacency.py::test_face_adjacency_angles[sphere_small-ordito-cuda]": {
+ "benchmarks/test_adjacency.py::test_face_adjacency_angles[sphere_small-ordito-cuda-adjacency]": {
   "counts": {
    "launch": 1,
    "alloc": 1
+  }
+ },
+ "benchmarks/test_adjacency.py::test_face_adjacency_angles[sphere_small-ordito-cuda-normals]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 2,
+   "d2h": 1,
+   "scan": 1,
+   "sort": 1
   }
  },
  "benchmarks/test_adjacency.py::test_face_adjacency_convex[sphere_small-ordito-cuda]": {

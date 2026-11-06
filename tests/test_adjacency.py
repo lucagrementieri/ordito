@@ -540,11 +540,13 @@ def test_face_adjacency_angles(request: pytest.FixtureRequest, mesh_name: str) -
     (``sphere_irregular``) and 7.8e-08 (``saddle_graded``), both devices, all of it ordito's
     float32 normals: trimesh is within 3e-08 of an exact ``atan2`` over float64 normals.
 
-    Ordito against ordito on the precomputed path as well: supplying ``face_normals`` takes the same
-    route as deriving them, and that result is compared against trimesh the same way.
+    Ordito against ordito on the precomputed paths as well: supplying ``face_normals``, with the
+    adjacency or without it (the pairs then come off the sorted halfedge keys), takes the same
+    route as deriving them, and each result is compared against trimesh the same way.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     angles_tm = mesh_tm.face_adjacency_angles
+    assert np.ptp(angles_tm) > 1e-3
 
     adjacency_wp = od.adjacency.face_adjacency(mesh_wp.indices)
     face_normals_wp, _ = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
@@ -554,11 +556,56 @@ def test_face_adjacency_angles(request: pytest.FixtureRequest, mesh_name: str) -
     angles_precomputed_wp = od.adjacency.face_adjacency_angles(
         mesh_wp.points, mesh_wp.indices, face_adjacency=adjacency_wp, face_normals=face_normals_wp
     )
+    angles_normals_only_wp = od.adjacency.face_adjacency_angles(
+        mesh_wp.points, mesh_wp.indices, face_normals=face_normals_wp
+    )
     assert np.allclose(angles_wp.numpy(), angles_precomputed_wp.numpy(), rtol=1e-5, atol=1e-5)
 
     assert np.array_equal(adjacency_wp.numpy(), mesh_tm.face_adjacency)
-    for result_wp in (angles_wp, angles_precomputed_wp):
+    for result_wp in (angles_wp, angles_precomputed_wp, angles_normals_only_wp):
         assert np.allclose(result_wp.numpy(), angles_tm, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "torus_irregular_holes"])
+def test_face_adjacency_angles_reads_the_normals_it_is_given(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Not a library comparison: no reference takes face normals apart from the mesh they belong to.
+
+    Supplied normals are random unit vectors, unrelated to the faces, so a path that formed its
+    normals from the positions instead of reading ``face_normals`` fails here while matching every
+    test that passes the mesh's own normals. The oracle is ``atan2(|a x b|, a . b)`` in float64
+    over ``face_adjacency``'s rows, lower face first. Both the supplied-adjacency path and the
+    derived one (the pairs off the sorted halfedge keys) are held to it, and to each other.
+    ``torus_irregular_holes`` adds boundary edges, which own no row.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    n_faces = faces_wp.size // 3
+    rng = np.random.default_rng(7)
+    normals_np = rng.normal(size=(n_faces, 3))
+    normals_np = (normals_np / np.linalg.norm(normals_np, axis=1, keepdims=True)).astype(np.float32)
+    normals_wp = wp.array(normals_np, dtype=wp.vec3, device=faces_wp.device)
+
+    adjacency_np = od.adjacency.face_adjacency(faces_wp).numpy()
+    a_np = normals_np[adjacency_np[:, 0]].astype(np.float64)
+    b_np = normals_np[adjacency_np[:, 1]].astype(np.float64)
+    angles_np = np.arctan2(np.linalg.norm(np.cross(a_np, b_np), axis=1), (a_np * b_np).sum(axis=1))
+    assert np.ptp(angles_np) > 1.0
+
+    derived_wp = od.adjacency.face_adjacency_angles(vertices_wp, faces_wp, face_normals=normals_wp)
+    tabled_wp = od.adjacency.face_adjacency_angles(
+        vertices_wp,
+        faces_wp,
+        face_adjacency=od.adjacency.face_adjacency(faces_wp),
+        face_normals=normals_wp,
+    )
+    assert np.allclose(derived_wp.numpy(), angles_np, rtol=1e-5, atol=1e-5)
+    assert np.allclose(tabled_wp.numpy(), angles_np, rtol=1e-5, atol=1e-5)
+    assert np.allclose(derived_wp.numpy(), tabled_wp.numpy(), rtol=1e-6, atol=1e-6)
+    from_positions_np = od.adjacency.face_adjacency_angles(vertices_wp, faces_wp).numpy()
+    assert not np.allclose(derived_wp.numpy(), from_positions_np, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -637,6 +684,10 @@ def test_dihedral_tables_of_a_lone_triangle_are_empty(device: str) -> None:
     ).shape == (0,)
     normal_wp = wp.array([[0.0, 0.0, 1.0]], dtype=wp.vec3, device=device)
     no_faces_wp = warp_empty(0, wp.int32, device)
+    for faces in (faces_wp, no_faces_wp):
+        angles_wp = od.adjacency.face_adjacency_angles(vertices_wp, faces, face_normals=normal_wp)
+        assert angles_wp.shape == (0,)
+        assert angles_wp.dtype == wp.float32
     for faces in (faces_wp, no_faces_wp):
         for normals in (None, normal_wp):
             projections_wp = od.adjacency.face_adjacency_projections(
