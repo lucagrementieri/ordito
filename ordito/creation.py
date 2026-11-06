@@ -59,7 +59,7 @@ _CLOSED_ANGLE_ATOL = 1e-10
 # difference here would move every ring vertex in the last bits.
 _FULL_TURN = wp.float32(2.0 * math.pi)
 # The matrix a generator kernel receives when the caller passed no transform (it is not applied).
-_IDENTITY_MATRIX = wp.mat44(*np.eye(4).ravel())
+_IDENTITY_MATRIX = _launch.mat44(np.eye(4))
 # The closed-form profile parameters ``revolve_uniform`` receives with an uploaded profile (unread).
 _NO_PROFILE_PARAMS = wp.vec4d(0.0, 0.0, 0.0, 0.0)
 
@@ -1924,10 +1924,10 @@ def extrude_polygon(
         translation = np.eye(4)
         translation[2, 3] = abs(float(height)) / -2.0
         if transform is None:
-            transform = wp.mat44(*translation.flatten())
+            transform = _launch.mat44(translation)
         else:
             composed = od.transform.matrix_to_numpy(transform).dot(translation)
-            transform = wp.mat44(*composed.flatten())
+            transform = _launch.mat44(composed)
     # A full triangulation of the ring (a convex ring's fan, passed as ``None``, is one) is bounded
     # by the ring edges themselves and wound like the ring; a partial one (a degenerate ring) has
     # its boundary and winding derived, as ``extrude_triangulation`` does.
@@ -2250,8 +2250,8 @@ def truncated_prisms(
     # Inverted in NumPy, on the matrix that is already in hand, rather than with ``wp.inverse``:
     # a Warp builtin at Python scope routes through builtin dispatch and is several times dearer,
     # and the two agree to float32 rounding (``wp.inverse`` works in float32).
-    to_plane = wp.mat44(*transform_np.flatten())
-    from_plane = wp.mat44(*np.linalg.inv(transform_np).flatten())
+    to_plane = _launch.mat44(transform_np)
+    from_plane = _launch.mat44(np.linalg.inv(transform_np))
     _launch.launch(
         kernel_creation.truncated_prism_geometry,
         dim=n_faces,
@@ -2330,14 +2330,6 @@ def axis(
     if axis_length is None:
         axis_length = origin_size_f * 10.0
 
-    # Each cylinder is built centered on the origin, so it has to be pushed out along its own axis
-    # by half its length, then carried by the marker transform: the two compose on the host into
-    # the one matrix its kernel places it with. The ball and then the three cylinders (one launch)
-    # are written straight into the final buffers, so there is no concatenation pass.
-    shift = np.eye(4)
-    shift[2, 3] = float(axis_length) / 2.0
-    marker = np.eye(4) if transform is None else od.transform.matrix_to_numpy(transform)
-
     radius, half, n_sections, keep_caps, keep_sides = _cylinder_template(
         float(axis_radius), float(axis_length) / 2.0, DEFAULT_SECTIONS
     )
@@ -2347,10 +2339,11 @@ def axis(
     device = wp.get_device(device)
     vertices = _launch.empty(ball_vertices + 3 * cylinder_vertices, dtype=wp.vec3, device=device)
     faces = _launch.empty(3 * (ball_faces + 3 * cylinder_faces), dtype=wp.int32, device=device)
-    placements = [
-        _placement(wp.mat44(*(marker @ rotation.dot(shift)).flatten()))
-        for rotation in _axis_rotations()
-    ]
+    cylinder_matrices, cylinder_modes = (
+        _axis_cylinder_placements(float(axis_length))
+        if transform is None
+        else _axis_cylinder_placements_under(od.transform.matrix_to_numpy(transform), axis_length)
+    )
     table, corners = _icosphere_tables(device.alias)
     ball_n = 1 << _AXIS_BALL_LEVELS
     _launch.launch(
@@ -2368,8 +2361,8 @@ def axis(
             _FULL_TURN,
             wp.int32(keep_caps),
             wp.int32(keep_sides),
-            *(matrix for matrix, _mode in placements),
-            wp.vec3i(*(int(mode) for _matrix, mode in placements)),
+            *cylinder_matrices,
+            cylinder_modes,
             wp.int32(ball_vertices),
             wp.int32(ball_faces),
         ],
@@ -2377,6 +2370,45 @@ def axis(
         device=device,
     )
     return vertices, faces
+
+
+@functools.lru_cache(maxsize=16)
+def _axis_cylinder_placements(axis_length: float) -> tuple[tuple[wp.mat44, ...], wp.vec3i]:
+    """
+    ``_axis_cylinder_placements_under`` for an untransformed marker, formed once per length.
+
+    The three matrices and their modes depend on nothing else, and forming them is most of the
+    host time of an untransformed ``axis`` call.
+    """
+    return _axis_cylinder_placements_under(np.eye(4), axis_length)
+
+
+def _axis_cylinder_placements_under(
+    marker: np.ndarray, axis_length: float
+) -> tuple[tuple[wp.mat44, ...], wp.vec3i]:
+    """
+    Return the placement matrices of ``axis``'s three cylinders and their modes under ``marker``.
+
+    Each cylinder is built centered on the origin, so it has to be pushed out along its own axis by
+    half its length, then carried by the marker transform: the two compose on the host into the one
+    matrix its kernel places it with.
+    """
+    shift = np.eye(4)
+    shift[2, 3] = float(axis_length) / 2.0
+    # The matrices as ``wp.mat44`` holds them, so the three mirror tests are
+    # ``transform.reverses_orientation``'s on each, in one determinant call.
+    matrices_np = np.stack([marker @ rotation.dot(shift) for rotation in _axis_rotations()])
+    matrices_np = matrices_np.astype(np.float32)
+    mirrors = np.linalg.det(matrices_np[:, :3, :3].astype(np.float64)) < 0.0
+    return (
+        tuple(_launch.mat44(matrix_np) for matrix_np in matrices_np),
+        wp.vec3i(
+            *(
+                int(kernel_creation.TRANSFORM_MIRROR if mirror else kernel_creation.TRANSFORM_KEEP)
+                for mirror in mirrors.tolist()
+            )
+        ),
+    )
 
 
 @functools.cache
@@ -2579,7 +2611,7 @@ def super_ellipsoid(
     # Radii other than one scale the unit superquadric as it is written.
     scale = None
     if not np.array_equal(radii_np, np.ones(3)):
-        scale = wp.mat44(*np.diag([*radii_np, 1.0]).ravel())
+        scale = _launch.mat44(np.diag([*radii_np, 1.0]))
     return _parametric_surface(
         _SUPER_ELLIPSOID_SPEC, u_resolution, v_resolution, device, n1=n1, n2=n2, transform=scale
     )
@@ -3258,7 +3290,7 @@ def _segment_to_cylinder(segment: Sequence[Sequence[float]]) -> tuple[wp.mat44, 
     matrix = _align_vectors(np.array([0.0, 0.0, 1.0]), vector)
     # Compose translation-to-midpoint with the rotation.
     matrix[:3, 3] = segment_np[0] + vector * 0.5
-    return wp.mat44(*matrix.flatten()), height
+    return _launch.mat44(matrix), height
 
 
 def _resolve_sections(sections: int | None) -> int:

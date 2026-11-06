@@ -1872,6 +1872,17 @@ def array(
 _struct_record_dtypes: dict[Any, np.dtype[Any]] = {}
 
 
+def mat44(host: npt.ArrayLike) -> wp.mat44:
+    """
+    ``wp.mat44(*host.flatten())`` for a ``(4, 4)`` host matrix, from its ``float32`` bytes.
+
+    The constructor imports its sixteen arguments one by one; a ``wp.mat44`` is a ``ctypes``
+    array, so copying the row-major ``float32`` buffer in builds the same matrix 15-20x cheaper.
+    Each entry is rounded to ``float32`` to nearest either way.
+    """
+    return wp.mat44.from_buffer_copy(np.ascontiguousarray(host, dtype=np.float32).tobytes())
+
+
 def struct_records(struct: _codegen.Struct, count: int) -> npt.NDArray[np.void]:
     """
     ``count`` zeroed host records of ``struct``, for a descriptor table filled field by field.
