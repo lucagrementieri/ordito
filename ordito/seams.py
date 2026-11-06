@@ -503,10 +503,21 @@ def uv_seam_edges(
     boundaries = odt.empty_2d((n_boundaries, 2), wp.int32, device=device)
     foldovers = odt.empty_2d((n_foldovers, 4), wp.int32, device=device)
     if int(totals[2]) > 0:
+        dim, by_rank = _launch.set_bit_launch(n_halfedges, int(totals[2]), device)
         _launch.launch(
             kernel_seams.scatter_uv_halfedges,
-            dim=n_halfedges,
-            inputs=[faces, twins, words, word_ranks, 32 * row_words, seams, boundaries, foldovers],
+            dim=dim,
+            inputs=[
+                faces,
+                twins,
+                words,
+                word_ranks,
+                by_rank,
+                32 * row_words,
+                seams,
+                boundaries,
+                foldovers,
+            ],
             device=device,
         )
     return seams, boundaries, foldovers

@@ -732,6 +732,7 @@ def test_halfedge_mates_key_order_is_the_edge_key_sort(
         pytest.param(1, False, False, id="1-sorted-pair-radix"),
     ],
 )
+@pytest.mark.usefixtures("set_bit_launch")
 def test_key_ordered_halfedges_match_numpy(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], n_classes: int, given_order: bool, bounded: bool
 ) -> None:

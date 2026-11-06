@@ -1469,10 +1469,19 @@ class _BoundaryHalfedges:
         out_edges = odt.empty_2d((k, 2), wp.int32, device=device)
         if k > 0 and self.key_order is not None:
             # The bits were ranked in key order: the rows are stored at their ranks directly.
+            dim, by_rank = _launch.set_bit_launch(self.n, k, device)
             _launch.launch(
                 kernel_boundary.emit_key_ordered_boundary_edges,
-                dim=_launch.set_bit_launch_dim(self.n, k, device),
-                inputs=[self._words, self._ranks, self.key_order, self.faces, sort_pair, out_edges],
+                dim=dim,
+                inputs=[
+                    self._words,
+                    self._ranks,
+                    by_rank,
+                    self.key_order,
+                    self.faces,
+                    sort_pair,
+                    out_edges,
+                ],
                 device=device,
             )
         elif k > 0:
@@ -1518,12 +1527,14 @@ class _BoundaryHalfedges:
             _launch.fill_(next_node, -1)
         else:
             next_node = _launch.full(node_count, -1, dtype=wp.int32, device=device)
+        dim, by_rank = _launch.set_bit_launch(self.n, k, device)
         _launch.launch(
             kernel_boundary.emit_boundary_successors,
-            dim=_launch.set_bit_launch_dim(self.n, k, device),
+            dim=dim,
             inputs=[
                 self._words,
                 self._ranks,
+                by_rank,
                 self.key_order,
                 self.faces,
                 self.mates if halfedge_nodes else None,

@@ -1117,14 +1117,33 @@ def _float_scan_fixed_order(in_array: Any, out_array: Any, size: int) -> None:
                  block_dim=block_dim, device=device)  # fmt: skip
 
 
-def set_bit_launch_dim(n_bits: int, count: int, device: Any) -> int:
-    """
-    Launch ``dim`` for a kernel over a ranked bitmask's ``count`` set bits of ``n_bits``.
+# A launch over a ranked bitmask's set bits takes a thread a set bit on CUDA from this many bits,
+# when at most one bit in ``SET_BIT_RANK_DENSITY`` is set (``kernels/array.launched_set_bit``),
+# and a thread a position otherwise. The rank launch's search of the ranks is latency it pays once:
+# flagged halfedge keys, new/old, ``dragon`` (2.6 M bits) 0.55x at 0.5 % set and 0.71x at 10 %,
+# ``lucy`` (84 M) 0.07x and 0.59x, both about even at 21 %; ``sphere_large`` (1 M) even,
+# ``tangle_torus`` (0.5 M) and the 80 k-face meshes +1-2 us. The CPU device, whose launch runs its
+# threads one after another, keeps the thread a position: ``k`` searches cost a dense rim more than
+# ``n`` lookups (``boundary_edges`` on ``rim_long`` 1.53x).
+SET_BIT_RANK_FROM_BITS = 1 << 20
+SET_BIT_RANK_DENSITY = 8
 
-    The size ``kernels/array.launched_set_bit`` reads its thread index against: ``count`` on CUDA,
-    one thread per set bit, and ``n_bits`` on the CPU device, one thread per position.
+
+def set_bit_launch(n_bits: int, count: int, device: Any) -> tuple[int, bool]:
     """
-    return n_bits if device.is_cpu else count
+    ``(dim, by_rank)`` for a kernel over a ranked bitmask's ``count`` set bits of ``n_bits``.
+
+    What ``kernels/array.launched_set_bit`` reads its thread index against: ``count`` threads,
+    one per set bit, where ``by_rank``, else ``n_bits``, one per position. A mask of several class
+    rows whose positions share one item (``kernels/seams.flagged_uv_halfedge``) passes the item
+    count as ``n_bits`` and launches a thread an item when not ``by_rank``.
+    """
+    by_rank = (
+        device.is_cuda
+        and n_bits >= SET_BIT_RANK_FROM_BITS
+        and count * SET_BIT_RANK_DENSITY <= n_bits
+    )
+    return (count if by_rank else n_bits), by_rank
 
 
 def key_bits(bound: int) -> int:

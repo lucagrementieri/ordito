@@ -5390,10 +5390,11 @@ def _keep_longest_edges(
     m = int(unique_edges.shape[0])
     keys_buffer = _launch.empty(2 * n_long, dtype=wp.float32, device=device)
     edges_buffer = _launch.empty(2 * n_long, dtype=wp.int32, device=device)
+    dim, by_rank = _launch.set_bit_launch(m, n_long, device)
     _launch.launch(
         kernel_remesh.longest_edge_sort_keys,
-        dim=m,
-        inputs=[vertices, unique_edges, *split_bits],
+        dim=dim,
+        inputs=[vertices, unique_edges, *split_bits, by_rank],
         outputs=[keys_buffer, edges_buffer],
         device=device,
     )

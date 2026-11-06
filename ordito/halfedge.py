@@ -748,10 +748,11 @@ def key_ordered_halfedges(
     if key_order is not None:
         halfedges = _launch.empty(count, dtype=wp.int32, device=device)
         if count > 0:
+            dim, by_rank = _launch.set_bit_launch(n_classes * row_bits, count, device)
             _launch.launch(
                 kernel_halfedge.flagged_key_ordered_halfedges,
-                dim=(n_classes, n),
-                inputs=[words, word_ranks, key_order, row_bits, halfedges],
+                dim=dim,
+                inputs=[words, word_ranks, by_rank, key_order, row_bits, halfedges],
                 device=device,
             )
         return halfedges
@@ -762,10 +763,11 @@ def key_ordered_halfedges(
     keys, order = _launch.sort_buffers(count, wp.uint64, device)
     if count == 0:
         return order
+    dim, by_rank = _launch.set_bit_launch(n_classes * row_bits, count, device)
     _launch.launch(
         kernel_halfedge.flagged_halfedge_keys,
-        dim=(n_classes, n),
-        inputs=[faces, words, word_ranks, row_bits, wp.uint64(n_vertices), keys, order],
+        dim=dim,
+        inputs=[faces, words, word_ranks, by_rank, row_bits, wp.uint64(n_vertices), keys, order],
         device=device,
     )
     _launch.radix_sort_pairs(

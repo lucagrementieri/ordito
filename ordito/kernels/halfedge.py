@@ -19,7 +19,7 @@ already imported from here.
 import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT
-from ordito.kernels.array import bit_slot, pack_edge_key
+from ordito.kernels.array import launched_set_bit, pack_edge_key
 
 wp.set_module_options({"enable_backward": False})
 
@@ -593,6 +593,7 @@ def key_ordered_halfedge(key_order: wp.array[wp.int32], i: wp.int32) -> wp.int32
 def flagged_key_ordered_halfedges(
     words: wp.array[wp.uint32],
     word_ranks: wp.array[wp.int32],
+    by_rank: wp.bool,
     key_order: wp.array[wp.int32],
     row_bits: wp.int32,
     out_halfedges: wp.array[wp.int32],
@@ -600,10 +601,9 @@ def flagged_key_ordered_halfedges(
     # ``halfedge.key_ordered_halfedges`` with the sort's permutation: the flag table is already
     # in key order, class row by class row (each ``row_bits`` wide, a whole number of words), so
     # the flagged halfedges are written at their ranks and nothing is sorted.
-    c, i = wp.tid()
-    slot, flagged = bit_slot(words, word_ranks, c * row_bits + i)
+    p, slot, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()), by_rank)
     if flagged:
-        out_halfedges[slot] = key_order[i]
+        out_halfedges[slot] = key_order[p % row_bits]
 
 
 @wp.kernel
@@ -611,21 +611,23 @@ def flagged_halfedge_keys(
     faces: wp.array[wp.int32],
     words: wp.array[wp.uint32],
     word_ranks: wp.array[wp.int32],
+    by_rank: wp.bool,
     row_bits: wp.int32,
     base: wp.uint64,
     out_keys: wp.array[wp.uint64],
     out_order: wp.array[wp.int32],
 ) -> None:
-    # ``halfedge.key_ordered_halfedges``' sorting compaction: one thread per halfedge of each class
-    # row of the caller's ranked bitmask, the rows ``row_bits`` apart. Where a bit is set, the
+    # ``halfedge.key_ordered_halfedges``' sorting compaction over the set bits of the caller's
+    # ranked bitmask (``launched_set_bit``), its class rows ``row_bits`` apart. At a set bit the
     # halfedge's undirected edge key (``adjacency.write_face_edge_keys``' packing), lifted by its
     # class row so one sort keeps the classes apart, goes into the sort's input at its rank, the
     # halfedge as the payload. The ranks ascend with the halfedge index, so the stable sort breaks
     # key ties by it.
-    c, h = wp.tid()
-    slot, flagged = bit_slot(words, word_ranks, c * row_bits + h)
+    p, slot, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()), by_rank)
     if not flagged:
         return
+    c = p // row_bits
+    h = p - c * row_bits
     a, b = halfedge_endpoints(faces, h)
     out_keys[slot] = pack_edge_key(a, b, base) + wp.uint64(c) * base * base
     out_order[slot] = h

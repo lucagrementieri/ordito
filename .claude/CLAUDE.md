@@ -1037,12 +1037,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   component sums): whether it should test peers (`warp_peer_lanes`) rather than a uniform warp.
   The uniform form was priced on one hot group, components and random groups; the corner sites
   (§14) say to expect a loss wherever the kernel has work of its own.
-- **`kernels/array.launched_set_bit` at the other sparse bit emits** (found by the 2026-11-06
-  `boundary` sweep; awaiting approval, outside its scope): `halfedge.flagged_halfedge_keys` and
-  `flagged_key_ordered_halfedges` (behind `key_ordered_halfedges`; 0.27 ms of `lucy`'s 4.7 ms
-  `boundary_edges`), `selection.emit_key_ordered_region_seam`, `remesh.longest_edge_sort_keys`
-  and `seams`' ranked rows launch a thread a position for `k` set bits. Expect ~0.2 ms each at
-  `lucy` scale for +2 us on 80 k-face meshes; a dense mask (long edges) may lose, so price each.
 - **`halfedge_mates`' bucket pipeline under `face_connected_component_labels`:** degree count,
   bucket count, scan, scatter and pairing are 52-54 % of the call's device time on dragon and
   lucy (2026-11-06), the union-find the rest. Not re-examined in the adjacency sweep, which took

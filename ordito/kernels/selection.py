@@ -11,7 +11,7 @@ from ordito.kernels.array import (
     binary_search_index,
     binary_search_index_left,
     binary_search_sorted_contains,
-    bit_slot,
+    launched_set_bit,
     masked_at,
     pack_directed_key,
     pack_edge_key,
@@ -552,6 +552,7 @@ def emit_region_seam(
 def emit_key_ordered_region_seam(
     words: wp.array[wp.uint32],
     word_ranks: wp.array[wp.int32],
+    by_rank: wp.bool,
     key_order: wp.array[wp.int32],
     mates: wp.array[wp.int32],
     faces: wp.array[wp.int32],
@@ -561,9 +562,9 @@ def emit_key_ordered_region_seam(
 ) -> None:
     # ``halfedge.flagged_key_ordered_halfedges`` and ``emit_region_seam`` in one pass, when the
     # mates came from the edge-key sort: the ranked bits are already in key order, so a set bit
-    # writes its row at its rank and no halfedge list is compacted in between.
-    i = wp.int32(wp.tid())
-    row, flagged = bit_slot(words, word_ranks, i)
+    # writes its row at its rank and no halfedge list is compacted in between. Launched over the
+    # set bits (``launched_set_bit``).
+    i, row, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()), by_rank)
     if flagged:
         write_region_seam_row(key_order[i], row, mates, faces, face_mask, oriented, out_edges)
 

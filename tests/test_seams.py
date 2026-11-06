@@ -769,6 +769,7 @@ def test_uv_seam_vertex_mask_twins_change_no_answer(
 
 # Not ``conftest.MESHES``: the spherical wedge atlas has no foldover on ``cave_cube``.
 @pytest.mark.parametrize("mesh_name", ["sphere_irregular", "saddle_graded"])
+@pytest.mark.usefixtures("set_bit_launch")
 def test_uv_seam_edges_matches_igl_port(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A (``od.equality.rows_equal``): all three blocks equal the ``igl::seam_edges`` CPU port.

@@ -1286,6 +1286,20 @@ def force_halfedge_buckets(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
 
 
+@pytest.fixture(params=["position", "rank"])
+def set_bit_launch(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Run a test once per shape of a launch over a ranked bitmask's set bits.
+
+    ``_launch.set_bit_launch`` takes a thread a set bit on CUDA only on a large, sparse mask, which
+    no fixture is; ``"rank"`` opens that gate at fixture size. The CPU device keeps a thread a
+    position either way.
+    """
+    if request.param == "rank":
+        monkeypatch.setattr("ordito._launch.SET_BIT_RANK_FROM_BITS", 0)
+        monkeypatch.setattr("ordito._launch.SET_BIT_RANK_DENSITY", 1)
+
+
 CACHED_TRIMESH_KEYS = frozenset(
     name for name, value in vars(od.Trimesh).items() if isinstance(value, _CachedProperty)
 )

@@ -125,10 +125,21 @@ def region_boundary_edges(
     n_seam = scan_count(word_ranks)
     out_edges = odt.empty_2d((n_seam, 2), wp.int32, device=device)
     if n_seam > 0 and key_order is not None:
+        dim, by_rank = _launch.set_bit_launch(n, n_seam, device)
         _launch.launch(
             kernel_selection.emit_key_ordered_region_seam,
-            dim=n,
-            inputs=[words, word_ranks, key_order, mates, faces, face_mask, oriented, out_edges],
+            dim=dim,
+            inputs=[
+                words,
+                word_ranks,
+                by_rank,
+                key_order,
+                mates,
+                faces,
+                face_mask,
+                oriented,
+                out_edges,
+            ],
             device=device,
         )
     elif n_seam > 0:

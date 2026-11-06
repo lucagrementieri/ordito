@@ -4117,6 +4117,7 @@ def test_subdivide_region_appends_and_leaves_the_outside_untouched(
         assert tuple(sorted(int(x) for x in t)) in original or touches_new
 
 
+@pytest.mark.usefixtures("set_bit_launch")
 def test_subdivide_region_max_splits_takes_the_longest_edges(
     saddle_graded: tuple[tm.Trimesh, wp.Mesh],
 ):

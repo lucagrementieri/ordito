@@ -2346,18 +2346,18 @@ def nth_bit_position(
 
 @wp.func
 def launched_set_bit(
-    words: wp.array[wp.uint32], word_ranks: wp.array[wp.int32], t: wp.int32
+    words: wp.array[wp.uint32], word_ranks: wp.array[wp.int32], t: wp.int32, by_rank: wp.bool
 ) -> tuple[wp.int32, wp.int32, wp.bool]:
-    # Thread ``t`` of a launch over a ranked bitmask's set bits, sized by
-    # ``array.set_bit_launch_dim``: the bit's position, its rank, and whether it is set. On CUDA
-    # one thread per set bit, ``t`` its rank and its position found by a search of the ranks
-    # (``nth_bit_position``), so a sparse mask launches for its set bits only. On the CPU device,
-    # whose launch runs its threads one after another, one thread per position (``bit_slot``):
-    # there ``k`` searches cost more than ``n`` lookups once the bits are dense.
-    if device_is_cpu() != 0:
-        rank, flagged = bit_slot(words, word_ranks, t)
-        return t, rank, flagged
-    return nth_bit_position(words, word_ranks, t), t, True
+    # Thread ``t`` of a launch over a ranked bitmask's set bits, as ``_launch.set_bit_launch``
+    # shapes it: the bit's position, its rank, and whether it is set. ``by_rank``: one thread per
+    # set bit, ``t`` its rank and its position found by a search of the ranks
+    # (``nth_bit_position``), so a sparse mask launches for its set bits only. Otherwise one thread
+    # per position (``bit_slot``), always on the CPU device, whose launch runs its threads one
+    # after another (``device_is_cpu`` folds the rank branch away there).
+    if by_rank and device_is_cpu() == 0:
+        return nth_bit_position(words, word_ranks, t), t, True
+    rank, flagged = bit_slot(words, word_ranks, t)
+    return t, rank, flagged
 
 
 @wp.func

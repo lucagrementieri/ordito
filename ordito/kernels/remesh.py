@@ -16,8 +16,8 @@ from ordito.kernels.array import (
     append_slot,
     binary_search_sorted_contains,
     bit_rank,
-    bit_slot,
     divide_if_positive,
+    launched_set_bit,
     lowbias32,
     next_row_entry,
     or_counted_bit,
@@ -920,15 +920,16 @@ def longest_edge_sort_keys(
     unique_edges: wp.array2d[wp.int32],
     words: wp.array[wp.uint32],
     word_ranks: wp.array[wp.int32],
+    by_rank: wp.bool,
     out_keys: wp.array[wp.float32],
     out_edges: wp.array[wp.int32],
 ) -> None:
-    # A budget-trimmed refinement pass's sort input, one thread per unique edge: each flagged edge
+    # A budget-trimmed refinement pass's sort input: each flagged edge
     # (a set bit of the ranked bitmask) writes its negated length -- ascending on it is descending
     # on the length -- and its own index at its rank, the flagged edges in ascending order,
-    # straight into the radix sort's double-width buffers.
-    e = wp.int32(wp.tid())
-    slot, flagged = bit_slot(words, word_ranks, e)
+    # straight into the radix sort's double-width buffers. Launched over the set bits
+    # (``launched_set_bit``).
+    e, slot, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()), by_rank)
     if flagged:
         out_keys[slot] = -unique_edge_length(vertices, unique_edges, e)
         out_edges[slot] = e

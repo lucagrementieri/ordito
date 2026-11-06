@@ -177,6 +177,7 @@ def emit_boundary_edges(
 def emit_key_ordered_boundary_edges(
     words: wp.array[wp.uint32],
     word_ranks: wp.array[wp.int32],
+    by_rank: wp.bool,
     key_order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     sort_pair: wp.bool,
@@ -187,7 +188,7 @@ def emit_key_ordered_boundary_edges(
     # ``key_order``): over the set bits (``launched_set_bit``), each halfedge's row stored at its
     # rank, its row of the ascending-key table. The two kernels differ only in where a row's
     # halfedge and slot come from.
-    j, slot, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()))
+    j, slot, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()), by_rank)
     if flagged:
         store_boundary_row(faces, sort_pair, key_ordered_halfedge(key_order, j), slot, out_edges)
 
@@ -387,6 +388,7 @@ def dart_successors(
 def emit_boundary_successors(
     words: wp.array[wp.uint32],
     word_ranks: wp.array[wp.int32],
+    by_rank: wp.bool,
     key_order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     mates: wp.array[wp.int32],
@@ -403,12 +405,11 @@ def emit_boundary_successors(
     # point has two successors, over halfedges every node has one. A fan that does not close (a
     # mesh that is not edge-manifold) maps to a self-loop, so the walk stays bounded. The ranking
     # names each cycle by its smallest node, so the order of ``out_tails`` is free. Launched over
-    # the set bits (``launched_set_bit``): on CUDA a thread a set bit took ``lucy``'s launch from
-    # 84 M threads, 252 us, to 20 us and ``dragon``'s 7.1 -> 4.9 us, for +2 us on the 80 k-face
-    # benchmark meshes. Declined: a thread a word walking its set bits, 1.4-2.5x the set-bit
-    # launch except on ``lucy`` and 9x on ``holes_pinched``, whose rotations it runs one after
-    # another.
-    i, g, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()))
+    # the set bits (``launched_set_bit``): a thread a set bit took ``lucy``'s launch from 84 M
+    # threads, 252 us, to 20 us and ``dragon``'s 7.1 -> 4.9 us. Declined: a thread a word walking
+    # its set bits, 1.4-2.5x the set-bit launch except on ``lucy`` and 9x on ``holes_pinched``,
+    # whose rotations it runs one after another.
+    i, g, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()), by_rank)
     if not flagged:
         return
     h = key_ordered_halfedge(key_order, i)

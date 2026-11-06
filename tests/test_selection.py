@@ -67,6 +67,7 @@ def _graph_distance(faces_np: np.ndarray, n: int, seed: np.ndarray) -> np.ndarra
 
 
 @pytest.mark.parity("region_boundary_edges", "meshlib")
+@pytest.mark.usefixtures("set_bit_launch")
 def test_region_boundary_edges(device: str):
     """
     Class A against the function this one ports, plus the hand-written rule it is meant to encode.
@@ -249,6 +250,7 @@ def test_region_boundary_edges_oriented_round_trips_through_the_fill(
 
 @pytest.mark.parametrize("variant", ["buckets", "mates"])
 @pytest.mark.parametrize("oriented", [False, True])
+@pytest.mark.usefixtures("set_bit_launch")
 def test_region_boundary_edges_other_pairings_match_the_key_sort(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh],
     oriented: bool,

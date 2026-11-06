@@ -13,6 +13,7 @@ from ordito.kernels.array import (
     bit_slot,
     cross2,
     mark_at,
+    nth_bit_position,
     pack_edge_key,
     store_counted_ballot_bit,
 )
@@ -324,21 +325,38 @@ def classify_uv_halfedges(
 
 
 @wp.func
-def ranked_row_slot(
-    words: wp.array[wp.uint32],
-    word_ranks: wp.array[wp.int32],
-    row_bits: wp.int32,
-    k: wp.int32,
-    h: wp.int32,
-) -> tuple[wp.int32, wp.bool]:
-    # Slot of halfedge ``h`` within row ``k`` of ``classify_uv_halfedges``' ranked bitmask, and its
-    # bit. Row ``k``'s ranks run on from the totals of the rows before it, which sit in the rank of
-    # the word just ahead of the row; subtracting it makes each row zero-based.
-    slot, flag = bit_slot(words, word_ranks, k * row_bits + h)
+def ranked_row_base(word_ranks: wp.array[wp.int32], row_bits: wp.int32, k: wp.int32) -> wp.int32:
+    # The rank row ``k`` of ``classify_uv_halfedges``' ranked bitmask starts from: the totals of
+    # the rows before it, which sit in the rank of the word just ahead of the row. Subtracting it
+    # from a bit's rank makes each row zero-based.
     base = wp.int32(0)
     if k > 0:
         base = word_ranks[(k * row_bits >> 5) - 1]
-    return slot - base, flag
+    return base
+
+
+@wp.func
+def flagged_uv_halfedge(
+    words: wp.array[wp.uint32],
+    word_ranks: wp.array[wp.int32],
+    row_bits: wp.int32,
+    t: wp.int32,
+    by_rank: wp.bool,
+) -> tuple[wp.int32, wp.int32, wp.int32]:
+    # ``scatter_uv_halfedges``' thread ``t`` as ``_launch.set_bit_launch`` shapes it over the
+    # halfedges: ``(halfedge, class, rank)``, the class ``-1`` where the halfedge has none. By rank,
+    # thread ``t`` is set bit ``t`` of the three rows (``nth_bit_position``), bit ``p`` halfedge
+    # ``p % row_bits`` of class ``p // row_bits``; otherwise thread ``t`` is halfedge ``t``, which
+    # tests its bit in each row.
+    if by_rank:
+        p = nth_bit_position(words, word_ranks, t)
+        k = p // row_bits
+        return p - k * row_bits, k, t
+    for k in range(3):
+        rank, flagged = bit_slot(words, word_ranks, k * row_bits + t)
+        if flagged:
+            return t, k, rank
+    return t, -1, -1
 
 
 @wp.func
@@ -359,6 +377,7 @@ def scatter_uv_halfedges(
     twins: wp.array[wp.int32],
     words: wp.array[wp.uint32],
     word_ranks: wp.array[wp.int32],
+    by_rank: wp.bool,
     row_bits: wp.int32,
     out_seams: wp.array2d[wp.int32],
     out_boundaries: wp.array2d[wp.int32],
@@ -369,22 +388,20 @@ def scatter_uv_halfedges(
     # so each flag is a bit and its slot that bit's rank within its row. A seam or foldover row is
     # the ``(face, corner)`` pair of both canonical halfedges; a boundary row is this halfedge's
     # own ``(face, corner)``, under the ``h = 3 * f + k`` convention. A halfedge carries at most one
-    # class.
-    h = wp.int32(wp.tid())
-    row, is_boundary = ranked_row_slot(words, word_ranks, row_bits, 1, h)
-    if is_boundary:
+    # class, so each set bit of the three rows is one row of one output (``flagged_uv_halfedge``).
+    h, k, rank = flagged_uv_halfedge(words, word_ranks, row_bits, wp.int32(wp.tid()), by_rank)
+    if k < 0:
+        return
+    row = rank - ranked_row_base(word_ranks, row_bits, k)
+    if k == 1:
         out_boundaries[row, 0] = h // 3
         out_boundaries[row, 1] = h % 3
         return
-    seam_row, is_seam = ranked_row_slot(words, word_ranks, row_bits, 0, h)
-    foldover_row, is_foldover = ranked_row_slot(words, word_ranks, row_bits, 2, h)
-    if not is_seam and not is_foldover:
-        return
     forwards, backwards = canonical_edge_halfedges(faces, h, twins[h])
-    if is_seam:
-        write_canonical_pair_row(forwards, backwards, seam_row, out_seams)
+    if k == 0:
+        write_canonical_pair_row(forwards, backwards, row, out_seams)
     else:
-        write_canonical_pair_row(forwards, backwards, foldover_row, out_foldovers)
+        write_canonical_pair_row(forwards, backwards, row, out_foldovers)
 
 
 @wp.kernel

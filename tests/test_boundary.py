@@ -40,6 +40,7 @@ from tests.conversions import (
 @pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 @pytest.mark.parity("boundary_edges", "trimesh", "pyvista", "igl")
 @pytest.mark.parity("oriented_boundary_edges", "trimesh", "igl")
+@pytest.mark.usefixtures("set_bit_launch")
 def test_boundary_edges_match_trimesh_pyvista_and_igl(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -218,6 +219,7 @@ def test_boundary_loops(request: pytest.FixtureRequest, mesh_name: str) -> None:
         assert np.array_equal(loop_wp.numpy(), np.asarray(loop_igl))
 
 
+@pytest.mark.usefixtures("set_bit_launch")
 @pytest.mark.parametrize("mesh_name", BOUNDARY_MESHES)
 @pytest.mark.parity("boundary_loops", "trimesh")
 def test_boundary_loops_matches_trimesh_outline(
@@ -586,6 +588,7 @@ def test_boundary_loops_non_manifold_terminates(
 
 
 @pytest.mark.parametrize("compact", [False, True], ids=["table", "compacted"])
+@pytest.mark.usefixtures("set_bit_launch")
 def test_boundary_loops_walk_a_pinched_rim_edge_by_edge(
     device: str, monkeypatch: pytest.MonkeyPatch, compact: bool
 ) -> None:
