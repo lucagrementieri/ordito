@@ -1043,6 +1043,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `boundary_edges`), `selection.emit_key_ordered_region_seam`, `remesh.longest_edge_sort_keys`
   and `seams`' ranked rows launch a thread a position for `k` set bits. Expect ~0.2 ms each at
   `lucy` scale for +2 us on 80 k-face meshes; a dense mask (long edges) may lose, so price each.
+- **`halfedge_mates`' bucket pipeline under `face_connected_component_labels`:** degree count,
+  bucket count, scan, scatter and pairing are 52-54 % of the call's device time on dragon and
+  lucy (2026-11-06), the union-find the rest. Not re-examined in the adjacency sweep, which took
+  the union-find side only; the lower-degree owner is a hub-balancing choice to keep.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
