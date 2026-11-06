@@ -68,6 +68,34 @@ def test_concatenate_meshes(three_parts: list[MeshPair], n_parts: int) -> None:
     assert np.array_equal(concat_faces_wp.numpy(), concat_tm.faces.reshape(-1))
 
 
+@pytest.mark.parity("concatenate", "trimesh")
+def test_concatenate_many_small_meshes(device: str) -> None:
+    """
+    Class A: forty small boxes, a vertex-only piece and an empty one against ``trimesh``.
+
+    Past the CPU's piece count, so both devices take the one-launch packing, and the vertex-only
+    and empty pieces put records with nothing to copy, and a shift over no faces, in its table.
+    """
+    rng = np.random.default_rng(41)
+    boxes_tm = [
+        tm.creation.box(bounds=[corner, corner + 1.0]) for corner in rng.random((40, 3)) * 10.0
+    ]
+    pieces_wp = [numpy_to_warp(box_tm.vertices, box_tm.faces, device) for box_tm in boxes_tm]
+    lone_np = rng.random((5, 3))
+    pieces_wp.insert(
+        3, (wp.array(lone_np, dtype=wp.vec3, device=device), warp_empty(0, wp.int32, device))
+    )
+    pieces_wp.insert(7, (warp_empty(0, wp.vec3, device), warp_empty(0, wp.int32, device)))
+    concat_tm = tm.util.concatenate(boxes_tm)
+    assert isinstance(concat_tm, tm.Trimesh)
+    vertices_np = np.concatenate([concat_tm.vertices[:24], lone_np, concat_tm.vertices[24:]])
+    faces_np = np.where(concat_tm.faces >= 24, concat_tm.faces + 5, concat_tm.faces)
+
+    vertices_wp, faces_wp = od.combine.concatenate(pieces_wp)
+    assert np.allclose(vertices_wp.numpy(), vertices_np)
+    assert np.array_equal(faces_wp.numpy(), faces_np.reshape(-1))
+
+
 @pytest.mark.parity("concatenate", "meshlib")
 def test_concatenate_matches_meshlib(request: pytest.FixtureRequest) -> None:
     """

@@ -1902,3 +1902,36 @@ def struct_array(
     """
     words = array(records.view(np.int32), dtype=wp.int32, device=device)
     return alias(words, cast("type[Any]", struct), 0, records.shape[0])
+
+
+# Segment count from which a segmented copy (``array.concatenate``, ``array.split(copy=True)``,
+# ``combine.concatenate``) builds a descriptor table and copies in one launch instead of one
+# ``wp.copy`` per segment. The loop costs a few microseconds of host time per segment whatever it
+# holds; the launch is flat in the segment count. On CUDA the lines cross around half this value,
+# and the threshold is the first swept point on the winning side.
+SEGMENTS_IN_ONE_LAUNCH_FROM = 32
+
+# On the CPU a launch copies a word at a time where ``wp.copy`` is a memcpy, so a few large segments
+# still copy faster one by one: past this many words a segment on average the loop wins (250 k
+# ``vec3`` in 32-128 segments, 0.26-0.56x the launch), below it the launch (20 k ``int32`` from 32
+# segments, 0.09-0.75x the loop).
+SEGMENTS_IN_ONE_LAUNCH_CPU_MEAN_WORDS = 2048
+
+# Widest per-segment launch dimension of a segmented copy on CUDA: each thread strides its segment
+# by it, so it bounds the grid and never the work (without a cap a 256-way split whose first piece
+# holds nearly all of a 2.6 M-element buffer launched 670 M threads, 99.6 % exiting at once). The
+# CPU runs a launch's threads one after another, so there a segment is one thread's sequential
+# copy: the strided grid scattered each thread's words across cache lines (0.15-0.6x).
+SEGMENT_COPY_MAX_WIDTH = 4096
+
+
+def segments_in_one_launch(n_segments: int, total_words: int, device: Any) -> bool:
+    """Whether ``n_segments`` holding ``total_words`` 4-byte words copy in one launch."""
+    return n_segments >= SEGMENTS_IN_ONE_LAUNCH_FROM and (
+        device.is_cuda or total_words <= SEGMENTS_IN_ONE_LAUNCH_CPU_MEAN_WORDS * n_segments
+    )
+
+
+def segment_copy_width(longest_words: int, device: Any) -> int:
+    """Return the second launch dimension of a segmented copy with that longest segment."""
+    return min(longest_words, SEGMENT_COPY_MAX_WIDTH) if device.is_cuda else 1

@@ -29,13 +29,6 @@ from ordito._device import require_same_device, scan_count
 from ordito.adjacency import _face_component_forest  # pyright: ignore[reportPrivateUsage]
 from ordito.kernels import combine as kernel_combine
 
-# Widest per-record launch dimension of ``_pack_mesh_pieces``: the kernel strides by it, so it
-# bounds the grid and never the work (``array._PACK_SEGMENTS_MAX_WIDTH``, the same packing copy).
-# The CPU runs a launch's threads one after another, so there a record is one thread's sequential
-# copy: a strided grid scatters each thread's words across cache lines.
-_PIECE_WORDS_MAX_WIDTH_CUDA = 4096
-_PIECE_WORDS_MAX_WIDTH_CPU = 1
-
 
 def concatenate(
     meshes_data: Sequence[tuple[wp.array[wp.vec3], wp.array[wp.int32]]],
@@ -144,8 +137,11 @@ def _pack_mesh_pieces(
     """
     device = cast("wp.Device", meshes_data[0][0].device)
     n_pieces = len(meshes_data)
-    if not device.is_cuda and n_pieces < od.array.PACK_SEGMENTS_KERNEL_FROM:
-        # A CPU word loop runs 1.06-1.2x the per-buffer copies it replaces below that many pieces.
+    if n_pieces < _launch.SEGMENTS_IN_ONE_LAUNCH_FROM and not device.is_cuda:
+        # A CPU word loop runs 1.06-1.2x the per-buffer copies it replaces below that many pieces
+        # (CUDA takes the launch at any count: it also saves the renumbering launch). Not
+        # ``segments_in_one_launch``' mean-size test: copying large pieces one buffer at a time
+        # still pays the renumbering launch, 1.11-1.68x this path at 32-128 pieces of 82 k faces.
         return None
     sizes: list[int] = []  # every piece's vertex count, then every piece's index count
     pointers: list[int] = []  # the same order
@@ -200,8 +196,7 @@ def _pack_mesh_pieces(
     record_np["offset"] = starts
     record_np["count"] = counts
     descriptor = _launch.struct_array(record_np, kernel_combine.MeshPieceWords, device)
-    max_width = _PIECE_WORDS_MAX_WIDTH_CUDA if device.is_cuda else _PIECE_WORDS_MAX_WIDTH_CPU
-    width = min(longest, max_width)
+    width = _launch.segment_copy_width(longest, device)
     _launch.launch(
         kernel_combine.pack_mesh_pieces,
         dim=(2 * n_pieces, width),

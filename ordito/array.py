@@ -8,7 +8,6 @@ from collections.abc import Sequence
 from typing import Any, TypeVar, cast
 
 import numpy as np
-import numpy.typing as npt
 import warp as wp
 
 import ordito as od
@@ -561,7 +560,9 @@ def _copy_segments(array: wp.array[DType], bounds: Sequence[int]) -> list[wp.arr
     n_segments = len(bounds) - 1
     words_per_element = _words_per_element(array.dtype)
     if (
-        n_segments < PACK_SEGMENTS_KERNEL_FROM
+        not _launch.segments_in_one_launch(
+            n_segments, (bounds[-1] - bounds[0]) * words_per_element, array.device
+        )
         or words_per_element == 0
         or type(array) is not wp.array
         or array.requires_grad
@@ -651,19 +652,9 @@ def _pack_segments(
     return flat, offsets
 
 
-# Segment count from which ``_pack_segments`` builds a descriptor table and copies in one launch
-# instead of one ``wp.copy`` per segment. The two costs are a straight line against a flat one --
-# the loop is a few microseconds of host time per segment whatever it holds, the single launch is
-# flat in the segment count *and* in the total size -- so the whole choice is where they cross, and
-# above it the launch wins by orders of magnitude. The lines cross around half this value; the
-# threshold is set at the first swept point on the winning side rather than the interpolated one.
-PACK_SEGMENTS_KERNEL_FROM = 32
-
-# Widest per-segment launch dimension ``_pack_segments`` will ask for. The kernel strides by this,
-# so it only bounds the *grid*, never the work: without a cap a 256-way split whose first piece
-# holds nearly all of a 2.6 M-element buffer would launch 670 M threads of which 99.6 % exit at
-# once.
-_PACK_SEGMENTS_MAX_WIDTH = 4096
+# Segment count from which the segmented copies run as one launch on CUDA; the CPU also weighs the
+# segments' mean size (``_launch.segments_in_one_launch``).
+PACK_SEGMENTS_KERNEL_FROM = _launch.SEGMENTS_IN_ONE_LAUNCH_FROM
 
 
 def _pack_in_one_launch(
@@ -679,19 +670,19 @@ def _pack_in_one_launch(
     ``wp.array`` of *that* is a descriptor table a kernel can index — see
     ``kernels.array.pack_segment_words`` for the measurement and for why one kernel serves every
     dtype rather than a table of them. The descriptor is built as a single NumPy structured array
-    through the struct's own ``numpy_dtype()`` and uploaded once, which matters: constructing the
-    struct instances one at a time in Python is almost the whole cost of a per-object build, and
-    would give most of the win straight back.
+    ([`_launch.struct_records`][ordito._launch.struct_records]) and uploaded once, which matters:
+    constructing the struct instances one at a time in Python is almost the whole cost of a
+    per-object build, and would give most of the win straight back.
 
-    Returns ``False`` — leaving ``flat`` untouched for the caller's copy loop — when there are too
-    few segments to pay for the descriptor, or when the dtype's itemsize is not a multiple of four
-    and so cannot be addressed as whole words.
+    Returns ``False`` — leaving ``flat`` untouched for the caller's copy loop — where the copies win
+    ([`_launch.segments_in_one_launch`][ordito._launch.segments_in_one_launch]), or when the dtype's
+    itemsize is not a multiple of four and so cannot be addressed as whole words.
     """
     n_segments = len(arrays)
-    if n_segments < PACK_SEGMENTS_KERNEL_FROM:
-        return False
     words_per_element = _words_per_element(flat.dtype)
-    if words_per_element == 0:
+    if words_per_element == 0 or not _launch.segments_in_one_launch(
+        n_segments, flat.size * words_per_element, flat.device
+    ):
         return False
     table = _word_segment_table(
         [arr.ptr or 0 for arr in arrays], sizes, offsets, words_per_element, flat.device
@@ -735,19 +726,15 @@ def _word_segment_table(
     longest = int(word_counts.max())
     if longest == 0:
         return None
-    # ``Struct.numpy_dtype()`` is unannotated and builds a plain ``dict``, where numpy's
-    # ``zeros`` wants the ``_DTypeDict`` TypedDict; ``np.dtype`` is the documented way to
-    # turn that mapping into a real structured dtype.
-    record_dtype = np.dtype(cast("npt.DTypeLike", kernel_array.WordSegment.numpy_dtype()))
-    record_np = cast("npt.NDArray[np.void]", np.zeros(len(sizes), dtype=record_dtype))
+    record_np = _launch.struct_records(kernel_array.WordSegment, len(sizes))
     record_np["data"]["data"] = np.asarray(pointers, dtype=np.uint64)
     record_np["data"]["shape"][:, 0] = word_counts
     record_np["data"]["strides"][:, 0] = 4
     record_np["data"]["ndim"] = 1
     record_np["offset"] = np.asarray(offsets, dtype=np.int64) * words_per_element
     record_np["count"] = word_counts
-    descriptor = _launch.array(record_np, dtype=kernel_array.WordSegment, device=device, copy=True)
-    return descriptor, min(longest, _PACK_SEGMENTS_MAX_WIDTH)
+    descriptor = _launch.struct_array(record_np, kernel_array.WordSegment, device)
+    return descriptor, _launch.segment_copy_width(longest, descriptor.device)
 
 
 def _as_words(arr: wp.array[DType], words_per_element: int) -> wp.array[wp.int32]:

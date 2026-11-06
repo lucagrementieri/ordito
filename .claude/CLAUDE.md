@@ -1057,6 +1057,12 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   bucket count, scan, scatter and pairing are 52-54 % of the call's device time on dragon and
   lucy (2026-11-06), the union-find the rest. Not re-examined in the adjacency sweep, which took
   the union-find side only; the lower-degree owner is a hub-balancing choice to keep.
+- **`combine` leftovers outside its scope (2026-11-06 sweep):** `require_same_device` is about
+  half of `concatenate`'s host time at 4 096 pieces (one recursive descent per array);
+  `split` reads its vertex and face offsets in two readbacks (`array.split` twice) where one
+  buffer read once would do; the one-component `split` pays `submesh_from_face_indices`' memset
+  for an identity face order. Each is a few percent of the call at the benchmark sizes; price
+  before acting.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
