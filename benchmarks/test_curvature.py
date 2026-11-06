@@ -337,6 +337,11 @@ def test_vertex_defects(bench_case: BenchCase) -> None:
     ``curvature.discrete_gaussian_curvature`` computes, and confusing the two is the trap this
     group's name is chosen against.
 
+    Declined (2026-11-06): with the deterministic setting off, seeding the output with ``2 * pi``
+    and scattering each angle's negation would drop the ``angle_defect`` map launch, but it rounds
+    every term at the ulp of a full turn instead of a sum growing from zero: on ``fan_hub`` the hub
+    read 4.0e-3 off the exact defect, against 1.6e-3 for the sum-then-subtract form.
+
     ``igl.gaussian_curvature`` is one of the ``(V, F)``-family functions, so it returns ``len(V)``
     rows rather than ``F.max() + 1`` and lines up with ordito on a mesh with unreferenced
     vertices. That is why it can be a row here where ``igl.adjacency_matrix``-family functions need
