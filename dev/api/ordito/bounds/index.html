@@ -4272,6 +4272,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ordito.bounds.EXTENT_MIN_SLICE" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        EXTENT_MIN_SLICE
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ordito.bounds.CONVEX_PREFILTER_MIN_POINTS" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -6072,6 +6083,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ordito.bounds.EXTENT_MIN_SLICE" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        EXTENT_MIN_SLICE
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#ordito.bounds.CONVEX_PREFILTER_MIN_POINTS" class="md-nav__link">
     <span class="md-ellipsis">
       <span class="md-typeset">
@@ -6400,6 +6422,29 @@ mesh query in the package derives from its input's extent.</p>
 
 
 
+<h2 id="ordito.bounds.EXTENT_MIN_SLICE" class="doc doc-heading">
+            <span class="doc doc-object-name doc-attribute-name">EXTENT_MIN_SLICE</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-module-attribute"><code>module-attribute</code></small>
+  </span>
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="n">EXTENT_MIN_SLICE</span> <span class="o">=</span> <span class="mi">64</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+          
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
 <h2 id="ordito.bounds.CONVEX_PREFILTER_MIN_POINTS" class="doc doc-heading">
             <span class="doc doc-object-name doc-attribute-name">CONVEX_PREFILTER_MIN_POINTS</span>
 
@@ -6528,47 +6573,47 @@ point <code>p</code> and axis <code>i</code>. If <code>n == 0</code>, <code>min_
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/bounds.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">53</span>
-<span class="normal">54</span>
-<span class="normal">55</span>
-<span class="normal">56</span>
-<span class="normal">57</span>
-<span class="normal">58</span>
-<span class="normal">59</span>
-<span class="normal">60</span>
-<span class="normal">61</span>
-<span class="normal">62</span>
-<span class="normal">63</span>
-<span class="normal">64</span>
-<span class="normal">65</span>
-<span class="normal">66</span>
-<span class="normal">67</span>
-<span class="normal">68</span>
-<span class="normal">69</span>
-<span class="normal">70</span>
-<span class="normal">71</span>
-<span class="normal">72</span>
-<span class="normal">73</span>
-<span class="normal">74</span>
-<span class="normal">75</span>
-<span class="normal">76</span>
-<span class="normal">77</span>
-<span class="normal">78</span>
-<span class="normal">79</span>
-<span class="normal">80</span>
-<span class="normal">81</span>
-<span class="normal">82</span>
-<span class="normal">83</span>
-<span class="normal">84</span>
-<span class="normal">85</span>
-<span class="normal">86</span>
-<span class="normal">87</span>
-<span class="normal">88</span>
-<span class="normal">89</span>
-<span class="normal">90</span>
-<span class="normal">91</span>
-<span class="normal">92</span>
-<span class="normal">93</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">aabb</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 60</span>
+<span class="normal"> 61</span>
+<span class="normal"> 62</span>
+<span class="normal"> 63</span>
+<span class="normal"> 64</span>
+<span class="normal"> 65</span>
+<span class="normal"> 66</span>
+<span class="normal"> 67</span>
+<span class="normal"> 68</span>
+<span class="normal"> 69</span>
+<span class="normal"> 70</span>
+<span class="normal"> 71</span>
+<span class="normal"> 72</span>
+<span class="normal"> 73</span>
+<span class="normal"> 74</span>
+<span class="normal"> 75</span>
+<span class="normal"> 76</span>
+<span class="normal"> 77</span>
+<span class="normal"> 78</span>
+<span class="normal"> 79</span>
+<span class="normal"> 80</span>
+<span class="normal"> 81</span>
+<span class="normal"> 82</span>
+<span class="normal"> 83</span>
+<span class="normal"> 84</span>
+<span class="normal"> 85</span>
+<span class="normal"> 86</span>
+<span class="normal"> 87</span>
+<span class="normal"> 88</span>
+<span class="normal"> 89</span>
+<span class="normal"> 90</span>
+<span class="normal"> 91</span>
+<span class="normal"> 92</span>
+<span class="normal"> 93</span>
+<span class="normal"> 94</span>
+<span class="normal"> 95</span>
+<span class="normal"> 96</span>
+<span class="normal"> 97</span>
+<span class="normal"> 98</span>
+<span class="normal"> 99</span>
+<span class="normal">100</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">aabb</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Axis-aligned bounding box of ``points`` (component-wise min / max).</span>
 
@@ -6762,14 +6807,7 @@ point <code>p</code> and axis <code>i</code>. If <code>n == 0</code>, <code>min_
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/bounds.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 96</span>
-<span class="normal"> 97</span>
-<span class="normal"> 98</span>
-<span class="normal"> 99</span>
-<span class="normal">100</span>
-<span class="normal">101</span>
-<span class="normal">102</span>
-<span class="normal">103</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">103</span>
 <span class="normal">104</span>
 <span class="normal">105</span>
 <span class="normal">106</span>
@@ -6809,7 +6847,14 @@ point <code>p</code> and axis <code>i</code>. If <code>n == 0</code>, <code>min_
 <span class="normal">140</span>
 <span class="normal">141</span>
 <span class="normal">142</span>
-<span class="normal">143</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">aabb_union</span><span class="p">(</span>
+<span class="normal">143</span>
+<span class="normal">144</span>
+<span class="normal">145</span>
+<span class="normal">146</span>
+<span class="normal">147</span>
+<span class="normal">148</span>
+<span class="normal">149</span>
+<span class="normal">150</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">aabb_union</span><span class="p">(</span>
     <span class="n">a_min</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">a_max</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">b_min</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">b_max</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7009,14 +7054,7 @@ empty box has infinite negative extent -- callers guard on the point count first
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/bounds.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">146</span>
-<span class="normal">147</span>
-<span class="normal">148</span>
-<span class="normal">149</span>
-<span class="normal">150</span>
-<span class="normal">151</span>
-<span class="normal">152</span>
-<span class="normal">153</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">153</span>
 <span class="normal">154</span>
 <span class="normal">155</span>
 <span class="normal">156</span>
@@ -7083,7 +7121,18 @@ empty box has infinite negative extent -- callers guard on the point count first
 <span class="normal">217</span>
 <span class="normal">218</span>
 <span class="normal">219</span>
-<span class="normal">220</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">enclosing_diagonal</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">other</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="normal">220</span>
+<span class="normal">221</span>
+<span class="normal">222</span>
+<span class="normal">223</span>
+<span class="normal">224</span>
+<span class="normal">225</span>
+<span class="normal">226</span>
+<span class="normal">227</span>
+<span class="normal">228</span>
+<span class="normal">229</span>
+<span class="normal">230</span>
+<span class="normal">231</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">enclosing_diagonal</span><span class="p">(</span><span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">other</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Diagonal of the axis-aligned box enclosing one or two point sets.</span>
 
@@ -7137,7 +7186,7 @@ empty box has infinite negative extent -- callers guard on the point count first
     <span class="c1"># two boxes and an ``aabb_union``, and in one launch: ``minmax_vec3_pair_chunked`` folds both</span>
     <span class="c1"># clouds' chunks into the same slots with ``wp.atomic_min``. Reducing a concatenation instead</span>
     <span class="c1"># is slower -- the union buffer is an allocation and a copy of both clouds.</span>
-    <span class="n">device</span> <span class="o">=</span> <span class="n">points</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">cast</span><span class="p">(</span><span class="s2">"wp.Device"</span><span class="p">,</span> <span class="n">points</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
     <span class="n">corners</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="mi">6</span><span class="p">,</span> <span class="n">math</span><span class="o">.</span><span class="n">inf</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">n_other</span> <span class="o">=</span> <span class="mi">0</span> <span class="k">if</span> <span class="n">other</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">other</span><span class="o">.</span><span class="n">size</span>
     <span class="k">if</span> <span class="n">points</span><span class="o">.</span><span class="n">size</span> <span class="o">+</span> <span class="n">n_other</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
@@ -7152,11 +7201,15 @@ empty box has infinite negative extent -- callers guard on the point count first
     <span class="c1"># seeded ``inf`` in place, so ``upper - lower`` is ``-inf`` componentwise and the length is</span>
     <span class="c1"># ``inf`` -- the documented empty-input answer, reached without a branch.</span>
     <span class="c1">#</span>
-    <span class="c1"># Taken in NumPy, on the buffer the readback already produced, rather than through two</span>
+    <span class="c1"># Taken in NumPy ``float32``, as ``box_diagonal`` takes it, rather than through two</span>
     <span class="c1"># ``wp.vec3`` constructions and ``wp.length``: every Warp operator and builtin at *Python*</span>
     <span class="c1"># scope routes through Warp's builtin dispatch (``inspect.signature().bind()`` per operand),</span>
-    <span class="c1"># an order of magnitude dearer than this.</span>
-    <span class="n">corners_np</span> <span class="o">=</span> <span class="n">corners</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+    <span class="c1"># an order of magnitude dearer than this. On CUDA one six-value ``read_values`` copy, which</span>
+    <span class="c1"># builds no host array; on the CPU device that would only add a list round trip.</span>
+    <span class="k">if</span> <span class="n">device</span><span class="o">.</span><span class="n">is_cpu</span><span class="p">:</span>
+        <span class="n">corners_np</span> <span class="o">=</span> <span class="n">corners</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">corners_np</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">read_values</span><span class="p">(</span><span class="n">corners</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">6</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
     <span class="k">return</span> <span class="nb">float</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="o">-</span><span class="n">corners_np</span><span class="p">[</span><span class="mi">3</span><span class="p">:]</span> <span class="o">-</span> <span class="n">corners_np</span><span class="p">[:</span><span class="mi">3</span><span class="p">]))</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -7272,18 +7325,7 @@ readback that measure it again.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/bounds.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">223</span>
-<span class="normal">224</span>
-<span class="normal">225</span>
-<span class="normal">226</span>
-<span class="normal">227</span>
-<span class="normal">228</span>
-<span class="normal">229</span>
-<span class="normal">230</span>
-<span class="normal">231</span>
-<span class="normal">232</span>
-<span class="normal">233</span>
-<span class="normal">234</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">234</span>
 <span class="normal">235</span>
 <span class="normal">236</span>
 <span class="normal">237</span>
@@ -7310,7 +7352,18 @@ readback that measure it again.</p>
 <span class="normal">258</span>
 <span class="normal">259</span>
 <span class="normal">260</span>
-<span class="normal">261</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">box_diagonal</span><span class="p">(</span><span class="n">min_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">max_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+<span class="normal">261</span>
+<span class="normal">262</span>
+<span class="normal">263</span>
+<span class="normal">264</span>
+<span class="normal">265</span>
+<span class="normal">266</span>
+<span class="normal">267</span>
+<span class="normal">268</span>
+<span class="normal">269</span>
+<span class="normal">270</span>
+<span class="normal">271</span>
+<span class="normal">272</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">box_diagonal</span><span class="p">(</span><span class="n">min_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">max_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Diagonal of an axis-aligned box given by its corners, as a host float.</span>
 
@@ -7508,18 +7561,7 @@ strict.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/bounds.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">264</span>
-<span class="normal">265</span>
-<span class="normal">266</span>
-<span class="normal">267</span>
-<span class="normal">268</span>
-<span class="normal">269</span>
-<span class="normal">270</span>
-<span class="normal">271</span>
-<span class="normal">272</span>
-<span class="normal">273</span>
-<span class="normal">274</span>
-<span class="normal">275</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">275</span>
 <span class="normal">276</span>
 <span class="normal">277</span>
 <span class="normal">278</span>
@@ -7566,7 +7608,18 @@ strict.</p>
 <span class="normal">319</span>
 <span class="normal">320</span>
 <span class="normal">321</span>
-<span class="normal">322</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">points_in_aabb</span><span class="p">(</span>
+<span class="normal">322</span>
+<span class="normal">323</span>
+<span class="normal">324</span>
+<span class="normal">325</span>
+<span class="normal">326</span>
+<span class="normal">327</span>
+<span class="normal">328</span>
+<span class="normal">329</span>
+<span class="normal">330</span>
+<span class="normal">331</span>
+<span class="normal">332</span>
+<span class="normal">333</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">points_in_aabb</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">min_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">max_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7769,18 +7822,7 @@ as <a class="autorefs autorefs-internal" title="half_space_mask" href="../points
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/bounds.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">325</span>
-<span class="normal">326</span>
-<span class="normal">327</span>
-<span class="normal">328</span>
-<span class="normal">329</span>
-<span class="normal">330</span>
-<span class="normal">331</span>
-<span class="normal">332</span>
-<span class="normal">333</span>
-<span class="normal">334</span>
-<span class="normal">335</span>
-<span class="normal">336</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">336</span>
 <span class="normal">337</span>
 <span class="normal">338</span>
 <span class="normal">339</span>
@@ -7818,7 +7860,18 @@ as <a class="autorefs autorefs-internal" title="half_space_mask" href="../points
 <span class="normal">371</span>
 <span class="normal">372</span>
 <span class="normal">373</span>
-<span class="normal">374</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">points_in_aabb_mask</span><span class="p">(</span>
+<span class="normal">374</span>
+<span class="normal">375</span>
+<span class="normal">376</span>
+<span class="normal">377</span>
+<span class="normal">378</span>
+<span class="normal">379</span>
+<span class="normal">380</span>
+<span class="normal">381</span>
+<span class="normal">382</span>
+<span class="normal">383</span>
+<span class="normal">384</span>
+<span class="normal">385</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">points_in_aabb_mask</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">min_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">max_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8050,18 +8103,7 @@ axis-aligned box but outside the oriented one:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/bounds.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">377</span>
-<span class="normal">378</span>
-<span class="normal">379</span>
-<span class="normal">380</span>
-<span class="normal">381</span>
-<span class="normal">382</span>
-<span class="normal">383</span>
-<span class="normal">384</span>
-<span class="normal">385</span>
-<span class="normal">386</span>
-<span class="normal">387</span>
-<span class="normal">388</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">388</span>
 <span class="normal">389</span>
 <span class="normal">390</span>
 <span class="normal">391</span>
@@ -8116,7 +8158,18 @@ axis-aligned box but outside the oriented one:</p>
 <span class="normal">440</span>
 <span class="normal">441</span>
 <span class="normal">442</span>
-<span class="normal">443</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">points_in_obb</span><span class="p">(</span>
+<span class="normal">443</span>
+<span class="normal">444</span>
+<span class="normal">445</span>
+<span class="normal">446</span>
+<span class="normal">447</span>
+<span class="normal">448</span>
+<span class="normal">449</span>
+<span class="normal">450</span>
+<span class="normal">451</span>
+<span class="normal">452</span>
+<span class="normal">453</span>
+<span class="normal">454</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">points_in_obb</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">rotation</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">,</span> <span class="n">min_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">max_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8348,18 +8401,7 @@ axis-aligned box but outside the oriented one:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/bounds.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">446</span>
-<span class="normal">447</span>
-<span class="normal">448</span>
-<span class="normal">449</span>
-<span class="normal">450</span>
-<span class="normal">451</span>
-<span class="normal">452</span>
-<span class="normal">453</span>
-<span class="normal">454</span>
-<span class="normal">455</span>
-<span class="normal">456</span>
-<span class="normal">457</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">457</span>
 <span class="normal">458</span>
 <span class="normal">459</span>
 <span class="normal">460</span>
@@ -8401,7 +8443,18 @@ axis-aligned box but outside the oriented one:</p>
 <span class="normal">496</span>
 <span class="normal">497</span>
 <span class="normal">498</span>
-<span class="normal">499</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">points_in_obb_mask</span><span class="p">(</span>
+<span class="normal">499</span>
+<span class="normal">500</span>
+<span class="normal">501</span>
+<span class="normal">502</span>
+<span class="normal">503</span>
+<span class="normal">504</span>
+<span class="normal">505</span>
+<span class="normal">506</span>
+<span class="normal">507</span>
+<span class="normal">508</span>
+<span class="normal">509</span>
+<span class="normal">510</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">points_in_obb_mask</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">rotation</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">,</span> <span class="n">min_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">max_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8638,18 +8691,7 @@ the second return rather than an option because the compaction has already compu
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/bounds.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">502</span>
-<span class="normal">503</span>
-<span class="normal">504</span>
-<span class="normal">505</span>
-<span class="normal">506</span>
-<span class="normal">507</span>
-<span class="normal">508</span>
-<span class="normal">509</span>
-<span class="normal">510</span>
-<span class="normal">511</span>
-<span class="normal">512</span>
-<span class="normal">513</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">513</span>
 <span class="normal">514</span>
 <span class="normal">515</span>
 <span class="normal">516</span>
@@ -8707,7 +8749,18 @@ the second return rather than an option because the compaction has already compu
 <span class="normal">568</span>
 <span class="normal">569</span>
 <span class="normal">570</span>
-<span class="normal">571</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crop_points</span><span class="p">(</span>
+<span class="normal">571</span>
+<span class="normal">572</span>
+<span class="normal">573</span>
+<span class="normal">574</span>
+<span class="normal">575</span>
+<span class="normal">576</span>
+<span class="normal">577</span>
+<span class="normal">578</span>
+<span class="normal">579</span>
+<span class="normal">580</span>
+<span class="normal">581</span>
+<span class="normal">582</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crop_points</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">min_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
     <span class="n">max_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
@@ -9007,18 +9060,7 @@ a boolean -- for a flush cut, intersect the mesh with the box as a solid instead
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/bounds.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">574</span>
-<span class="normal">575</span>
-<span class="normal">576</span>
-<span class="normal">577</span>
-<span class="normal">578</span>
-<span class="normal">579</span>
-<span class="normal">580</span>
-<span class="normal">581</span>
-<span class="normal">582</span>
-<span class="normal">583</span>
-<span class="normal">584</span>
-<span class="normal">585</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">585</span>
 <span class="normal">586</span>
 <span class="normal">587</span>
 <span class="normal">588</span>
@@ -9120,7 +9162,18 @@ a boolean -- for a flush cut, intersect the mesh with the box as a solid instead
 <span class="normal">684</span>
 <span class="normal">685</span>
 <span class="normal">686</span>
-<span class="normal">687</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crop_mesh</span><span class="p">(</span>
+<span class="normal">687</span>
+<span class="normal">688</span>
+<span class="normal">689</span>
+<span class="normal">690</span>
+<span class="normal">691</span>
+<span class="normal">692</span>
+<span class="normal">693</span>
+<span class="normal">694</span>
+<span class="normal">695</span>
+<span class="normal">696</span>
+<span class="normal">697</span>
+<span class="normal">698</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crop_mesh</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">min_bound</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span>
@@ -9494,18 +9547,7 @@ axis-aligned box:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/bounds.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">741</span>
-<span class="normal">742</span>
-<span class="normal">743</span>
-<span class="normal">744</span>
-<span class="normal">745</span>
-<span class="normal">746</span>
-<span class="normal">747</span>
-<span class="normal">748</span>
-<span class="normal">749</span>
-<span class="normal">750</span>
-<span class="normal">751</span>
-<span class="normal">752</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">752</span>
 <span class="normal">753</span>
 <span class="normal">754</span>
 <span class="normal">755</span>
@@ -9716,7 +9758,28 @@ axis-aligned box:</p>
 <span class="normal">960</span>
 <span class="normal">961</span>
 <span class="normal">962</span>
-<span class="normal">963</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">oriented_bounding_box</span><span class="p">(</span>
+<span class="normal">963</span>
+<span class="normal">964</span>
+<span class="normal">965</span>
+<span class="normal">966</span>
+<span class="normal">967</span>
+<span class="normal">968</span>
+<span class="normal">969</span>
+<span class="normal">970</span>
+<span class="normal">971</span>
+<span class="normal">972</span>
+<span class="normal">973</span>
+<span class="normal">974</span>
+<span class="normal">975</span>
+<span class="normal">976</span>
+<span class="normal">977</span>
+<span class="normal">978</span>
+<span class="normal">979</span>
+<span class="normal">980</span>
+<span class="normal">981</span>
+<span class="normal">982</span>
+<span class="normal">983</span>
+<span class="normal">984</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">oriented_bounding_box</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">rotations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">4096</span><span class="p">,</span>
     <span class="n">objective</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"volume"</span><span class="p">,</span> <span class="s2">"surface_area"</span><span class="p">,</span> <span class="s2">"diagonal"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"volume"</span><span class="p">,</span>
@@ -9863,7 +9926,7 @@ axis-aligned box:</p>
         <span class="n">points</span> <span class="o">=</span> <span class="n">_compact_masked_points</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">od</span><span class="o">.</span><span class="n">points</span><span class="o">.</span><span class="n">convex_superset_mask</span><span class="p">(</span><span class="n">points</span><span class="p">))</span>
         <span class="n">n</span> <span class="o">=</span> <span class="n">points</span><span class="o">.</span><span class="n">size</span>
 
-    <span class="n">device</span> <span class="o">=</span> <span class="n">points</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">cast</span><span class="p">(</span><span class="s2">"wp.Device"</span><span class="p">,</span> <span class="n">points</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
     <span class="c1"># One chain when there is nothing to refine: the seeding walk's first pick is the global</span>
     <span class="c1"># argmin, so it stops after a single round and the row it writes is already the answer.</span>
     <span class="n">n_chains</span> <span class="o">=</span> <span class="mi">1</span> <span class="k">if</span> <span class="n">refine_iterations</span> <span class="o">==</span> <span class="mi">0</span> <span class="k">else</span> <span class="n">_REFINE_CHAINS</span>
@@ -9872,26 +9935,35 @@ axis-aligned box:</p>
     <span class="c1"># still reads. The seeding walk writes half 0, including the first round's frames.</span>
     <span class="n">count</span> <span class="o">=</span> <span class="n">_REFINE_CANDIDATES</span> <span class="k">if</span> <span class="n">refine_iterations</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="k">else</span> <span class="mi">0</span>
     <span class="n">total</span> <span class="o">=</span> <span class="n">n_chains</span> <span class="o">*</span> <span class="n">count</span>
-    <span class="c1"># Every table of the search is carved from one ``mat33`` and one ``float32`` allocation. The</span>
-    <span class="c1"># axes kernel also seeds each candidate's six extent slots, so ``corners`` is uninitialised</span>
-    <span class="c1"># until then and every slot is written before the extents kernel reads it.</span>
-    <span class="n">axes</span><span class="p">,</span> <span class="n">refine_axes</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">,</span> <span class="p">[</span><span class="n">rotations</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">total</span><span class="p">],</span> <span class="n">device</span><span class="p">)</span>
+    <span class="c1"># Every table of the search is carved from one allocation. The axes kernel also seeds each</span>
+    <span class="c1"># candidate's six extent slots, so ``corners`` is uninitialised until then and every slot is</span>
+    <span class="c1"># written before the extents kernel reads it; it also draws the refinement ball's ``deltas``,</span>
+    <span class="c1"># once for every round.</span>
     <span class="n">state_size</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">n_chains</span> <span class="o">*</span> <span class="n">kernel_bounds</span><span class="o">.</span><span class="n">BOX_STATE_COLUMNS</span>
-    <span class="n">corners</span><span class="p">,</span> <span class="n">loss</span><span class="p">,</span> <span class="n">refine_corners</span><span class="p">,</span> <span class="n">state_flat</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span>
-        <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="p">[</span><span class="mi">6</span> <span class="o">*</span> <span class="n">rotations</span><span class="p">,</span> <span class="n">rotations</span><span class="p">,</span> <span class="mi">12</span> <span class="o">*</span> <span class="n">total</span><span class="p">,</span> <span class="n">state_size</span><span class="p">],</span> <span class="n">device</span>
+    <span class="n">axes</span><span class="p">,</span> <span class="n">refine_axes</span><span class="p">,</span> <span class="n">corners</span><span class="p">,</span> <span class="n">loss</span><span class="p">,</span> <span class="n">refine_corners</span><span class="p">,</span> <span class="n">state_flat</span><span class="p">,</span> <span class="n">deltas</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve_typed</span><span class="p">(</span>
+        <span class="p">[</span>
+            <span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">,</span> <span class="n">rotations</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">total</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="mi">6</span> <span class="o">*</span> <span class="n">rotations</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">rotations</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="mi">12</span> <span class="o">*</span> <span class="n">total</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">state_size</span><span class="p">),</span>
+            <span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">vec4d</span><span class="p">,</span> <span class="n">count</span><span class="p">),</span>
+        <span class="p">],</span>
+        <span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_bounds</span><span class="o">.</span><span class="n">oriented_box_candidate_axes</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">rotations</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">rotations</span><span class="p">,</span> <span class="n">axes</span><span class="p">,</span> <span class="n">corners</span><span class="p">],</span>
+        <span class="n">dim</span><span class="o">=</span><span class="nb">max</span><span class="p">(</span><span class="n">rotations</span><span class="p">,</span> <span class="n">count</span><span class="p">),</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">rotations</span><span class="p">,</span> <span class="n">count</span><span class="p">,</span> <span class="n">axes</span><span class="p">,</span> <span class="n">corners</span><span class="p">,</span> <span class="n">deltas</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
 
-    <span class="n">n_slices</span> <span class="o">=</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">(</span><span class="n">n</span> <span class="o">+</span> <span class="n">ITEMS_PER_CANDIDATE_SLICE</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span> <span class="o">//</span> <span class="n">ITEMS_PER_CANDIDATE_SLICE</span><span class="p">)</span>
     <span class="c1"># The extent of the cloud in every candidate frame, six packed slots each. The kernel only</span>
     <span class="c1"># ``atomic_min``s into ``corners``, so it must arrive holding ``+inf``: both axes kernels seed a</span>
     <span class="c1"># candidate's slots as they write its frame, which is what lets the refinement reuse one</span>
     <span class="c1"># buffer across its rounds.</span>
+    <span class="n">n_slices</span> <span class="o">=</span> <span class="n">_extent_slices</span><span class="p">(</span><span class="n">n</span><span class="p">,</span> <span class="n">rotations</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="n">kernel</span><span class="p">,</span> <span class="n">dim</span> <span class="o">=</span> <span class="n">kernel_bounds</span><span class="o">.</span><span class="n">OBB_EXTENTS</span><span class="o">.</span><span class="n">launch_shape</span><span class="p">(</span><span class="n">rotations</span><span class="p">,</span> <span class="n">n_slices</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span><span class="n">kernel</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="n">dim</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">points</span><span class="p">,</span> <span class="n">axes</span><span class="p">,</span> <span class="n">n_slices</span><span class="p">,</span> <span class="n">corners</span><span class="p">],</span> <span class="n">device</span><span class="o">=</span><span class="n">points</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
 
@@ -9918,6 +9990,7 @@ axis-aligned box:</p>
             <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_chains</span><span class="p">),</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">(</span><span class="n">sigma</span> <span class="o">/</span> <span class="n">math</span><span class="o">.</span><span class="n">pi</span><span class="p">),</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">count</span><span class="p">),</span>
+            <span class="n">deltas</span><span class="p">,</span>
             <span class="n">chain_state</span><span class="p">,</span>
             <span class="n">refine_axes</span><span class="p">,</span>
             <span class="n">refine_corners</span><span class="p">,</span>
@@ -9929,9 +10002,9 @@ axis-aligned box:</p>
         <span class="k">return</span> <span class="n">_best_chain</span><span class="p">(</span><span class="n">chain_state</span><span class="p">,</span> <span class="n">n_chains</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span>
     <span class="n">_refine_box</span><span class="p">(</span>
         <span class="n">points</span><span class="p">,</span>
+        <span class="n">deltas</span><span class="p">,</span>
         <span class="n">objective</span><span class="p">,</span>
         <span class="n">refine_iterations</span><span class="p">,</span>
-        <span class="n">n_slices</span><span class="p">,</span>
         <span class="n">sigma</span><span class="p">,</span>
         <span class="n">n_chains</span><span class="p">,</span>
         <span class="n">chain_state</span><span class="p">,</span>
