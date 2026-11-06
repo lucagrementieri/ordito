@@ -452,6 +452,61 @@
    "sort": 1
   }
  },
+ "benchmarks/test_boundary.py::test_boundary_loops_pinches[holes_many-ordito-cpu-fan]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 4,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_loops_pinches[holes_many-ordito-cpu-gap]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 4,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_loops_pinches[holes_many-ordito-cpu-split]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 4,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_loops_pinches[holes_pinched-ordito-cpu-fan]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 5,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_loops_pinches[holes_pinched-ordito-cpu-gap]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 7,
+   "readback": 2,
+   "scan": 1,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_loops_pinches[holes_pinched-ordito-cpu-split]": {
+  "counts": {
+   "launch": 5,
+   "alloc": 7,
+   "h2h": 2,
+   "readback": 4,
+   "scan": 1,
+   "sort": 1
+  }
+ },
  "benchmarks/test_boundary.py::test_boundary_loops_with_offsets[holes_many-ordito-cpu]": {
   "counts": {
    "launch": 5,

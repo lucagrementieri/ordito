@@ -37,6 +37,8 @@ it shares the MeshSet.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import igl
 import numpy as np
 import pytest
@@ -103,6 +105,29 @@ def test_boundary_loops_with_offsets(bench_case: BenchCase) -> None:
     )
     assert int(offsets.shape[0]) >= 1
     assert flat_loops.size <= vertices.size
+
+
+@pytest.mark.benchmark(group="boundary_loops_pinches")
+@pytest.mark.benchaxis("pinches")
+@pytest.mark.benchlibs("ordito")
+@pytest.mark.parametrize("pinches", ["split", "fan", "gap"])
+def test_boundary_loops_pinches(
+    bench_case: BenchCase, pinches: Literal["split", "fan", "gap"]
+) -> None:
+    """
+    The packed loops on a rim that meets itself at vertices, for each way of leaving a pinch.
+
+    ``holes_pinched`` has holes touching at vertices, which ``holes_many`` (the control, every
+    hole apart) never does: the walk then runs over the boundary halfedges, and ``"split"`` cuts
+    the walk's loops into simple ones at the vertices they pass twice. Ordito only: no reference
+    returns pinched rims in these three forms, and the test pins the three against each other.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    flat_loops, offsets = bench_case.run(
+        lambda: od.boundary.boundary_loops_with_offsets(vertices, faces, pinches=pinches)
+    )
+    assert int(offsets.shape[0]) >= 1
+    assert flat_loops.size <= faces.size
 
 
 @pytest.mark.benchmark(group="boundary_edges")

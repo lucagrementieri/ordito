@@ -478,6 +478,67 @@
    "sort": 1
   }
  },
+ "benchmarks/test_boundary.py::test_boundary_loops_pinches[holes_many-ordito-cuda-fan]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 4,
+   "memset": 3,
+   "d2h": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_loops_pinches[holes_many-ordito-cuda-gap]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 4,
+   "memset": 3,
+   "d2h": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_loops_pinches[holes_many-ordito-cuda-split]": {
+  "counts": {
+   "launch": 7,
+   "alloc": 4,
+   "memset": 3,
+   "d2h": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_loops_pinches[holes_pinched-ordito-cuda-fan]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 5,
+   "memset": 3,
+   "d2h": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_loops_pinches[holes_pinched-ordito-cuda-gap]": {
+  "counts": {
+   "launch": 10,
+   "alloc": 7,
+   "memset": 4,
+   "d2h": 2,
+   "scan": 2,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_boundary.py::test_boundary_loops_pinches[holes_pinched-ordito-cuda-split]": {
+  "counts": {
+   "launch": 8,
+   "alloc": 9,
+   "memset": 3,
+   "h2d": 2,
+   "d2h": 4,
+   "scan": 2,
+   "sort": 1
+  }
+ },
  "benchmarks/test_boundary.py::test_boundary_loops_with_offsets[holes_many-ordito-cuda]": {
   "counts": {
    "launch": 7,

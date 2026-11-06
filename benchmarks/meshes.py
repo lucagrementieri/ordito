@@ -186,6 +186,11 @@ _PUNCH_SEED = 0
 # form of the rim measurement ran to hundreds of milliseconds.
 N_DENSE_HOLES = 8_192
 
+# Every ``PINCH_PERIOD``-th face of ``holes_pinched``'s icosphere is removed, so neighbouring holes
+# touch at vertices and the rims pinch (one in seven: 11 703 holes merging into 10 460 simple
+# loops, 5 536 before the pinches are cut).
+PINCH_PERIOD = 7
+
 # Grid resolutions for the saddle patches: ``k x k`` vertices give ``2 * (k - 1) ** 2`` faces.
 SADDLE_SMALL, SADDLE_MEDIUM = 68, 133
 
@@ -311,6 +316,21 @@ def _punched_sphere(subdivisions: int, n_holes: int, seed: int = _PUNCH_SEED) ->
     if punched != n_holes:
         raise ValueError(f"only {punched} vertex-disjoint faces available, wanted {n_holes}")
     mesh.update_faces(keep)
+    return mesh.vertices, mesh.faces
+
+
+def _pinched_sphere(subdivisions: int, period: int) -> _Arrays:
+    """
+    Icosphere with every ``period``-th face removed, so holes meet each other at single vertices.
+
+    The counterpart of ``_punched_sphere``: there no two holes share a vertex, here many do, which
+    is a pinch -- a rim vertex with two boundary edges out -- and the case the boundary walks
+    order by halfedge and cut into simple loops. Edge-manifold throughout, and no vertex loses all
+    its faces.
+    """
+    mesh = tm.creation.icosphere(subdivisions=subdivisions)
+    mesh.update_faces(np.arange(len(mesh.faces)) % period != 0)
+    mesh.remove_unreferenced_vertices()
     return mesh.vertices, mesh.faces
 
 
@@ -442,6 +462,7 @@ FEATURE_MESHES: list[MeshSpec] = [
     _mesh("rim_long", "", 131_072, 131_072, "loops"),
     _mesh("holes_many", "", 40_962, 81_408, "loops"),
     _mesh("holes_dense", "", 40_962, 73_728, "loops_dense"),
+    _mesh("holes_pinched", "", 40_962, 70_217, "pinches"),
     _mesh("rim_short", "", 1_024, 1_024, "loops_dp"),
     _mesh("saddle_small", "", 4_624, 8_978, "patch"),
     _mesh("saddle", "", 17_689, 34_848, "patch"),
@@ -471,6 +492,7 @@ BUILDERS: dict[str, Callable[[], _Arrays]] = {
     "rim_long": lambda: _open_cylinder(RIM_LONG),
     "holes_many": lambda: _punched_sphere(6, N_PUNCHED_HOLES),
     "holes_dense": lambda: _punched_sphere(6, N_DENSE_HOLES),
+    "holes_pinched": lambda: _pinched_sphere(6, PINCH_PERIOD),
     "rim_short": lambda: _open_cylinder(RIM_SHORT),
     "saddle_small": lambda: _saddle(SADDLE_SMALL),
     "saddle": lambda: _saddle(SADDLE_MEDIUM),
@@ -513,6 +535,9 @@ AXES: dict[str, tuple[str, ...]] = {
     # Loop count 512 -> 8 192 on the *same* 40 962-vertex sphere: the pure per-loop-cost axis,
     # for work that scales with how many rims there are rather than with their length or the mesh.
     "loops_dense": ("holes_many", "holes_dense"),
+    # Holes apart -> holes touching at vertices on the same sphere: the pinched rims the boundary
+    # walk follows by halfedge and cuts into simple loops.
+    "pinches": ("holes_many", "holes_pinched"),
     # Worst aspect ratio 1.6 -> 4 719 at identical V, F and connectivity.
     "quality": ("saddle", "saddle_graded"),
     # Disk-topology solver inputs: flat and curved, small to medium.

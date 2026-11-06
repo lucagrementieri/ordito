@@ -56,6 +56,9 @@ _TOPOLOGY: dict[str, tuple[int, bool, int, int]] = {
     "rim_long": (1, False, 2, 3),
     "holes_many": (1, False, 512, 6),
     "holes_dense": (1, False, 8_192, 6),
+    # trimesh's outline splits the pinched rims its own way: 17 010 paths for ordito's 10 460
+    # simple loops.
+    "holes_pinched": (1, False, 17_010, 6),
     "rim_short": (1, False, 2, 3),
     "saddle_small": (1, False, 1, 6),
     "saddle": (1, False, 1, 6),
