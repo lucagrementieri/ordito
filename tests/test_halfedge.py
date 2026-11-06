@@ -12,6 +12,7 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
+import ordito.typing as odt
 from tests.conftest import MESHES, OPEN_MESHES
 from tests.conversions import flags_to_warp_bitmask, warp_empty
 
@@ -254,6 +255,69 @@ def test_bucketed_twins_match_the_sorted_twins_on_fixtures(
     # A non-orientable surface pairs some halfedges running the same way: a direction defect.
     if not mesh_tm.is_winding_consistent:
         assert sorted_defects[1] > 0
+
+
+@pytest.mark.parametrize("mesh_name", ["sphere_irregular", "mobius"])
+def test_unbounded_pairing_reads_its_vertex_bound(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: given no vertex count, the pairing reads one off ``faces`` and buckets.
+
+    Where the pairing buckets (CUDA; the mates' size gates opened here) a call without
+    ``n_vertices`` reduces the index range once and pairs through the buckets as the call given
+    the count does, the twins' defects included (``mobius``). The spies show the readback and the
+    buckets ran exactly there (the sort gives the same table, so equality alone shows neither);
+    the CPU device keeps the sort and reads nothing.
+    """
+    monkeypatch.setattr(od.halfedge, "_INFERRED_BOUND_FROM_HALFEDGES", 0)
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
+    reductions: list[int] = []
+    minmax = od.reduce.minmax
+
+    def counted_minmax(array: odt.ArrayNdInt) -> tuple[int, int]:
+        reductions.append(array.size)
+        return minmax(array)
+
+    monkeypatch.setattr(od.reduce, "minmax", counted_minmax)
+    bucket_builds: list[int] = []
+    edge_buckets = od.halfedge._edge_buckets  # pyright: ignore[reportPrivateUsage]
+
+    def counted_edge_buckets(*args: Any) -> Any:
+        bucket_builds.append(1)
+        return edge_buckets(*args)
+
+    monkeypatch.setattr(od.halfedge, "_edge_buckets", counted_edge_buckets)
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_wp = mesh_wp.indices
+    n_vertices = len(mesh_tm.vertices)
+    mates_np = od.halfedge.halfedge_mates(faces_wp, n_vertices).numpy()
+    twins_np = od.halfedge.halfedge_twins(faces_wp, n_vertices, validate=False).numpy()
+    assert reductions == []
+    bucket_builds.clear()
+
+    assert np.array_equal(od.halfedge.halfedge_mates(faces_wp).numpy(), mates_np)
+    assert np.array_equal(od.halfedge.halfedge_twins(faces_wp, validate=False).numpy(), twins_np)
+    assert reductions == ([faces_wp.size] * 2 if faces_wp.device.is_cuda else [])
+    assert len(bucket_builds) == (2 if faces_wp.device.is_cuda else 0)
+
+
+def test_unbounded_pairing_keeps_the_sort_for_a_negative_index(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: a negative index has no bucket, so the read bound is dropped.
+
+    ``-1`` packs as the largest ``uint32`` in the sort's keys and matches its own kind, so the
+    unbounded call is defined on it; reading ``max + 1`` as the count would send it to bucket
+    ``-1``. The answer is the sort's, with the read bound or without it.
+    """
+    faces_wp = wp.array([0, 1, 2, 2, 1, -1, -1, 1, 0], dtype=wp.int32, device=device)
+    monkeypatch.setattr(od.halfedge, "_INFERRED_BOUND_FROM_HALFEDGES", 1 << 62)
+    sorted_np = od.halfedge.halfedge_mates(faces_wp).numpy()
+    monkeypatch.setattr(od.halfedge, "_INFERRED_BOUND_FROM_HALFEDGES", 0)
+    assert np.array_equal(od.halfedge.halfedge_mates(faces_wp).numpy(), sorted_np)
+    assert (sorted_np >= 0).any()
 
 
 @pytest.mark.parametrize(

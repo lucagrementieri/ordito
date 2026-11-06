@@ -1249,8 +1249,9 @@ def ears(
         ``(3 * n_faces,)`` face index buffer.
     n_vertices
         Optional vertex count, forwarded to
-        [`halfedge_mates`][ordito.halfedge.halfedge_mates]: it narrows the sort that pairs the
-        halfedges. Trusted, not checked: it must exceed every index in ``faces``.
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates]: it spares the readback that bounds
+        the pairing of a large mesh, or narrows the sort that pairs a small one. Trusted, not
+        checked: it must exceed every index in ``faces``.
     mates
         ``(3 * n_faces,)`` halfedge mate codes of ``faces``, from
         [`halfedge_mates`][ordito.halfedge.halfedge_mates], to spare the sort that otherwise pairs

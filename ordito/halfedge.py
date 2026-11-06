@@ -37,6 +37,11 @@ _BUCKETED_PAIRING_ON_CPU = False
 # sort. Below it the bucket build's extra launches outweigh the sort it replaces
 # (kernels/halfedge.py). The twin table takes the buckets at every size.
 _BUCKETED_MATES_FROM_HALFEDGES = 1 << 19
+# From this many halfedges ``halfedge_mates`` given no vertex count reads one off ``faces`` for
+# the buckets (``_pairing_vertex_bound``); below, it would only narrow the sort, which saves less
+# than the readback costs (kernels/halfedge.py). Its own knob, so ``force_halfedge_buckets``
+# leaves an unbounded call on the sort.
+_INFERRED_BOUND_FROM_HALFEDGES = 1 << 19
 # Below this many halfedges a CUDA ``halfedge_mates`` given a vertex-face CSR scans its rows
 # instead of sorting (kernels/halfedge.vertex_face_halfedge_mates); the CPU device scans them only
 # when the flag says so, the sort being cheaper there.
@@ -80,7 +85,8 @@ def halfedge_twins(
     n_vertices
         Total vertex count, which must exceed every index in ``faces``: it sizes the per-vertex
         buckets, or bounds the sort keys. Passing it is an optimization rather than a requirement:
-        when ``None`` the keys pack against
+        when ``None`` a CUDA device reads it off ``faces`` (one host readback) for the buckets,
+        and otherwise the keys pack against
         [`constants.INDEX_RADIX_PAIR`][ordito.constants.INDEX_RADIX_PAIR], which bounds every
         ``int32`` index without a reduction and orders the keys the same way.
     validate
@@ -128,6 +134,9 @@ def halfedge_twins(
     print(int((twins.numpy() == -1).sum()))  # 0
     ```
     """
+    # The twin table takes the buckets at every size, so a count read off ``faces`` pays at every
+    # size on a device that buckets.
+    n_vertices = _pairing_vertex_bound(faces, n_vertices, 0)
     twins, defect_counts = _pair_halfedges(faces, n_vertices, 2)
     if validate and twins.size > 0:
         _raise_twin_defects(read_values(defect_counts, 0, 2))
@@ -521,10 +530,11 @@ def halfedge_mates(
     faces
         ``(3 * n_faces,)`` triangle index buffer.
     n_vertices
-        Total vertex count, which must exceed every index in ``faces``. When it is given, a CUDA
-        device pairs a large mesh's halfedges through per-vertex buckets; otherwise, and on the
+        Total vertex count, which must exceed every index in ``faces``. A CUDA device pairs a
+        large mesh's halfedges through per-vertex buckets, reading the count off ``faces`` (one
+        host readback) when it is not given and no key order is asked for; otherwise, and on the
         CPU, through a sort of the edge keys, which is correct for any non-negative indices
-        without it. Both give the same table.
+        without it. All give the same table.
     return_key_order
         Also return the sort's permutation when the pairing sorted the edge keys, for a caller
         that wants some of the halfedges in key order
@@ -597,6 +607,8 @@ def halfedge_mates(
             device=device,
         )
         return mates
+    if not return_key_order:
+        n_vertices = _pairing_vertex_bound(faces, n_vertices, _INFERRED_BOUND_FROM_HALFEDGES)
     sorted_pairing = _sorted_pairing(faces, n_vertices)
     if n_halfedges == 0:
         key_order = mates
@@ -920,6 +932,29 @@ def _edge_buckets(
 def _buckets_on(faces: wp.array[wp.int32]) -> bool:
     """Whether a pairing of ``faces`` with a known vertex count takes the edge buckets (CUDA)."""
     return wp.get_device(faces.device).is_cuda or _BUCKETED_PAIRING_ON_CPU
+
+
+def _pairing_vertex_bound(
+    faces: wp.array[wp.int32], n_vertices: int | None, from_halfedges: int
+) -> int | None:
+    """
+    Return the vertex count a pairing of ``faces`` goes by: ``n_vertices``, or one off ``faces``.
+
+    Without a count the edge keys pack against ``INDEX_RADIX_PAIR`` and sort over all 64 bits,
+    which costs more than the per-vertex buckets wherever the pairing would take them, from
+    ``from_halfedges`` halfedges on a device that buckets. There one reduction of the index range
+    and its readback stand in for the count; a negative index has no bucket, so it keeps the sort
+    (``None``). Either way the pairing is the same table.
+    """
+    if (
+        n_vertices is not None
+        or faces.size // 3 * 3 < max(from_halfedges, 1)
+        or not _buckets_on(faces)
+    ):
+        return n_vertices
+    # Readback: the index range bounds the buckets, which a large mesh pairs through.
+    low, high = od.reduce.minmax(faces)
+    return int(high) + 1 if int(low) >= 0 else None
 
 
 def _raise_twin_defects(defect_counts: Sequence[int]) -> None:

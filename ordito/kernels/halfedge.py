@@ -24,6 +24,13 @@ from ordito.kernels.array import launched_set_bit, pack_edge_key
 wp.set_module_options({"enable_backward": False})
 
 
+# A pairing given no vertex count (``halfedge._pairing_vertex_bound``), CUDA new/old with the
+# count read off ``faces`` against the 64-bit key sort: twins 0.098 -> 0.090 ms at 15 k halfedges,
+# 0.115 -> 0.090 ms at 267 k, ``dragon`` 0.358 -> 0.160, ``lucy`` 13.3 -> 4.8 ms; mates, which
+# bucket only from 2**19 halfedges, 0.130 -> 0.142 ms at 491 k (the readback for a narrower sort),
+# 0.168 -> 0.137 at 983 k, ``dragon`` 0.354 -> 0.158, ``lucy`` 13.1 -> 4.7 ms.
+
+
 @wp.func
 def halfedge_next(h: wp.int32) -> wp.int32:
     # Next halfedge inside the same face, under the ``h = 3 * f + k`` convention of
