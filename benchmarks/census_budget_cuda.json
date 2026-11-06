@@ -1466,8 +1466,8 @@
  },
  "benchmarks/test_curvature.py::test_principal_curvature_meyer[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 4,
-   "alloc": 6,
+   "launch": 5,
+   "alloc": 7,
    "memset": 3,
    "scan": 1
   }
@@ -1498,8 +1498,8 @@
  },
  "benchmarks/test_curvature.py::test_vertex_curvatures[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 4,
-   "alloc": 4,
+   "launch": 5,
+   "alloc": 5,
    "memset": 1,
    "scan": 1
   }

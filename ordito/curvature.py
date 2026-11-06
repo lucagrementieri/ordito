@@ -250,15 +250,14 @@ def _one_ring_principal_curvatures(
         # VTK and Meyer et al. form no directions: zero ones, and the kernel writes the values.
         mates = od.halfedge.halfedge_mates(faces, vertex_faces=(vertex_faces, vf_offsets))
         if n_vertices > 0:
-            _launch.launch(
-                kernel_curvature.vtk_principal_curvatures
-                if method == "pyvista"
-                else kernel_curvature.meyer_principal_curvatures,
-                dim=n_vertices,
-                inputs=[vertices, faces, vertex_faces, vf_offsets, mates],
-                outputs=[pv1, pv2],
-                device=device,
-            )
+            if method == "pyvista":
+                kernel = kernel_curvature.vtk_principal_curvatures
+                inputs = [vertices, faces, vertex_faces, vf_offsets, mates]
+            else:
+                kernel = kernel_curvature.meyer_principal_curvatures
+                face_terms = _meyer_face_terms(vertices, faces)
+                inputs = [vertices, faces, vertex_faces, vf_offsets, mates, face_terms]
+            _launch.launch(kernel, dim=n_vertices, inputs=inputs, outputs=[pv1, pv2], device=device)
         directions = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
         return directions, _launch.zeros(n_vertices, dtype=wp.vec3, device=device), pv1, pv2
     normals = _vertex_normals(vertices, faces, weighting="angle")
@@ -445,14 +444,32 @@ def vertex_curvatures(
         return mean, gaussian
     vertex_faces, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
     mates = od.halfedge.halfedge_mates(faces, vertex_faces=(vertex_faces, vf_offsets))
+    face_terms = _meyer_face_terms(vertices, faces)
     _launch.launch(
         kernel_curvature.meyer_vertex_curvatures,
         dim=n_vertices,
-        inputs=[vertices, faces, vertex_faces, vf_offsets, mates],
+        inputs=[vertices, faces, vertex_faces, vf_offsets, mates, face_terms],
         outputs=[mean, gaussian],
         device=device,
     )
     return mean, gaussian
+
+
+def _meyer_face_terms(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+) -> wp.array[wp.float64, Literal[2]]:
+    """``(n_faces, 5)`` angle terms of Meyer et al.'s walk, formed once a face, not a corner."""
+    n_faces = faces.size // 3
+    face_terms = _launch.empty((n_faces, 5), dtype=wp.float64, device=vertices.device)
+    if n_faces > 0:
+        _launch.launch(
+            kernel_curvature.meyer_face_terms,
+            dim=n_faces,
+            inputs=[vertices, faces],
+            outputs=[face_terms],
+            device=vertices.device,
+        )
+    return face_terms
 
 
 def vertex_defects(
