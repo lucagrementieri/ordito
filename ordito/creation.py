@@ -2016,6 +2016,10 @@ def _extrude(
 
     # The lower layer is a contiguous prefix, so the boundary walk reads it as a view. The boundary
     # of the triangulation as given; a re-wound one reverses each edge on the device.
+    # The boundary pass is most of this call (89-108 of 135-151 us at rings of 64 and 1 024, CUDA).
+    # Declined (2026-11-06): letting ``extrude_faces`` emit the walls from the boundary's ranked
+    # bits saves its emit launch and allocation only (about 12 us, 8 %) and needs ``boundary``'s
+    # private halfedge state here; the sort, mark, scan and readback stay.
     boundary = od.boundary.oriented_boundary_edges(odt.as_dense(layers[:n]), faces)
     n_boundary = int(boundary.shape[0])
 
