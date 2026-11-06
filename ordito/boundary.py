@@ -1496,8 +1496,10 @@ class _BoundaryHalfedges:
         Return the boundary as a successor graph: its nodes, and the ``node_count``-sized table.
 
         The nodes are the directed rows' tail vertices, or with ``halfedge_nodes`` the boundary
-        halfedges; see ``kernels/boundary.emit_boundary_successors``. The table is ``-1`` off the
-        nodes, which is where a chain on a mesh that is not edge-manifold ends.
+        halfedges; see ``kernels/boundary.emit_boundary_successors``. A chain on a mesh that is
+        not edge-manifold ends where the table reads ``-1``: everywhere off the vertex nodes, and
+        over halfedges at each dead end the walk reaches, the only entries off the nodes it
+        reads.
         """
         device = self.faces.device
         k = self.count()
@@ -1506,9 +1508,12 @@ class _BoundaryHalfedges:
         else:
             tails = _launch.empty(k, dtype=wp.int32, device=device)
         # ``-1`` off the nodes: the ranking reads it to tell where a chain ends. The census' degree
-        # table, read only by the flagging launch, holds it where it is long enough.
+        # table, read only by the flagging launch, holds it where it is long enough. Over
+        # halfedges the emit writes every entry the ranking reads, so the table is not filled.
         scratch = self._degree_scratch
-        if scratch is not None and 0 < node_count <= scratch.size:
+        if halfedge_nodes:
+            next_node = _launch.empty(node_count, dtype=wp.int32, device=device)
+        elif scratch is not None and 0 < node_count <= scratch.size:
             next_node = _launch.view(scratch, 0, node_count)
             _launch.fill_(next_node, -1)
         else:

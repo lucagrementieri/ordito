@@ -512,7 +512,7 @@
   "counts": {
    "launch": 8,
    "alloc": 5,
-   "memset": 3,
+   "memset": 2,
    "d2h": 2,
    "scan": 2,
    "sort": 1
@@ -522,7 +522,7 @@
   "counts": {
    "launch": 10,
    "alloc": 7,
-   "memset": 4,
+   "memset": 3,
    "d2h": 2,
    "scan": 2,
    "sort": 1
@@ -532,7 +532,7 @@
   "counts": {
    "launch": 13,
    "alloc": 8,
-   "memset": 3,
+   "memset": 2,
    "d2h": 3,
    "scan": 3,
    "sort": 3

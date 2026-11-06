@@ -416,6 +416,12 @@ def emit_boundary_successors(
         following = next_boundary_halfedge_from_mates(faces, mates, h)
         out_tails[g] = h
         out_next[h] = wp.where(following >= 0, following, h)
+        if following >= 0 and not is_boundary_mate(mates[following]):
+            # A dead end, on a mesh that is not edge-manifold: a halfedge with no twin that is no
+            # node, where the chain must end. Written here, every entry the ranking reads -- a
+            # node's or a node's successor's -- is written by this launch, so the
+            # halfedge-sized table takes no fill. Its threads all store ``-1``.
+            out_next[following] = -1
     else:
         a, b = halfedge_endpoints(faces, h)
         out_tails[g] = a
