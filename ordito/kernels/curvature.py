@@ -1076,6 +1076,14 @@ def face_pair_dihedrals(
     out_upper[k] = upper
 
 
+# Leaf size of ``ball_mean_curvature``'s edge BVH. A walk to a leaf is a chain of dependent node
+# loads, and with few queries the launch is that chain's latency; wider leaves shorten it and the
+# build, for more candidates a leaf. Walk plus build over leaf 4 (the ``bvh_from_bounds`` default),
+# CUDA: 12-16 best at every size and radius (0.83-0.91x on sphere_small and dragon, 0.89-0.95x on
+# sphere_large); 24-32 give some of it back.
+MEAN_CURVATURE_BVH_LEAF_SIZE = 16
+
+
 @wp.kernel
 def ball_mean_curvature(
     queries: wp.array[wp.vec3],

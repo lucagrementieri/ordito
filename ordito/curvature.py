@@ -820,7 +820,9 @@ def discrete_mean_curvature(
         device=device,
     )
 
-    bvh = od.neighbors.bvh_from_bounds(edge_lower, edge_upper)
+    bvh = od.neighbors.bvh_from_bounds(
+        edge_lower, edge_upper, leaf_size=kernel_curvature.MEAN_CURVATURE_BVH_LEAF_SIZE
+    )
     # The predicate the narrow phase below applies is the *ball* -- it keeps the edge length inside
     # the ball of ``radius`` -- so the broad phase is the ball query and not the enclosing cube:
     # ``wp.bvh_query_sphere``'s traversal is cheaper than ``wp.bvh_query_aabb``'s on the identical
