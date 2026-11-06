@@ -756,6 +756,50 @@ def test_boundary_loops_crossing_pinch_gaps_match_meshlib_holes(device: str) -> 
     assert {canonical(loop) for loop in loops("split")} == {canonical(loop) for loop in gap}
 
 
+def test_boundary_loops_crossing_pinch_gaps_stay_on_the_rim_off_an_edge_manifold_mesh(
+    device: str,
+) -> None:
+    """
+    Class B, against trimesh's boundary edges: ``"gap"`` walks only real rim edges, repeatably.
+
+    Fins (a third face on an edge) next to touching holes make the rim walk dead-end on a halfedge
+    that is no boundary edge, at vertices with two fans. Sending that dead end across the gap gave
+    two walks one successor: on the CPU the loops held vertex indices past the mesh, on CUDA a
+    different loop count each call. The named transform is from consecutive loop pairs to
+    directed edges: each is an oriented boundary edge of ``trimesh``'s, at most once, and two
+    calls agree.
+    """
+    sphere_tm = tm.creation.icosphere(subdivisions=4)
+    kept_np = sphere_tm.faces[np.arange(len(sphere_tm.faces)) % 7 != 0]
+    picks_np = kept_np[np.random.default_rng(3).choice(len(kept_np), 150, replace=False)]
+    n_sphere = len(sphere_tm.vertices)
+    apex_np = np.arange(n_sphere, n_sphere + len(picks_np))
+    faces_np = np.concatenate([kept_np, np.stack([picks_np[:, 0], picks_np[:, 1], apex_np], 1)])
+    vertices_np = np.concatenate([sphere_tm.vertices, 1.1 * sphere_tm.vertices[picks_np[:, 2]]])
+    mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+    # Non-vacuity: some edge carries three faces, and some rim vertex has two boundary edges out.
+    assert np.unique(mesh_tm.edges_sorted, axis=0, return_counts=True)[1].max() >= 3
+    boundary_np = mesh_tm.edges[tm_grouping.group_rows(mesh_tm.edges_sorted, require_count=1)]
+    assert (np.bincount(boundary_np[:, 0]) == 2).any()
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+
+    def walked() -> list[tuple[int, int]]:
+        flat_wp, offsets_wp = od.boundary.boundary_loops_with_offsets(
+            vertices_wp, faces_wp, pinches="gap"
+        )
+        flat_np = flat_wp.numpy()
+        return [
+            (int(flat_np[i]), int(flat_np[a + (i - a + 1) % (b - a)]))
+            for a, b in itertools.pairwise(offsets_wp.numpy().tolist())
+            for i in range(a, b)
+        ]
+
+    first = walked()
+    assert first
+    assert Counter(first) <= Counter(map(tuple, boundary_np.tolist()))
+    assert walked() == first
+
+
 def test_boundary_loops_reject_an_unknown_pinch_mode(device: str) -> None:
     vertices_np, faces_np = touching_holes_grid_arrays()
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)

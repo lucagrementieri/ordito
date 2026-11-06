@@ -456,11 +456,13 @@ def cross_pinch_gaps(
     # walk leaves by the other fan's boundary halfedge, crossing the gap rather than staying in its
     # own fan, so a loop follows the empty region. With two out-halfedges the swap is the whole
     # rule; each thread rewrites only its own entry. A vertex with more fans keeps the in-fan
-    # successor.
+    # successor, and so does a walk whose successor is no boundary halfedge of ``v`` (a dead end on
+    # a mesh that is not edge-manifold): sent to one of ``v``'s two it would share it with the walk
+    # already leading there, and the ranking needs every successor to have one predecessor.
     h = tails[wp.int32(wp.tid())]
     s = next_node[h]
     v = faces[s]
-    if counts[v] == 2:
+    if counts[v] == 2 and (slots[2 * v] == s or slots[2 * v + 1] == s):
         next_node[h] = wp.where(slots[2 * v] == s, slots[2 * v + 1], slots[2 * v])
 
 
