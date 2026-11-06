@@ -1056,8 +1056,7 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `proximity.winding_number`'s tiled path (few queries) and `visibility`'s
   `SUPPORT_ARGMAX_SLICED` (`k` escaped rays). Unpriced (the GPU was shared): price each at small
   and large outer counts, and if either pays, move the rule into `RegisterBlockedTable` beside
-  `launch_shape` and route all three through it. Also queued: a quiet-box CUDA clock for
-  `enclosing_diagonal`'s `read_values` readback (landed on its census count alone).
+  `launch_shape` and route all three through it.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
