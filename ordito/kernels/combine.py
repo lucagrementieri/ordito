@@ -19,16 +19,12 @@ class MeshPieceWords:
     shift: wp.int32
 
 
-@wp.kernel(module="unique")
+@wp.kernel
 def pack_mesh_pieces(pieces: wp.array[MeshPieceWords], width: wp.int32) -> None:
     # Pack every piece's vertices and faces into the two concatenated buffers and renumber the
     # faces, one launch for all of it: each piece contributes two records, its vertex words (shift
     # 0) and its face indices (shift = the piece's vertex offset). ``array.pack_segment_words`` with
     # a destination and a shift per record, so one table serves both outputs; same grid and stride.
-    # A module of its own, for no reason in the code: in ``kernels/combine.py`` it moved
-    # ``offset_packed_faces``' entry from 48 to 32 mod 64 in the loaded object (Warp maps ``.text``
-    # page-aligned), and that kernel's identical instructions ran 1.10-1.17x on the CPU. Function
-    # placement alone; the layout is luck, and any edit to either module can move it again.
     s, t = wp.tid()
     piece = pieces[s]
     kernel_array.copy_shifted_words(

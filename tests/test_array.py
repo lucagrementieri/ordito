@@ -17,7 +17,7 @@ import warp.sparse as wps
 
 import ordito as od
 import ordito.typing as odt
-from ordito import _device
+from ordito import _device, _launch
 from tests.conversions import bsr_to_dense, points_to_warp, scipy_to_bsr, warp_empty
 
 DType = TypeVar("DType")
@@ -470,6 +470,45 @@ def test_split_copies_past_the_one_launch_threshold(device: str, dtype: type) ->
         if end > begin:
             assert not base_begin <= int(cast("int", copy_wp.ptr)) < base_end
         assert np.array_equal(copy_wp.numpy(), shaped_np[begin:end])
+
+
+@pytest.mark.parametrize("dtype", [wp.int32, wp.vec3], ids=lambda d: d.__name__)
+def test_segmented_copies_of_large_segments_match_numpy(device: str, dtype: type) -> None:
+    """
+    Class A: ``np.concatenate`` and ``np.split`` over forty segments too large for the CPU's launch.
+
+    Forty segments of a few thousand elements average past
+    ``_launch.SEGMENTS_IN_ONE_LAUNCH_CPU_MEAN_WORDS``, so the CPU copies them one at a time while
+    CUDA still copies them in one launch. The gate's answer is asserted, so neither arm drifts onto
+    the other path unseen. ``concatenate`` and ``split(copy=True)`` both, with an interior empty
+    segment.
+    """
+    device_wp = wp.get_device(device)
+    width = 3 if dtype is wp.vec3 else 1
+    rng = np.random.default_rng(29)
+    lengths = rng.integers(2500, 3500, size=40)
+    lengths[11] = 0
+    words = int(lengths.sum()) * width
+    assert _launch.segments_in_one_launch(lengths.size, words, device_wp) == device_wp.is_cuda
+    scalar_np = np.float32 if width > 1 else np.int32
+    parts_np = [
+        rng.random((int(n), width)).astype(scalar_np)
+        if width > 1
+        else rng.integers(0, 1 << 30, int(n)).astype(scalar_np)
+        for n in lengths
+    ]
+    parts_wp = [wp.array(part_np, dtype=dtype, device=device) for part_np in parts_np]
+    concatenated_np = np.concatenate(parts_np)
+
+    assert np.array_equal(od.array.concatenate(parts_wp).numpy(), concatenated_np)
+    base_wp = wp.array(concatenated_np, dtype=dtype, device=device)
+    offsets_np = np.concatenate([[0], np.cumsum(lengths)]).astype(np.int32)
+    copies_wp = od.array.split(
+        base_wp, wp.array(offsets_np, dtype=wp.int32, device=device), copy=True
+    )
+    assert len(copies_wp) == lengths.size
+    for copy_wp, part_np in zip(copies_wp, parts_np, strict=True):
+        assert np.array_equal(copy_wp.numpy(), part_np)
 
 
 def test_segment_views_fall_back_for_grad_and_strided_bases(device: str) -> None:
