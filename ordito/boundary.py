@@ -1471,7 +1471,7 @@ class _BoundaryHalfedges:
             # The bits were ranked in key order: the rows are stored at their ranks directly.
             _launch.launch(
                 kernel_boundary.emit_key_ordered_boundary_edges,
-                dim=self.n,
+                dim=_launch.set_bit_launch_dim(self.n, k, device),
                 inputs=[self._words, self._ranks, self.key_order, self.faces, sort_pair, out_edges],
                 device=device,
             )
@@ -1515,7 +1515,7 @@ class _BoundaryHalfedges:
             next_node = _launch.full(node_count, -1, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_boundary.emit_boundary_successors,
-            dim=self.n,
+            dim=_launch.set_bit_launch_dim(self.n, k, device),
             inputs=[
                 self._words,
                 self._ranks,

@@ -1117,6 +1117,16 @@ def _float_scan_fixed_order(in_array: Any, out_array: Any, size: int) -> None:
                  block_dim=block_dim, device=device)  # fmt: skip
 
 
+def set_bit_launch_dim(n_bits: int, count: int, device: Any) -> int:
+    """
+    Launch ``dim`` for a kernel over a ranked bitmask's ``count`` set bits of ``n_bits``.
+
+    The size ``kernels/array.launched_set_bit`` reads its thread index against: ``count`` on CUDA,
+    one thread per set bit, and ``n_bits`` on the CPU device, one thread per position.
+    """
+    return n_bits if device.is_cpu else count
+
+
 def key_bits(bound: int) -> int:
     """
     Radix-sort ``end_bit`` for keys in ``[0, bound)``: the bits of ``bound - 1``, in ``[1, 64]``.

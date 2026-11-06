@@ -23,6 +23,7 @@ from ordito.kernels.array import (
     append_slot,
     append_slot_if,
     cube_corner_offset,
+    device_is_cpu,
     is_positive_finite,
     next_up,
     ordered_float_bits,
@@ -58,7 +59,6 @@ from ordito.kernels.proximity import (
 from ordito.kernels.reduce import (
     block_chunk_1d,
     block_sum,
-    device_is_cpu,
     store_sum_and_count,
     term_sum_1d,
     warp_min_at_lead,

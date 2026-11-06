@@ -1816,6 +1816,22 @@ def _register_overloads() -> None:
 _register_overloads()
 
 
+_DEVICE_IS_CPU = """
+#if defined(__CUDA_ARCH__)
+return 0;
+#else
+return 1;
+#endif
+"""
+
+
+@wp.func_native(_DEVICE_IS_CPU)
+def device_is_cpu() -> wp.int32:
+    # 1 when compiled for the CPU device: a constant the compiler folds, so a branch on it costs
+    # neither device anything and the other device's arm is dropped.
+    ...
+
+
 # The set bits of a word in one instruction: the SWAR sequence it replaced cost the octree sweeps,
 # which rank eight cells a row (``wp.bit_count`` arrived in Warp 1.19, above the supported floor).
 _NATIVE_POPCOUNT = """
@@ -2326,6 +2342,22 @@ def nth_bit_position(
     w = wp.lower_bound(word_ranks, n + 1)
     before = word_ranks[w] - native_popcount32(words[w])
     return (w << 5) + nth_set_bit(words[w], n - before)
+
+
+@wp.func
+def launched_set_bit(
+    words: wp.array[wp.uint32], word_ranks: wp.array[wp.int32], t: wp.int32
+) -> tuple[wp.int32, wp.int32, wp.bool]:
+    # Thread ``t`` of a launch over a ranked bitmask's set bits, sized by
+    # ``array.set_bit_launch_dim``: the bit's position, its rank, and whether it is set. On CUDA
+    # one thread per set bit, ``t`` its rank and its position found by a search of the ranks
+    # (``nth_bit_position``), so a sparse mask launches for its set bits only. On the CPU device,
+    # whose launch runs its threads one after another, one thread per position (``bit_slot``):
+    # there ``k`` searches cost more than ``n`` lookups once the bits are dense.
+    if device_is_cpu() != 0:
+        rank, flagged = bit_slot(words, word_ranks, t)
+        return t, rank, flagged
+    return nth_bit_position(words, word_ranks, t), t, True
 
 
 @wp.func

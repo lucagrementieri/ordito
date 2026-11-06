@@ -5,7 +5,7 @@ import warp as wp
 from ordito.constants import INT32_MAX_CONSTANT
 from ordito.kernels.adjacency import edge_endpoints
 from ordito.kernels.array import (
-    bit_slot,
+    launched_set_bit,
     loop_owner,
     loop_rim_edge,
     pack_ranked_key,
@@ -184,11 +184,10 @@ def emit_key_ordered_boundary_edges(
 ) -> None:
     # ``emit_boundary_edges`` over ``halfedge.key_ordered_halfedges``' rank compaction in one
     # launch, for bits ranked in the key sort's order (``mark_boundary_halfedges`` given its
-    # ``key_order``): one thread per bit, and where it is set, the halfedge's row is stored at its
-    # rank, which is its row of the ascending-key table. The two kernels differ only in where a
-    # row's halfedge and slot come from.
-    j = wp.int32(wp.tid())
-    slot, flagged = bit_slot(words, word_ranks, j)
+    # ``key_order``): over the set bits (``launched_set_bit``), each halfedge's row stored at its
+    # rank, its row of the ascending-key table. The two kernels differ only in where a row's
+    # halfedge and slot come from.
+    j, slot, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()))
     if flagged:
         store_boundary_row(faces, sort_pair, key_ordered_halfedge(key_order, j), slot, out_edges)
 
@@ -403,9 +402,13 @@ def emit_boundary_successors(
     # reads it, so no twin table is built for the few halfedges walked): over vertices a pinch
     # point has two successors, over halfedges every node has one. A fan that does not close (a
     # mesh that is not edge-manifold) maps to a self-loop, so the walk stays bounded. The ranking
-    # names each cycle by its smallest node, so the order of ``out_tails`` is free.
-    i = wp.int32(wp.tid())
-    g, flagged = bit_slot(words, word_ranks, i)
+    # names each cycle by its smallest node, so the order of ``out_tails`` is free. Launched over
+    # the set bits (``launched_set_bit``): on CUDA a thread a set bit took ``lucy``'s launch from
+    # 84 M threads, 252 us, to 20 us and ``dragon``'s 7.1 -> 4.9 us, for +2 us on the 80 k-face
+    # benchmark meshes. Declined: a thread a word walking its set bits, 1.4-2.5x the set-bit
+    # launch except on ``lucy`` and 9x on ``holes_pinched``, whose rotations it runs one after
+    # another.
+    i, g, flagged = launched_set_bit(words, word_ranks, wp.int32(wp.tid()))
     if not flagged:
         return
     h = key_ordered_halfedge(key_order, i)

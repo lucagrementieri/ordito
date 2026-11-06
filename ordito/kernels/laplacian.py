@@ -6,12 +6,13 @@ from ordito.kernels.array import (
     OverloadTable,
     csr_key,
     csr_run_start,
+    device_is_cpu,
     sorted_run_end,
     store_coo_key,
 )
 from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import doublearea_from_lengths, triangle_double_area
-from ordito.kernels.reduce import GroupSumPass, block_chunk_1d, block_min, device_is_cpu
+from ordito.kernels.reduce import GroupSumPass, block_chunk_1d, block_min
 from ordito.kernels.scatter import (
     arrival_order_add_vector,
     group_sum_vector_term,
