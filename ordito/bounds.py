@@ -19,7 +19,7 @@ mesh query in the package derives from its input's extent.
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Literal, cast
 
 import numpy as np
 import warp as wp
@@ -36,10 +36,16 @@ from ordito.selection import _compact_marked_submesh  # pyright: ignore[reportPr
 
 # Points reduced per thread by the per-candidate extent reduction in
 # [`oriented_bounding_box`][ordito.bounds.oriented_bounding_box]. Long, and one value for both
-# devices, because the *candidate* dimension already fills the device -- this is the per-query
-# regime [`ITEMS_PER_SLICE_CUDA`][ordito.constants.ITEMS_PER_SLICE_CUDA]'s note describes, not the
-# global-reduction one.
+# devices, because on a large cloud the *candidate* dimension already fills the device -- this is
+# the per-query regime [`ITEMS_PER_SLICE_CUDA`][ordito.constants.ITEMS_PER_SLICE_CUDA]'s note
+# describes, not the global-reduction one.
 ITEMS_PER_CANDIDATE_SLICE = 256
+
+# Shortest slice the extent reduction cuts a cloud into on CUDA when the frames alone would starve
+# the device: the refinement scores 512 frames a round, so a cloud of a few thousand points at
+# ``ITEMS_PER_CANDIDATE_SLICE`` a slice launches a few thousand threads. ``_extent_slices`` then
+# adds slices toward ``REGISTER_BLOCK_MIN_THREADS`` threads, none shorter than this.
+EXTENT_MIN_SLICE = 64
 
 # Cloud size at which [`oriented_bounding_box`][ordito.bounds.oriented_bounding_box] first runs
 # [`convex_superset_mask`][ordito.points.convex_superset_mask] and searches only the survivors.
@@ -885,7 +891,7 @@ def oriented_bounding_box(
         points = _compact_masked_points(points, od.points.convex_superset_mask(points))
         n = points.size
 
-    device = points.device
+    device = cast("wp.Device", points.device)
     # One chain when there is nothing to refine: the seeding walk's first pick is the global
     # argmin, so it stops after a single round and the row it writes is already the answer.
     n_chains = 1 if refine_iterations == 0 else _REFINE_CHAINS
@@ -909,11 +915,11 @@ def oriented_bounding_box(
         device=device,
     )
 
-    n_slices = max(1, (n + ITEMS_PER_CANDIDATE_SLICE - 1) // ITEMS_PER_CANDIDATE_SLICE)
     # The extent of the cloud in every candidate frame, six packed slots each. The kernel only
     # ``atomic_min``s into ``corners``, so it must arrive holding ``+inf``: both axes kernels seed a
     # candidate's slots as they write its frame, which is what lets the refinement reuse one
     # buffer across its rounds.
+    n_slices = _extent_slices(n, rotations, device)
     kernel, dim = kernel_bounds.OBB_EXTENTS.launch_shape(rotations, n_slices)
     _launch.launch(kernel, dim=dim, inputs=[points, axes, n_slices, corners], device=points.device)
 
@@ -953,7 +959,6 @@ def oriented_bounding_box(
         points,
         objective,
         refine_iterations,
-        n_slices,
         sigma,
         n_chains,
         chain_state,
@@ -989,6 +994,21 @@ _BOX_OBJECTIVES: dict[str, wp.int32] = {
 }
 
 
+def _extent_slices(n_points: int, n_frames: int, device: wp.Device) -> int:
+    """
+    Slices the extent reduction cuts ``n_points`` into when scoring ``n_frames`` frames.
+
+    ``ITEMS_PER_CANDIDATE_SLICE`` points a slice, unless that leaves the CUDA grid short of
+    ``REGISTER_BLOCK_MIN_THREADS`` threads: then more slices, down to ``EXTENT_MIN_SLICE`` points.
+    The corners are exact minima whatever the slicing, so the box does not change.
+    """
+    n_slices = max(1, -(-n_points // ITEMS_PER_CANDIDATE_SLICE))
+    if device.is_cuda:
+        starved = -(-kernel_array.REGISTER_BLOCK_MIN_THREADS // n_frames)
+        n_slices = max(n_slices, min(starved, -(-n_points // EXTENT_MIN_SLICE)))
+    return n_slices
+
+
 def _compact_masked_points(points: wp.array[wp.vec3], mask: wp.array[wp.bool]) -> wp.array[wp.vec3]:
     """
     Compact the points ``mask`` keeps, in index order.
@@ -1016,7 +1036,6 @@ def _refine_box(
     points: wp.array[wp.vec3],
     objective: str,
     refine_iterations: int,
-    n_slices: int,
     sigma: float,
     n_chains: int,
     chain_state: odt.Array2dFloat32,
@@ -1032,7 +1051,7 @@ def _refine_box(
     the base and is what makes a chain monotone. Each buffer holds two halves, read and written in
     turn. Nothing is read back until the caller unpacks the winning row.
     """
-    device = points.device
+    device = cast("wp.Device", points.device)
     total = n_chains * _REFINE_CANDIDATES
     objective_code = _BOX_OBJECTIVES[objective]
     halves = [
@@ -1045,6 +1064,7 @@ def _refine_box(
         )
         for half in (0, 1)
     ]
+    n_slices = _extent_slices(points.size, total, device)
     extents_kernel, extents_dim = kernel_bounds.OBB_EXTENTS.launch_shape(total, n_slices)
     for round_index in range(refine_iterations):
         state_in, axes_in, corners_in = halves[round_index % 2]
