@@ -27,7 +27,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device, scan_count
+from ordito._device import read_values, require_same_device, scan_count
 from ordito.kernels import array as kernel_array
 from ordito.kernels import bounds as kernel_bounds
 from ordito.kernels import predicates as kernel_predicates
@@ -203,7 +203,7 @@ def enclosing_diagonal(points: wp.array[wp.vec3], other: wp.array[wp.vec3] | Non
     # two boxes and an ``aabb_union``, and in one launch: ``minmax_vec3_pair_chunked`` folds both
     # clouds' chunks into the same slots with ``wp.atomic_min``. Reducing a concatenation instead
     # is slower -- the union buffer is an allocation and a copy of both clouds.
-    device = points.device
+    device = cast("wp.Device", points.device)
     corners = _launch.full(6, math.inf, dtype=wp.float32, device=device)
     n_other = 0 if other is None else other.size
     if points.size + n_other > 0:
@@ -218,11 +218,15 @@ def enclosing_diagonal(points: wp.array[wp.vec3], other: wp.array[wp.vec3] | Non
     # seeded ``inf`` in place, so ``upper - lower`` is ``-inf`` componentwise and the length is
     # ``inf`` -- the documented empty-input answer, reached without a branch.
     #
-    # Taken in NumPy, on the buffer the readback already produced, rather than through two
+    # Taken in NumPy ``float32``, as ``box_diagonal`` takes it, rather than through two
     # ``wp.vec3`` constructions and ``wp.length``: every Warp operator and builtin at *Python*
     # scope routes through Warp's builtin dispatch (``inspect.signature().bind()`` per operand),
-    # an order of magnitude dearer than this.
-    corners_np = corners.numpy()
+    # an order of magnitude dearer than this. On CUDA one six-value ``read_values`` copy, which
+    # builds no host array; on the CPU device that would only add a list round trip.
+    if device.is_cpu:
+        corners_np = corners.numpy()
+    else:
+        corners_np = np.array(read_values(corners, 0, 6), dtype=np.float32)
     return float(np.linalg.norm(-corners_np[3:] - corners_np[:3]))
 
 
