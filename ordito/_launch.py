@@ -1872,15 +1872,20 @@ def array(
 _struct_record_dtypes: dict[Any, np.dtype[Any]] = {}
 
 
-def mat44(host: npt.ArrayLike) -> wp.mat44:
+def matrix(dtype: type[DType], host: npt.ArrayLike) -> DType:
     """
-    ``wp.mat44(*host.flatten())`` for a ``(4, 4)`` host matrix, from its ``float32`` bytes.
+    ``dtype(*host.flatten())`` for a host matrix, from its bytes in ``dtype``'s scalar type.
 
-    The constructor imports its sixteen arguments one by one; a ``wp.mat44`` is a ``ctypes``
-    array, so copying the row-major ``float32`` buffer in builds the same matrix 15-20x cheaper.
-    Each entry is rounded to ``float32`` to nearest either way.
+    A Warp matrix constructor imports its arguments one by one; the type is a ``ctypes`` array, so
+    copying the row-major buffer in builds the same value 4-10x cheaper (a ``wp.mat44`` 0.5 against
+    3.2 us). Each entry is rounded to the scalar type to nearest either way.
     """
-    return wp.mat44.from_buffer_copy(np.ascontiguousarray(host, dtype=np.float32).tobytes())
+    layout = _upload_layout(dtype)
+    assert layout is not None
+    raw = np.ascontiguousarray(host, dtype=layout[0])
+    # ``from_buffer_copy`` reads the leading bytes of a longer buffer without complaint.
+    assert raw.nbytes == ctypes.sizeof(cast("Any", dtype)), (dtype, raw.shape)
+    return cast("Any", dtype).from_buffer_copy(raw.tobytes())
 
 
 def struct_records(struct: _codegen.Struct, count: int) -> npt.NDArray[np.void]:

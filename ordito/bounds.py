@@ -1126,4 +1126,4 @@ def _best_chain(
     """
     state_np = chain_state.numpy()[half * n_chains : (half + 1) * n_chains]
     row = state_np[int(state_np[:, 0].argmin())]
-    return (wp.mat33(*row[7:16]), wp.vec3(*row[1:4]), wp.vec3(*row[4:7]))
+    return (_launch.matrix(wp.mat33, row[7:16]), wp.vec3(*row[1:4]), wp.vec3(*row[4:7]))

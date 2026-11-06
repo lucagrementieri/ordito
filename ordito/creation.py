@@ -59,7 +59,7 @@ _CLOSED_ANGLE_ATOL = 1e-10
 # difference here would move every ring vertex in the last bits.
 _FULL_TURN = wp.float32(2.0 * math.pi)
 # The matrix a generator kernel receives when the caller passed no transform (it is not applied).
-_IDENTITY_MATRIX = _launch.mat44(np.eye(4))
+_IDENTITY_MATRIX = _launch.matrix(wp.mat44, np.eye(4))
 # The closed-form profile parameters ``revolve_uniform`` receives with an uploaded profile (unread).
 _NO_PROFILE_PARAMS = wp.vec4d(0.0, 0.0, 0.0, 0.0)
 
@@ -1924,10 +1924,10 @@ def extrude_polygon(
         translation = np.eye(4)
         translation[2, 3] = abs(float(height)) / -2.0
         if transform is None:
-            transform = _launch.mat44(translation)
+            transform = _launch.matrix(wp.mat44, translation)
         else:
             composed = od.transform.matrix_to_numpy(transform).dot(translation)
-            transform = _launch.mat44(composed)
+            transform = _launch.matrix(wp.mat44, composed)
     # A full triangulation of the ring (a convex ring's fan, passed as ``None``, is one) is bounded
     # by the ring edges themselves and wound like the ring; a partial one (a degenerate ring) has
     # its boundary and winding derived, as ``extrude_triangulation`` does.
@@ -2250,8 +2250,8 @@ def truncated_prisms(
     # Inverted in NumPy, on the matrix that is already in hand, rather than with ``wp.inverse``:
     # a Warp builtin at Python scope routes through builtin dispatch and is several times dearer,
     # and the two agree to float32 rounding (``wp.inverse`` works in float32).
-    to_plane = _launch.mat44(transform_np)
-    from_plane = _launch.mat44(np.linalg.inv(transform_np))
+    to_plane = _launch.matrix(wp.mat44, transform_np)
+    from_plane = _launch.matrix(wp.mat44, np.linalg.inv(transform_np))
     _launch.launch(
         kernel_creation.truncated_prism_geometry,
         # A thread a prism on the CPU, a thread an output vertex or triangle on CUDA.
@@ -2402,7 +2402,7 @@ def _axis_cylinder_placements_under(
     matrices_np = matrices_np.astype(np.float32)
     mirrors = np.linalg.det(matrices_np[:, :3, :3].astype(np.float64)) < 0.0
     return (
-        tuple(_launch.mat44(matrix_np) for matrix_np in matrices_np),
+        tuple(_launch.matrix(wp.mat44, matrix_np) for matrix_np in matrices_np),
         wp.vec3i(
             *(
                 int(kernel_creation.TRANSFORM_MIRROR if mirror else kernel_creation.TRANSFORM_KEEP)
@@ -2612,7 +2612,7 @@ def super_ellipsoid(
     # Radii other than one scale the unit superquadric as it is written.
     scale = None
     if not np.array_equal(radii_np, np.ones(3)):
-        scale = _launch.mat44(np.diag([*radii_np, 1.0]))
+        scale = _launch.matrix(wp.mat44, np.diag([*radii_np, 1.0]))
     return _parametric_surface(
         _SUPER_ELLIPSOID_SPEC, u_resolution, v_resolution, device, n1=n1, n2=n2, transform=scale
     )
@@ -3291,7 +3291,7 @@ def _segment_to_cylinder(segment: Sequence[Sequence[float]]) -> tuple[wp.mat44, 
     matrix = _align_vectors(np.array([0.0, 0.0, 1.0]), vector)
     # Compose translation-to-midpoint with the rotation.
     matrix[:3, 3] = segment_np[0] + vector * 0.5
-    return _launch.mat44(matrix), height
+    return _launch.matrix(wp.mat44, matrix), height
 
 
 def _resolve_sections(sections: int | None) -> int:

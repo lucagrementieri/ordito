@@ -749,7 +749,7 @@ def normal_matrix(matrix: wp.mat44 | wp.array[wp.mat44]) -> wp.mat33:
     linear = matrix_to_numpy(matrix)[:3, :3]
     if _is_singular(linear, ORTHOGONALITY_RTOL):
         raise ValueError("normal_matrix requires an invertible linear block, got a singular one")
-    return wp.mat33(*np.linalg.inv(linear).T.flatten())
+    return _launch.matrix(wp.mat33, np.linalg.inv(linear).T)
 
 
 def classify_transform(
@@ -1045,7 +1045,7 @@ def _compose(linear: np.ndarray, offset: np.ndarray) -> wp.mat44:
     host = np.eye(4)
     host[:3, :3] = linear
     host[:3, 3] = offset
-    return wp.mat44(*host.flatten())
+    return _launch.matrix(wp.mat44, host)
 
 
 def _vec3_host(value: wp.vec3 | Sequence[float], name: str) -> np.ndarray:

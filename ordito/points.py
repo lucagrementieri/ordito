@@ -639,7 +639,7 @@ def principal_axes(points: wp.array[wp.vec3]) -> tuple[wp.mat33, wp.vec3, wp.vec
     frame = _scatter_fit(
         points, point_sum, float(n), kernel_points.SCATTER_PRINCIPAL_AXES, 5
     ).numpy()
-    return (wp.mat33(*frame[:3].ravel()), wp.vec3(*frame[3]), wp.vec3(*frame[4]))
+    return (_launch.matrix(wp.mat33, frame[:3]), wp.vec3(*frame[3]), wp.vec3(*frame[4]))
 
 
 def estimate_normals(
