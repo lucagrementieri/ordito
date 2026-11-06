@@ -4,7 +4,6 @@ import warp as wp
 
 from ordito.kernels import array as kernel_array
 from ordito.kernels.algorithms.connected_components import find_representative
-from ordito.kernels.array import sorted_run_start
 
 wp.set_module_options({"enable_backward": False})
 
@@ -49,27 +48,56 @@ def offset_packed_faces(
     faces[i] = faces[i] + vertex_offsets[piece]
 
 
+@wp.func
+def store_label_root_and_identity(
+    label: wp.int32, f: wp.int32, out_keys: wp.array[wp.int32], out_order: wp.array[wp.int32]
+):
+    # One face's entry of ``split_with_offsets``' component sort, written into the radix sort's
+    # double-width buffers: its label as the key, its id as the payload, and in the keys' upper
+    # half (the sort's scratch, free until the sort runs) whether it is its component's root. A
+    # label is its component's smallest face id, so the scanned root flags number the components
+    # in label order.
+    out_keys[f] = label
+    out_order[f] = f
+    out_keys[out_keys.shape[0] // 2 + f] = wp.where(label == f, wp.int32(1), wp.int32(0))
+
+
 @wp.kernel
 def flatten_labels_and_identity(
     parents: wp.array[wp.int32], out_keys: wp.array[wp.int32], out_order: wp.array[wp.int32]
 ) -> None:
-    # ``connected_components.ecl_flatten`` writing each face's component label straight into the
-    # leading half of the radix sort's double-width key buffer, beside the identity payload, for
-    # ``split_with_offsets``' label sort: no label buffer is filled to be copied there by
-    # ``array.keys_and_identity``.
+    # ``connected_components.ecl_flatten`` storing each face's component label as
+    # ``store_label_root_and_identity`` lays it out: no label buffer is filled to be copied there.
+    # ``labels_and_identity`` is the same entry from a caller's labels.
     f = wp.int32(wp.tid())
-    out_keys[f] = find_representative(parents, f)
-    out_order[f] = f
+    store_label_root_and_identity(find_representative(parents, f), f, out_keys, out_order)
 
 
 @wp.kernel
-def label_run_starts(sorted_labels: wp.array[wp.int32], out_flags: wp.array[wp.int32]) -> None:
-    # Segment boundaries of a label-sorted array as ``0`` / ``1`` flags: position 0, plus every
-    # label change, plus the end -- ``out_flags`` is one longer than the labels, so the indices of
-    # its ones are the total-terminated offsets directly, and the flags are written as ``int32``
-    # straight into the buffer ``array.flatnonzero_in_place`` scans, with no mask between them.
-    # ``sorted_run_start``'s own ``i == 0`` test covers the single-element buffer.
-    i = wp.int32(wp.tid())
-    out_flags[i] = wp.where(sorted_run_start(sorted_labels, i), wp.int32(1), wp.int32(0))
-    if i == sorted_labels.shape[0] - 1:
-        out_flags[i + 1] = wp.int32(1)
+def labels_and_identity(
+    labels: wp.array[wp.int32], out_keys: wp.array[wp.int32], out_order: wp.array[wp.int32]
+) -> None:
+    # ``flatten_labels_and_identity`` for labels the caller passed in.
+    f = wp.int32(wp.tid())
+    store_label_root_and_identity(labels[f], f, out_keys, out_order)
+
+
+@wp.kernel
+def component_rank_keys(keys: wp.array[wp.int32]) -> None:
+    # Replace each face's label key by its component's number: the inclusive scan of the root
+    # flags in the keys' upper half, read at the root (the label), less one. The number is
+    # monotone in the label, so the sort's order is the label sort's, over ``key_bits(k)`` bits
+    # instead of ``key_bits(n_faces)``. The reads stay in the upper half and the writes in the
+    # lower one.
+    f = wp.int32(wp.tid())
+    keys[f] = keys[keys.shape[0] // 2 + keys[f]] - 1
+
+
+@wp.kernel
+def component_face_offsets(
+    sorted_components: wp.array[wp.int32], out_offsets: wp.array[wp.int32]
+) -> None:
+    # The total-terminated face offsets of the component-sorted faces: component ``c`` starts at
+    # the first entry not below ``c``, and ``c == k`` reads ``n_faces``.
+    c = wp.int32(wp.tid())
+    out_offsets[c] = kernel_array.binary_search_index_left(sorted_components, c)

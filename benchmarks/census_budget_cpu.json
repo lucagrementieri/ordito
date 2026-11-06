@@ -877,7 +877,7 @@
  "benchmarks/test_combine.py::test_split[parts_1024-ordito-cpu]": {
   "counts": {
    "launch": 12,
-   "alloc": 12,
+   "alloc": 11,
    "readback": 4,
    "scan": 2,
    "sort": 3
@@ -886,7 +886,7 @@
  "benchmarks/test_combine.py::test_split[parts_64-ordito-cpu]": {
   "counts": {
    "launch": 12,
-   "alloc": 12,
+   "alloc": 11,
    "readback": 4,
    "scan": 2,
    "sort": 3
@@ -894,18 +894,18 @@
  },
  "benchmarks/test_combine.py::test_split[sphere_med-ordito-cpu]": {
   "counts": {
-   "launch": 9,
-   "alloc": 8,
+   "launch": 7,
+   "alloc": 6,
    "h2h": 1,
    "readback": 2,
    "scan": 2,
-   "sort": 2
+   "sort": 1
   }
  },
  "benchmarks/test_combine.py::test_split_with_offsets[parts_1024-ordito-cpu]": {
   "counts": {
    "launch": 12,
-   "alloc": 12,
+   "alloc": 11,
    "readback": 2,
    "scan": 2,
    "sort": 3
@@ -914,7 +914,7 @@
  "benchmarks/test_combine.py::test_split_with_offsets[parts_64-ordito-cpu]": {
   "counts": {
    "launch": 12,
-   "alloc": 12,
+   "alloc": 11,
    "readback": 2,
    "scan": 2,
    "sort": 3
@@ -922,12 +922,12 @@
  },
  "benchmarks/test_combine.py::test_split_with_offsets[sphere_med-ordito-cpu]": {
   "counts": {
-   "launch": 9,
-   "alloc": 8,
+   "launch": 7,
+   "alloc": 6,
    "h2h": 1,
    "readback": 2,
    "scan": 2,
-   "sort": 2
+   "sort": 1
   }
  },
  "benchmarks/test_creation.py::test_annulus[ordito-cpu-32]": {

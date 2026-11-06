@@ -25,7 +25,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device
+from ordito._device import require_same_device, scan_count
 from ordito.adjacency import _face_component_forest  # pyright: ignore[reportPrivateUsage]
 from ordito.kernels import combine as kernel_combine
 
@@ -377,43 +377,56 @@ def split_with_offsets(
     if n_faces == 0:
         return (*_launch.empty_packed(wp.vec3, device), *_launch.empty_packed(wp.int32, device))
 
-    # Every label is a face id, below ``n_faces``, so the radix sort stops at that bit width instead
-    # of running all 32 bits.
-    end_bit = _launch.key_bits(n_faces)
+    # The labels and the identity payload go straight into the sort's double-width buffers, with
+    # each component's root flagged in the keys' upper half; the flags' scan numbers the components.
+    keys_buffer, order_buffer = _launch.sort_buffers(n_faces, wp.int32, device)
     if labels is None:
-        # The labelling's flatten writes the labels and the identity payload straight into the
-        # sort's double-width buffers.
         parents = _face_component_forest(faces, vertices.size, None)
-        keys_buffer, order_buffer = _launch.sort_buffers(n_faces, wp.int32, device)
         _launch.launch(
             kernel_combine.flatten_labels_and_identity,
             dim=n_faces,
             inputs=[parents, keys_buffer, order_buffer],
             device=device,
         )
-        sorted_labels, sorted_face_ids = od.array.sort_and_argsort_in_place(
-            keys_buffer, order_buffer, end_bit=end_bit
-        )
     else:
-        sorted_labels, sorted_face_ids = od.array.sort_and_argsort(labels, end_bit=end_bit)
+        _launch.launch(
+            kernel_combine.labels_and_identity,
+            dim=n_faces,
+            inputs=[labels, keys_buffer, order_buffer],
+            device=device,
+        )
+    n_components = scan_count(_launch.view(keys_buffer, n_faces, 2 * n_faces))
 
-    # Segment boundaries of the label-sorted array: position 0, every label change, and the end.
-    is_start = _launch.empty(n_faces + 1, dtype=wp.int32, device=device)
+    if n_components == 1:
+        # One component is every face in its own order: no sort, and both offsets are known here.
+        component_vertices, component_faces = od.selection.submesh_from_face_indices(
+            vertices, faces, _launch.view(order_buffer, 0, n_faces)
+        )
+        offsets = _launch.array(
+            [0, n_faces, 0, component_vertices.size], dtype=wp.int32, device=device
+        )
+        return (
+            component_vertices,
+            _launch.view(offsets, 2, 4),
+            component_faces,
+            _launch.view(offsets, 0, 2),
+        )
+
+    # Sorting by component number rather than label orders ``key_bits(k)`` bits, not
+    # ``key_bits(n_faces)``; the stable sort keeps each component's faces ascending.
     _launch.launch(
-        kernel_combine.label_run_starts,
-        dim=n_faces,
-        inputs=[sorted_labels, is_start],
+        kernel_combine.component_rank_keys, dim=n_faces, inputs=[keys_buffer], device=device
+    )
+    sorted_components, sorted_face_ids = od.array.sort_and_argsort_in_place(
+        keys_buffer, order_buffer, end_bit=_launch.key_bits(n_components)
+    )
+    face_offsets = _launch.empty(n_components + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_combine.component_face_offsets,
+        dim=n_components + 1,
+        inputs=[sorted_components, face_offsets],
         device=device,
     )
-    face_offsets = od.array.flatnonzero_in_place(is_start)
-
-    if face_offsets.size == 2:
-        component_vertices, component_faces = od.selection.submesh_from_face_indices(
-            vertices, faces, sorted_face_ids
-        )
-        vertex_offsets = _launch.array([0, component_vertices.size], dtype=wp.int32, device=device)
-        return component_vertices, vertex_offsets, component_faces, face_offsets
-
     vertices_all, vertex_offsets, faces_all = od.selection.submeshes_from_face_groups(
         vertices, faces, sorted_face_ids, face_offsets
     )

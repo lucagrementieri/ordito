@@ -928,7 +928,7 @@
  "benchmarks/test_combine.py::test_split[parts_1024-ordito-cuda]": {
   "counts": {
    "launch": 12,
-   "alloc": 14,
+   "alloc": 13,
    "d2h": 4,
    "scan": 2,
    "sort": 3
@@ -937,7 +937,7 @@
  "benchmarks/test_combine.py::test_split[parts_64-ordito-cuda]": {
   "counts": {
    "launch": 12,
-   "alloc": 14,
+   "alloc": 13,
    "d2h": 4,
    "scan": 2,
    "sort": 3
@@ -945,19 +945,19 @@
  },
  "benchmarks/test_combine.py::test_split[sphere_med-ordito-cuda]": {
   "counts": {
-   "launch": 9,
-   "alloc": 8,
+   "launch": 7,
+   "alloc": 6,
    "memset": 1,
    "h2d": 1,
    "d2h": 2,
    "scan": 2,
-   "sort": 2
+   "sort": 1
   }
  },
  "benchmarks/test_combine.py::test_split_with_offsets[parts_1024-ordito-cuda]": {
   "counts": {
    "launch": 12,
-   "alloc": 12,
+   "alloc": 11,
    "d2h": 2,
    "scan": 2,
    "sort": 3
@@ -966,7 +966,7 @@
  "benchmarks/test_combine.py::test_split_with_offsets[parts_64-ordito-cuda]": {
   "counts": {
    "launch": 12,
-   "alloc": 12,
+   "alloc": 11,
    "d2h": 2,
    "scan": 2,
    "sort": 3
@@ -974,13 +974,13 @@
  },
  "benchmarks/test_combine.py::test_split_with_offsets[sphere_med-ordito-cuda]": {
   "counts": {
-   "launch": 9,
-   "alloc": 8,
+   "launch": 7,
+   "alloc": 6,
    "memset": 1,
    "h2d": 1,
    "d2h": 2,
    "scan": 2,
-   "sort": 2
+   "sort": 1
   }
  },
  "benchmarks/test_creation.py::test_annulus[ordito-cuda-32]": {
