@@ -385,7 +385,11 @@ def fit_point_principal_curvature(
 
 # The 1-ring estimators below load a face's corners in ``float64``
 # (``triangles.face_vertices_vec3d``): their cotangents and dihedrals lose every digit of a needle
-# in ``float32``.
+# in ``float32``. Declined (2026-11-06): the Meyer table and walk in ``float32`` ran 0.35x on
+# sphere_small and 0.08x on dragon, but moved 48 % of dragon's values (20 % of saddle_small's) by
+# more than 1e-3 of the median curvature, up to 3.5e5 times it; even the median error, 5e-4, is
+# far above ``float32`` rounding, since the mean curvature cancels large Laplacian terms. A
+# ``float32`` filter ahead of the ``float64`` form would therefore pass almost nothing.
 
 
 @wp.func
