@@ -2616,6 +2616,24 @@ class WordSegment:
     count: wp.int32
 
 
+@wp.func
+def copy_shifted_words(
+    source: wp.array[wp.int32],
+    offset: wp.int32,
+    count: wp.int32,
+    shift: wp.int32,
+    t: wp.int32,
+    width: wp.int32,
+    target: wp.array[wp.int32],
+):
+    # Thread ``t``'s share of one segment of a word-addressed packed copy: words ``t``,
+    # ``t + width``, ... of ``source`` land at ``offset`` onwards in ``target``, each plus
+    # ``shift``. The packing kernels pass a shift of 0, an identity on any word's bits;
+    # ``combine.pack_mesh_pieces`` passes a piece's vertex offset to renumber its faces as it packs.
+    for k in range(t, count, width):
+        target[offset + k] = source[k] + shift
+
+
 @wp.kernel
 def pack_segment_words(
     segments: wp.array[WordSegment], width: wp.int32, out_flat: wp.array[wp.int32]
@@ -2632,8 +2650,7 @@ def pack_segment_words(
     # correct on CPU as well.
     s, t = wp.tid()
     segment = segments[s]
-    for k in range(t, segment.count, width):
-        out_flat[segment.offset + k] = segment.data[k]
+    copy_shifted_words(segment.data, segment.offset, segment.count, wp.int32(0), t, width, out_flat)
 
 
 @wp.kernel

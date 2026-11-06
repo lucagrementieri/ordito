@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Sequence
 from typing import cast
 
@@ -44,7 +45,11 @@ def _concatenate_parts(parts: Sequence[MeshPair]) -> tuple[wp.array[wp.vec3], wp
 
 
 @pytest.mark.parity("concatenate", "trimesh")
-@pytest.mark.parametrize("n_parts", [1, 3], ids=["one_mesh", "three_meshes"])
+@pytest.mark.parametrize(
+    "n_parts",
+    [1, 3, od.array.PACK_SEGMENTS_KERNEL_FROM - 1, od.array.PACK_SEGMENTS_KERNEL_FROM],
+    ids=["one_mesh", "three_meshes", "below_cpu_one_launch", "cpu_one_launch"],
+)
 def test_concatenate_meshes(three_parts: list[MeshPair], n_parts: int) -> None:
     """
     Class A: meshes packed against ``trimesh.util.concatenate``, positions and indices.
@@ -52,9 +57,10 @@ def test_concatenate_meshes(three_parts: list[MeshPair], n_parts: int) -> None:
     The index *offsetting* is the whole operation, so comparing elementwise rather than as a
     set is the point: a wrong offset would still give a valid-looking mesh with the right
     counts. The one-mesh arm checks that a one-element list comes back with the input's own
-    values, not merely an equivalent mesh.
+    values, not merely an equivalent mesh. The last two arms cycle the three fixtures to either
+    side of the piece count from which the CPU packs in one launch too.
     """
-    parts = three_parts[:n_parts]
+    parts = list(itertools.islice(itertools.cycle(three_parts), n_parts))
     concat_tm = tm.util.concatenate([mesh_tm for mesh_tm, _ in parts])
     assert isinstance(concat_tm, tm.Trimesh)
     concat_vertices_wp, concat_faces_wp = _concatenate_parts(parts)

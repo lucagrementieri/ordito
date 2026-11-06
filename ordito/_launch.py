@@ -31,6 +31,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, cast, overload
 
 import numpy as np
+import numpy.typing as npt
 import warp as wp
 import warp._src.codegen as _codegen
 import warp._src.context as _ctx
@@ -1866,3 +1867,38 @@ def array(
                 if type(out) is _ARRAY:
                     return out
     return wp.array(data, dtype=dtype, device=device, **kwargs)
+
+
+_struct_record_dtypes: dict[Any, np.dtype[Any]] = {}
+
+
+def struct_records(struct: _codegen.Struct, count: int) -> npt.NDArray[np.void]:
+    """
+    ``count`` zeroed host records of ``struct``, for a descriptor table filled field by field.
+
+    ``Struct.numpy_dtype()`` builds the record layout afresh on every call (tens of microseconds for
+    a struct holding arrays), so it is built once per struct here. Upload with
+    [`struct_array`][ordito._launch.struct_array].
+    """
+    record_dtype = _struct_record_dtypes.get(struct)
+    if record_dtype is None:
+        # ``numpy_dtype()`` is unannotated and builds a plain ``dict``, where ``np.dtype`` wants
+        # the ``_DTypeDict`` TypedDict.
+        record_dtype = np.dtype(cast("npt.DTypeLike", struct.numpy_dtype()))
+        assert record_dtype.itemsize == _type_size(cast("type[Any]", struct))
+        assert record_dtype.itemsize % 4 == 0
+        _struct_record_dtypes[struct] = record_dtype
+    return cast("npt.NDArray[np.void]", np.zeros(count, dtype=record_dtype))
+
+
+def struct_array(
+    records: npt.NDArray[np.void], struct: _codegen.Struct, device: Any
+) -> wp.array[_codegen.StructInstance]:
+    """
+    Upload ``records`` from [`struct_records`][ordito._launch.struct_records] as a ``struct`` array.
+
+    The bytes go up as ``int32`` words through [`array`][ordito._launch.array]'s direct copy and
+    are viewed as the struct, so Warp never rebuilds the record layout to convert them.
+    """
+    words = array(records.view(np.int32), dtype=wp.int32, device=device)
+    return alias(words, cast("type[Any]", struct), 0, records.shape[0])

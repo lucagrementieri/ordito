@@ -862,9 +862,9 @@
  },
  "benchmarks/test_combine.py::test_concatenate[sphere_med-ordito-cpu-512]": {
   "counts": {
-   "launch": 3,
-   "alloc": 5,
-   "h2h": 3
+   "launch": 1,
+   "alloc": 3,
+   "h2h": 1
   }
  },
  "benchmarks/test_combine.py::test_concatenate[sphere_med-ordito-cpu-8]": {

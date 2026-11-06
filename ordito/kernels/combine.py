@@ -9,6 +9,32 @@ from ordito.kernels.array import sorted_run_start
 wp.set_module_options({"enable_backward": False})
 
 
+@wp.struct
+class MeshPieceWords:
+    """One buffer of one ``concatenate`` piece, its source and target addressed as 4-byte words."""
+
+    source: wp.array[wp.int32]
+    target: wp.array[wp.int32]
+    offset: wp.int32
+    count: wp.int32
+    shift: wp.int32
+
+
+@wp.kernel(module="unique")
+def pack_mesh_pieces(pieces: wp.array[MeshPieceWords], width: wp.int32) -> None:
+    # Pack every piece's vertices and faces into the two concatenated buffers and renumber the
+    # faces, one launch for all of it: each piece contributes two records, its vertex words (shift
+    # 0) and its face indices (shift = the piece's vertex offset). ``array.pack_segment_words`` with
+    # a destination and a shift per record, so one table serves both outputs; same grid and stride.
+    # A module of its own: beside ``offset_packed_faces`` it changed that kernel's CPU build, and
+    # the CPU path below 32 pieces, which still launches it, ran 1.07-1.12x.
+    s, t = wp.tid()
+    piece = pieces[s]
+    kernel_array.copy_shifted_words(
+        piece.source, piece.offset, piece.count, piece.shift, t, width, piece.target
+    )
+
+
 @wp.kernel
 def offset_packed_faces(
     piece_starts: wp.array[wp.int32], vertex_offsets: wp.array[wp.int32], faces: wp.array[wp.int32]

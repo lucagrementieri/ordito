@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Sequence
+from typing import cast
 
+import numpy as np
 import warp as wp
 
 import ordito as od
@@ -26,6 +28,13 @@ from ordito import _launch
 from ordito._device import require_same_device
 from ordito.adjacency import _face_component_forest  # pyright: ignore[reportPrivateUsage]
 from ordito.kernels import combine as kernel_combine
+
+# Widest per-record launch dimension of ``_pack_mesh_pieces``: the kernel strides by it, so it
+# bounds the grid and never the work (``array._PACK_SEGMENTS_MAX_WIDTH``, the same packing copy).
+# The CPU runs a launch's threads one after another, so there a record is one thread's sequential
+# copy: a strided grid scatters each thread's words across cache lines.
+_PIECE_WORDS_MAX_WIDTH_CUDA = 4096
+_PIECE_WORDS_MAX_WIDTH_CPU = 1
 
 
 def concatenate(
@@ -88,6 +97,9 @@ def concatenate(
     if len(meshes_data) == 1:
         vertices, faces = meshes_data[0]
         return _launch.clone(vertices), _launch.clone(faces)
+    packed = _pack_mesh_pieces(meshes_data)
+    if packed is not None:
+        return packed
     # Both packings' offsets are host metadata, read off each piece's length: they reach the device
     # once, as the one table the renumbering reads, rather than once per packing.
     vertex_counts = [vertices.size for vertices, _ in meshes_data]
@@ -115,6 +127,87 @@ def concatenate(
             ],
             device=device,
         )
+    return concatenated_vertices, concatenated_faces
+
+
+def _pack_mesh_pieces(
+    meshes_data: Sequence[tuple[wp.array[wp.vec3], wp.array[wp.int32]]],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]] | None:
+    """
+    Pack and renumber every piece in one launch, or return ``None`` where that cannot apply.
+
+    One descriptor table holds two records a piece, its vertex words and its face indices with the
+    piece's vertex offset as their shift (``kernels.combine.pack_mesh_pieces``), uploaded once.
+    ``None`` -- leaving the packing to ``array.concatenate`` and the renumbering launch, which
+    also validate -- unless every buffer is a contiguous rank-1 ``wp.array`` of ``vec3`` vertices
+    and ``int32`` faces.
+    """
+    device = cast("wp.Device", meshes_data[0][0].device)
+    n_pieces = len(meshes_data)
+    if not device.is_cuda and n_pieces < od.array.PACK_SEGMENTS_KERNEL_FROM:
+        # A CPU word loop runs 1.06-1.2x the per-buffer copies it replaces below that many pieces.
+        return None
+    sizes: list[int] = []  # every piece's vertex count, then every piece's index count
+    pointers: list[int] = []  # the same order
+    face_sizes: list[int] = []
+    face_pointers: list[int] = []
+    for vertices, faces in meshes_data:
+        if (
+            type(vertices) is not wp.array
+            or type(faces) is not wp.array
+            or vertices.dtype is not wp.vec3
+            or faces.dtype is not wp.int32
+            or vertices.ndim != 1
+            or faces.ndim != 1
+            or not vertices.is_contiguous
+            or not faces.is_contiguous
+        ):
+            return None
+        sizes.append(vertices.size)
+        pointers.append(vertices.ptr or 0)
+        face_sizes.append(faces.size)
+        face_pointers.append(faces.ptr or 0)
+    sizes += face_sizes
+    pointers += face_pointers
+    counts = np.array(sizes, dtype=np.int64)
+    # Each half's exclusive scan: a piece's first vertex, then a piece's first index.
+    starts = counts.copy()
+    starts[:n_pieces] = np.cumsum(counts[:n_pieces]) - counts[:n_pieces]
+    starts[n_pieces:] = np.cumsum(counts[n_pieces:]) - counts[n_pieces:]
+    total_vertices = int(starts[n_pieces - 1] + counts[n_pieces - 1])
+    total_indices = int(starts[-1] + counts[-1])
+    concatenated_vertices = _launch.empty(total_vertices, dtype=wp.vec3, device=device)
+    concatenated_faces = _launch.empty(total_indices, dtype=wp.int32, device=device)
+    # A vertex is three words.
+    counts[:n_pieces] *= 3
+    longest = int(counts.max())
+    if longest == 0:
+        return concatenated_vertices, concatenated_faces
+
+    record_np = _launch.struct_records(kernel_combine.MeshPieceWords, 2 * n_pieces)
+    record_np["source"]["data"] = pointers
+    record_np["source"]["shape"][:, 0] = counts
+    record_np["source"]["strides"][:, 0] = 4
+    record_np["source"]["ndim"] = 1
+    record_np["target"]["data"][:n_pieces] = concatenated_vertices.ptr or 0
+    record_np["target"]["data"][n_pieces:] = concatenated_faces.ptr or 0
+    record_np["target"]["shape"][:n_pieces, 0] = 3 * total_vertices
+    record_np["target"]["shape"][n_pieces:, 0] = total_indices
+    record_np["target"]["strides"][:, 0] = 4
+    record_np["target"]["ndim"] = 1
+    record_np["shift"][n_pieces:] = starts[:n_pieces]
+    starts[:n_pieces] *= 3
+    record_np["offset"] = starts
+    record_np["count"] = counts
+    descriptor = _launch.struct_array(record_np, kernel_combine.MeshPieceWords, device)
+    max_width = _PIECE_WORDS_MAX_WIDTH_CUDA if device.is_cuda else _PIECE_WORDS_MAX_WIDTH_CPU
+    width = min(longest, max_width)
+    _launch.launch(
+        kernel_combine.pack_mesh_pieces,
+        dim=(2 * n_pieces, width),
+        inputs=[descriptor, wp.int32(width)],
+        device=device,
+    )
     return concatenated_vertices, concatenated_faces
 
 
