@@ -1686,30 +1686,46 @@ def _revolve_kept_template(profile_np: np.ndarray, step: float) -> np.ndarray:
         return np.flatnonzero(base_np != 0.0).astype(np.int32)
     if per <= _KEPT_TEMPLATE_LOOP_MAX:
         return _revolve_kept_template_scalar(profile_np, step)
-    radius_np, height_np = profile_np[:, 0], profile_np[:, 1]
-    grid_np = np.vstack(
-        (
-            np.column_stack((radius_np, np.zeros(per), height_np)),
-            np.column_stack((np.cos(step) * radius_np, np.sin(step) * radius_np, height_np)),
-        )
+    # ``_revolve_kept_template_scalar``'s operations, elementwise over the segments: the corner
+    # differences written out per triangle rather than gathered from a corner grid, which is what
+    # a cross product and a norm over an index table cost (8.7x this at 8 192 points).
+    cos_step = np.cos(step)
+    sin_step = np.sin(step)
+    r0_np, h0_np = profile_np[:-1, 0], profile_np[:-1, 1]
+    r1_np, h1_np = profile_np[1:, 0], profile_np[1:, 1]
+    qx_np, qy_np = cos_step * r0_np, sin_step * r0_np
+    zero_np = np.zeros(per - 1)
+    kept_np = np.empty((per - 1, 2), dtype=bool)
+    kept_np[:, 0] = _template_area_exceeds(
+        (qx_np - r0_np, qy_np - 0.0, h0_np - h0_np),
+        (r1_np - r0_np, zero_np - zero_np, h1_np - h0_np),
     )
-    segment_np = np.arange(per - 1)
-    triangles_np = np.empty((2 * (per - 1), 3), dtype=np.int64)
-    triangles_np[0::2] = np.column_stack((segment_np, segment_np + per, segment_np + 1))
-    triangles_np[1::2] = np.column_stack((segment_np + 1, segment_np + per, segment_np + per + 1))
-    corner_np = grid_np[triangles_np]
-    areas_np = 0.5 * np.linalg.norm(
-        np.cross(corner_np[:, 1] - corner_np[:, 0], corner_np[:, 2] - corner_np[:, 0]), axis=1
+    kept_np[:, 1] = _template_area_exceeds(
+        (qx_np - r1_np, qy_np - 0.0, h0_np - h1_np),
+        (cos_step * r1_np - r1_np, sin_step * r1_np - 0.0, h1_np - h1_np),
     )
-    return np.flatnonzero(areas_np > TOLERANCE_MERGE).astype(np.int32)
+    return np.flatnonzero(kept_np.reshape(-1)).astype(np.int32)
+
+
+def _template_area_exceeds(
+    a: tuple[np.ndarray, np.ndarray, np.ndarray], b: tuple[np.ndarray, np.ndarray, np.ndarray]
+) -> np.ndarray:
+    """Whether ``0.5 * |a x b|`` exceeds ``1e-8``, per element, in ``numpy.cross``'s order."""
+    ax, ay, az = a
+    bx, by, bz = b
+    cx = ay * bz - az * by
+    cy = az * bx - ax * bz
+    cz = ax * by - ay * bx
+    return 0.5 * np.sqrt(cx * cx + cy * cy + cz * cz) > TOLERANCE_MERGE
 
 
 def _revolve_kept_template_scalar(profile_np: np.ndarray, step: float) -> np.ndarray:
     """
     [`_revolve_kept_template`][ordito.creation._revolve_kept_template] in Python floats.
 
-    The same IEEE operations in the same order -- the template's corner differences, the cross
-    product's ``a1 * b2 - a2 * b1`` components, and the norm's left-to-right sum of squares -- so
+    The same IEEE operations in the same order as the array form -- the template's corner
+    differences, the cross product's ``a1 * b2 - a2 * b1`` components, and a left-to-right sum of
+    squares (``trimesh``'s ``numpy.cross`` and ``numpy.linalg.norm`` over the corner grid) -- so
     the verdict is identical bit for bit. On a profile of a handful of points the array form's cost
     is its per-call NumPy overhead, which this avoids.
     """
@@ -2933,8 +2949,8 @@ _REVOLVE_REGULAR_MAX_PROFILE = 2048
 
 # Longest profile whose degenerate-triangle screen runs in Python floats rather than NumPy: two
 # template triangles per segment, so the scalar loop grows with the profile while the array form's
-# cost is flat per-call overhead until the arrays get long.
-_KEPT_TEMPLATE_LOOP_MAX = 64
+# cost is flat per-call overhead until the arrays get long. The two cross at about 32 points.
+_KEPT_TEMPLATE_LOOP_MAX = 32
 # Longest profile whose area bound (``_off_axis_triangles_survive``) runs in Python floats.
 _BOUND_LOOP_MAX = 16
 
