@@ -244,6 +244,9 @@ def mate_pair_prehook(mates: wp.array[wp.int32], out_parents: wp.array[wp.int32]
 @wp.kernel
 def mate_pair_hook(mates: wp.array[wp.int32], parents: wp.array[wp.int32]) -> None:
     # ``connected_components.ecl_hook_edges`` over the same edges, after ``mate_pair_prehook``.
+    # A thread per halfedge, two in three a self-loop. A thread per face hooking its own pairs
+    # (``mate > h``) gave the same labels at 0.83-0.89x this kernel's device time on dragon to
+    # lucy but 1.25-1.3x on bunny, 1-4 % of the call either way (2026-11-06): declined.
     f0, f1 = mate_pair_faces(mates, wp.int32(wp.tid()))
     ecl_hook_pair(parents, f0, f1)
 
