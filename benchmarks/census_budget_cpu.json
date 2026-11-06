@@ -717,7 +717,7 @@
  "benchmarks/test_bounds.py::test_oriented_bounding_box[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 20,
-   "alloc": 2,
+   "alloc": 1,
    "readback": 1
   }
  },

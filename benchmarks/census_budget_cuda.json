@@ -768,7 +768,7 @@
  "benchmarks/test_bounds.py::test_oriented_bounding_box[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 20,
-   "alloc": 3,
+   "alloc": 2,
    "d2h": 1
   }
  },

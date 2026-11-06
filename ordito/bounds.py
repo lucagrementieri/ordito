@@ -900,18 +900,27 @@ def oriented_bounding_box(
     # still reads. The seeding walk writes half 0, including the first round's frames.
     count = _REFINE_CANDIDATES if refine_iterations > 0 else 0
     total = n_chains * count
-    # Every table of the search is carved from one ``mat33`` and one ``float32`` allocation. The
-    # axes kernel also seeds each candidate's six extent slots, so ``corners`` is uninitialised
-    # until then and every slot is written before the extents kernel reads it.
-    axes, refine_axes = _launch.carve(wp.mat33, [rotations, 2 * total], device)
+    # Every table of the search is carved from one allocation. The axes kernel also seeds each
+    # candidate's six extent slots, so ``corners`` is uninitialised until then and every slot is
+    # written before the extents kernel reads it; it also draws the refinement ball's ``deltas``,
+    # once for every round.
     state_size = 2 * n_chains * kernel_bounds.BOX_STATE_COLUMNS
-    corners, loss, refine_corners, state_flat = _launch.carve(
-        wp.float32, [6 * rotations, rotations, 12 * total, state_size], device
+    axes, refine_axes, corners, loss, refine_corners, state_flat, deltas = _launch.carve_typed(
+        [
+            (wp.mat33, rotations),
+            (wp.mat33, 2 * total),
+            (wp.float32, 6 * rotations),
+            (wp.float32, rotations),
+            (wp.float32, 12 * total),
+            (wp.float32, state_size),
+            (wp.vec4d, count),
+        ],
+        device,
     )
     _launch.launch(
         kernel_bounds.oriented_box_candidate_axes,
-        dim=rotations,
-        inputs=[rotations, axes, corners],
+        dim=max(rotations, count),
+        inputs=[rotations, count, axes, corners, deltas],
         device=device,
     )
 
@@ -946,6 +955,7 @@ def oriented_bounding_box(
             wp.int32(n_chains),
             wp.float64(sigma / math.pi),
             wp.int32(count),
+            deltas,
             chain_state,
             refine_axes,
             refine_corners,
@@ -957,6 +967,7 @@ def oriented_bounding_box(
         return _best_chain(chain_state, n_chains, 0)
     _refine_box(
         points,
+        deltas,
         objective,
         refine_iterations,
         sigma,
@@ -1034,6 +1045,7 @@ def _compact_masked_points(points: wp.array[wp.vec3], mask: wp.array[wp.bool]) -
 
 def _refine_box(
     points: wp.array[wp.vec3],
+    deltas: wp.array[wp.vec4d],
     objective: str,
     refine_iterations: int,
     sigma: float,
@@ -1080,20 +1092,22 @@ def _refine_box(
         # shrinking by 0.4 never outruns what a round can see. The last round's next ball is
         # written and never scored.
         sigma *= 0.4
-        _launch.launch(
+        _launch.launch_tiled(
             kernel_bounds.oriented_box_select_chains,
-            dim=total,
+            dim=(n_chains,),
             inputs=[
                 corners_in,
                 axes_in,
                 state_in,
                 wp.int32(_REFINE_CANDIDATES),
+                deltas,
                 objective_code,
                 wp.float64(sigma / math.pi),
                 state_out,
                 axes_out,
                 corners_out,
             ],
+            block_dim=_SEED_BLOCK_DIM,
             device=device,
         )
 

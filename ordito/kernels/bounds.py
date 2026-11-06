@@ -66,49 +66,19 @@ def seed_packed_box(out_corners: wp.array[wp.float32], box: wp.int32) -> None:
         out_corners[base + c] = FLOAT32_INF_CONSTANT
 
 
-@wp.kernel
-def oriented_box_candidate_axes(
-    n_rotations: wp.int32, out_axes: wp.array[wp.mat33], out_corners: wp.array[wp.float32]
-) -> None:
-    # Candidate box orientations, as world -> box frames whose *rows* are the box axes, each with
-    # its extent accumulator seeded (``seed_packed_box``).
-    #
-    # The set is the Super-Fibonacci spiral [Alexa 2022] — the same low-discrepancy sampling of
-    # SO(3) ``igl::oriented_bounding_box`` searches — with the identity as the **last** candidate,
-    # so a returned box can never be worse than the axis-aligned one and ``n_rotations = 1`` reduces
-    # to exactly the axis-aligned reduction.
-    i = wp.int32(wp.tid())
-    seed_packed_box(out_corners, i)
-    n_spiral = n_rotations - 1
-    if i >= n_spiral:
-        out_axes[i] = wp.identity(n=3, dtype=wp.float32)
-        return
-
-    q = super_fibonacci_quat(i, n_spiral)
-    rotation = wp.quat_to_matrix(
-        wp.quat(wp.float32(q[0]), wp.float32(q[1]), wp.float32(q[2]), wp.float32(q[3]))
-    )
-    # The quaternion names a box -> world rotation; the extent reduction wants world -> box.
-    out_axes[i] = wp.transpose(rotation)
-
-
 @wp.func
-def refine_candidate(
-    base: wp.mat33, p: wp.int32, count: wp.int32, angle_scale: wp.float64
-) -> wp.mat33:
+def refine_delta(p: wp.int32, count: wp.int32) -> wp.vec4d:
     """
-    Return candidate ``p`` of the ``count``-frame trust-region ball around ``base``.
+    Return delta ``p`` of the ``count``-frame trust-region ball, unshrunk, as ``(axis, angle)``.
 
-    The Super-Fibonacci sample of SO(3), geodesically shrunk toward the identity (each rotation
-    angle scaled by ``sigma / pi``) and composed onto the chain's base frame. Draws the same
-    [`super_fibonacci_quat`][ordito.kernels.bounds.super_fibonacci_quat] sequence
-    ``oriented_box_candidate_axes`` samples, so the last delta of every ball is the identity --
-    which re-scores the base and keeps each chain monotone. Shared by the two kernels that write a
-    round's frames: the seeding walk (the first round) and each round's selection (the next one).
+    The Super-Fibonacci sample of SO(3) as a unit axis and a rotation angle in ``[0, pi]``. It
+    depends on ``p`` and ``count`` alone, so ``oriented_box_candidate_axes`` tabulates it once and
+    every round's [`refine_candidate`][ordito.kernels.bounds.refine_candidate] reads it back
+    instead of redrawing it: the ``float64`` trigonometry was most of a round's selection and of
+    the seeding walk. The last delta is the identity, which ``refine_candidate`` never reads.
     """
     if p == count - 1:
-        return base
-
+        return wp.vec4d(wp.float64(1.0), wp.float64(0.0), wp.float64(0.0), wp.float64(0.0))
     delta_quat = super_fibonacci_quat(p, count - 1)
     qx = delta_quat[0]
     qy = delta_quat[1]
@@ -128,17 +98,78 @@ def refine_candidate(
         ax = qx / axis_norm
         ay = qy / axis_norm
         az = qz / axis_norm
-    shrunk_half = wp.float64(0.5) * angle * angle_scale
+    return wp.vec4d(ax, ay, az, angle)
+
+
+@wp.kernel
+def oriented_box_candidate_axes(
+    n_rotations: wp.int32,
+    n_deltas: wp.int32,
+    out_axes: wp.array[wp.mat33],
+    out_corners: wp.array[wp.float32],
+    out_deltas: wp.array[wp.vec4d],
+) -> None:
+    # Candidate box orientations, as world -> box frames whose *rows* are the box axes, each with
+    # its extent accumulator seeded (``seed_packed_box``); and the refinement's ``n_deltas`` ball
+    # deltas (``refine_delta``). Launched over ``max(n_rotations, n_deltas)`` threads.
+    #
+    # The set is the Super-Fibonacci spiral [Alexa 2022] — the same low-discrepancy sampling of
+    # SO(3) ``igl::oriented_bounding_box`` searches — with the identity as the **last** candidate,
+    # so a returned box can never be worse than the axis-aligned one and ``n_rotations = 1`` reduces
+    # to exactly the axis-aligned reduction.
+    i = wp.int32(wp.tid())
+    if i < n_deltas:
+        out_deltas[i] = refine_delta(i, n_deltas)
+    if i >= n_rotations:
+        return
+    seed_packed_box(out_corners, i)
+    n_spiral = n_rotations - 1
+    if i >= n_spiral:
+        out_axes[i] = wp.identity(n=3, dtype=wp.float32)
+        return
+
+    q = super_fibonacci_quat(i, n_spiral)
+    rotation = wp.quat_to_matrix(
+        wp.quat(wp.float32(q[0]), wp.float32(q[1]), wp.float32(q[2]), wp.float32(q[3]))
+    )
+    # The quaternion names a box -> world rotation; the extent reduction wants world -> box.
+    out_axes[i] = wp.transpose(rotation)
+
+
+@wp.func
+def refine_candidate(
+    base: wp.mat33,
+    p: wp.int32,
+    count: wp.int32,
+    deltas: wp.array[wp.vec4d],
+    angle_scale: wp.float64,
+) -> wp.mat33:
+    """
+    Return candidate ``p`` of the ``count``-frame trust-region ball around ``base``.
+
+    The tabulated delta ([`refine_delta`][ordito.kernels.bounds.refine_delta]) geodesically shrunk
+    toward the identity (its rotation angle scaled by ``sigma / pi``) and composed onto the chain's
+    base frame. The deltas draw the same
+    [`super_fibonacci_quat`][ordito.kernels.bounds.super_fibonacci_quat] sequence
+    ``oriented_box_candidate_axes`` samples, so the last delta of every ball is the identity --
+    which re-scores the base and keeps each chain monotone. Shared by the two kernels that write a
+    round's frames: the seeding walk (the first round) and each round's selection (the next one).
+    """
+    if p == count - 1:
+        return base
+
+    delta = deltas[p]
+    shrunk_half = wp.float64(0.5) * delta[3] * angle_scale
     sin_half = wp.sin(shrunk_half)
-    delta = wp.quat_to_matrix(
+    rotation = wp.quat_to_matrix(
         wp.quat(
-            wp.float32(ax * sin_half),
-            wp.float32(ay * sin_half),
-            wp.float32(az * sin_half),
+            wp.float32(delta[0] * sin_half),
+            wp.float32(delta[1] * sin_half),
+            wp.float32(delta[2] * sin_half),
             wp.float32(wp.cos(shrunk_half)),
         )
     )
-    return delta * base
+    return rotation * base
 
 
 # Candidate frames one ``oriented_box_extents`` thread may project into together; a launch takes
@@ -297,6 +328,7 @@ def oriented_box_seed_chains(
     n_chains: wp.int32,
     angle_scale: wp.float64,
     count_per_chain: wp.int32,
+    deltas: wp.array[wp.vec4d],
     out_state: wp.array2d[wp.float32],
     out_axes: wp.array[wp.mat33],
     out_corners: wp.array[wp.float32],
@@ -396,7 +428,9 @@ def oriented_box_seed_chains(
     for i in range(lane, n_chains * count_per_chain, wp.block_dim()):
         seed_packed_box(out_corners, i)
         base = axes[wp.max(picked[i // count_per_chain], 0)]
-        out_axes[i] = refine_candidate(base, i % count_per_chain, count_per_chain, angle_scale)
+        out_axes[i] = refine_candidate(
+            base, i % count_per_chain, count_per_chain, deltas, angle_scale
+        )
 
 
 @wp.func
@@ -415,6 +449,7 @@ def oriented_box_select_chains(
     axes: wp.array[wp.mat33],
     chain_state: wp.array2d[wp.float32],
     count_per_chain: wp.int32,
+    deltas: wp.array[wp.vec4d],
     objective: wp.int32,
     angle_scale: wp.float64,
     out_state: wp.array2d[wp.float32],
@@ -424,42 +459,44 @@ def oriented_box_select_chains(
     """
     Keep each chain's best candidate of this round, and write the next round's frames around it.
 
-    One thread per next-round candidate. Each walks its chain's ``count_per_chain`` block of
-    scored candidates and takes the argmin of the objective, which replaces the chain only when the
-    round improved on it -- what makes the refinement monotone per chain. Every thread of a chain
-    computes the same winner, so each writes its own frame of the next ball
-    ([`refine_candidate`][ordito.kernels.bounds.refine_candidate]) and seeds its extent slots with
-    no barrier, and the chain's first thread writes its row of ``out_state``. The inputs and
+    Launched ``wp.launch_tiled(dim=n_chains)``: one block per chain, whose lanes stride the chain's
+    ``count_per_chain`` scored candidates by ``wp.block_dim()`` and fold their argmins with
+    [`block_argmin`][ordito.kernels.reduce.block_argmin] -- the lowest-index candidate of least
+    loss, the one a serial walk would keep. It replaces the chain only when it improves on the
+    chain's loss, which is what makes the refinement monotone per chain. Every lane then holds the
+    winner, so each writes its share of the next ball's frames
+    ([`refine_candidate`][ordito.kernels.bounds.refine_candidate]) and seeds their extent slots
+    with no further barrier, and lane 0 writes the chain's row of ``out_state``. The inputs and
     outputs are two halves of one ping-ponged buffer each, so no thread overwrites what another of
-    this launch still reads.
+    this launch still reads. On the CPU device the one lane walks the whole chain.
 
     ``chain_state`` is one [`write_chain_state`][ordito.kernels.bounds.write_chain_state] row per
     chain, whose frame is the chain's base, so the whole refinement reads back once at the end
     instead of once per round.
     """
-    i = wp.int32(wp.tid())
-    chain = i // count_per_chain
-    p = i % count_per_chain
+    chain, lane = wp.tid()
     base = chain * count_per_chain
-    best_row = wp.int32(-1)
-    best_loss = chain_state[chain, 0]
-    for k in range(count_per_chain):
-        row = base + k
-        loss = box_objective_loss(packed_box_sides(corners, row), objective)
-        if loss < best_loss:
-            best_loss = loss
-            best_row = row
+    lane_loss = wp.float32(FLOAT32_INF_CONSTANT)
+    lane_row = wp.int32(-1)
+    for k in range(lane, count_per_chain, wp.block_dim()):
+        loss = box_objective_loss(packed_box_sides(corners, base + k), objective)
+        if loss < lane_loss:
+            lane_loss = loss
+            lane_row = base + k
+    best_loss, best_row = block_argmin(lane_loss, lane_row)
+    improved = best_row >= 0 and best_loss < chain_state[chain, 0]
     frame = chain_frame(chain_state, chain)
-    if best_row >= 0:
+    if improved:
         frame = axes[best_row]
-    if p == 0:
-        if best_row >= 0:
+    if lane == 0:
+        if improved:
             write_chain_state(out_state, chain, best_loss, corners, best_row, frame)
         else:
             for c in range(BOX_STATE_COLUMNS):
                 out_state[chain, c] = chain_state[chain, c]
-    seed_packed_box(out_corners, i)
-    out_axes[i] = refine_candidate(frame, p, count_per_chain, angle_scale)
+    for p in range(lane, count_per_chain, wp.block_dim()):
+        seed_packed_box(out_corners, base + p)
+        out_axes[base + p] = refine_candidate(frame, p, count_per_chain, deltas, angle_scale)
 
 
 @wp.func
