@@ -42,10 +42,12 @@ def halfedge_prev(h: wp.int32) -> wp.int32:
 
 
 @wp.func
-def next_boundary_halfedge(
-    faces: wp.array[wp.int32], twins: wp.array[wp.int32], h: wp.int32
+def rotate_to_boundary_halfedge(
+    faces: wp.array[wp.int32], table: wp.array[wp.int32], h: wp.int32, twin_of: wp.Function
 ) -> wp.int32:
-    # The boundary halfedge following ``h`` around the rim, or -1 if the fan does not close.
+    # The boundary halfedge following ``h`` around the rim, or -1 if the fan does not close, with
+    # each twin read by ``twin_of(faces, table, g)``: ``next_boundary_halfedge`` over a twin table,
+    # ``next_boundary_halfedge_from_mates`` over the mates the table would be built from.
     #
     # Rotate around ``h``'s tip through the faces on ``h``'s own side until an outgoing halfedge
     # with no twin turns up. That sector is what makes this well defined where a per-*vertex* table
@@ -59,10 +61,25 @@ def next_boundary_halfedge(
     # approached, and it is here so a malformed twin table cannot spin forever.
     g = halfedge_next(h)
     for _ in range(faces.shape[0] // 3):
-        if twins[g] < 0:
+        twin = twin_of(faces, table, g)
+        if twin < 0:
             return g
-        g = halfedge_next(twins[g])
+        g = halfedge_next(twin)
     return -1
+
+
+@wp.func
+def table_twin(faces: wp.array[wp.int32], twins: wp.array[wp.int32], h: wp.int32) -> wp.int32:
+    # ``rotate_to_boundary_halfedge``'s lookup over a twin table (``faces`` unread).
+    return twins[h]
+
+
+@wp.func
+def next_boundary_halfedge(
+    faces: wp.array[wp.int32], twins: wp.array[wp.int32], h: wp.int32
+) -> wp.int32:
+    # ``rotate_to_boundary_halfedge`` over a twin table.
+    return rotate_to_boundary_halfedge(faces, twins, h, table_twin)
 
 
 @wp.func
@@ -373,6 +390,23 @@ def mate_twin_defect(
             return wp.int32(-1), HALFEDGE_DEFECT_SAME_DIRECTION
         return wp.int32(-1), HALFEDGE_DEFECT_NONE
     return mate, HALFEDGE_DEFECT_NONE
+
+
+@wp.func
+def mate_twin(faces: wp.array[wp.int32], mates: wp.array[wp.int32], h: wp.int32) -> wp.int32:
+    # Halfedge ``h``'s entry of the twin table ``twins_from_mates`` would build from ``mates``.
+    twin, _defect = mate_twin_defect(faces, mates[h], h)
+    return twin
+
+
+@wp.func
+def next_boundary_halfedge_from_mates(
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], h: wp.int32
+) -> wp.int32:
+    # ``next_boundary_halfedge`` with each twin formed from the mates where the rotation reads it,
+    # for a caller that walks only the boundary halfedges and would otherwise build the whole
+    # twin table for them (``boundary``'s pinched walk).
+    return rotate_to_boundary_halfedge(faces, mates, h, mate_twin)
 
 
 @wp.func

@@ -512,30 +512,22 @@ def _pinched_boundary_cycles(
     So the cycles are the boundary of the surface with each pinch vertex split once per fan: every
     boundary edge appears exactly once, and a cycle can pass through a pinch vertex twice where two
     holes touch there (one fan hands the walk from the first rim to the second, the other hands it
-    back); [`_split_at_pinches`][ordito.boundary._split_at_pinches] then cuts it in two. Only this
-    branch builds a twin table (unvalidated: a mesh this function accepts need not
-    be edge-manifold, and on one that is not, the walk is still
-    bounded and in range, just not meaningful). There a rotation can dead-end on a halfedge that is
-    not a boundary one, and the chain it leaves is dropped rather than ranked (see
-    ``kernels/graph.closed_cycle_windows``), so every returned pair is still a boundary edge.
+    back); [`_split_at_pinches`][ordito.boundary._split_at_pinches] then cuts it in two. The
+    rotation reads each twin off the boundary detection's own mates where it steps, under
+    ``halfedge_twins``' rule but unvalidated: a mesh this function accepts need not be
+    edge-manifold, and on one that is not, the walk is still bounded and in range, just not
+    meaningful. There a rotation can dead-end on a halfedge that is not a boundary one, and the
+    chain it leaves is dropped rather than ranked (see ``kernels/graph.closed_cycle_windows``), so
+    every returned pair is still a boundary edge.
 
     ``cross_gaps`` swaps the successor at a vertex with two out-halfedges for the other one, which
     crosses the gap between the fans (``kernels/boundary.cross_pinch_gaps``); the map stays a
     bijection, as each swap exchanges the two halfedges leaving one vertex.
     """
     faces = boundary.faces
-    # ``halfedge_twins(faces, n_vertices=n_vertices, validate=False)``, read off the boundary
-    # detection's own mates, so the pairing is not repeated. The defect counts are not read.
     n = boundary.n
     device = faces.device
-    twins = _launch.empty(n, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_halfedge.twins_from_mates,
-        dim=n,
-        inputs=[faces, boundary.mates, twins, _launch.zeros(2, dtype=wp.int32, device=device)],
-        device=device,
-    )
-    tails, next_node = boundary.successors(n, twins=twins)
+    tails, next_node = boundary.successors(n, halfedge_nodes=True)
     if cross_gaps:
         counts = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
         slots = _launch.empty(2 * n_vertices, dtype=wp.int32, device=device)
@@ -1449,15 +1441,14 @@ class _BoundaryHalfedges:
         return out_edges
 
     def successors(
-        self, node_count: int, *, twins: wp.array[wp.int32] | None = None
+        self, node_count: int, *, halfedge_nodes: bool = False
     ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
         """
         Return the boundary as a successor graph: its nodes, and the ``node_count``-sized table.
 
-        The nodes are the directed rows' tail vertices, or with ``twins`` the boundary halfedges;
-        see
-        ``kernels/boundary.emit_boundary_successors``. The table is ``-1`` off the nodes, which is
-        where a chain on a mesh that is not edge-manifold ends.
+        The nodes are the directed rows' tail vertices, or with ``halfedge_nodes`` the boundary
+        halfedges; see ``kernels/boundary.emit_boundary_successors``. The table is ``-1`` off the
+        nodes, which is where a chain on a mesh that is not edge-manifold ends.
         """
         device = self.faces.device
         k = self.count()
@@ -1476,7 +1467,15 @@ class _BoundaryHalfedges:
         _launch.launch(
             kernel_boundary.emit_boundary_successors,
             dim=self.n,
-            inputs=[self._words, self._ranks, self.key_order, self.faces, twins, tails, next_node],
+            inputs=[
+                self._words,
+                self._ranks,
+                self.key_order,
+                self.faces,
+                self.mates if halfedge_nodes else None,
+                tails,
+                next_node,
+            ],
             device=device,
         )
         return tails, next_node

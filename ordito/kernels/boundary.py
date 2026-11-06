@@ -14,7 +14,7 @@ from ordito.kernels.halfedge import (
     HALFEDGE_MATE_BOUNDARY,
     halfedge_endpoints,
     key_ordered_halfedge,
-    next_boundary_halfedge,
+    next_boundary_halfedge_from_mates,
     sorted_run_mate,
 )
 from ordito.kernels.predicates import newell_term
@@ -388,25 +388,27 @@ def emit_boundary_successors(
     word_ranks: wp.array[wp.int32],
     key_order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
-    twins: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
     out_tails: wp.array[wp.int32],
     out_next: wp.array[wp.int32],
 ) -> None:
     # The boundary as a successor graph, straight off ``mark_boundary_halfedges``' ranked bits
     # with no edge rows in between: the ranked nodes in ``out_tails`` and their successors in the
-    # node-sized ``out_next``. Without ``twins`` (``None``) the nodes are the vertices, the
-    # directed rows' tails (``halfedge_endpoints``). With it they are the boundary
-    # *halfedges*, each followed by the boundary halfedge leaving its tip in its own sector: over
-    # vertices a pinch point has two successors, over halfedges every node has one. A fan that
-    # does not close (a malformed twin table) maps to a self-loop, so the walk stays bounded. The
-    # ranking names each cycle by its smallest node, so the order of ``out_tails`` is free.
+    # node-sized ``out_next``. Without ``mates`` (``None``) the nodes are the vertices, the
+    # directed rows' tails (``halfedge_endpoints``). With them they are the boundary
+    # *halfedges*, each followed by the boundary halfedge leaving its tip in its own sector
+    # (``next_boundary_halfedge_from_mates``, each twin formed from the mates as the rotation
+    # reads it, so no twin table is built for the few halfedges walked): over vertices a pinch
+    # point has two successors, over halfedges every node has one. A fan that does not close (a
+    # mesh that is not edge-manifold) maps to a self-loop, so the walk stays bounded. The ranking
+    # names each cycle by its smallest node, so the order of ``out_tails`` is free.
     i = wp.int32(wp.tid())
     g, flagged = bit_slot(words, word_ranks, i)
     if not flagged:
         return
     h = key_ordered_halfedge(key_order, i)
-    if twins.shape[0] > 0:
-        following = next_boundary_halfedge(faces, twins, h)
+    if mates.shape[0] > 0:
+        following = next_boundary_halfedge_from_mates(faces, mates, h)
         out_tails[g] = h
         out_next[h] = wp.where(following >= 0, following, h)
     else:
