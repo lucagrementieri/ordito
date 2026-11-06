@@ -1078,11 +1078,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `float64` work no face table removes (Meyer's per-corner divisions, VTK's corner arccosines,
   the normal-cycle dihedrals and `wp.eig3`: dragon 1.9 / 1.9 / 2.6 ms); a `float32` path or
   filter changes outputs against the VTK / MeshLab parity pairs and needs the user's go-ahead.
-  The ball measures are latency-bound at few queries: `ball_mean_curvature` is 75 % of
-  `discrete_mean_curvature`'s device time on `sphere_small` (345 us for 2 562 queries) and
-  `ball_angle_defect_sum` 74 % of the Gaussian's; a cooperative walk meets §12.2's overfull-leaf
-  hazard. Outside the scope: `kernels/reconstruction.corner_angle_weighted_normals` re-forms each face's `float64` normal and
-  edge units at all three corners (the face-table shape), inside a lattice-bound call.
+  The ball measures stay latency-bound at few queries after their leaf and cell tuning
+  (`ball_mean_curvature` about 290 us for 2 562 queries); a cooperative walk meets §12.2's
+  overfull-leaf hazard. Not yet carried to other few-query ball walks: a BVH's leaf size and a
+  hash grid's cell of twice the radius (`kernels/curvature.MEAN_CURVATURE_BVH_LEAF_SIZE`,
+  `GAUSSIAN_WIDE_CELL_MAX_QUERIES`); price each site, since both lose where queries are many.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

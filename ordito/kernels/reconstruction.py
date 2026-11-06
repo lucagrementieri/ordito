@@ -3707,41 +3707,55 @@ def unit_or_zero_d(v: wp.vec3d) -> wp.vec3d:
 
 
 @wp.kernel
+def corner_angle_face_terms(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_face_terms: wp.array2d[wp.float64]
+) -> None:
+    # Face ``f``'s unit normal (columns 0-2) and its angles at corners 0, 1 and 2 (columns 3-5), in
+    # ``float64``, for ``corner_angle_weighted_normals``: each vertex walking its row formed the
+    # face's normal, three unit edges and arccosine afresh, so a face paid them at all three of its
+    # corners. Bit-identical to forming them in the walk; table and walk 0.29-0.30x the walk's
+    # device time (sphere_small, dragon), for 48 bytes a face released before the lattice.
+    f = wp.int32(wp.tid())
+    a = wp.vec3d(vertices[faces[3 * f]])
+    b = wp.vec3d(vertices[faces[3 * f + 1]])
+    c = wp.vec3d(vertices[faces[3 * f + 2]])
+    normal = unit_or_zero_d(wp.cross(b - a, c - a))
+    e0 = unit_or_zero_d(b - a)
+    e1 = unit_or_zero_d(c - b)
+    e2 = unit_or_zero_d(a - c)
+    one = wp.float64(1.0)
+    out_face_terms[f, 0] = normal[0]
+    out_face_terms[f, 1] = normal[1]
+    out_face_terms[f, 2] = normal[2]
+    out_face_terms[f, 3] = wp.acos(wp.clamp(wp.dot(e0, -e2), -one, one))
+    out_face_terms[f, 4] = wp.acos(wp.clamp(wp.dot(-e0, e1), -one, one))
+    out_face_terms[f, 5] = wp.acos(wp.clamp(wp.dot(-e1, e2), -one, one))
+
+
+@wp.kernel
 def corner_angle_weighted_normals(
-    vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
+    face_terms: wp.array2d[wp.float64],
     out_normals: wp.array[wp.vec3d],
 ) -> None:
     """
     Each vertex's sum of its faces' unit normals weighted by the face's angle there, unnormalized.
 
     In ``float64``, over the vertex's row of ``vertex_faces`` in row order (ascending face order
-    when the rows are sorted). A face listed once per corner at the vertex adds each such corner;
-    a zero-area face adds nothing, its normal being zero.
+    when the rows are sorted), each face's normal and corner angles read off its
+    ``corner_angle_face_terms`` row. A face listed once per corner at the vertex adds each such
+    corner; a zero-area face adds nothing, its normal being zero.
     """
     v = wp.int32(wp.tid())
     total = wp.vec3d()
     for slot in range(offsets[v], offsets[v + 1]):
         f = vertex_faces[slot]
-        i0 = faces[3 * f]
-        i1 = faces[3 * f + 1]
-        i2 = faces[3 * f + 2]
-        a = wp.vec3d(vertices[i0])
-        b = wp.vec3d(vertices[i1])
-        c = wp.vec3d(vertices[i2])
-        normal = unit_or_zero_d(wp.cross(b - a, c - a))
-        e0 = unit_or_zero_d(b - a)
-        e1 = unit_or_zero_d(c - b)
-        e2 = unit_or_zero_d(a - c)
-        one = wp.float64(1.0)
-        if i0 == v:
-            total += normal * wp.acos(wp.clamp(wp.dot(e0, -e2), -one, one))
-        if i1 == v:
-            total += normal * wp.acos(wp.clamp(wp.dot(-e0, e1), -one, one))
-        if i2 == v:
-            total += normal * wp.acos(wp.clamp(wp.dot(-e1, e2), -one, one))
+        normal = wp.vec3d(face_terms[f, 0], face_terms[f, 1], face_terms[f, 2])
+        for k in range(3):
+            if faces[3 * f + k] == v:
+                total += normal * face_terms[f, 3 + k]
     out_normals[v] = total
 
 

@@ -4685,14 +4685,24 @@ def _meshlab_resample(
     device = vertices.device
     n_vertices = vertices.size
     vertex_faces, offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    n_faces = faces.size // 3
+    face_terms = _launch.empty((n_faces, 6), dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_reconstruction.corner_angle_face_terms,
+        dim=n_faces,
+        inputs=[vertices, faces],
+        outputs=[face_terms],
+        device=device,
+    )
     normals = _launch.empty(n_vertices, dtype=wp.vec3d, device=device)
     _launch.launch(
         kernel_reconstruction.corner_angle_weighted_normals,
         dim=n_vertices,
-        inputs=[vertices, faces, vertex_faces, offsets],
+        inputs=[faces, vertex_faces, offsets, face_terms],
         outputs=[normals],
         device=device,
     )
+    del face_terms
     mesh = wp.Mesh(points=vertices, indices=faces)
     field = odt.empty_3d(shape, wp.float64, device=device)
     lattice_lower = wp.vec3d(*origin)

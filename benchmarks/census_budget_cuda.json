@@ -5901,8 +5901,8 @@
  },
  "benchmarks/test_reconstruction.py::test_resample_uniform_meshlab[sphere_small-ordito-cuda-0.01]": {
   "counts": {
-   "launch": 7,
-   "alloc": 8,
+   "launch": 8,
+   "alloc": 9,
    "memset": 2,
    "d2h": 2,
    "scan": 2
@@ -5910,8 +5910,8 @@
  },
  "benchmarks/test_reconstruction.py::test_resample_uniform_meshlab[sphere_small-ordito-cuda-0.02]": {
   "counts": {
-   "launch": 7,
-   "alloc": 8,
+   "launch": 8,
+   "alloc": 9,
    "memset": 2,
    "d2h": 2,
    "scan": 2
