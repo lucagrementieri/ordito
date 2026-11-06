@@ -619,18 +619,30 @@ def _group_values(n: int, width: int, dtype_np: type, seed: int) -> np.ndarray:
 
 @pytest.mark.parametrize("deterministic", [True, False], indirect=True)
 @pytest.mark.parametrize(("dtype_wp", "dtype_np", "width"), _GROUP_SUM_DTYPES)
+@pytest.mark.parametrize(
+    ("n_groups", "pooling"),
+    [(3_000, kernel_scatter.ARRIVAL_POOL_UNIFORM), (20, kernel_scatter.ARRIVAL_POOL_PEERS)],
+)
 @pytest.mark.parity("scatter_sum", "numpy")
 def test_scatter_sum_matches_numpy(
-    device: str, dtype_wp: type, dtype_np: type, width: int, deterministic: bool
+    device: str,
+    dtype_wp: type,
+    dtype_np: type,
+    width: int,
+    n_groups: int,
+    pooling: int,
+    deterministic: bool,
 ) -> None:
     """
     Class A: per-group sums against ``numpy.bincount`` in ``float64``, on both settings.
 
-    50 000 values into 3 000 groups, a group no index names included (it sums to zero), with
-    ``n_groups`` passed and with it inferred from the largest index. Vectors are compared per
-    component (``bincount`` of each column).
+    50 000 values into 3 000 groups (the uniform warp test) or 20 (pooling peers, from
+    ``kernels/scatter.SCATTER_POOL_PEERS_TERMS`` terms a group), a group no index names included
+    (it sums to zero), with ``n_groups`` passed and with it inferred from the largest index.
+    Vectors are compared per component (``bincount`` of each column).
     """
-    n, n_groups = 50_000, 3_000
+    n = 50_000
+    assert kernel_scatter.scatter_sum_pooling(n, n_groups) == pooling
     values_np = _group_values(n, width, dtype_np, seed=12)
     rng = np.random.default_rng(13)
     indices_np = rng.integers(0, n_groups - 1, n).astype(np.int32)
@@ -653,6 +665,22 @@ def test_scatter_sum_matches_numpy(
     if deterministic:
         # Each group's sum depends on its own terms alone, not on how many groups there are.
         assert np.array_equal(inferred_wp.numpy(), sums_wp.numpy()[:-1])
+
+
+@pytest.mark.parametrize("n_groups", [1, 7, 1_000])
+def test_scatter_sum_pools_peers_from_its_mean_group_size(n_groups: int) -> None:
+    """
+    Not a library comparison: the pooling ``scatter_sum`` launches, at its threshold's boundary.
+
+    Peers from ``SCATTER_POOL_PEERS_TERMS`` terms a group on average, the uniform warp test one
+    term below it, and an empty scatter the uniform test.
+    """
+    threshold = kernel_scatter.SCATTER_POOL_PEERS_TERMS * n_groups
+    peers = kernel_scatter.ARRIVAL_POOL_PEERS
+    uniform = kernel_scatter.ARRIVAL_POOL_UNIFORM
+    assert kernel_scatter.scatter_sum_pooling(threshold, n_groups) == peers
+    assert kernel_scatter.scatter_sum_pooling(threshold - 1, n_groups) == uniform
+    assert kernel_scatter.scatter_sum_pooling(0, 0) == uniform
 
 
 @pytest.mark.parametrize(("dtype_wp", "dtype_np", "width"), _GROUP_SUM_DTYPES)
@@ -688,20 +716,21 @@ def test_scatter_sum_repeats_bit_for_bit_on_both_devices(
 def _scatter_sum_positive(dtype: Any, width: int) -> Any:
     """Build a kernel adding each ``dtype`` value whose first component is positive."""
 
-    def _scalars(values: Any, indices: Any, sums: Any, out_sums: Any) -> None:
+    def _scalars(values: Any, indices: Any, pooling: Any, sums: Any, out_sums: Any) -> None:
         i = wp.int32(wp.tid())  # pyright: ignore[reportArgumentType]
         if values[i] > type(values[i])(0.0):
-            kernel_scatter.scatter_add(out_sums, sums, indices[i], values[i])
+            kernel_scatter.scatter_add(out_sums, sums, indices[i], values[i], pooling)
 
-    def _vectors(values: Any, indices: Any, sums: Any, out_sums: Any) -> None:
+    def _vectors(values: Any, indices: Any, pooling: Any, sums: Any, out_sums: Any) -> None:
         i = wp.int32(wp.tid())  # pyright: ignore[reportArgumentType]
         if values[i][0] > type(values[i][0])(0.0):
-            kernel_scatter.scatter_add_vector(out_sums, sums, indices[i], values[i])
+            kernel_scatter.scatter_add_vector(out_sums, sums, indices[i], values[i], pooling)
 
     _k = _scalars if width == 1 else _vectors
     _k.__annotations__.update(
         values=wp.array[dtype],
         indices=wp.array[wp.int32],
+        pooling=wp.int32,
         sums=kernel_reduce.GroupSumPass,
         out_sums=wp.array[dtype],
         **{"return": None},
@@ -718,8 +747,17 @@ _SCATTER_SUM_POSITIVE = {
 @pytest.mark.parametrize("deterministic", [True, False], indirect=True)
 @pytest.mark.parametrize(("dtype_wp", "dtype_np", "width"), _GROUP_SUM_DTYPES[::3])
 @pytest.mark.parametrize("run", [1, 7, 10_000])
+@pytest.mark.parametrize(
+    "pooling", [kernel_scatter.ARRIVAL_POOL_UNIFORM, kernel_scatter.ARRIVAL_POOL_PEERS]
+)
 def test_group_sums_of_hot_groups_under_divergence(
-    device: str, dtype_wp: type, dtype_np: type, width: int, run: int, deterministic: bool
+    device: str,
+    dtype_wp: type,
+    dtype_np: type,
+    width: int,
+    run: int,
+    pooling: int,
+    deterministic: bool,
 ) -> None:
     """
     Class A: a scatter taken by about half of each warp's lanes, against ``numpy.bincount``.
@@ -727,10 +765,11 @@ def test_group_sums_of_hot_groups_under_divergence(
     Groups are runs of ``run`` consecutive items (1: every lane its own group; 7: warps shared
     by a few groups; 10 000: every warp on one group), and only the items whose first component
     is positive add, so a warp's active lanes are a scattered subset of it. With the setting off
-    that is the warp-uniform pre-sum over a partial mask (``kernels/reduce.warp_lanes_sum``'s
-    rank walk); a lane summed twice, or one dropped, moves its group by a whole term. The item
-    count is not a multiple of 32, so the last warp is short too. Under the setting the sums also
-    repeat bit for bit.
+    that is the pre-sum over a partial mask (``kernels/reduce.warp_lanes_sum``'s rank walk), of a
+    warp-uniform group or, pooling peers, of each group a warp's lanes share (``run`` 7 splits a
+    warp among several); a lane summed twice, or one dropped, moves its group by a whole term.
+    The item count is not a multiple of 32, so the last warp is short too. Under the setting the
+    sums also repeat bit for bit.
     """
     n = 100_003
     values_np = _group_values(n, width, dtype_np, seed=20)
@@ -751,7 +790,11 @@ def test_group_sums_of_hot_groups_under_divergence(
     sums = [_launch.group_sums(n_groups, dtype_wp, n, device) for _ in range(2)]
     for pass_sums in sums:
         _launch.launch_group_sums(
-            _SCATTER_SUM_POSITIVE[dtype_wp], n, [values_wp, indices_wp], pass_sums, device=device
+            _SCATTER_SUM_POSITIVE[dtype_wp],
+            n,
+            [values_wp, indices_wp, pooling],
+            pass_sums,
+            device=device,
         )
     sums_np, again_np = (_launch.finish_group_sums(pass_sums).numpy() for pass_sums in sums)
     assert np.allclose(sums_np, expected_np, rtol=1e-5, atol=1e-3)
@@ -848,7 +891,7 @@ def test_group_sum_headroom_limits(device: str) -> None:
     _launch.launch_group_sums(
         kernel_scatter.SCATTER_SUM_SCALARS[wp.float64],
         4,
-        [values_wp, indices_wp],
+        [values_wp, indices_wp, kernel_scatter.ARRIVAL_POOL_UNIFORM],
         sums,
         device=device,
     )
@@ -885,11 +928,12 @@ def test_read_group_sum_equals_the_finish(device: str, deterministic: bool) -> N
     indices_wp = wp.array(indices_np, dtype=wp.int32, device=device)
     kernel = kernel_scatter.SCATTER_SUM_SCALARS[wp.float32]
     finished = _launch.group_sums(n_groups, wp.float32, n, device)
-    _launch.launch_group_sums(kernel, n, [values_wp, indices_wp], finished, device=device)
+    inputs = [values_wp, indices_wp, kernel_scatter.ARRIVAL_POOL_UNIFORM]
+    _launch.launch_group_sums(kernel, n, inputs, finished, device=device)
     expected_np = _launch.finish_group_sums(finished).numpy()
     fused = _launch.group_sums(n_groups, wp.float32, n, device, fused=True)
     assert (fused.out is None) == deterministic
-    _launch.launch_group_sums(kernel, n, [values_wp, indices_wp], fused, device=device)
+    _launch.launch_group_sums(kernel, n, inputs, fused, device=device)
     read_wp = warp_empty(n_groups, wp.float32, device)
     wp.launch(
         _read_group_sums,
@@ -906,13 +950,14 @@ def test_read_group_sum_equals_the_finish(device: str, deterministic: bool) -> N
 def _scatter_sum_matrices(dtype: Any) -> Any:
     """Build a kernel adding each ``dtype`` matrix into its group (``scatter_add_matrix``)."""
 
-    def _k(values: Any, indices: Any, sums: Any, out_sums: Any) -> None:
+    def _k(values: Any, indices: Any, pooling: Any, sums: Any, out_sums: Any) -> None:
         i = wp.int32(wp.tid())  # pyright: ignore[reportArgumentType]
-        kernel_scatter.scatter_add_matrix(out_sums, sums, indices[i], values[i])
+        kernel_scatter.scatter_add_matrix(out_sums, sums, indices[i], values[i], pooling)
 
     _k.__annotations__.update(
         values=wp.array[dtype],
         indices=wp.array[wp.int32],
+        pooling=wp.int32,
         sums=kernel_reduce.GroupSumPass,
         out_sums=wp.array[dtype],
         **{"return": None},
@@ -924,7 +969,12 @@ _SCATTER_SUM_MATRICES = {dtype: _scatter_sum_matrices(dtype) for dtype in (wp.ma
 
 
 def _matrix_group_sums(
-    values_np: np.ndarray, indices_np: np.ndarray, n_groups: int, dtype_wp: type, device: str
+    values_np: np.ndarray,
+    indices_np: np.ndarray,
+    n_groups: int,
+    dtype_wp: type,
+    device: str,
+    pooling: int,
 ) -> np.ndarray:
     """``(n_groups, 3, 3)`` group sums of ``values_np`` through the matrix scatter and finish."""
     values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
@@ -933,7 +983,7 @@ def _matrix_group_sums(
     _launch.launch_group_sums(
         _SCATTER_SUM_MATRICES[dtype_wp],
         values_np.shape[0],
-        [values_wp, indices_wp],
+        [values_wp, indices_wp, pooling],
         sums,
         device=device,
     )
@@ -944,8 +994,11 @@ def _matrix_group_sums(
 @pytest.mark.parametrize(
     ("dtype_wp", "dtype_np"), [(wp.mat33, np.float32), (wp.mat33d, np.float64)]
 )
+@pytest.mark.parametrize(
+    "pooling", [kernel_scatter.ARRIVAL_POOL_UNIFORM, kernel_scatter.ARRIVAL_POOL_PEERS]
+)
 def test_matrix_group_sums_are_exact_and_repeat(
-    device: str, dtype_wp: type, dtype_np: type, deterministic: bool
+    device: str, dtype_wp: type, dtype_np: type, pooling: int, deterministic: bool
 ) -> None:
     """
     Not a library comparison: matrix group sums against each entry's exact rational sum.
@@ -965,7 +1018,7 @@ def test_matrix_group_sums_are_exact_and_repeat(
     values_np = values_np.astype(dtype_np)
     indices_np = rng.integers(0, n_groups - 1, n).astype(np.int32)
     indices_np[: n // 3] = 5
-    sums_np = _matrix_group_sums(values_np, indices_np, n_groups, dtype_wp, device)
+    sums_np = _matrix_group_sums(values_np, indices_np, n_groups, dtype_wp, device, pooling)
     assert sums_np.shape == (n_groups, 3, 3)
     assert np.all(sums_np[n_groups - 1] == 0.0)
     if not deterministic:
@@ -986,8 +1039,8 @@ def test_matrix_group_sums_are_exact_and_repeat(
                 allowed += 2.0 * float(np.spacing(dtype_np(abs(exact))))
                 error = abs(Fraction(float(sums_np[g, r, c])) - exact)
                 assert error <= Fraction(allowed), (g, r, c)
-    again_np = _matrix_group_sums(values_np, indices_np, n_groups, dtype_wp, device)
-    on_cpu_np = _matrix_group_sums(values_np, indices_np, n_groups, dtype_wp, "cpu")
+    again_np = _matrix_group_sums(values_np, indices_np, n_groups, dtype_wp, device, pooling)
+    on_cpu_np = _matrix_group_sums(values_np, indices_np, n_groups, dtype_wp, "cpu", pooling)
     assert np.array_equal(again_np.view(np.uint8), sums_np.view(np.uint8))
     assert np.array_equal(on_cpu_np.view(np.uint8), sums_np.view(np.uint8))
 

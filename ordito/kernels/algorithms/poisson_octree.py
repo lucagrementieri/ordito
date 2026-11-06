@@ -89,7 +89,7 @@ from ordito.kernels.reconstruction import (
     poisson_restrict_weight,
 )
 from ordito.kernels.reduce import GroupSumPass
-from ordito.kernels.scatter import scatter_add, scatter_add_vector
+from ordito.kernels.scatter import ARRIVAL_POOL_UNIFORM, scatter_add, scatter_add_vector
 
 wp.set_module_options({"enable_backward": False})
 
@@ -940,6 +940,7 @@ def octree_density_splat(
                         sums,
                         cell_entry(cells, target[0], o),
                         mass * vx[a] * vy[b] * vz[c],
+                        ARRIVAL_POOL_UNIFORM,
                     )
 
 
@@ -1044,7 +1045,8 @@ def splat_normal_at(
                     entry = cell_entry(cells, t, o)
                     if targets.shape[0] > 0:
                         entry = bit_rank(targets, target_ranks, entry)
-                    scatter_add_vector(out_normals, sums, entry, amount * (vx[a] * vy[b] * vz[c]))
+                    value = amount * (vx[a] * vy[b] * vz[c])
+                    scatter_add_vector(out_normals, sums, entry, value, ARRIVAL_POOL_UNIFORM)
 
 
 @wp.kernel

@@ -21,7 +21,7 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.halfedge import halfedge_endpoints, key_ordered_halfedge, mate_halfedge
 from ordito.kernels.reduce import GroupSumPass, read_group_sum
-from ordito.kernels.scatter import mark_corners, scatter_add
+from ordito.kernels.scatter import ARRIVAL_POOL_PEERS, mark_corners, scatter_add
 from ordito.kernels.triangles import corner_triple, face_normals_and_area, write_corner_triple
 
 wp.set_module_options({"enable_backward": False})
@@ -743,10 +743,11 @@ def scatter_region_areas(
     out_areas: wp.array[wp.float32],
 ) -> None:
     # Each face's area into its region's sum (``scatter.scatter_add``, per the deterministic
-    # setting), slot per label.
+    # setting), slot per label; off, pooled across the lanes sharing a region
+    # (``ARRIVAL_POOL_PEERS``: dragon 0.86x the uniform test, elsewhere at par).
     f = wp.int32(wp.tid())
     _normal, area = face_normals_and_area(vertices, faces, f)
-    scatter_add(out_areas, sums, region_labels[f], area)
+    scatter_add(out_areas, sums, region_labels[f], area, ARRIVAL_POOL_PEERS)
 
 
 @wp.func

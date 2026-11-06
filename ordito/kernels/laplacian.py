@@ -14,6 +14,7 @@ from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import doublearea_from_lengths, triangle_double_area
 from ordito.kernels.reduce import GroupSumPass, block_chunk_1d, block_min
 from ordito.kernels.scatter import (
+    ARRIVAL_POOL_UNIFORM,
     arrival_order_add_vector,
     group_sum_vector_term,
     peer_summed_add_corner_triple,
@@ -287,7 +288,9 @@ def intrinsic_rounding_rows(
         for k in range(3):
             for end in range(1, 3):
                 v = half_cotangent_row(faces, f, k, end)
-                arrival_order_add_vector(out_rows, v, wp.vec2d(bound[k], weight[k]))
+                arrival_order_add_vector(
+                    out_rows, v, wp.vec2d(bound[k], weight[k]), ARRIVAL_POOL_UNIFORM
+                )
     elif device_is_cpu() != 0:
         add_rounding_terms_out_of_line(faces, f, bound, weight, sums)
     else:

@@ -1883,7 +1883,7 @@ def _octree_group_sums(
     _launch.launch_group_sums(
         kernel_scatter.SCATTER_SUM_VECTORS[wp.vec3],
         values.size,
-        [values, groups],
+        [values, groups, kernel_scatter.scatter_sum_pooling(values.size, n_groups)],
         sums,
         device=device,
     )

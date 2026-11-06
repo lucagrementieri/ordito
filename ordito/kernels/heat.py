@@ -67,7 +67,12 @@ from ordito.kernels.reduce import (
     block_sum,
     store_sum_and_count,
 )
-from ordito.kernels.scatter import add_corner_triple, add_or_store_corner_triple, scatter_add_vector
+from ordito.kernels.scatter import (
+    ARRIVAL_POOL_UNIFORM,
+    add_corner_triple,
+    add_or_store_corner_triple,
+    scatter_add_vector,
+)
 from ordito.kernels.triangles import (
     corner_triple,
     face_normals_and_area,
@@ -2793,7 +2798,7 @@ def splat_curve_edges(
     if out_lengths.shape[0] > 0:
         out_lengths[k] = length
     along = wp.where(edges[e, 0] == a, length, -length)
-    scatter_add_vector(out_source, sums, e, wp.vec2d(wp.float64(0.0), along))
+    scatter_add_vector(out_source, sums, e, wp.vec2d(wp.float64(0.0), along), ARRIVAL_POOL_UNIFORM)
 
 
 # The magnitude below which a diffused edge value is taken to have run into ``float64`` underflow

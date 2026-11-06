@@ -34,7 +34,7 @@ from ordito.kernels.halfedge import (
 )
 from ordito.kernels.predicates import triangle_area_vector, triangle_aspect_ratio, triangle_normal
 from ordito.kernels.reduce import GroupSumPass, read_group_sum
-from ordito.kernels.scatter import scatter_add
+from ordito.kernels.scatter import ARRIVAL_POOL_PEERS, scatter_add
 from ordito.kernels.selection import face_touches_front, mark_submesh_face
 from ordito.kernels.triangles import (
     QUALITY_AREA,
@@ -873,9 +873,12 @@ def scatter_face_measure_by_group(
 ) -> None:
     # Each face's measure (``face_group_measure``) into its group's sum (``scatter.scatter_add``):
     # one ``float32`` atomic in arrival order with ``ordito.config``'s deterministic setting off,
-    # or a pass of the exact group sum with it on, recomputing the measure bit for bit each pass.
+    # pooled across the lanes sharing a component (``ARRIVAL_POOL_PEERS``: dragon 0.87x the
+    # uniform test, elsewhere at par), or a pass of the exact group sum with it on, recomputing
+    # the measure bit for bit each pass.
     f = wp.int32(wp.tid())
-    scatter_add(out_group_measure, sums, groups[f], face_group_measure(vertices, faces, f, measure))
+    value = face_group_measure(vertices, faces, f, measure)
+    scatter_add(out_group_measure, sums, groups[f], value, ARRIVAL_POOL_PEERS)
 
 
 # ``remove_small_components``' four criteria, as the selector ``component_kept`` branches on.

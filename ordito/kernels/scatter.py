@@ -48,14 +48,47 @@ wp.set_module_options({"enable_backward": False})
 # of group ``g`` is slot ``g * n_components + c`` (row-major for a matrix), and the group's
 # components share one field, raised by their largest.
 #
-# With the setting off, a warp whose active lanes all add to one group sums their values first
-# (``kernels/reduce.warp_lanes_sum``, in ``float64`` for either precision, per component) and its
-# lowest lane commits once; any other warp takes the plain per-lane atomic, and the CPU device
-# always does. One group of 10 M terms ran 0.04x the plain atomic, ``remove_small_components``
-# and ``make_volume(multibody=True)`` 0.22-0.27x on 1 and 64 components (5 M and 21 M faces), at
-# par with every face its own component and on 1 M random groups. Declined: a ``float32`` sum
-# for ``float32`` values (0.94-1.00x; a generic func_native cannot return its argument's type, so
-# it would be a second, same-named native).
+# With the setting off, the lanes of a warp adding to one group sum their values first
+# (``kernels/reduce.warp_lanes_sum``, in ``float64`` for either precision, per component) and the
+# lowest commits once; any other lane takes the plain atomic, and the CPU device always does.
+# ``pooling`` names the lanes that pool, a constant at each site or a launch argument:
+# ``ARRIVAL_POOL_UNIFORM`` only a warp whose active lanes all share the group
+# (``reduce.warp_uniform_lanes``), ``ARRIVAL_POOL_PEERS`` every set of lanes sharing one
+# (``reduce.warp_peer_lanes``, a ``__match_any_sync``). One group of 10 M terms ran 0.04x the plain
+# atomic under either, ``remove_small_components`` and ``make_volume(multibody=True)`` 0.22-0.27x
+# on 1 and 64 components (5 M and 21 M faces), at par with every face its own component and on
+# 1 M random groups. Declined: a ``float32`` sum for ``float32`` values (0.94-1.00x; a generic
+# func_native cannot return its argument's type, so it would be a second, same-named native).
+#
+# Pooling peers pays where the lanes sharing a group in a warp share an address hot across the
+# launch, and costs where they share a cold one (device time peers/uniform, 10 M terms): 8 random
+# groups 0.20x, 64 random groups 0.85-0.88x, every other term into one group 0.08-0.12x,
+# ``fan_hub`` corners into vertices 0.23x and its rounding rows 0.15x, the component and region
+# areas of dragon 0.86-0.87x; but sorted runs of 4 and 16 terms 2.1x and 1.3x (``float32``),
+# ``segment_sum`` 1.09-1.39x, dragon's corners into vertices 1.38x and its rounding rows 1.11x
+# (lucy 1.07x), the Poisson octree splats 1.10-1.74x; random keys over many groups at par. So
+# repair's component sums and selection's region areas take peers and the other sites keep the
+# uniform test, each by its keys' structure; ``reduce.scatter_sum``, whose keys are the caller's,
+# chooses by ``scatter_sum_pooling``.
+ARRIVAL_POOL_UNIFORM = wp.int32(0)
+ARRIVAL_POOL_PEERS = wp.int32(1)
+
+# The mean terms a group from which ``scatter_sum_pooling`` pools peers. Mesh size does not predict
+# the gain (1 M and 10 M terms agree; dragon and lucy part by face order), the keys' structure
+# does, and the mean is the one free signal of it: few groups are hot whatever their order. Peers
+# against uniform, device time at 1 M and 10 M terms: random keys 0.98-1.02x up to 1 024 terms a
+# group, 0.95-0.99x at 4 096, 0.84-0.98x at 16 384; interleaved runs of 4 and 16 terms (the cold
+# peers that cost) 0.36-1.27x at 1 024, 0.19-1.03x at 2 048 and 0.12-0.75x at 4 096. It misses a
+# hub among many groups (every other term into one group, two terms a group on average), which
+# only a histogram pass could see and which would cost more than it saves.
+SCATTER_POOL_PEERS_TERMS = 2048
+
+
+def scatter_sum_pooling(n_terms: int, n_groups: int) -> int:
+    """Return the ``pooling`` for ``n_terms`` arrival-order terms over ``n_groups`` caller keys."""
+    if n_terms >= SCATTER_POOL_PEERS_TERMS * max(n_groups, 1):
+        return int(ARRIVAL_POOL_PEERS)
+    return int(ARRIVAL_POOL_UNIFORM)
 
 
 # The off-mode commit, ``out_sums[index] += value`` without a negative index's wrap, which costs
@@ -71,9 +104,17 @@ def atomic_add_at(out: wp.array[Any], index: wp.int32, value: Any): ...
 
 
 @wp.func
-def arrival_order_add(out_sums: wp.array[Any], group: wp.int32, value: wp.Float):
-    # The off-mode commit of a scalar: pre-summed across a warp sharing ``group``, else per lane.
-    lanes = warp_uniform_lanes(group)
+def arrival_order_lanes(group: wp.int32, pooling: wp.int32) -> wp.int32:
+    # The lanes that pool their values into ``group`` under ``pooling``, 0 for none.
+    if pooling == ARRIVAL_POOL_PEERS:
+        return warp_peer_lanes(group)
+    return warp_uniform_lanes(group)
+
+
+@wp.func
+def arrival_order_add(out_sums: wp.array[Any], group: wp.int32, value: wp.Float, pooling: wp.int32):
+    # The off-mode commit of a scalar: pre-summed across the lanes sharing ``group``, else per lane.
+    lanes = arrival_order_lanes(group, pooling)
     if lanes == 0:
         atomic_add_at(out_sums, group, value)
     else:
@@ -83,9 +124,11 @@ def arrival_order_add(out_sums: wp.array[Any], group: wp.int32, value: wp.Float)
 
 
 @wp.func
-def arrival_order_add_vector(out_sums: wp.array[Any], group: wp.int32, value: Any):
+def arrival_order_add_vector(
+    out_sums: wp.array[Any], group: wp.int32, value: Any, pooling: wp.int32
+):
     # ``arrival_order_add`` for a vector, componentwise.
-    lanes = warp_uniform_lanes(group)
+    lanes = arrival_order_lanes(group, pooling)
     if lanes == 0:
         atomic_add_at(out_sums, group, value)
     else:
@@ -112,9 +155,11 @@ def group_sum_vector_term(sums: GroupSumPass, group: wp.int32, value: Any):
 
 
 @wp.func
-def arrival_order_add_matrix(out_sums: wp.array[Any], group: wp.int32, value: Any):
+def arrival_order_add_matrix(
+    out_sums: wp.array[Any], group: wp.int32, value: Any, pooling: wp.int32
+):
     # ``arrival_order_add`` for a matrix, componentwise (``arrival_order_add_vector``'s twin).
-    lanes = warp_uniform_lanes(group)
+    lanes = arrival_order_lanes(group, pooling)
     if lanes == 0:
         atomic_add_at(out_sums, group, value)
     else:
@@ -149,28 +194,34 @@ def group_sum_matrix_term(sums: GroupSumPass, group: wp.int32, value: Any):
 
 
 @wp.func
-def scatter_add(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: wp.Float):
+def scatter_add(
+    out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: wp.Float, pooling: wp.int32
+):
     # ``out_sums[group] += value`` for a scalar.
     if sums.words.shape[0] == 0:
-        arrival_order_add(out_sums, group, value)
+        arrival_order_add(out_sums, group, value, pooling)
     else:
         group_sum_term(sums, group, wp.float64(value))
 
 
 @wp.func
-def scatter_add_vector(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any):
+def scatter_add_vector(
+    out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any, pooling: wp.int32
+):
     # ``out_sums[group] += value`` for a vector, componentwise.
     if sums.words.shape[0] == 0:
-        arrival_order_add_vector(out_sums, group, value)
+        arrival_order_add_vector(out_sums, group, value, pooling)
     else:
         group_sum_vector_term(sums, group, value)
 
 
 @wp.func
-def scatter_add_matrix(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any):
+def scatter_add_matrix(
+    out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any, pooling: wp.int32
+):
     # ``out_sums[group] += value`` for a matrix, componentwise.
     if sums.words.shape[0] == 0:
-        arrival_order_add_matrix(out_sums, group, value)
+        arrival_order_add_matrix(out_sums, group, value, pooling)
     else:
         group_sum_matrix_term(sums, group, value)
 
@@ -194,10 +245,12 @@ def group_sum_vector_term_out_of_line(sums: GroupSumPass, group: wp.int32, value
 
 
 @wp.func
-def sole_scatter_add(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: wp.Float):
+def sole_scatter_add(
+    out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: wp.Float, pooling: wp.int32
+):
     # ``scatter_add`` as a kernel's whole work.
     if sums.words.shape[0] == 0:
-        arrival_order_add(out_sums, group, value)
+        arrival_order_add(out_sums, group, value, pooling)
     elif device_is_cpu() != 0:
         group_sum_term_out_of_line(sums, group, wp.float64(value))
     else:
@@ -206,11 +259,11 @@ def sole_scatter_add(out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int3
 
 @wp.func
 def sole_scatter_add_vector(
-    out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any
+    out_sums: wp.array[Any], sums: GroupSumPass, group: wp.int32, value: Any, pooling: wp.int32
 ):
     # ``scatter_add_vector`` as a kernel's whole work.
     if sums.words.shape[0] == 0:
-        arrival_order_add_vector(out_sums, group, value)
+        arrival_order_add_vector(out_sums, group, value, pooling)
     elif device_is_cpu() != 0:
         group_sum_vector_term_out_of_line(sums, group, value)
     else:
@@ -221,22 +274,28 @@ def sole_scatter_add_vector(
 def scatter_sum_scalars(
     values: wp.array[wp.Float],
     indices: wp.array[wp.int32],
+    pooling: wp.int32,
     sums: GroupSumPass,
     out_sums: wp.array[wp.Float],
 ) -> None:
-    # ``reduce.scatter_sum`` of scalars: each value into its group. Also the second pass of a
-    # producer that stores its values in the bound pass rather than computing them twice.
+    # ``reduce.scatter_sum`` of scalars: each value into its group, its lanes pooled as
+    # ``pooling`` names (``arrival_order_add``). Also the second pass of a producer that stores its
+    # values in the bound pass rather than computing them twice.
     i = wp.int32(wp.tid())
-    sole_scatter_add(out_sums, sums, indices[i], values[i])
+    sole_scatter_add(out_sums, sums, indices[i], values[i], pooling)
 
 
 @wp.kernel
 def scatter_sum_vectors(
-    values: wp.array[Any], indices: wp.array[wp.int32], sums: GroupSumPass, out_sums: wp.array[Any]
+    values: wp.array[Any],
+    indices: wp.array[wp.int32],
+    pooling: wp.int32,
+    sums: GroupSumPass,
+    out_sums: wp.array[Any],
 ) -> None:
     # ``scatter_sum_scalars`` for vectors.
     i = wp.int32(wp.tid())
-    sole_scatter_add_vector(out_sums, sums, indices[i], values[i])
+    sole_scatter_add_vector(out_sums, sums, indices[i], values[i], pooling)
 
 
 @wp.func
@@ -262,9 +321,10 @@ def segment_sum_scalars(
     out_sums: wp.array[wp.Float],
 ) -> None:
     # ``reduce.segment_sum`` of scalars: one thread per item, into its segment. Consecutive items
-    # share a segment, so a long segment's warps commit once each (``reduce.warp_lanes_sum``).
+    # share a segment, so a long segment's warps commit once each (``reduce.warp_lanes_sum``); a
+    # short segment's lanes are peers on a cold address, which pooling peers would cost.
     i = wp.int32(wp.tid())
-    sole_scatter_add(out_sums, sums, segment_of(offsets, i), values[i])
+    sole_scatter_add(out_sums, sums, segment_of(offsets, i), values[i], ARRIVAL_POOL_UNIFORM)
 
 
 @wp.kernel
@@ -273,7 +333,7 @@ def segment_sum_vectors(
 ) -> None:
     # ``segment_sum_scalars`` for vectors.
     i = wp.int32(wp.tid())
-    sole_scatter_add_vector(out_sums, sums, segment_of(offsets, i), values[i])
+    sole_scatter_add_vector(out_sums, sums, segment_of(offsets, i), values[i], ARRIVAL_POOL_UNIFORM)
 
 
 @wp.func
@@ -312,7 +372,7 @@ def atomic_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec3) ->
 # lowest commits once; a lane with no peer, and every lane on the CPU device, takes the plain
 # atomic, so CPU bits are unchanged. A sum of ``float32`` values in ``float64`` stays exact, so
 # ``scatter_sum_exact`` keeps its order-free result. The hub of a fan sits in every other face
-# (trimesh's cone), where the warp-*uniform* test of ``arrival_order_add`` never fires.
+# (trimesh's cone), where ``arrival_order_add``'s warp-*uniform* test never fires.
 #
 # Device time against the plain atomics (``fan_hub``: two hubs of valence 40 960): the ``float64``
 # vector scatter 0.09x on the hub, 0.79-0.85x on dragon, happy_buddha and lucy (consecutive faces
@@ -1021,14 +1081,14 @@ def _register_overloads() -> None:
     SCATTER_SUM_SCALARS = OverloadTable(
         scatter_sum_scalars,
         {
-            d: [wp.array[d], wp.array[wp.int32], GroupSumPass, wp.array[d]]
+            d: [wp.array[d], wp.array[wp.int32], wp.int32, GroupSumPass, wp.array[d]]
             for d in _GROUP_SUM_SCALARS
         },
     )
     SCATTER_SUM_VECTORS = OverloadTable(
         scatter_sum_vectors,
         {
-            d: [wp.array[d], wp.array[wp.int32], GroupSumPass, wp.array[d]]
+            d: [wp.array[d], wp.array[wp.int32], wp.int32, GroupSumPass, wp.array[d]]
             for d in _GROUP_SUM_VECTORS
         },
     )

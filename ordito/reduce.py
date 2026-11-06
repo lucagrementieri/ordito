@@ -702,7 +702,9 @@ def scatter_sum(
             raise ValueError(
                 f"scatter_sum indices span [{lowest}, {highest}], outside [0, {n_groups})."
             )
-    return _scatter_groups(kernels[0], values, indices, n_groups or 0)
+    n_groups = n_groups or 0
+    pooling = kernel_scatter.scatter_sum_pooling(n, n_groups)
+    return _scatter_groups(kernels[0], values, indices, n_groups, pooling)
 
 
 def segment_sum(values: wp.array[DType], offsets: wp.array[wp.int32]) -> wp.array[DType]:
@@ -769,7 +771,7 @@ def segment_sum(values: wp.array[DType], offsets: wp.array[wp.int32]) -> wp.arra
     total = int(read_scalar(offsets, -1))
     if total != n:
         raise ValueError(f"segment_sum offsets end at {total}, not at the {n} values.")
-    return _scatter_groups(kernels[1], values, offsets, offsets.size - 1)
+    return _scatter_groups(kernels[1], values, offsets, offsets.size - 1, None)
 
 
 def _group_sum_kernels(values: wp.array[Any], name: str) -> tuple[odt.Kernel, odt.Kernel]:
@@ -787,13 +789,23 @@ def _group_sum_kernels(values: wp.array[Any], name: str) -> tuple[odt.Kernel, od
 
 
 def _scatter_groups(
-    kernel: odt.Kernel, values: wp.array[DType], groups: wp.array[wp.int32], n_groups: int
+    kernel: odt.Kernel,
+    values: wp.array[DType],
+    groups: wp.array[wp.int32],
+    n_groups: int,
+    pooling: int | None,
 ) -> wp.array[DType]:
-    """Each value into its group through ``kernel``, per the deterministic setting."""
+    """
+    Each value into its group through ``kernel``, per the deterministic setting.
+
+    ``pooling`` is the scatter kernel's lane pooling (``kernels/scatter.scatter_sum_pooling``);
+    ``None`` for the segment kernel, which takes none.
+    """
     device = values.device
     sums = _launch.group_sums(n_groups, values.dtype, values.size or 1, device)
     if values.size > 0 and n_groups > 0:
-        _launch.launch_group_sums(kernel, values.size, [values, groups], sums, device=device)
+        inputs = [values, groups] if pooling is None else [values, groups, pooling]
+        _launch.launch_group_sums(kernel, values.size, inputs, sums, device=device)
     return cast("wp.array[DType]", _launch.finish_group_sums(sums))
 
 
