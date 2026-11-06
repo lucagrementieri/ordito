@@ -16,6 +16,7 @@ from ordito.kernels.array import (
     append_slot,
     binary_search_sorted_contains,
     bit_rank,
+    device_is_cpu,
     divide_if_positive,
     launched_set_bit,
     lowbias32,
@@ -173,6 +174,22 @@ def split_face_four(fv: wp.vec3i, mv: wp.vec3i) -> tuple[wp.vec3i, wp.vec3i, wp.
 
 
 @wp.func
+def face_split_corners(
+    faces: wp.array[wp.int32], corner_edge: wp.array[wp.int32], vertex_offset: wp.int32, f: wp.int32
+) -> tuple[wp.vec3i, wp.vec3i]:
+    # Face ``f``'s corners and its three edge vertices under the uniform 1 -> 4 split: corner
+    # ``k``'s edge is ``corner_edge[3f + k]`` and every edge is split, so its new vertex is
+    # ``vertex_offset`` plus the edge id -- the shift is applied here rather than materialised as a
+    # ``3 * n_faces`` index buffer by a separate pass that the split would read straight back.
+    c0, c1, c2 = corner_triple(faces, f)
+    return wp.vec3i(c0, c1, c2), wp.vec3i(
+        vertex_offset + corner_edge[f * 3 + 0],
+        vertex_offset + corner_edge[f * 3 + 1],
+        vertex_offset + corner_edge[f * 3 + 2],
+    )
+
+
+@wp.func
 def write_four_children(
     faces: wp.array[wp.int32],
     corner_edge: wp.array[wp.int32],
@@ -180,33 +197,38 @@ def write_four_children(
     f: wp.int32,
     out_faces: wp.array[wp.int32],
 ) -> None:
-    # Face ``f``'s four children under the uniform 1 -> 4 split, into rows ``4f .. 4f + 3``. Corner
-    # ``k``'s edge is ``corner_edge[3f + k]`` and every edge is split, so its new vertex is
-    # ``vertex_offset`` plus the edge id -- the shift is applied here rather than materialised as a
-    # ``3 * n_faces`` index buffer by a separate pass that the split would read straight back.
-    # Shared by ``subdivide_mesh`` (``subdivide``) and ``loop_edge_opposites``
+    # Face ``f``'s four children (``split_face_four``) into rows ``4f .. 4f + 3``. Shared by
+    # ``subdivide_mesh`` (``subdivide``) on the CPU and ``loop_edge_opposites``
     # (``subdivide_loop``), which writes the faces in its own pass over them.
-    c0, c1, c2 = corner_triple(faces, f)
-    fv = wp.vec3i(c0, c1, c2)
-    mv = wp.vec3i(
-        vertex_offset + corner_edge[f * 3 + 0],
-        vertex_offset + corner_edge[f * 3 + 1],
-        vertex_offset + corner_edge[f * 3 + 2],
-    )
+    fv, mv = face_split_corners(faces, corner_edge, vertex_offset, f)
     t0, t1, t2, t3 = split_face_four(fv, mv)
-    base = f * 12
-    out_faces[base + 0] = t0[0]
-    out_faces[base + 1] = t0[1]
-    out_faces[base + 2] = t0[2]
-    out_faces[base + 3] = t1[0]
-    out_faces[base + 4] = t1[1]
-    out_faces[base + 5] = t1[2]
-    out_faces[base + 6] = t2[0]
-    out_faces[base + 7] = t2[1]
-    out_faces[base + 8] = t2[2]
-    out_faces[base + 9] = t3[0]
-    out_faces[base + 10] = t3[1]
-    out_faces[base + 11] = t3[2]
+    write_corner_triple(out_faces, 4 * f + 0, t0[0], t0[1], t0[2])
+    write_corner_triple(out_faces, 4 * f + 1, t1[0], t1[1], t1[2])
+    write_corner_triple(out_faces, 4 * f + 2, t2[0], t2[1], t2[2])
+    write_corner_triple(out_faces, 4 * f + 3, t3[0], t3[1], t3[2])
+
+
+@wp.func
+def write_split_child(
+    faces: wp.array[wp.int32],
+    corner_edge: wp.array[wp.int32],
+    vertex_offset: wp.int32,
+    row: wp.int32,
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # Child ``row % 4`` of face ``row // 4`` alone, into row ``row``: ``write_four_children`` a
+    # thread a child, so consecutive threads write consecutive rows.
+    fv, mv = face_split_corners(faces, corner_edge, vertex_offset, row // 4)
+    t0, t1, t2, t3 = split_face_four(fv, mv)
+    k = row % 4
+    child = t3
+    if k == 0:
+        child = t0
+    elif k == 1:
+        child = t1
+    elif k == 2:
+        child = t2
+    write_corner_triple(out_faces, row, child[0], child[1], child[2])
 
 
 @wp.kernel
@@ -218,18 +240,24 @@ def subdivide_mesh(
     out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
-    # The uniform 1 -> 4 split whole, over ``max(n_vertices + n_edges, n_faces)`` threads: the
-    # originals followed by one midpoint per unique edge, and each face's four children
-    # (``write_four_children``; ``loop_edge_opposites`` writes the same table in its pass over the
-    # faces).
+    # The uniform 1 -> 4 split whole: the originals followed by one midpoint per unique edge, and
+    # each face's four children (``loop_edge_opposites`` writes the same table in its pass over the
+    # faces). On CUDA over ``max(n_vertices + n_edges, 4 n_faces)`` threads, a child triangle a
+    # thread, so consecutive threads write consecutive rows (a face a thread stored its 48 bytes
+    # 48 apart across a warp); the CPU runs threads one after another, where that only repeats the
+    # face's reads, so it keeps a face a thread over ``max(n_vertices + n_edges, n_faces)``.
     t = wp.int32(wp.tid())
     n_vertices = vertices.shape[0]
     if t < n_vertices:
         out_vertices[t] = vertices[t]
     elif t < out_vertices.shape[0]:
         out_vertices[t] = edge_midpoint(vertices, unique_edges, t - n_vertices)
-    if t < faces.shape[0] // 3:
-        write_four_children(faces, corner_edge, n_vertices, t, out_faces)
+    n_faces = faces.shape[0] // 3
+    if device_is_cpu() != 0:
+        if t < n_faces:
+            write_four_children(faces, corner_edge, n_vertices, t, out_faces)
+    elif t < 4 * n_faces:
+        write_split_child(faces, corner_edge, n_vertices, t, out_faces)
 
 
 @wp.kernel

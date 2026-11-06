@@ -4331,7 +4331,8 @@ def subdivide(
     new_faces = _launch.empty(n_faces * 12, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_remesh.subdivide_mesh,
-        dim=max(n_vertices + n_unique, n_faces),
+        # A face a thread on the CPU, a child triangle a thread on CUDA.
+        dim=max(n_vertices + n_unique, n_faces if wp.get_device(device).is_cpu else 4 * n_faces),
         inputs=[vertices, faces, unique_edges, inverse],
         outputs=[new_vertices, new_faces],
         device=device,
