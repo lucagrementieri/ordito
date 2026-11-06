@@ -658,6 +658,60 @@ def test_boundary_loops_cut_a_pinched_loop_into_simple_cycles(
     assert walked == Counter(map(tuple, boundary_np.tolist()))
 
 
+def _split_by_stack_walk(flat_np: np.ndarray, offsets_np: np.ndarray) -> list[list[int]]:
+    """Each loop cut at its repeated vertices by a stack walk, rotated and sorted as specified."""
+    cycles: list[list[int]] = []
+    for start, stop in itertools.pairwise(offsets_np.tolist()):
+        path: list[int] = []
+        position: dict[int, int] = {}
+        for vertex in flat_np[start:stop].tolist():
+            if vertex in position:
+                first = position[vertex]
+                cycles.append(path[first:])
+                for dropped in path[first + 1 :]:
+                    del position[dropped]
+                del path[first + 1 :]
+            else:
+                position[vertex] = len(path)
+                path.append(vertex)
+        cycles.append(path)
+    rotated = [
+        cycle[cycle.index(min(cycle)) :] + cycle[: cycle.index(min(cycle))] for cycle in cycles
+    ]
+    return sorted(rotated, key=lambda cycle: (cycle[0], cycle[1] if len(cycle) > 1 else -1))
+
+
+def test_boundary_loops_split_at_pinches_follows_the_stack_walk(device: str) -> None:
+    """
+    Not a library comparison: no reference cuts a loop at its repeated vertices in this order.
+
+    The oracle is the stack walk the split specifies, transcribed: an entry whose vertex is on the
+    path cuts the path back to it, the cut-off run is a cycle, each cycle starts at its smallest
+    vertex and the cycles ascend by their first two vertices, ties in cut order. Random loops over
+    a few vertices repeat them densely and interleaved, so a walk that tests the wrong occurrence
+    or cuts in the wrong place returns other cycles; the first loop
+    ``0 5 1 6 0 7 1 8`` cuts differently from every other start, and ``3 3`` is a cycle of one.
+    """
+    rng = np.random.default_rng(11)
+    loops = [[0, 5, 1, 6, 0, 7, 1, 8], [3, 3], [4]]
+    loops += [rng.integers(0, 9, int(rng.integers(1, 30))).tolist() for _ in range(40)]
+    loops.append(rng.integers(0, 40, 2000).tolist())
+    flat_np = np.concatenate([np.asarray(loop, dtype=np.int32) for loop in loops])
+    offsets_np = np.concatenate([[0], np.cumsum([len(loop) for loop in loops])]).astype(np.int32)
+    expected = _split_by_stack_walk(flat_np, offsets_np)
+    assert len(expected) > 2 * len(loops)  # non-vacuity: most loops are cut
+
+    flat_wp, offsets_wp = od.boundary._split_at_pinches(  # pyright: ignore[reportPrivateUsage]
+        wp.array(flat_np, dtype=wp.int32, device=device),
+        wp.array(offsets_np, dtype=wp.int32, device=device),
+        40,
+    )
+    flat_out = flat_wp.numpy().tolist()
+    cut = [flat_out[a:b] for a, b in itertools.pairwise(offsets_wp.numpy().tolist())]
+
+    assert cut == expected
+
+
 @pytest.mark.parity("boundary_loops", "meshlib")
 def test_boundary_loops_crossing_pinch_gaps_match_meshlib_holes(device: str) -> None:
     """

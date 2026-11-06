@@ -2,9 +2,11 @@ from typing import Any
 
 import warp as wp
 
+from ordito.constants import INT32_MAX_CONSTANT
 from ordito.kernels.adjacency import edge_endpoints
 from ordito.kernels.array import (
     bit_slot,
+    loop_owner,
     loop_rim_edge,
     pack_ranked_key,
     scanned_count,
@@ -451,6 +453,204 @@ def cross_pinch_gaps(
     v = faces[s]
     if counts[v] == 2:
         next_node[h] = wp.where(slots[2 * v] == s, slots[2 * v + 1], slots[2 * v])
+
+
+# ``boundary._split_at_pinches`` on the device: every loop that passes a vertex twice cut into
+# simple cycles, each rotated to start at its smallest vertex, the cycles in ascending order of
+# their first two vertices (ties in the order the cuts made them). The cut is a stack walk, one
+# thread a loop (``split_pinched_loops``); what it needs from outside its loop is each entry's
+# previous occurrence of the same vertex in the same loop, which a stable sort of the entries by
+# vertex lays side by side (``pinch_occurrence_keys``, ``previous_occurrences``).
+#
+# Against the host walk it replaced (a readback, a Python stack walk a loop, an upload), new/old:
+# ``holes_pinched`` (10 460 cycles) 0.0057x CUDA and 0.11x CPU, an icosphere(7) with every
+# seventh face removed 0.0032x CUDA. Its five launches and two sorts are a fixed cost the host
+# form did not pay: on a five-by-five grid with two touching holes CUDA reads 0.93x but the CPU
+# 1.35x (+0.12 ms), even at about a hundred boundary entries. Kept on both devices: a host path
+# below a size would be a second implementation of one answer.
+
+
+@wp.kernel
+def pinch_occurrence_keys(
+    flat_loops: wp.array[wp.int32], out_keys: wp.array[wp.int32], out_positions: wp.array[wp.int32]
+) -> None:
+    # Each packed entry's vertex as its sort key, its position as the payload: a stable sort then
+    # leaves every vertex's occurrences adjacent and in position order.
+    p = wp.int32(wp.tid())
+    out_keys[p] = flat_loops[p]
+    out_positions[p] = p
+
+
+@wp.kernel
+def previous_occurrences(
+    sorted_vertices: wp.array[wp.int32],
+    sorted_positions: wp.array[wp.int32],
+    loop_id: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    out_previous: wp.array[wp.int32],
+    out_totals: wp.array[wp.int32],
+) -> None:
+    # Over the sorted entries: each position's previous occurrence of its vertex within its own
+    # loop, else ``-1``. Thread 0 also zeroes the walk's two totals, which arrive unwritten.
+    s = wp.int32(wp.tid())
+    if s == 0:
+        out_totals[0] = 0
+        out_totals[1] = 0
+    p = sorted_positions[s]
+    previous = wp.int32(-1)
+    if s > 0 and sorted_vertices[s - 1] == sorted_vertices[s]:
+        q = sorted_positions[s - 1]
+        if q >= offsets[loop_owner(loop_id, offsets, p)]:
+            previous = q
+    out_previous[p] = previous
+
+
+@wp.func
+def store_pinch_cycle(
+    flat_loops: wp.array[wp.int32],
+    stack: wp.array[wp.int32],
+    base: wp.int32,
+    first: wp.int32,
+    depth: wp.int32,
+    value_slot: wp.int32,
+    record_slot: wp.int32,
+    out_values: wp.array[wp.int32],
+    out_records: wp.array[wp.vec3i],
+    out_keys: wp.array[wp.int64],
+) -> wp.int32:
+    # The path entries ``first .. depth - 1`` (positions on ``stack`` from ``base``) as one cycle:
+    # their vertices stored in walk order from ``value_slot``, and at ``record_slot`` the record
+    # ``(value_slot, size, rotation)`` -- ``rotation`` the offset of the smallest vertex, its first
+    # occurrence as ``np.argmin`` takes it -- and the sort key ``(smallest << 32) | (next + 1)``,
+    # ``next`` the vertex after the smallest or ``-1`` for a cycle of one. Returns the size.
+    size = depth - first
+    smallest = wp.int32(INT32_MAX_CONSTANT)
+    rotation = wp.int32(0)
+    for k in range(size):
+        vertex = flat_loops[stack[base + first + k]]
+        out_values[value_slot + k] = vertex
+        if vertex < smallest:
+            smallest = vertex
+            rotation = k
+    following = wp.int32(-1)
+    if size > 1:
+        following = out_values[value_slot + (rotation + 1) % size]
+    out_records[record_slot] = wp.vec3i(value_slot, size, rotation)
+    out_keys[record_slot] = (wp.int64(smallest) << wp.int64(32)) | wp.int64(following + 1)
+    return size
+
+
+@wp.kernel
+def split_pinched_loops(
+    flat_loops: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    previous: wp.array[wp.int32],
+    sentinel: wp.int64,
+    out_stack: wp.array[wp.int32],
+    out_path_index: wp.array[wp.int32],
+    out_representative: wp.array[wp.int32],
+    out_values: wp.array[wp.int32],
+    out_records: wp.array[wp.vec3i],
+    out_keys: wp.array[wp.int64],
+    out_slots: wp.array[wp.int32],
+    out_totals: wp.array[wp.int32],
+) -> None:
+    # One thread per loop, the host walk's stack decomposition over positions: an entry whose
+    # vertex is on the path cuts the path back to that vertex's entry and the cut-off run, from
+    # that entry on, is a cycle; any other entry is pushed. What is left at the end is the last
+    # cycle. The scratch tables are indexed by packed position, inside the loop's own range:
+    # ``out_stack`` the path (from the loop's start), ``out_path_index`` a pushed entry's depth or
+    # ``-1`` once cut off, ``out_representative`` the pushed entry an occurrence stands for. An
+    # occurrence's vertex is on the path exactly when its previous occurrence's representative
+    # still is: when that one was handled no other entry of the vertex was on the path.
+    #
+    # Cycles take value and record slots from the loop's start in cut order (a loop yields at
+    # most one value and one cycle per entry); the loop's other record slots get ``sentinel``,
+    # which sorts after every key. ``out_totals`` counts the cycles and their entries.
+    ell = wp.int32(wp.tid())
+    start = offsets[ell]
+    end = offsets[ell + 1]
+    depth = wp.int32(0)
+    stored = wp.int32(0)
+    cycles = wp.int32(0)
+    for p in range(start, end):
+        q = previous[p]
+        representative = wp.int32(-1)
+        on_path = wp.int32(-1)
+        if q >= 0:
+            representative = out_representative[q]
+            on_path = out_path_index[representative]
+        if on_path >= 0:
+            stored += store_pinch_cycle(
+                flat_loops,
+                out_stack,
+                start,
+                on_path,
+                depth,
+                start + stored,
+                start + cycles,
+                out_values,
+                out_records,
+                out_keys,
+            )
+            cycles += 1
+            for k in range(on_path + 1, depth):
+                out_path_index[out_stack[start + k]] = -1
+            depth = on_path + 1
+            out_representative[p] = representative
+        else:
+            out_stack[start + depth] = p
+            out_path_index[p] = depth
+            out_representative[p] = p
+            depth += 1
+    if depth > 0:
+        stored += store_pinch_cycle(
+            flat_loops,
+            out_stack,
+            start,
+            0,
+            depth,
+            start + stored,
+            start + cycles,
+            out_values,
+            out_records,
+            out_keys,
+        )
+        cycles += 1
+    for slot in range(start, end):
+        out_slots[slot] = slot
+        if slot >= start + cycles:
+            out_keys[slot] = sentinel
+    wp.atomic_add(out_totals, 0, cycles)
+    wp.atomic_add(out_totals, 1, stored)
+
+
+@wp.kernel
+def pinch_cycle_sizes(
+    slots: wp.array[wp.int32], records: wp.array[wp.vec3i], out_offsets: wp.array[wp.int32]
+) -> None:
+    # Cycle ``g`` of the sorted order's size into ``out_offsets[g + 1]``, which the caller scans
+    # in place; thread 0 writes the leading ``0``.
+    g = wp.int32(wp.tid())
+    if g == 0:
+        out_offsets[0] = 0
+    out_offsets[g + 1] = records[slots[g]][1]
+
+
+@wp.kernel
+def emit_pinch_cycles(
+    slots: wp.array[wp.int32],
+    records: wp.array[wp.vec3i],
+    values: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    out_flat: wp.array[wp.int32],
+) -> None:
+    # One thread per sorted cycle: its vertices from the smallest on, at its scanned offset.
+    g = wp.int32(wp.tid())
+    record = records[slots[g]]
+    base = offsets[g]
+    for j in range(record[1]):
+        out_flat[base + j] = values[record[0] + (record[2] + j) % record[1]]
 
 
 @wp.func

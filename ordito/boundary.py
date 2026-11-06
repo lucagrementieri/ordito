@@ -404,7 +404,7 @@ def boundary_loops_with_offsets(
         return _launch.empty_packed(wp.int32, device)
     if has_pinch:
         if pinches == "split":
-            return _split_at_pinches(*_pinched_boundary_cycles(boundary, n_vertices))
+            return _split_at_pinches(*_pinched_boundary_cycles(boundary, n_vertices), n_vertices)
         return _pinched_boundary_cycles(boundary, n_vertices, cross_gaps=pinches == "gap")
     if has_seam:
         return _unoriented_boundary_cycles(boundary.edges(sort_pair=True), n_vertices)
@@ -416,46 +416,95 @@ def boundary_loops_with_offsets(
 
 
 def _split_at_pinches(
-    flat_loops: wp.array[wp.int32], offsets: wp.array[wp.int32]
+    flat_loops: wp.array[wp.int32], offsets: wp.array[wp.int32], n_vertices: int
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Cut every loop that passes a vertex twice into simple cycles, kept in its direction.
 
     The last step of [`boundary_loops_with_offsets`][ordito.boundary.boundary_loops_with_offsets]
-    on a pinched boundary. Each cycle starts at its smallest vertex and the cycles ascend by their
-    first two vertices, the order of the unsplit loops. On the host: only a pinched boundary comes
-    here, and its loops are boundary-sized.
+    on a pinched boundary. Each loop is walked in order with a stack: an entry whose vertex is
+    already on the path cuts the path back to that vertex, and the run cut off is a cycle. Each
+    cycle starts at its smallest vertex and the cycles ascend by their first two vertices, the
+    order of the unsplit loops; cycles that tie keep the order their cuts made them in.
+
+    On the device, one thread a loop (``kernels/boundary.split_pinched_loops``): what a loop's walk
+    needs from outside it is each entry's previous occurrence of its vertex in the same loop,
+    which a stable sort of the entries by vertex puts side by side, and a second sort orders the
+    cycles. One readback sizes the result.
     """
     device = flat_loops.device
-    # Readback: the cut walks each loop in order, which is host-sequential work on the boundary.
-    flat_np = flat_loops.numpy()
-    offsets_np = offsets.numpy()
-    cycles: list[np.ndarray] = []
-    for start, stop in zip(offsets_np[:-1].tolist(), offsets_np[1:].tolist(), strict=True):
-        path: list[int] = []
-        position: dict[int, int] = {}
-        for vertex in flat_np[start:stop].tolist():
-            if vertex in position:
-                first = position[vertex]
-                cycles.append(np.asarray(path[first:], dtype=np.int32))
-                for dropped in path[first + 1 :]:
-                    del position[dropped]
-                del path[first + 1 :]
-            else:
-                position[vertex] = len(path)
-                path.append(vertex)
-        cycles.append(np.asarray(path, dtype=np.int32))
-    cycles = [np.roll(cycle, -int(np.argmin(cycle))) for cycle in cycles if cycle.size > 0]
-    if not cycles:
-        # A boundary that is not edge-manifold can leave only chains, which the walk drops.
+    total = flat_loops.size
+    n_loops = offsets.size - 1
+    if n_loops == 0 or total == 0:
         return _launch.empty_packed(wp.int32, device)
-    cycles.sort(key=lambda cycle: (int(cycle[0]), int(cycle[1]) if cycle.size > 1 else -1))
-    sizes = np.array([cycle.size for cycle in cycles], dtype=np.int32)
-    new_offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int32)
-    return (
-        _launch.array(np.concatenate(cycles), dtype=wp.int32, device=device),
-        _launch.array(new_offsets, dtype=wp.int32, device=device),
+    keys, positions, previous, totals, records, cycle_keys, cycle_slots = _launch.carve_typed(
+        (
+            (wp.int32, 2 * total),
+            (wp.int32, 2 * total),
+            (wp.int32, total),
+            (wp.int32, 2),
+            (wp.vec3i, total),
+            (wp.int64, 2 * total),
+            (wp.int32, 2 * total),
+        ),
+        device,
     )
+    _launch.launch(
+        kernel_boundary.pinch_occurrence_keys,
+        dim=total,
+        inputs=[flat_loops, keys, positions],
+        device=device,
+    )
+    _launch.radix_sort_pairs(keys, positions, total, end_bit=_launch.key_bits(n_vertices))
+    _launch.launch(
+        kernel_boundary.previous_occurrences,
+        dim=total,
+        inputs=[keys, positions, None, offsets, previous, totals],
+        device=device,
+    )
+    # The walk's scratch reuses the occurrence sort's buffers, dead once ``previous`` is formed:
+    # the path and the depths in their upper halves, the representatives and the cycles' vertices
+    # in their lower ones.
+    sentinel = n_vertices << 32
+    _launch.launch(
+        kernel_boundary.split_pinched_loops,
+        dim=n_loops,
+        inputs=[
+            flat_loops,
+            offsets,
+            previous,
+            sentinel,
+            _launch.view(keys, total, 2 * total),
+            _launch.view(positions, total, 2 * total),
+            _launch.view(keys, 0, total),
+            _launch.view(positions, 0, total),
+            records,
+            cycle_keys,
+            cycle_slots,
+            totals,
+        ],
+        device=device,
+    )
+    # Readback: the cycle and entry counts size the result.
+    n_cycles, n_values = read_values(totals, 0, 2)
+    _launch.radix_sort_pairs(cycle_keys, cycle_slots, total, end_bit=_launch.key_bits(sentinel + 1))
+    new_offsets = _launch.empty(n_cycles + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boundary.pinch_cycle_sizes,
+        dim=n_cycles,
+        inputs=[cycle_slots, records, new_offsets],
+        device=device,
+    )
+    scanned = _launch.view(new_offsets, 1, n_cycles + 1)
+    _launch.array_scan(scanned, out_array=scanned, inclusive=True)
+    new_flat = _launch.empty(n_values, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_boundary.emit_pinch_cycles,
+        dim=n_cycles,
+        inputs=[cycle_slots, records, _launch.view(positions, 0, total), new_offsets, new_flat],
+        device=device,
+    )
+    return new_flat, new_offsets
 
 
 def _boundary_defects(boundary: _BoundaryHalfedges, n_vertices: int) -> tuple[bool, bool]:
