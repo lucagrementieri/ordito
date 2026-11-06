@@ -1048,6 +1048,16 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   bucket count, scan, scatter and pairing are 52-54 % of the call's device time on dragon and
   lucy (2026-11-06), the union-find the rest. Not re-examined in the adjacency sweep, which took
   the union-find side only; the lower-degree owner is a hub-balancing choice to keep.
+- **Starved strided-slice reductions (from the `bounds` sweep, 2026-11-06):**
+  `oriented_bounding_box` now grows its slice count on CUDA until the grid reaches
+  `REGISTER_BLOCK_MIN_THREADS` threads, none shorter than 64 points (`bounds._extent_slices`;
+  0.72x on `sphere_small`, byte-identical). Two `RegisterBlockedTable` sites slice by a fixed
+  `ITEMS_PER_QUERY_SLICE` and starve the same way when the outer count is small:
+  `proximity.winding_number`'s tiled path (few queries) and `visibility`'s
+  `SUPPORT_ARGMAX_SLICED` (`k` escaped rays). Unpriced (the GPU was shared): price each at small
+  and large outer counts, and if either pays, move the rule into `RegisterBlockedTable` beside
+  `launch_shape` and route all three through it. Also queued: a quiet-box CUDA clock for
+  `enclosing_diagonal`'s `read_values` readback (landed on its census count alone).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
