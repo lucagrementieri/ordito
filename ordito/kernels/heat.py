@@ -1753,6 +1753,12 @@ def ordered_corner_records(
 ) -> None:
     # For each corner in sorted order, ``(face, its index in the face, the next corner's vertex,
     # the one after)``: everything a pop reads to reach a face's corners, in one load.
+    #
+    # The wrapper counts and scans each vertex's corners for their offsets though this sort
+    # already orders them. Searching each vertex's first sorted corner in this launch on CUDA
+    # (``adjacency.emit_sorted_vertex_faces``' form, the CPU keeping the count) saved a launch,
+    # a memset and a scan, byte-identical, and timed 0.99-1.02x at 1 k-330 k faces: the call is
+    # its front loop.
     e = wp.int32(wp.tid())
     c = corner_order[e]
     f = c // 3
