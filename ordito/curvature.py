@@ -271,14 +271,18 @@ def _one_ring_principal_curvatures(
                 kernel, dim=n_vertices, inputs=inputs, outputs=[pd1, pd2, pv1, pv2], device=device
             )
         return pd1, pd2, pv1, pv2
-    normals = _vertex_normals(vertices, faces, weighting="angle")
+    # The tensors' angle-weighted vertex normals: gathered over the face row the kernel walks on
+    # CUDA, scattered into a table on the CPU (``kernels/curvature.ring_angle_weighted_normal``),
+    # where ``vertices`` stands in for the table the kernel does not read.
+    gather = not wp.get_device(device).is_cpu
+    normals = vertices if gather else _vertex_normals(vertices, faces, weighting="angle")
     if method == "taubin":
         kernel = kernel_curvature.taubin_principal_curvatures
-        inputs = [vertices, faces, vertex_faces, vf_offsets, normals]
+        inputs = [vertices, faces, vertex_faces, vf_offsets, normals, int(gather)]
     else:
         kernel = kernel_curvature.normal_cycle_principal_curvatures
         mates = od.halfedge.halfedge_mates(faces, vertex_faces=(vertex_faces, vf_offsets))
-        inputs = [vertices, faces, vertex_faces, vf_offsets, mates, normals]
+        inputs = [vertices, faces, vertex_faces, vf_offsets, mates, normals, int(gather)]
     if n_vertices > 0:
         _launch.launch(
             kernel, dim=n_vertices, inputs=inputs, outputs=[pd1, pd2, pv1, pv2], device=device

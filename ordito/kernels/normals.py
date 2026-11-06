@@ -7,6 +7,7 @@ from ordito.kernels.triangles import (
     face_area,
     face_corner_angles,
     face_normals_and_area,
+    local_corner,
     triangle_cross,
 )
 
@@ -93,6 +94,35 @@ def gathered_area_weighted_normal(
     for slot in range(offsets[vertex], offsets[vertex + 1]):
         normal, area = face_normals_and_area(positions, faces, vertex_faces[slot])
         total += wp.vec3d(normal * area)
+    return normalized_narrowed(total[0], total[1], total[2])
+
+
+@wp.func
+def gathered_angle_weighted_normal(
+    positions: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex: wp.int32,
+) -> wp.vec3:
+    """
+    Vertex ``vertex``'s angle-weighted unit normal, gathered over its incident faces.
+
+    The gather form of ``scatter_angle_weighted_normals`` followed by
+    ``normalized_accumulated_row`` at ``float64``, over a vertex-face table as
+    ``gathered_area_weighted_normal`` is the area-weighted one: the same ``float32`` product of the
+    unit face normal and the corner angle at ``vertex``, widened into a ``float64`` sum in the
+    table's order (equal to the scatter up to summation order). A face listing ``vertex`` twice is
+    degenerate, so its angles, and both its terms, are zero either way. The 1-ring tensors of
+    ``curvature`` read it, sparing the accumulator, its fill, the scatter and the normalization.
+    """
+    total = wp.vec3d()
+    for slot in range(offsets[vertex], offsets[vertex + 1]):
+        f = vertex_faces[slot]
+        normal, _area = face_normals_and_area(positions, faces, f)
+        a0, a1, a2 = face_corner_angles(positions, faces, f)
+        angle = wp.vec3(a0, a1, a2)[local_corner(faces, f, vertex)]
+        total += wp.vec3d(normal * angle)
     return normalized_narrowed(total[0], total[1], total[2])
 
 

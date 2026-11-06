@@ -7,6 +7,7 @@ from ordito.kernels.array import declare_map_signatures, map_probe
 from ordito.kernels.halfedge import halfedge_destination, halfedge_prev
 from ordito.kernels.linalg import solve_normal_equations
 from ordito.kernels.neighbors import in_ball
+from ordito.kernels.normals import gathered_angle_weighted_normal
 from ordito.kernels.predicates import (
     angle_defect,
     any_perpendicular,
@@ -740,6 +741,28 @@ def write_no_principal_curvature(
     out_pv2[i] = wp.float32(0.0)
 
 
+@wp.func
+def ring_angle_weighted_normal(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vf_offsets: wp.array[wp.int32],
+    vertex_normals: wp.array[wp.vec3],
+    gather: wp.int32,
+    v: wp.int32,
+) -> wp.vec3:
+    # The angle-weighted vertex normal the 1-ring tensors orient by: ``vertex_normals[v]`` as
+    # ``normals.vertex_normals(weighting="angle")`` scattered it, or, where ``gather`` is set,
+    # ``normals.gathered_angle_weighted_normal`` over the face row the tensor walks (equal up to
+    # summation order), sparing the accumulator, its fill, the scatter and the normalization. CUDA
+    # gathers (Taubin 0.76-0.90x wall, normal cycles 0.90-1.00x, scrambled dragon included); the CPU
+    # reads the scattered table, since the gather forms each face's angles at all three of its
+    # corners (1.2-1.6x and 1.13-1.16x there).
+    if gather != 0:
+        return gathered_angle_weighted_normal(vertices, faces, vf_offsets, vertex_faces, v)
+    return vertex_normals[v]
+
+
 @wp.kernel
 def taubin_principal_curvatures(
     vertices: wp.array[wp.vec3],
@@ -747,6 +770,7 @@ def taubin_principal_curvatures(
     vertex_faces: wp.array[wp.int32],
     vf_offsets: wp.array[wp.int32],
     vertex_normals: wp.array[wp.vec3],
+    gather_normals: wp.int32,
     out_pd1: wp.array[wp.vec3],
     out_pd2: wp.array[wp.vec3],
     out_pv1: wp.array[wp.float32],
@@ -760,9 +784,13 @@ def taubin_principal_curvatures(
     # forms the edge weights without the edge list. ``M``'s eigenvectors in the tangent plane are
     # the principal directions and its eigenvalues ``m1 >= m2`` give ``k1 = 3 m1 - m2`` and
     # ``k2 = 3 m2 - m1``. An edge along the normal has no tangent and is skipped; a ring of no
-    # area writes the zero answer.
+    # area writes the zero answer. ``n`` is ``ring_angle_weighted_normal``.
     v = wp.int32(wp.tid())
-    normal = wp.normalize(vertex_normals[v])
+    normal = wp.normalize(
+        ring_angle_weighted_normal(
+            vertices, faces, vertex_faces, vf_offsets, vertex_normals, gather_normals, v
+        )
+    )
     here = vertices[v]
     tensor = wp.mat33()
     ring_area = wp.float32(0.0)
@@ -810,6 +838,7 @@ def normal_cycle_principal_curvatures(
     vf_offsets: wp.array[wp.int32],
     mates: wp.array[wp.int32],
     vertex_normals: wp.array[wp.vec3],
+    gather_normals: wp.int32,
     out_pd1: wp.array[wp.vec3],
     out_pd2: wp.array[wp.vec3],
     out_pv1: wp.array[wp.float32],
@@ -851,7 +880,10 @@ def normal_cycle_principal_curvatures(
         return
     tensor = tensor * (wp.float64(1.5) / ring_area)
     vectors, values = wp.eig3(tensor)
-    normal = wp.vec3d(vertex_normals[v])
+    vertex_normal = ring_angle_weighted_normal(
+        vertices, faces, vertex_faces, vf_offsets, vertex_normals, gather_normals, v
+    )
+    normal = wp.vec3d(vertex_normal)
     across = wp.int32(0)
     best = wp.float64(-1.0)
     for i in range(3):
@@ -866,7 +898,7 @@ def normal_cycle_principal_curvatures(
     small = wp.where(values[a] < values[b], a, b)
     pd1 = wp.vec3(wp.vec3d(vectors[0, small], vectors[1, small], vectors[2, small]))
     axis = wp.vec3(wp.vec3d(vectors[0, across], vectors[1, across], vectors[2, across]))
-    if wp.dot(axis, vertex_normals[v]) < wp.float32(0.0):
+    if wp.dot(axis, vertex_normal) < wp.float32(0.0):
         axis = -axis
     out_pd1[v] = pd1
     out_pd2[v] = wp.cross(axis, pd1)
