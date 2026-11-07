@@ -187,7 +187,9 @@ def interpolate_from_points_in_ball(
     # are ``kernels.neighbors.ball_collect``'s hash-grid branch, so a query folds exactly the
     # neighbours, in exactly the order, that CSR would have listed -- with no count pass, scan,
     # readback or two neighbour-sized buffers in between. What still differs is the body: the
-    # collect writes each neighbour out, this folds it in.
+    # collect writes each neighbour out, this folds it in. Not walked a block a query for few
+    # queries (``neighbors.ball_count_in_cells``): a coincident source wins in walk order, which
+    # lanes over separate cells would not keep.
     q = wp.int32(wp.tid())
     p = query_points[q]
     accumulated = source_values[0] * wp.float32(0.0)

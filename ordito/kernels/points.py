@@ -793,7 +793,9 @@ def normal_outlier_flags(
     # A point is a normal outlier when its normal's angle in radians to the mean direction of the
     # *other* points' normals in its ball, ``atan2(|n x s|, n . s)``, exceeds ``max_angle``; the
     # angle is ``180`` when their sum is shorter than ``0.3``, too little agreement to define a
-    # direction.
+    # direction. Not walked a block a point for few points (``neighbors.ball_count_in_cells``):
+    # the lanes would add the ``float32`` normals in another order, and the angle test on that sum
+    # could then flip a point at the threshold.
     i = wp.int32(wp.tid())
     q = points[i]
     total = wp.vec3()
