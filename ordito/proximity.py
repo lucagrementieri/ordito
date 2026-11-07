@@ -389,7 +389,13 @@ def closest_point_on_edges(
     if bvh is None:
         assert lower is not None
         assert upper is not None
-        bvh = od.neighbors.bvh_from_bounds(lower, upper)
+        if wp.get_device(device).is_cpu:
+            leaf_size = kernel_proximity.EDGE_BVH_LEAF_SIZE_CPU
+        elif n_edges >= kernel_proximity.EDGE_BVH_WIDE_LEAF_MIN_EDGES:
+            leaf_size = kernel_proximity.EDGE_BVH_LEAF_SIZE_CUDA
+        else:
+            leaf_size = 4
+        bvh = od.neighbors.bvh_from_bounds(lower, upper, leaf_size=leaf_size)
     caller_max_dist = 0.0 if max_dist is None else max_dist
 
     out_closest = _launch.empty(m, dtype=wp.vec3, device=device)

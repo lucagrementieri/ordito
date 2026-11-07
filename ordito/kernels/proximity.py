@@ -215,6 +215,16 @@ def edge_bounds_and_scene_box(
         minmax_vec3_chunk(queries, t - n_edges - vertex_chunks, out_corners, wp.int32(1))
 
 
+# Leaf size of the BVH ``proximity.closest_point_on_edges`` builds over its edges' boxes, per
+# device. Against the ``bvh_from_bounds`` default of 4, call time, CUDA leaf 8: 0.87-0.96x from
+# 41 k edges up (scrambled dragon 0.87-0.90x), 1.01-1.04x at 7.7 k, so CUDA takes it from
+# ``EDGE_BVH_WIDE_LEAF_MIN_EDGES``; leaf 16 0.83-0.88x on dragon but 1.04x at 7.7 k. CPU leaf 16:
+# 0.82-0.87x at every size (leaf 8 0.92-0.98x).
+EDGE_BVH_LEAF_SIZE_CUDA = 8
+EDGE_BVH_LEAF_SIZE_CPU = 16
+EDGE_BVH_WIDE_LEAF_MIN_EDGES = 1 << 15
+
+
 @wp.kernel
 def closest_point_on_edges(
     vertices: wp.array[wp.vec3],
