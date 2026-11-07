@@ -7124,27 +7124,7 @@ with it, or a degenerate system) has zero directions and zero curvature values.<
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/curvature.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">282</span>
-<span class="normal">283</span>
-<span class="normal">284</span>
-<span class="normal">285</span>
-<span class="normal">286</span>
-<span class="normal">287</span>
-<span class="normal">288</span>
-<span class="normal">289</span>
-<span class="normal">290</span>
-<span class="normal">291</span>
-<span class="normal">292</span>
-<span class="normal">293</span>
-<span class="normal">294</span>
-<span class="normal">295</span>
-<span class="normal">296</span>
-<span class="normal">297</span>
-<span class="normal">298</span>
-<span class="normal">299</span>
-<span class="normal">300</span>
-<span class="normal">301</span>
-<span class="normal">302</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">302</span>
 <span class="normal">303</span>
 <span class="normal">304</span>
 <span class="normal">305</span>
@@ -7217,7 +7197,27 @@ with it, or a degenerate system) has zero directions and zero curvature values.<
 <span class="normal">372</span>
 <span class="normal">373</span>
 <span class="normal">374</span>
-<span class="normal">375</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">point_principal_curvature</span><span class="p">(</span>
+<span class="normal">375</span>
+<span class="normal">376</span>
+<span class="normal">377</span>
+<span class="normal">378</span>
+<span class="normal">379</span>
+<span class="normal">380</span>
+<span class="normal">381</span>
+<span class="normal">382</span>
+<span class="normal">383</span>
+<span class="normal">384</span>
+<span class="normal">385</span>
+<span class="normal">386</span>
+<span class="normal">387</span>
+<span class="normal">388</span>
+<span class="normal">389</span>
+<span class="normal">390</span>
+<span class="normal">391</span>
+<span class="normal">392</span>
+<span class="normal">393</span>
+<span class="normal">394</span>
+<span class="normal">395</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">point_principal_curvature</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">neighbor_idx</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7482,27 +7482,7 @@ meshes, and a vertex whose ring area is tiny (a needle's tip) amplifies rounding
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/curvature.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">378</span>
-<span class="normal">379</span>
-<span class="normal">380</span>
-<span class="normal">381</span>
-<span class="normal">382</span>
-<span class="normal">383</span>
-<span class="normal">384</span>
-<span class="normal">385</span>
-<span class="normal">386</span>
-<span class="normal">387</span>
-<span class="normal">388</span>
-<span class="normal">389</span>
-<span class="normal">390</span>
-<span class="normal">391</span>
-<span class="normal">392</span>
-<span class="normal">393</span>
-<span class="normal">394</span>
-<span class="normal">395</span>
-<span class="normal">396</span>
-<span class="normal">397</span>
-<span class="normal">398</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">398</span>
 <span class="normal">399</span>
 <span class="normal">400</span>
 <span class="normal">401</span>
@@ -7559,7 +7539,28 @@ meshes, and a vertex whose ring area is tiny (a needle's tip) amplifies rounding
 <span class="normal">452</span>
 <span class="normal">453</span>
 <span class="normal">454</span>
-<span class="normal">455</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_curvatures</span><span class="p">(</span>
+<span class="normal">455</span>
+<span class="normal">456</span>
+<span class="normal">457</span>
+<span class="normal">458</span>
+<span class="normal">459</span>
+<span class="normal">460</span>
+<span class="normal">461</span>
+<span class="normal">462</span>
+<span class="normal">463</span>
+<span class="normal">464</span>
+<span class="normal">465</span>
+<span class="normal">466</span>
+<span class="normal">467</span>
+<span class="normal">468</span>
+<span class="normal">469</span>
+<span class="normal">470</span>
+<span class="normal">471</span>
+<span class="normal">472</span>
+<span class="normal">473</span>
+<span class="normal">474</span>
+<span class="normal">475</span>
+<span class="normal">476</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_curvatures</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7629,10 +7630,11 @@ meshes, and a vertex whose ring area is tiny (a needle's tip) amplifies rounding
         <span class="k">return</span> <span class="n">mean</span><span class="p">,</span> <span class="n">gaussian</span>
     <span class="n">vertex_faces</span><span class="p">,</span> <span class="n">vf_offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">vertex_face_adjacency</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">)</span>
     <span class="n">mates</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">halfedge</span><span class="o">.</span><span class="n">halfedge_mates</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">vertex_faces</span><span class="o">=</span><span class="p">(</span><span class="n">vertex_faces</span><span class="p">,</span> <span class="n">vf_offsets</span><span class="p">))</span>
+    <span class="n">face_terms</span> <span class="o">=</span> <span class="n">_meyer_face_terms</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_curvature</span><span class="o">.</span><span class="n">meyer_vertex_curvatures</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">vertex_faces</span><span class="p">,</span> <span class="n">vf_offsets</span><span class="p">,</span> <span class="n">mates</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">vertex_faces</span><span class="p">,</span> <span class="n">vf_offsets</span><span class="p">,</span> <span class="n">mates</span><span class="p">,</span> <span class="n">face_terms</span><span class="p">],</span>
         <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">mean</span><span class="p">,</span> <span class="n">gaussian</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
@@ -7833,45 +7835,7 @@ referenced by any face have defect <code>2π</code> (empty angle sum).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/curvature.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">458</span>
-<span class="normal">459</span>
-<span class="normal">460</span>
-<span class="normal">461</span>
-<span class="normal">462</span>
-<span class="normal">463</span>
-<span class="normal">464</span>
-<span class="normal">465</span>
-<span class="normal">466</span>
-<span class="normal">467</span>
-<span class="normal">468</span>
-<span class="normal">469</span>
-<span class="normal">470</span>
-<span class="normal">471</span>
-<span class="normal">472</span>
-<span class="normal">473</span>
-<span class="normal">474</span>
-<span class="normal">475</span>
-<span class="normal">476</span>
-<span class="normal">477</span>
-<span class="normal">478</span>
-<span class="normal">479</span>
-<span class="normal">480</span>
-<span class="normal">481</span>
-<span class="normal">482</span>
-<span class="normal">483</span>
-<span class="normal">484</span>
-<span class="normal">485</span>
-<span class="normal">486</span>
-<span class="normal">487</span>
-<span class="normal">488</span>
-<span class="normal">489</span>
-<span class="normal">490</span>
-<span class="normal">491</span>
-<span class="normal">492</span>
-<span class="normal">493</span>
-<span class="normal">494</span>
-<span class="normal">495</span>
-<span class="normal">496</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">496</span>
 <span class="normal">497</span>
 <span class="normal">498</span>
 <span class="normal">499</span>
@@ -7921,7 +7885,45 @@ referenced by any face have defect <code>2π</code> (empty angle sum).</p>
 <span class="normal">543</span>
 <span class="normal">544</span>
 <span class="normal">545</span>
-<span class="normal">546</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_defects</span><span class="p">(</span>
+<span class="normal">546</span>
+<span class="normal">547</span>
+<span class="normal">548</span>
+<span class="normal">549</span>
+<span class="normal">550</span>
+<span class="normal">551</span>
+<span class="normal">552</span>
+<span class="normal">553</span>
+<span class="normal">554</span>
+<span class="normal">555</span>
+<span class="normal">556</span>
+<span class="normal">557</span>
+<span class="normal">558</span>
+<span class="normal">559</span>
+<span class="normal">560</span>
+<span class="normal">561</span>
+<span class="normal">562</span>
+<span class="normal">563</span>
+<span class="normal">564</span>
+<span class="normal">565</span>
+<span class="normal">566</span>
+<span class="normal">567</span>
+<span class="normal">568</span>
+<span class="normal">569</span>
+<span class="normal">570</span>
+<span class="normal">571</span>
+<span class="normal">572</span>
+<span class="normal">573</span>
+<span class="normal">574</span>
+<span class="normal">575</span>
+<span class="normal">576</span>
+<span class="normal">577</span>
+<span class="normal">578</span>
+<span class="normal">579</span>
+<span class="normal">580</span>
+<span class="normal">581</span>
+<span class="normal">582</span>
+<span class="normal">583</span>
+<span class="normal">584</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_defects</span><span class="p">(</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">face_angles</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat32</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8234,45 +8236,7 @@ for each point.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/curvature.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">549</span>
-<span class="normal">550</span>
-<span class="normal">551</span>
-<span class="normal">552</span>
-<span class="normal">553</span>
-<span class="normal">554</span>
-<span class="normal">555</span>
-<span class="normal">556</span>
-<span class="normal">557</span>
-<span class="normal">558</span>
-<span class="normal">559</span>
-<span class="normal">560</span>
-<span class="normal">561</span>
-<span class="normal">562</span>
-<span class="normal">563</span>
-<span class="normal">564</span>
-<span class="normal">565</span>
-<span class="normal">566</span>
-<span class="normal">567</span>
-<span class="normal">568</span>
-<span class="normal">569</span>
-<span class="normal">570</span>
-<span class="normal">571</span>
-<span class="normal">572</span>
-<span class="normal">573</span>
-<span class="normal">574</span>
-<span class="normal">575</span>
-<span class="normal">576</span>
-<span class="normal">577</span>
-<span class="normal">578</span>
-<span class="normal">579</span>
-<span class="normal">580</span>
-<span class="normal">581</span>
-<span class="normal">582</span>
-<span class="normal">583</span>
-<span class="normal">584</span>
-<span class="normal">585</span>
-<span class="normal">586</span>
-<span class="normal">587</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">587</span>
 <span class="normal">588</span>
 <span class="normal">589</span>
 <span class="normal">590</span>
@@ -8322,7 +8286,48 @@ for each point.</p>
 <span class="normal">634</span>
 <span class="normal">635</span>
 <span class="normal">636</span>
-<span class="normal">637</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">discrete_gaussian_curvature</span><span class="p">(</span>
+<span class="normal">637</span>
+<span class="normal">638</span>
+<span class="normal">639</span>
+<span class="normal">640</span>
+<span class="normal">641</span>
+<span class="normal">642</span>
+<span class="normal">643</span>
+<span class="normal">644</span>
+<span class="normal">645</span>
+<span class="normal">646</span>
+<span class="normal">647</span>
+<span class="normal">648</span>
+<span class="normal">649</span>
+<span class="normal">650</span>
+<span class="normal">651</span>
+<span class="normal">652</span>
+<span class="normal">653</span>
+<span class="normal">654</span>
+<span class="normal">655</span>
+<span class="normal">656</span>
+<span class="normal">657</span>
+<span class="normal">658</span>
+<span class="normal">659</span>
+<span class="normal">660</span>
+<span class="normal">661</span>
+<span class="normal">662</span>
+<span class="normal">663</span>
+<span class="normal">664</span>
+<span class="normal">665</span>
+<span class="normal">666</span>
+<span class="normal">667</span>
+<span class="normal">668</span>
+<span class="normal">669</span>
+<span class="normal">670</span>
+<span class="normal">671</span>
+<span class="normal">672</span>
+<span class="normal">673</span>
+<span class="normal">674</span>
+<span class="normal">675</span>
+<span class="normal">676</span>
+<span class="normal">677</span>
+<span class="normal">678</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">discrete_gaussian_curvature</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -8402,7 +8407,10 @@ for each point.</p>
         <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">face_angles</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">angle_sum</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="n">grid</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">hashgrid_from_points</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="nb">float</span><span class="p">(</span><span class="n">radius</span><span class="p">))</span>
+    <span class="c1"># Few queries on CUDA take cells twice the radius, so each query meets fewer cells.</span>
+    <span class="n">wide</span> <span class="o">=</span> <span class="n">points</span><span class="o">.</span><span class="n">size</span> <span class="o">&lt;</span> <span class="n">kernel_curvature</span><span class="o">.</span><span class="n">GAUSSIAN_WIDE_CELL_MAX_QUERIES</span>
+    <span class="n">cell</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">radius</span><span class="p">)</span> <span class="o">*</span> <span class="p">(</span><span class="mf">2.0</span> <span class="k">if</span> <span class="n">wide</span> <span class="ow">and</span> <span class="ow">not</span> <span class="n">wp</span><span class="o">.</span><span class="n">get_device</span><span class="p">(</span><span class="n">device</span><span class="p">)</span><span class="o">.</span><span class="n">is_cpu</span> <span class="k">else</span> <span class="mf">1.0</span><span class="p">)</span>
+    <span class="n">grid</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">hashgrid_from_points</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">cell</span><span class="p">)</span>
     <span class="n">gauss_curvature</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">points</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_curvature</span><span class="o">.</span><span class="n">ball_angle_defect_sum</span><span class="p">,</span>
@@ -8657,48 +8665,7 @@ edge measures zero:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/curvature.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">667</span>
-<span class="normal">668</span>
-<span class="normal">669</span>
-<span class="normal">670</span>
-<span class="normal">671</span>
-<span class="normal">672</span>
-<span class="normal">673</span>
-<span class="normal">674</span>
-<span class="normal">675</span>
-<span class="normal">676</span>
-<span class="normal">677</span>
-<span class="normal">678</span>
-<span class="normal">679</span>
-<span class="normal">680</span>
-<span class="normal">681</span>
-<span class="normal">682</span>
-<span class="normal">683</span>
-<span class="normal">684</span>
-<span class="normal">685</span>
-<span class="normal">686</span>
-<span class="normal">687</span>
-<span class="normal">688</span>
-<span class="normal">689</span>
-<span class="normal">690</span>
-<span class="normal">691</span>
-<span class="normal">692</span>
-<span class="normal">693</span>
-<span class="normal">694</span>
-<span class="normal">695</span>
-<span class="normal">696</span>
-<span class="normal">697</span>
-<span class="normal">698</span>
-<span class="normal">699</span>
-<span class="normal">700</span>
-<span class="normal">701</span>
-<span class="normal">702</span>
-<span class="normal">703</span>
-<span class="normal">704</span>
-<span class="normal">705</span>
-<span class="normal">706</span>
-<span class="normal">707</span>
-<span class="normal">708</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">708</span>
 <span class="normal">709</span>
 <span class="normal">710</span>
 <span class="normal">711</span>
@@ -8796,7 +8763,50 @@ edge measures zero:</p>
 <span class="normal">803</span>
 <span class="normal">804</span>
 <span class="normal">805</span>
-<span class="normal">806</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">discrete_mean_curvature</span><span class="p">(</span>
+<span class="normal">806</span>
+<span class="normal">807</span>
+<span class="normal">808</span>
+<span class="normal">809</span>
+<span class="normal">810</span>
+<span class="normal">811</span>
+<span class="normal">812</span>
+<span class="normal">813</span>
+<span class="normal">814</span>
+<span class="normal">815</span>
+<span class="normal">816</span>
+<span class="normal">817</span>
+<span class="normal">818</span>
+<span class="normal">819</span>
+<span class="normal">820</span>
+<span class="normal">821</span>
+<span class="normal">822</span>
+<span class="normal">823</span>
+<span class="normal">824</span>
+<span class="normal">825</span>
+<span class="normal">826</span>
+<span class="normal">827</span>
+<span class="normal">828</span>
+<span class="normal">829</span>
+<span class="normal">830</span>
+<span class="normal">831</span>
+<span class="normal">832</span>
+<span class="normal">833</span>
+<span class="normal">834</span>
+<span class="normal">835</span>
+<span class="normal">836</span>
+<span class="normal">837</span>
+<span class="normal">838</span>
+<span class="normal">839</span>
+<span class="normal">840</span>
+<span class="normal">841</span>
+<span class="normal">842</span>
+<span class="normal">843</span>
+<span class="normal">844</span>
+<span class="normal">845</span>
+<span class="normal">846</span>
+<span class="normal">847</span>
+<span class="normal">848</span>
+<span class="normal">849</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">discrete_mean_curvature</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
@@ -8914,7 +8924,9 @@ edge measures zero:</p>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
 
-    <span class="n">bvh</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">bvh_from_bounds</span><span class="p">(</span><span class="n">edge_lower</span><span class="p">,</span> <span class="n">edge_upper</span><span class="p">)</span>
+    <span class="n">bvh</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">bvh_from_bounds</span><span class="p">(</span>
+        <span class="n">edge_lower</span><span class="p">,</span> <span class="n">edge_upper</span><span class="p">,</span> <span class="n">leaf_size</span><span class="o">=</span><span class="n">kernel_curvature</span><span class="o">.</span><span class="n">MEAN_CURVATURE_BVH_LEAF_SIZE</span>
+    <span class="p">)</span>
     <span class="c1"># The predicate the narrow phase below applies is the *ball* -- it keeps the edge length inside</span>
     <span class="c1"># the ball of ``radius`` -- so the broad phase is the ball query and not the enclosing cube:</span>
     <span class="c1"># ``wp.bvh_query_sphere``'s traversal is cheaper than ``wp.bvh_query_aabb``'s on the identical</span>
@@ -9160,50 +9172,7 @@ it orders its <code>K1</code> and <code>K2</code> by magnitude.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/curvature.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">809</span>
-<span class="normal">810</span>
-<span class="normal">811</span>
-<span class="normal">812</span>
-<span class="normal">813</span>
-<span class="normal">814</span>
-<span class="normal">815</span>
-<span class="normal">816</span>
-<span class="normal">817</span>
-<span class="normal">818</span>
-<span class="normal">819</span>
-<span class="normal">820</span>
-<span class="normal">821</span>
-<span class="normal">822</span>
-<span class="normal">823</span>
-<span class="normal">824</span>
-<span class="normal">825</span>
-<span class="normal">826</span>
-<span class="normal">827</span>
-<span class="normal">828</span>
-<span class="normal">829</span>
-<span class="normal">830</span>
-<span class="normal">831</span>
-<span class="normal">832</span>
-<span class="normal">833</span>
-<span class="normal">834</span>
-<span class="normal">835</span>
-<span class="normal">836</span>
-<span class="normal">837</span>
-<span class="normal">838</span>
-<span class="normal">839</span>
-<span class="normal">840</span>
-<span class="normal">841</span>
-<span class="normal">842</span>
-<span class="normal">843</span>
-<span class="normal">844</span>
-<span class="normal">845</span>
-<span class="normal">846</span>
-<span class="normal">847</span>
-<span class="normal">848</span>
-<span class="normal">849</span>
-<span class="normal">850</span>
-<span class="normal">851</span>
-<span class="normal">852</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">852</span>
 <span class="normal">853</span>
 <span class="normal">854</span>
 <span class="normal">855</span>
@@ -9286,7 +9255,50 @@ it orders its <code>K1</code> and <code>K2</code> by magnitude.</p>
 <span class="normal">932</span>
 <span class="normal">933</span>
 <span class="normal">934</span>
-<span class="normal">935</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mls_principal_curvature</span><span class="p">(</span>
+<span class="normal">935</span>
+<span class="normal">936</span>
+<span class="normal">937</span>
+<span class="normal">938</span>
+<span class="normal">939</span>
+<span class="normal">940</span>
+<span class="normal">941</span>
+<span class="normal">942</span>
+<span class="normal">943</span>
+<span class="normal">944</span>
+<span class="normal">945</span>
+<span class="normal">946</span>
+<span class="normal">947</span>
+<span class="normal">948</span>
+<span class="normal">949</span>
+<span class="normal">950</span>
+<span class="normal">951</span>
+<span class="normal">952</span>
+<span class="normal">953</span>
+<span class="normal">954</span>
+<span class="normal">955</span>
+<span class="normal">956</span>
+<span class="normal">957</span>
+<span class="normal">958</span>
+<span class="normal">959</span>
+<span class="normal">960</span>
+<span class="normal">961</span>
+<span class="normal">962</span>
+<span class="normal">963</span>
+<span class="normal">964</span>
+<span class="normal">965</span>
+<span class="normal">966</span>
+<span class="normal">967</span>
+<span class="normal">968</span>
+<span class="normal">969</span>
+<span class="normal">970</span>
+<span class="normal">971</span>
+<span class="normal">972</span>
+<span class="normal">973</span>
+<span class="normal">974</span>
+<span class="normal">975</span>
+<span class="normal">976</span>
+<span class="normal">977</span>
+<span class="normal">978</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">mls_principal_curvature</span><span class="p">(</span>
     <span class="n">points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">normals</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"apss"</span><span class="p">,</span> <span class="s2">"rimls"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"apss"</span><span class="p">,</span>

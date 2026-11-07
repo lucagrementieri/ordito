@@ -12019,23 +12019,7 @@ boundary edge, so the output is watertight with no vertex-merge pass (trimesh re
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/creation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1773</span>
-<span class="normal">1774</span>
-<span class="normal">1775</span>
-<span class="normal">1776</span>
-<span class="normal">1777</span>
-<span class="normal">1778</span>
-<span class="normal">1779</span>
-<span class="normal">1780</span>
-<span class="normal">1781</span>
-<span class="normal">1782</span>
-<span class="normal">1783</span>
-<span class="normal">1784</span>
-<span class="normal">1785</span>
-<span class="normal">1786</span>
-<span class="normal">1787</span>
-<span class="normal">1788</span>
-<span class="normal">1789</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1789</span>
 <span class="normal">1790</span>
 <span class="normal">1791</span>
 <span class="normal">1792</span>
@@ -12095,7 +12079,23 @@ boundary edge, so the output is watertight with no vertex-merge pass (trimesh re
 <span class="normal">1846</span>
 <span class="normal">1847</span>
 <span class="normal">1848</span>
-<span class="normal">1849</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">extrude_triangulation</span><span class="p">(</span>
+<span class="normal">1849</span>
+<span class="normal">1850</span>
+<span class="normal">1851</span>
+<span class="normal">1852</span>
+<span class="normal">1853</span>
+<span class="normal">1854</span>
+<span class="normal">1855</span>
+<span class="normal">1856</span>
+<span class="normal">1857</span>
+<span class="normal">1858</span>
+<span class="normal">1859</span>
+<span class="normal">1860</span>
+<span class="normal">1861</span>
+<span class="normal">1862</span>
+<span class="normal">1863</span>
+<span class="normal">1864</span>
+<span class="normal">1865</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">extrude_triangulation</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">height</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
@@ -12338,23 +12338,7 @@ hands the result to <a class="autorefs autorefs-internal" title="extrude_triangu
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/creation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1852</span>
-<span class="normal">1853</span>
-<span class="normal">1854</span>
-<span class="normal">1855</span>
-<span class="normal">1856</span>
-<span class="normal">1857</span>
-<span class="normal">1858</span>
-<span class="normal">1859</span>
-<span class="normal">1860</span>
-<span class="normal">1861</span>
-<span class="normal">1862</span>
-<span class="normal">1863</span>
-<span class="normal">1864</span>
-<span class="normal">1865</span>
-<span class="normal">1866</span>
-<span class="normal">1867</span>
-<span class="normal">1868</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1868</span>
 <span class="normal">1869</span>
 <span class="normal">1870</span>
 <span class="normal">1871</span>
@@ -12405,7 +12389,23 @@ hands the result to <a class="autorefs autorefs-internal" title="extrude_triangu
 <span class="normal">1916</span>
 <span class="normal">1917</span>
 <span class="normal">1918</span>
-<span class="normal">1919</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">extrude_polygon</span><span class="p">(</span>
+<span class="normal">1919</span>
+<span class="normal">1920</span>
+<span class="normal">1921</span>
+<span class="normal">1922</span>
+<span class="normal">1923</span>
+<span class="normal">1924</span>
+<span class="normal">1925</span>
+<span class="normal">1926</span>
+<span class="normal">1927</span>
+<span class="normal">1928</span>
+<span class="normal">1929</span>
+<span class="normal">1930</span>
+<span class="normal">1931</span>
+<span class="normal">1932</span>
+<span class="normal">1933</span>
+<span class="normal">1934</span>
+<span class="normal">1935</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">extrude_polygon</span><span class="p">(</span>
     <span class="n">polygon</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span>
     <span class="n">height</span><span class="p">:</span> <span class="nb">float</span><span class="p">,</span>
     <span class="n">transform</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">mat44</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -12464,10 +12464,10 @@ hands the result to <a class="autorefs autorefs-internal" title="extrude_triangu
         <span class="n">translation</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span>
         <span class="n">translation</span><span class="p">[</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]</span> <span class="o">=</span> <span class="nb">abs</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">height</span><span class="p">))</span> <span class="o">/</span> <span class="o">-</span><span class="mf">2.0</span>
         <span class="k">if</span> <span class="n">transform</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-            <span class="n">transform</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">(</span><span class="o">*</span><span class="n">translation</span><span class="o">.</span><span class="n">flatten</span><span class="p">())</span>
+            <span class="n">transform</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">matrix</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">,</span> <span class="n">translation</span><span class="p">)</span>
         <span class="k">else</span><span class="p">:</span>
             <span class="n">composed</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">matrix_to_numpy</span><span class="p">(</span><span class="n">transform</span><span class="p">)</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">translation</span><span class="p">)</span>
-            <span class="n">transform</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">(</span><span class="o">*</span><span class="n">composed</span><span class="o">.</span><span class="n">flatten</span><span class="p">())</span>
+            <span class="n">transform</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">matrix</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">,</span> <span class="n">composed</span><span class="p">)</span>
     <span class="c1"># A full triangulation of the ring (a convex ring's fan, passed as ``None``, is one) is bounded</span>
     <span class="c1"># by the ring edges themselves and wound like the ring; a partial one (a degenerate ring) has</span>
     <span class="c1"># its boundary and winding derived, as ``extrude_triangulation`` does.</span>
@@ -12694,27 +12694,7 @@ ring is not a simple polygon).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/creation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2017</span>
-<span class="normal">2018</span>
-<span class="normal">2019</span>
-<span class="normal">2020</span>
-<span class="normal">2021</span>
-<span class="normal">2022</span>
-<span class="normal">2023</span>
-<span class="normal">2024</span>
-<span class="normal">2025</span>
-<span class="normal">2026</span>
-<span class="normal">2027</span>
-<span class="normal">2028</span>
-<span class="normal">2029</span>
-<span class="normal">2030</span>
-<span class="normal">2031</span>
-<span class="normal">2032</span>
-<span class="normal">2033</span>
-<span class="normal">2034</span>
-<span class="normal">2035</span>
-<span class="normal">2036</span>
-<span class="normal">2037</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2037</span>
 <span class="normal">2038</span>
 <span class="normal">2039</span>
 <span class="normal">2040</span>
@@ -12827,7 +12807,27 @@ ring is not a simple polygon).</p>
 <span class="normal">2147</span>
 <span class="normal">2148</span>
 <span class="normal">2149</span>
-<span class="normal">2150</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sweep_polygon</span><span class="p">(</span>
+<span class="normal">2150</span>
+<span class="normal">2151</span>
+<span class="normal">2152</span>
+<span class="normal">2153</span>
+<span class="normal">2154</span>
+<span class="normal">2155</span>
+<span class="normal">2156</span>
+<span class="normal">2157</span>
+<span class="normal">2158</span>
+<span class="normal">2159</span>
+<span class="normal">2160</span>
+<span class="normal">2161</span>
+<span class="normal">2162</span>
+<span class="normal">2163</span>
+<span class="normal">2164</span>
+<span class="normal">2165</span>
+<span class="normal">2166</span>
+<span class="normal">2167</span>
+<span class="normal">2168</span>
+<span class="normal">2169</span>
+<span class="normal">2170</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">sweep_polygon</span><span class="p">(</span>
     <span class="n">polygon</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec2</span><span class="p">],</span>
     <span class="n">path</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">angles</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -13155,27 +13155,7 @@ are <em>not</em> merged, so each prism stays a separate body — the same choice
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/creation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2153</span>
-<span class="normal">2154</span>
-<span class="normal">2155</span>
-<span class="normal">2156</span>
-<span class="normal">2157</span>
-<span class="normal">2158</span>
-<span class="normal">2159</span>
-<span class="normal">2160</span>
-<span class="normal">2161</span>
-<span class="normal">2162</span>
-<span class="normal">2163</span>
-<span class="normal">2164</span>
-<span class="normal">2165</span>
-<span class="normal">2166</span>
-<span class="normal">2167</span>
-<span class="normal">2168</span>
-<span class="normal">2169</span>
-<span class="normal">2170</span>
-<span class="normal">2171</span>
-<span class="normal">2172</span>
-<span class="normal">2173</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2173</span>
 <span class="normal">2174</span>
 <span class="normal">2175</span>
 <span class="normal">2176</span>
@@ -13247,7 +13227,28 @@ are <em>not</em> merged, so each prism stays a separate body — the same choice
 <span class="normal">2242</span>
 <span class="normal">2243</span>
 <span class="normal">2244</span>
-<span class="normal">2245</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">truncated_prisms</span><span class="p">(</span>
+<span class="normal">2245</span>
+<span class="normal">2246</span>
+<span class="normal">2247</span>
+<span class="normal">2248</span>
+<span class="normal">2249</span>
+<span class="normal">2250</span>
+<span class="normal">2251</span>
+<span class="normal">2252</span>
+<span class="normal">2253</span>
+<span class="normal">2254</span>
+<span class="normal">2255</span>
+<span class="normal">2256</span>
+<span class="normal">2257</span>
+<span class="normal">2258</span>
+<span class="normal">2259</span>
+<span class="normal">2260</span>
+<span class="normal">2261</span>
+<span class="normal">2262</span>
+<span class="normal">2263</span>
+<span class="normal">2264</span>
+<span class="normal">2265</span>
+<span class="normal">2266</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">truncated_prisms</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">origin</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -13331,11 +13332,12 @@ are <em>not</em> merged, so each prism stays a separate body — the same choice
     <span class="c1"># Inverted in NumPy, on the matrix that is already in hand, rather than with ``wp.inverse``:</span>
     <span class="c1"># a Warp builtin at Python scope routes through builtin dispatch and is several times dearer,</span>
     <span class="c1"># and the two agree to float32 rounding (``wp.inverse`` works in float32).</span>
-    <span class="n">to_plane</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">(</span><span class="o">*</span><span class="n">transform_np</span><span class="o">.</span><span class="n">flatten</span><span class="p">())</span>
-    <span class="n">from_plane</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">(</span><span class="o">*</span><span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">inv</span><span class="p">(</span><span class="n">transform_np</span><span class="p">)</span><span class="o">.</span><span class="n">flatten</span><span class="p">())</span>
+    <span class="n">to_plane</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">matrix</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">,</span> <span class="n">transform_np</span><span class="p">)</span>
+    <span class="n">from_plane</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">matrix</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">inv</span><span class="p">(</span><span class="n">transform_np</span><span class="p">))</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_creation</span><span class="o">.</span><span class="n">truncated_prism_geometry</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
+        <span class="c1"># A thread a prism on the CPU, a thread an output vertex or triangle on CUDA.</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span> <span class="k">if</span> <span class="n">wp</span><span class="o">.</span><span class="n">get_device</span><span class="p">(</span><span class="n">device</span><span class="p">)</span><span class="o">.</span><span class="n">is_cpu</span> <span class="k">else</span> <span class="mi">14</span> <span class="o">*</span> <span class="n">n_faces</span><span class="p">,</span>
         <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">to_plane</span><span class="p">,</span> <span class="n">from_plane</span><span class="p">,</span> <span class="n">out_vertices</span><span class="p">,</span> <span class="n">out_faces</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
@@ -13515,28 +13517,7 @@ per-face colors itself.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/creation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2257</span>
-<span class="normal">2258</span>
-<span class="normal">2259</span>
-<span class="normal">2260</span>
-<span class="normal">2261</span>
-<span class="normal">2262</span>
-<span class="normal">2263</span>
-<span class="normal">2264</span>
-<span class="normal">2265</span>
-<span class="normal">2266</span>
-<span class="normal">2267</span>
-<span class="normal">2268</span>
-<span class="normal">2269</span>
-<span class="normal">2270</span>
-<span class="normal">2271</span>
-<span class="normal">2272</span>
-<span class="normal">2273</span>
-<span class="normal">2274</span>
-<span class="normal">2275</span>
-<span class="normal">2276</span>
-<span class="normal">2277</span>
-<span class="normal">2278</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2278</span>
 <span class="normal">2279</span>
 <span class="normal">2280</span>
 <span class="normal">2281</span>
@@ -13621,7 +13602,21 @@ per-face colors itself.</p>
 <span class="normal">2360</span>
 <span class="normal">2361</span>
 <span class="normal">2362</span>
-<span class="normal">2363</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">axis</span><span class="p">(</span>
+<span class="normal">2363</span>
+<span class="normal">2364</span>
+<span class="normal">2365</span>
+<span class="normal">2366</span>
+<span class="normal">2367</span>
+<span class="normal">2368</span>
+<span class="normal">2369</span>
+<span class="normal">2370</span>
+<span class="normal">2371</span>
+<span class="normal">2372</span>
+<span class="normal">2373</span>
+<span class="normal">2374</span>
+<span class="normal">2375</span>
+<span class="normal">2376</span>
+<span class="normal">2377</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">axis</span><span class="p">(</span>
     <span class="n">origin_size</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.04</span><span class="p">,</span>
     <span class="n">transform</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">mat44</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
     <span class="n">axis_radius</span><span class="p">:</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -13681,14 +13676,6 @@ per-face colors itself.</p>
     <span class="k">if</span> <span class="n">axis_length</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="n">axis_length</span> <span class="o">=</span> <span class="n">origin_size_f</span> <span class="o">*</span> <span class="mf">10.0</span>
 
-    <span class="c1"># Each cylinder is built centered on the origin, so it has to be pushed out along its own axis</span>
-    <span class="c1"># by half its length, then carried by the marker transform: the two compose on the host into</span>
-    <span class="c1"># the one matrix its kernel places it with. The ball and then the three cylinders (one launch)</span>
-    <span class="c1"># are written straight into the final buffers, so there is no concatenation pass.</span>
-    <span class="n">shift</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span>
-    <span class="n">shift</span><span class="p">[</span><span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">]</span> <span class="o">=</span> <span class="nb">float</span><span class="p">(</span><span class="n">axis_length</span><span class="p">)</span> <span class="o">/</span> <span class="mf">2.0</span>
-    <span class="n">marker</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span> <span class="k">if</span> <span class="n">transform</span> <span class="ow">is</span> <span class="kc">None</span> <span class="k">else</span> <span class="n">od</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">matrix_to_numpy</span><span class="p">(</span><span class="n">transform</span><span class="p">)</span>
-
     <span class="n">radius</span><span class="p">,</span> <span class="n">half</span><span class="p">,</span> <span class="n">n_sections</span><span class="p">,</span> <span class="n">keep_caps</span><span class="p">,</span> <span class="n">keep_sides</span> <span class="o">=</span> <span class="n">_cylinder_template</span><span class="p">(</span>
         <span class="nb">float</span><span class="p">(</span><span class="n">axis_radius</span><span class="p">),</span> <span class="nb">float</span><span class="p">(</span><span class="n">axis_length</span><span class="p">)</span> <span class="o">/</span> <span class="mf">2.0</span><span class="p">,</span> <span class="n">DEFAULT_SECTIONS</span>
     <span class="p">)</span>
@@ -13698,10 +13685,11 @@ per-face colors itself.</p>
     <span class="n">device</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">get_device</span><span class="p">(</span><span class="n">device</span><span class="p">)</span>
     <span class="n">vertices</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">ball_vertices</span> <span class="o">+</span> <span class="mi">3</span> <span class="o">*</span> <span class="n">cylinder_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">faces</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">3</span> <span class="o">*</span> <span class="p">(</span><span class="n">ball_faces</span> <span class="o">+</span> <span class="mi">3</span> <span class="o">*</span> <span class="n">cylinder_faces</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">placements</span> <span class="o">=</span> <span class="p">[</span>
-        <span class="n">_placement</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">(</span><span class="o">*</span><span class="p">(</span><span class="n">marker</span> <span class="o">@</span> <span class="n">rotation</span><span class="o">.</span><span class="n">dot</span><span class="p">(</span><span class="n">shift</span><span class="p">))</span><span class="o">.</span><span class="n">flatten</span><span class="p">()))</span>
-        <span class="k">for</span> <span class="n">rotation</span> <span class="ow">in</span> <span class="n">_axis_rotations</span><span class="p">()</span>
-    <span class="p">]</span>
+    <span class="n">cylinder_matrices</span><span class="p">,</span> <span class="n">cylinder_modes</span> <span class="o">=</span> <span class="p">(</span>
+        <span class="n">_axis_cylinder_placements</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">axis_length</span><span class="p">))</span>
+        <span class="k">if</span> <span class="n">transform</span> <span class="ow">is</span> <span class="kc">None</span>
+        <span class="k">else</span> <span class="n">_axis_cylinder_placements_under</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">transform</span><span class="o">.</span><span class="n">matrix_to_numpy</span><span class="p">(</span><span class="n">transform</span><span class="p">),</span> <span class="n">axis_length</span><span class="p">)</span>
+    <span class="p">)</span>
     <span class="n">table</span><span class="p">,</span> <span class="n">corners</span> <span class="o">=</span> <span class="n">_icosphere_tables</span><span class="p">(</span><span class="n">device</span><span class="o">.</span><span class="n">alias</span><span class="p">)</span>
     <span class="n">ball_n</span> <span class="o">=</span> <span class="mi">1</span> <span class="o">&lt;&lt;</span> <span class="n">_AXIS_BALL_LEVELS</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
@@ -13719,8 +13707,8 @@ per-face colors itself.</p>
             <span class="n">_FULL_TURN</span><span class="p">,</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">keep_caps</span><span class="p">),</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">keep_sides</span><span class="p">),</span>
-            <span class="o">*</span><span class="p">(</span><span class="n">matrix</span> <span class="k">for</span> <span class="n">matrix</span><span class="p">,</span> <span class="n">_mode</span> <span class="ow">in</span> <span class="n">placements</span><span class="p">),</span>
-            <span class="n">wp</span><span class="o">.</span><span class="n">vec3i</span><span class="p">(</span><span class="o">*</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">mode</span><span class="p">)</span> <span class="k">for</span> <span class="n">_matrix</span><span class="p">,</span> <span class="n">mode</span> <span class="ow">in</span> <span class="n">placements</span><span class="p">)),</span>
+            <span class="o">*</span><span class="n">cylinder_matrices</span><span class="p">,</span>
+            <span class="n">cylinder_modes</span><span class="p">,</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">ball_vertices</span><span class="p">),</span>
             <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">ball_faces</span><span class="p">),</span>
         <span class="p">],</span>
@@ -13956,60 +13944,7 @@ parameterization does not identify, and drops the 2 triangles that thereby becam
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/creation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2397</span>
-<span class="normal">2398</span>
-<span class="normal">2399</span>
-<span class="normal">2400</span>
-<span class="normal">2401</span>
-<span class="normal">2402</span>
-<span class="normal">2403</span>
-<span class="normal">2404</span>
-<span class="normal">2405</span>
-<span class="normal">2406</span>
-<span class="normal">2407</span>
-<span class="normal">2408</span>
-<span class="normal">2409</span>
-<span class="normal">2410</span>
-<span class="normal">2411</span>
-<span class="normal">2412</span>
-<span class="normal">2413</span>
-<span class="normal">2414</span>
-<span class="normal">2415</span>
-<span class="normal">2416</span>
-<span class="normal">2417</span>
-<span class="normal">2418</span>
-<span class="normal">2419</span>
-<span class="normal">2420</span>
-<span class="normal">2421</span>
-<span class="normal">2422</span>
-<span class="normal">2423</span>
-<span class="normal">2424</span>
-<span class="normal">2425</span>
-<span class="normal">2426</span>
-<span class="normal">2427</span>
-<span class="normal">2428</span>
-<span class="normal">2429</span>
-<span class="normal">2430</span>
-<span class="normal">2431</span>
-<span class="normal">2432</span>
-<span class="normal">2433</span>
-<span class="normal">2434</span>
-<span class="normal">2435</span>
-<span class="normal">2436</span>
-<span class="normal">2437</span>
-<span class="normal">2438</span>
-<span class="normal">2439</span>
-<span class="normal">2440</span>
-<span class="normal">2441</span>
-<span class="normal">2442</span>
-<span class="normal">2443</span>
-<span class="normal">2444</span>
-<span class="normal">2445</span>
-<span class="normal">2446</span>
-<span class="normal">2447</span>
-<span class="normal">2448</span>
-<span class="normal">2449</span>
-<span class="normal">2450</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2450</span>
 <span class="normal">2451</span>
 <span class="normal">2452</span>
 <span class="normal">2453</span>
@@ -14046,7 +13981,60 @@ parameterization does not identify, and drops the 2 triangles that thereby becam
 <span class="normal">2484</span>
 <span class="normal">2485</span>
 <span class="normal">2486</span>
-<span class="normal">2487</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">parametric_surface</span><span class="p">(</span>
+<span class="normal">2487</span>
+<span class="normal">2488</span>
+<span class="normal">2489</span>
+<span class="normal">2490</span>
+<span class="normal">2491</span>
+<span class="normal">2492</span>
+<span class="normal">2493</span>
+<span class="normal">2494</span>
+<span class="normal">2495</span>
+<span class="normal">2496</span>
+<span class="normal">2497</span>
+<span class="normal">2498</span>
+<span class="normal">2499</span>
+<span class="normal">2500</span>
+<span class="normal">2501</span>
+<span class="normal">2502</span>
+<span class="normal">2503</span>
+<span class="normal">2504</span>
+<span class="normal">2505</span>
+<span class="normal">2506</span>
+<span class="normal">2507</span>
+<span class="normal">2508</span>
+<span class="normal">2509</span>
+<span class="normal">2510</span>
+<span class="normal">2511</span>
+<span class="normal">2512</span>
+<span class="normal">2513</span>
+<span class="normal">2514</span>
+<span class="normal">2515</span>
+<span class="normal">2516</span>
+<span class="normal">2517</span>
+<span class="normal">2518</span>
+<span class="normal">2519</span>
+<span class="normal">2520</span>
+<span class="normal">2521</span>
+<span class="normal">2522</span>
+<span class="normal">2523</span>
+<span class="normal">2524</span>
+<span class="normal">2525</span>
+<span class="normal">2526</span>
+<span class="normal">2527</span>
+<span class="normal">2528</span>
+<span class="normal">2529</span>
+<span class="normal">2530</span>
+<span class="normal">2531</span>
+<span class="normal">2532</span>
+<span class="normal">2533</span>
+<span class="normal">2534</span>
+<span class="normal">2535</span>
+<span class="normal">2536</span>
+<span class="normal">2537</span>
+<span class="normal">2538</span>
+<span class="normal">2539</span>
+<span class="normal">2540</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">parametric_surface</span><span class="p">(</span>
     <span class="n">kind</span><span class="p">:</span> <span class="n">ParametricSurfaceKind</span><span class="p">,</span>
     <span class="n">u_resolution</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">40</span><span class="p">,</span>
     <span class="n">v_resolution</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">40</span><span class="p">,</span>
@@ -14370,60 +14358,7 @@ surface stays symmetric about every coordinate plane.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/creation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2490</span>
-<span class="normal">2491</span>
-<span class="normal">2492</span>
-<span class="normal">2493</span>
-<span class="normal">2494</span>
-<span class="normal">2495</span>
-<span class="normal">2496</span>
-<span class="normal">2497</span>
-<span class="normal">2498</span>
-<span class="normal">2499</span>
-<span class="normal">2500</span>
-<span class="normal">2501</span>
-<span class="normal">2502</span>
-<span class="normal">2503</span>
-<span class="normal">2504</span>
-<span class="normal">2505</span>
-<span class="normal">2506</span>
-<span class="normal">2507</span>
-<span class="normal">2508</span>
-<span class="normal">2509</span>
-<span class="normal">2510</span>
-<span class="normal">2511</span>
-<span class="normal">2512</span>
-<span class="normal">2513</span>
-<span class="normal">2514</span>
-<span class="normal">2515</span>
-<span class="normal">2516</span>
-<span class="normal">2517</span>
-<span class="normal">2518</span>
-<span class="normal">2519</span>
-<span class="normal">2520</span>
-<span class="normal">2521</span>
-<span class="normal">2522</span>
-<span class="normal">2523</span>
-<span class="normal">2524</span>
-<span class="normal">2525</span>
-<span class="normal">2526</span>
-<span class="normal">2527</span>
-<span class="normal">2528</span>
-<span class="normal">2529</span>
-<span class="normal">2530</span>
-<span class="normal">2531</span>
-<span class="normal">2532</span>
-<span class="normal">2533</span>
-<span class="normal">2534</span>
-<span class="normal">2535</span>
-<span class="normal">2536</span>
-<span class="normal">2537</span>
-<span class="normal">2538</span>
-<span class="normal">2539</span>
-<span class="normal">2540</span>
-<span class="normal">2541</span>
-<span class="normal">2542</span>
-<span class="normal">2543</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2543</span>
 <span class="normal">2544</span>
 <span class="normal">2545</span>
 <span class="normal">2546</span>
@@ -14449,7 +14384,60 @@ surface stays symmetric about every coordinate plane.</p>
 <span class="normal">2566</span>
 <span class="normal">2567</span>
 <span class="normal">2568</span>
-<span class="normal">2569</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">super_ellipsoid</span><span class="p">(</span>
+<span class="normal">2569</span>
+<span class="normal">2570</span>
+<span class="normal">2571</span>
+<span class="normal">2572</span>
+<span class="normal">2573</span>
+<span class="normal">2574</span>
+<span class="normal">2575</span>
+<span class="normal">2576</span>
+<span class="normal">2577</span>
+<span class="normal">2578</span>
+<span class="normal">2579</span>
+<span class="normal">2580</span>
+<span class="normal">2581</span>
+<span class="normal">2582</span>
+<span class="normal">2583</span>
+<span class="normal">2584</span>
+<span class="normal">2585</span>
+<span class="normal">2586</span>
+<span class="normal">2587</span>
+<span class="normal">2588</span>
+<span class="normal">2589</span>
+<span class="normal">2590</span>
+<span class="normal">2591</span>
+<span class="normal">2592</span>
+<span class="normal">2593</span>
+<span class="normal">2594</span>
+<span class="normal">2595</span>
+<span class="normal">2596</span>
+<span class="normal">2597</span>
+<span class="normal">2598</span>
+<span class="normal">2599</span>
+<span class="normal">2600</span>
+<span class="normal">2601</span>
+<span class="normal">2602</span>
+<span class="normal">2603</span>
+<span class="normal">2604</span>
+<span class="normal">2605</span>
+<span class="normal">2606</span>
+<span class="normal">2607</span>
+<span class="normal">2608</span>
+<span class="normal">2609</span>
+<span class="normal">2610</span>
+<span class="normal">2611</span>
+<span class="normal">2612</span>
+<span class="normal">2613</span>
+<span class="normal">2614</span>
+<span class="normal">2615</span>
+<span class="normal">2616</span>
+<span class="normal">2617</span>
+<span class="normal">2618</span>
+<span class="normal">2619</span>
+<span class="normal">2620</span>
+<span class="normal">2621</span>
+<span class="normal">2622</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">super_ellipsoid</span><span class="p">(</span>
     <span class="n">n1</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
     <span class="n">n2</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
     <span class="n">radii</span><span class="p">:</span> <span class="nb">tuple</span><span class="p">[</span><span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">,</span> <span class="nb">float</span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span>
@@ -14525,7 +14513,7 @@ surface stays symmetric about every coordinate plane.</p>
     <span class="c1"># Radii other than one scale the unit superquadric as it is written.</span>
     <span class="n">scale</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">np</span><span class="o">.</span><span class="n">array_equal</span><span class="p">(</span><span class="n">radii_np</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="mi">3</span><span class="p">)):</span>
-        <span class="n">scale</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">(</span><span class="o">*</span><span class="n">np</span><span class="o">.</span><span class="n">diag</span><span class="p">([</span><span class="o">*</span><span class="n">radii_np</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">])</span><span class="o">.</span><span class="n">ravel</span><span class="p">())</span>
+        <span class="n">scale</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">matrix</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">mat44</span><span class="p">,</span> <span class="n">np</span><span class="o">.</span><span class="n">diag</span><span class="p">([</span><span class="o">*</span><span class="n">radii_np</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">]))</span>
     <span class="k">return</span> <span class="n">_parametric_surface</span><span class="p">(</span>
         <span class="n">_SUPER_ELLIPSOID_SPEC</span><span class="p">,</span> <span class="n">u_resolution</span><span class="p">,</span> <span class="n">v_resolution</span><span class="p">,</span> <span class="n">device</span><span class="p">,</span> <span class="n">n1</span><span class="o">=</span><span class="n">n1</span><span class="p">,</span> <span class="n">n2</span><span class="o">=</span><span class="n">n2</span><span class="p">,</span> <span class="n">transform</span><span class="o">=</span><span class="n">scale</span>
     <span class="p">)</span>
@@ -14739,67 +14727,67 @@ axis, and this one exists for the exponents.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/creation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2572</span>
-<span class="normal">2573</span>
-<span class="normal">2574</span>
-<span class="normal">2575</span>
-<span class="normal">2576</span>
-<span class="normal">2577</span>
-<span class="normal">2578</span>
-<span class="normal">2579</span>
-<span class="normal">2580</span>
-<span class="normal">2581</span>
-<span class="normal">2582</span>
-<span class="normal">2583</span>
-<span class="normal">2584</span>
-<span class="normal">2585</span>
-<span class="normal">2586</span>
-<span class="normal">2587</span>
-<span class="normal">2588</span>
-<span class="normal">2589</span>
-<span class="normal">2590</span>
-<span class="normal">2591</span>
-<span class="normal">2592</span>
-<span class="normal">2593</span>
-<span class="normal">2594</span>
-<span class="normal">2595</span>
-<span class="normal">2596</span>
-<span class="normal">2597</span>
-<span class="normal">2598</span>
-<span class="normal">2599</span>
-<span class="normal">2600</span>
-<span class="normal">2601</span>
-<span class="normal">2602</span>
-<span class="normal">2603</span>
-<span class="normal">2604</span>
-<span class="normal">2605</span>
-<span class="normal">2606</span>
-<span class="normal">2607</span>
-<span class="normal">2608</span>
-<span class="normal">2609</span>
-<span class="normal">2610</span>
-<span class="normal">2611</span>
-<span class="normal">2612</span>
-<span class="normal">2613</span>
-<span class="normal">2614</span>
-<span class="normal">2615</span>
-<span class="normal">2616</span>
-<span class="normal">2617</span>
-<span class="normal">2618</span>
-<span class="normal">2619</span>
-<span class="normal">2620</span>
-<span class="normal">2621</span>
-<span class="normal">2622</span>
-<span class="normal">2623</span>
-<span class="normal">2624</span>
-<span class="normal">2625</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2625</span>
 <span class="normal">2626</span>
 <span class="normal">2627</span>
 <span class="normal">2628</span>
 <span class="normal">2629</span>
 <span class="normal">2630</span>
 <span class="normal">2631</span>
-<span class="normal">2632</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">super_toroid</span><span class="p">(</span>
+<span class="normal">2632</span>
+<span class="normal">2633</span>
+<span class="normal">2634</span>
+<span class="normal">2635</span>
+<span class="normal">2636</span>
+<span class="normal">2637</span>
+<span class="normal">2638</span>
+<span class="normal">2639</span>
+<span class="normal">2640</span>
+<span class="normal">2641</span>
+<span class="normal">2642</span>
+<span class="normal">2643</span>
+<span class="normal">2644</span>
+<span class="normal">2645</span>
+<span class="normal">2646</span>
+<span class="normal">2647</span>
+<span class="normal">2648</span>
+<span class="normal">2649</span>
+<span class="normal">2650</span>
+<span class="normal">2651</span>
+<span class="normal">2652</span>
+<span class="normal">2653</span>
+<span class="normal">2654</span>
+<span class="normal">2655</span>
+<span class="normal">2656</span>
+<span class="normal">2657</span>
+<span class="normal">2658</span>
+<span class="normal">2659</span>
+<span class="normal">2660</span>
+<span class="normal">2661</span>
+<span class="normal">2662</span>
+<span class="normal">2663</span>
+<span class="normal">2664</span>
+<span class="normal">2665</span>
+<span class="normal">2666</span>
+<span class="normal">2667</span>
+<span class="normal">2668</span>
+<span class="normal">2669</span>
+<span class="normal">2670</span>
+<span class="normal">2671</span>
+<span class="normal">2672</span>
+<span class="normal">2673</span>
+<span class="normal">2674</span>
+<span class="normal">2675</span>
+<span class="normal">2676</span>
+<span class="normal">2677</span>
+<span class="normal">2678</span>
+<span class="normal">2679</span>
+<span class="normal">2680</span>
+<span class="normal">2681</span>
+<span class="normal">2682</span>
+<span class="normal">2683</span>
+<span class="normal">2684</span>
+<span class="normal">2685</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">super_toroid</span><span class="p">(</span>
     <span class="n">n1</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
     <span class="n">n2</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">1.0</span><span class="p">,</span>
     <span class="n">u_resolution</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">40</span><span class="p">,</span>
@@ -15123,60 +15111,7 @@ through <a class="autorefs autorefs-internal" title="resolve_seed" href="../samp
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/creation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2635</span>
-<span class="normal">2636</span>
-<span class="normal">2637</span>
-<span class="normal">2638</span>
-<span class="normal">2639</span>
-<span class="normal">2640</span>
-<span class="normal">2641</span>
-<span class="normal">2642</span>
-<span class="normal">2643</span>
-<span class="normal">2644</span>
-<span class="normal">2645</span>
-<span class="normal">2646</span>
-<span class="normal">2647</span>
-<span class="normal">2648</span>
-<span class="normal">2649</span>
-<span class="normal">2650</span>
-<span class="normal">2651</span>
-<span class="normal">2652</span>
-<span class="normal">2653</span>
-<span class="normal">2654</span>
-<span class="normal">2655</span>
-<span class="normal">2656</span>
-<span class="normal">2657</span>
-<span class="normal">2658</span>
-<span class="normal">2659</span>
-<span class="normal">2660</span>
-<span class="normal">2661</span>
-<span class="normal">2662</span>
-<span class="normal">2663</span>
-<span class="normal">2664</span>
-<span class="normal">2665</span>
-<span class="normal">2666</span>
-<span class="normal">2667</span>
-<span class="normal">2668</span>
-<span class="normal">2669</span>
-<span class="normal">2670</span>
-<span class="normal">2671</span>
-<span class="normal">2672</span>
-<span class="normal">2673</span>
-<span class="normal">2674</span>
-<span class="normal">2675</span>
-<span class="normal">2676</span>
-<span class="normal">2677</span>
-<span class="normal">2678</span>
-<span class="normal">2679</span>
-<span class="normal">2680</span>
-<span class="normal">2681</span>
-<span class="normal">2682</span>
-<span class="normal">2683</span>
-<span class="normal">2684</span>
-<span class="normal">2685</span>
-<span class="normal">2686</span>
-<span class="normal">2687</span>
-<span class="normal">2688</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2688</span>
 <span class="normal">2689</span>
 <span class="normal">2690</span>
 <span class="normal">2691</span>
@@ -15210,7 +15145,60 @@ through <a class="autorefs autorefs-internal" title="resolve_seed" href="../samp
 <span class="normal">2719</span>
 <span class="normal">2720</span>
 <span class="normal">2721</span>
-<span class="normal">2722</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">random_hills</span><span class="p">(</span>
+<span class="normal">2722</span>
+<span class="normal">2723</span>
+<span class="normal">2724</span>
+<span class="normal">2725</span>
+<span class="normal">2726</span>
+<span class="normal">2727</span>
+<span class="normal">2728</span>
+<span class="normal">2729</span>
+<span class="normal">2730</span>
+<span class="normal">2731</span>
+<span class="normal">2732</span>
+<span class="normal">2733</span>
+<span class="normal">2734</span>
+<span class="normal">2735</span>
+<span class="normal">2736</span>
+<span class="normal">2737</span>
+<span class="normal">2738</span>
+<span class="normal">2739</span>
+<span class="normal">2740</span>
+<span class="normal">2741</span>
+<span class="normal">2742</span>
+<span class="normal">2743</span>
+<span class="normal">2744</span>
+<span class="normal">2745</span>
+<span class="normal">2746</span>
+<span class="normal">2747</span>
+<span class="normal">2748</span>
+<span class="normal">2749</span>
+<span class="normal">2750</span>
+<span class="normal">2751</span>
+<span class="normal">2752</span>
+<span class="normal">2753</span>
+<span class="normal">2754</span>
+<span class="normal">2755</span>
+<span class="normal">2756</span>
+<span class="normal">2757</span>
+<span class="normal">2758</span>
+<span class="normal">2759</span>
+<span class="normal">2760</span>
+<span class="normal">2761</span>
+<span class="normal">2762</span>
+<span class="normal">2763</span>
+<span class="normal">2764</span>
+<span class="normal">2765</span>
+<span class="normal">2766</span>
+<span class="normal">2767</span>
+<span class="normal">2768</span>
+<span class="normal">2769</span>
+<span class="normal">2770</span>
+<span class="normal">2771</span>
+<span class="normal">2772</span>
+<span class="normal">2773</span>
+<span class="normal">2774</span>
+<span class="normal">2775</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">random_hills</span><span class="p">(</span>
     <span class="n">n_hills</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">30</span><span class="p">,</span>
     <span class="n">amplitude</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">2.0</span><span class="p">,</span>
     <span class="n">x_variance</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">2.5</span><span class="p">,</span>
@@ -15443,62 +15431,62 @@ agree in distribution, not value for value.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/creation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2725</span>
-<span class="normal">2726</span>
-<span class="normal">2727</span>
-<span class="normal">2728</span>
-<span class="normal">2729</span>
-<span class="normal">2730</span>
-<span class="normal">2731</span>
-<span class="normal">2732</span>
-<span class="normal">2733</span>
-<span class="normal">2734</span>
-<span class="normal">2735</span>
-<span class="normal">2736</span>
-<span class="normal">2737</span>
-<span class="normal">2738</span>
-<span class="normal">2739</span>
-<span class="normal">2740</span>
-<span class="normal">2741</span>
-<span class="normal">2742</span>
-<span class="normal">2743</span>
-<span class="normal">2744</span>
-<span class="normal">2745</span>
-<span class="normal">2746</span>
-<span class="normal">2747</span>
-<span class="normal">2748</span>
-<span class="normal">2749</span>
-<span class="normal">2750</span>
-<span class="normal">2751</span>
-<span class="normal">2752</span>
-<span class="normal">2753</span>
-<span class="normal">2754</span>
-<span class="normal">2755</span>
-<span class="normal">2756</span>
-<span class="normal">2757</span>
-<span class="normal">2758</span>
-<span class="normal">2759</span>
-<span class="normal">2760</span>
-<span class="normal">2761</span>
-<span class="normal">2762</span>
-<span class="normal">2763</span>
-<span class="normal">2764</span>
-<span class="normal">2765</span>
-<span class="normal">2766</span>
-<span class="normal">2767</span>
-<span class="normal">2768</span>
-<span class="normal">2769</span>
-<span class="normal">2770</span>
-<span class="normal">2771</span>
-<span class="normal">2772</span>
-<span class="normal">2773</span>
-<span class="normal">2774</span>
-<span class="normal">2775</span>
-<span class="normal">2776</span>
-<span class="normal">2777</span>
-<span class="normal">2778</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">2778</span>
 <span class="normal">2779</span>
-<span class="normal">2780</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">random_soup</span><span class="p">(</span>
+<span class="normal">2780</span>
+<span class="normal">2781</span>
+<span class="normal">2782</span>
+<span class="normal">2783</span>
+<span class="normal">2784</span>
+<span class="normal">2785</span>
+<span class="normal">2786</span>
+<span class="normal">2787</span>
+<span class="normal">2788</span>
+<span class="normal">2789</span>
+<span class="normal">2790</span>
+<span class="normal">2791</span>
+<span class="normal">2792</span>
+<span class="normal">2793</span>
+<span class="normal">2794</span>
+<span class="normal">2795</span>
+<span class="normal">2796</span>
+<span class="normal">2797</span>
+<span class="normal">2798</span>
+<span class="normal">2799</span>
+<span class="normal">2800</span>
+<span class="normal">2801</span>
+<span class="normal">2802</span>
+<span class="normal">2803</span>
+<span class="normal">2804</span>
+<span class="normal">2805</span>
+<span class="normal">2806</span>
+<span class="normal">2807</span>
+<span class="normal">2808</span>
+<span class="normal">2809</span>
+<span class="normal">2810</span>
+<span class="normal">2811</span>
+<span class="normal">2812</span>
+<span class="normal">2813</span>
+<span class="normal">2814</span>
+<span class="normal">2815</span>
+<span class="normal">2816</span>
+<span class="normal">2817</span>
+<span class="normal">2818</span>
+<span class="normal">2819</span>
+<span class="normal">2820</span>
+<span class="normal">2821</span>
+<span class="normal">2822</span>
+<span class="normal">2823</span>
+<span class="normal">2824</span>
+<span class="normal">2825</span>
+<span class="normal">2826</span>
+<span class="normal">2827</span>
+<span class="normal">2828</span>
+<span class="normal">2829</span>
+<span class="normal">2830</span>
+<span class="normal">2831</span>
+<span class="normal">2832</span>
+<span class="normal">2833</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">random_soup</span><span class="p">(</span>
     <span class="n">face_count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">100</span><span class="p">,</span> <span class="n">seed</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">device</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">DeviceLike</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
