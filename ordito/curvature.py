@@ -850,11 +850,35 @@ def discrete_mean_curvature(
         edge_lower, edge_upper, leaf_size=kernel_curvature.MEAN_CURVATURE_BVH_LEAF_SIZE
     )
     # The predicate the narrow phase below applies is the *ball* -- it keeps the edge length inside
-    # the ball of ``radius`` -- so the broad phase is the ball query and not the enclosing cube:
+    # the ball of ``radius`` -- so with many queries the broad phase is the ball query and not the
+    # enclosing cube:
     # ``wp.bvh_query_sphere``'s traversal is cheaper than ``wp.bvh_query_aabb``'s on the identical
     # BVH, and the cube would also admit candidates outside the ball that the narrow phase would
     # then have to reject.
     mean_curvature = _launch.empty(n_points, dtype=wp.float32, device=device)
+    if (
+        not wp.get_device(device).is_cpu
+        and n_points < kernel_curvature.MEAN_CURVATURE_TILED_MAX_QUERIES
+        and radius > 0.0
+    ):
+        # Few queries: a block a query, its lanes walking sub-boxes of the ball side by side.
+        _launch.launch_tiled(
+            kernel_curvature.ball_mean_curvature_tiled,
+            dim=[n_points],
+            inputs=[
+                points,
+                vertices,
+                face_adjacency_edges,
+                signed_angles,
+                bvh.id,
+                wp.float32(radius),
+                kernel_curvature.MEAN_CURVATURE_SUB_BOXES,
+            ],
+            outputs=[mean_curvature],
+            device=device,
+            block_dim=kernel_curvature.MEAN_CURVATURE_TILED_BLOCK_DIM,
+        )
+        return mean_curvature
     _launch.launch(
         kernel_curvature.ball_mean_curvature,
         dim=n_points,

@@ -844,6 +844,37 @@ def test_discrete_mean_curvature(
     assert np.allclose(mean_curvature_wp.numpy(), mean_curvature_tm, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("radius", [0.02, 0.3, 0.6])
+def test_discrete_mean_curvature_few_query_walk_matches_one_thread_walk(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch, radius: float
+) -> None:
+    """
+    Ordito against ordito: the few-query walk equals the one-thread walk up to summation order.
+
+    The few-query walk is a block a query, its lanes over sub-boxes of the ball, each keeping the
+    edges whose in-ball midpoint its sub-box owns. trimesh is the oracle of the measure itself
+    (``test_discrete_mean_curvature``); this pins the two CUDA walks to each other, the gate forced
+    off for the second call, at a tolerance far below one edge's term, so an edge kept by no lane
+    or by two fails it. The queries scatter in and around the mesh. On the CPU both calls take the
+    one-thread walk.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    rng = np.random.default_rng(12)
+    low, high = mesh_tm.bounds
+    points_np = low - 0.2 * (high - low) + rng.random((500, 3)) * 1.4 * (high - low)
+    points_wp = points_to_warp(points_np, mesh_wp.device)
+    scale = float(np.linalg.norm(high - low))
+    few_np = od.curvature.discrete_mean_curvature(
+        points_wp, mesh_wp.points, mesh_wp.indices, radius * scale
+    ).numpy()
+    monkeypatch.setattr(od.curvature.kernel_curvature, "MEAN_CURVATURE_TILED_MAX_QUERIES", 0)
+    one_np = od.curvature.discrete_mean_curvature(
+        points_wp, mesh_wp.points, mesh_wp.indices, radius * scale
+    ).numpy()
+    assert np.ptp(one_np) > 1e-3
+    assert np.allclose(few_np, one_np, rtol=1e-5, atol=1e-5 * np.abs(one_np).max())
+
+
 @pytest.mark.parity("discrete_gaussian_curvature", "pymeshlab")
 @pytest.mark.parity("discrete_mean_curvature", "pymeshlab")
 @pytest.mark.parametrize("kind", ["gaussian", "mean"])

@@ -6,7 +6,13 @@ from ordito.kernels.algorithms.bfs import ball_row_bounds
 from ordito.kernels.array import declare_map_signatures, map_probe
 from ordito.kernels.halfedge import halfedge_destination, halfedge_prev
 from ordito.kernels.linalg import solve_normal_equations
-from ordito.kernels.neighbors import ball_cell_box, ball_cell_probe, in_ball
+from ordito.kernels.neighbors import (
+    ball_cell_box,
+    ball_cell_probe,
+    ball_sub_box,
+    ball_sub_box_index,
+    in_ball,
+)
 from ordito.kernels.normals import gathered_angle_weighted_normal
 from ordito.kernels.predicates import (
     angle_defect,
@@ -1058,9 +1064,11 @@ def ball_angle_defect_sum_tiled(
 
 
 @wp.func
-def line_ball_intersection_segment(
+def segment_ball_params(
     start_point: wp.vec3, end_point: wp.vec3, center: wp.vec3, radius: wp.float32
-) -> wp.float32:
+) -> tuple[wp.float32, wp.float32]:
+    # The parameters ``0 <= d1 <= d2 <= 1`` of the part of the segment inside the ball, both zero
+    # where the segment's line misses it.
     segment = end_point - start_point
     oc = start_point - center
     r = radius
@@ -1069,17 +1077,22 @@ def line_ball_intersection_segment(
     ocdotoc = wp.length_sq(oc)
     discrim = ldotoc * ldotoc - ldotl * (ocdotoc - r * r)
 
-    if discrim <= wp.float32(0.0):
-        return wp.float32(0.0)
+    d1 = wp.float32(0.0)
+    d2 = wp.float32(0.0)
+    if discrim > wp.float32(0.0):
+        sqrt_discrim = wp.sqrt(discrim)
+        d1 = wp.clamp((-ldotoc - sqrt_discrim) / ldotl, wp.float32(0.0), wp.float32(1.0))
+        d2 = wp.clamp((-ldotoc + sqrt_discrim) / ldotl, wp.float32(0.0), wp.float32(1.0))
+    return d1, d2
 
-    sqrt_discrim = wp.sqrt(discrim)
-    d1 = (-ldotoc - sqrt_discrim) / ldotl
-    d2 = (-ldotoc + sqrt_discrim) / ldotl
 
-    d1 = wp.clamp(d1, wp.float32(0.0), wp.float32(1.0))
-    d2 = wp.clamp(d2, wp.float32(0.0), wp.float32(1.0))
-
-    return (d2 - d1) * wp.length(segment)
+@wp.func
+def line_ball_intersection_segment(
+    start_point: wp.vec3, end_point: wp.vec3, center: wp.vec3, radius: wp.float32
+) -> wp.float32:
+    # The length of the segment inside the ball.
+    d1, d2 = segment_ball_params(start_point, end_point, center, radius)
+    return (d2 - d1) * wp.length(end_point - start_point)
 
 
 @wp.kernel
@@ -1134,6 +1147,17 @@ def face_pair_dihedrals(
 MEAN_CURVATURE_BVH_LEAF_SIZE = 16
 
 
+# Below this many queries on CUDA ``ball_mean_curvature_tiled`` takes the walk: a block a query,
+# its lanes over ``MEAN_CURVATURE_SUB_BOXES`` cubed sub-boxes of the ball's bounding cube. Each
+# lane's walk starts at the BVH's root, so the split multiplies node visits and pays only while one
+# thread's walk is the launch. Device time against the one-thread sphere walk: 0.36-0.60x at 500 to
+# 2 500 queries (sphere_med, dragon, sphere_small; radii 2 and 4 edges), 0.64-1.15x at 8 k, 1.2-4x
+# from 10 k. Two per axis over 8 lanes was within 15 % of three over 32.
+MEAN_CURVATURE_TILED_MAX_QUERIES = 1 << 12
+MEAN_CURVATURE_SUB_BOXES = 3
+MEAN_CURVATURE_TILED_BLOCK_DIM = 32
+
+
 @wp.kernel
 def ball_mean_curvature(
     queries: wp.array[wp.vec3],
@@ -1164,6 +1188,45 @@ def ball_mean_curvature(
         # Positive across a convex edge, negative across a concave one; see ``face_pair_dihedrals``.
         total = total + length * signed_angles[k] * wp.float32(0.5)
     out_mean_curvature[q] = total
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def ball_mean_curvature_tiled(
+    queries: wp.array[wp.vec3],
+    vertices: wp.array[wp.vec3],
+    face_adjacency_edges: wp.array2d[wp.int32],
+    signed_angles: wp.array[wp.float32],
+    bvh_id: wp.uint64,
+    radius: wp.float32,
+    sub_boxes: wp.int32,
+    out_mean_curvature: wp.array[wp.float32],
+) -> None:
+    # ``ball_mean_curvature`` a block a query: each lane walks the BVH over its share of the
+    # ball's sub-boxes (``kernels.neighbors.ball_sub_box``, strided by ``wp.block_dim()``) and
+    # keeps an edge only where its sub-box owns the midpoint of the edge's part inside the ball
+    # (``ball_sub_box_index``), which lies on the edge and in the ball, so every edge that meets
+    # the ball is kept by exactly one lane. ``wp.tile_sum`` adds the lanes' terms in a fixed tree,
+    # a different order from the one-thread walk's. Its own module: launched at
+    # ``MEAN_CURVATURE_TILED_BLOCK_DIM`` lanes. On the CPU a block is one lane, which walks every
+    # sub-box.
+    q, lane = wp.tid()
+    center = queries[q]
+    partial = wp.float32(0.0)
+    for b in range(lane, sub_boxes * sub_boxes * sub_boxes, wp.block_dim()):
+        lower, upper = ball_sub_box(center, radius, sub_boxes, b)
+        k = wp.int32(0)
+        query = wp.bvh_query_aabb(bvh_id, lower, upper)
+        while wp.bvh_query_next(query, k):
+            start_point = vertices[face_adjacency_edges[k, 0]]
+            end_point = vertices[face_adjacency_edges[k, 1]]
+            d1, d2 = segment_ball_params(start_point, end_point, center, radius)
+            middle = start_point + (end_point - start_point) * ((d1 + d2) * wp.float32(0.5))
+            if ball_sub_box_index(center, radius, sub_boxes, middle) == b:
+                length = (d2 - d1) * wp.length(end_point - start_point)
+                partial = partial + length * signed_angles[k] * wp.float32(0.5)
+    total = wp.tile_sum(wp.tile(partial))
+    if lane == 0:
+        out_mean_curvature[q] = total[0]
 
 
 # ---------------------------------------------------------------------------

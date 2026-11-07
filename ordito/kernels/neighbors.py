@@ -405,6 +405,44 @@ def ball_cell_probe(
 
 
 @wp.func
+def ball_sub_box(
+    center: wp.vec3, radius: wp.float32, per_axis: wp.int32, b: wp.int32
+) -> tuple[wp.vec3, wp.vec3]:
+    # Sub-box ``b`` (x fastest) of the ball's bounding cube cut ``per_axis`` times along each axis,
+    # grown by a thousandth of its side so a point ``ball_sub_box_index`` assigns to it lies inside
+    # it whatever the rounding. A BVH walk over a ball split this way gives each lane a sub-box:
+    # Warp's BVH walks start at the root, so the split pays only while queries are few.
+    side = wp.float32(2.0) * radius / wp.float32(per_axis)
+    i = b % per_axis
+    j = (b // per_axis) % per_axis
+    k = b // (per_axis * per_axis)
+    margin = side * wp.float32(1.0e-3)
+    lower = center + wp.vec3(
+        wp.float32(i) * side - radius - margin,
+        wp.float32(j) * side - radius - margin,
+        wp.float32(k) * side - radius - margin,
+    )
+    upper = lower + wp.vec3(side + wp.float32(2.0) * margin)
+    return lower, upper
+
+
+@wp.func
+def ball_sub_box_index(
+    center: wp.vec3, radius: wp.float32, per_axis: wp.int32, point: wp.vec3
+) -> wp.int32:
+    # The ``ball_sub_box`` that owns ``point``, clamped into the cube: a lane keeps a candidate only
+    # when its own sub-box owns the candidate's representative point, so a candidate whose box
+    # meets several sub-boxes is counted once.
+    side = wp.float32(2.0) * radius / wp.float32(per_axis)
+    offset = point - center + wp.vec3(radius)
+    top = per_axis - 1
+    i = wp.clamp(wp.int32(wp.floor(offset[0] / side)), 0, top)
+    j = wp.clamp(wp.int32(wp.floor(offset[1] / side)), 0, top)
+    k = wp.clamp(wp.int32(wp.floor(offset[2] / side)), 0, top)
+    return i + per_axis * (j + per_axis * k)
+
+
+@wp.func
 def in_ball(offset: wp.vec3, radius: wp.float32) -> wp.bool:
     # The ball predicate every hash-grid ball walk applies to a candidate ``points[j] - q``: the
     # squared form, for the reasons ``ball_count_in_radius`` gives. The count, the collect and
