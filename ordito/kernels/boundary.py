@@ -558,6 +558,7 @@ def split_pinched_loops(
     offsets: wp.array[wp.int32],
     previous: wp.array[wp.int32],
     sentinel: wp.int64,
+    lanes: wp.int32,
     out_stack: wp.array[wp.int32],
     out_path_index: wp.array[wp.int32],
     out_representative: wp.array[wp.int32],
@@ -578,8 +579,12 @@ def split_pinched_loops(
     #
     # Cycles take value and record slots from the loop's start in cut order (a loop yields at
     # most one value and one cycle per entry); the loop's other record slots get ``sentinel``,
-    # which sorts after every key. ``out_totals`` counts the cycles and their entries.
-    ell = wp.int32(wp.tid())
+    # which sorts after every key. ``out_totals`` counts the cycles and their entries. ``lanes``
+    # threads a loop, the first walking (``_launch.walk_lanes``).
+    t = wp.int32(wp.tid())
+    if t % lanes != 0:
+        return
+    ell = t // lanes
     start = offsets[ell]
     end = offsets[ell + 1]
     depth = wp.int32(0)

@@ -1100,6 +1100,9 @@ def _traceback_fill_faces(
     padded = odt.as_dense(filled[n_face_indices:]).reshape((n_padded, 3))
     triangle_offsets = loops.triangle_offsets
     counts = _launch.view(counts_scratch, 0, loops.n_loops)
+    # Declined (2026-11-08): a warp a loop (``_launch.walk_lanes``): the traceback is 0.18 ms of a
+    # 4.8 ms call on ``rim_short``, one loop that has a warp to itself already, and 5 us on
+    # ``holes_many``'s many short rims.
     _launch.launch(
         kernel_holes.traceback_fill_triangles,
         dim=loops.n_loops,
