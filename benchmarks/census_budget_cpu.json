@@ -1480,7 +1480,6 @@
   "counts": {
    "launch": 4,
    "alloc": 4,
-   "h2h": 1,
    "readback": 2,
    "scan": 1,
    "sort": 1

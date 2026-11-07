@@ -246,7 +246,7 @@ def edges_unique(
         # pair exactly as ``hash_indices_rows`` packs the corresponding ``faces_to_edges`` row, so
         # the ``(3 * n_faces, 2)`` table is never written or read back, and any range check reduces
         # the ``3 * n_faces`` face buffer -- the same values, half the entries.
-        radix, check = _face_edge_radix(faces, n_faces, n_vertices, validate)
+        radix, check = _face_edge_radix(n_vertices, validate)
         unique_edges, inverse, counts = _unique_edges_from_faces(
             faces, n_faces, radix, check, return_counts
         )
@@ -335,7 +335,7 @@ def unique_edge_count(
     n_faces = faces.size // 3
     if n_faces == 0:
         return 0
-    radix, check = _face_edge_radix(faces, n_faces, n_vertices, validate)
+    radix, check = _face_edge_radix(n_vertices, validate)
     n = 3 * n_faces
     # Two zeroed slots after the payload: the key pass's range flag, then the run count.
     keys, order = _sorted_face_edge_keys(faces, n_faces, radix, radix if check else None, tail=2)
@@ -349,39 +349,36 @@ def unique_edge_count(
     # The count is the answer; the range flag rides in the same copy.
     code, n_edges = read_values(order, 2 * n, 2)
     if check:
+        # Only a supplied bound is checked in the key pass, and it is the radix.
+        assert radix is not None
         _raise_on_range_code(int(code), radix)
     return int(n_edges)
 
 
-def _face_edge_radix(
-    faces: wp.array[wp.int32], n_faces: int, n_vertices: int | None, validate: bool
-) -> tuple[int, bool]:
+def _face_edge_radix(n_vertices: int | None, validate: bool) -> tuple[int | None, bool]:
     """
     Return the radix every corner edge's sorted-pair key packs against, and whether to check it.
 
     The ``edges_sorted is None`` half of [`edges_unique`][ordito.edges.edges_unique], resolving
     ``n_vertices`` and ``validate`` exactly as the composed ``faces_to_edges`` +
     ``hash_indices_rows`` path does: an inferred bound checks the negative half, a supplied one is
-    checked against, and ``validate=False`` with no bound packs against ``INDEX_RADIX_PAIR``. Only
-    the inferred bound needs a reduction here, since the radix depends on it; a supplied bound is
-    returned with ``True``, and the key kernel checks every index against it in the same pass,
-    its flag read back with the edge count.
+    checked against, and ``validate=False`` with no bound packs against ``INDEX_RADIX_PAIR``. A
+    supplied bound is returned with ``True``, and the key kernel checks every index against it in
+    the same pass, its flag read back with the edge count. The inferred bound is returned as
+    ``None``: [`_sorted_face_edge_keys`][ordito.edges._sorted_face_edge_keys] reduces the faces
+    into its own key buffers and reads it there, since the radix depends on it.
     """
     if n_vertices is not None and n_vertices <= 0:
         raise ValueError(f"n_vertices must be positive, got {n_vertices}")
     if n_vertices is not None:
         return n_vertices, validate
     if validate:
-        owned = faces if faces.size == 3 * n_faces else odt.as_dense(faces[: 3 * n_faces])
-        low, high = od.reduce.minmax(owned)
-        if low < 0:
-            raise ValueError(f"edge indices must be non-negative, got a minimum of {low}")
-        return int(high) + 1, False
+        return None, False
     return INDEX_RADIX_PAIR, False
 
 
 def _unique_edges_from_faces(
-    faces: wp.array[wp.int32], n_faces: int, radix: int, check: bool, return_counts: bool
+    faces: wp.array[wp.int32], n_faces: int, radix: int | None, check: bool, return_counts: bool
 ) -> tuple[odt.Array2dInt32, wp.array[wp.int32], wp.array[wp.int32] | None]:
     """
     ``(unique_edges, inverse)`` from one radix sort of every corner's packed edge key.
@@ -417,7 +414,7 @@ def _unique_edges_from_faces(
 
 
 def _sorted_edge_run_ranks(
-    faces: wp.array[wp.int32], n_faces: int, radix: int, check: bool
+    faces: wp.array[wp.int32], n_faces: int, radix: int | None, check: bool
 ) -> tuple[wp.array[wp.uint64], wp.array[wp.int32], wp.array[wp.int32], int]:
     """
     ``(keys, order, ranks, n_edges)``: sorted edge keys, their 1-based unique-edge ranks, the count.
@@ -435,7 +432,7 @@ def _sorted_edge_run_ranks(
 
 
 def _sorted_face_edge_keys(
-    faces: wp.array[wp.int32], n_faces: int, radix: int, bound: int | None, tail: int = 0
+    faces: wp.array[wp.int32], n_faces: int, radix: int | None, bound: int | None, tail: int = 0
 ) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
     """
     Every corner's packed edge key, radix-sorted with its corner index as the payload.
@@ -445,7 +442,9 @@ def _sorted_face_edge_keys(
     slots after its ``6 * n_faces`` (at least one with a ``bound``). With a ``bound`` the key
     kernel also range-checks every face index against it and raises the first,
     ``order[6 * n_faces]``, to a nonzero code on a miss;
-    [`_raise_on_range_code`][ordito.edges._raise_on_range_code] reads it.
+    [`_raise_on_range_code`][ordito.edges._raise_on_range_code] reads it. A ``radix`` of ``None``
+    is inferred as one past the largest face index, raising on a negative one, from a reduction
+    committed into the zeroed payload's scratch half and read back before the key pass.
     """
     # The payload is zeroed whole by its allocation. Declined (2026-11-07): carving it from the
     # keys' allocation and zeroing only the tail slots saved the memset's bandwidth (lucy 0.97x,
@@ -455,12 +454,35 @@ def _sorted_face_edge_keys(
     n = 3 * n_faces
     if bound is not None:
         tail = max(tail, 1)
-    if tail == 0:
+    if tail == 0 and radix is not None:
         keys, order = _launch.sort_buffers(n, wp.uint64, device)
     else:
         keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
         order = _launch.zeros(2 * n + tail, dtype=wp.int32, device=device)
-    if bound is None:
+    if radix is None:
+        # The inferred bound, reduced into ``order[n:n + 2]``: zeroed scratch the key pass leaves
+        # alone and the sort only overwrites once the host has the bound for its key width --
+        # ``reduce.minmax`` without its own seeded result buffer.
+        _launch.launch_tiled(
+            kernel_edges.face_index_extrema,
+            dim=[kernel_reduce.blocks_1d(n)],
+            inputs=[faces, n, n, order],
+            block_dim=TILE_1D,
+            device=device,
+        )
+        # The key pass packs against the bound on the device, so it is issued ahead of the read;
+        # the bound sets the sort's key width, which only the host can hand it.
+        _launch.launch(
+            kernel_edges.face_edge_keys_inferred,
+            dim=n_faces,
+            inputs=[faces, n, keys, order],
+            device=device,
+        )
+        low, high = read_values(order, n, 2)
+        if low < 0:
+            raise ValueError(f"edge indices must be non-negative, got a minimum of {low}")
+        radix = int(high) + 1
+    elif bound is None:
         _launch.launch(
             kernel_adjacency.face_edge_keys_and_order,
             dim=n_faces,
@@ -691,7 +713,7 @@ def edges_unique_length(
         return _launch.empty(0, dtype=wp.float32, device=vertices.device)
     # ``edges_unique``'s sort and run scan, then the lengths written at each run's rank: the edge
     # table and the corner inverse it would emit are never built.
-    radix, check = _face_edge_radix(faces, n_faces, n_vertices, validate)
+    radix, check = _face_edge_radix(n_vertices, validate)
     keys, order, ranks, n_edges = _sorted_edge_run_ranks(faces, n_faces, radix, check)
     lengths = _launch.empty(n_edges, dtype=wp.float32, device=vertices.device)
     _launch.launch(
