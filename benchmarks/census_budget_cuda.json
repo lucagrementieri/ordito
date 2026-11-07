@@ -1681,7 +1681,7 @@
  },
  "benchmarks/test_energies.py::test_k_harmonic[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 6,
+   "launch": 5,
    "alloc": 7,
    "memset": 1,
    "d2h": 1,
@@ -5110,7 +5110,7 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[hemisphere-ordito-cuda-2]": {
   "counts": {
-   "launch": 442,
+   "launch": 441,
    "alloc": 53,
    "memset": 21,
    "d2h": 7,
@@ -5132,7 +5132,7 @@
  },
  "benchmarks/test_parametrization.py::test_harmonic[saddle_small-ordito-cuda-2]": {
   "counts": {
-   "launch": 309,
+   "launch": 308,
    "alloc": 53,
    "memset": 21,
    "d2h": 7,

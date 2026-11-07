@@ -942,9 +942,9 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   are allocated by the first listing that finds a piece). The squared-Laplacian polynomial lists
   its two factors the same way once the state's own matrix has a long row (a long Laplacian row
   implies one in the squared system), so nothing is listed on a mesh with none: a disk fan of hub
-  valence 1 200, `harmonic(k=2)`, steps 123 -> 4 us; with `kernels/energies.sandwich_long_rows`
-  (the biharmonic product's 1.44 M-triplet hub row a block, 124 ms a thread) the call 985 -> 68 ms,
-  byte-identical operator. The one-block solve cannot hold a long row on CUDA (1 024 rows at most).
+  valence 1 200, `harmonic(k=2)`, steps 123 -> 4 us; with the biharmonic product's 1.44 M-triplet
+  hub row spread over threads (124 ms a thread; `kernels/energies.sandwich_triplets`) the call
+  985 -> 68 ms, byte-identical operator. The one-block solve cannot hold a long row on CUDA (1 024 rows at most).
   The pieces' last block folds with every lane (one lane's fold waited on each partial): 9.5 ->
   8.8 us a launch, the floor being the fence-and-ticket chain of a small launch, 1.7x the 5.2 us
   step beside it. **A row-a-thread kernel takes a long row by deferring it to its block:** launch
