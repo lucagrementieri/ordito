@@ -621,6 +621,11 @@ def write_generator_loops(
     #
     # The resulting order is the closed walk ``a -> apex -> b``, with the generator edge ``(b, a)``
     # closing it implicitly -- the start vertex is not repeated, matching ``boundary_loops``.
+    #
+    # Declined (2026-11-08): staging the climbs in ``generator_loop_counts`` and copying them here
+    # (``array.stage_point``'s walk-once form, which ``geodesic_walk``'s walks take): the two
+    # kernels are 22 + 37 us of a 1.84 ms host-bound call on ``handles_64`` (128 generators), so
+    # walking once would save about 1 % for a pool allocation and its fill.
     e = wp.int32(wp.tid())
     if not candidate[e]:
         return

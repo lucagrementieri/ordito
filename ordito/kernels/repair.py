@@ -1712,6 +1712,7 @@ def shortest_nontrivial_loop_per_root(
     slot_class: wp.array2d[wp.uint64],
     heap: wp.array2d[wp.int32],
     heap_position: wp.array2d[wp.int32],
+    lanes: wp.int32,
     out_count: wp.array[wp.int32],
 ) -> None:
     # One thread per root, over its own scratch rows (``table`` pre-filled with ``-1``): Dijkstra
@@ -1731,8 +1732,13 @@ def shortest_nontrivial_loop_per_root(
     #
     # ``out_count`` is the written cycle's vertex count, ``0`` when no loop is non-separating within
     # ``bound``, and ``-1`` when the ball outgrew the rows, which the caller re-runs wider. The
-    # cycle is written over the root's ``heap`` row, which the search no longer reads.
-    r = wp.int32(wp.tid())
+    # cycle is written over the root's ``heap`` row, which the search no longer reads. ``lanes``
+    # threads a root, the first searching (``_launch.walk_lanes``): the searches differ in length,
+    # and a warp's roots would wait on the longest.
+    t = wp.int32(wp.tid())
+    if t % lanes != 0:
+        return
+    r = t // lanes
     row_table = table[r]
     row_vertex = slot_vertex[r]
     row_dist = slot_dist[r]

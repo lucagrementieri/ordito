@@ -3858,9 +3858,10 @@ def _root_loop_search(
     )
     heap = odt.empty_2d((n_roots, capacity), wp.int32, device=device)
     counts = _launch.empty(n_roots, dtype=wp.int32, device=device)
+    lanes = _launch.walk_lanes(n_roots) if wp.get_device(device).is_cuda else 1
     _launch.launch(
         kernel_repair.shortest_nontrivial_loop_per_root,
-        dim=n_roots,
+        dim=n_roots * lanes,
         inputs=[
             vertices,
             faces,
@@ -3877,6 +3878,7 @@ def _root_loop_search(
             odt.empty_2d((n_roots, capacity), wp.uint64, device=device),
             heap,
             odt.empty_2d((n_roots, capacity), wp.int32, device=device),
+            wp.int32(lanes),
         ],
         outputs=[counts],
         device=device,
