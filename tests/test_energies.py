@@ -499,6 +499,33 @@ def test_curved_hessian_energy_matches_igl_on_a_long_fan(device: str, hub_faces:
     )
 
 
+@pytest.mark.parity("curved_hessian_energy", "igl")
+def test_curved_hessian_energy_matches_igl_on_a_tetrahedron(device: str) -> None:
+    """
+    Class A: ``igl.curved_hessian_energy`` on a tetrahedron.
+
+    Every face's three edges have the same vertex across them, so each face's block numbers it in
+    three places, whose entries the pattern's run sum folds into one; the irregular corners keep
+    the blocks' entries distinct.
+    """
+    vertices_np = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.1, 0.0], [0.2, 1.1, 0.05], [0.3, 0.2, 0.9]], dtype=np.float32
+    )
+    faces_np = np.array([[0, 2, 1], [0, 1, 3], [1, 2, 3], [0, 3, 2]], dtype=np.int32)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    energy_igl = igl.curved_hessian_energy(
+        vertices_np.astype(np.float64), faces_np.astype(np.int64)
+    )
+    assert energy_igl.nnz == 16
+    assert np.ptp(energy_igl.toarray()) > 1e-3
+    assert sparse_allclose(
+        bsr_to_csr(od.energies.curved_hessian_energy(vertices_wp, faces_wp)),
+        energy_igl,
+        rtol=1e-7,
+        atol=1e-7 * float(abs(energy_igl).max()),
+    )
+
+
 def test_hessian_energy_refuses_a_fan_past_its_corner_bound(device: str) -> None:
     """
     Not a library comparison: the corner bound of ``hessian_energy``'s count pass.

@@ -986,29 +986,29 @@ vec6i = wp.types.vector(length=6, dtype=wp.int32)
 
 
 @wp.func
+def curved_face_side(edge_halfedges: wp.array2d[wp.int32], edge: wp.int32, f: wp.int32) -> wp.int32:
+    # Which of ``edge``'s two recorded halfedges is face ``f``'s: its apex sits in the edge's
+    # gradient-row slot ``2 + side`` (``cr_gradient_rows``), the apex across in ``3 - side``.
+    return wp.where(edge_halfedges[edge, 0] // 3 == f, 0, 1)
+
+
+@wp.func
 def curved_face_star(
-    inverse: wp.array[wp.int32], edge_vertex_slots: wp.array2d[wp.int32], f: wp.int32
-) -> tuple[vec6i, wp.int32]:
-    # The vertices face ``f``'s three edges' Crouzeix-Raviart gradient rows touch (each edge's
-    # endpoints and the vertices opposite it, at most six), in order of first appearance over the
-    # edges' igl slots and each edge's four vertex slots, and how many there are: the numbering of
-    # the face's 6x6 block, shared by its pattern keys and its values.
-    star = vec6i()
-    count = wp.int32(0)
+    faces: wp.array[wp.int32],
+    inverse: wp.array[wp.int32],
+    edge_halfedges: wp.array2d[wp.int32],
+    edge_vertex_slots: wp.array2d[wp.int32],
+    f: wp.int32,
+) -> vec6i:
+    # The vertices face ``f``'s three edges' Crouzeix-Raviart gradient rows touch, numbering its
+    # 6x6 block: its corners, then the apex across each edge (igl slot ``alpha``, opposite corner
+    # ``alpha``), ``-1`` where there is none. A vertex held twice (a tetrahedron's apex across all
+    # three edges) keeps both places; its keys are one entry's, which sums both.
+    across = vec6i()
     for alpha in range(3):
         edge = inverse[f * 3 + (alpha + 1) % 3]
-        for u_slot in range(4):
-            vertex = edge_vertex_slots[edge, u_slot]
-            seen = vertex < 0
-            for p in range(6):
-                if p < count and star[p] == vertex:
-                    seen = wp.bool(True)
-            if not seen:
-                for p in range(6):
-                    if p == count:
-                        star[p] = vertex
-                count += 1
-    return star, count
+        across[alpha] = edge_vertex_slots[edge, 3 - curved_face_side(edge_halfedges, edge, f)]
+    return vec6i(faces[f * 3], faces[f * 3 + 1], faces[f * 3 + 2], across[0], across[1], across[2])
 
 
 @wp.kernel
@@ -1016,6 +1016,7 @@ def curved_hessian_keys(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     inverse: wp.array[wp.int32],
+    edge_halfedges: wp.array2d[wp.int32],
     edge_vertex_slots: wp.array2d[wp.int32],
     n_vertices: wp.int32,
     out_keys: wp.array[wp.uint64],
@@ -1023,38 +1024,29 @@ def curved_hessian_keys(
 ) -> None:
     # The curved Hessian's pattern: face ``f`` couples every pair of its star's vertices
     # (``curved_face_star``), the entries of its 6x6 block ``curved_hessian_face_blocks`` forms.
-    # A fixed 36 keys a face, key ``36 f + 6 p + q`` the block's ``(p, q)``, the pairs past the
-    # face's own count and a degenerate face's all the sentinel; the payload is the slot.
+    # A fixed 36 keys a face, the block's ``(p, q)`` at slot ``(6 p + q) n_faces + f``, so that
+    # for each pair a warp's stores are contiguous; a pair with a missing apex and every pair of a
+    # degenerate face is the sentinel, and the payload is the slot.
+    #
+    # Replaced: slot ``36 f + 6 p + q``, a warp's stores 36 slots apart (``dragon`` 1.48 ms against
+    # 0.34), over a star of first occurrences.
     f = wp.int32(wp.tid())
-    base_out = f * 36
+    n_faces = faces.shape[0] // 3
     _l2_0, _l2_1, _l2_2, dbl_area = triangle_geometry_f64(vertices, faces, f)
-    star = vec6i()
-    count = wp.int32(0)
+    star = vec6i(-1)
     if dbl_area > wp.float64(0.0):
-        star, count = curved_face_star(inverse, edge_vertex_slots, f)
+        star = curved_face_star(faces, inverse, edge_halfedges, edge_vertex_slots, f)
     for p in range(6):
         for q in range(6):
-            row = wp.int32(-1)
-            column = wp.int32(-1)
-            if p < count and q < count:
-                row = star[p]
-                column = star[q]
             store_coo_key(
-                base_out + p * 6 + q, row, column, n_vertices, n_vertices, out_keys, out_order
-            )
+                (p * 6 + q) * n_faces + f, star[p], star[q], n_vertices, n_vertices, out_keys,
+                out_order,
+            )  # fmt: skip
 
 
-@wp.func
-def curved_star_position(star: vec6i, count: wp.int32, vertex: wp.int32) -> wp.int32:
-    # Where ``vertex`` sits in a face's star (``curved_face_star``); the caller knows it does.
-    position = wp.int32(0)
-    for p in range(6):
-        if p < count and star[p] == vertex:
-            position = p
-    return position
-
-
-# A face's block of the curved Hessian over its star, accumulated at runtime positions.
+# A face's 6x6 tables over its star: the gradient rows ``W`` (rows ``2 alpha`` and
+# ``2 alpha + 1``, edge ``alpha``'s parallel and perpendicular components), the mass-weighted
+# ``L + K`` block and the face's block of the energy.
 mat66d = wp.types.matrix(shape=(6, 6), dtype=wp.float64)
 
 
@@ -1066,53 +1058,58 @@ def curved_hessian_face_blocks(
     angles: wp.array2d[wp.float64],
     angle_sums: wp.array[wp.float64],
     mass: wp.array[wp.float64],
-    edge_vertex_slots: wp.array2d[wp.int32],
+    edge_halfedges: wp.array2d[wp.int32],
     par: wp.array2d[wp.float64],
     perp: wp.array2d[wp.float64],
+    edge_vertex_slots: wp.array2d[wp.int32],
     out_blocks: wp.array[wp.float64],
 ) -> None:
-    # Face ``f``'s share of ``Q = D^T Mi (L + K) Mi D`` over its star: entry ``(p, q)`` sums, over
-    # the ordered edge-slot pairs ``(alpha, beta)`` and each vertex slot of edge ``alpha`` at
-    # ``p`` and of edge ``beta`` at ``q``, the sandwiched ``(L + K)`` block. Written at slot
-    # ``36 f + 6 p + q``, the payload of the key ``curved_hessian_keys`` wrote for that pair, for
-    # ``curved_hessian_values`` to sum over each entry's run; a degenerate face writes nothing (its
-    # keys were the sentinel).
+    # Face ``f``'s share of ``Q = D^T Mi (L + K) Mi D`` over its star (``curved_face_star``):
+    # ``W^T (B W)``, with ``W`` its three edges' gradient rows on the star and ``B`` the
+    # face's ``(L + K)`` block between them, each edge pair's 2x2 weighted by both edges' inverse
+    # masses. Entry ``(p, q)`` is written at slot ``(6 p + q) n_faces + f``, the payload of the key
+    # ``curved_hessian_keys`` wrote for that pair, for ``curved_hessian_values`` to sum over each
+    # entry's run; a degenerate face, and a pair with a missing apex, writes nothing (its keys
+    # were the sentinel).
+    #
+    # Replaced: each of the 144 vertex-slot pairs' sandwiched contributions added into the block at
+    # its vertices' runtime places in the star, about 1 300 ``float64`` operations a face into a
+    # block in local memory (``dragon`` 2.0 ms).
     f = wp.int32(wp.tid())
     valid, eids, ims, diag, pp, pq = curved_face_terms(
         vertices, faces, inverse, angles, angle_sums, mass, f
     )
     if not valid:
         return
-    star, count = curved_face_star(inverse, edge_vertex_slots, f)
-    block = mat66d()
+    rows = mat66d()
+    weighted = mat66d()
     for alpha in range(3):
-        edge_a = eids[alpha]
-        mi_a = ims[alpha]
+        edge = eids[alpha]
+        side = curved_face_side(edge_halfedges, edge, f)
+        # Slots 0 and 1 hold the edge's endpoints, corners ``alpha + 1`` and ``alpha + 2``.
+        first = wp.where(edge_vertex_slots[edge, 0] == faces[f * 3 + (alpha + 1) % 3], 0, 1)
+        rows[2 * alpha, alpha] = par[edge, 2 + side]
+        rows[2 * alpha + 1, alpha] = perp[edge, 2 + side]
+        rows[2 * alpha, (alpha + 1) % 3] = par[edge, first]
+        rows[2 * alpha + 1, (alpha + 1) % 3] = perp[edge, first]
+        rows[2 * alpha, (alpha + 2) % 3] = par[edge, 1 - first]
+        rows[2 * alpha + 1, (alpha + 2) % 3] = perp[edge, 1 - first]
+        rows[2 * alpha, 3 + alpha] = par[edge, 3 - side]
+        rows[2 * alpha + 1, 3 + alpha] = perp[edge, 3 - side]
         for beta in range(3):
-            edge_b = eids[beta]
-            mimi = mi_a * ims[beta]
+            mimi = ims[alpha] * ims[beta]
             b_pp, b_pq, b_qp = curved_pair_block(diag, pp, pq, alpha, beta)
-            for u_slot in range(4):
-                row = edge_vertex_slots[edge_a, u_slot]
-                if row >= 0:
-                    p = curved_star_position(star, count, row)
-                    par_u = par[edge_a, u_slot]
-                    perp_u = perp[edge_a, u_slot]
-                    for v_slot in range(4):
-                        col = edge_vertex_slots[edge_b, v_slot]
-                        if col >= 0:
-                            q = curved_star_position(star, count, col)
-                            par_v = par[edge_b, v_slot]
-                            perp_v = perp[edge_b, v_slot]
-                            block[p, q] = block[p, q] + mimi * (
-                                b_pp * (par_u * par_v + perp_u * perp_v)
-                                + b_pq * par_u * perp_v
-                                + b_qp * perp_u * par_v
-                            )
+            weighted[2 * alpha, 2 * beta] = mimi * b_pp
+            weighted[2 * alpha, 2 * beta + 1] = mimi * b_pq
+            weighted[2 * alpha + 1, 2 * beta] = mimi * b_qp
+            weighted[2 * alpha + 1, 2 * beta + 1] = mimi * b_pp
+    block = wp.transpose(rows) @ (weighted @ rows)
+    star = curved_face_star(faces, inverse, edge_halfedges, edge_vertex_slots, f)
+    n_faces = faces.shape[0] // 3
     for p in range(6):
         for q in range(6):
-            if p < count and q < count:
-                out_blocks[f * 36 + p * 6 + q] = block[p, q]
+            if star[p] >= 0 and star[q] >= 0:
+                out_blocks[(p * 6 + q) * n_faces + f] = block[p, q]
 
 
 @wp.kernel
@@ -1123,7 +1120,8 @@ def curved_hessian_values(
     out_values: wp.array[wp.Float],
 ) -> None:
     # Entry ``e``'s value: its faces' block entries over its run of sorted keys, in the run's
-    # (ascending face) order, a thread an entry.
+    # order (ascending slot, so by the entry's position in each block, then by face), a thread an
+    # entry.
     #
     # Replaced: a thread a row walking its candidate faces in ascending order (a scan of its fan
     # for each next face, a sorted face list on a long fan), each face's 144 corner-pair

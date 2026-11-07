@@ -999,7 +999,16 @@ def curved_hessian_energy(
     _launch.launch(
         kernel_energies.curved_hessian_keys,
         dim=n_faces,
-        inputs=[vertices, faces, inverse, vertex_slots, wp.int32(n_vertices), keys, order],
+        inputs=[
+            vertices,
+            faces,
+            inverse,
+            edge_halfedges,
+            vertex_slots,
+            wp.int32(n_vertices),
+            keys,
+            order,
+        ],
         device=device,
     )
     offsets, key_columns, starts = od.array.csr_from_keys(
@@ -1025,9 +1034,10 @@ def curved_hessian_energy(
                 angles,
                 angle_sums,
                 mass,
-                vertex_slots,
+                edge_halfedges,
                 par,
                 perp,
+                vertex_slots,
                 blocks,
             ],
             device=device,
