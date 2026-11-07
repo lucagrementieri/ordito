@@ -1670,13 +1670,13 @@
  },
  "benchmarks/test_energies.py::test_hessian_energy[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 9,
-   "alloc": 9,
+   "launch": 13,
+   "alloc": 13,
    "memset": 4,
    "d2d": 1,
    "d2h": 2,
-   "scan": 3,
-   "sort": 1
+   "scan": 4,
+   "sort": 2
   }
  },
  "benchmarks/test_energies.py::test_k_harmonic[sphere_small-ordito-cuda]": {

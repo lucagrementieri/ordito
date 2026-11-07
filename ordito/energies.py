@@ -652,12 +652,12 @@ def hessian_energy(
     linear functions are exactly in its null space, boundary or not. ``M`` is the Voronoi lumped
     mass with boundary degrees of freedom killed, per the reference.
 
-    Rather than materializing the sparse ``(9 n_faces, n_vertices)`` stacked Hessian ``H``, the
-    product is contracted analytically over its nine component pairs and assembled in one triplet
-    pass per vertex: ``Q_ij = sum_k M_k^-1 sum_{f,g ni k} A_f A_g (g_fk . g_gk)(g_fi . g_gj)``
-    with ``g_fc`` corner ``c``'s hat-function gradient in face ``f``. The per-vertex triplet count
-    is ``9 * valence^2``, so cost is quadratic in valence. A degenerate face contributes nothing
-    (igl emits NaN there).
+    Rather than materializing the sparse ``(9 n_faces, n_vertices)`` stacked Hessian ``H`` and
+    multiplying, each entry is formed from ``H``'s 3x3 blocks
+    ``H_kc = sum_{f ni k, c} A_f g_fk g_fc^T``, with ``g_fc`` corner ``c``'s hat-function gradient
+    in face ``f``: ``Q_ij = sum_k M_k^-1 <H_ki, H_kj>`` (Frobenius) over the vertices ``k`` adjacent
+    to both. A vertex couples every pair of its neighbours, so cost is quadratic in valence. A
+    degenerate face contributes nothing (igl emits NaN there).
 
     Parameters
     ----------
@@ -776,8 +776,8 @@ def hessian_energy(
         device=device,
     )
     # The pattern first: one key per pair of an active vertex's star vertices, sorted into the
-    # rows; the values are then gathered a row a thread in the order a triplet sort would have
-    # summed them (``kernels/energies.hessian_energy_rows``), so no triplet is stored.
+    # rows; the values are then formed an entry a thread from the stacked Hessian's 3x3 blocks
+    # (``kernels/energies.hessian_energy_values``), so no triplet is stored.
     n_keys = scan_count_checked(segment_offsets, "the operator")
     keys, order = od.array.csr_key_buffers(n_keys, device)
     if n_keys > 0:
@@ -804,15 +804,19 @@ def hessian_energy(
     columns = _launch.empty(n_entries, dtype=wp.int32, device=device)
     if n_entries > 0:
         wp.copy(columns, key_columns, count=n_entries)
-    # The key buffers and the key-sized columns go before the values arrive.
+    # The key buffers and the key-sized columns go before the blocks arrive.
     del keys, order, key_columns, _starts
-    # ``-0.0``: the identity of floating-point addition, so each entry is its contributions' sum
-    # from the first one on.
-    values = _launch.full(n_entries, -0.0, dtype=dtype, device=device)
+    values = _launch.empty(n_entries, dtype=dtype, device=device)
     if n_entries > 0:
+        # The closed one-ring indexes the blocks ``M_kr``: an entry ``(i, j)`` pairs the blocks of
+        # the vertices both rings hold. Its sort buffers go before the blocks arrive.
+        ring = mesh_operator_pattern(faces, n_vertices)
+        ring_offsets, ring_columns = ring.offsets, ring.columns
+        del ring
+        blocks = _launch.empty(ring_columns.size, dtype=wp.mat33d, device=device)
         _launch.launch(
-            kernel_energies.HESSIAN_ENERGY_ROWS[dtype],
-            dim=n_vertices,
+            kernel_energies.hessian_energy_blocks,
+            dim=ring_columns.size,
             inputs=[
                 faces,
                 vf_offsets,
@@ -820,10 +824,16 @@ def hessian_energy(
                 gradients,
                 areas,
                 inverse_mass,
-                offsets,
-                columns,
-                values,
+                ring_offsets,
+                ring_columns,
+                blocks,
             ],
+            device=device,
+        )
+        _launch.launch(
+            kernel_energies.HESSIAN_ENERGY_VALUES[dtype],
+            dim=n_entries,
+            inputs=[inverse_mass, ring_offsets, ring_columns, blocks, offsets, columns, values],
             device=device,
         )
     return od.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values, nnz=n_entries)

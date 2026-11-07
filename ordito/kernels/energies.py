@@ -647,7 +647,7 @@ def hessian_energy_counts(
     # ``HESSIAN_MAX_CORNERS``, boundary or not. The mass is defined only at
     # interior vertices, so a boundary vertex (``row_vertex_on_boundary``) inverts as a zero mass.
     # The mass inversion rides in the same launch: the gate reads the inverse it has just written,
-    # which is the value ``hessian_energy_keys`` and ``hessian_energy_rows`` gate on.
+    # which is the value ``hessian_energy_keys`` and ``hessian_energy_blocks`` gate on.
     k = wp.int32(wp.tid())
     corners = 3 * (vf_offsets[k + 1] - vf_offsets[k])
     if corners > HESSIAN_MAX_CORNERS:
@@ -678,7 +678,7 @@ def hessian_energy_keys(
     out_order: wp.array[wp.int32],
 ) -> None:
     # The Hessian energy's pattern: entry ``(i, j)`` exists where an active vertex ``k`` has both
-    # in its star, which is where ``hessian_energy_rows`` gathers a contribution. One thread per
+    # in its star, which is where ``hessian_energy_values`` finds a common ``k``. One thread per
     # vertex, one key per pair of its star vertices (first occurrences, ``hessian_star_mask``);
     # the payload is unread, the values coming from the gather.
     k = wp.int32(wp.tid())
@@ -708,83 +708,93 @@ def hessian_energy_keys(
 
 
 @wp.kernel
-def hessian_energy_rows(
+def hessian_energy_blocks(
     faces: wp.array[wp.int32],
     vf_offsets: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
     gradients: wp.array[wp.vec3d],
     areas: wp.array[wp.float64],
     inv_mass: wp.array[wp.float64],
+    ring_offsets: wp.array[wp.int32],
+    ring_columns: wp.array[wp.int32],
+    out_blocks: wp.array[wp.mat33d],
+) -> None:
+    # The stacked Hessian's 3x3 block at row ``k``, column ``r``:
+    # ``M_kr = sum_{f ni k, r} A_f g_fk (x) g_fr``, ``g_fc`` corner ``c``'s hat-function gradient
+    # in face ``f``, over ``k``'s vertex-face row (a face listed once a corner at ``k``) and every
+    # corner of ``f`` at ``r``. One thread an entry of the closed one-ring pattern (row ``r``,
+    # column ``k``), stored there; a killed ``k`` (zero inverse mass) is never read and not
+    # written. The one-ring's columns are a capacity: a thread past its entries returns.
+    p = wp.int32(wp.tid())
+    if p >= ring_offsets[ring_offsets.shape[0] - 1]:
+        return
+    k = ring_columns[p]
+    if not (inv_mass[k] > wp.float64(0.0)):
+        return
+    r = binary_search_index(ring_offsets, p) - 1
+    zero = wp.float64(0.0)
+    block = wp.mat33d(zero, zero, zero, zero, zero, zero, zero, zero, zero)
+    for a in range(vf_offsets[k], vf_offsets[k + 1]):
+        f = vertex_faces[a]
+        gradient_fr = wp.vec3d(zero, zero, zero)
+        hit = wp.bool(False)
+        for c in range(3):
+            if faces[f * 3 + c] == r:
+                gradient_fr = gradient_fr + gradients[f * 3 + c]
+                hit = True
+        if hit:
+            block = block + areas[f] * wp.outer(
+                gradients[f * 3 + known_local_corner(faces, f, k)], gradient_fr
+            )
+    out_blocks[p] = block
+
+
+@wp.kernel
+def hessian_energy_values(
+    inv_mass: wp.array[wp.float64],
+    ring_offsets: wp.array[wp.int32],
+    ring_columns: wp.array[wp.int32],
+    blocks: wp.array[wp.mat33d],
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     out_values: wp.array[wp.Float],
 ) -> None:
-    # ``Q = H^T Minv H`` contracted analytically over the 9 component pairs of the stacked
-    # Hessian: ``Q_ij = sum_k Minv_k sum_{f,g ni k} A_f A_g (g_fk . g_gk)(g_fi . g_gj)`` with
-    # ``g_fc`` the hat-function gradient of corner ``c`` in face ``f``. One thread per row ``i``,
-    # over ``hessian_energy_keys``' pattern, its values arriving at ``-0.0``, the identity of
-    # floating-point addition: the vertices ``k`` sharing a face with ``i`` in ascending order,
-    # then ``k``'s face pairs ``(f, g)`` in its vertex-face row's order, the corner ``i`` holds in
-    # ``f`` and each corner of ``g``, each contribution searched into the row. That is the order
-    # an entry's contributions held when one thread a ``k`` emitted every corner pair of every
-    # pair of ``k``'s faces as a triplet and the triplets' sort summed each run, so each entry is
-    # that sum bit for bit, with no triplet stored.
+    # ``Q = H^T Minv H`` entry by entry: ``Q_ij = sum_k Minv_k <M_ki, M_kj>`` (Frobenius) over the
+    # active ``k`` in both one-rings, ascending, so ``Q_ij`` and ``Q_ji`` are equal bit for bit and
+    # the sum repeats run to run in either deterministic setting. One thread an entry of
+    # ``hessian_energy_keys``' pattern. The shorter ring is walked and each of its vertices searched
+    # in the longer, so a hub's row costs its partners' rings, not its own, an entry.
     #
-    # Declined: a thread an entry, walking the same order for its own ``(i, j)`` (no search, 19x
-    # the threads): 2.0x this kernel's call on ``dragon``, 1.24x on ``bunny``, each entry walking
-    # its row's ring again and adding through its own atomic.
-    i = wp.int32(wp.tid())
-    row_start = offsets[i]
-    row_end = offsets[i + 1]
-    if row_start == row_end:
-        return
-    ring_start = vf_offsets[i]
-    ring_end = vf_offsets[i + 1]
-    previous = wp.int32(-1)
-    while True:
-        # The next vertex ``k`` above ``previous`` sharing a face with ``i`` (``i`` included).
-        k = wp.int32(-1)
-        for a in range(ring_start, ring_end):
-            for c in range(3):
-                candidate = faces[vertex_faces[a] * 3 + c]
-                if candidate > previous and (k < 0 or candidate < k):
-                    k = candidate
-        if k < 0:
-            break
-        previous = k
+    # Replaced: a thread a row summing every corner-pair contribution of every pair of ``k``'s
+    # faces in a triplet sort's order, each searched into the row and added through an atomic
+    # (``Q_ij = sum_k Minv_k sum_{f,g} A_f A_g (g_fk . g_gk)(g_fi . g_gj)``, the sum ungrouped):
+    # about 250 searched ``float64`` contributions a row in one thread. The blocks took the call
+    # 0.29x on ``sphere_small``, 0.31x on ``bunny`` and 0.41-0.45x on ``dragon`` (scrambled or
+    # not) on CUDA, 0.57-0.66x on the CPU, at the same peak; the values move by under 1e-15 of
+    # the largest.
+    e = wp.int32(wp.tid())
+    i = binary_search_index(offsets, e) - 1
+    j = columns[e]
+    i_start = ring_offsets[i]
+    i_end = ring_offsets[i + 1]
+    j_start = ring_offsets[j]
+    j_end = ring_offsets[j + 1]
+    swap = i_end - i_start > j_end - j_start
+    a_start = wp.where(swap, j_start, i_start)
+    a_end = wp.where(swap, j_end, i_end)
+    b_start = wp.where(swap, i_start, j_start)
+    b_end = wp.where(swap, i_end, j_end)
+    total = wp.float64(0.0)
+    cursor = b_start
+    for p in range(a_start, a_end):
+        k = ring_columns[p]
         weight = inv_mass[k]
-        if not (weight > wp.float64(0.0)):
-            continue
-        start = vf_offsets[k]
-        end = vf_offsets[k + 1]
-        for a in range(start, end):
-            f = vertex_faces[a]
-            if faces[f * 3] != i and faces[f * 3 + 1] != i and faces[f * 3 + 2] != i:
-                continue
-            gradient_fk = gradients[f * 3 + known_local_corner(faces, f, k)]
-            left = weight * areas[f]
-            for b in range(start, end):
-                g = vertex_faces[b]
-                pair = (
-                    left
-                    * areas[g]
-                    * wp.dot(gradient_fk, gradients[g * 3 + known_local_corner(faces, g, k)])
-                )
-                for ci in range(3):
-                    if faces[f * 3 + ci] == i:
-                        gradient_fi = gradients[f * 3 + ci]
-                        for cj in range(3):
-                            slot = wp.lower_bound(columns, row_start, row_end, faces[g * 3 + cj])
-                            # An atomic though the row is this thread's alone: the product is
-                            # rounded before it is added, where ``acc + pair * dot`` would be
-                            # one fused multiply-add on CUDA and differ in the last bits.
-                            wp.atomic_add(
-                                out_values,
-                                slot,
-                                type(out_values[0])(
-                                    pair * wp.dot(gradient_fi, gradients[g * 3 + cj])
-                                ),
-                            )
+        if weight > wp.float64(0.0):
+            q = wp.lower_bound(ring_columns, cursor, b_end, k)
+            if ring_columns[q] == k:
+                total += weight * wp.ddot(blocks[p], blocks[q])
+            cursor = q
+    out_values[e] = type(out_values[0])(total)
 
 
 @wp.kernel
@@ -1764,7 +1774,7 @@ CROUZEIX_RAVIART_CSR: OverloadTable
 SANDWICH_ROW_COUNTS: OverloadTable
 SANDWICH_ROW_TRIPLETS: OverloadTable
 SANDWICH_LONG_ROWS: OverloadTable
-HESSIAN_ENERGY_ROWS: OverloadTable
+HESSIAN_ENERGY_VALUES: OverloadTable
 CURVED_HESSIAN_ROWS: OverloadTable
 CURVED_HESSIAN_LONG_ROWS: OverloadTable
 CURVED_HESSIAN_LONG_COLUMNS: OverloadTable
@@ -1775,7 +1785,7 @@ def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global CROUZEIX_RAVIART_MASS_DIAG, CROUZEIX_RAVIART_CSR
     global SANDWICH_ROW_COUNTS, SANDWICH_ROW_TRIPLETS, SANDWICH_LONG_ROWS
-    global HESSIAN_ENERGY_ROWS, CURVED_HESSIAN_ROWS, CURVED_HESSIAN_LONG_ROWS
+    global HESSIAN_ENERGY_VALUES, CURVED_HESSIAN_ROWS, CURVED_HESSIAN_LONG_ROWS
     global CURVED_HESSIAN_LONG_COLUMNS
     global LSCM_LAPLACIAN_ROWS_AND_COUNTS
     i32 = wp.array[wp.int32]
@@ -1844,20 +1854,10 @@ def _register_overloads() -> None:
             for d in _MATRIX_DTYPES
         },
     )
-    HESSIAN_ENERGY_ROWS = OverloadTable(
-        hessian_energy_rows,
+    HESSIAN_ENERGY_VALUES = OverloadTable(
+        hessian_energy_values,
         {
-            d: [
-                i32,
-                i32,
-                i32,
-                wp.array[wp.vec3d],
-                wp.array[wp.float64],
-                wp.array[wp.float64],
-                i32,
-                i32,
-                wp.array[d],
-            ]
+            d: [wp.array[wp.float64], i32, i32, wp.array[wp.mat33d], i32, i32, wp.array[d]]
             for d in _MATRIX_DTYPES
         },
     )

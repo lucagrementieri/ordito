@@ -294,7 +294,8 @@ Never size a buffer, slice or launch `dim` off `matrix.nnz`.
   order the triplet sort summed them, through a thread-owned `wp.atomic_add` so the product is
   rounded before the add (`energies.hessian_energy` / `curved_hessian_energy`, byte-identical to
   their triplet forms: call peak 6.3 -> 0.7 GB and 5.5 -> 1.0 GB on `dragon`, 0.5x / 0.76x time;
-  `kernels/energies.hessian_energy_rows` records the declined entry-a-thread gather).
+  `hessian_energy`'s values are since formed an entry a thread from the stacked Hessian's 3x3
+  blocks, `kernels/energies.hessian_energy_values`).
 - A scanned `int32` count that sizes buffers is checked for a wrap through
   `_common.scan_count_checked` (`kernels/array.flag_wrapped_scan`, read with the total): a total
   past `2**32` wraps back to a small positive count, so its sign alone does not tell
