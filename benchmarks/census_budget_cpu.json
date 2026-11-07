@@ -6170,6 +6170,26 @@
    "sort": 5
   }
  },
+ "benchmarks/test_repair.py::test_remove_tunnels_root_search[handles_1-ordito-cpu]": {
+  "counts": {
+   "launch": 18,
+   "alloc": 33,
+   "h2h": 5,
+   "readback": 9,
+   "scan": 4,
+   "sort": 2
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_tunnels_root_search[handles_64-ordito-cpu]": {
+  "counts": {
+   "launch": 18,
+   "alloc": 33,
+   "h2h": 5,
+   "readback": 9,
+   "scan": 4,
+   "sort": 2
+  }
+ },
  "benchmarks/test_repair.py::test_remove_unreferenced_vertices[sphere_small-ordito-cpu-clean]": {
   "counts": {
    "launch": 2,

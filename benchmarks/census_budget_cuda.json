@@ -6800,6 +6800,30 @@
    "sort": 4
   }
  },
+ "benchmarks/test_repair.py::test_remove_tunnels_root_search[handles_1-ordito-cuda]": {
+  "counts": {
+   "launch": 49,
+   "alloc": 38,
+   "memset": 8,
+   "d2d": 2,
+   "h2d": 3,
+   "d2h": 11,
+   "scan": 15,
+   "sort": 1
+  }
+ },
+ "benchmarks/test_repair.py::test_remove_tunnels_root_search[handles_64-ordito-cuda]": {
+  "counts": {
+   "launch": 49,
+   "alloc": 38,
+   "memset": 8,
+   "d2d": 2,
+   "h2d": 3,
+   "d2h": 12,
+   "scan": 15,
+   "sort": 1
+  }
+ },
  "benchmarks/test_repair.py::test_remove_unreferenced_vertices[sphere_small-ordito-cuda-clean]": {
   "counts": {
    "launch": 2,

@@ -1183,6 +1183,29 @@ def test_remove_tunnels(bench_case: BenchCase) -> None:
     )
 
 
+@pytest.mark.benchmark(group="remove_tunnels_root_search")
+@pytest.mark.benchaxis("genus")
+@pytest.mark.benchlibs("ordito")
+def test_remove_tunnels_root_search(bench_case: BenchCase) -> None:
+    """
+    ``remove_tunnels`` when no basis loop is short enough: the search from every basis vertex.
+
+    At ``max_length`` 2.0 no shortened basis loop qualifies, so the call searches every vertex of
+    the basis for the shortest non-separating loop through it (a truncated Dijkstra a root,
+    ``kernels/repair.shortest_nontrivial_loop_per_root``) and finds none that short on these
+    fixtures: the row times the answer "no handle within the bound", which ``test_remove_tunnels``
+    (an unbounded length) never reaches. ordito-only for that group's reason.
+    """
+    if bench_case.mesh_name == "sphere_med":
+        pytest.skip("sphere_med is genus 0: there is no tunnel to search for")
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _, cut_faces, removed = bench_case.run(
+        lambda: od.repair.remove_tunnels(vertices, faces, 2.0), rounds=3
+    )
+    assert removed == 0
+    assert cut_faces.size == faces.size
+
+
 @pytest.mark.benchmark(group="remove_degree3_vertices")
 @pytest.mark.benchlibs("ordito", "meshlib")
 def test_remove_degree3_vertices(bench_case: BenchCase) -> None:
