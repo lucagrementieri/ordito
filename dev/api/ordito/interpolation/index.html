@@ -6381,8 +6381,7 @@ are not part of the rendered reference, so this one is not a link).</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/interpolation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 52</span>
-<span class="normal"> 53</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 53</span>
 <span class="normal"> 54</span>
 <span class="normal"> 55</span>
 <span class="normal"> 56</span>
@@ -6431,7 +6430,8 @@ are not part of the rendered reference, so this one is not a link).</p>
 <span class="normal"> 99</span>
 <span class="normal">100</span>
 <span class="normal">101</span>
-<span class="normal">102</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">average_onto_faces</span><span class="p">(</span>
+<span class="normal">102</span>
+<span class="normal">103</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">average_onto_faces</span><span class="p">(</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">vertex_values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6661,8 +6661,7 @@ face and is <code>nan</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/interpolation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">105</span>
-<span class="normal">106</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">106</span>
 <span class="normal">107</span>
 <span class="normal">108</span>
 <span class="normal">109</span>
@@ -6732,7 +6731,8 @@ face and is <code>nan</code>:</p>
 <span class="normal">173</span>
 <span class="normal">174</span>
 <span class="normal">175</span>
-<span class="normal">176</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">average_onto_vertices</span><span class="p">(</span>
+<span class="normal">176</span>
+<span class="normal">177</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">average_onto_vertices</span><span class="p">(</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">face_values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7037,8 +7037,7 @@ touches, and the unreferenced vertex 3 stays <code>0</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/interpolation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">179</span>
-<span class="normal">180</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">180</span>
 <span class="normal">181</span>
 <span class="normal">182</span>
 <span class="normal">183</span>
@@ -7133,7 +7132,8 @@ touches, and the unreferenced vertex 3 stays <code>0</code>:</p>
 <span class="normal">272</span>
 <span class="normal">273</span>
 <span class="normal">274</span>
-<span class="normal">275</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">average_from_edges_onto_vertices</span><span class="p">(</span>
+<span class="normal">275</span>
+<span class="normal">276</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">average_from_edges_onto_vertices</span><span class="p">(</span>
     <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span>
@@ -7508,8 +7508,7 @@ own confidence measure, and <code>inf</code> for a miss.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/interpolation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">278</span>
-<span class="normal">279</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">279</span>
 <span class="normal">280</span>
 <span class="normal">281</span>
 <span class="normal">282</span>
@@ -7639,7 +7638,8 @@ own confidence measure, and <code>inf</code> for a miss.</p>
 <span class="normal">406</span>
 <span class="normal">407</span>
 <span class="normal">408</span>
-<span class="normal">409</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transfer_onto_vertices</span><span class="p">(</span>
+<span class="normal">409</span>
+<span class="normal">410</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transfer_onto_vertices</span><span class="p">(</span>
     <span class="n">source_vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">source_faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">source_values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">],</span>
@@ -7973,8 +7973,7 @@ vertices:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/interpolation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">412</span>
-<span class="normal">413</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">413</span>
 <span class="normal">414</span>
 <span class="normal">415</span>
 <span class="normal">416</span>
@@ -8076,7 +8075,8 @@ vertices:</p>
 <span class="normal">512</span>
 <span class="normal">513</span>
 <span class="normal">514</span>
-<span class="normal">515</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transfer_through_operator</span><span class="p">(</span>
+<span class="normal">515</span>
+<span class="normal">516</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">transfer_through_operator</span><span class="p">(</span>
     <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">],</span> <span class="n">operator</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8479,8 +8479,7 @@ closest-point fallback is this function at <code>k=1</code>, so neither needs a 
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/interpolation.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">518</span>
-<span class="normal">519</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">519</span>
 <span class="normal">520</span>
 <span class="normal">521</span>
 <span class="normal">522</span>
@@ -8640,7 +8639,15 @@ closest-point fallback is this function at <code>k=1</code>, so neither needs a 
 <span class="normal">676</span>
 <span class="normal">677</span>
 <span class="normal">678</span>
-<span class="normal">679</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">interpolate_from_points</span><span class="p">(</span>
+<span class="normal">679</span>
+<span class="normal">680</span>
+<span class="normal">681</span>
+<span class="normal">682</span>
+<span class="normal">683</span>
+<span class="normal">684</span>
+<span class="normal">685</span>
+<span class="normal">686</span>
+<span class="normal">687</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">interpolate_from_points</span><span class="p">(</span>
     <span class="n">source_points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">source_values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">DType</span><span class="p">],</span>
     <span class="n">query_points</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
@@ -8766,9 +8773,16 @@ closest-point fallback is this function at <code>k=1</code>, so neither needs a 
     <span class="n">inverse_scale</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">sharpness</span><span class="p">)</span> <span class="o">/</span> <span class="nb">float</span><span class="p">(</span><span class="n">radius</span><span class="p">))</span>
     <span class="k">if</span> <span class="n">k</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
         <span class="c1"># The mean is reduced during the grid walk, so no neighbour list is ever materialized: the</span>
-        <span class="c1"># same hash grid and predicate ``query_ball_with_offsets`` uses, visiting the neighbours in</span>
-        <span class="c1"># the order its list would hold them.</span>
-        <span class="n">grid</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">hashgrid_from_points</span><span class="p">(</span><span class="n">source_points</span><span class="p">,</span> <span class="nb">float</span><span class="p">(</span><span class="n">radius</span><span class="p">))</span>
+        <span class="c1"># predicate ``query_ball_with_offsets`` applies, over a grid whose cells suit the query</span>
+        <span class="c1"># count.</span>
+        <span class="n">cell</span> <span class="o">=</span> <span class="n">ball_grid_cell_width</span><span class="p">(</span>
+            <span class="nb">float</span><span class="p">(</span><span class="n">radius</span><span class="p">),</span>
+            <span class="n">n_query</span><span class="p">,</span>
+            <span class="n">device</span><span class="p">,</span>
+            <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">BALL_GRID_WIDE_CELL_QUERIES_CUDA</span><span class="p">,</span>
+            <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">BALL_GRID_WIDE_CELL_QUERIES_CPU</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">grid</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">neighbors</span><span class="o">.</span><span class="n">hashgrid_from_points</span><span class="p">(</span><span class="n">source_points</span><span class="p">,</span> <span class="n">cell</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_interpolation</span><span class="o">.</span><span class="n">INTERPOLATE_FROM_POINTS_IN_BALL</span><span class="p">[</span><span class="n">source_values</span><span class="o">.</span><span class="n">dtype</span><span class="p">],</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">n_query</span><span class="p">,</span>
