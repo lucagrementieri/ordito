@@ -38,7 +38,7 @@ Paths are open and simple to start with (a Dijkstra path), so the closed-loop ca
 
 import warp as wp
 
-from ordito.kernels.array import LOOP_PROGRESS
+from ordito.kernels.array import LOOP_PROGRESS, copy_staged, first_staged_chunk, stage_point
 
 wp.set_module_options({"enable_backward": False})
 
@@ -1625,11 +1625,20 @@ def write_point(
     kind: wp.int32,
     element: wp.int32,
     coords: wp.vec3d,
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
+    chunk: wp.ref[wp.int32],
     out_points: wp.array[wp.vec3],
 ) -> None:
-    # Point ``index`` of a trace lands at ``top - index``: the paths come out backwards.
+    # Point ``index`` of a trace lands at ``top - index``: the paths come out backwards. Past
+    # ``limit`` (all of it on the counting pass) it is staged from ``chunk`` (``array.stage_point``)
+    # for ``write_traced_points`` to copy.
     if index < limit:
         out_points[top - index] = point_position(mesh, kind, element, coords)
+    elif chunk >= 0:
+        stage_point(
+            staged_points, staged_next, chunk, index, point_position(mesh, kind, element, coords)
+        )
 
 
 @wp.func
@@ -1646,14 +1655,22 @@ def trace_points(
     max_iterations: wp.int32,
     limit: wp.int32,
     top: wp.int32,
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
+    first_chunk: wp.int32,
     out_points: wp.array[wp.vec3],
 ) -> tuple[wp.int32, wp.int32, wp.int32]:
-    # ``traceGeodesic`` from ``tail`` with ``includePath``, writing its first ``limit`` points.
+    # ``traceGeodesic`` from ``tail`` with ``includePath``, writing its first ``limit`` points and
+    # staging the rest from ``first_chunk`` (``write_point``).
     # Returns the point count, the last point ``trimTraceResult`` keeps (the last edge crossing not
     # on an edge of ``target``, else the start) and that crossing's edge, ``-1`` for the start.
+    chunk = wp.int32(first_chunk)
     length = wp.length(vector)
     direction = vector / length
-    write_point(mesh, 0, limit, top, POINT_VERTEX, tail, wp.vec3d(), out_points)
+    write_point(
+        mesh, 0, limit, top, POINT_VERTEX, tail, wp.vec3d(), staged_points, staged_next, chunk,
+        out_points,
+    )  # fmt: skip
     n = wp.int32(1)
     kept = wp.int32(0)
     kept_edge = wp.int32(-1)
@@ -1664,7 +1681,7 @@ def trace_points(
         t = edge_t(step.cross_halfedge, step.t_cross)
         write_point(
             mesh, n, limit, top, POINT_EDGE, e, wp.vec3d(t, wp.float64(0.0), wp.float64(0.0)),
-            out_points,
+            staged_points, staged_next, chunk, out_points,
         )  # fmt: skip
         if not edge_touches(mesh, e, target):
             kept = n
@@ -1676,7 +1693,10 @@ def trace_points(
             mesh, step.cross_halfedge, step.t_cross, step.direction, step.length
         )
         iteration += 1
-    write_point(mesh, n, limit, top, step.end_kind, step.end_element, step.end_coords, out_points)
+    write_point(
+        mesh, n, limit, top, step.end_kind, step.end_element, step.end_coords, staged_points,
+        staged_next, chunk, out_points,
+    )  # fmt: skip
     if step.end_kind == POINT_EDGE and not edge_touches(mesh, step.end_element, target):
         kept = n
         kept_edge = step.end_element
@@ -1715,7 +1735,7 @@ def trim_succeeds(
     return found
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def count_traced_points(
     mesh: InputMesh,
     offsets: wp.array[wp.int32],
@@ -1725,6 +1745,8 @@ def count_traced_points(
     tip: wp.array[wp.int32],
     vector: wp.array[wp.vec2d],
     max_iterations: wp.int32,
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
     no_points: wp.array[wp.vec3],
     out_limits: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
@@ -1744,7 +1766,17 @@ def count_traced_points(
         out_counts[i] = 1 + end
     else:
         n, kept, kept_edge = trace_points(
-            mesh, tail[i], tip[i], vector[i], max_iterations, 0, 0, no_points
+            mesh,
+            tail[i],
+            tip[i],
+            vector[i],
+            max_iterations,
+            0,
+            0,
+            staged_points,
+            staged_next,
+            first_staged_chunk(staged_next, i),
+            no_points,
         )
         if trim_succeeds(mesh, tail[i], kept_edge, tip[i]):
             out_limits[i] = kept + 1
@@ -1754,7 +1786,7 @@ def count_traced_points(
             out_counts[i] = n
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def write_traced_points(
     mesh: InputMesh,
     offsets: wp.array[wp.int32],
@@ -1764,12 +1796,15 @@ def write_traced_points(
     tip: wp.array[wp.int32],
     vector: wp.array[wp.vec2d],
     max_iterations: wp.int32,
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
     limits: wp.array[wp.int32],
     point_offsets: wp.array[wp.int32],
     out_points: wp.array[wp.vec3],
 ) -> None:
     # The points ``count_traced_points`` counted, each path's written back to front so that it
-    # runs from its target to the source.
+    # runs from its target to the source: copied from what that pass staged, or traced again where
+    # the pool did not hold them.
     i = wp.int32(wp.tid())
     p = path[i]
     first = point_offsets[offsets[p]]
@@ -1778,9 +1813,21 @@ def write_traced_points(
     k = kind[i]
     limit = limits[i]
     if k == ENTRY_TRACED:
-        trace_points(
-            mesh, tail[i], tip[i], vector[i], max_iterations, wp.abs(limit), top, out_points
-        )
+        n_write = wp.abs(limit)
+        if not copy_staged(staged_points, staged_next, i, out_points, top, -1, n_write):
+            trace_points(
+                mesh,
+                tail[i],
+                tip[i],
+                vector[i],
+                max_iterations,
+                n_write,
+                top,
+                staged_points,
+                staged_next,
+                wp.int32(-1),
+                out_points,
+            )
     else:
         out_points[top] = point_position(mesh, POINT_VERTEX, tail[i], wp.vec3d())
     if limit > 0 and point_offsets[i + 1] - point_offsets[i] > limit:

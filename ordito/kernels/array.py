@@ -2261,6 +2261,78 @@ return flag != 0
 def append_slot_if(counter: wp.array[wp.int32], index: wp.int32, flag: wp.int32) -> wp.int32: ...
 
 
+# Points a staged chunk holds.
+STAGED_CHUNK = wp.int32(16)
+
+
+# A counting pass of a serial walk (a ray trace, a descent) stages each walk's points as it counts
+# them, for the writing pass to copy back (``copy_staged``) instead of walking again. The pool is
+# ``staged_points``, ``STAGED_CHUNK``-point chunks, and ``staged_next`` (``n_chunks + 1``) links
+# them a walk at a time: walk ``w``'s first chunk is chunk ``w`` (none when ``w >= n_chunks``),
+# ``staged_next[c]`` is the chunk after ``c``, ``-1`` where the pool ran out (the walk is then
+# walked again), and the last slot counts the chunks handed out, from ``min(n_walks, n_chunks)``.
+# A ``staged_next`` of one slot stages nothing. ``geodesic_walk._staged_points`` allocates both.
+
+
+@wp.func
+def staged_chunk(staged_next: wp.array[wp.int32]) -> wp.int32:
+    # A fresh chunk of the pool, or -1 once it is spent.
+    n_chunks = staged_next.shape[0] - 1
+    taken = wp.atomic_add(staged_next, n_chunks, wp.int32(1))
+    return wp.where(taken < n_chunks, taken, wp.int32(-1))
+
+
+@wp.func
+def first_staged_chunk(staged_next: wp.array[wp.int32], walk: wp.int32) -> wp.int32:
+    # Walk ``walk``'s first chunk, or -1 when it stages nothing.
+    return wp.where(walk < staged_next.shape[0] - 1, walk, wp.int32(-1))
+
+
+@wp.func
+def stage_point(
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
+    chunk: wp.ref[wp.int32],
+    index: wp.int32,
+    point: wp.vec3,
+):
+    # Stage a walk's point ``index`` from its current chunk ``chunk`` (-1 stages nothing), points
+    # coming in order. A chunk is taken when its first slot is written, so a slot written again
+    # (``index`` one below the next) is always in the current one. Callers are compiled with
+    # ``enable_backward=False`` (``wp.ref``).
+    if chunk >= wp.int32(0):
+        slot = index % STAGED_CHUNK
+        if slot == 0 and index > 0:
+            following = staged_chunk(staged_next)
+            staged_next[chunk] = following
+            chunk = following
+        if chunk >= wp.int32(0):
+            staged_points[chunk * STAGED_CHUNK + slot] = point
+
+
+@wp.func
+def copy_staged(
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
+    walk: wp.int32,
+    out_points: wp.array[wp.vec3],
+    write_begin: wp.int32,
+    step: wp.int32,
+    count: wp.int32,
+) -> wp.bool:
+    # Copy walk ``walk``'s first ``count`` staged points to ``out_points[write_begin + step * j]``;
+    # ``False`` when its chunks do not hold them all, and the walk has to be walked again.
+    chunk = first_staged_chunk(staged_next, walk)
+    for j in range(count):
+        slot = j % STAGED_CHUNK
+        if slot == 0 and j > 0:
+            chunk = staged_next[chunk]
+        if chunk < 0:
+            return False
+        out_points[write_begin + step * j] = staged_points[chunk * STAGED_CHUNK + slot]
+    return True
+
+
 # Bit ``index`` of a ``uint32`` bitmask (zeroed by the caller) set from ``bit``, for a launch whose
 # thread ``index`` is slot ``index`` of a dense 1-D domain: on CUDA the converged lanes of a warp
 # hold consecutive slots of one word (lane ``index & 31``, a launch's threads coming in warps of

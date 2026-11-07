@@ -1760,7 +1760,7 @@
  "benchmarks/test_geodesic_walk.py::test_geodesic_path_potpourri3d[sphere_med-ordito-cpu-1]": {
   "counts": {
    "launch": 13,
-   "alloc": 32,
+   "alloc": 33,
    "h2h": 4,
    "readback": 5,
    "scan": 2,
@@ -1770,7 +1770,7 @@
  "benchmarks/test_geodesic_walk.py::test_geodesic_path_potpourri3d[sphere_med-ordito-cpu-64]": {
   "counts": {
    "launch": 20,
-   "alloc": 118,
+   "alloc": 119,
    "h2h": 34,
    "readback": 60,
    "scan": 2,

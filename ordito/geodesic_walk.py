@@ -886,7 +886,13 @@ def _flip_geodesic_paths(
 
     limits = _launch.empty(n_entries, dtype=wp.int32, device=device)
     point_offsets = _launch.zeros(n_entries + 1, dtype=wp.int32, device=device)
-    max_iterations = wp.int32(_FLIP_TRACE_STEPS_PER_FACE * (mesh.faces.size // 3))
+    n_faces = mesh.faces.size // 3
+    max_iterations = _FLIP_TRACE_STEPS_PER_FACE * n_faces
+    # The counting pass stages each traced entry's points, and the writing pass copies them.
+    # Declined (2026-11-07): a warp an entry (``_walk_lanes``, which the walk kernels take): the
+    # entries are few and long, each already alone in its warp, and the two trace kernels read
+    # 2.9 / 3.3 ms against 2.8 / 2.5 ms (64 paths, ``sphere_med``).
+    staged_points, staged_next = _staged_points(n_entries, max_iterations + 2, n_faces, device)
     traced = [
         input_mesh,
         path_offsets,
@@ -895,7 +901,9 @@ def _flip_geodesic_paths(
         entry_tail,
         entry_tip,
         entry_vector,
-        max_iterations,
+        wp.int32(max_iterations),
+        staged_points,
+        staged_next,
     ]
     _launch.launch(
         kernel_flip_geodesics.count_traced_points,
@@ -1838,13 +1846,13 @@ def _staged_points(
     Return the pool a walk kernel's counting pass stages its points in, and its chunk links.
 
     The writing pass then copies each walk from it instead of walking it again, and walks again
-    only one the pool did not hold (``kernels/geodesic_walk.copy_staged``). The walks share the
+    only one the pool did not hold (``kernels/array.copy_staged``). The walks share the
     pool, a long one taking what a short one left, so it is sized for each at about a walk across
     the mesh (``isqrt(n_faces)`` points, at most its ``max_points`` bound), up to
     ``_STAGED_POINTS`` in all, in one allocation. The links' last slot, the chunk counter, starts
     past the walks' own first chunks.
     """
-    chunk = int(kernel_geodesic_walk.STAGED_CHUNK)
+    chunk = int(kernel_array.STAGED_CHUNK)
     per_walk = min(max_points, math.isqrt(n_faces) + chunk)
     n_chunks = min(n_walks * -(-per_walk // chunk), _STAGED_POINTS // chunk)
     staged_next, staged_points = _launch.carve_typed(
