@@ -1570,3 +1570,50 @@ def test_walk_length_epsilon_is_the_host_floor(
         assert epsilon_wp.numpy()[0].tobytes() == host_np.tobytes()
     else:
         assert np.isclose(epsilon_wp.numpy()[0], host_np, rtol=1e-6, atol=0.0)
+
+
+@pytest.mark.parametrize(
+    "walk",
+    ["trace_from_vertex", "trace_from_face", "descend_field", "geodesic_path", "shorten_loop"],
+)
+def test_walks_refuse_an_edge_of_three_faces(walk: str, device: str) -> None:
+    """
+    Not a library comparison: each walk that builds its own twin table refuses a non-manifold mesh.
+
+    The documented ``ValueError`` of ``halfedge_twins``, reached through every entry point: three
+    faces on the edge ``(0, 1)`` leave "the face across it" undefined, so a walk would cross on a
+    table that means nothing.
+    """
+    vertices_np = np.array(
+        [[0, 0, 0], [1, 0, 0], [0.5, 1, 0], [0.5, -1, 0], [0.5, 0, 1]], dtype=np.float32
+    )
+    faces_np = np.array([[0, 1, 2], [1, 0, 3], [0, 1, 4]], dtype=np.int32)
+    vertices, faces = numpy_to_warp(vertices_np, faces_np, device)
+    vertex_0_wp = wp.array([0], dtype=wp.int32, device=device)
+    directions = wp.array([wp.vec3(0.1, 0.1, 0.0)], dtype=wp.vec3, device=device)
+    calls = {
+        "trace_from_vertex": lambda: od.geodesic_walk.trace_from_vertex(
+            vertices, faces, vertex_0_wp, directions
+        ),
+        "trace_from_face": lambda: od.geodesic_walk.trace_from_face(
+            vertices,
+            faces,
+            vertex_0_wp,
+            wp.array([wp.vec3(1.0 / 3.0)], dtype=wp.vec3, device=device),
+            directions,
+        ),
+        "descend_field": lambda: od.geodesic_walk.descend_field(
+            vertices,
+            faces,
+            wp.array(np.arange(5, dtype=np.float64), dtype=wp.float64, device=device),
+            wp.array([4], dtype=wp.int32, device=device),
+        ),
+        "geodesic_path": lambda: od.geodesic_walk.geodesic_path(
+            vertices, faces, vertex_0_wp, wp.array([4], dtype=wp.int32, device=device)
+        ),
+        "shorten_loop": lambda: od.geodesic_walk.shorten_loop(
+            vertices, faces, [wp.array([0, 1, 2], dtype=wp.int32, device=device)]
+        ),
+    }
+    with pytest.raises(ValueError, match="three or more faces"):
+        calls[walk]()

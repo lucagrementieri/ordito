@@ -1112,9 +1112,8 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   same distances, so a frontier or block-local relaxation is open) and the tables' copies to the
   host 2.3 ms. A descent's counting walk is latency-bound at about 2.6 us a point (one path,
   0.6 ms), and is now the descent's whole device time. The staging pool's 12 MiB cap holds about
-  a quarter of 4 096 descents on `dragon`, which then run at par: a larger cap is a memory-for-time
-  trade to decide. `descend_field` validates the twins it builds (`halfedge_twins`, a readback
-  and an undocumented `ValueError` on a non-manifold mesh); skipping it is an API decision.
+  a quarter of 4 096 descents on `dragon`, which then run at par: a larger cap was declined (memory
+  for time, 2026-11-08).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

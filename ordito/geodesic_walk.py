@@ -128,6 +128,12 @@ def trace_from_vertex(
 
     Raises
     ------
+    ValueError
+        When this builds ``twins`` or ``rings`` itself and the mesh has an edge of three or more
+        faces, two faces wound against each other
+        ([`halfedge_twins`][ordito.halfedge.halfedge_twins]' refusals), or a vertex whose faces do
+        not form one fan ([`vertex_one_rings`][ordito.halfedge.vertex_one_rings]' refusal); or when
+        a given ``twins`` is not a twin table for ``faces``.
     RuntimeError
         If ``vertices``, ``faces``, ``start_vertices``, ``directions``, ``twins``, ``rings`` and
         ``frames`` are not all on one device.
@@ -257,6 +263,9 @@ def trace_from_face(
 
     Raises
     ------
+    ValueError
+        When ``twins`` is ``None`` and the mesh has an edge of three or more faces or two faces
+        wound against each other ([`halfedge_twins`][ordito.halfedge.halfedge_twins]' refusals).
     RuntimeError
         If ``vertices``, ``faces``, ``start_faces``, ``start_barycentric``, ``directions`` and
         ``twins`` are not all on one device.
@@ -393,7 +402,9 @@ def descend_field(
     ------
     ValueError
         If ``values`` does not have one entry per vertex, or ``gradients`` is given and does not
-        have one entry per face.
+        have one entry per face; and when ``twins`` is ``None``, if the mesh has an edge of three or
+        more faces or two faces wound against each other
+        ([`halfedge_twins`][ordito.halfedge.halfedge_twins]' refusals).
     RuntimeError
         If ``vertices``, ``faces``, ``values``, ``starts``, ``twins``, ``vertex_faces`` and
         ``gradients`` are not all on one device.
@@ -554,7 +565,7 @@ def geodesic_path(
     ValueError
         If ``method`` is not one of the two; with ``"potpourri3d"``, if an entry of ``source`` or
         ``targets`` is not a vertex index in ``[0, n_vertices)`` or a vertex's faces do not form a
-        single fan. ``"potpourri3d"`` also takes
+        single fan. Both methods take
         [`halfedge_twins`][ordito.halfedge.halfedge_twins]' refusals: an edge of three or more
         faces, or two faces wound against each other.
     RuntimeError
@@ -1377,6 +1388,11 @@ def shorten_loop(
     ------
     TypeError
         If any loop is not a rank-1 ``wp.int32`` array.
+    ValueError
+        When ``rings`` is ``None``: if the mesh has an edge of three or more faces, two faces wound
+        against each other ([`halfedge_twins`][ordito.halfedge.halfedge_twins]' refusals), or a
+        vertex whose faces do not form one fan; or if a given ``twins`` is not a twin table for
+        ``faces``.
     RuntimeError
         If ``vertices``, ``faces``, ``loops``, ``twins`` and ``rings`` are not all on one device.
 
@@ -1491,6 +1507,11 @@ def shorten_loop_with_offsets(
     ------
     TypeError
         If ``loops`` or ``loop_offsets`` is not a rank-1 ``wp.int32`` array.
+    ValueError
+        When ``rings`` is ``None``: if the mesh has an edge of three or more faces, two faces wound
+        against each other ([`halfedge_twins`][ordito.halfedge.halfedge_twins]' refusals), or a
+        vertex whose faces do not form one fan; or if a given ``twins`` is not a twin table for
+        ``faces``.
     RuntimeError
         If ``vertices``, ``faces``, ``loops``, ``loop_offsets``, ``twins`` and ``rings`` are not
         all on one device.
