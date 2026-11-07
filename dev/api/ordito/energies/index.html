@@ -6429,7 +6429,8 @@ wants; a positive value pulls the mesh toward uniform edges of that size instead
                 <p><code>(n_edges, 2)</code> <a class="autorefs autorefs-internal" title="edges_unique" href="../edges/#ordito.edges.edges_unique"><code>edges_unique</code></a> of <code>faces</code>, which depend on
 the connectivity alone: a loop moving the vertices over fixed faces builds them once
 (<a class="autorefs autorefs-internal" title="edges_unique" href="../mesh/#ordito.mesh.Trimesh.edges_unique"><code>Trimesh.edges_unique</code></a>) and each call then skips the
-edge sort. Trusted, not checked.</p>
+edge sort. Its rows must be in <code>edges_unique</code>'s order, which the sum follows, so the loss
+is the same either way, to the last bit. Trusted, not checked.</p>
               </div>
             </td>
             <td>
@@ -6524,7 +6525,12 @@ edge length is <code>(12 + 6 * 2) / 18</code>:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 70</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 65</span>
+<span class="normal"> 66</span>
+<span class="normal"> 67</span>
+<span class="normal"> 68</span>
+<span class="normal"> 69</span>
+<span class="normal"> 70</span>
 <span class="normal"> 71</span>
 <span class="normal"> 72</span>
 <span class="normal"> 73</span>
@@ -6602,8 +6608,7 @@ edge length is <code>(12 + 6 * 2) / 18</code>:</p>
 <span class="normal">145</span>
 <span class="normal">146</span>
 <span class="normal">147</span>
-<span class="normal">148</span>
-<span class="normal">149</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edge_length_loss</span><span class="p">(</span>
+<span class="normal">148</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edge_length_loss</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">target_length</span><span class="p">:</span> <span class="nb">float</span> <span class="o">=</span> <span class="mf">0.0</span><span class="p">,</span>
@@ -6630,7 +6635,8 @@ edge length is <code>(12 + 6 * 2) / 18</code>:</p>
 <span class="sd">        ``(n_edges, 2)`` [`edges_unique`][ordito.edges.edges_unique] of ``faces``, which depend on</span>
 <span class="sd">        the connectivity alone: a loop moving the vertices over fixed faces builds them once</span>
 <span class="sd">        ([`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique]) and each call then skips the</span>
-<span class="sd">        edge sort. Trusted, not checked.</span>
+<span class="sd">        edge sort. Its rows must be in ``edges_unique``'s order, which the sum follows, so the loss</span>
+<span class="sd">        is the same either way, to the last bit. Trusted, not checked.</span>
 
 <span class="sd">    Returns</span>
 <span class="sd">    -------</span>
@@ -6670,9 +6676,12 @@ edge length is <code>(12 + 6 * 2) / 18</code>:</p>
 <span class="sd">    ```</span>
 <span class="sd">    """</span>
     <span class="n">require_same_device</span><span class="p">(</span><span class="n">vertices</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">unique_edges</span><span class="o">=</span><span class="n">unique_edges</span><span class="p">)</span>
-    <span class="c1"># The bound is supplied and the range check skipped: both are host readbacks that</span>
-    <span class="c1"># serialise the pipeline, and this wrapper trusts its connectivity the same way its</span>
-    <span class="c1"># own per-edge kernels below do.</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">wp</span><span class="o">.</span><span class="n">get_device</span><span class="p">(</span><span class="n">device</span><span class="p">)</span><span class="o">.</span><span class="n">is_cpu</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">_edge_length_loss_over_halfedges</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">target_length</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">)</span>
+    <span class="c1"># The CPU sums a length table. The bound is supplied and the range check skipped: both are</span>
+    <span class="c1"># host readbacks that serialise the pipeline, and this wrapper trusts its connectivity as its</span>
+    <span class="c1"># per-edge kernels do.</span>
     <span class="n">lengths</span> <span class="o">=</span> <span class="n">edges_unique_length</span><span class="p">(</span>
         <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">unique_edges</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">vertices</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">validate</span><span class="o">=</span><span class="kc">False</span>
     <span class="p">)</span>
@@ -6872,57 +6881,7 @@ a flat grid has no fold at all:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">152</span>
-<span class="normal">153</span>
-<span class="normal">154</span>
-<span class="normal">155</span>
-<span class="normal">156</span>
-<span class="normal">157</span>
-<span class="normal">158</span>
-<span class="normal">159</span>
-<span class="normal">160</span>
-<span class="normal">161</span>
-<span class="normal">162</span>
-<span class="normal">163</span>
-<span class="normal">164</span>
-<span class="normal">165</span>
-<span class="normal">166</span>
-<span class="normal">167</span>
-<span class="normal">168</span>
-<span class="normal">169</span>
-<span class="normal">170</span>
-<span class="normal">171</span>
-<span class="normal">172</span>
-<span class="normal">173</span>
-<span class="normal">174</span>
-<span class="normal">175</span>
-<span class="normal">176</span>
-<span class="normal">177</span>
-<span class="normal">178</span>
-<span class="normal">179</span>
-<span class="normal">180</span>
-<span class="normal">181</span>
-<span class="normal">182</span>
-<span class="normal">183</span>
-<span class="normal">184</span>
-<span class="normal">185</span>
-<span class="normal">186</span>
-<span class="normal">187</span>
-<span class="normal">188</span>
-<span class="normal">189</span>
-<span class="normal">190</span>
-<span class="normal">191</span>
-<span class="normal">192</span>
-<span class="normal">193</span>
-<span class="normal">194</span>
-<span class="normal">195</span>
-<span class="normal">196</span>
-<span class="normal">197</span>
-<span class="normal">198</span>
-<span class="normal">199</span>
-<span class="normal">200</span>
-<span class="normal">201</span>
-<span class="normal">202</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">202</span>
 <span class="normal">203</span>
 <span class="normal">204</span>
 <span class="normal">205</span>
@@ -6964,7 +6923,57 @@ a flat grid has no fold at all:</p>
 <span class="normal">241</span>
 <span class="normal">242</span>
 <span class="normal">243</span>
-<span class="normal">244</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">normal_consistency_loss</span><span class="p">(</span>
+<span class="normal">244</span>
+<span class="normal">245</span>
+<span class="normal">246</span>
+<span class="normal">247</span>
+<span class="normal">248</span>
+<span class="normal">249</span>
+<span class="normal">250</span>
+<span class="normal">251</span>
+<span class="normal">252</span>
+<span class="normal">253</span>
+<span class="normal">254</span>
+<span class="normal">255</span>
+<span class="normal">256</span>
+<span class="normal">257</span>
+<span class="normal">258</span>
+<span class="normal">259</span>
+<span class="normal">260</span>
+<span class="normal">261</span>
+<span class="normal">262</span>
+<span class="normal">263</span>
+<span class="normal">264</span>
+<span class="normal">265</span>
+<span class="normal">266</span>
+<span class="normal">267</span>
+<span class="normal">268</span>
+<span class="normal">269</span>
+<span class="normal">270</span>
+<span class="normal">271</span>
+<span class="normal">272</span>
+<span class="normal">273</span>
+<span class="normal">274</span>
+<span class="normal">275</span>
+<span class="normal">276</span>
+<span class="normal">277</span>
+<span class="normal">278</span>
+<span class="normal">279</span>
+<span class="normal">280</span>
+<span class="normal">281</span>
+<span class="normal">282</span>
+<span class="normal">283</span>
+<span class="normal">284</span>
+<span class="normal">285</span>
+<span class="normal">286</span>
+<span class="normal">287</span>
+<span class="normal">288</span>
+<span class="normal">289</span>
+<span class="normal">290</span>
+<span class="normal">291</span>
+<span class="normal">292</span>
+<span class="normal">293</span>
+<span class="normal">294</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">normal_consistency_loss</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -7287,57 +7296,7 @@ residual, a length, doubles:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">247</span>
-<span class="normal">248</span>
-<span class="normal">249</span>
-<span class="normal">250</span>
-<span class="normal">251</span>
-<span class="normal">252</span>
-<span class="normal">253</span>
-<span class="normal">254</span>
-<span class="normal">255</span>
-<span class="normal">256</span>
-<span class="normal">257</span>
-<span class="normal">258</span>
-<span class="normal">259</span>
-<span class="normal">260</span>
-<span class="normal">261</span>
-<span class="normal">262</span>
-<span class="normal">263</span>
-<span class="normal">264</span>
-<span class="normal">265</span>
-<span class="normal">266</span>
-<span class="normal">267</span>
-<span class="normal">268</span>
-<span class="normal">269</span>
-<span class="normal">270</span>
-<span class="normal">271</span>
-<span class="normal">272</span>
-<span class="normal">273</span>
-<span class="normal">274</span>
-<span class="normal">275</span>
-<span class="normal">276</span>
-<span class="normal">277</span>
-<span class="normal">278</span>
-<span class="normal">279</span>
-<span class="normal">280</span>
-<span class="normal">281</span>
-<span class="normal">282</span>
-<span class="normal">283</span>
-<span class="normal">284</span>
-<span class="normal">285</span>
-<span class="normal">286</span>
-<span class="normal">287</span>
-<span class="normal">288</span>
-<span class="normal">289</span>
-<span class="normal">290</span>
-<span class="normal">291</span>
-<span class="normal">292</span>
-<span class="normal">293</span>
-<span class="normal">294</span>
-<span class="normal">295</span>
-<span class="normal">296</span>
-<span class="normal">297</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">297</span>
 <span class="normal">298</span>
 <span class="normal">299</span>
 <span class="normal">300</span>
@@ -7448,7 +7407,57 @@ residual, a length, doubles:</p>
 <span class="normal">405</span>
 <span class="normal">406</span>
 <span class="normal">407</span>
-<span class="normal">408</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">laplacian_smoothing_loss</span><span class="p">(</span>
+<span class="normal">408</span>
+<span class="normal">409</span>
+<span class="normal">410</span>
+<span class="normal">411</span>
+<span class="normal">412</span>
+<span class="normal">413</span>
+<span class="normal">414</span>
+<span class="normal">415</span>
+<span class="normal">416</span>
+<span class="normal">417</span>
+<span class="normal">418</span>
+<span class="normal">419</span>
+<span class="normal">420</span>
+<span class="normal">421</span>
+<span class="normal">422</span>
+<span class="normal">423</span>
+<span class="normal">424</span>
+<span class="normal">425</span>
+<span class="normal">426</span>
+<span class="normal">427</span>
+<span class="normal">428</span>
+<span class="normal">429</span>
+<span class="normal">430</span>
+<span class="normal">431</span>
+<span class="normal">432</span>
+<span class="normal">433</span>
+<span class="normal">434</span>
+<span class="normal">435</span>
+<span class="normal">436</span>
+<span class="normal">437</span>
+<span class="normal">438</span>
+<span class="normal">439</span>
+<span class="normal">440</span>
+<span class="normal">441</span>
+<span class="normal">442</span>
+<span class="normal">443</span>
+<span class="normal">444</span>
+<span class="normal">445</span>
+<span class="normal">446</span>
+<span class="normal">447</span>
+<span class="normal">448</span>
+<span class="normal">449</span>
+<span class="normal">450</span>
+<span class="normal">451</span>
+<span class="normal">452</span>
+<span class="normal">453</span>
+<span class="normal">454</span>
+<span class="normal">455</span>
+<span class="normal">456</span>
+<span class="normal">457</span>
+<span class="normal">458</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">laplacian_smoothing_loss</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">method</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="s2">"uniform"</span><span class="p">,</span> <span class="s2">"cot"</span><span class="p">,</span> <span class="s2">"cotcurv"</span><span class="p">]</span> <span class="o">=</span> <span class="s2">"uniform"</span><span class="p">,</span>
@@ -7821,57 +7830,7 @@ scalar type on its device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">425</span>
-<span class="normal">426</span>
-<span class="normal">427</span>
-<span class="normal">428</span>
-<span class="normal">429</span>
-<span class="normal">430</span>
-<span class="normal">431</span>
-<span class="normal">432</span>
-<span class="normal">433</span>
-<span class="normal">434</span>
-<span class="normal">435</span>
-<span class="normal">436</span>
-<span class="normal">437</span>
-<span class="normal">438</span>
-<span class="normal">439</span>
-<span class="normal">440</span>
-<span class="normal">441</span>
-<span class="normal">442</span>
-<span class="normal">443</span>
-<span class="normal">444</span>
-<span class="normal">445</span>
-<span class="normal">446</span>
-<span class="normal">447</span>
-<span class="normal">448</span>
-<span class="normal">449</span>
-<span class="normal">450</span>
-<span class="normal">451</span>
-<span class="normal">452</span>
-<span class="normal">453</span>
-<span class="normal">454</span>
-<span class="normal">455</span>
-<span class="normal">456</span>
-<span class="normal">457</span>
-<span class="normal">458</span>
-<span class="normal">459</span>
-<span class="normal">460</span>
-<span class="normal">461</span>
-<span class="normal">462</span>
-<span class="normal">463</span>
-<span class="normal">464</span>
-<span class="normal">465</span>
-<span class="normal">466</span>
-<span class="normal">467</span>
-<span class="normal">468</span>
-<span class="normal">469</span>
-<span class="normal">470</span>
-<span class="normal">471</span>
-<span class="normal">472</span>
-<span class="normal">473</span>
-<span class="normal">474</span>
-<span class="normal">475</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">475</span>
 <span class="normal">476</span>
 <span class="normal">477</span>
 <span class="normal">478</span>
@@ -7936,7 +7895,57 @@ scalar type on its device.</p>
 <span class="normal">537</span>
 <span class="normal">538</span>
 <span class="normal">539</span>
-<span class="normal">540</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">k_harmonic</span><span class="p">(</span>
+<span class="normal">540</span>
+<span class="normal">541</span>
+<span class="normal">542</span>
+<span class="normal">543</span>
+<span class="normal">544</span>
+<span class="normal">545</span>
+<span class="normal">546</span>
+<span class="normal">547</span>
+<span class="normal">548</span>
+<span class="normal">549</span>
+<span class="normal">550</span>
+<span class="normal">551</span>
+<span class="normal">552</span>
+<span class="normal">553</span>
+<span class="normal">554</span>
+<span class="normal">555</span>
+<span class="normal">556</span>
+<span class="normal">557</span>
+<span class="normal">558</span>
+<span class="normal">559</span>
+<span class="normal">560</span>
+<span class="normal">561</span>
+<span class="normal">562</span>
+<span class="normal">563</span>
+<span class="normal">564</span>
+<span class="normal">565</span>
+<span class="normal">566</span>
+<span class="normal">567</span>
+<span class="normal">568</span>
+<span class="normal">569</span>
+<span class="normal">570</span>
+<span class="normal">571</span>
+<span class="normal">572</span>
+<span class="normal">573</span>
+<span class="normal">574</span>
+<span class="normal">575</span>
+<span class="normal">576</span>
+<span class="normal">577</span>
+<span class="normal">578</span>
+<span class="normal">579</span>
+<span class="normal">580</span>
+<span class="normal">581</span>
+<span class="normal">582</span>
+<span class="normal">583</span>
+<span class="normal">584</span>
+<span class="normal">585</span>
+<span class="normal">586</span>
+<span class="normal">587</span>
+<span class="normal">588</span>
+<span class="normal">589</span>
+<span class="normal">590</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">k_harmonic</span><span class="p">(</span>
     <span class="n">laplacian</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Float</span><span class="p">],</span> <span class="n">mass</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdFloat</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="n">k</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">2</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Float</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8086,12 +8095,12 @@ the clamped biharmonic operator
 (<a class="autorefs autorefs-internal" title="k_harmonic" href="./#ordito.energies.k_harmonic"><code>k_harmonic</code></a> at <code>k == 2</code>) produces —
 linear functions are exactly in its null space, boundary or not. <code>M</code> is the Voronoi lumped
 mass with boundary degrees of freedom killed, per the reference.</p>
-<p>Rather than materializing the sparse <code>(9 n_faces, n_vertices)</code> stacked Hessian <code>H</code>, the
-product is contracted analytically over its nine component pairs and assembled in one triplet
-pass per vertex: <code>Q_ij = sum_k M_k^-1 sum_{f,g ni k} A_f A_g (g_fk . g_gk)(g_fi . g_gj)</code>
-with <code>g_fc</code> corner <code>c</code>'s hat-function gradient in face <code>f</code>. The per-vertex triplet count
-is <code>9 * valence^2</code>, so cost is quadratic in valence. A degenerate face contributes nothing
-(igl emits NaN there).</p>
+<p>Rather than materializing the sparse <code>(9 n_faces, n_vertices)</code> stacked Hessian <code>H</code> and
+multiplying, each entry is formed from <code>H</code>'s 3x3 blocks
+<code>H_kc = sum_{f ni k, c} A_f g_fk g_fc^T</code>, with <code>g_fc</code> corner <code>c</code>'s hat-function gradient
+in face <code>f</code>: <code>Q_ij = sum_k M_k^-1 &lt;H_ki, H_kj&gt;</code> (Frobenius) over the vertices <code>k</code> adjacent
+to both. A vertex couples every pair of its neighbours, so cost is quadratic in valence. A
+degenerate face contributes nothing (igl emits NaN there).</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -8288,33 +8297,7 @@ biharmonic operator penalizes it at the boundary:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">637</span>
-<span class="normal">638</span>
-<span class="normal">639</span>
-<span class="normal">640</span>
-<span class="normal">641</span>
-<span class="normal">642</span>
-<span class="normal">643</span>
-<span class="normal">644</span>
-<span class="normal">645</span>
-<span class="normal">646</span>
-<span class="normal">647</span>
-<span class="normal">648</span>
-<span class="normal">649</span>
-<span class="normal">650</span>
-<span class="normal">651</span>
-<span class="normal">652</span>
-<span class="normal">653</span>
-<span class="normal">654</span>
-<span class="normal">655</span>
-<span class="normal">656</span>
-<span class="normal">657</span>
-<span class="normal">658</span>
-<span class="normal">659</span>
-<span class="normal">660</span>
-<span class="normal">661</span>
-<span class="normal">662</span>
-<span class="normal">663</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">663</span>
 <span class="normal">664</span>
 <span class="normal">665</span>
 <span class="normal">666</span>
@@ -8480,7 +8463,62 @@ biharmonic operator penalizes it at the boundary:</p>
 <span class="normal">826</span>
 <span class="normal">827</span>
 <span class="normal">828</span>
-<span class="normal">829</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hessian_energy</span><span class="p">(</span>
+<span class="normal">829</span>
+<span class="normal">830</span>
+<span class="normal">831</span>
+<span class="normal">832</span>
+<span class="normal">833</span>
+<span class="normal">834</span>
+<span class="normal">835</span>
+<span class="normal">836</span>
+<span class="normal">837</span>
+<span class="normal">838</span>
+<span class="normal">839</span>
+<span class="normal">840</span>
+<span class="normal">841</span>
+<span class="normal">842</span>
+<span class="normal">843</span>
+<span class="normal">844</span>
+<span class="normal">845</span>
+<span class="normal">846</span>
+<span class="normal">847</span>
+<span class="normal">848</span>
+<span class="normal">849</span>
+<span class="normal">850</span>
+<span class="normal">851</span>
+<span class="normal">852</span>
+<span class="normal">853</span>
+<span class="normal">854</span>
+<span class="normal">855</span>
+<span class="normal">856</span>
+<span class="normal">857</span>
+<span class="normal">858</span>
+<span class="normal">859</span>
+<span class="normal">860</span>
+<span class="normal">861</span>
+<span class="normal">862</span>
+<span class="normal">863</span>
+<span class="normal">864</span>
+<span class="normal">865</span>
+<span class="normal">866</span>
+<span class="normal">867</span>
+<span class="normal">868</span>
+<span class="normal">869</span>
+<span class="normal">870</span>
+<span class="normal">871</span>
+<span class="normal">872</span>
+<span class="normal">873</span>
+<span class="normal">874</span>
+<span class="normal">875</span>
+<span class="normal">876</span>
+<span class="normal">877</span>
+<span class="normal">878</span>
+<span class="normal">879</span>
+<span class="normal">880</span>
+<span class="normal">881</span>
+<span class="normal">882</span>
+<span class="normal">883</span>
+<span class="normal">884</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">hessian_energy</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span>
@@ -8498,12 +8536,12 @@ biharmonic operator penalizes it at the boundary:</p>
 <span class="sd">    linear functions are exactly in its null space, boundary or not. ``M`` is the Voronoi lumped</span>
 <span class="sd">    mass with boundary degrees of freedom killed, per the reference.</span>
 
-<span class="sd">    Rather than materializing the sparse ``(9 n_faces, n_vertices)`` stacked Hessian ``H``, the</span>
-<span class="sd">    product is contracted analytically over its nine component pairs and assembled in one triplet</span>
-<span class="sd">    pass per vertex: ``Q_ij = sum_k M_k^-1 sum_{f,g ni k} A_f A_g (g_fk . g_gk)(g_fi . g_gj)``</span>
-<span class="sd">    with ``g_fc`` corner ``c``'s hat-function gradient in face ``f``. The per-vertex triplet count</span>
-<span class="sd">    is ``9 * valence^2``, so cost is quadratic in valence. A degenerate face contributes nothing</span>
-<span class="sd">    (igl emits NaN there).</span>
+<span class="sd">    Rather than materializing the sparse ``(9 n_faces, n_vertices)`` stacked Hessian ``H`` and</span>
+<span class="sd">    multiplying, each entry is formed from ``H``'s 3x3 blocks</span>
+<span class="sd">    ``H_kc = sum_{f ni k, c} A_f g_fk g_fc^T``, with ``g_fc`` corner ``c``'s hat-function gradient</span>
+<span class="sd">    in face ``f``: ``Q_ij = sum_k M_k^-1 &lt;H_ki, H_kj&gt;`` (Frobenius) over the vertices ``k`` adjacent</span>
+<span class="sd">    to both. A vertex couples every pair of its neighbours, so cost is quadratic in valence. A</span>
+<span class="sd">    degenerate face contributes nothing (igl emits NaN there).</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -8578,14 +8616,10 @@ biharmonic operator penalizes it at the boundary:</p>
     <span class="k">if</span> <span class="n">n_faces</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">empty_square_bsr</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
 
-    <span class="c1"># The per-face gradients and areas and the per-vertex inverse mass, each written whole before</span>
-    <span class="c1"># it is read: one allocation.</span>
-    <span class="n">gradient_entries</span><span class="p">,</span> <span class="n">areas</span><span class="p">,</span> <span class="n">inverse_mass</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span>
-        <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="p">(</span><span class="mi">9</span> <span class="o">*</span> <span class="n">n_faces</span><span class="p">,</span> <span class="n">n_faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">),</span> <span class="n">device</span><span class="p">,</span> <span class="n">zeroed</span><span class="o">=</span><span class="kc">False</span>
-    <span class="p">)</span>
-    <span class="n">gradients</span> <span class="o">=</span> <span class="n">gradient_entries</span><span class="o">.</span><span class="n">reshape</span><span class="p">((</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n_faces</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3d</span><span class="p">)</span>
-    <span class="c1"># The triplets below are emitted in the vertex-face rows' order and summed in that order, so</span>
-    <span class="c1"># a reproducible result needs ordered rows as well as an ordered mass sum: under</span>
+    <span class="c1"># The per-vertex inverse mass, written whole by the count pass before it is read.</span>
+    <span class="n">inverse_mass</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># The blocks below sum over the vertex-face rows in their order, so a reproducible result</span>
+    <span class="c1"># needs ordered rows as well as an ordered mass sum: under</span>
     <span class="c1"># ``ordito.config``'s deterministic mode the kernel writes each corner's share and one sort of</span>
     <span class="c1"># the corners gives both; otherwise it adds the shares atomically.</span>
     <span class="n">deterministic</span> <span class="o">=</span> <span class="n">is_deterministic</span><span class="p">()</span>
@@ -8596,7 +8630,7 @@ biharmonic operator penalizes it at the boundary:</p>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_energies</span><span class="o">.</span><span class="n">hessian_face_terms</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">gradients</span><span class="p">,</span> <span class="n">areas</span><span class="p">,</span> <span class="n">mass</span><span class="p">,</span> <span class="n">corner_mass</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">kernel_energies</span><span class="o">.</span><span class="n">HESSIAN_FACE_MASS</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="kc">None</span><span class="p">,</span> <span class="n">mass</span><span class="p">,</span> <span class="n">corner_mass</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
     <span class="n">sorted_rows</span> <span class="o">=</span> <span class="kc">None</span>
@@ -8611,6 +8645,11 @@ biharmonic operator penalizes it at the boundary:</p>
         <span class="n">vf_indices</span><span class="p">,</span> <span class="n">vf_offsets</span> <span class="o">=</span> <span class="n">sorted_rows</span>
     <span class="k">else</span><span class="p">:</span>
         <span class="n">vf_indices</span><span class="p">,</span> <span class="n">vf_offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">vertex_face_adjacency</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">)</span>
+    <span class="c1"># The closed one-ring is each vertex's star: its pairs are the pattern's keys, and it indexes</span>
+    <span class="c1"># the blocks ``M_kr`` the values are formed from. Its sort buffers go at once.</span>
+    <span class="n">ring</span> <span class="o">=</span> <span class="n">mesh_operator_pattern</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">)</span>
+    <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_columns</span> <span class="o">=</span> <span class="n">ring</span><span class="o">.</span><span class="n">offsets</span><span class="p">,</span> <span class="n">ring</span><span class="o">.</span><span class="n">columns</span>
+    <span class="k">del</span> <span class="n">ring</span>
     <span class="c1"># Each vertex's count lands in the offsets' buffer past its leading zero, scanned in place;</span>
     <span class="c1"># the trailing slot flags a scan that wrapped (``_common.scan_count_checked``).</span>
     <span class="n">segment_offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_vertices</span> <span class="o">+</span> <span class="mi">2</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
@@ -8618,25 +8657,28 @@ biharmonic operator penalizes it at the boundary:</p>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_energies</span><span class="o">.</span><span class="n">hessian_energy_counts</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">vf_offsets</span><span class="p">,</span> <span class="n">vf_indices</span><span class="p">,</span> <span class="n">mass</span><span class="p">,</span> <span class="n">inverse_mass</span><span class="p">,</span> <span class="n">counts</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">vf_offsets</span><span class="p">,</span> <span class="n">vf_indices</span><span class="p">,</span> <span class="n">mass</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">inverse_mass</span><span class="p">,</span> <span class="n">counts</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
+    <span class="c1"># The mass lives on as its inverse.</span>
+    <span class="k">del</span> <span class="n">mass</span><span class="p">,</span> <span class="n">corner_mass</span>
     <span class="c1"># The pattern first: one key per pair of an active vertex's star vertices, sorted into the</span>
-    <span class="c1"># rows; the values are then gathered a row a thread in the order a triplet sort would have</span>
-    <span class="c1"># summed them (``kernels/energies.hessian_energy_rows``), so no triplet is stored.</span>
+    <span class="c1"># rows; the values are then formed an entry a thread from the stacked Hessian's 3x3 blocks</span>
+    <span class="c1"># (``kernels/energies.hessian_energy_values``), so no triplet is stored.</span>
     <span class="n">n_keys</span> <span class="o">=</span> <span class="n">scan_count_checked</span><span class="p">(</span><span class="n">segment_offsets</span><span class="p">,</span> <span class="s2">"the operator"</span><span class="p">)</span>
     <span class="n">keys</span><span class="p">,</span> <span class="n">order</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_key_buffers</span><span class="p">(</span><span class="n">n_keys</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_keys</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="c1"># A thread a key on CUDA, a vertex on the CPU (``kernels/energies.hessian_energy_keys``).</span>
+        <span class="n">rows</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">get_device</span><span class="p">(</span><span class="n">device</span><span class="p">)</span><span class="o">.</span><span class="n">is_cpu</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_energies</span><span class="o">.</span><span class="n">hessian_energy_keys</span><span class="p">,</span>
-            <span class="n">dim</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">n_vertices</span> <span class="k">if</span> <span class="n">rows</span> <span class="k">else</span> <span class="n">n_keys</span><span class="p">,</span>
             <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
-                <span class="n">faces</span><span class="p">,</span>
-                <span class="n">vf_offsets</span><span class="p">,</span>
-                <span class="n">vf_indices</span><span class="p">,</span>
-                <span class="n">inverse_mass</span><span class="p">,</span>
-                <span class="n">segment_offsets</span><span class="p">,</span>
+                <span class="n">ring_offsets</span><span class="p">,</span>
+                <span class="n">ring_columns</span><span class="p">,</span>
+                <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">segment_offsets</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">n_vertices</span> <span class="o">+</span> <span class="mi">1</span><span class="p">),</span>
                 <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">),</span>
+                <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">rows</span><span class="p">),</span>
                 <span class="n">keys</span><span class="p">,</span>
                 <span class="n">order</span><span class="p">,</span>
             <span class="p">],</span>
@@ -8650,15 +8692,34 @@ biharmonic operator penalizes it at the boundary:</p>
     <span class="n">columns</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_entries</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_entries</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">wp</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">columns</span><span class="p">,</span> <span class="n">key_columns</span><span class="p">,</span> <span class="n">count</span><span class="o">=</span><span class="n">n_entries</span><span class="p">)</span>
-    <span class="c1"># The key buffers and the key-sized columns go before the values arrive.</span>
+    <span class="c1"># The key buffers and the key-sized columns go before the blocks arrive.</span>
     <span class="k">del</span> <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">key_columns</span><span class="p">,</span> <span class="n">_starts</span>
-    <span class="c1"># ``-0.0``: the identity of floating-point addition, so each entry is its contributions' sum</span>
-    <span class="c1"># from the first one on.</span>
-    <span class="n">values</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">n_entries</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">values</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_entries</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_entries</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="c1"># The per-face gradients and areas, written whole: one allocation, after the sort.</span>
+        <span class="n">gradient_entries</span><span class="p">,</span> <span class="n">areas</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="p">(</span><span class="mi">9</span> <span class="o">*</span> <span class="n">n_faces</span><span class="p">,</span> <span class="n">n_faces</span><span class="p">),</span> <span class="n">device</span><span class="p">,</span> <span class="n">zeroed</span><span class="o">=</span><span class="kc">False</span>
+        <span class="p">)</span>
+        <span class="n">gradients</span> <span class="o">=</span> <span class="n">gradient_entries</span><span class="o">.</span><span class="n">reshape</span><span class="p">((</span><span class="mi">3</span> <span class="o">*</span> <span class="n">n_faces</span><span class="p">,</span> <span class="mi">3</span><span class="p">))</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3d</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_energies</span><span class="o">.</span><span class="n">HESSIAN_ENERGY_ROWS</span><span class="p">[</span><span class="n">dtype</span><span class="p">],</span>
-            <span class="n">dim</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span>
+            <span class="n">kernel_energies</span><span class="o">.</span><span class="n">hessian_face_terms</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
+                <span class="n">vertices</span><span class="p">,</span>
+                <span class="n">faces</span><span class="p">,</span>
+                <span class="n">kernel_energies</span><span class="o">.</span><span class="n">HESSIAN_FACE_GRADIENTS</span><span class="p">,</span>
+                <span class="n">gradients</span><span class="p">,</span>
+                <span class="n">areas</span><span class="p">,</span>
+                <span class="kc">None</span><span class="p">,</span>
+                <span class="kc">None</span><span class="p">,</span>
+            <span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="c1"># An entry ``(i, j)`` pairs the blocks of the vertices both rings hold.</span>
+        <span class="n">blocks</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">ring_columns</span><span class="o">.</span><span class="n">size</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">mat33d</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_energies</span><span class="o">.</span><span class="n">hessian_energy_blocks</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">ring_columns</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
             <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
                 <span class="n">faces</span><span class="p">,</span>
                 <span class="n">vf_offsets</span><span class="p">,</span>
@@ -8666,10 +8727,16 @@ biharmonic operator penalizes it at the boundary:</p>
                 <span class="n">gradients</span><span class="p">,</span>
                 <span class="n">areas</span><span class="p">,</span>
                 <span class="n">inverse_mass</span><span class="p">,</span>
-                <span class="n">offsets</span><span class="p">,</span>
-                <span class="n">columns</span><span class="p">,</span>
-                <span class="n">values</span><span class="p">,</span>
+                <span class="n">ring_offsets</span><span class="p">,</span>
+                <span class="n">ring_columns</span><span class="p">,</span>
+                <span class="n">blocks</span><span class="p">,</span>
             <span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_energies</span><span class="o">.</span><span class="n">HESSIAN_ENERGY_VALUES</span><span class="p">[</span><span class="n">dtype</span><span class="p">],</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">n_entries</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">inverse_mass</span><span class="p">,</span> <span class="n">ring_offsets</span><span class="p">,</span> <span class="n">ring_columns</span><span class="p">,</span> <span class="n">blocks</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">values</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
     <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">bsr_from_csr</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">values</span><span class="p">,</span> <span class="n">nnz</span><span class="o">=</span><span class="n">n_entries</span><span class="p">)</span>
@@ -8927,62 +8994,7 @@ device.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 832</span>
-<span class="normal"> 833</span>
-<span class="normal"> 834</span>
-<span class="normal"> 835</span>
-<span class="normal"> 836</span>
-<span class="normal"> 837</span>
-<span class="normal"> 838</span>
-<span class="normal"> 839</span>
-<span class="normal"> 840</span>
-<span class="normal"> 841</span>
-<span class="normal"> 842</span>
-<span class="normal"> 843</span>
-<span class="normal"> 844</span>
-<span class="normal"> 845</span>
-<span class="normal"> 846</span>
-<span class="normal"> 847</span>
-<span class="normal"> 848</span>
-<span class="normal"> 849</span>
-<span class="normal"> 850</span>
-<span class="normal"> 851</span>
-<span class="normal"> 852</span>
-<span class="normal"> 853</span>
-<span class="normal"> 854</span>
-<span class="normal"> 855</span>
-<span class="normal"> 856</span>
-<span class="normal"> 857</span>
-<span class="normal"> 858</span>
-<span class="normal"> 859</span>
-<span class="normal"> 860</span>
-<span class="normal"> 861</span>
-<span class="normal"> 862</span>
-<span class="normal"> 863</span>
-<span class="normal"> 864</span>
-<span class="normal"> 865</span>
-<span class="normal"> 866</span>
-<span class="normal"> 867</span>
-<span class="normal"> 868</span>
-<span class="normal"> 869</span>
-<span class="normal"> 870</span>
-<span class="normal"> 871</span>
-<span class="normal"> 872</span>
-<span class="normal"> 873</span>
-<span class="normal"> 874</span>
-<span class="normal"> 875</span>
-<span class="normal"> 876</span>
-<span class="normal"> 877</span>
-<span class="normal"> 878</span>
-<span class="normal"> 879</span>
-<span class="normal"> 880</span>
-<span class="normal"> 881</span>
-<span class="normal"> 882</span>
-<span class="normal"> 883</span>
-<span class="normal"> 884</span>
-<span class="normal"> 885</span>
-<span class="normal"> 886</span>
-<span class="normal"> 887</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 887</span>
 <span class="normal"> 888</span>
 <span class="normal"> 889</span>
 <span class="normal"> 890</span>
@@ -9197,7 +9209,12 @@ device.</p>
 <span class="normal">1099</span>
 <span class="normal">1100</span>
 <span class="normal">1101</span>
-<span class="normal">1102</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">curved_hessian_energy</span><span class="p">(</span>
+<span class="normal">1102</span>
+<span class="normal">1103</span>
+<span class="normal">1104</span>
+<span class="normal">1105</span>
+<span class="normal">1106</span>
+<span class="normal">1107</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">curved_hessian_energy</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span><span class="p">[</span><span class="n">odt</span><span class="o">.</span><span class="n">Block</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span>
@@ -9317,9 +9334,8 @@ device.</p>
     <span class="p">)</span>
     <span class="c1"># Each unique edge's two halfedges are recorded by the same face pass.</span>
     <span class="n">edge_halfedges</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="n">n_edges</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="c1"># Each unique edge's halfedge count; the edge-manifold flag of the launch after, and the long</span>
-    <span class="c1"># fans' key count (``kernels/energies.curved_long_ring_count``) beside it for the same read.</span>
-    <span class="n">cursor</span><span class="p">,</span> <span class="n">flags</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="p">(</span><span class="n">n_edges</span><span class="p">,</span> <span class="mi">2</span><span class="p">),</span> <span class="n">device</span><span class="p">,</span> <span class="n">zeroed</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="c1"># Each unique edge's halfedge count, and the edge-manifold flag of the launch after.</span>
+    <span class="n">cursor</span><span class="p">,</span> <span class="n">flags</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="p">(</span><span class="n">n_edges</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span> <span class="n">device</span><span class="p">,</span> <span class="n">zeroed</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_energies</span><span class="o">.</span><span class="n">internal_angles_and_sums</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
@@ -9327,19 +9343,14 @@ device.</p>
         <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">angles</span><span class="p">,</span> <span class="n">angle_sums</span><span class="p">,</span> <span class="n">edge_halfedges</span><span class="p">,</span> <span class="n">mass</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="c1"># Under the deterministic mode the angle sums' sort gives the vertex-face rows too, the ones</span>
-    <span class="c1"># ``vertex_face_adjacency`` would sort the same face buffer again for.</span>
-    <span class="n">sorted_rows</span> <span class="o">=</span> <span class="kc">None</span>
     <span class="k">if</span> <span class="n">deterministic</span><span class="p">:</span>
-        <span class="n">angle_sums</span><span class="p">,</span> <span class="n">sorted_rows</span> <span class="o">=</span> <span class="n">_sorted_vertex_corner_sums</span><span class="p">(</span>
-            <span class="n">faces</span><span class="p">,</span> <span class="n">angles</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">with_rows</span><span class="o">=</span><span class="kc">True</span>
-        <span class="p">)</span>
+        <span class="n">angle_sums</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">_sorted_vertex_corner_sums</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">angles</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">)</span>
     <span class="c1"># ``cursor`` now counts each unique edge's halfedges, which settles the topology the rest</span>
     <span class="c1"># needs: an edge on three or more faces fails the edge-manifold precondition (flagged by the</span>
     <span class="c1"># launch below), and an edge on one is a boundary edge.</span>
     <span class="c1"># igl::cr_vector_curvature_correction's kappa scaling, ``angle_defect / angle_sum``, is zero</span>
     <span class="c1"># on the boundary (curvature is only corrected at interior vertices) and for a non-positive</span>
-    <span class="c1"># angle sum: zeroing the boundary's *sums* gives that zero where the row kernel forms the</span>
+    <span class="c1"># angle sum: zeroing the boundary's *sums* gives that zero where the block kernel forms the</span>
     <span class="c1"># kappa as it reads it, and it forms each edge's inverse mass likewise.</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_energies</span><span class="o">.</span><span class="n">zero_at_boundary_edges</span><span class="p">,</span>
@@ -9348,21 +9359,8 @@ device.</p>
         <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">angle_sums</span><span class="p">,</span> <span class="n">flags</span><span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="k">if</span> <span class="n">sorted_rows</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">vf_indices</span><span class="p">,</span> <span class="n">vf_offsets</span> <span class="o">=</span> <span class="n">sorted_rows</span>
-    <span class="k">else</span><span class="p">:</span>
-        <span class="n">vf_indices</span><span class="p">,</span> <span class="n">vf_offsets</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">vertex_face_adjacency</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_energies</span><span class="o">.</span><span class="n">curved_long_ring_count</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vf_offsets</span><span class="p">],</span>
-        <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">flags</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="c1"># The validation raises on the host, so its flag is read back, and the long fans' key count</span>
-    <span class="c1"># sizes their face lists.</span>
-    <span class="n">nonmanifold</span><span class="p">,</span> <span class="n">n_long_keys</span> <span class="o">=</span> <span class="n">read_values</span><span class="p">(</span><span class="n">flags</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
-    <span class="k">if</span> <span class="nb">int</span><span class="p">(</span><span class="n">nonmanifold</span><span class="p">)</span> <span class="o">!=</span> <span class="mi">0</span><span class="p">:</span>
+    <span class="c1"># The validation raises on the host, so its flag is read back.</span>
+    <span class="k">if</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">flags</span><span class="p">,</span> <span class="mi">0</span><span class="p">))</span> <span class="o">!=</span> <span class="mi">0</span><span class="p">:</span>
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
             <span class="s2">"mesh must be edge-manifold (every edge shared by at most two faces); the "</span>
             <span class="s2">"Crouzeix-Raviart discretization curved_hessian_energy is built on is undefined "</span>
@@ -9380,17 +9378,26 @@ device.</p>
     <span class="p">)</span>
 
     <span class="c1"># The pattern first: 36 keys a face, the pairs of the vertices its edges' gradient rows touch,</span>
-    <span class="c1"># sorted into the rows; the values are then gathered a row a thread in the order a triplet</span>
-    <span class="c1"># sort would have summed them (``kernels/energies.curved_hessian_rows``).</span>
+    <span class="c1"># sorted into the rows; each face's 6x6 block then lands in the sorted keys' lower half, which</span>
+    <span class="c1"># nothing reads again, at its keys' payloads, and an entry sums its run of them.</span>
     <span class="n">n_keys</span> <span class="o">=</span> <span class="mi">36</span> <span class="o">*</span> <span class="n">n_faces</span>
     <span class="n">keys</span><span class="p">,</span> <span class="n">order</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_key_buffers</span><span class="p">(</span><span class="n">n_keys</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel_energies</span><span class="o">.</span><span class="n">curved_hessian_keys</span><span class="p">,</span>
         <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">inverse</span><span class="p">,</span> <span class="n">vertex_slots</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">),</span> <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">],</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
+            <span class="n">vertices</span><span class="p">,</span>
+            <span class="n">faces</span><span class="p">,</span>
+            <span class="n">inverse</span><span class="p">,</span>
+            <span class="n">edge_halfedges</span><span class="p">,</span>
+            <span class="n">vertex_slots</span><span class="p">,</span>
+            <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">),</span>
+            <span class="n">keys</span><span class="p">,</span>
+            <span class="n">order</span><span class="p">,</span>
+        <span class="p">],</span>
         <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
     <span class="p">)</span>
-    <span class="n">offsets</span><span class="p">,</span> <span class="n">key_columns</span><span class="p">,</span> <span class="n">_starts</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_from_keys</span><span class="p">(</span>
+    <span class="n">offsets</span><span class="p">,</span> <span class="n">key_columns</span><span class="p">,</span> <span class="n">starts</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_from_keys</span><span class="p">(</span>
         <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">n_keys</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_vertices</span>
     <span class="p">)</span>
     <span class="c1"># Host readback: the entry count is known only on the device, and it sizes the operator.</span>
@@ -9398,75 +9405,35 @@ device.</p>
     <span class="n">columns</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_entries</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_entries</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
         <span class="n">wp</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">columns</span><span class="p">,</span> <span class="n">key_columns</span><span class="p">,</span> <span class="n">count</span><span class="o">=</span><span class="n">n_entries</span><span class="p">)</span>
-    <span class="c1"># The key buffers and the key-sized columns go before the values arrive.</span>
-    <span class="k">del</span> <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">key_columns</span><span class="p">,</span> <span class="n">_starts</span>
-    <span class="c1"># A long fan's row walks its faces sorted (``kernels/energies.CURVED_LONG_RING_FACES``); no</span>
-    <span class="c1"># list is built when no fan is long.</span>
-    <span class="n">long_offsets</span> <span class="o">=</span> <span class="n">long_faces</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">n_long_keys</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="n">long_keys</span><span class="p">,</span> <span class="n">long_order</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_key_buffers</span><span class="p">(</span><span class="nb">int</span><span class="p">(</span><span class="n">n_long_keys</span><span class="p">),</span> <span class="n">device</span><span class="p">)</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
-            <span class="n">kernel_energies</span><span class="o">.</span><span class="n">curved_long_ring_keys</span><span class="p">,</span>
-            <span class="n">dim</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
-                <span class="n">inverse</span><span class="p">,</span>
-                <span class="n">edge_halfedges</span><span class="p">,</span>
-                <span class="n">vf_offsets</span><span class="p">,</span>
-                <span class="n">vf_indices</span><span class="p">,</span>
-                <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">),</span>
-                <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n_faces</span><span class="p">),</span>
-                <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
-            <span class="p">],</span>
-            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">long_keys</span><span class="p">,</span> <span class="n">long_order</span><span class="p">],</span>
-            <span class="n">block_dim</span><span class="o">=</span><span class="mi">256</span><span class="p">,</span>
-            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-        <span class="p">)</span>
-        <span class="n">long_offsets</span><span class="p">,</span> <span class="n">long_faces</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_from_keys</span><span class="p">(</span>
-            <span class="n">long_keys</span><span class="p">,</span> <span class="n">long_order</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">n_long_keys</span><span class="p">),</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_faces</span>
-        <span class="p">)</span>
-        <span class="k">del</span> <span class="n">long_keys</span><span class="p">,</span> <span class="n">long_order</span>
-    <span class="c1"># ``-0.0``: the identity of floating-point addition, so each entry is its contributions' sum</span>
-    <span class="c1"># from the first one on.</span>
-    <span class="n">values</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">n_entries</span><span class="p">,</span> <span class="o">-</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># The key-sized columns go before the values arrive; the keys stay, holding the blocks.</span>
+    <span class="k">del</span> <span class="n">key_columns</span>
+    <span class="n">values</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_entries</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">dtype</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">n_entries</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="c1"># A long fan's row a thread an entry (``kernels/energies.curved_hessian_long_rows``) and</span>
-        <span class="c1"># its long columns a block a row (``curved_hessian_long_columns``); every other row a</span>
-        <span class="c1"># thread a row.</span>
-        <span class="n">rows</span> <span class="o">=</span> <span class="p">[</span>
-            <span class="n">vertices</span><span class="p">,</span>
-            <span class="n">faces</span><span class="p">,</span>
-            <span class="n">inverse</span><span class="p">,</span>
-            <span class="n">angles</span><span class="p">,</span>
-            <span class="n">angle_sums</span><span class="p">,</span>
-            <span class="n">mass</span><span class="p">,</span>
-            <span class="n">edge_halfedges</span><span class="p">,</span>
-            <span class="n">vertex_slots</span><span class="p">,</span>
-            <span class="n">par</span><span class="p">,</span>
-            <span class="n">perp</span><span class="p">,</span>
-            <span class="n">vf_offsets</span><span class="p">,</span>
-            <span class="n">vf_indices</span><span class="p">,</span>
-        <span class="p">]</span>
+        <span class="n">blocks</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">alias</span><span class="p">(</span><span class="n">keys</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">n_keys</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_energies</span><span class="o">.</span><span class="n">CURVED_HESSIAN_ROWS</span><span class="p">[</span><span class="n">dtype</span><span class="p">],</span>
-            <span class="n">dim</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="o">*</span><span class="n">rows</span><span class="p">,</span> <span class="n">long_offsets</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">values</span><span class="p">],</span>
+            <span class="n">kernel_energies</span><span class="o">.</span><span class="n">curved_hessian_face_blocks</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">n_faces</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
+                <span class="n">vertices</span><span class="p">,</span>
+                <span class="n">faces</span><span class="p">,</span>
+                <span class="n">inverse</span><span class="p">,</span>
+                <span class="n">angles</span><span class="p">,</span>
+                <span class="n">angle_sums</span><span class="p">,</span>
+                <span class="n">mass</span><span class="p">,</span>
+                <span class="n">edge_halfedges</span><span class="p">,</span>
+                <span class="n">par</span><span class="p">,</span>
+                <span class="n">perp</span><span class="p">,</span>
+                <span class="n">vertex_slots</span><span class="p">,</span>
+                <span class="n">blocks</span><span class="p">,</span>
+            <span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
-        <span class="k">if</span> <span class="n">n_long_keys</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-            <span class="n">long_inputs</span> <span class="o">=</span> <span class="p">[</span><span class="o">*</span><span class="n">rows</span><span class="p">,</span> <span class="n">long_offsets</span><span class="p">,</span> <span class="n">long_faces</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">values</span><span class="p">]</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-                <span class="n">kernel_energies</span><span class="o">.</span><span class="n">CURVED_HESSIAN_LONG_ROWS</span><span class="p">[</span><span class="n">dtype</span><span class="p">],</span>
-                <span class="n">dim</span><span class="o">=</span><span class="n">n_entries</span><span class="p">,</span>
-                <span class="n">inputs</span><span class="o">=</span><span class="n">long_inputs</span><span class="p">,</span>
-                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-            <span class="p">)</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">launch_tiled</span><span class="p">(</span>
-                <span class="n">kernel_energies</span><span class="o">.</span><span class="n">CURVED_HESSIAN_LONG_COLUMNS</span><span class="p">[</span><span class="n">dtype</span><span class="p">],</span>
-                <span class="n">dim</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span>
-                <span class="n">inputs</span><span class="o">=</span><span class="n">long_inputs</span><span class="p">,</span>
-                <span class="n">block_dim</span><span class="o">=</span><span class="mi">256</span><span class="p">,</span>
-                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-            <span class="p">)</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_energies</span><span class="o">.</span><span class="n">CURVED_HESSIAN_VALUES</span><span class="p">[</span><span class="n">dtype</span><span class="p">],</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">n_entries</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">blocks</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">starts</span><span class="p">,</span> <span class="n">values</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
     <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">bsr_from_csr</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">values</span><span class="p">,</span> <span class="n">nnz</span><span class="o">=</span><span class="n">n_entries</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -9735,12 +9702,7 @@ that sum to zero:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1105</span>
-<span class="normal">1106</span>
-<span class="normal">1107</span>
-<span class="normal">1108</span>
-<span class="normal">1109</span>
-<span class="normal">1110</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1110</span>
 <span class="normal">1111</span>
 <span class="normal">1112</span>
 <span class="normal">1113</span>
@@ -9876,7 +9838,12 @@ that sum to zero:</p>
 <span class="normal">1243</span>
 <span class="normal">1244</span>
 <span class="normal">1245</span>
-<span class="normal">1246</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crouzeix_raviart_cotmatrix</span><span class="p">(</span>
+<span class="normal">1246</span>
+<span class="normal">1247</span>
+<span class="normal">1248</span>
+<span class="normal">1249</span>
+<span class="normal">1250</span>
+<span class="normal">1251</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crouzeix_raviart_cotmatrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">cot_entries</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dFloat</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -10249,12 +10216,7 @@ follow <a class="autorefs autorefs-internal" title="edges_unique" href="../edges
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1249</span>
-<span class="normal">1250</span>
-<span class="normal">1251</span>
-<span class="normal">1252</span>
-<span class="normal">1253</span>
-<span class="normal">1254</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1254</span>
 <span class="normal">1255</span>
 <span class="normal">1256</span>
 <span class="normal">1257</span>
@@ -10337,7 +10299,12 @@ follow <a class="autorefs autorefs-internal" title="edges_unique" href="../edges
 <span class="normal">1334</span>
 <span class="normal">1335</span>
 <span class="normal">1336</span>
-<span class="normal">1337</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crouzeix_raviart_massmatrix</span><span class="p">(</span>
+<span class="normal">1337</span>
+<span class="normal">1338</span>
+<span class="normal">1339</span>
+<span class="normal">1340</span>
+<span class="normal">1341</span>
+<span class="normal">1342</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">crouzeix_raviart_massmatrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">dtype</span><span class="p">:</span> <span class="nb">type</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span>
@@ -10654,12 +10621,7 @@ ones to pass.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1367</span>
-<span class="normal">1368</span>
-<span class="normal">1369</span>
-<span class="normal">1370</span>
-<span class="normal">1371</span>
-<span class="normal">1372</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1372</span>
 <span class="normal">1373</span>
 <span class="normal">1374</span>
 <span class="normal">1375</span>
@@ -10802,7 +10764,12 @@ ones to pass.</p>
 <span class="normal">1512</span>
 <span class="normal">1513</span>
 <span class="normal">1514</span>
-<span class="normal">1515</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm_hessian</span><span class="p">(</span>
+<span class="normal">1515</span>
+<span class="normal">1516</span>
+<span class="normal">1517</span>
+<span class="normal">1518</span>
+<span class="normal">1519</span>
+<span class="normal">1520</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">lscm_hessian</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -11135,12 +11102,7 @@ no boundary and an empty matrix:</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/energies.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1518</span>
-<span class="normal">1519</span>
-<span class="normal">1520</span>
-<span class="normal">1521</span>
-<span class="normal">1522</span>
-<span class="normal">1523</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1523</span>
 <span class="normal">1524</span>
 <span class="normal">1525</span>
 <span class="normal">1526</span>
@@ -11221,7 +11183,12 @@ no boundary and an empty matrix:</p>
 <span class="normal">1601</span>
 <span class="normal">1602</span>
 <span class="normal">1603</span>
-<span class="normal">1604</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_area_matrix</span><span class="p">(</span>
+<span class="normal">1604</span>
+<span class="normal">1605</span>
+<span class="normal">1606</span>
+<span class="normal">1607</span>
+<span class="normal">1608</span>
+<span class="normal">1609</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vector_area_matrix</span><span class="p">(</span>
     <span class="n">vertices</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">],</span>
     <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
