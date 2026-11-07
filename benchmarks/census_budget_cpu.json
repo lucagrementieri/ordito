@@ -1705,7 +1705,7 @@
  "benchmarks/test_geodesic_walk.py::test_descend_field[sphere_med-ordito-cpu-1]": {
   "counts": {
    "launch": 8,
-   "alloc": 8,
+   "alloc": 9,
    "readback": 2,
    "scan": 2,
    "sort": 1
@@ -1714,7 +1714,7 @@
  "benchmarks/test_geodesic_walk.py::test_descend_field[sphere_med-ordito-cpu-4096]": {
   "counts": {
    "launch": 8,
-   "alloc": 8,
+   "alloc": 9,
    "readback": 2,
    "scan": 2,
    "sort": 1
@@ -1723,7 +1723,7 @@
  "benchmarks/test_geodesic_walk.py::test_descend_field[sphere_med-ordito-cpu-64]": {
   "counts": {
    "launch": 8,
-   "alloc": 8,
+   "alloc": 9,
    "readback": 2,
    "scan": 2,
    "sort": 1
@@ -1732,7 +1732,7 @@
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cpu-1]": {
   "counts": {
    "launch": 25,
-   "alloc": 17,
+   "alloc": 18,
    "readback": 6,
    "scan": 2,
    "sort": 2
@@ -1741,7 +1741,7 @@
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cpu-4096]": {
   "counts": {
    "launch": 35,
-   "alloc": 31,
+   "alloc": 32,
    "h2h": 1,
    "readback": 9,
    "scan": 3,
@@ -1751,7 +1751,7 @@
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cpu-64]": {
   "counts": {
    "launch": 25,
-   "alloc": 17,
+   "alloc": 18,
    "readback": 6,
    "scan": 2,
    "sort": 2
@@ -1820,7 +1820,7 @@
  "benchmarks/test_geodesic_walk.py::test_trace_from_face[sphere_small-ordito-cpu]": {
   "counts": {
    "launch": 5,
-   "alloc": 6,
+   "alloc": 7,
    "readback": 2,
    "scan": 1,
    "sort": 1
@@ -1829,7 +1829,7 @@
  "benchmarks/test_geodesic_walk.py::test_trace_locality[ribbon_long-ordito-cpu]": {
   "counts": {
    "launch": 7,
-   "alloc": 12,
+   "alloc": 13,
    "readback": 2,
    "scan": 2,
    "sort": 1
@@ -1838,7 +1838,7 @@
  "benchmarks/test_geodesic_walk.py::test_trace_locality[sphere_med-ordito-cpu]": {
   "counts": {
    "launch": 7,
-   "alloc": 12,
+   "alloc": 13,
    "readback": 2,
    "scan": 2,
    "sort": 1
@@ -1847,7 +1847,7 @@
  "benchmarks/test_geodesic_walk.py::test_trace_ray_count[sphere_med-ordito-cpu-1]": {
   "counts": {
    "launch": 7,
-   "alloc": 12,
+   "alloc": 13,
    "readback": 2,
    "scan": 2,
    "sort": 1
@@ -1856,7 +1856,7 @@
  "benchmarks/test_geodesic_walk.py::test_trace_ray_count[sphere_med-ordito-cpu-4096]": {
   "counts": {
    "launch": 7,
-   "alloc": 12,
+   "alloc": 13,
    "readback": 2,
    "scan": 2,
    "sort": 1
@@ -1865,7 +1865,7 @@
  "benchmarks/test_geodesic_walk.py::test_trace_ray_count[sphere_med-ordito-cpu-64]": {
   "counts": {
    "launch": 7,
-   "alloc": 12,
+   "alloc": 13,
    "readback": 2,
    "scan": 2,
    "sort": 1

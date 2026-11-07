@@ -207,7 +207,9 @@ def trace_from_vertex(
         wp.int32(max_steps),
         *_length_epsilon(vertices, faces),
     ]
-    return _trace(kernel_geodesic_walk.trace_from_vertices, inputs, n_rays, device)
+    return _trace(
+        kernel_geodesic_walk.trace_from_vertices, inputs, n_rays, max_steps, faces.size // 3, device
+    )
 
 
 def trace_from_face(
@@ -310,7 +312,9 @@ def trace_from_face(
         wp.int32(max_steps),
         *_length_epsilon(vertices, faces),
     ]
-    return _trace(kernel_geodesic_walk.trace_from_faces, inputs, n_rays, device)
+    return _trace(
+        kernel_geodesic_walk.trace_from_faces, inputs, n_rays, max_steps, faces.size // 3, device
+    )
 
 
 def descend_field(
@@ -737,7 +741,11 @@ def _descend(
     kernel = kernel_geodesic_walk.descent_paths
     no_graph = _launch.empty(0, dtype=wp.float32, device=device)
     no_offsets = _launch.empty(0, dtype=wp.int32, device=device)
-    no_points = _launch.empty(0, dtype=wp.vec3, device=device)
+    # A descent writes its start, at most two points a step (a crossing and the stop it lands
+    # on), and with ``complete_to`` a point a step of the completion and the corner it starts from.
+    staged_points, staged_next = _staged_points(n_paths, 3 * max_steps + 3, faces.size // 3, device)
+    # The counting passes write nothing to ``out_points``; the pool's own buffer stands in.
+    no_points = staged_points
     # The counts are written straight into the offsets' tail and scanned there in place (the
     # writing pass leaves them alone). With ``complete_to``, the same zeroed allocation also holds
     # one flag per path that stopped short, their number, how many the completion finished, and
@@ -753,7 +761,7 @@ def _descend(
     _launch.launch(
         kernel,
         dim=n_paths * lanes,
-        inputs=[*inputs, no_graph, short_paths, no_offsets],
+        inputs=[*inputs, no_graph, short_paths, staged_points, staged_next, no_offsets],
         outputs=[counts, no_points],
         device=device,
     )
@@ -774,7 +782,7 @@ def _descend(
             _launch.launch(
                 kernel,
                 dim=n_paths * lanes,
-                inputs=[*inputs, graph, short_paths, no_offsets],
+                inputs=[*inputs, graph, short_paths, staged_points, staged_next, no_offsets],
                 outputs=[counts, no_points],
                 device=device,
             )
@@ -787,7 +795,7 @@ def _descend(
     _launch.launch(
         kernel,
         dim=n_paths * lanes,
-        inputs=[*inputs, graph, short_paths, offsets],
+        inputs=[*inputs, graph, short_paths, staged_points, staged_next, offsets],
         outputs=[counts, points],
         device=device,
     )
@@ -1766,25 +1774,37 @@ def _length_epsilon(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> l
 
 
 def _trace(
-    kernel: odt.Kernel, inputs: Sequence[object], n_rays: int, device: wp.DeviceLike
+    kernel: odt.Kernel,
+    inputs: Sequence[object],
+    n_rays: int,
+    max_steps: int,
+    n_faces: int,
+    device: wp.DeviceLike,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Run a tracing kernel twice: once to count each ray's points, once to write them.
 
-    The walk is cheap arithmetic and its length is not known in advance, so counting first and
-    sizing the output exactly beats reserving ``max_steps`` points per ray, which at the default cap
-    would be tens of megabytes for a few thousand rays.
+    The walk's length is not known in advance, so counting first and sizing the output exactly
+    beats reserving ``max_steps`` points per ray, which at the default cap would be tens of
+    megabytes for a few thousand rays. The counting pass stages the points it counts
+    (``_staged_points``), so the writing pass copies a ray rather than walking it again.
     """
+    # A ray writes its start, then at most one point a step.
+    max_points = max_steps + 1
     # The counts are written straight into the offsets' tail and scanned there in place; the
     # writing pass leaves them alone.
     offsets = _launch.zeros(n_rays + 1, dtype=wp.int32, device=device)
     counts = _launch.view(offsets, 1, n_rays + 1)
     no_offsets = _launch.empty(0, dtype=wp.int32, device=device)
-    no_points = _launch.empty(0, dtype=wp.vec3, device=device)
     lanes = _walk_lanes(n_rays, device)
-    inputs = [*inputs, wp.int32(lanes)]
+    staged_points, staged_next = _staged_points(n_rays, max_points, n_faces, device)
+    inputs = [*inputs, wp.int32(lanes), staged_points, staged_next]
+    # The counting pass writes nothing to ``out_points``; the pool's own buffer stands in.
     _launch.launch(
-        kernel, dim=n_rays * lanes, inputs=[*inputs, no_offsets, counts, no_points], device=device
+        kernel,
+        dim=n_rays * lanes,
+        inputs=[*inputs, no_offsets, counts, staged_points],
+        device=device,
     )
     _launch.array_scan(counts, out_array=counts, inclusive=True)
 
@@ -1795,6 +1815,35 @@ def _trace(
         kernel, dim=n_rays * lanes, inputs=[*inputs, offsets, counts, points], device=device
     )
     return points, offsets
+
+
+def _staged_points(
+    n_walks: int, max_points: int, n_faces: int, device: wp.DeviceLike
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return the pool a walk kernel's counting pass stages its points in, and its chunk links.
+
+    The writing pass then copies each walk from it instead of walking it again, and walks again
+    only one the pool did not hold (``kernels/geodesic_walk.copy_staged``). The walks share the
+    pool, a long one taking what a short one left, so it is sized for each at about a walk across
+    the mesh (``isqrt(n_faces)`` points, at most its ``max_points`` bound), up to
+    ``_STAGED_POINTS`` in all, in one allocation. The links' last slot, the chunk counter, starts
+    past the walks' own first chunks.
+    """
+    chunk = int(kernel_geodesic_walk.STAGED_CHUNK)
+    per_walk = min(max_points, math.isqrt(n_faces) + chunk)
+    n_chunks = min(n_walks * -(-per_walk // chunk), _STAGED_POINTS // chunk)
+    staged_next, staged_points = _launch.carve_typed(
+        ((wp.int32, n_chunks + 1), (wp.vec3, n_chunks * chunk)), device
+    )
+    _launch.fill_(_launch.view(staged_next, n_chunks, n_chunks + 1), min(n_walks, n_chunks))
+    return staged_points, staged_next
+
+
+# The most points a walk call stages (12 MiB), however many walks: what it does not hold is
+# walked twice, as every walk was before the pool. Its own size is the call's peak memory it adds
+# (``descend_field``: 4 096 paths on a sphere of 82 k faces, 12.7 -> 25 MiB).
+_STAGED_POINTS = 1 << 20
 
 
 def _walk_lanes(n_walks: int, device: wp.DeviceLike) -> int:

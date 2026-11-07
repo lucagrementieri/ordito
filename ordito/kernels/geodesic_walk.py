@@ -88,22 +88,85 @@ def unfold_direction(
     return tangential
 
 
+# Points a staged chunk holds.
+STAGED_CHUNK = wp.int32(16)
+
+
+# A counting pass stages each walk's points as it counts them, for the writing pass to copy back
+# instead of walking again. ``staged_points`` is a pool of ``STAGED_CHUNK``-point chunks, and
+# ``staged_next`` (``n_chunks + 1``) links them a walk at a time: walk ``w``'s first chunk is chunk
+# ``w`` (none when ``w >= n_chunks``), ``staged_next[c]`` is the chunk after ``c``, ``-1`` where
+# the pool ran out (the walk is then walked again), and the last slot counts the chunks handed
+# out, from ``n_walks``. A ``staged_next`` of one slot stages nothing.
+
+
+@wp.func
+def staged_chunk(staged_next: wp.array[wp.int32]) -> wp.int32:
+    # A fresh chunk of the pool, or -1 once it is spent.
+    n_chunks = staged_next.shape[0] - 1
+    taken = wp.atomic_add(staged_next, n_chunks, wp.int32(1))
+    return wp.where(taken < n_chunks, taken, wp.int32(-1))
+
+
+@wp.func
+def first_staged_chunk(staged_next: wp.array[wp.int32], walk: wp.int32) -> wp.int32:
+    # Walk ``walk``'s first chunk, or -1 when it stages nothing.
+    return wp.where(walk < staged_next.shape[0] - 1, walk, wp.int32(-1))
+
+
+@wp.func
+def copy_staged(
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
+    walk: wp.int32,
+    out_points: wp.array[wp.vec3],
+    write_begin: wp.int32,
+    count: wp.int32,
+) -> wp.bool:
+    # Copy walk ``walk``'s ``count`` staged points to ``out_points[write_begin:]``; ``False`` when
+    # its chunks do not hold them all, and the walk has to be walked again.
+    chunk = first_staged_chunk(staged_next, walk)
+    for j in range(count):
+        slot = j % STAGED_CHUNK
+        if slot == 0 and j > 0:
+            chunk = staged_next[chunk]
+        if chunk < 0:
+            return False
+        out_points[write_begin + j] = staged_points[chunk * STAGED_CHUNK + slot]
+    return True
+
+
 @wp.func
 def emit_walk_point(
-    out_points: wp.array[wp.vec3], write_begin: wp.int32, count: wp.int32, point: wp.vec3
+    out_points: wp.array[wp.vec3],
+    write_begin: wp.int32,
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
+    chunk: wp.ref[wp.int32],
+    count: wp.int32,
+    point: wp.vec3,
 ) -> wp.int32:
     """
-    Conditionally write ``point`` at the walk's next output slot; return the incremented count.
+    Write ``point`` at the walk's next slot; return the incremented count.
 
     ``trace_walk`` / ``descent_walk`` are each a two-pass walk sharing one implementation: a
-    counting pass (``write_begin < 0``, nothing written) sizes the polyline, and a writing pass
-    (``write_begin >= 0``) fills it at ``out_points[write_begin : write_begin + count]``. Every step
-    of both walks conditionally writes one point and advances ``count`` by exactly one, so this is
-    the whole idiom factored once; a plain return (not ``wp.ref``) is enough since nothing else is
-    mutated between the write and the increment.
+    counting pass (``write_begin < 0``) sizes the polyline and stages its points (from ``chunk``,
+    the walk's current chunk; ``-1`` stages nothing), and a writing pass
+    (``write_begin >= 0``) fills it at ``out_points[write_begin : write_begin + count]`` when the
+    staged copy did not hold it. Every step of both walks writes one point and advances ``count``
+    by exactly one, so this is the whole idiom factored once. A chunk is taken when its first slot
+    is written, so a slot written again (``emit_descent_point``) is always in the current one.
     """
     if write_begin >= wp.int32(0):
         out_points[write_begin + count] = point
+    elif chunk >= wp.int32(0):
+        slot = count % STAGED_CHUNK
+        if slot == 0 and count > 0:
+            following = staged_chunk(staged_next)
+            staged_next[chunk] = following
+            chunk = following
+        if chunk >= wp.int32(0):
+            staged_points[chunk * STAGED_CHUNK + slot] = point
     return count + wp.int32(1)
 
 
@@ -244,11 +307,16 @@ def trace_walk(
     max_steps: wp.int32,
     length_epsilon: wp.float32,
     write_begin: wp.int32,
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
+    first_chunk: wp.int32,
     out_points: wp.array[wp.vec3],
 ) -> wp.int32:
     # Straightest-geodesic walk from one point, for the arc length ``|start_direction|``. Returns
-    # the number of polyline points; writes them from ``write_begin`` when that is non-negative, so
-    # the counting and writing passes share this one implementation.
+    # the number of polyline points; writes them from ``write_begin`` when that is non-negative,
+    # and stages them from ``first_chunk`` otherwise, so the counting and writing passes share
+    # this one implementation.
+    chunk = wp.int32(first_chunk)
     face = start_face
     normal = face_normal(vertices, faces, face)
     point = start_point
@@ -256,7 +324,9 @@ def trace_walk(
     remaining = arc_length
 
     count = wp.int32(0)
-    count = emit_walk_point(out_points, write_begin, count, point)
+    count = emit_walk_point(
+        out_points, write_begin, staged_points, staged_next, chunk, count, point
+    )
     if remaining <= TOLERANCE_ZERO_CONSTANT or tangential_length <= TOLERANCE_ZERO_CONSTANT:
         return count
 
@@ -273,13 +343,17 @@ def trace_walk(
             break
         if distance >= remaining:
             point = point + remaining * direction
-            count = emit_walk_point(out_points, write_begin, count, point)
+            count = emit_walk_point(
+                out_points, write_begin, staged_points, staged_next, chunk, count, point
+            )
             remaining = wp.float32(0.0)
             break
 
         point = point + distance * direction
         remaining -= distance
-        count = emit_walk_point(out_points, write_begin, count, point)
+        count = emit_walk_point(
+            out_points, write_begin, staged_points, staged_next, chunk, count, point
+        )
 
         hit = corner_hit(vertices, faces, face, edge, point)
         if hit != wp.int32(-1):
@@ -411,7 +485,33 @@ def mean_length_epsilon(
     return epsilon
 
 
-@wp.kernel
+@wp.func
+def begin_walk(
+    offsets: wp.array[wp.int32],
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
+    out_points: wp.array[wp.vec3],
+    walk: wp.int32,
+) -> tuple[wp.int32, wp.int32, wp.bool]:
+    # How one thread of a walk kernel starts: ``(write_begin, first_chunk, copied)``. The writing
+    # pass (``offsets`` given) copies the walk's staged points and is done (``copied``), or walks
+    # again from ``offsets[walk]`` where the pool did not hold them; a counting pass stages the walk
+    # from a fresh chunk. The tracers and ``descent_paths`` differ only in what they walk.
+    if offsets.shape[0] > 0:
+        write_begin = offsets[walk]
+        copied = copy_staged(
+            staged_points,
+            staged_next,
+            walk,
+            out_points,
+            write_begin,
+            offsets[walk + 1] - write_begin,
+        )
+        return write_begin, wp.int32(-1), copied
+    return wp.int32(-1), first_staged_chunk(staged_next, walk), False
+
+
+@wp.kernel(enable_backward=False)
 def trace_from_vertices(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -428,6 +528,8 @@ def trace_from_vertices(
     edge_length_total: wp.array[wp.float32],
     n_halfedges: wp.int32,
     lanes: wp.int32,
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
     out_points: wp.array[wp.vec3],
@@ -441,20 +543,24 @@ def trace_from_vertices(
     if t % lanes != 0:
         return
     r = t // lanes
+    write_begin, first_chunk, copied = begin_walk(
+        offsets, staged_points, staged_next, out_points, r
+    )
+    if copied:
+        return
     length_epsilon = mean_length_epsilon(edge_length_total, n_halfedges)
     v = start_vertices[r]
     direction = directions[r]
     f, in_face = start_direction_at_vertex(
         vertices, faces, ring_offsets, ring_halfedges, is_boundary, basis_x, basis_y, v, direction
     )
-    write_begin = wp.int32(-1)
-    if offsets.shape[0] > 0:
-        write_begin = offsets[r]
     if f == wp.int32(-1):
         # An isolated vertex, or a direction pointing out of a boundary vertex's fan: nowhere to go.
-        if write_begin >= wp.int32(0):
-            out_points[write_begin] = vertices[v]
-        else:
+        chunk = wp.int32(first_chunk)
+        emit_walk_point(
+            out_points, write_begin, staged_points, staged_next, chunk, wp.int32(0), vertices[v]
+        )
+        if write_begin < wp.int32(0):
             out_counts[r] = wp.int32(1)
         return
     # The trace length is measured in the *vertex's* tangent plane, not in the plane of whichever
@@ -473,13 +579,16 @@ def trace_from_vertices(
         max_steps,
         length_epsilon,
         write_begin,
+        staged_points,
+        staged_next,
+        first_chunk,
         out_points,
     )
     if write_begin < wp.int32(0):
         out_counts[r] = count
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def trace_from_faces(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -491,6 +600,8 @@ def trace_from_faces(
     edge_length_total: wp.array[wp.float32],
     n_halfedges: wp.int32,
     lanes: wp.int32,
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
     out_points: wp.array[wp.vec3],
@@ -498,10 +609,17 @@ def trace_from_faces(
     # One ray per thread. ``offsets`` is empty on the counting pass, which is how the two passes
     # share ``trace_walk``. Only the counting pass writes ``out_counts``: the wrapper counts into
     # the offsets' own tail and scans it in place, so the writing pass reads it as ``offsets``.
+    # The counting pass stages each ray's points, and the writing pass copies them
+    # (``begin_walk``).
     t = wp.int32(wp.tid())
     if t % lanes != 0:
         return
     r = t // lanes
+    write_begin, first_chunk, copied = begin_walk(
+        offsets, staged_points, staged_next, out_points, r
+    )
+    if copied:
+        return
     length_epsilon = mean_length_epsilon(edge_length_total, n_halfedges)
     f = start_faces[r]
     bary = start_bary[r]
@@ -510,9 +628,6 @@ def trace_from_faces(
         + bary[1] * vertices[faces[f * 3 + 1]]
         + bary[2] * vertices[faces[f * 3 + 2]]
     )
-    write_begin = wp.int32(-1)
-    if offsets.shape[0] > 0:
-        write_begin = offsets[r]
     # The trace length is the direction's component in the *face's* plane: a direction leaving the
     # surface traces only what is tangential to it.
     direction = directions[r]
@@ -529,6 +644,9 @@ def trace_from_faces(
         max_steps,
         length_epsilon,
         write_begin,
+        staged_points,
+        staged_next,
+        first_chunk,
         out_points,
     )
     if write_begin < wp.int32(0):
@@ -632,6 +750,9 @@ def at_descent_stop(
 def emit_descent_point(
     out_points: wp.array[wp.vec3],
     write_begin: wp.int32,
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
+    chunk: wp.ref[wp.int32],
     count: wp.int32,
     last_point: wp.vec3,
     point: wp.vec3,
@@ -645,8 +766,12 @@ def emit_descent_point(
     if count > wp.int32(0) and wp.length(point - last_point) <= length_epsilon:
         if write_begin >= wp.int32(0):
             out_points[write_begin + count - wp.int32(1)] = point
+        elif chunk >= wp.int32(0):
+            staged_points[chunk * STAGED_CHUNK + (count - wp.int32(1)) % STAGED_CHUNK] = point
         return count, point
-    return emit_walk_point(out_points, write_begin, count, point), point
+    return emit_walk_point(
+        out_points, write_begin, staged_points, staged_next, chunk, count, point
+    ), point
 
 
 @wp.func
@@ -694,6 +819,9 @@ def descent_walk(
     length_epsilon: wp.float32,
     graph_distance: wp.array[wp.float32],
     write_begin: wp.int32,
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
+    first_chunk: wp.int32,
     out_points: wp.array[wp.vec3],
 ) -> tuple[wp.int32, wp.int32]:
     # Follow the steepest descent of a per-vertex field from ``start_vertex`` until the field drops
@@ -710,12 +838,21 @@ def descent_walk(
     # all. The field has no single gradient at a vertex, and the two cases a purely in-face walk
     # cannot express are exactly the ones that arise there: a descent that runs *along* an edge, and
     # one that leaves through a corner.
+    chunk = wp.int32(first_chunk)
     count = wp.int32(0)
     vertex = start_vertex
     point = vertices[vertex]
     emitted = point
     count, emitted = emit_descent_point(
-        out_points, write_begin, count, emitted, point, length_epsilon
+        out_points,
+        write_begin,
+        staged_points,
+        staged_next,
+        chunk,
+        count,
+        emitted,
+        point,
+        length_epsilon,
     )
 
     # The field value at the last written point, tracked exactly rather than read off ``vertex`` --
@@ -759,7 +896,15 @@ def descent_walk(
             point = vertices[vertex]
             last_value = values[vertex]
             count, emitted = emit_descent_point(
-                out_points, write_begin, count, emitted, point, length_epsilon
+                out_points,
+                write_begin,
+                staged_points,
+                staged_next,
+                chunk,
+                count,
+                emitted,
+                point,
+                length_epsilon,
             )
             continue
 
@@ -791,7 +936,15 @@ def descent_walk(
             point = vertices[vertex]
             last_value = values[vertex]
             count, emitted = emit_descent_point(
-                out_points, write_begin, count, emitted, point, length_epsilon
+                out_points,
+                write_begin,
+                staged_points,
+                staged_next,
+                chunk,
+                count,
+                emitted,
+                point,
+                length_epsilon,
             )
             face = wp.int32(-1)
             continue
@@ -802,7 +955,15 @@ def descent_walk(
         # face's affine field.
         last_value -= wp.float64(slope) * wp.float64(distance)
         count, emitted = emit_descent_point(
-            out_points, write_begin, count, emitted, point, length_epsilon
+            out_points,
+            write_begin,
+            staged_points,
+            staged_next,
+            chunk,
+            count,
+            emitted,
+            point,
+            length_epsilon,
         )
 
         start = faces[face * 3 + edge]
@@ -817,7 +978,15 @@ def descent_walk(
             if end_stops and (not start_stops or values[end] < values[start]):
                 reached = end
             count, emitted = emit_descent_point(
-                out_points, write_begin, count, emitted, vertices[reached], length_epsilon
+                out_points,
+                write_begin,
+                staged_points,
+                staged_next,
+                chunk,
+                count,
+                emitted,
+                vertices[reached],
+                length_epsilon,
             )
             break
 
@@ -843,7 +1012,15 @@ def descent_walk(
             # taking the same face again would repeat it until ``max_steps`` ran out. Put the
             # written point back on the vertex and step along an edge from it instead.
             count, emitted = emit_descent_point(
-                out_points, write_begin, count, emitted, vertices[vertex], length_epsilon
+                out_points,
+                write_begin,
+                staged_points,
+                staged_next,
+                chunk,
+                count,
+                emitted,
+                vertices[vertex],
+                length_epsilon,
             )
             point = vertices[vertex]
             last_value = values[vertex]
@@ -889,7 +1066,15 @@ def descent_walk(
         point = vertices[vertex]
         last_value = values[vertex]
         count, emitted = emit_descent_point(
-            out_points, write_begin, count, emitted, point, length_epsilon
+            out_points,
+            write_begin,
+            staged_points,
+            staged_next,
+            chunk,
+            count,
+            emitted,
+            point,
+            length_epsilon,
         )
         face = wp.int32(-1)
 
@@ -910,6 +1095,9 @@ def descent_walk(
                     count, emitted = emit_descent_point(
                         out_points,
                         write_begin,
+                        staged_points,
+                        staged_next,
+                        chunk,
                         count,
                         emitted,
                         vertices[short_vertex],
@@ -926,12 +1114,20 @@ def descent_walk(
                         break
                     vertex = parent
                     count, emitted = emit_descent_point(
-                        out_points, write_begin, count, emitted, vertices[vertex], length_epsilon
+                        out_points,
+                        write_begin,
+                        staged_points,
+                        staged_next,
+                        chunk,
+                        count,
+                        emitted,
+                        vertices[vertex],
+                        length_epsilon,
                     )
     return count, stopped_short
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def descent_paths(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -949,6 +1145,8 @@ def descent_paths(
     lanes: wp.int32,
     graph_distance: wp.array[wp.float32],
     short_paths: wp.array[wp.int32],
+    staged_points: wp.array[wp.vec3],
+    staged_next: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
     out_points: wp.array[wp.vec3],
@@ -963,7 +1161,8 @@ def descent_paths(
     #   only their lengths change; the rest keep their counts. Slot ``n_paths + 1`` counts the
     #   paths the completion finished (those a source reaches), and the total takes each walked
     #   path's change.
-    # * Writing, ``offsets`` given: every path walks and writes its points, and leaves
+    # * Writing, ``offsets`` given: every path copies the points a counting pass staged, or walks
+    #   and writes them where the pool did not hold them (``begin_walk``), and leaves
     #   ``out_counts`` alone: the counts are the offsets' tail, scanned in place.
     t = wp.int32(wp.tid())
     if t % lanes != 0:
@@ -971,14 +1170,16 @@ def descent_paths(
     r = t // lanes
     length_epsilon = mean_length_epsilon(edge_length_total, n_halfedges)
     n_paths = starts.shape[0]
-    write_begin = wp.int32(-1)
     completing = wp.bool(False)
-    if offsets.shape[0] > 0:
-        write_begin = offsets[r]
-    elif graph_distance.shape[0] > 0 and short_paths.shape[0] > 0:
+    if offsets.shape[0] == 0 and graph_distance.shape[0] > 0 and short_paths.shape[0] > 0:
         if short_paths[r] == wp.int32(0):
             return
         completing = True
+    write_begin, first_chunk, copied = begin_walk(
+        offsets, staged_points, staged_next, out_points, r
+    )
+    if copied:
+        return
     count, stopped_short = descent_walk(
         vertices,
         faces,
@@ -994,6 +1195,9 @@ def descent_paths(
         length_epsilon,
         graph_distance,
         write_begin,
+        staged_points,
+        staged_next,
+        first_chunk,
         out_points,
     )
     if offsets.shape[0] == 0 and graph_distance.shape[0] == 0 and short_paths.shape[0] > 0:
