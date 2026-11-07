@@ -26,7 +26,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device, run_device_loop
+from ordito._common import read_scalar, require_same_device, run_device_loop
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import homology as kernel_homology

@@ -47,7 +47,7 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device
+from ordito._common import require_same_device
 from ordito.kernels import repair as kernel_repair
 from ordito.kernels import transform as kernel_transform
 

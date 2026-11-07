@@ -375,7 +375,7 @@ _WARP_VERSION_ALLOWLIST: dict[tuple[str, str], str] = {
     # (GH-1991; cuBQL already did, the CUDA LBVH still cuts at 32), and
     # ``kernels.proximity``'s straggler-walk comment now says so.
     # ---------------------------------------------------------------------------------------
-    ("_device", "1.18"): (
+    ("_common", "1.18"): (
         "deliberate history: the version that shipped the experimental, off-by-default "
         "``wp.config.enable_cpu_blocks`` (NVIDIA/warp#1638)"
     ),
@@ -472,7 +472,7 @@ _WARP_VERSION_ALLOWLIST: dict[tuple[str, str], str] = {
         "deliberate history: names the version in which ``wp.Volume.allocate_by_voxels`` "
         "gained its CPU path, which is why this module is not CUDA-only"
     ),
-    ("_device", "1.14"): (
+    ("_common", "1.14"): (
         "deliberate history: the version in which ``wp.launch`` stopped validating a "
         "cross-device argument list (NVIDIA/warp GH-1461), which is why ``require_same_device`` "
         "exists at all and does not move when the installed version does"

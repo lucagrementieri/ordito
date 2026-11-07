@@ -88,7 +88,7 @@ Never let `ruff check --fix` strip the constructor (it rewrites `int(0)` to `0`)
 A kernel whose lanes cooperate (`wp.tile_sum` / `tile_min` / `tile_max` per lane, a `wp.tile_bvh_query_aabb` walk) is correct on both devices only when its lanes partition a sequence the block already owns, with the stride taken from `wp.block_dim()`, never from a kernel argument or constant.
 
 - `launch_tiled` runs one lane per block on CPU, where `wp.block_dim()` reads 1; a one-element tile is not a bug, an arg-strided sum is. Do not conclude tiles do not work on CPU (§12.2).
-- Where lanes would partition the outer work (a whole-array reduction with no per-item dimension, e.g. `metrics.chamfer_*_tiled`), keep a constant stride on CUDA only with a lane-free `_sliced` sibling for CPU (`_device.prefers_tiled_reduction`), or stay lane-free on both.
+- Where lanes would partition the outer work (a whole-array reduction with no per-item dimension, e.g. `metrics.chamfer_*_tiled`), keep a constant stride on CUDA only with a lane-free `_sliced` sibling for CPU (`_common.prefers_tiled_reduction`), or stay lane-free on both.
 - For a lane-strided reduction, tune the fold width: launch `dim=kernel_reduce.blocks_1d(n)` so each block owns `ITEMS_PER_BLOCK_1D` elements, never `dim=n / TILE_1D`. Assemble a wide accumulator before the single commit (§13.2).
 - A float block commit goes through `kernels/reduce.store_block_sum` / `store_block_total` into a `_launch.block_partials` buffer, never a bare per-block `atomic_add` (arrival order, §12.3); integer commits keep `commit_block_*`. A float scan goes through `_launch.array_scan`. Both read the global setting `ordito.config` (`set_deterministic`, the scoped `with deterministic(True):`; off by default in the library and the benchmarks, on for every test via `tests/conftest.py`) at the call, so a new reduction or float scan obeys it by routing through them. The same flag fixes output order (an atomic-slot fill becomes a stable sort); there is no separate order setting. Never add a per-call `deterministic` keyword or thread the mode through signatures; a caller that reads more than the result slots tells the two buffer forms apart by the buffer's size. Benchmarks run with the setting off for the whole session (`benchmarks/conftest.py`, `benchmarks/README.md`).
 - A new per-group float sum goes through `kernels/scatter.scatter_add` / `scatter_add_vector` / `scatter_add_matrix` with a `_launch.group_sums` buffer (`launch_group_sums`, `finish_group_sums`): the buffer picks the mode, a plain `atomic_add` with the setting off and the exact fixed-point sum of `kernels/reduce` with it on (identical on CPU and CUDA). A kernel that consumes the sums reads them through `kernels/reduce.read_group_sum` from `group_sums(fused=True)` (no finish launch and no result buffer when on; repair's component sums). The public forms are `reduce.scatter_sum` and `reduce.segment_sum`. Every call names its off-mode lane pooling by its keys' structure: `ARRIVAL_POOL_PEERS` where the lanes sharing a group hit an address hot across the launch (component and region labels), `ARRIVAL_POOL_UNIFORM` for sorted or clustered keys (segments, a face's corners, cells); §14 prices both. Keep a site's existing form where §14 prices it faster.
@@ -296,7 +296,7 @@ Never size a buffer, slice or launch `dim` off `matrix.nnz`.
   their triplet forms: call peak 6.3 -> 0.7 GB and 5.5 -> 1.0 GB on `dragon`, 0.5x / 0.76x time;
   `kernels/energies.hessian_energy_rows` records the declined entry-a-thread gather).
 - A scanned `int32` count that sizes buffers is checked for a wrap through
-  `_device.scan_count_checked` (`kernels/array.flag_wrapped_scan`, read with the total): a total
+  `_common.scan_count_checked` (`kernels/array.flag_wrapped_scan`, read with the total): a total
   past `2**32` wraps back to a small positive count, so its sign alone does not tell
   (`hessian_energy` on `lucy`, CUDA error 700). Any per-row count that sums neighbours' row
   lengths grows as the square of the largest valence: `smooth_region` on `fan_hub` wrapped its
@@ -332,7 +332,7 @@ flattens.
 ### 3.9 Device checks and the launch-device memory-safety rule
 
 Every public function with two or more device-bearing arguments calls
-`_device.require_same_device(**named)` as its first statement, passing every array, mesh, BVH, hash
+`_common.require_same_device(**named)` as its first statement, passing every array, mesh, BVH, hash
 grid, `wp.Volume` or list/tuple of those, including `X | None` arguments. It raises `RuntimeError`;
 document it with a `Raises` entry (§4.3; check 11 cannot see the delegation). Internal code stays
 trusting and forwards `device=` from an input array (§2.1).
@@ -349,8 +349,8 @@ trusting and forwards `device=` from an input array (§2.1).
 - Every `.numpy()` / `int(<device value>)` readback carries a comment naming why it is unavoidable.
   When the caller can supply the bound a readback infers, expose a keyword
   (`face_adjacency(n_vertices=...)`) and pass it from every in-repo caller that knows it (§14).
-- Several adjacent small values: `ordito._device.read_values(arr, start, count)`. A tail value:
-  `ordito._device.read_scalar(arr, index=-1)`, never a hand-rolled spelling (a pinned scratch races,
+- Several adjacent small values: `ordito._common.read_values(arr, start, count)`. A tail value:
+  `ordito._common.read_scalar(arr, index=-1)`, never a hand-rolled spelling (a pinned scratch races,
   §12.1).
 - Several small device values go into one buffer and are read once (`points.fit_plane`); a tail
   read of a mesh-sized array stays `read_scalar`.
@@ -381,7 +381,7 @@ trusting and forwards `device=` from an input array (§2.1).
 
 ### 4.3 Docstring, signature and body must agree
 
-- A documented `Raises` must be reachable; a direct `raise` needs a `Raises` block (check 11). Delegating to a shared guard means documenting its `Raises` (`_device.require_same_device`, §3.9).
+- A documented `Raises` must be reachable; a direct `raise` needs a `Raises` block (check 11). Delegating to a shared guard means documenting its `Raises` (`_common.require_same_device`, §3.9).
 - A documented validation must be performed.
 - When a comment and the body disagree, decide which is load-bearing first; usually the comment is right.
 - After a rank/shape/dtype rule change, check the paths bypassing the helper (early returns, `@overload` stubs, `Returns` prose).
@@ -536,7 +536,7 @@ implementation. `trimesh` is the default; §7.6 covers the other eight libraries
   having run in its process.
 - While developing, run `uv run python -m pytest tests/test_<module>.py -q --device=cuda` only.
 - Use `tests.devices` when a change is device-dependent by construction (`launch_tiled` kernel (§12.2),
-  `_device.prefers_tiled_reduction`, device-gated constant (§13.2)).
+  `_common.prefers_tiled_reduction`, device-gated constant (§13.2)).
 - CPU is the deterministic oracle for byte-for-byte A/B; on CUDA any reduction-order change is
   noise.
 - A test costing more than about 15 s on CPU wears `@pytest.mark.slow_cpu(<seconds>)`.
@@ -803,7 +803,7 @@ builtins), `warp.md` (Python scope), `sparse.md`, `utils.md`, `fem_linalg.md`.
 - A `wp.launch` without `device=` corrupts the host heap: it resolves to `cuda:0` while CPU arrays are freed under the running kernel. Always forward `device=` (§2.1).
 - An out-of-bounds kernel write on CPU is glibc heap corruption; range-check at the write. Debug mode (-O0) raises register use and drops FMA, so exact-float comparisons move.
 - A zero-triangle `wp.Mesh` corrupts CUDA allocator state (error 700 on the next allocation; NVIDIA/warp#1765). Never build one on CUDA, tests included.
-- Python-scope gather ignores a non-contiguous index view's stride (§3.4); `wp.copy(..., count=0)` copies the whole source; `wp.copy` into pinned memory is async with no event (use `_device.read_scalar`, safe for scalars only).
+- Python-scope gather ignores a non-contiguous index view's stride (§3.4); `wp.copy(..., count=0)` copies the whole source; `wp.copy` into pinned memory is async with no event (use `_common.read_scalar`, safe for scalars only).
 - CPU work is ~36x slower once CUDA is initialised in the process, hence two-process coverage (§7.2).
 
 ### 12.2 `wp.launch_tiled` runs one lane per block on the CPU
@@ -811,7 +811,7 @@ builtins), `warp.md` (Python scope), `sparse.md`, `utils.md`, `fem_linalg.md`.
 On CPU, `launch_tiled` runs one thread per block and `wp.block_dim()` reads 1. The experimental `wp.config.enable_cpu_blocks` (NVIDIA/warp#1638) runs every lane but is 1.5-340x slower: a test oracle (`--cpu-blocks`), not a production path.
 
 - Probe a lane-constructed tile (`wp.tile(x)` from per-lane values), not `tile_load`, or you will delete a correctness branch.
-- Stride by `wp.block_dim()`. Partitioned kernels keep a lane-free `_sliced` sibling behind `_device.prefers_tiled_reduction` (§2.2).
+- Stride by `wp.block_dim()`. Partitioned kernels keep a lane-free `_sliced` sibling behind `_common.prefers_tiled_reduction` (§2.2).
 - Warp has no grid-wide barrier, no per-cell `HashGrid` entry point and no builtin node-by-node BVH traversal; node reads take `wp.func_native` over `wp::BVH` (`kernels/proximity.py`, re-probe the layout at each upgrade).
 - `wp.tile_bvh_query_aabb` overruns its `5 * block_dim` shared result buffer exactly when a round meets leaves holding more than 4 primitives, and every Warp BVH builder makes a deep node a leaf whatever its size (depth 32 in the CUDA LBVH; 31 in cuBQL, and in the top-down host builder since Warp 1.19, GH-1991) (lucy's mesh BVH: 0.9 M such leaves, up to 28 faces; the bunnies none). The overrun drops primitives and reads past the buffer *inside* the builtin, which faults (CUDA error 700) once it is large, so no bound check on the returned index can catch it. Walk with it only a query that meets no such leaf; `kernels/proximity.flag_overfull_leaf` flags those leaves in a node bitset, and the rest take a walk that cannot drop (`mesh_to_mesh_distance`: its own `wp.tile_stack` walk; `ball_pivoting`: per-lane slabs of the box through the serial `wp.bvh_query_aabb`). Point clouds hit it too (dragon, happy_buddha, lucy). Still bound-check every candidate (`0 <= c < n`). `max_nodes` is the *capacity*: a CUDA LBVH builds all `2n - 1` nodes and never writes `num_nodes` (`wp_bvh_create_device` copies an uninitialised stack `wp::BVH`, so the field is stale stack contents: usually 0, once a large value that sent the `ball_pivoting` bitset pass past `node_lowers`, CUDA error 700 found by `compute-sanitizer`), a top-down tree (every CPU `wp.Mesh`, or `bvh_constructor="sah"` on CUDA) only a prefix counted in `num_nodes` (657 of 1999 measured), the rest uninitialised. The host builder writes `num_nodes` but not `constructor_type`. `kernels/proximity.bvh_node_count` therefore selects on `constructor_type` on CUDA and reads `num_nodes` on the CPU, clamped to `max_nodes`; never trust either field alone. A node-bitset pass runs wherever blocks have several lanes (`prefers_tiled_reduction`), where the tile walk exists.
 - A multi-launch `capture_while` body replays differently on CPU, and Python-level ping-pong cannot help a captured loop.
@@ -884,7 +884,7 @@ Measure `n` calls between two syncs and divide; a sync inside the loop drains th
 | cached `wp.map` | ~11 µs above the kernel |
 | readback | ~0.1 ms queued, 14 µs isolated |
 | replayed graph kernel | 1.2 µs |
-| small `.numpy()` readback / `_device.read_values` | ~27 µs (builds a host `wp.array`) / ~9 µs |
+| small `.numpy()` readback / `_common.read_values` | ~27 µs (builds a host `wp.array`) / ~9 µs |
 | `wp.array` slice / `_launch.view` | 4.2 / 1.05 µs |
 | small-pattern native fill (`_launch.pattern`) / 2-element upload | 8.2 / 11.7 µs |
 

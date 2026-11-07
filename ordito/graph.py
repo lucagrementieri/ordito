@@ -9,7 +9,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device, run_device_loop
+from ordito._common import read_scalar, read_values, require_same_device, run_device_loop
 from ordito.array import arange
 from ordito.constants import INT32_MAX, TILE_1D
 from ordito.kernels import array as kernel_array

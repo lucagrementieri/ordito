@@ -41,7 +41,7 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._common import read_scalar, require_same_device
 from ordito.constants import TOLERANCE_PLANAR
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import visibility as kernel_visibility

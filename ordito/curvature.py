@@ -36,7 +36,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device, tiled_ball_walk
+from ordito._common import require_same_device, tiled_ball_walk
 from ordito.config import is_deterministic
 from ordito.kernels import curvature as kernel_curvature
 from ordito.kernels import neighbors as kernel_neighbors

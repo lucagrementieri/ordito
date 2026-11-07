@@ -112,7 +112,7 @@ def pytest_configure(config: pytest.Config) -> None:
     # Warp reads the flag at each launch, so setting it here -- before any test launches -- is
     # enough. On the CPU device ``wp.launch_tiled`` otherwise runs one lane per block, which hides
     # every kernel whose lanes partition work by anything but ``wp.block_dim()`` and keeps
-    # ``_device.prefers_tiled_reduction``'s tiled half off the CPU.
+    # ``_common.prefers_tiled_reduction``'s tiled half off the CPU.
     if config.getoption("--cpu-blocks"):
         wp.config.enable_cpu_blocks = True
     config.addinivalue_line(

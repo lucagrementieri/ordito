@@ -58,7 +58,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import (
+from ordito._common import (
     ball_grid_cell_width,
     read_values,
     require_same_device,
@@ -2756,7 +2756,7 @@ def _support_extremes(
     Below it, ``stride`` is the point count and both tables are ``None``: the sweeps test every
     point in parallel, which a cloud that small does not leave enough slices to beat. Each thread
     reduces a strided slice of the cloud, so the launch is sized by
-    [`items_per_slice`][ordito._device.items_per_slice] points per thread rather than by the point
+    [`items_per_slice`][ordito._common.items_per_slice] points per thread rather than by the point
     count -- enough parallelism to fill the device while keeping the number of atomics into the
     ``n_directions`` accumulator slots low. The same per-device slice length also backs three other
     strided reductions: ``visibility``'s support arg-max, ``proximity``'s winding-number sum and

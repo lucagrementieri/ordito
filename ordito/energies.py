@@ -50,7 +50,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import (
+from ordito._common import (
     read_scalar,
     read_values,
     require_same_device,
@@ -563,7 +563,7 @@ def _diagonal_sandwich(
     n_rows = int(a.nrow)
     device = inverse_mass.device
     # Each row's count lands in the offsets' buffer past its leading zero and is scanned in place;
-    # the trailing slot flags a scan that wrapped (``_device.scan_count_checked``). The long rows'
+    # the trailing slot flags a scan that wrapped (``_common.scan_count_checked``). The long rows'
     # list follows in the same zeroed buffer, its count first: a long row has a factor row of 64
     # entries or more (``kernels/energies.SANDWICH_LONG_ROW_TRIPLETS``), which bounds their number.
     capacity = (a.columns.size + b.columns.size) // 64
@@ -766,7 +766,7 @@ def hessian_energy(
     else:
         vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
     # Each vertex's count lands in the offsets' buffer past its leading zero, scanned in place;
-    # the trailing slot flags a scan that wrapped (``_device.scan_count_checked``).
+    # the trailing slot flags a scan that wrapped (``_common.scan_count_checked``).
     segment_offsets = _launch.zeros(n_vertices + 2, dtype=wp.int32, device=device)
     counts = _launch.view(segment_offsets, 1, n_vertices + 1)
     _launch.launch(

@@ -1137,7 +1137,7 @@ def degree3_fan_tables(
     # no pass compacts; a cleared row exits here.
     #
     # Its fixed buffer makes every pass recordable, and recording passes 1 onward under
-    # ``_device.record_device_loop`` (``array.loop_advance`` closing each round, so no per-pass
+    # ``_common.record_device_loop`` (``array.loop_advance`` closing each round, so no per-pass
     # read) was built and declined: interleaved against the host loop of one small read per pass,
     # it was 0.86x at ``dragon`` (two passes) and 0.87-0.96x at ``happy_buddha`` (three). The
     # recording costs more than the reads it removes at one or two replayed passes, and no

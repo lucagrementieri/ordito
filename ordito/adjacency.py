@@ -28,7 +28,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device, scan_count
+from ordito._common import require_same_device, scan_count
 from ordito.config import is_deterministic
 from ordito.constants import INDEX_RADIX_PAIR, TOLERANCE_MERGE_CONSTANT
 from ordito.kernels import adjacency as kernel_adjacency

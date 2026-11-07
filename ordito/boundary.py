@@ -31,7 +31,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device, scan_count
+from ordito._common import read_scalar, read_values, require_same_device, scan_count
 from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX
 from ordito.graph import successor_cycles_from_table

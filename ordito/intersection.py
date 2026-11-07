@@ -31,7 +31,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_nonempty_mesh, require_same_device, scan_count
+from ordito._common import read_scalar, require_nonempty_mesh, require_same_device, scan_count
 from ordito.constants import TILE_1D, TOLERANCE_MERGE
 from ordito.kernels import graph as kernel_graph
 from ordito.kernels import grouping as kernel_grouping

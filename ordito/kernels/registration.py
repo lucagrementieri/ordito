@@ -370,7 +370,7 @@ def close_point_to_point_round(
 
     Run by one thread of the last block of ``fit_transform_and_accumulate_cost``, once the fit's
     cost is complete: the point-to-point sibling of ``close_point_to_plane_round``, the host loop's
-    tail after its fit, so the loop body is one fixed sequence ``_device.run_device_loop`` records
+    tail after its fit, so the loop body is one fixed sequence ``_common.run_device_loop`` records
     once.
 
     - **weightless** (the fit's weight sum is exactly zero -- every correspondence rejected by the
@@ -1255,7 +1255,7 @@ def close_point_to_plane_round(
     Run by one thread of the last block of ``accumulate_point_to_plane``, once the moments are
     complete. The host loop's whole per-iteration tail -- the weightless test, the 6x6 solve, the
     composition into the running transform and the convergence test -- so that the loop body is a
-    fixed sequence ``_device.run_device_loop`` can record once and replay, with no readback:
+    fixed sequence ``_common.run_device_loop`` can record once and replay, with no readback:
 
     - **weightless**: no correspondence carried weight, so nothing is solved; the step is set to
       the identity and the loop stops, and the host reports ``inf``;

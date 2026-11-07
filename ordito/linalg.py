@@ -137,7 +137,7 @@ import warp.optim.linear as wpl
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device, scan_count
+from ordito._common import read_scalar, read_values, require_same_device, scan_count
 from ordito.cholesky import NotPositiveDefiniteError, SparseCholesky, sparse_cholesky
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
@@ -4148,7 +4148,7 @@ class _BatchedCg:
 
         A CUDA state copies it into one pageable host buffer it keeps, so a host-checked loop pays
         a copy a check and no host allocation (``.numpy()`` stages through a fresh one each call).
-        Pageable, not pinned, for ``_device.read_scalar``'s reason: the copy then returns only once
+        Pageable, not pinned, for ``_common.read_scalar``'s reason: the copy then returns only once
         it has landed. The returned view aliases that buffer and is valid until the next read.
         """
         if not self._device.is_cuda:

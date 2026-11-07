@@ -1,17 +1,13 @@
 """
-Private device-capability guards and host-readback helpers shared across wrapper modules.
+Private helpers shared across wrapper modules.
 
-Three of the seven members are not about devices, and the name is a historical accident rather
-than a claim: ``read_scalar`` is a host-readback helper (which is at least device-adjacent -- it is
-the sync) and ``require_nonempty_mesh`` / ``require_valid_faces`` are plain validation guards. They
-live here because this is the module wrapper code already imports for shared internals, not because
-any of them consults the device. Noted so a reader grepping for a guard is not surprised to find it
-under this name.
-
-``require_same_device`` is the exception: it is squarely about devices, and it is the one member of
-this module every public two-or-more-array function in the package now calls. See its own
-docstring for why a manual device check, generally discouraged for internal call sites, is load-
-bearing at the public boundary.
+What several wrappers need and no one public module owns: the argument guards
+([`require_same_device`][ordito._common.require_same_device], which every public function
+taking two or more device-bearing arguments calls first, and the mesh and index checks), host
+readbacks ([`read_scalar`][ordito._common.read_scalar],
+[`read_values`][ordito._common.read_values]), the index-buffer extrema behind the index checks,
+scan counts and offset buffers, device loops, and per-device tuning choices. Kernel launching
+lives in ``_launch``.
 """
 
 from __future__ import annotations
@@ -79,7 +75,7 @@ def prefers_tiled_reduction(device: wp.DeviceLike) -> bool:
 
     See Also
     --------
-    [`items_per_slice`][ordito._device.items_per_slice]
+    [`items_per_slice`][ordito._common.items_per_slice]
     """
     return wp.get_device(device).is_cuda or wp.config.enable_cpu_blocks
 
@@ -156,7 +152,7 @@ def run_device_loop(
 
     See Also
     --------
-    [`prefers_tiled_reduction`][ordito._device.prefers_tiled_reduction]
+    [`prefers_tiled_reduction`][ordito._common.prefers_tiled_reduction]
     """
     record_device_loop(device, condition, body)()
 
@@ -165,7 +161,7 @@ def record_device_loop(
     device: wp.DeviceLike, condition: wp.array[wp.int32, Any], body: Callable[[], None]
 ) -> Callable[[], None]:
     """
-    Record [`run_device_loop`][ordito._device.run_device_loop]'s loop now; return what runs it.
+    Record [`run_device_loop`][ordito._common.run_device_loop]'s loop now; return what runs it.
 
     The same two branches, split between recording and launching, so a caller can record while
     the device is still busy with work already issued, then read that work's outcome and skip the
@@ -209,7 +205,7 @@ def items_per_slice(device: wp.DeviceLike) -> int:
 
     See Also
     --------
-    [`prefers_tiled_reduction`][ordito._device.prefers_tiled_reduction]
+    [`prefers_tiled_reduction`][ordito._common.prefers_tiled_reduction]
     """
     return ITEMS_PER_SLICE_CUDA if wp.get_device(device).is_cuda else ITEMS_PER_SLICE_CPU
 
@@ -218,7 +214,7 @@ def slice_count(count: int, device: wp.DeviceLike) -> int:
     """
     Thread count for a lane-free strided-slice reduction over ``count`` elements.
 
-    The launch dimension that goes with [`items_per_slice`][ordito._device.items_per_slice]: one
+    The launch dimension that goes with [`items_per_slice`][ordito._common.items_per_slice]: one
     thread per strided slice, and at least one thread so an empty input still launches a well-formed
     grid. Callers should not divide by ``items_per_slice`` themselves -- that spelling is what this
     exists to hold in one place.
@@ -237,7 +233,7 @@ def slice_count(count: int, device: wp.DeviceLike) -> int:
 
     See Also
     --------
-    [`items_per_slice`][ordito._device.items_per_slice]
+    [`items_per_slice`][ordito._common.items_per_slice]
     """
     per_slice = items_per_slice(device)
     return max(1, (count + per_slice - 1) // per_slice)
@@ -280,11 +276,11 @@ def require_valid_faces(faces: wp.array[wp.int32], n_vertices: int, name: str) -
     downstream kernel that indexes ``vertices[faces[...]]`` -- silent glibc heap corruption on the
     CPU device, and a silently wrong or crashing answer on CUDA, with no Python exception either way
     (the same memory-safety class as an unvalidated device mismatch, which is why
-    [`require_same_device`][ordito._device.require_same_device] exists). Nothing downstream of a
+    [`require_same_device`][ordito._common.require_same_device] exists). Nothing downstream of a
     well-formed mesh checks this -- several reference libraries this package tests against don't
     either -- so it is a precondition, not a runtime-checked invariant.
 
-    Unlike [`require_nonempty_mesh`][ordito._device.require_nonempty_mesh], this is **not** free:
+    Unlike [`require_nonempty_mesh`][ordito._common.require_nonempty_mesh], this is **not** free:
     it costs a device reduction and a host readback, because it has to read the actual index
     values, not just a shape. That is deliberate: it is meant for the small number of public entry
     points that are the real trust boundary for a mesh's connectivity -- a
@@ -310,14 +306,7 @@ def require_valid_faces(faces: wp.array[wp.int32], n_vertices: int, name: str) -
     """
     if faces.size == 0:
         return
-    # Both ends from one launch and one readback; the range the message quotes is re-measured.
-    lo, hi = index_extrema(faces)
-    if lo < 0 or hi >= n_vertices:
-        lo, hi = od.reduce.minmax(faces)
-        raise ValueError(
-            f"{name}: faces must reference vertex indices in [0, {n_vertices}), "
-            f"got a range of [{lo}, {hi}]"
-        )
+    require_indices_below(faces, n_vertices, f"{name}: faces must reference vertex indices in")
 
 
 def require_same_device(**named: object) -> None:
@@ -492,7 +481,7 @@ def read_values(arr: wp.array[Any], start: int, count: int) -> list[Any]:
     """
     ``count`` consecutive elements of ``arr`` from ``start``, read back in one copy.
 
-    The several-value counterpart of [`read_scalar`][ordito._device.read_scalar], for a function
+    The several-value counterpart of [`read_scalar`][ordito._common.read_scalar], for a function
     that writes a few small device values side by side and reads them once: a cached pageable
     scratch per ``(dtype, count)`` and an offset copy, rather than a slice view plus ``.numpy()``'s
     fresh host array, which costs over twice as much. Same pageable-scratch rule and the same
@@ -574,6 +563,82 @@ def index_extrema(indices: odt.ArrayNdInt) -> tuple[int, int]:
     return int(low), int(high)
 
 
+def checked_index_bound(
+    low: int, high: int, name: str, bound: int | None = None, bound_name: str = ""
+) -> int:
+    """
+    Return the exclusive bound of an index buffer from its extrema, raising if one is out of range.
+
+    The decision every inferred radix or bound check shares, from the pair
+    [`index_extrema`][ordito._common.index_extrema] returns (or one a caller reduced into its own
+    buffer): a negative ``low`` raises, then a given ``bound`` is checked against ``high`` and
+    returned; without one the bound is ``high + 1``.
+
+    Parameters
+    ----------
+    low
+        The buffer's minimum, or ``min(0, minimum)``.
+    high
+        The buffer's maximum, or ``max(0, maximum)``.
+    name
+        What the indices are, as the error message names them (``"faces"``).
+    bound
+        Exclusive bound every index must stay under, or ``None`` to infer it.
+    bound_name
+        What ``bound`` is, as the error message names it (``"n_vertices"``).
+
+    Returns
+    -------
+    int
+        ``bound`` when given, else ``high + 1``.
+
+    Raises
+    ------
+    ValueError
+        If ``low`` is negative, or ``bound`` is given and ``high`` reaches it.
+    """
+    if low < 0:
+        raise ValueError(f"{name} must be non-negative, got a minimum of {low}")
+    if bound is None:
+        return high + 1
+    if high >= bound:
+        raise ValueError(f"{name} must be less than {bound_name} {bound}, got a maximum of {high}")
+    return bound
+
+
+def require_indices_below(
+    indices: odt.ArrayNdInt, bound: int, prefix: str, suffix: str = ""
+) -> None:
+    """
+    Raise if any entry of the non-empty ``indices`` falls outside ``[0, bound)``.
+
+    One [`index_extrema`][ordito._common.index_extrema] on the path that does not raise; the
+    message quotes the exact range, so the error path re-measures it with ``reduce.minmax``:
+    ``f"{prefix} [0, {bound}){suffix}, got a range of [{low}, {high}]"``.
+
+    Parameters
+    ----------
+    indices
+        Non-empty index buffer of any rank.
+    bound
+        Exclusive upper bound every entry must stay under.
+    prefix
+        Message text before the interval.
+    suffix
+        Message text after the interval.
+
+    Raises
+    ------
+    ValueError
+        If any entry is negative or ``>= bound``.
+    """
+    low, high = index_extrema(indices)
+    if low < 0 or high >= bound:
+        # The range the message quotes.
+        low, high = od.reduce.minmax(cast(odt.ScalarArray, indices))
+        raise ValueError(f"{prefix} [0, {bound}){suffix}, got a range of [{low}, {high}]")
+
+
 def _detached(value: T) -> T:
     """Copy ``value`` when it is a view, so a vector or matrix element outlives the next read."""
     return value.copy() if isinstance(value, np.ndarray) else value
@@ -584,8 +649,8 @@ def scan_count(flags: wp.array[Any]) -> int:
     Scan integer ``flags`` inclusively in place and return their total: one tail readback.
 
     An inclusive scan of ``0`` / ``1`` flags (or counts) ends at their sum, so the one 4-byte read
-    of [`read_scalar`][ordito._device.read_scalar] sizes the outputs where a reduction would read
-    the whole array. Applied to the ``tail`` of [`offsets_buffer`][ordito._device.offsets_buffer]
+    of [`read_scalar`][ordito._common.read_scalar] sizes the outputs where a reduction would read
+    the whole array. Applied to the ``tail`` of [`offsets_buffer`][ordito._common.offsets_buffer]
     it turns the counts written there into total-terminated offsets and returns the total.
     """
     _launch.array_scan(flags, out_array=flags, inclusive=True)
@@ -600,7 +665,7 @@ def scan_count_checked(offsets: wp.array[wp.int32], what: str) -> int:
     and a trailing slot that ``kernels/array.flag_wrapped_scan`` sets when the ``int32`` scan
     wrapped, read back with the total in one copy. A total past ``2**32`` wraps all the way round
     to a small positive count, so its sign alone does not tell. ``offsets[: n + 1]`` are then the
-    total-terminated offsets. Use it, not [`scan_count`][ordito._device.scan_count], wherever the
+    total-terminated offsets. Use it, not [`scan_count`][ordito._common.scan_count], wherever the
     counts are per-row products that can pass ``2**31`` and the total sizes a buffer.
 
     Raises
@@ -634,7 +699,7 @@ def offsets_buffer(n: int, device: wp.DeviceLike) -> tuple[wp.array[wp.int32], w
     Allocate zeroed ``(n + 1,)`` offsets and return them with their tail view ``offsets[1:]``.
 
     A producer writes its ``n`` counts into the tail; scanning the tail in place
-    ([`scan_count`][ordito._device.scan_count]) then leaves the total-terminated offsets, the
+    ([`scan_count`][ordito._common.scan_count]) then leaves the total-terminated offsets, the
     leading zero being the first one, with no separate count buffer. ``n`` must be positive.
     """
     offsets = _launch.zeros(n + 1, dtype=wp.int32, device=device)

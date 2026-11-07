@@ -42,7 +42,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import index_extrema, read_scalar, read_values, require_same_device
+from ordito._common import read_scalar, read_values, require_indices_below, require_same_device
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TOLERANCE_MOLLIFY
 from ordito.edges import edges_unique, face_edge_lengths, faces_to_edges
@@ -1546,14 +1546,9 @@ def _entry_edges(
         edges, _ = edges_unique(faces, n_vertices=vertices.size, validate=False)
     elif validate and int(edges.shape[0]) > 0:
         n_vertices = vertices.size
-        lowest, highest = index_extrema(edges)
-        if lowest < 0 or highest >= n_vertices:
-            # The range the message quotes.
-            lowest, highest = od.reduce.minmax(edges)
-            raise ValueError(
-                f"laplacian_entries: edges must reference vertex indices in [0, {n_vertices}), "
-                f"got a range of [{lowest}, {highest}]"
-            )
+        require_indices_below(
+            edges, n_vertices, "laplacian_entries: edges must reference vertex indices in"
+        )
     return edges
 
 

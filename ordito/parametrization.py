@@ -37,7 +37,7 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device
+from ordito._common import require_same_device
 from ordito.config import is_deterministic
 from ordito.kernels import parametrization as kernel_parametrization
 from ordito.kernels import scatter as kernel_scatter

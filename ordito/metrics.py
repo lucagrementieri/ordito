@@ -41,7 +41,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import prefers_tiled_reduction, read_values, require_same_device, slice_count
+from ordito._common import prefers_tiled_reduction, read_values, require_same_device, slice_count
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
@@ -1571,7 +1571,7 @@ def _launch_reduction_pair(
 
     The block-reducing ``*_tiled`` kernel runs on CUDA, the portable strided-slice one on CPU, where
     ``wp.launch_tiled`` runs a single lane per block (see
-    [`prefers_tiled_reduction`][ordito._device.prefers_tiled_reduction]). ``common_inputs`` is
+    [`prefers_tiled_reduction`][ordito._common.prefers_tiled_reduction]). ``common_inputs`` is
     every argument both kernels share, in the order they declare it, before the sliced kernel's
     extra ``slices`` count and both kernels' trailing ``loss``.
 

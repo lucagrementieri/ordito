@@ -24,7 +24,7 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._common import read_scalar, read_values, require_same_device
 from ordito.constants import INT32_MAX
 from ordito.kernels import texture as kernel_texture
 
@@ -490,7 +490,7 @@ def _raise_on_uv_flag(flag: wp.array[wp.int32]) -> None:
     for the samplers although it is a fixed share of a launch-bound call, because an out-of-range
     UV is not rejected downstream but silently *clamped* to the nearest edge pixel: dropping the
     guard trades a raised public-API error for a plausible wrong answer -- the same trade
-    ``_device.require_same_device`` is argued from. If a caller ever samples in a loop, the shape
+    ``_common.require_same_device`` is argued from. If a caller ever samples in a loop, the shape
     to add is a ``validate=False`` keyword **with** an in-repo caller passing it, not an
     unconditional removal.
 

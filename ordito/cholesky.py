@@ -45,7 +45,7 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, record_device_loop, require_same_device
+from ordito._common import read_scalar, read_values, record_device_loop, require_same_device
 from ordito.graph import connected_component_labels
 from ordito.kernels import cholesky as kernel_cholesky
 from ordito.kernels import grouping as kernel_grouping

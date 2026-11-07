@@ -8,7 +8,7 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device, scan_count
+from ordito._common import read_scalar, require_same_device, scan_count
 from ordito.config import is_deterministic
 from ordito.constants import TOLERANCE_PLANAR
 from ordito.kernels import proximity as kernel_proximity

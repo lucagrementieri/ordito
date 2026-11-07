@@ -24,7 +24,7 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device
+from ordito._common import require_same_device
 from ordito.kernels import array as kernel_array
 from ordito.kernels import normals as kernel_normals
 from ordito.kernels import scatter as kernel_scatter

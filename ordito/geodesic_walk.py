@@ -46,7 +46,7 @@ from warp._src.codegen import StructInstance
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device, run_device_loop
+from ordito._common import read_scalar, read_values, require_same_device, run_device_loop
 from ordito.halfedge import halfedge_twins, vertex_one_rings
 from ordito.kernels import array as kernel_array
 from ordito.kernels import geodesic_walk as kernel_geodesic_walk

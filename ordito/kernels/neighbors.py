@@ -27,7 +27,7 @@ wp.set_module_options({"enable_backward": False})
 # of attempts forces the complete scan, which is the whole-cloud brute force this change exists to
 # avoid. 16 doublings cover a query 3 x 10^4 spacings away from the cloud.
 # A ball walk over a hash grid with fewer queries than this runs a block a query on CUDA, its lanes
-# taking the query's cells side by side (``ball_count_in_cells``; ``_device.tiled_ball_walk``):
+# taking the query's cells side by side (``ball_count_in_cells``; ``_common.tiled_ball_walk``):
 # with few queries the one-thread walk's chain of dependent loads is the launch. Counts, call time
 # against the one-thread walk over cells of twice the radius (its own best below this): 0.60-0.76x
 # at 2.5 k to 40 k queries (``radius_outlier_mask``); the Gaussian measure's sum 0.40-0.69x. At
@@ -38,7 +38,7 @@ TILED_BALL_WALK_BLOCK_DIM = 32
 
 # Query counts below which a cell-local ball walk built here (the outlier masks of ``points``,
 # ``interpolation.interpolate_from_points``) takes hash-grid cells of twice the radius
-# (``_device.ball_grid_cell_width``). Call time against cells of the radius, at a radius of two
+# (``_common.ball_grid_cell_width``). Call time against cells of the radius, at a radius of two
 # mean edges, CUDA: 0.72-0.80x at 2.5 k points, 0.87-0.92x at 10 k, 0.85-0.95x at 40 k, and
 # 1.0-1.25x at 160 k scrambled (``plane_outlier_mask`` gains nothing anywhere and keeps the radius).
 # The CPU gains at every size, 0.63-0.95x up to 0.72-0.77x at 160 k, so it always takes them.
@@ -555,7 +555,7 @@ def query_ball_count_tiled(
     out_neighbor_counts: wp.array[wp.int32],
 ) -> None:
     # ``query_ball_count`` over a hash grid a block a query, a lane a share of its cells, for few
-    # queries (``_device.tiled_ball_walk``); the counts are the one-thread kernel's exactly. Its
+    # queries (``_common.tiled_ball_walk``); the counts are the one-thread kernel's exactly. Its
     # own module, being launched at its own width (``TILED_BALL_WALK_BLOCK_DIM``).
     t, lane = wp.tid()
     c = ball_count_in_cells(

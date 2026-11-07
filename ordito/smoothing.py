@@ -61,7 +61,7 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch, laplacian
-from ordito._device import (
+from ordito._common import (
     offsets_buffer,
     read_scalar,
     read_values,
@@ -3775,7 +3775,7 @@ def _solve_region_smooth(
         device=device,
     )
     # The counts past the leading zero; the trailing slot flags a scan that wrapped
-    # (``_device.scan_count_checked``).
+    # (``_common.scan_count_checked``).
     term_counts = _launch.view(term_offsets, 1, n_free + 1)
     rim = _SMOOTH_REGION_RIM_UNIT if unit else _SMOOTH_REGION_RIM_COTAN
     # Each free vertex's ring counted from the rim, for the preconditioner's lift; none (an empty

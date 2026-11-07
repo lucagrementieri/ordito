@@ -9,7 +9,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import index_extrema, read_scalar, scan_count
+from ordito._common import checked_index_bound, index_extrema, read_scalar, scan_count
 from ordito.array import bitcast_from_int, bitcast_to_int, copyto, gather, sort_pair_indices
 from ordito.constants import INDEX_RADIX_PAIR
 from ordito.kernels import array as kernel_array
@@ -808,10 +808,7 @@ def unique_faces(
     if max_index is None:
         # Sorting a face's corners does not change the buffer's extremes, so the range check and
         # the inferred radix read the input directly. The reduction ends in a host readback.
-        min_index, max_value = index_extrema(faces)
-        if min_index < 0:
-            raise ValueError(f"faces must be non-negative, got a minimum of {min_index}")
-        max_index = max_value + 1
+        max_index = checked_index_bound(*index_extrema(faces), "faces")
     # The orientation-free face keys and the identity payload, written straight into the leading
     # halves of the radix sort's double-width buffers.
     keys, order = _launch.sort_buffers(n_faces, wp.uint64, device)
@@ -1346,15 +1343,7 @@ def _row_radix(data: odt.Array2dInt32, max_index: int | None, validate: bool) ->
         # It is unavoidable when the radix has to be inferred, and skippable via validate=False
         # when the caller already knows the bound. Skipped for an empty ``data`` -- there is
         # nothing to validate, and ``reduce.minmax`` itself raises on an empty array.
-        min_data, max_data = index_extrema(data)
-        if min_data < 0:
-            raise ValueError(f"data must be non-negative, got a minimum of {min_data}")
-        if max_index is not None and max_data >= max_index:
-            raise ValueError(
-                f"data must be less than max_index {max_index}, got a maximum of {max_data}"
-            )
-        if max_index is None:
-            max_index = max_data + 1
+        max_index = checked_index_bound(*index_extrema(data), "data", max_index, "max_index")
     return max_index
 
 

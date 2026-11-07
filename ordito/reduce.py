@@ -11,7 +11,7 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._common import read_scalar, read_values, require_same_device
 from ordito.array import _sorted_copy, astype  # pyright: ignore[reportPrivateUsage]
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TILE_2D

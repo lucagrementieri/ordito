@@ -38,7 +38,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import (
+from ordito._common import (
     offsets_buffer,
     prefers_tiled_reduction,
     read_values,

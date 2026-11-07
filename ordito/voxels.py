@@ -65,7 +65,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._common import read_scalar, read_values, require_same_device
 from ordito.constants import INT32_MAX
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping

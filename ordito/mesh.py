@@ -13,7 +13,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_nonempty_mesh
+from ordito._common import read_scalar, require_nonempty_mesh
 from ordito.config import is_deterministic
 from ordito.kernels import mesh as kernel_mesh
 from ordito.kernels import transform as kernel_transform

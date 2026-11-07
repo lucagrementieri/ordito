@@ -25,7 +25,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device, scan_count
+from ordito._common import require_same_device, scan_count
 from ordito.adjacency import _face_component_forest  # pyright: ignore[reportPrivateUsage]
 from ordito.kernels import combine as kernel_combine
 

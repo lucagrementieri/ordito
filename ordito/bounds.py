@@ -27,7 +27,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_values, require_same_device, scan_count
+from ordito._common import read_values, require_same_device, scan_count
 from ordito.kernels import array as kernel_array
 from ordito.kernels import bounds as kernel_bounds
 from ordito.kernels import predicates as kernel_predicates

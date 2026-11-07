@@ -67,7 +67,8 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import (
+from ordito._common import (
+    checked_index_bound,
     index_extrema,
     read_scalar,
     read_values,
@@ -774,10 +775,7 @@ def resolve_duplicated_faces(
 
     if n_vertices is None:
         # The range check and the key radix ``grouping.unique_faces`` takes without a bound.
-        min_index, max_value = index_extrema(faces)
-        if min_index < 0:
-            raise ValueError(f"faces must be non-negative, got a minimum of {min_index}")
-        n_vertices = max_value + 1
+        n_vertices = checked_index_bound(*index_extrema(faces), "faces")
     if method in ("open3d", "meshlab"):
         return _first_occurrence_faces(faces, n_vertices, oriented=method == "open3d")
     # Orientation-free keys ordered as the sorted rows are lexicographically, with the identity

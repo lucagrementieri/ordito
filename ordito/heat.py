@@ -63,7 +63,7 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import (
+from ordito._common import (
     offsets_buffer,
     read_scalar,
     read_values,

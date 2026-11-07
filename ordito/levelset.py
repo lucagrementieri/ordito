@@ -46,7 +46,7 @@ from warp.geometry import sparse_marching_cubes
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device, scan_count
+from ordito._common import read_scalar, require_same_device, scan_count
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import levelset as kernel_levelset

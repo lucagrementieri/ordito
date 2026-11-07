@@ -95,7 +95,7 @@ by version, so the first suite run recompiles every module cold. Expect long str
 
 - **Run the CUDA suite with `-x -W default::DeprecationWarning`** in the background. The first
   failure is usually in `_launch.py`, because it touches the most private surface.
-- **Private internals.** For every `warp._src` name `ordito/_launch.py`, `_device.py` and any other
+- **Private internals.** For every `warp._src` name `ordito/_launch.py`, `_common.py` and any other
   module touch (`grep -rn "_src\.\|_ctx\.\|_types\.\|_codegen\." ordito`):
   1. Confirm it still exists.
   2. **Diff the Warp function that computes it** between the two tags. A name can survive with a

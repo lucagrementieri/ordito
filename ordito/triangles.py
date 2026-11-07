@@ -21,7 +21,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device
+from ordito._common import require_same_device
 from ordito.kernels import triangles as kernel_triangles
 
 

@@ -52,7 +52,7 @@ mutating would let one component accept two edges in a round and could close a c
 **Both loops carry their own condition so the wrapper can capture them**, and both do it through
 the package's shared round-loop slot table rather than one of their own -- ``array.LOOP_ROUND`` /
 ``LOOP_CONDITION`` / ``LOOP_PROGRESS``, closed by ``array.loop_advance`` and driven by
-``_device.run_device_loop``. A per-round host readback drains the pipeline the round's launches
+``_common.run_device_loop``. A per-round host readback drains the pipeline the round's launches
 just filled, and there were about thirty of them across the two loops; the wrapper now synchronizes
 three times in the whole call. Each loop passes its own round cap: the merge count and the claim
 flag are each a sound termination argument on their own, but a captured loop that fails one hangs

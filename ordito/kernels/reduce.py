@@ -160,7 +160,7 @@ def index_extrema(
     slot: wp.int32,
     out_extrema: wp.array[wp.int32],
 ) -> None:
-    # ``_device.index_extrema``: the minimum and maximum of the first ``n_indices`` entries of an
+    # ``_common.index_extrema``: the minimum and maximum of the first ``n_indices`` entries of an
     # index buffer, committed by ``atomic_min`` / ``atomic_max`` into ``out_extrema[slot]`` and
     # ``out_extrema[slot + 1]``, two zeroed slots -- of a buffer the caller allocates anyway where
     # it has one (``edges.edges_unique``'s sort payload). The zero seeds clamp the pair to

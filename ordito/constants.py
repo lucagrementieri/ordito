@@ -92,7 +92,7 @@ TILES_PER_BLOCK_1D = 16
 # dimension is that it does not.
 #
 # The optimum splits by device, so there are two values and
-# [`items_per_slice`][ordito._device.items_per_slice] picks between them; do not read either
+# [`items_per_slice`][ordito._common.items_per_slice] picks between them; do not read either
 # directly. CUDA wants long slices; CPU wants short ones. A *per-query* reduction wants a much
 # longer slice on both devices -- the query dimension already fills the device -- and sets its own
 # value locally (see ``proximity.ITEMS_PER_QUERY_SLICE``).

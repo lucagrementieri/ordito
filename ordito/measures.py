@@ -31,7 +31,7 @@ import warp as wp
 
 import ordito as od
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._common import read_scalar, read_values, require_same_device
 from ordito.constants import TILE_1D
 from ordito.kernels import measures as kernel_measures
 from ordito.kernels import reduce as kernel_reduce

@@ -30,7 +30,7 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device
+from ordito._common import require_same_device
 from ordito.halfedge import halfedge_twins, require_matching_twins, vertex_one_rings
 from ordito.kernels import tangent_space as kernel_tangent_space
 

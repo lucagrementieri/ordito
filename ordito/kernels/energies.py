@@ -586,7 +586,7 @@ HESSIAN_MASK_CORNERS = 64
 # count. Such a vertex's Hessian rows are dense over a star of thousands of vertices, and its
 # first-occurrence dedupe alone (``hessian_star_mask``, quadratic in the corners, in one thread)
 # would run for minutes before the count overflowed, so ``hessian_energy_counts`` refuses the fan
-# before the dedupe: it writes a negative count, which ``_device.scan_count_checked`` raises on.
+# before the dedupe: it writes a negative count, which ``_common.scan_count_checked`` raises on.
 HESSIAN_MAX_CORNERS = 46340
 
 

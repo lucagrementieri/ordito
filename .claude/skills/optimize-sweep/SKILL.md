@@ -110,7 +110,7 @@ already landed, so read that commit before writing your own version.
      (§3.4).
 7. **Read back less often.**
    - Each readback either carries its reason comment (§3.10) or goes.
-   - Merge small reads into one buffer read once (`_device.read_values`; `screened_poisson`
+   - Merge small reads into one buffer read once (`_common.read_values`; `screened_poisson`
      "reads its small values together").
    - Read totals off a scan's tail.
    - Take a size the host already knows from the host (`concatenate` reads its offsets off the

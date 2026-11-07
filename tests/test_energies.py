@@ -26,7 +26,7 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
-from ordito._device import scan_count_checked
+from ordito._common import scan_count_checked
 from tests.comparisons import sparse_allclose
 from tests.conftest import BOUNDARY_MESHES, MESHES
 from tests.conversions import (
@@ -434,7 +434,7 @@ def test_triplet_count_refuses_a_scan_that_wrapped(device: str) -> None:
     """
     Not a library comparison: the wrapped-scan guard of ``hessian_energy`` and ``smooth_region``.
 
-    ``_device.scan_count_checked`` keeps both from writing past their buffers.
+    ``_common.scan_count_checked`` keeps both from writing past their buffers.
 
     On ``lucy`` the Hessian's triplet total passes ``2**32``, so its ``int32`` scan wraps all the
     way round to a small positive total that sized the buffers short (CUDA error 700). Four counts

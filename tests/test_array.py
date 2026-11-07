@@ -17,7 +17,7 @@ import warp.sparse as wps
 
 import ordito as od
 import ordito.typing as odt
-from ordito import _device, _launch
+from ordito import _common, _launch
 from tests.conversions import bsr_to_dense, points_to_warp, scipy_to_bsr, warp_empty
 
 DType = TypeVar("DType")
@@ -1760,7 +1760,7 @@ def test_read_scalar_returns_a_detached_row_for_a_vector_dtype(device: str) -> N
     """
     Ordito against ordito: two reads of one vector array must not alias each other.
 
-    Not a library comparison: ``_device.read_scalar`` is a private readback helper with no
+    Not a library comparison: ``_common.read_scalar`` is a private readback helper with no
     counterpart in any reference. The invariant is that the value survives the *next* read, which
     is what a shared per-dtype scratch buffer threatens: ``.numpy()`` on a ``wp.array[wp.vec3]``
     yields a view, so without a copy the first read would take the second's value. That defect is
@@ -1774,15 +1774,15 @@ def test_read_scalar_returns_a_detached_row_for_a_vector_dtype(device: str) -> N
         device=device,
     )
 
-    first = _device.read_scalar(path_wp, 0)
-    last = _device.read_scalar(path_wp, 2)
+    first = _common.read_scalar(path_wp, 0)
+    last = _common.read_scalar(path_wp, 2)
 
     assert np.array_equal(first, np.array([0.0, 0.0, 0.0], dtype=np.float32))
     assert np.array_equal(last, np.array([9.0, 8.0, 7.0], dtype=np.float32))
     # The scalar path is the one that never needed the copy; assert it still reads correctly.
     counts_wp = wp.array(np.array([4, 5, 6], dtype=np.int32), dtype=wp.int32, device=device)
-    assert int(_device.read_scalar(counts_wp, 0)) == 4
-    assert int(_device.read_scalar(counts_wp)) == 6
+    assert int(_common.read_scalar(counts_wp, 0)) == 4
+    assert int(_common.read_scalar(counts_wp)) == 6
 
 
 def test_cross_device_inputs_are_rejected() -> None:
@@ -1808,7 +1808,7 @@ def test_cross_device_inputs_are_rejected() -> None:
             pack([cpu_wp, cuda_wp])
         pack([cpu_wp, cpu_wp])  # a same-device sequence still goes through
     # A public two-array function, standing in for every one wired to
-    # ``_device.require_same_device`` (the helper itself is pinned below).
+    # ``_common.require_same_device`` (the helper itself is pinned below).
     with pytest.raises(RuntimeError, match="one device"):
         od.array.allclose(cpu_wp, cuda_wp)
     # A matrix and its values: ``bsr_with_values`` checks the values against the pattern's device.
@@ -1821,7 +1821,7 @@ def test_cross_device_inputs_are_rejected() -> None:
 
 def test_require_same_device_flags_a_mismatch_and_ignores_none(device: str) -> None:
     """
-    Not a library comparison: ``_device.require_same_device`` has no reference-library equivalent.
+    Not a library comparison: ``_common.require_same_device`` has no reference-library equivalent.
 
     No other library shares Warp's launch-time device hazard, so there is nothing to compare its
     verdict against. Pins its three contracts directly instead: a ``None`` argument is skipped
@@ -1831,16 +1831,16 @@ def test_require_same_device_flags_a_mismatch_and_ignores_none(device: str) -> N
     a_wp = wp.zeros(3, dtype=wp.float32, device=device)
     b_wp = wp.zeros(3, dtype=wp.float32, device=device)
 
-    _device.require_same_device(a=a_wp, b=b_wp, unset=None)  # no raise
-    _device.require_same_device(loops=[a_wp, b_wp, None])  # no raise
+    _common.require_same_device(a=a_wp, b=b_wp, unset=None)  # no raise
+    _common.require_same_device(loops=[a_wp, b_wp, None])  # no raise
 
     if not wp.is_cuda_available():
         pytest.skip("needs both devices to construct a mismatch")
     c_wp = wp.zeros(3, dtype=wp.float32, device="cuda:0" if device == "cpu" else "cpu")
     with pytest.raises(RuntimeError, match=r"'a' is on .+ while 'c' is on"):
-        _device.require_same_device(a=a_wp, c=c_wp)
+        _common.require_same_device(a=a_wp, c=c_wp)
     with pytest.raises(RuntimeError, match=r"'loops\[0\]' is on .+ while 'loops\[1\]' is on"):
-        _device.require_same_device(loops=[a_wp, c_wp])
+        _common.require_same_device(loops=[a_wp, c_wp])
 
 
 _EMPTY_INPUT_CASES = [

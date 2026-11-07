@@ -119,7 +119,7 @@ def _ordito_site(depth: int = 2) -> str:
         frame = frame.f_back if frame is not None else None
     while frame is not None:
         name = frame.f_code.co_filename
-        if name.startswith(_PACKAGE) and not name.endswith(("/_launch.py", "/_device.py")):
+        if name.startswith(_PACKAGE) and not name.endswith(("/_launch.py", "/_common.py")):
             return f"{name.removeprefix(_PACKAGE)}:{frame.f_lineno}"
         frame = frame.f_back
     return "?"
@@ -145,7 +145,7 @@ def _count_readbacks() -> None:
 
         def counted(self: Any, *args: Any, _original: Any = original, **kwargs: Any) -> Any:
             # Only on a CPU row: on CUDA a readback is the ``d2h`` copy, and the host view of the
-            # pinned scratch ``_device.read_scalar`` copies into would count it twice.
+            # pinned scratch ``_common.read_scalar`` copies into would count it twice.
             if (
                 _STATE["armed"]
                 and _STATE["cpu_row"]

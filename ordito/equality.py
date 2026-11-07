@@ -34,7 +34,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import index_extrema, read_scalar, require_same_device
+from ordito._common import checked_index_bound, index_extrema, read_scalar, require_same_device
 from ordito.constants import ALLCLOSE_ATOL, ALLCLOSE_RTOL
 from ordito.kernels import equality as kernel_equality
 
@@ -665,7 +665,4 @@ def _require_triangles(**named: wp.array[wp.int32]) -> None:
 def _index_bound(faces: wp.array[wp.int32]) -> int:
     """One past the largest index of the non-empty ``faces``, which must hold no negative one."""
     # A reduction with a host readback: the bound sizes the sort keys.
-    min_index, max_index = index_extrema(faces)
-    if min_index < 0:
-        raise ValueError(f"faces must be non-negative, got a minimum of {min_index}")
-    return max_index + 1
+    return checked_index_bound(*index_extrema(faces), "faces")

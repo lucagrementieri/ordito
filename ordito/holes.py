@@ -78,7 +78,7 @@ from warp._src.codegen import StructInstance
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._common import read_scalar, read_values, require_same_device
 from ordito.config import is_deterministic
 from ordito.constants import TOLERANCE_ZERO
 from ordito.kernels import boundary as kernel_boundary

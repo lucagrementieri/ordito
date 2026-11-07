@@ -22,7 +22,7 @@ import warp as wp
 
 import ordito as od
 from ordito import _launch
-from ordito._device import index_extrema, read_scalar, read_values, require_same_device
+from ordito._common import index_extrema, read_scalar, read_values, require_same_device
 from ordito.adjacency import _sorted_face_edge_buffers  # pyright: ignore[reportPrivateUsage]
 from ordito.constants import INDEX_RADIX_PAIR, INT32_MAX
 from ordito.kernels import halfedge as kernel_halfedge

@@ -41,7 +41,7 @@ from warp.geometry import delaunay_edge_flip
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import (
+from ordito._common import (
     prefers_tiled_reduction,
     read_scalar,
     read_values,
