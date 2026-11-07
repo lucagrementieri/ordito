@@ -32,9 +32,10 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_nonempty_mesh, require_same_device
+from ordito._device import ball_grid_cell_width, require_nonempty_mesh, require_same_device
 from ordito.kernels import array as kernel_array
 from ordito.kernels import interpolation as kernel_interpolation
+from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import scatter as kernel_scatter
 
 DType = TypeVar("DType")
@@ -641,9 +642,16 @@ def interpolate_from_points(
     inverse_scale = wp.float32(float(sharpness) / float(radius))
     if k is None:
         # The mean is reduced during the grid walk, so no neighbour list is ever materialized: the
-        # same hash grid and predicate ``query_ball_with_offsets`` uses, visiting the neighbours in
-        # the order its list would hold them.
-        grid = od.neighbors.hashgrid_from_points(source_points, float(radius))
+        # predicate ``query_ball_with_offsets`` applies, over a grid whose cells suit the query
+        # count.
+        cell = ball_grid_cell_width(
+            float(radius),
+            n_query,
+            device,
+            kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CUDA,
+            kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CPU,
+        )
+        grid = od.neighbors.hashgrid_from_points(source_points, cell)
         _launch.launch(
             kernel_interpolation.INTERPOLATE_FROM_POINTS_IN_BALL[source_values.dtype],
             dim=n_query,

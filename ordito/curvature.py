@@ -36,7 +36,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device
+from ordito._device import ball_grid_cell_width, require_same_device
 from ordito.config import is_deterministic
 from ordito.kernels import curvature as kernel_curvature
 from ordito.kernels import predicates as kernel_predicates
@@ -665,8 +665,9 @@ def discrete_gaussian_curvature(
         device=device,
     )
     # Few queries on CUDA take cells twice the radius, so each query meets fewer cells.
-    wide = points.size < kernel_curvature.GAUSSIAN_WIDE_CELL_MAX_QUERIES
-    cell = float(radius) * (2.0 if wide and not wp.get_device(device).is_cpu else 1.0)
+    cell = ball_grid_cell_width(
+        float(radius), points.size, device, kernel_curvature.GAUSSIAN_WIDE_CELL_MAX_QUERIES, 0
+    )
     grid = od.neighbors.hashgrid_from_points(vertices, cell)
     gauss_curvature = _launch.empty(points.size, dtype=wp.float32, device=device)
     _launch.launch(

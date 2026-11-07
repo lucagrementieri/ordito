@@ -83,6 +83,23 @@ def prefers_tiled_reduction(device: wp.DeviceLike) -> bool:
     return wp.get_device(device).is_cuda or wp.config.enable_cpu_blocks
 
 
+def ball_grid_cell_width(
+    radius: float, n_queries: int, device: wp.DeviceLike, wide_below_cuda: int, wide_below_cpu: int
+) -> float:
+    """
+    Cell width for a hash grid that ball queries of ``radius`` walk: the radius or twice it.
+
+    At twice the radius a query's box is one cell wide and meets 8 cells rather than up to 27,
+    which shortens the walk when queries are few, while larger cells hold more candidates to reject
+    when queries are many. Twice the radius below ``wide_below_cuda`` queries on a CUDA device and
+    below ``wide_below_cpu`` on the CPU; each caller passes the thresholds measured for its own
+    walk. The answer of a ball query does not depend on the cell width, only its cost and the
+    order in which a walk meets the points.
+    """
+    wide_below = wide_below_cpu if wp.get_device(device).is_cpu else wide_below_cuda
+    return 2.0 * radius if n_queries < wide_below else radius
+
+
 def run_device_loop(
     device: wp.DeviceLike, condition: wp.array[wp.int32, Any], body: Callable[[], None]
 ) -> None:

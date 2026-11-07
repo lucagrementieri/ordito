@@ -26,6 +26,15 @@ wp.set_module_options({"enable_backward": False})
 # scan sum to less than that scan costs, so a spare attempt is nearly free — whereas running *out*
 # of attempts forces the complete scan, which is the whole-cloud brute force this change exists to
 # avoid. 16 doublings cover a query 3 x 10^4 spacings away from the cloud.
+# Query counts below which a cell-local ball walk built here (the outlier masks of ``points``,
+# ``interpolation.interpolate_from_points``) takes hash-grid cells of twice the radius
+# (``_device.ball_grid_cell_width``). Call time against cells of the radius, at a radius of two
+# mean edges, CUDA: 0.72-0.80x at 2.5 k points, 0.87-0.92x at 10 k, 0.85-0.95x at 40 k, and
+# 1.0-1.25x at 160 k scrambled (``plane_outlier_mask`` gains nothing anywhere and keeps the radius).
+# The CPU gains at every size, 0.63-0.95x up to 0.72-0.77x at 160 k, so it always takes them.
+BALL_GRID_WIDE_CELL_QUERIES_CUDA = 1 << 16
+BALL_GRID_WIDE_CELL_QUERIES_CPU = 1 << 31
+
 MAX_SEARCH_ATTEMPTS = wp.int32(16)
 RADIUS_GROWTH = wp.float32(2.0)
 

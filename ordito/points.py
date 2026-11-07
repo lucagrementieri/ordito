@@ -58,11 +58,18 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_values, require_same_device, run_device_loop, slice_count
+from ordito._device import (
+    ball_grid_cell_width,
+    read_values,
+    require_same_device,
+    run_device_loop,
+    slice_count,
+)
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TOLERANCE_ZERO
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
+from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import points as kernel_points
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import reduce as kernel_reduce
@@ -1228,7 +1235,16 @@ def radius_outlier_mask(
         return _launch.zeros(0, dtype=wp.bool, device=device)
 
     if grid is None:
-        grid = od.neighbors.hashgrid_from_points(points, radius)
+        grid = od.neighbors.hashgrid_from_points(
+            points,
+            ball_grid_cell_width(
+                radius,
+                n,
+                device,
+                kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CUDA,
+                kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CPU,
+            ),
+        )
     # A self-query counts the point itself once, at distance 0 -- which is what makes
     # ``min_neighbors`` comparable with Open3D's ``nb_points`` without an off-by-one correction.
     out_mask = _launch.empty(n, dtype=wp.bool, device=device)
@@ -1313,7 +1329,20 @@ def cluster_outlier_mask(
     n = points.size
     if n == 0:
         return _launch.zeros(0, dtype=wp.bool, device=device)
-    accelerator = od.neighbors.hashgrid_from_points(points, radius) if grid is None else grid
+    accelerator = (
+        od.neighbors.hashgrid_from_points(
+            points,
+            ball_grid_cell_width(
+                radius,
+                n,
+                device,
+                kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CUDA,
+                kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CPU,
+            ),
+        )
+        if grid is None
+        else grid
+    )
     neighbors, _, offsets = od.neighbors.query_ball_with_offsets(
         points, points, radius, accelerator=accelerator
     )
@@ -1515,7 +1544,20 @@ def normal_outlier_mask(
     n = points.size
     if n == 0:
         return _launch.zeros(0, dtype=wp.bool, device=device)
-    accelerator = od.neighbors.hashgrid_from_points(points, radius) if grid is None else grid
+    accelerator = (
+        od.neighbors.hashgrid_from_points(
+            points,
+            ball_grid_cell_width(
+                radius,
+                n,
+                device,
+                kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CUDA,
+                kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CPU,
+            ),
+        )
+        if grid is None
+        else grid
+    )
     out_mask = _launch.empty(n, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_points.normal_outlier_flags,
