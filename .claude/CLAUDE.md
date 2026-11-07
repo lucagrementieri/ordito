@@ -1074,12 +1074,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   buffer read once would do; the one-component `split` pays `submesh_from_face_indices`' memset
   for an identity face order. Each is a few percent of the call at the benchmark sizes; price
   before acting.
-- **Few-query ball walks outside `curvature` (2026-11-06 sweep):** a BVH's leaf size and a hash
-  grid's cell of twice the radius shortened `discrete_mean_curvature`'s and
-  `discrete_gaussian_curvature`'s walks (`kernels/curvature.MEAN_CURVATURE_BVH_LEAF_SIZE`,
-  `GAUSSIAN_WIDE_CELL_MAX_QUERIES`) and are not yet priced at the other ball walks; both lose
-  where queries are many. A cooperative walk for the remaining latency meets §12.2's
-  overfull-leaf hazard.
+- **Few-query ball walks, remaining latency (2026-11-07):** leaf sizes and the shared cell rule
+  (`_device.ball_grid_cell_width`) are applied wherever they paid; what is left of a few-query
+  walk's time is one thread's chain of loads, and splitting a query across lanes meets §12.2's
+  overfull-leaf hazard on a BVH and has no per-cell entry point on a hash grid. Not applied: the
+  public `query_ball` family, where a different cell reorders unsorted rows a caller sees.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
