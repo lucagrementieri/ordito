@@ -1,5 +1,6 @@
 import warp as wp
 
+from ordito.kernels.adjacency import edge_endpoints
 from ordito.kernels.array import (
     OverloadTable,
     binary_search_index,
@@ -9,6 +10,7 @@ from ordito.kernels.array import (
     store_coo_key,
     to_vec3d,
 )
+from ordito.kernels.edges import edge_row_length
 from ordito.kernels.halfedge import halfedge_destination, halfedge_endpoints, halfedge_prev
 from ordito.kernels.laplacian import cotmatrix_row, store_half_cotangents
 from ordito.kernels.predicates import (
@@ -69,10 +71,45 @@ class EdgeDeviationTerms:
 
 
 @wp.func
-def edge_deviation_term(local: wp.int32, offset: wp.int32, terms: EdgeDeviationTerms) -> wp.float32:
-    # ``(x - L0)^2`` for edge ``offset + local``, the per-edge term of the edge-length regularizer.
-    difference = terms.lengths[offset + local] - terms.target
+def edge_deviation(length: wp.float32, target: wp.float32) -> wp.float32:
+    # ``(x - L0)^2``, the per-edge term of the edge-length regularizer.
+    difference = length - target
     return difference * difference
+
+
+@wp.func
+def edge_deviation_term(local: wp.int32, offset: wp.int32, terms: EdgeDeviationTerms) -> wp.float32:
+    # ``edge_deviation`` of edge ``offset + local`` of a length table.
+    return edge_deviation(terms.lengths[offset + local], terms.target)
+
+
+@wp.struct
+class EdgeDeviationRunTerms:
+    """``edge_length_loss``'s halfedge count, sorted edge keys, order, faces, positions, ``L0``."""
+
+    n: wp.int32
+    keys: wp.array[wp.uint64]
+    order: wp.array[wp.int32]
+    faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3]
+    target: wp.float32
+
+
+@wp.func
+def edge_deviation_run_term(
+    local: wp.int32, offset: wp.int32, terms: EdgeDeviationRunTerms
+) -> wp.vec2:
+    # ``(edge_deviation, 1)`` at the first sorted halfedge of each unique edge's run, zero
+    # elsewhere: the sum and the edge count in one pass over the sorted halfedges, with the length
+    # ``edges.edges_unique_length`` would emit for the run (``edges.edge_row_length``), so neither
+    # the length table nor its count readback exists.
+    p = offset + local
+    if not sorted_run_start(terms.keys, p):
+        return wp.vec2(0.0, 0.0)
+    lo, hi = edge_endpoints(terms.faces, terms.order[p])
+    return wp.vec2(
+        edge_deviation(edge_row_length(terms.vertices, lo, hi), terms.target), wp.float32(1.0)
+    )
 
 
 @wp.struct
@@ -255,6 +292,9 @@ def laplacian_smoothing_cot_norms(
 # sum handed to ``reduce.sum_of_terms`` (by ``energies._mean_of_terms`` for the ``float32`` ones;
 # the normal-consistency pair sum and pair count share a ``wp.vec2``).
 EDGE_DEVIATION_SUM = term_sum_1d(edge_deviation_term, EdgeDeviationTerms, "edge_deviation_sum")
+EDGE_DEVIATION_RUN_SUM = term_sum_1d(
+    edge_deviation_run_term, EdgeDeviationRunTerms, "edge_deviation_run_sum", wp.vec2
+)
 NORMAL_CONSISTENCY_SUM = term_sum_1d(
     edge_pair_consistency_term, NormalConsistencyTerms, "normal_consistency_sum", wp.vec2
 )

@@ -2522,6 +2522,10 @@ def mumford_shah_face_keys(
     # with the face across its halfedge ``3 f + k`` (the sentinel on a rim or a non-manifold edge,
     # which have no partner face), slot ``4 f + 3`` its diagonal. The payload is the slot, which
     # ``mumford_shah_face_values`` decodes.
+    #
+    # Declined: a pair-major slot layout (``k n_faces + f``), for a warp's stores contiguous. The
+    # pass runs once a call ahead of the iterated solve: 0.05 of 123 ms device time on ``dragon``,
+    # 0.2 % on ``sphere_small``.
     f = wp.int32(wp.tid())
     for k in range(3):
         mate = mates[3 * f + k]
@@ -2669,6 +2673,10 @@ def normals_to_points_keys(
     # The vertex update's normal equations ``(w^2 I + M^T M)`` for ``array.csr_from_coo_keys``:
     # nine corner-pair contributions per face at slots ``9 f + 3 i + j``, then every vertex's
     # guide term ``w^2`` at ``9 n_faces + v``.
+    #
+    # Declined: a pair-major slot layout (``(3 i + j) n_faces + f``), for a warp's stores
+    # contiguous. The pass runs once a call: 0.5 of 182 ms device time in ``filter_two_step`` on
+    # ``dragon``, 0.1 % on ``sphere_small``.
     t = wp.int32(wp.tid())
     if t < n_faces:
         for i in range(3):
