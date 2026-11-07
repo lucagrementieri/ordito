@@ -345,6 +345,66 @@ def query_bvh_box_neighbors(
 
 
 @wp.func
+def grid_cell_coord(v: wp.float32) -> wp.int32:
+    # The hash-grid cell coordinate of a position already scaled by the inverse cell width, as
+    # ``wp.hash_grid_query`` takes it (Warp's ``hash_grid_cell_coord``): the floor, saturated to
+    # ``[INT_MIN, INT_MAX - 1]``, and 0 for NaN. A walk over these cells meets exactly the query's.
+    c = wp.floor(v)
+    if c != c:
+        return wp.int32(0)
+    if c >= wp.float32(2147483648.0):
+        return wp.int32(2147483646)
+    if c < wp.float32(-2147483648.0):
+        return wp.int32(-2147483647) - wp.int32(1)
+    return wp.int32(c)
+
+
+@wp.func
+def ball_cell_box(
+    center: wp.vec3, radius: wp.float32, cell_width_inv: wp.float32, resolution: wp.int32
+) -> tuple[wp.vec3i, wp.vec3i]:
+    # The first cell and the cell count along each axis of the box ``wp.hash_grid_query(grid,
+    # center, radius)`` walks, for a ball walk that hands its cells to several lanes
+    # (``ball_cell_probe``). ``cell_width_inv`` is the grid's ``float32(1 / cell_width)`` and
+    # ``resolution`` its cells along an axis: like the query, a box never spans more than that, so
+    # no bucket is walked twice.
+    first = wp.vec3i(
+        grid_cell_coord((center[0] - radius) * cell_width_inv),
+        grid_cell_coord((center[1] - radius) * cell_width_inv),
+        grid_cell_coord((center[2] - radius) * cell_width_inv),
+    )
+    last = wp.vec3i(
+        grid_cell_coord((center[0] + radius) * cell_width_inv),
+        grid_cell_coord((center[1] + radius) * cell_width_inv),
+        grid_cell_coord((center[2] + radius) * cell_width_inv),
+    )
+    counts = wp.vec3i()
+    for axis in range(3):
+        counts[axis] = wp.min(
+            wp.int32(wp.int64(last[axis]) - wp.int64(first[axis]) + wp.int64(1)), resolution
+        )
+    return first, counts
+
+
+@wp.func
+def ball_cell_probe(
+    first: wp.vec3i, counts: wp.vec3i, c: wp.int32, cell_width: wp.float32
+) -> wp.vec3:
+    # The centre of the box's ``c``-th cell (x fastest). Warp has no per-cell hash-grid entry point,
+    # so a lane walks one cell as ``wp.hash_grid_query(grid, probe, cell_width / 4)``, whose box
+    # lies inside that cell: the lanes' cells together are exactly the whole query's.
+    i = first[0] + c % counts[0]
+    j = first[1] + (c // counts[0]) % counts[1]
+    k = first[2] + c // (counts[0] * counts[1])
+    half = wp.float32(0.5)
+    return wp.vec3(
+        (wp.float32(i) + half) * cell_width,
+        (wp.float32(j) + half) * cell_width,
+        (wp.float32(k) + half) * cell_width,
+    )
+
+
+@wp.func
 def in_ball(offset: wp.vec3, radius: wp.float32) -> wp.bool:
     # The ball predicate every hash-grid ball walk applies to a candidate ``points[j] - q``: the
     # squared form, for the reasons ``ball_count_in_radius`` gives. The count, the collect and

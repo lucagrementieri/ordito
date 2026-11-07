@@ -6,7 +6,7 @@ from ordito.kernels.algorithms.bfs import ball_row_bounds
 from ordito.kernels.array import declare_map_signatures, map_probe
 from ordito.kernels.halfedge import halfedge_destination, halfedge_prev
 from ordito.kernels.linalg import solve_normal_equations
-from ordito.kernels.neighbors import in_ball
+from ordito.kernels.neighbors import ball_cell_box, ball_cell_probe, in_ball
 from ordito.kernels.normals import gathered_angle_weighted_normal
 from ordito.kernels.predicates import (
     angle_defect,
@@ -980,13 +980,17 @@ def scatter_corner_angles(
 # ---------------------------------------------------------------------------
 
 
-# Below this many queries on CUDA, ``ball_angle_defect_sum``'s hash grid takes cells twice the
-# radius: a query's box is then one cell wide and meets 8 cells rather than up to 27, which
-# shortens each thread's chain of dependent loads, and with few queries that latency is the
-# launch. Walk plus build, cell 2r over r: 0.64-0.72x at 2.5 k queries, 0.87-0.98x at 10 k; at 40 k
-# 0.87-1.05x, and 1.1-1.5x on scrambled meshes from 160 k, where the larger cells' extra candidates
-# cost bandwidth. CPU 0.80-1.06x, kept at r.
-GAUSSIAN_WIDE_CELL_MAX_QUERIES = 1 << 14
+# Below this many queries on CUDA ``ball_angle_defect_sum_tiled`` takes the walk: a block a query,
+# a lane a hash-grid cell. With few queries one thread's chain of dependent loads is the launch,
+# and the lanes walk the cells side by side. Device time against the one-thread walk (over cells
+# of the radius, or of twice it below 16 k queries, the faster of the two), byte-identical:
+# 0.18-0.40x at 2.5 k queries, 0.19-0.24x at 10 k, 0.45-0.56x at 40 k scrambled, 0.70-0.75x at
+# 160 k and 437 k scrambled, but 1.6-2.3x on ordered dragon, whose one-thread walks already share
+# cache lines. Cells of half the radius or 64 lanes were within 10-20 % either way; 8 lanes over
+# cells of twice it lost 1.3-2x. The one-thread walk once took cells of twice the radius below
+# 16 k queries (0.64-0.98x); this path supersedes it.
+GAUSSIAN_TILED_MAX_QUERIES = 1 << 16
+GAUSSIAN_TILED_BLOCK_DIM = 32
 
 
 @wp.kernel
@@ -1018,6 +1022,39 @@ def ball_angle_defect_sum(
         if in_ball(vertices[v] - p, radius):
             total = total + angle_defect(angle_sum[v])
     out_curvature[q] = wp.float32(total)
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def ball_angle_defect_sum_tiled(
+    vertices: wp.array[wp.vec3],
+    angle_sum: wp.array[wp.float64],
+    points: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    cell_width: wp.float32,
+    cell_width_inv: wp.float32,
+    resolution: wp.int32,
+    out_curvature: wp.array[wp.float32],
+) -> None:
+    # ``ball_angle_defect_sum`` a block a query: each lane walks its share of the query's cells
+    # (``kernels.neighbors.ball_cell_box`` / ``ball_cell_probe``, strided by ``wp.block_dim()``)
+    # under the same predicate and defect, and ``wp.tile_sum`` adds the lanes' ``float64`` partials
+    # in a fixed tree. Its own module: launched at ``GAUSSIAN_TILED_BLOCK_DIM`` lanes, which would
+    # rebuild this one. On the CPU a block is one lane, which walks every cell.
+    q, lane = wp.tid()
+    p = points[q]
+    first, counts = ball_cell_box(p, radius, cell_width_inv, resolution)
+    partial = wp.float64(0.0)
+    for c in range(lane, counts[0] * counts[1] * counts[2], wp.block_dim()):
+        probe = ball_cell_probe(first, counts, c, cell_width)
+        v = wp.int32(0)
+        query = wp.hash_grid_query(grid_id, probe, cell_width * wp.float32(0.25))
+        while wp.hash_grid_query_next(query, v):
+            if in_ball(vertices[v] - p, radius):
+                partial = partial + angle_defect(angle_sum[v])
+    total = wp.tile_sum(wp.tile(partial))
+    if lane == 0:
+        out_curvature[q] = wp.float32(total[0])
 
 
 @wp.func

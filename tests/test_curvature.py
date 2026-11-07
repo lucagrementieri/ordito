@@ -731,6 +731,37 @@ def test_discrete_gaussian_curvature(
     assert np.allclose(gauss_curvature_wp.numpy(), gauss_curvature_tm, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("radius", [0.02, 0.3, 0.6])
+def test_discrete_gaussian_curvature_few_query_walk_matches_one_thread_walk(
+    sphere_irregular: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch, radius: float
+) -> None:
+    """
+    Ordito against ordito: the few-query walk equals the one-thread walk bit for bit.
+
+    The few-query walk is a block a query, a lane a hash-grid cell. trimesh is the oracle of the
+    measure itself (``test_discrete_gaussian_curvature``); this pins the two CUDA walks to each
+    other, the gate forced off for the second call. The queries scatter in and around the mesh
+    (some outside every ball, some on negative coordinates), and the radii run from under the
+    mesh's spacing to most of the mesh. On the CPU both calls take the one-thread walk.
+    """
+    mesh_tm, mesh_wp = sphere_irregular
+    rng = np.random.default_rng(11)
+    low, high = mesh_tm.bounds
+    points_np = low - 0.2 * (high - low) + rng.random((500, 3)) * 1.4 * (high - low)
+    points_wp = points_to_warp(points_np, mesh_wp.device)
+    angles_wp = od.triangles.face_angles(mesh_wp.points, mesh_wp.indices)
+    scale = float(np.linalg.norm(high - low))
+    few_np = od.curvature.discrete_gaussian_curvature(
+        points_wp, mesh_wp.points, mesh_wp.indices, angles_wp, radius * scale
+    ).numpy()
+    monkeypatch.setattr(od.curvature.kernel_curvature, "GAUSSIAN_TILED_MAX_QUERIES", 0)
+    one_np = od.curvature.discrete_gaussian_curvature(
+        points_wp, mesh_wp.points, mesh_wp.indices, angles_wp, radius * scale
+    ).numpy()
+    assert np.ptp(one_np) > 1e-3
+    assert np.array_equal(few_np, one_np)
+
+
 def test_discrete_gaussian_curvature_edge_cases(saddle_graded: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: the face-angle table check, and the empty inputs.

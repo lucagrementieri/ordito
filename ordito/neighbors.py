@@ -197,7 +197,8 @@ def hashgrid_from_points(
         and related kernels. The cell width is recorded on the returned object as
         ``cell_width``, which
         [`query_nearest`][ordito.neighbors.query_nearest] reads back to size its
-        search (``warp.HashGrid`` itself does not keep it).
+        search, and the resolution along each axis as ``resolution`` (``warp.HashGrid`` itself
+        keeps neither).
 
     See Also
     --------
@@ -227,6 +228,7 @@ def hashgrid_from_points(
     grid.build(points, radius)
     # Documented on the returned object; ``warp.HashGrid`` declares no such attribute.
     grid.cell_width = float(radius)  # pyright: ignore[reportAttributeAccessIssue]
+    grid.resolution = bins  # pyright: ignore[reportAttributeAccessIssue]
     return grid
 
 
