@@ -1145,6 +1145,14 @@ def ball_mean_curvature(
 # the spacing (its documented intent) moved ``sphere_irregular``'s fields by 8e-06. At 1e-10 the
 # answer is MeshLab's to ``float32`` rounding and most points stop after a few steps (15 steps
 # cost 2.5x three on a 2 562-point sphere).
+# Leaf size of the BVH over the samples' ball boxes. Every MLS evaluation walks it to a point, up
+# to twenty times a point, and leaves of one end each walk at the boxes that hold the point:
+# 0.81-0.88x the default leaf of 4 on CUDA (APSS and RIMLS, sphere_small to dragon), leaf 8 within
+# 2 % of it for RIMLS and leaf 2 1.2-1.4x. Values move by summation order alone, less than a
+# one-ulp move of the points moves them. The CPU keeps 4 (leaf 1 1.03-1.08x there).
+MLS_BVH_LEAF_SIZE_CUDA = 1
+MLS_BVH_LEAF_SIZE_CPU = 4
+
 MLS_PROJECTION_ITERATIONS = 15
 MLS_PROJECTION_TOLERANCE = wp.float64(1e-10)
 # APSS's spherical parameter: 1 fits pure spheres (MeshLab's default).

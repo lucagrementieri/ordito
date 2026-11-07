@@ -965,7 +965,12 @@ def mls_principal_curvature(
         outputs=[radii, lower, upper],
         device=device,
     )
-    bvh = od.neighbors.bvh_from_bounds(lower, upper)
+    leaf_size = (
+        kernel_curvature.MLS_BVH_LEAF_SIZE_CPU
+        if wp.get_device(device).is_cpu
+        else kernel_curvature.MLS_BVH_LEAF_SIZE_CUDA
+    )
+    bvh = od.neighbors.bvh_from_bounds(lower, upper, leaf_size=leaf_size)
     _launch.launch(
         kernel_curvature.apss_principal_curvature
         if method == "apss"
