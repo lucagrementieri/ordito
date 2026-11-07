@@ -3,7 +3,7 @@ from typing import Any
 import warp as wp
 
 from ordito.kernels.array import OverloadTable, trilinear_cell, trilinear_corner, trilinear_weight
-from ordito.kernels.neighbors import in_ball
+from ordito.kernels.neighbors import ball_cell_box, ball_cell_probe, in_ball
 from ordito.kernels.proximity import closest_point_query
 from ordito.kernels.triangles import face_vertices, point_barycentric
 
@@ -187,9 +187,8 @@ def interpolate_from_points_in_ball(
     # are ``kernels.neighbors.ball_collect``'s hash-grid branch, so a query folds exactly the
     # neighbours, in exactly the order, that CSR would have listed -- with no count pass, scan,
     # readback or two neighbour-sized buffers in between. What still differs is the body: the
-    # collect writes each neighbour out, this folds it in. Not walked a block a query for few
-    # queries (``neighbors.ball_count_in_cells``): a coincident source wins in walk order, which
-    # lanes over separate cells would not keep.
+    # collect writes each neighbour out, this folds it in. ``interpolate_from_points_in_ball_tiled``
+    # is the same mean with the ball's cells walked by a block's lanes, for few queries.
     q = wp.int32(wp.tid())
     p = query_points[q]
     accumulated = source_values[0] * wp.float32(0.0)
@@ -204,6 +203,56 @@ def interpolate_from_points_in_ball(
                 source_values, j, wp.length(offset), inverse_scale, accumulated, total, coincident
             )
     write_gaussian_mean(source_values, q, accumulated, total, coincident, out_values)
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def interpolate_from_points_in_ball_tiled(
+    source_points: wp.array[wp.vec3],
+    source_values: wp.array[Any],
+    query_points: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    inverse_scale: wp.float32,
+    cell_width: wp.float32,
+    cell_width_inv: wp.float32,
+    resolution: wp.int32,
+    out_values: wp.array[Any],
+) -> None:
+    # ``interpolate_from_points_in_ball`` a block a query, for few queries: each lane folds the
+    # sources of its share of the ball's hash-grid cells (``neighbors.ball_cell_box`` /
+    # ``ball_cell_probe``) with ``accumulate_gaussian_neighbor``, and ``wp.tile_sum`` adds the
+    # lanes' weighted values and weights in a fixed tree, so the mean is the one-thread walk's up
+    # to ``float32`` summation order and the same on every run. Of several sources sitting on the
+    # query, each lane keeps the last it meets and the block the highest index (``wp.tile_max``),
+    # where the one-thread walk keeps the last it meets; one such source reads the same either
+    # way. Its own module, launched at ``neighbors.TILED_BALL_WALK_BLOCK_DIM`` lanes.
+    q, lane = wp.tid()
+    p = query_points[q]
+    accumulated = source_values[0] * wp.float32(0.0)
+    total = wp.float32(0.0)
+    coincident = wp.int32(-1)
+    first, counts = ball_cell_box(p, radius, cell_width_inv, resolution)
+    for c in range(lane, counts[0] * counts[1] * counts[2], wp.block_dim()):
+        probe = ball_cell_probe(first, counts, c, cell_width)
+        j = wp.int32(0)
+        query = wp.hash_grid_query(grid_id, probe, cell_width * wp.float32(0.25))
+        while wp.hash_grid_query_next(query, j):
+            offset = source_points[j] - p
+            if in_ball(offset, radius):
+                accumulated, total, coincident = accumulate_gaussian_neighbor(
+                    source_values,
+                    j,
+                    wp.length(offset),
+                    inverse_scale,
+                    accumulated,
+                    total,
+                    coincident,
+                )
+    summed = wp.tile_sum(wp.tile(accumulated, preserve_type=True))[0]
+    weight = wp.tile_sum(wp.tile(total))[0]
+    nearest = wp.tile_max(wp.tile(coincident))[0]
+    if lane == 0:
+        write_gaussian_mean(source_values, q, summed, weight, nearest, out_values)
 
 
 @wp.kernel(enable_backward=False)
@@ -260,6 +309,13 @@ def sample_grid_trilinear(
 # the weights do not have.
 _FIELD_DTYPES = (wp.float32, wp.vec2, wp.vec3)
 
+# Queries below which ``interpolate_from_points`` walks a block a query
+# (``interpolate_from_points_in_ball_tiled``), lower than the counts' shared
+# ``neighbors.TILED_BALL_WALK_MAX_QUERIES``: its fold costs more a candidate. Call time against
+# the one-thread walk over cells of twice the radius: 0.51-0.54x at 2.5 k and 10 k queries,
+# 0.59x at 10 k over 41 k sources, but 1.2x at 40 k queries over 160 k.
+INTERPOLATE_TILED_MAX_QUERIES = 1 << 14
+
 # The concrete handles keyed by the caller's value dtype -- see
 # [`OverloadTable`][ordito.kernels.array.OverloadTable].
 APPLY_TRANSFER_OPERATOR: OverloadTable
@@ -267,12 +323,14 @@ SAMPLE_GRID_TRILINEAR: OverloadTable
 TRANSFER_ONTO_VERTICES: OverloadTable
 INTERPOLATE_FROM_POINTS_NEAREST: OverloadTable
 INTERPOLATE_FROM_POINTS_IN_BALL: OverloadTable
+INTERPOLATE_FROM_POINTS_IN_BALL_TILED: OverloadTable
 
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global APPLY_TRANSFER_OPERATOR, SAMPLE_GRID_TRILINEAR
     global TRANSFER_ONTO_VERTICES, INTERPOLATE_FROM_POINTS_NEAREST, INTERPOLATE_FROM_POINTS_IN_BALL
+    global INTERPOLATE_FROM_POINTS_IN_BALL_TILED
     APPLY_TRANSFER_OPERATOR = OverloadTable(
         apply_transfer_operator,
         {
@@ -333,6 +391,24 @@ def _register_overloads() -> None:
                 wp.uint64,
                 wp.float32,
                 wp.float32,
+                wp.array[d],
+            ]
+            for d in _FIELD_DTYPES
+        },
+    )
+    INTERPOLATE_FROM_POINTS_IN_BALL_TILED = OverloadTable(
+        interpolate_from_points_in_ball_tiled,
+        {
+            d: [
+                wp.array[wp.vec3],
+                wp.array[d],
+                wp.array[wp.vec3],
+                wp.uint64,
+                wp.float32,
+                wp.float32,
+                wp.float32,
+                wp.float32,
+                wp.int32,
                 wp.array[d],
             ]
             for d in _FIELD_DTYPES

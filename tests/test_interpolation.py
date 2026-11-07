@@ -585,6 +585,34 @@ def test_interpolate_from_points_is_exact_at_the_sources(device: str):
 
 
 @pytest.mark.parity("interpolate_from_points", "pyvista")
+@pytest.mark.parametrize("radius", [0.3, 0.6])
+def test_interpolate_from_points_few_query_walk_matches_one_thread_walk(
+    device: str, monkeypatch: pytest.MonkeyPatch, radius: float
+):
+    """
+    Ordito against ordito: the few-query walk equals the one-thread walk up to summation order.
+
+    The few-query walk is a block a query, a lane a share of the ball's hash-grid cells, its
+    lanes' sums added in a fixed tree; pyvista is the oracle of the mean itself
+    (``test_interpolate_from_points_matches_pyvista``). The gate is forced off for the second call.
+    A query on a source duplicated with two values reads one of them, the same on every call
+    (the few-query walk keeps the higher index, the one-thread walk the last it meets). On the
+    CPU both calls take the one-thread walk.
+    """
+    source_np, values_np, query_np = _scattered_cloud(n_query=400)
+    source_np = np.concatenate([source_np, source_np[:1]])
+    values_np = np.concatenate([values_np, [values_np[0] + 1.0]])
+    query_np = np.concatenate([query_np, source_np[:1]])
+    first_np = _interpolate_wp(source_np, values_np, query_np, radius, 2.0, device=device)
+    again_np = _interpolate_wp(source_np, values_np, query_np, radius, 2.0, device=device)
+    monkeypatch.setattr(od.interpolation.kernel_interpolation, "INTERPOLATE_TILED_MAX_QUERIES", 0)
+    one_np = _interpolate_wp(source_np, values_np, query_np, radius, 2.0, device=device)
+    assert (one_np[:-1] != 0.0).sum() > 0.8 * (query_np.shape[0] - 1)
+    assert np.array_equal(first_np, again_np)
+    assert np.allclose(first_np[:-1], one_np[:-1], rtol=1e-6, atol=1e-6)
+    assert np.isclose(first_np[-1], values_np[0]) or np.isclose(first_np[-1], values_np[-1])
+
+
 def test_interpolate_from_points_unreached_queries_get_the_null_value(device: str):
     """Class A on the miss case: a radius reaching almost nothing leaves 47 of 50 queries null."""
     source_np, values_np, query_np = _scattered_cloud()

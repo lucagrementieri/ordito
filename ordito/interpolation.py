@@ -32,7 +32,12 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import ball_grid_cell_width, require_nonempty_mesh, require_same_device
+from ordito._device import (
+    ball_grid_cell_width,
+    require_nonempty_mesh,
+    require_same_device,
+    tiled_ball_walk,
+)
 from ordito.kernels import array as kernel_array
 from ordito.kernels import interpolation as kernel_interpolation
 from ordito.kernels import neighbors as kernel_neighbors
@@ -642,16 +647,45 @@ def interpolate_from_points(
     inverse_scale = wp.float32(float(sharpness) / float(radius))
     if k is None:
         # The mean is reduced during the grid walk, so no neighbour list is ever materialized: the
-        # predicate ``query_ball_with_offsets`` applies, over a grid whose cells suit the query
-        # count.
-        cell = ball_grid_cell_width(
-            float(radius),
-            n_query,
-            device,
-            kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CUDA,
-            kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CPU,
+        # predicate ``query_ball_with_offsets`` applies. Few queries on CUDA walk a block a query
+        # over cells of the radius; otherwise one thread a query over cells sized for the count.
+        few = (
+            not wp.get_device(device).is_cpu
+            and n_query < kernel_interpolation.INTERPOLATE_TILED_MAX_QUERIES
+        )
+        cell = (
+            float(radius)
+            if few
+            else ball_grid_cell_width(
+                float(radius),
+                n_query,
+                device,
+                kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CUDA,
+                kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CPU,
+            )
         )
         grid = od.neighbors.hashgrid_from_points(source_points, cell)
+        walk = tiled_ball_walk(
+            grid, n_query, device, kernel_interpolation.INTERPOLATE_TILED_MAX_QUERIES
+        )
+        if walk is not None:
+            _launch.launch_tiled(
+                kernel_interpolation.INTERPOLATE_FROM_POINTS_IN_BALL_TILED[source_values.dtype],
+                dim=[n_query],
+                inputs=[
+                    source_points,
+                    source_values,
+                    query_points,
+                    grid.id,
+                    wp.float32(radius),
+                    inverse_scale,
+                    *walk,
+                ],
+                outputs=[out_values],
+                device=device,
+                block_dim=kernel_neighbors.TILED_BALL_WALK_BLOCK_DIM,
+            )
+            return out_values
         _launch.launch(
             kernel_interpolation.INTERPOLATE_FROM_POINTS_IN_BALL[source_values.dtype],
             dim=n_query,
