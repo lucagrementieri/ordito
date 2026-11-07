@@ -1561,25 +1561,38 @@ def normal_outlier_mask(
     n = points.size
     if n == 0:
         return _launch.zeros(0, dtype=wp.bool, device=device)
-    accelerator = (
-        od.neighbors.hashgrid_from_points(
-            points,
-            ball_grid_cell_width(
+    few = not wp.get_device(device).is_cpu and n < kernel_neighbors.TILED_BALL_WALK_MAX_QUERIES
+    if grid is None:
+        # Few points on CUDA walk a block a point over cells of the radius; otherwise one thread a
+        # point over cells sized for the count.
+        cell = (
+            radius
+            if few
+            else ball_grid_cell_width(
                 radius,
                 n,
                 device,
                 kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CUDA,
                 kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CPU,
-            ),
+            )
         )
-        if grid is None
-        else grid
-    )
+        grid = od.neighbors.hashgrid_from_points(points, cell)
     out_mask = _launch.empty(n, dtype=wp.bool, device=device)
+    walk = tiled_ball_walk(grid, n, device, kernel_neighbors.TILED_BALL_WALK_MAX_QUERIES)
+    if walk is not None:
+        _launch.launch_tiled(
+            kernel_points.normal_outlier_flags_tiled,
+            dim=[n],
+            inputs=[points, normals, grid.id, wp.float32(radius), *walk, wp.float32(max_angle)],
+            outputs=[out_mask],
+            device=device,
+            block_dim=kernel_neighbors.TILED_BALL_WALK_BLOCK_DIM,
+        )
+        return out_mask
     _launch.launch(
         kernel_points.normal_outlier_flags,
         dim=n,
-        inputs=[points, normals, accelerator.id, wp.float32(radius), wp.float32(max_angle)],
+        inputs=[points, normals, grid.id, wp.float32(radius), wp.float32(max_angle)],
         outputs=[out_mask],
         device=device,
     )

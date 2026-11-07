@@ -17,6 +17,8 @@ from ordito.kernels.array import (
 from ordito.kernels.grouping import hash_slot_words3, next_slot
 from ordito.kernels.neighbors import (
     ACCEL_HASHGRID,
+    ball_cell_box,
+    ball_cell_probe,
     ball_count_in_cells,
     ball_count_in_radius,
     in_ball,
@@ -781,6 +783,18 @@ def plane_outlier_flags(
     out_mask[i] = wp.where(one_sided != 0, distance, wp.abs(distance)) > height
 
 
+@wp.func
+def normal_outlier_angle(normal: wp.vec3, total: wp.vec3) -> wp.float32:
+    # The angle in radians from ``normal`` to the mean direction ``total`` of the other normals in
+    # the ball, ``atan2(|n x s|, n . s)``, or ``180`` when ``total`` is shorter than ``0.3``, too
+    # little agreement to define a direction.
+    angle = wp.float32(180.0)
+    if wp.length_sq(total) >= wp.float32(0.09):
+        direction = wp.normalize(total)
+        angle = wp.atan2(wp.length(wp.cross(normal, direction)), wp.dot(normal, direction))
+    return angle
+
+
 @wp.kernel
 def normal_outlier_flags(
     points: wp.array[wp.vec3],
@@ -790,12 +804,9 @@ def normal_outlier_flags(
     max_angle: wp.float32,
     out_mask: wp.array[wp.bool],
 ) -> None:
-    # A point is a normal outlier when its normal's angle in radians to the mean direction of the
-    # *other* points' normals in its ball, ``atan2(|n x s|, n . s)``, exceeds ``max_angle``; the
-    # angle is ``180`` when their sum is shorter than ``0.3``, too little agreement to define a
-    # direction. Not walked a block a point for few points (``neighbors.ball_count_in_cells``):
-    # the lanes would add the ``float32`` normals in another order, and the angle test on that sum
-    # could then flip a point at the threshold.
+    # A point is a normal outlier when ``normal_outlier_angle`` of its normal against the *other*
+    # points' normals in its ball exceeds ``max_angle``. ``normal_outlier_flags_tiled`` is the same
+    # test with the ball's cells walked by a block's lanes, for few points.
     i = wp.int32(wp.tid())
     q = points[i]
     total = wp.vec3()
@@ -804,12 +815,42 @@ def normal_outlier_flags(
     while wp.hash_grid_query_next(query, j):
         if j != i and in_ball(points[j] - q, radius):
             total += normals[j]
-    angle = wp.float32(180.0)
-    if wp.length_sq(total) >= wp.float32(0.09):
-        direction = wp.normalize(total)
-        n = normals[i]
-        angle = wp.atan2(wp.length(wp.cross(n, direction)), wp.dot(n, direction))
-    out_mask[i] = angle > max_angle
+    out_mask[i] = normal_outlier_angle(normals[i], total) > max_angle
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def normal_outlier_flags_tiled(
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    cell_width: wp.float32,
+    cell_width_inv: wp.float32,
+    resolution: wp.int32,
+    max_angle: wp.float32,
+    out_mask: wp.array[wp.bool],
+) -> None:
+    # ``normal_outlier_flags`` a block a point, its lanes summing the normals of the ball's cells
+    # side by side (``neighbors.ball_cell_box`` / ``ball_cell_probe``) and ``wp.tile_sum`` adding
+    # the lanes in a fixed tree. The ``float32`` sum takes another order than the one-thread walk's,
+    # so a point at the threshold may read the other way, the same way on every run; against a
+    # ``float64`` sum over the same balls neither form misjudged a point (noisy normals on 2.5 k to
+    # 41 k points, radii of 2 and 4 edges, threshold at the median angle). Call 0.32-0.78x the
+    # one-thread walk over cells of twice the radius.
+    i, lane = wp.tid()
+    q = points[i]
+    first, counts = ball_cell_box(q, radius, cell_width_inv, resolution)
+    total = wp.vec3()
+    for c in range(lane, counts[0] * counts[1] * counts[2], wp.block_dim()):
+        probe = ball_cell_probe(first, counts, c, cell_width)
+        j = wp.int32(0)
+        query = wp.hash_grid_query(grid_id, probe, cell_width * wp.float32(0.25))
+        while wp.hash_grid_query_next(query, j):
+            if j != i and in_ball(points[j] - q, radius):
+                total += normals[j]
+    summed = wp.tile_sum(wp.tile(total, preserve_type=True))[0]
+    if lane == 0:
+        out_mask[i] = normal_outlier_angle(normals[i], summed) > max_angle
 
 
 @wp.func
