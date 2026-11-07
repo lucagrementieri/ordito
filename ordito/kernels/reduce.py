@@ -1114,7 +1114,15 @@ def array_term(local: wp.int32, offset: wp.int32, values: Any):
 
 
 def _reduce_1d_tiled(
-    tile_reduce, atomic, scalar, name, dtype, partials=False, term=None, term_dtype=wp.float32
+    tile_reduce,
+    atomic,
+    scalar,
+    name,
+    dtype,
+    partials=False,
+    term=None,
+    term_dtype=wp.float32,
+    tiles_per_block=TILES_PER_BLOCK_1D,
 ):
     """
     axis=None on a 1-D array: ``TILES_PER_BLOCK_1D`` tiles per block, one atomic per block.
@@ -1146,7 +1154,8 @@ def _reduce_1d_tiled(
     (the ``wp.static`` branches below); the chunk walk, the seed, the fold order and the commit are
     one body, so a mapped sum is bit for bit the loaded sum over the materialized terms, and the
     terms are never stored. A mapped kernel is a ``float32`` reduction and goes into ``term``'s own
-    module, so a caller's term family never changes this module's hash.
+    module, so a caller's term family never changes this module's hash. ``tiles_per_block`` is the
+    fold width: ``TILES_PER_BLOCK_1D`` but for a mapped sum built narrower (see ``term_sum_1d``).
     """
     element = array_term if term is None else term
 
@@ -1156,7 +1165,7 @@ def _reduce_1d_tiled(
             n = source.shape[0]
         else:
             n = source.n
-        base, remaining = tile_chunk(n, i, TILES_PER_BLOCK_1D * TILE_1D)
+        base, remaining = tile_chunk(n, i, tiles_per_block * TILE_1D)
         if remaining <= 0:
             return
         if wp.static(term is not None):
@@ -1175,7 +1184,7 @@ def _reduce_1d_tiled(
             for k in range(1, remaining):
                 result = scalar(result, element(k, base, source))
 
-        for s in range(1, TILES_PER_BLOCK_1D):
+        for s in range(1, tiles_per_block):
             offset = base + s * TILE_1D
             rest = n - offset
             if rest >= TILE_1D:
@@ -1588,10 +1597,20 @@ class TermSum(NamedTuple):
     partials: wp.Kernel
     atomic: wp.Kernel | None
     dtype: type = wp.float32
+    tiles_per_block: int = TILES_PER_BLOCK_1D
+    """Tiles a block of the first stage folds; ``blocks_1d`` assumes ``TILES_PER_BLOCK_1D``."""
+
+    def blocks(self, n: int) -> int:
+        """Return the first stage's block count over ``n`` terms."""
+        return -(-n // (self.tiles_per_block * TILE_1D))
 
 
 def term_sum_1d(
-    term: wp.Function, terms_type: type, name: str, dtype: type = wp.float32
+    term: wp.Function,
+    terms_type: type,
+    name: str,
+    dtype: type = wp.float32,
+    tiles_per_block: int = TILES_PER_BLOCK_1D,
 ) -> TermSum:
     """
     Build the [`TermSum`][ordito.kernels.reduce.TermSum] of ``term(local, offset, terms)``.
@@ -1603,15 +1622,33 @@ def term_sum_1d(
     arrays ``term`` reads; ``name`` must be unique, and the two kernels are named ``name`` and
     ``name + "_partials"``. ``dtype`` is what ``term`` returns: ``float32``, or ``wp.vec2`` for two
     sums that share one pass over their items (each component folds as its own ``float32`` sum).
+    ``tiles_per_block`` narrows the fold for a term whose own latency, not the items' count, bounds
+    a lane's walk: the total is then that width's block tree, no longer ``reduce.sum``'s bits.
     """
     return TermSum(
         partials=_reduce_1d_tiled(
-            _tile_sum, None, wp.add, f"{name}_partials", terms_type, True, term, dtype
+            _tile_sum,
+            None,
+            wp.add,
+            f"{name}_partials",
+            terms_type,
+            True,
+            term,
+            dtype,
+            tiles_per_block,
         ),
         atomic=_reduce_1d_tiled(
-            _tile_sum, wp.atomic_add, wp.add, name, terms_type, term=term, term_dtype=dtype
+            _tile_sum,
+            wp.atomic_add,
+            wp.add,
+            name,
+            terms_type,
+            term=term,
+            term_dtype=dtype,
+            tiles_per_block=tiles_per_block,
         ),
         dtype=dtype,
+        tiles_per_block=tiles_per_block,
     )
 
 

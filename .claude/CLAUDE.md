@@ -905,6 +905,13 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
 - Spreading those (2026-11-03, CUDA new/old): `append_slot` at 25 single-counter appends was neutral to a win (`voxel_down_sample` 0.92-0.98, `intersects_location` 0.93-0.99, remesh commit counters 0.95-1.05); a read before `atomic_min` (`array.atomic_min_unless_below`) won nothing at four sites whose slots do not contend (0.98-1.00; declines at the sites), so it pays only where many threads hit one slot. A counted bitset (`store_counted_*` / `or_counted_bit`) in place of `set_bit` plus `bit_ranks` is neutral on device time and saves a launch and an allocation a site; a one-hot `(3, n)` `int32` table turned into three ranked bit rows took `uv_seam_edges` 0.68-0.81x on icospheres of 8-9 subdivisions.
 - **`float64` runs at 1/64 of the `float32` rate on this device**, so a launch of a few warps chaining `float64` tests is latency-bound: put a `float32` filter with a rigorous bound ahead (`predicates.orient3d_filtered_f32`, `orient3d_sign_from`; `convex_hull`'s flip round 2.5x).
 - Pack same-dtype quantities into one vector tile (`preserve_type=True`) for one barrier. Float sums that must reproduce use a fixed-order two-stage sum.
+- **A fused term sum's fold width follows its term's latency** (2026-11-07): `term_sum_1d` folds
+  `TILES_PER_BLOCK_1D` (16) tiles a block, so a lane walks 16 terms in turn, and a term that is a
+  chain of dependent loads (a sorted run's normals, a CSR row's ring) set the launch at 28-37 us
+  from 15 k to 983 k terms. Such a `TermSum` is built narrower (`tiles_per_block`, read by
+  `reduce.sum_of_terms` through `TermSum.blocks`): 4 took `normal_consistency_loss` 0.76-0.79x on
+  `sphere_small` and `laplacian_smoothing_loss` 0.87-0.94x at every size, CPU at par; 1 lost
+  1.16x on `dragon`. A narrowed total is its own width's tree, no longer `reduce.sum`'s bits.
 - A tile kernel whose reduced extent is under one tile loses ~49x; `tile_chunk` reports what remains, so clamp with `reduce.block_chunk`.
 - Tuning constants are per-device: CUDA wants long strided slices, CPU short (`ITEMS_PER_SLICE_CUDA = 128`, `_CPU = 32`). Sweep both devices and more than two values, split the constant if the optima differ, and re-probe after an upgrade (§9).
 - **Reproducibility prices (§12.3):** the last-block commit adds 2-5 µs of device time to a launch (fence, ticket, the last block's fold, latency-bound: fold its rows with interleaved accumulators), against 3-8 µs of host for a separate fold launch. The fixed-order scan is two launches and an allocation above one 2048-element chunk (+10-15 µs, 3x CUB's device time at 5 M) and cheaper than CUB below. On a 15-100 µs call either crosses 10 %, which is why the setting can be switched off (`ordito.config`, §2.2); on solves and loops it is noise.
@@ -1084,15 +1091,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   bucket count, scan, scatter and pairing are 52-54 % of the call's device time on dragon and
   lucy (2026-11-06), the union-find the rest. Not re-examined in the adjacency sweep, which took
   the union-find side only; the lower-degree owner is a hub-balancing choice to keep.
-- **`energies` leftovers (2026-11-07 sweep):** `normal_consistency_loss` and
-  `laplacian_smoothing_loss`'s term sums are latency-bound on `kernels/reduce.term_sum_1d`'s
-  fold (16 items a lane): 28-37 us flat from 15 k to 983 k terms, about a fifth of each call; a
-  per-`TermSum` fold width would break its bit-for-bit match with `reduce.sum`. `edge_length_loss`
-  could fold `edges_unique_length`'s emit into its mean (a readback, a scan and a launch fewer),
-  which needs `edges`' internals. `hessian_energy` on `dragon`: its pattern's key sort
-  (one-ring squared a vertex) sets the peak, which a symbolic square of the one-ring could
-  replace. Outside the scope, `smoothing.normals_to_points_keys` and `mumford_shah_face_keys`
-  write per-thread key segments (9 and 4 a face): the pair-major layout's candidates.
 - **`combine` leftovers outside its scope (2026-11-06 sweep):** `require_same_device` is about
   half of `concatenate`'s host time at 4 096 pieces (one recursive descent per array);
   `split` reads its vertex and face offsets in two readbacks (`array.split` twice) where one

@@ -128,29 +128,6 @@ def edge_length_loss(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, unique_edges=unique_edges)
-    if unique_edges is None and not wp.get_device(faces.device).is_cpu:
-        n = faces.size // 3 * 3
-        if n == 0:
-            return 0.0
-        # On CUDA, summed at each unique edge's first sorted halfedge, its count in the same pass,
-        # so neither the length table nor the count readback that sizes it exists; the mean is a
-        # host scalar, so the two sums are read back together. The CPU keeps the table: there the
-        # term over every sorted halfedge cost 7x the table's sum, 1.15-1.3x the call.
-        run_terms = kernel_energies.EdgeDeviationRunTerms()
-        run_terms.n = n
-        run_terms.keys, run_terms.order = od.adjacency.sorted_face_edge_keys(
-            faces, n_vertices=max(vertices.size, 1)
-        )
-        run_terms.faces = faces
-        run_terms.vertices = vertices
-        run_terms.target = float(target_length)
-        total, n_edges = read_scalar(
-            od.reduce.sum_of_terms(
-                kernel_energies.EDGE_DEVIATION_RUN_SUM, [run_terms], n, device=faces.device
-            ),
-            0,
-        )
-        return float(total) / float(n_edges)
     # The bound is supplied and the range check skipped: both are host readbacks that serialise
     # the pipeline, and this wrapper trusts its connectivity as its per-edge kernels do.
     lengths = edges_unique_length(

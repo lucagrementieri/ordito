@@ -1,6 +1,5 @@
 import warp as wp
 
-from ordito.kernels.adjacency import edge_endpoints
 from ordito.kernels.array import (
     OverloadTable,
     binary_search_index,
@@ -10,7 +9,6 @@ from ordito.kernels.array import (
     store_coo_key,
     to_vec3d,
 )
-from ordito.kernels.edges import edge_row_length
 from ordito.kernels.halfedge import halfedge_destination, halfedge_endpoints, halfedge_prev
 from ordito.kernels.laplacian import cotmatrix_row, store_half_cotangents
 from ordito.kernels.predicates import (
@@ -71,45 +69,16 @@ class EdgeDeviationTerms:
 
 
 @wp.func
-def edge_deviation(length: wp.float32, target: wp.float32) -> wp.float32:
-    # ``(x - L0)^2``, the per-edge term of the edge-length regularizer.
-    difference = length - target
-    return difference * difference
-
-
-@wp.func
 def edge_deviation_term(local: wp.int32, offset: wp.int32, terms: EdgeDeviationTerms) -> wp.float32:
-    # ``edge_deviation`` of edge ``offset + local`` of a length table.
-    return edge_deviation(terms.lengths[offset + local], terms.target)
-
-
-@wp.struct
-class EdgeDeviationRunTerms:
-    """``edge_length_loss``'s halfedge count, sorted edge keys, order, faces, positions, ``L0``."""
-
-    n: wp.int32
-    keys: wp.array[wp.uint64]
-    order: wp.array[wp.int32]
-    faces: wp.array[wp.int32]
-    vertices: wp.array[wp.vec3]
-    target: wp.float32
-
-
-@wp.func
-def edge_deviation_run_term(
-    local: wp.int32, offset: wp.int32, terms: EdgeDeviationRunTerms
-) -> wp.vec2:
-    # ``(edge_deviation, 1)`` at the first sorted halfedge of each unique edge's run, zero
-    # elsewhere: the sum and the edge count in one pass over the sorted halfedges, with the length
-    # ``edges.edges_unique_length`` would emit for the run (``edges.edge_row_length``), so neither
-    # the length table nor its count readback exists.
-    p = offset + local
-    if not sorted_run_start(terms.keys, p):
-        return wp.vec2(0.0, 0.0)
-    lo, hi = edge_endpoints(terms.faces, terms.order[p])
-    return wp.vec2(
-        edge_deviation(edge_row_length(terms.vertices, lo, hi), terms.target), wp.float32(1.0)
-    )
+    # ``(x - L0)^2`` for edge ``offset + local``, the per-edge term of the edge-length regularizer.
+    #
+    # Declined: the deviations summed at each unique edge's first sorted halfedge, with the edge
+    # count in the same pass, so neither the length table nor its count readback exists (CUDA
+    # 0.80-0.91x the call, 0.84x more at a fold of 4 tiles a block; the CPU lost 1.15-1.3x).
+    # Its sum runs over the sorted halfedges, the table's over the edges, so ``unique_edges=``
+    # would no longer give the same bits as the plain call.
+    difference = terms.lengths[offset + local] - terms.target
+    return difference * difference
 
 
 @wp.struct
@@ -292,13 +261,29 @@ def laplacian_smoothing_cot_norms(
 # sum handed to ``reduce.sum_of_terms`` (by ``energies._mean_of_terms`` for the ``float32`` ones;
 # the normal-consistency pair sum and pair count share a ``wp.vec2``).
 EDGE_DEVIATION_SUM = term_sum_1d(edge_deviation_term, EdgeDeviationTerms, "edge_deviation_sum")
-EDGE_DEVIATION_RUN_SUM = term_sum_1d(
-    edge_deviation_run_term, EdgeDeviationRunTerms, "edge_deviation_run_sum", wp.vec2
-)
+# Tiles a block of the two heavy term sums folds, against ``TILES_PER_BLOCK_1D``'s 16: a pair's
+# or a row's term is a chain of dependent loads, so at 16 a lane's walk set the launch's time
+# whatever the size (28-37 us from 15 k to 983 k terms). At 4: ``normal_consistency_loss``
+# 0.76-0.79x on ``sphere_small`` and 0.96x on ``sphere_large``, ``laplacian_smoothing_loss``
+# 0.87-0.94x at every size, ``dragon`` and the CPU at par. 1 lost 1.16x on ``dragon``; 2 matched
+# 4 within noise.
+HEAVY_TERM_TILES_PER_BLOCK = 4
+
+
 NORMAL_CONSISTENCY_SUM = term_sum_1d(
-    edge_pair_consistency_term, NormalConsistencyTerms, "normal_consistency_sum", wp.vec2
+    edge_pair_consistency_term,
+    NormalConsistencyTerms,
+    "normal_consistency_sum",
+    wp.vec2,
+    HEAVY_TERM_TILES_PER_BLOCK,
 )
-SMOOTHING_NORM_SUM = term_sum_1d(smoothing_norm_term, SmoothingNormTerms, "smoothing_norm_sum")
+SMOOTHING_NORM_SUM = term_sum_1d(
+    smoothing_norm_term,
+    SmoothingNormTerms,
+    "smoothing_norm_sum",
+    wp.float32,
+    HEAVY_TERM_TILES_PER_BLOCK,
+)
 
 
 @wp.kernel
@@ -641,6 +626,12 @@ def hessian_energy_keys(
     # Replaced: a thread a vertex finding its star's first occurrences in its fan's corners
     # (quadratic in the corners, once in the count pass and again here) and writing its keys in
     # turn, a warp's stores a star's square apart.
+    #
+    # Declined: keying each entry once, from the smallest active vertex both one-rings hold, so the
+    # sort holds entries rather than ~2.6x as many keys (21.8 M -> 8.9 M on ``dragon``, a 2.24 ->
+    # 0.89 ms sort and a smaller key buffer, the call's peak). Exact counts need the neighbours'
+    # inverse masses (one more pass) and put the keys back on a thread a vertex: 1.3x the call on
+    # ``sphere_small`` before that pass, and quadratic in a hub's ring.
     i = wp.int32(wp.tid())
     if rows != 0:
         cursor = segment_offsets[i]

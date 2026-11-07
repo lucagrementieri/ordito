@@ -1660,10 +1660,11 @@
  },
  "benchmarks/test_energies.py::test_edge_length_loss[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 2,
-   "alloc": 2,
+   "launch": 4,
+   "alloc": 3,
    "memset": 1,
-   "d2h": 1,
+   "d2h": 2,
+   "scan": 1,
    "sort": 1
   }
  },

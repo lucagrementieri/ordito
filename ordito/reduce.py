@@ -609,12 +609,14 @@ def sum_of_terms(
     if device is None:
         device = out.device if out is not None else cast(wp.array[Any], inputs[0]).device
     if kernels.atomic is None or is_deterministic():
-        return _sum_in_fixed_order(kernels.partials, inputs, n, kernels.dtype, device, out=out)
+        return _sum_in_fixed_order(
+            kernels.partials, inputs, n, kernels.dtype, device, out=out, blocks=kernels.blocks(n)
+        )
     if out is None:
         out = _launch.zeros(1, dtype=kernels.dtype, device=device)
     _launch.launch_tiled(
         kernels.atomic,
-        dim=[kernel_reduce.blocks_1d(n)],
+        dim=[kernels.blocks(n)],
         inputs=[*inputs, out],
         block_dim=TILE_1D,
         device=device,
@@ -1120,6 +1122,7 @@ def _sum_in_fixed_order(
     device: wp.DeviceLike,
     *,
     out: wp.array[Any] | None = None,
+    blocks: int | None = None,
 ) -> wp.array[Any]:
     """
     Sum a float reduction in a fixed order, into a ``(1,)`` device array holding the total.
@@ -1130,11 +1133,13 @@ def _sum_in_fixed_order(
     arrival order and move the total's last bits between runs on CUDA. One launch up to
     ``ITEMS_PER_BLOCK_1D`` elements, one more per factor of it after; integer sums keep the atomic.
     ``inputs`` holds what ``first`` takes before its output. The last stage writes ``out`` when it
-    is given.
+    is given. ``blocks`` is ``first``'s block count when it folds a width of its own
+    (``TermSum.blocks``).
     """
     fold = _FOLD_PARTIALS.get(dtype) or kernel_reduce.SUM1D_PARTIALS[dtype]
     kernel = first
-    blocks = kernel_reduce.blocks_1d(n)
+    if blocks is None:
+        blocks = kernel_reduce.blocks_1d(n)
     while True:
         if blocks == 1 and out is not None:
             partials = out
