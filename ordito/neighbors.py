@@ -45,7 +45,14 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import offsets_buffer, read_scalar, read_values, require_same_device, scan_count
+from ordito._device import (
+    offsets_buffer,
+    read_scalar,
+    read_values,
+    require_same_device,
+    scan_count,
+    tiled_ball_walk,
+)
 from ordito.constants import INT64_MAX, TILE_1D
 from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import reduce as kernel_reduce
@@ -773,6 +780,18 @@ def query_ball_count(
     if kind == "hashgrid":
         if accelerator is None:
             accelerator = hashgrid_from_points(points, r, grid_bins)
+        walk = tiled_ball_walk(accelerator, m, device, kernel_neighbors.TILED_BALL_WALK_MAX_QUERIES)
+        if walk is not None and r > 0.0:
+            # Few queries: a block a query, its lanes counting the query's cells side by side.
+            _launch.launch_tiled(
+                kernel_neighbors.query_ball_count_tiled,
+                dim=[m],
+                inputs=[points, queries, accelerator.id, wp.float32(r), *walk],
+                outputs=[neighbor_counts],
+                device=device,
+                block_dim=kernel_neighbors.TILED_BALL_WALK_BLOCK_DIM,
+            )
+            return neighbor_counts
         accel_selector = kernel_neighbors.ACCEL_HASHGRID
     else:
         if accelerator is None:

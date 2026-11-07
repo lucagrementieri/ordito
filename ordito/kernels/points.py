@@ -15,7 +15,12 @@ from ordito.kernels.array import (
     unpack_ranked_index,
 )
 from ordito.kernels.grouping import hash_slot_words3, next_slot
-from ordito.kernels.neighbors import ACCEL_HASHGRID, ball_count_in_radius, in_ball
+from ordito.kernels.neighbors import (
+    ACCEL_HASHGRID,
+    ball_count_in_cells,
+    ball_count_in_radius,
+    in_ball,
+)
 from ordito.kernels.predicates import point_plane_dot, triangle_normal
 from ordito.kernels.reduce import (
     block_chunk,
@@ -620,6 +625,28 @@ def radius_outlier_flags(
     i = wp.int32(wp.tid())
     count = ball_count_in_radius(points, ACCEL_HASHGRID, grid_id, points[i], radius)
     out_mask[i] = count <= min_neighbors
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def radius_outlier_flags_tiled(
+    points: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    cell_width: wp.float32,
+    cell_width_inv: wp.float32,
+    resolution: wp.int32,
+    min_neighbors: wp.int32,
+    out_mask: wp.array[wp.bool],
+) -> None:
+    # ``radius_outlier_flags`` a block a point, its lanes counting the ball's hash-grid cells side
+    # by side (``neighbors.ball_count_in_cells``) for few points; the same count, so the same mask.
+    i, lane = wp.tid()
+    c = ball_count_in_cells(
+        points, grid_id, points[i], radius, cell_width, cell_width_inv, resolution, lane
+    )
+    total = wp.tile_sum(wp.tile(c))
+    if lane == 0:
+        out_mask[i] = total[0] <= min_neighbors
 
 
 @wp.kernel

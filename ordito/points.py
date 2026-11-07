@@ -64,6 +64,7 @@ from ordito._device import (
     require_same_device,
     run_device_loop,
     slice_count,
+    tiled_ball_walk,
 )
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TOLERANCE_ZERO
@@ -1234,20 +1235,36 @@ def radius_outlier_mask(
     if n == 0:
         return _launch.zeros(0, dtype=wp.bool, device=device)
 
+    few = not wp.get_device(device).is_cpu and n < kernel_neighbors.TILED_BALL_WALK_MAX_QUERIES
     if grid is None:
-        grid = od.neighbors.hashgrid_from_points(
-            points,
-            ball_grid_cell_width(
+        # Few points on CUDA walk a block a point over cells of the radius; otherwise one thread a
+        # point over cells sized for the count.
+        cell = (
+            radius
+            if few
+            else ball_grid_cell_width(
                 radius,
                 n,
                 device,
                 kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CUDA,
                 kernel_neighbors.BALL_GRID_WIDE_CELL_QUERIES_CPU,
-            ),
+            )
         )
+        grid = od.neighbors.hashgrid_from_points(points, cell)
     # A self-query counts the point itself once, at distance 0 -- which is what makes
     # ``min_neighbors`` comparable with Open3D's ``nb_points`` without an off-by-one correction.
     out_mask = _launch.empty(n, dtype=wp.bool, device=device)
+    walk = tiled_ball_walk(grid, n, device, kernel_neighbors.TILED_BALL_WALK_MAX_QUERIES)
+    if walk is not None:
+        _launch.launch_tiled(
+            kernel_points.radius_outlier_flags_tiled,
+            dim=[n],
+            inputs=[points, grid.id, wp.float32(radius), *walk, wp.int32(min_neighbors)],
+            outputs=[out_mask],
+            device=device,
+            block_dim=kernel_neighbors.TILED_BALL_WALK_BLOCK_DIM,
+        )
+        return out_mask
     _launch.launch(
         kernel_points.radius_outlier_flags,
         dim=n,

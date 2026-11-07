@@ -26,6 +26,16 @@ wp.set_module_options({"enable_backward": False})
 # scan sum to less than that scan costs, so a spare attempt is nearly free — whereas running *out*
 # of attempts forces the complete scan, which is the whole-cloud brute force this change exists to
 # avoid. 16 doublings cover a query 3 x 10^4 spacings away from the cloud.
+# A ball walk over a hash grid with fewer queries than this runs a block a query on CUDA, its lanes
+# taking the query's cells side by side (``ball_count_in_cells``; ``_device.tiled_ball_walk``):
+# with few queries the one-thread walk's chain of dependent loads is the launch. Counts, call time
+# against the one-thread walk over cells of twice the radius (its own best below this): 0.60-0.76x
+# at 2.5 k to 40 k queries (``radius_outlier_mask``); the Gaussian measure's sum 0.40-0.69x. At
+# 437 k ordered queries the one-thread walk wins (1.6-2.3x), whose neighbouring threads share
+# cache lines.
+TILED_BALL_WALK_MAX_QUERIES = 1 << 16
+TILED_BALL_WALK_BLOCK_DIM = 32
+
 # Query counts below which a cell-local ball walk built here (the outlier masks of ``points``,
 # ``interpolation.interpolate_from_points``) takes hash-grid cells of twice the radius
 # (``_device.ball_grid_cell_width``). Call time against cells of the radius, at a radius of two
@@ -505,6 +515,55 @@ def query_ball_count(
 ) -> None:
     tid = wp.int32(wp.tid())
     out_neighbor_counts[tid] = ball_count_in_radius(points, accel, accel_id, queries[tid], radius)
+
+
+@wp.func
+def ball_count_in_cells(
+    points: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    q: wp.vec3,
+    radius: wp.float32,
+    cell_width: wp.float32,
+    cell_width_inv: wp.float32,
+    resolution: wp.int32,
+    lane: wp.int32,
+) -> wp.int32:
+    # The hash-grid branch of ``ball_count_in_radius`` over one lane's share of the query's cells
+    # (``ball_cell_box``, strided by ``wp.block_dim()``): the lanes' counts add up to the
+    # one-thread count exactly. A block a query; ``wp.tile_sum`` of the lanes' counts is the count.
+    first, counts = ball_cell_box(q, radius, cell_width_inv, resolution)
+    c = wp.int32(0)
+    for cell in range(lane, counts[0] * counts[1] * counts[2], wp.block_dim()):
+        probe = ball_cell_probe(first, counts, cell, cell_width)
+        j = wp.int32(0)
+        query = wp.hash_grid_query(grid_id, probe, cell_width * wp.float32(0.25))
+        while wp.hash_grid_query_next(query, j):
+            if in_ball(points[j] - q, radius):
+                c = c + 1
+    return c
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def query_ball_count_tiled(
+    points: wp.array[wp.vec3],
+    queries: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    cell_width: wp.float32,
+    cell_width_inv: wp.float32,
+    resolution: wp.int32,
+    out_neighbor_counts: wp.array[wp.int32],
+) -> None:
+    # ``query_ball_count`` over a hash grid a block a query, a lane a share of its cells, for few
+    # queries (``_device.tiled_ball_walk``); the counts are the one-thread kernel's exactly. Its
+    # own module, being launched at its own width (``TILED_BALL_WALK_BLOCK_DIM``).
+    t, lane = wp.tid()
+    c = ball_count_in_cells(
+        points, grid_id, queries[t], radius, cell_width, cell_width_inv, resolution, lane
+    )
+    total = wp.tile_sum(wp.tile(c))
+    if lane == 0:
+        out_neighbor_counts[t] = total[0]
 
 
 @wp.func

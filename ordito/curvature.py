@@ -31,15 +31,15 @@ pull in vertices across a fold of the surface and corrupt the fit.
 
 from typing import Literal
 
-import numpy as np
 import warp as wp
 
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device
+from ordito._device import require_same_device, tiled_ball_walk
 from ordito.config import is_deterministic
 from ordito.kernels import curvature as kernel_curvature
+from ordito.kernels import neighbors as kernel_neighbors
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import scatter as kernel_scatter
 from ordito.normals import vertex_normals as _vertex_normals
@@ -667,29 +667,16 @@ def discrete_gaussian_curvature(
     )
     grid = od.neighbors.hashgrid_from_points(vertices, float(radius))
     gauss_curvature = _launch.empty(points.size, dtype=wp.float32, device=device)
-    if (
-        not wp.get_device(device).is_cpu
-        and points.size < kernel_curvature.GAUSSIAN_TILED_MAX_QUERIES
-        and radius > 0.0
-    ):
+    walk = tiled_ball_walk(grid, points.size, device, kernel_neighbors.TILED_BALL_WALK_MAX_QUERIES)
+    if walk is not None and radius > 0.0:
         # Few queries: a block a query, its lanes walking the query's cells side by side.
         _launch.launch_tiled(
             kernel_curvature.ball_angle_defect_sum_tiled,
             dim=[points.size],
-            inputs=[
-                vertices,
-                angle_sum,
-                points,
-                grid.id,
-                wp.float32(radius),
-                wp.float32(radius),
-                # The grid's own ``float32(1) / float32(cell_width)``, so the lanes' cells are its.
-                float(np.float32(1.0) / np.float32(radius)),
-                grid.resolution,  # pyright: ignore[reportAttributeAccessIssue]
-            ],
+            inputs=[vertices, angle_sum, points, grid.id, wp.float32(radius), *walk],
             outputs=[gauss_curvature],
             device=device,
-            block_dim=kernel_curvature.GAUSSIAN_TILED_BLOCK_DIM,
+            block_dim=kernel_neighbors.TILED_BALL_WALK_BLOCK_DIM,
         )
         return gauss_curvature
     _launch.launch(

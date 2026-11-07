@@ -100,6 +100,30 @@ def ball_grid_cell_width(
     return 2.0 * radius if n_queries < wide_below else radius
 
 
+def tiled_ball_walk(
+    grid: object, n_queries: int, device: wp.DeviceLike, max_queries: int
+) -> tuple[float, float, int] | None:
+    """
+    Return the cell geometry for a ball walk a block a query over ``grid``, or ``None``.
+
+    ``None`` means the one-thread walk. A few-query walk on a CUDA device gives each lane of a
+    block a share of the query's hash-grid cells (``kernels/neighbors.ball_cell_box``). It needs
+    the grid's cell width and resolution, which
+    [`hashgrid_from_points`][ordito.neighbors.hashgrid_from_points] records on the grids it
+    builds; a grid built otherwise takes the one-thread walk. Returns ``(cell_width,
+    cell_width_inv, resolution)``, ``cell_width_inv`` rounded as Warp rounds it, so the lanes'
+    cells are exactly the grid query's.
+    """
+    if n_queries >= max_queries or wp.get_device(device).is_cpu:
+        return None
+    cell_width = getattr(grid, "cell_width", None)
+    resolution = getattr(grid, "resolution", None)
+    if cell_width is None or resolution is None or not cell_width > 0.0:
+        return None
+    width = np.float32(cell_width)
+    return float(width), float(np.float32(1.0) / width), int(resolution)
+
+
 def run_device_loop(
     device: wp.DeviceLike, condition: wp.array[wp.int32, Any], body: Callable[[], None]
 ) -> None:

@@ -754,7 +754,7 @@ def test_discrete_gaussian_curvature_few_query_walk_matches_one_thread_walk(
     few_np = od.curvature.discrete_gaussian_curvature(
         points_wp, mesh_wp.points, mesh_wp.indices, angles_wp, radius * scale
     ).numpy()
-    monkeypatch.setattr(od.curvature.kernel_curvature, "GAUSSIAN_TILED_MAX_QUERIES", 0)
+    monkeypatch.setattr(od.curvature.kernel_neighbors, "TILED_BALL_WALK_MAX_QUERIES", 0)
     one_np = od.curvature.discrete_gaussian_curvature(
         points_wp, mesh_wp.points, mesh_wp.indices, angles_wp, radius * scale
     ).numpy()

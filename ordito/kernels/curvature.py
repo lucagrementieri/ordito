@@ -986,17 +986,14 @@ def scatter_corner_angles(
 # ---------------------------------------------------------------------------
 
 
-# Below this many queries on CUDA ``ball_angle_defect_sum_tiled`` takes the walk: a block a query,
-# a lane a hash-grid cell. With few queries one thread's chain of dependent loads is the launch,
-# and the lanes walk the cells side by side. Device time against the one-thread walk (over cells
-# of the radius, or of twice it below 16 k queries, the faster of the two), byte-identical:
+# ``ball_angle_defect_sum_tiled`` walks few queries (``neighbors.TILED_BALL_WALK_MAX_QUERIES``) a
+# block a query, a lane a hash-grid cell. Device time against the one-thread walk (over cells of
+# the radius, or of twice it below 16 k queries, the faster of the two), byte-identical:
 # 0.18-0.40x at 2.5 k queries, 0.19-0.24x at 10 k, 0.45-0.56x at 40 k scrambled, 0.70-0.75x at
 # 160 k and 437 k scrambled, but 1.6-2.3x on ordered dragon, whose one-thread walks already share
 # cache lines. Cells of half the radius or 64 lanes were within 10-20 % either way; 8 lanes over
 # cells of twice it lost 1.3-2x. The one-thread walk once took cells of twice the radius below
 # 16 k queries (0.64-0.98x); this path supersedes it.
-GAUSSIAN_TILED_MAX_QUERIES = 1 << 16
-GAUSSIAN_TILED_BLOCK_DIM = 32
 
 
 @wp.kernel
@@ -1045,7 +1042,7 @@ def ball_angle_defect_sum_tiled(
     # ``ball_angle_defect_sum`` a block a query: each lane walks its share of the query's cells
     # (``kernels.neighbors.ball_cell_box`` / ``ball_cell_probe``, strided by ``wp.block_dim()``)
     # under the same predicate and defect, and ``wp.tile_sum`` adds the lanes' ``float64`` partials
-    # in a fixed tree. Its own module: launched at ``GAUSSIAN_TILED_BLOCK_DIM`` lanes, which would
+    # in a fixed tree. Its own module: launched at ``TILED_BALL_WALK_BLOCK_DIM`` lanes, which would
     # rebuild this one. On the CPU a block is one lane, which walks every cell.
     q, lane = wp.tid()
     p = points[q]
