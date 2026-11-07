@@ -1,14 +1,17 @@
 import warp as wp
 
+from ordito.kernels.adjacency import edge_endpoints
 from ordito.kernels.array import (
     OverloadTable,
     binary_search_index,
+    binary_search_index_left,
     outer_product_slot,
     sorted_run_end,
     sorted_run_start,
     store_coo_key,
     to_vec3d,
 )
+from ordito.kernels.edges import edge_row_length
 from ordito.kernels.halfedge import halfedge_destination, halfedge_endpoints, halfedge_prev
 from ordito.kernels.laplacian import cotmatrix_row, store_half_cotangents
 from ordito.kernels.predicates import (
@@ -69,16 +72,80 @@ class EdgeDeviationTerms:
 
 
 @wp.func
-def edge_deviation_term(local: wp.int32, offset: wp.int32, terms: EdgeDeviationTerms) -> wp.float32:
-    # ``(x - L0)^2`` for edge ``offset + local``, the per-edge term of the edge-length regularizer.
-    #
-    # Declined: the deviations summed at each unique edge's first sorted halfedge, with the edge
-    # count in the same pass, so neither the length table nor its count readback exists (CUDA
-    # 0.80-0.91x the call, 0.84x more at a fold of 4 tiles a block; the CPU lost 1.15-1.3x).
-    # Its sum runs over the sorted halfedges, the table's over the edges, so ``unique_edges=``
-    # would no longer give the same bits as the plain call.
-    difference = terms.lengths[offset + local] - terms.target
+def edge_deviation(length: wp.float32, target: wp.float32) -> wp.float32:
+    # ``(x - L0)^2``, the per-edge term of the edge-length regularizer.
+    difference = length - target
     return difference * difference
+
+
+@wp.func
+def edge_deviation_term(local: wp.int32, offset: wp.int32, terms: EdgeDeviationTerms) -> wp.float32:
+    # ``edge_deviation`` of edge ``offset + local`` of a length table: the CPU's form, whose
+    # threads run in turn, where a term at every sorted halfedge (below) cost 1.15-1.3x the call.
+    return edge_deviation(terms.lengths[offset + local], terms.target)
+
+
+@wp.struct
+class EdgeDeviationRunTerms:
+    """``edge_length_loss``'s halfedge count, run ranks, sorted order, faces, positions, ``L0``."""
+
+    n: wp.int32
+    ranks: wp.array[wp.int32]
+    order: wp.array[wp.int32]
+    faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3]
+    target: wp.float32
+
+
+@wp.func
+def edge_deviation_run_term(
+    local: wp.int32, offset: wp.int32, terms: EdgeDeviationRunTerms
+) -> wp.vec2:
+    # ``(edge_deviation, 1)`` of unique edge ``k = offset + local`` in ``edges_unique``'s order,
+    # zero past the last edge, over ``n`` (``3 n_faces``) slots: on CUDA the sum and the edge count
+    # in one pass, with no length table or count readback. Edge ``k``'s run starts at the first
+    # stably sorted halfedge whose run rank (``ranks``, the inclusive scan of the run starts)
+    # reaches ``k + 1``; its length is the one ``edges.edges_unique_length`` would emit there
+    # (``edges.edge_row_length``). ``edge_deviation_row_term`` reads the same terms off given edges
+    # into the same slots, so the two sums agree bit for bit.
+    #
+    # Against the table form, new/old CUDA: 0.84-0.87x on ``sphere_small`` and ``sphere_large``,
+    # 0.93-1.03x on ``dragon``, 1.05x scrambled; with given edges 0.55-0.84x, but 1.2-1.3x (+15 us)
+    # on a scrambled ``dragon``. At the default 16 tiles a block both lost more at the small end.
+    #
+    # Declined: the terms at their runs' sorted positions (0.68-0.92x the table form), which given
+    # edges could reach only through a search a halfedge for its row, its count and a scan:
+    # 1.3-6.5x the given-edges call.
+    k = offset + local
+    if k >= terms.ranks[terms.n - 1]:
+        return wp.vec2(0.0, 0.0)
+    lo, hi = edge_endpoints(terms.faces, terms.order[binary_search_index_left(terms.ranks, k + 1)])
+    return wp.vec2(
+        edge_deviation(edge_row_length(terms.vertices, lo, hi), terms.target), wp.float32(1.0)
+    )
+
+
+@wp.struct
+class EdgeDeviationRowTerms:
+    """``edge_length_loss``'s halfedge count, given unique edges, positions, ``L0``."""
+
+    n: wp.int32
+    unique_edges: wp.array2d[wp.int32]
+    vertices: wp.array[wp.vec3]
+    target: wp.float32
+
+
+@wp.func
+def edge_deviation_row_term(
+    local: wp.int32, offset: wp.int32, terms: EdgeDeviationRowTerms
+) -> wp.vec2:
+    # ``edge_deviation_run_term`` off given unique edges: row ``k`` at slot ``k``, zero past the
+    # last row, over the same ``n`` slots.
+    k = offset + local
+    if k >= terms.unique_edges.shape[0]:
+        return wp.vec2(0.0, 0.0)
+    length = edge_row_length(terms.vertices, terms.unique_edges[k, 0], terms.unique_edges[k, 1])
+    return wp.vec2(edge_deviation(length, terms.target), wp.float32(1.0))
 
 
 @wp.struct
@@ -269,6 +336,23 @@ EDGE_DEVIATION_SUM = term_sum_1d(edge_deviation_term, EdgeDeviationTerms, "edge_
 # 4 within noise.
 HEAVY_TERM_TILES_PER_BLOCK = 4
 
+
+# The two CUDA forms of ``edge_length_loss`` over one position space, at one width, so the given
+# edges' sum is the sorted halfedges' bit for bit.
+EDGE_DEVIATION_RUN_SUM = term_sum_1d(
+    edge_deviation_run_term,
+    EdgeDeviationRunTerms,
+    "edge_deviation_run_sum",
+    wp.vec2,
+    HEAVY_TERM_TILES_PER_BLOCK,
+)
+EDGE_DEVIATION_ROW_SUM = term_sum_1d(
+    edge_deviation_row_term,
+    EdgeDeviationRowTerms,
+    "edge_deviation_row_sum",
+    wp.vec2,
+    HEAVY_TERM_TILES_PER_BLOCK,
+)
 
 NORMAL_CONSISTENCY_SUM = term_sum_1d(
     edge_pair_consistency_term,

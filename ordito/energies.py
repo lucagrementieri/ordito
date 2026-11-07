@@ -54,6 +54,7 @@ from ordito._common import read_scalar, require_same_device, scan_count, scan_co
 from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX
 from ordito.edges import edges_unique, edges_unique_length
+from ordito.kernels import array as kernel_array
 from ordito.kernels import energies as kernel_energies
 from ordito.kernels import laplacian as kernel_laplacian
 from ordito.kernels import reduce as kernel_reduce
@@ -88,7 +89,8 @@ def edge_length_loss(
         ``(n_edges, 2)`` [`edges_unique`][ordito.edges.edges_unique] of ``faces``, which depend on
         the connectivity alone: a loop moving the vertices over fixed faces builds them once
         ([`Trimesh.edges_unique`][ordito.mesh.Trimesh.edges_unique]) and each call then skips the
-        edge sort. Trusted, not checked.
+        edge sort. Its rows must be in ``edges_unique``'s order, which the sum follows, so the loss
+        is the same either way, to the last bit. Trusted, not checked.
 
     Returns
     -------
@@ -128,8 +130,12 @@ def edge_length_loss(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, unique_edges=unique_edges)
-    # The bound is supplied and the range check skipped: both are host readbacks that serialise
-    # the pipeline, and this wrapper trusts its connectivity as its per-edge kernels do.
+    device = faces.device
+    if not wp.get_device(device).is_cpu:
+        return _edge_length_loss_over_halfedges(vertices, faces, target_length, unique_edges)
+    # The CPU sums a length table. The bound is supplied and the range check skipped: both are
+    # host readbacks that serialise the pipeline, and this wrapper trusts its connectivity as its
+    # per-edge kernels do.
     lengths = edges_unique_length(
         vertices, faces, unique_edges, n_vertices=vertices.size, validate=False
     )
@@ -140,6 +146,57 @@ def edge_length_loss(
     terms.lengths = lengths
     terms.target = float(target_length)
     return _mean_of_terms(kernel_energies.EDGE_DEVIATION_SUM, terms, lengths.size, lengths.device)
+
+
+def _edge_length_loss_over_halfedges(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    target_length: float,
+    unique_edges: odt.Array2dInt32 | None,
+) -> float:
+    """
+    [`edge_length_loss`][ordito.energies.edge_length_loss] on CUDA, over the sorted halfedges.
+
+    Each unique edge's deviation and count sit at its rank in ``edges_unique``'s order, over
+    ``3 * n_faces`` slots, one pass summing both, so no length table or count readback exists.
+    Without ``unique_edges`` an edge's slot finds its run among the sorted halfedges by its run
+    rank; with them, it reads its row: the same terms in the same slots, so the same bits.
+    """
+    device = faces.device
+    n = faces.size // 3 * 3
+    if n == 0:
+        return 0.0
+    if unique_edges is None:
+        terms = kernel_energies.EdgeDeviationRunTerms()
+        keys, terms.order = od.adjacency.sorted_face_edge_keys(
+            faces, n_vertices=max(vertices.size, 1)
+        )
+        # Each sorted halfedge's run rank: its run-start flag, scanned in place.
+        terms.ranks = _launch.empty(n, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_array.csr_run_flags,
+            dim=n,
+            inputs=[keys, wp.uint64(2**64 - 1)],
+            outputs=[terms.ranks],
+            device=device,
+        )
+        _launch.array_scan(terms.ranks, out_array=terms.ranks, inclusive=True)
+        terms.faces = faces
+        kernels = kernel_energies.EDGE_DEVIATION_RUN_SUM
+    else:
+        if int(unique_edges.shape[0]) == 0:
+            return 0.0
+        terms = kernel_energies.EdgeDeviationRowTerms()
+        terms.unique_edges = unique_edges
+        kernels = kernel_energies.EDGE_DEVIATION_ROW_SUM
+    terms.n = n
+    terms.vertices = vertices
+    terms.target = float(target_length)
+    # The mean is a host scalar: the sum and the edge count are read back together.
+    total, n_edges_summed = read_scalar(
+        od.reduce.sum_of_terms(kernels, [terms], n, device=device), 0
+    )
+    return float(total) / float(n_edges_summed)
 
 
 def normal_consistency_loss(
