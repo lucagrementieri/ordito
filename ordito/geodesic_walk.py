@@ -30,6 +30,7 @@ that one solves a vector-heat system -- and geodesic *distance* by the heat meth
 from __future__ import annotations
 
 import concurrent.futures
+import itertools
 import math
 import os
 import warnings
@@ -1079,13 +1080,14 @@ def _flip_shorten_on_host(
     """
     Shorten every path on the CPU device, each from the input triangulation.
 
-    Returns the path offsets and the entries (path, kind, tail, tip, trace vector) on the CPU
-    device, the entry count and how many paths the step bound cut off. Each path starts from the
-    input triangulation (``kernels/algorithms/flip_geodesics.shorten_paths`` rewinds its flips),
-    so the paths split into ranges, each shortened by one launch with a triangulation and pools of
-    its own, the ranges' launches on host threads (a CPU launch releases the interpreter), and
-    their entries joined in path order. A range whose pools ran out runs again, grown, from a
-    fresh copy of the input triangulation.
+    Returns the path offsets and the entries (path, kind, tail, tip, trace vector), on the CPU
+    device from one range and on the targets' device from several, the entry count and how many
+    paths the step bound cut off. Each path starts from the input triangulation
+    (``kernels/algorithms/flip_geodesics.shorten_paths`` rewinds its flips), so the paths split
+    into ranges, each shortened by one launch with a triangulation and pools of its own, built and
+    launched on host threads (a CPU launch releases the interpreter), and their entries joined in
+    path order. A range whose pools ran out runs again, grown, from a fresh copy of the input
+    triangulation.
     """
     host = wp.get_device("cpu")
     n_paths = targets.size
@@ -1117,23 +1119,31 @@ def _flip_shorten_on_host(
     unconverged = [0] * n_groups
     single: tuple[wp.array[Any], ...] | None = None
     pending = list(range(n_groups))
+
+    def record(g: int) -> tuple[Any, tuple[wp.array[Any], ...]]:
+        return _flip_group_run(
+            host_mesh,
+            (host_mesh.next, host_mesh.vertex, host_mesh.length, host_mesh.signpost),
+            n_edges,
+            incoming_host,
+            _launch.view(targets_host, starts[g], starts[g + 1]),
+            capacities[g],
+        )
+
+    def record_and_launch(g: int) -> tuple[Any, tuple[wp.array[Any], ...]]:
+        run = record(g)
+        run[0].launch()
+        return run
+
     with concurrent.futures.ThreadPoolExecutor(n_groups) as pool:
         while pending:
-            runs = [
-                _flip_group_run(
-                    host_mesh,
-                    (host_mesh.next, host_mesh.vertex, host_mesh.length, host_mesh.signpost),
-                    n_edges,
-                    incoming_host,
-                    _launch.view(targets_host, starts[g], starts[g + 1]),
-                    capacities[g],
-                )
-                for g in pending
-            ]
-            if len(runs) == 1:
-                runs[0][0].launch()
-            else:
-                list(pool.map(lambda run: run[0].launch(), runs))
+            # Each range copies its triangulation and allocates its pools on its own thread too
+            # (Warp's native copies and allocations release the interpreter), the first on this
+            # one, which loads the kernel's module before any other thread records a launch.
+            first = record(pending[0])
+            others = [pool.submit(record_and_launch, g) for g in pending[1:]]
+            first[0].launch()
+            runs = [first, *(future.result() for future in others)]
             still = []
             for g, (_, outputs) in zip(pending, runs, strict=True):
                 # Host reads, one a range: its entry count, and whether a pool ran out.
@@ -1175,16 +1185,19 @@ def _flip_shorten_on_host(
     ).astype(np.int32)
     n_entries = int(bases[-1])
     n_unconverged = sum(unconverged)
+    # Joined on the host and uploaded to the targets' device once: the offsets and the four
+    # integer columns in one buffer, the trace vectors in another.
+    columns = np.concatenate(
+        [offsets_np, *(np.concatenate([result[k] for result in done]) for k in range(1, 5))]
+    )
+    integers = wp.array(columns.astype(np.int32), dtype=wp.int32, device=targets.device)
+    bounds = [0, n_paths + 1, *(n_paths + 1 + k * n_entries for k in range(1, 5))]
     entries = (
-        wp.array(offsets_np, dtype=wp.int32, device=host),
-        *(
-            wp.array(np.concatenate([result[k] for result in done]), dtype=dtype, device=host)
-            for k, dtype in ((1, wp.int32), (2, wp.int32), (3, wp.int32), (4, wp.int32))
-        ),
+        *(_launch.view(integers, a, b) for a, b in itertools.pairwise(bounds)),
         wp.array(
             np.concatenate([result[5] for result in done]).reshape(-1, 2),
             dtype=wp.vec2d,
-            device=host,
+            device=targets.device,
         ),
     )
     return entries, n_entries, n_unconverged

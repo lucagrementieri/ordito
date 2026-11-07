@@ -1770,8 +1770,8 @@
  "benchmarks/test_geodesic_walk.py::test_geodesic_path_potpourri3d[sphere_med-ordito-cpu-64]": {
   "counts": {
    "launch": 20,
-   "alloc": 122,
-   "h2h": 38,
+   "alloc": 118,
+   "h2h": 34,
    "readback": 60,
    "scan": 2,
    "sort": 1

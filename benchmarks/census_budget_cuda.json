@@ -1873,11 +1873,11 @@
  "benchmarks/test_geodesic_walk.py::test_geodesic_path_potpourri3d[sphere_med-ordito-cuda-64]": {
   "counts": {
    "launch": 24,
-   "alloc": 135,
+   "alloc": 125,
    "memset": 9,
-   "h2d": 7,
+   "h2d": 3,
    "d2h": 13,
-   "h2h": 38,
+   "h2h": 32,
    "scan": 3
   }
  },
