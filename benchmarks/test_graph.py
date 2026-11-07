@@ -12,9 +12,9 @@ Two axes, matching the two ways a graph algorithm gets slow:
   ``test_connected_component_labels_depth``).
 * **diameter**, for ``shortest_path_envelope`` -- one launch per relaxation pass, and the pass
   count is the diameter of the region that violates the bound. The work per pass sweeps the whole
-  CSR rather than a frontier, so there is no narrow-frontier handover to make. Seeded from a single
-  spike, the worst case on purpose: the cap has to cross the whole mesh, so read the row as an upper
-  bound rather than a typical one. Capped at ``bunny_decimated`` for that reason.
+  CSR rather than a frontier, so there is no narrow-frontier handover to make. Seeded as a distance
+  from one source, the worst case on purpose: the envelope has to cross the whole mesh, so read the
+  row as an upper bound rather than a typical one. Capped at ``bunny_decimated`` for that reason.
 
 The vertex-adjacency CSR matrix is prebuilt (untimed, cached per mesh/device) so the timings
 isolate the graph algorithms from the edge sort that produces them -- including
@@ -466,10 +466,15 @@ def _length_weighted_adjacency(bench_case: BenchCase) -> odt.BsrMatrix[wp.float3
     return _weighted_cache[key]
 
 
-def _spike_field_np(bench_case: BenchCase) -> np.ndarray:
-    """Build a delta at vertex 0, so every pass has work and the relaxation is diameter-deep."""
-    values_np = np.zeros(bench_case.n_vertices, dtype=np.float64)
-    values_np[0] = 10.0
+def _source_field_np(bench_case: BenchCase) -> np.ndarray:
+    """
+    Build a distance seed, ``0`` at vertex 0 and unreached elsewhere: a diameter-deep relaxation.
+
+    A spike over a zero field (``10`` at vertex 0) converges in two passes whatever the mesh, since
+    only the spike is lowered; the source seed has to cross the whole mesh.
+    """
+    values_np = np.full(bench_case.n_vertices, 1.0e6, dtype=np.float64)
+    values_np[0] = 0.0
     return values_np
 
 
@@ -479,13 +484,13 @@ def test_shortest_path_envelope(bench_case: BenchCase) -> None:
     """
     Weighted relaxation to the shortest-path envelope: pass count is the graph diameter.
 
-    Capped at ``bunny_decimated`` on both sides. The spike seed makes every pass matter, so the
-    ordito row is ``diameter`` launches deep and the MeshLab row is a serial flood over the same
+    Capped at ``bunny_decimated`` on both sides. The source seed makes every pass matter, so the
+    ordito row is ``diameter`` passes deep and the MeshLab row is a serial flood over the same
     region -- neither says anything new at larger scale that the two smallest meshes do not. The
     weighted adjacency is an input and is built outside the timed callable, like the unweighted
     one the labelling groups take.
     """
-    skip_larger_than(bench_case, "bunny_decimated", "a spike-seeded relaxation is diameter-deep")
+    skip_larger_than(bench_case, "bunny_decimated", "a source-seeded relaxation is diameter-deep")
     n_vertices = bench_case.n_vertices
     if bench_case.kind == "pymeshlab":
 
@@ -495,7 +500,7 @@ def test_shortest_path_envelope(bench_case: BenchCase) -> None:
                 ml.Mesh(
                     bench_case.vertices_np,
                     np.ascontiguousarray(bench_case.faces_np, dtype=np.int32),
-                    v_scalar_array=_spike_field_np(bench_case),
+                    v_scalar_array=_source_field_np(bench_case),
                 )
             )
             meshset_pml.apply_scalar_saturation_per_vertex(gradientthr=1.0)
@@ -505,7 +510,7 @@ def test_shortest_path_envelope(bench_case: BenchCase) -> None:
         return
     adjacency = _length_weighted_adjacency(bench_case)
     values = wp.array(
-        _spike_field_np(bench_case).astype(np.float32), dtype=wp.float32, device=bench_case.device
+        _source_field_np(bench_case).astype(np.float32), dtype=wp.float32, device=bench_case.device
     )
     envelope = bench_case.run(lambda: od.graph.shortest_path_envelope(adjacency, values), rounds=3)
     assert envelope.shape == (n_vertices,)
