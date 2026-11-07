@@ -996,6 +996,15 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   shorter row paid only with the waves replayed from a device counter.
 - **CPU code generation on Warp 1.19 (SLP vectorization):** 1.18 -> 1.19 over every ordito CPU benchmark row at `--size small` (two interleaved passes, CUDA hidden): geomean 0.876 / 0.885, 450 rows faster than 0.9x in both passes, 21 slower than 1.1x. The largest gains: `face_tangent_frames` 0.22-0.31x, `vertex_normals` 0.39-0.42x, `fast_marching_distance` 0.49x, `principal_curvature_taubin` and `marching_cubes_lewiner` 0.52x, `isotropic_remesh` and `flip_to_delaunay` 0.57x. SLP is nearly all of it: with `-fno-slp-vectorize` the same rows read 0.94-1.02x, and also dropping loop vectorization changes nothing further. The stable losses are SLP too: `mls_principal_curvature` rimls 1.18-1.26x and apss 1.12-1.21x (0.4-1.7 s rows; 0.98x without SLP), `upsample_polyline` 1.14-1.17x (0.93x without), and other polyline rows and `parametric_surface` at 1.13-1.2x (not flag-tested). Declined: a module-wide flag on `kernels/curvature.py` would forfeit taubin's 0.52x along with MLS's loss, and CUDA is the target (§9). Only MLS kernels in a module of their own could take it. CUDA over the same rows (`--size small,medium`): geomean 0.995 / 1.006 with pass-to-pass correlation 0.00, so nothing moved except `descend_field` 0.88x and the Laplacian rows 0.77-0.81x. Ray queries (GH-1840), hash grid (GH-2119 / GH-2163) and the newly unrolled `continue` loops (GH-1552) were flat at 0.975-1.009 module geomeans. The §14 CPU verdicts above were measured on 1.18; the one-launch forms sped up with everything else.
 - **Shapes that lose:** a line-per-thread lattice pass absorbing a cell-per-thread one (`fill_orthographic`, 0.4-0.85x); a single-thread serial walk storing gathered values instead of computed indices (1.5-3x, polyline downsample); a per-face edge marker instead of a per-edge one plus a child-count launch (1.2x, remesh split).
+- **A serial walk counted then written walks once** (2026-11-07): a kernel launched to count each
+  walk's points and again to write them (tracers, descents, the flip traces) repeats the whole
+  walk. The counting pass stages the points in a pool of 16-point chunks linked a walk at a time
+  (`kernels/array.stage_point`), the writing pass copies them (`copy_staged`) and walks again only
+  a walk the pool ran out on: the writing kernel 2.1 -> 0.09 ms at 4 096 descents, `descend_field`
+  0.57-0.66x. Size the pool for the total, not each walk's bound (the walks share it), and keep it
+  in plain arrays: a `@wp.struct` of four arrays cost a host-bound call its device saving. Few
+  walks also take a warp each (`_launch.walk_lanes`; 0.63x at 4 096 descents), which pays where
+  walks sharing a warp diverge, and not for a few long walks already alone in theirs.
 - **A thread a row writing its segment in turn** (2026-11-07): a warp's stores sit a segment
   apart, which costs nothing while the output fits in L2 and is the whole kernel past it:
   `k_harmonic`'s sandwich (49 triplets a row) took 0.068 ms on `sphere_med` and 1.49 ms on
@@ -1097,6 +1106,15 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   buffer read once would do; the one-component `split` pays `submesh_from_face_indices`' memset
   for an identity face order. Each is a few percent of the call at the benchmark sizes; price
   before acting.
+- **`geodesic_walk` leftovers (2026-11-07 sweep):** `geodesic_path(method="potpourri3d")` at one
+  path is 12 ms on `sphere_med`, of which the shortest-edge tree's relaxation passes are 2.4 ms on
+  CUDA (a pass a hop of the tree, replayed in a conditional graph; any schedule converges to the
+  same distances, so a frontier or block-local relaxation is open) and the tables' copies to the
+  host 2.3 ms. A descent's counting walk is latency-bound at about 2.6 us a point (one path,
+  0.6 ms), and is now the descent's whole device time. The staging pool's 12 MiB cap holds about
+  a quarter of 4 096 descents on `dragon`, which then run at par: a larger cap is a memory-for-time
+  trade to decide. `descend_field` validates the twins it builds (`halfedge_twins`, a readback
+  and an undocumented `ValueError` on a non-manifold mesh); skipping it is an API decision.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
