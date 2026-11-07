@@ -477,17 +477,15 @@ def test_hessian_energy_matches_igl_past_its_corner_mask(device: str, hub_faces:
     )
 
 
-@pytest.mark.parametrize("hub_faces", [63, 64, 200])
+@pytest.mark.parametrize("hub_faces", [200, 2000])
 @pytest.mark.parity("curved_hessian_energy", "igl")
 def test_curved_hessian_energy_matches_igl_on_a_long_fan(device: str, hub_faces: int) -> None:
     """
     Class A: ``igl.curved_hessian_energy`` on a closed double cone whose hubs' fans are long.
 
-    From ``CURVED_LONG_RING_FACES`` (64) faces a row is summed a thread an entry, each walking its
-    column's faces in the scan's order, and the entries whose column's fan is long too (here the
-    diagonals and the two hubs' coupling) a block each; 63 faces stays on the row scan. Measured
-    against the scan on 64 and 200 faces, both devices: those four entries differ by at most 2e-18
-    relative, every other one is bit for bit the same.
+    Each entry sums one block value a face over its run of sorted pattern keys; a hub's diagonal
+    and the two hubs' coupling take from every face of the fan and the faces across it, the
+    longest runs the assembly forms.
     """
     vertices_np, faces_np = _double_cone_np(hub_faces)
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)

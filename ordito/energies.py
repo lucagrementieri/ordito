@@ -50,13 +50,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import (
-    read_scalar,
-    read_values,
-    require_same_device,
-    scan_count,
-    scan_count_checked,
-)
+from ordito._common import read_scalar, require_same_device, scan_count, scan_count_checked
 from ordito.config import is_deterministic
 from ordito.constants import INT32_MAX
 from ordito.edges import edges_unique, edges_unique_length
@@ -959,9 +953,8 @@ def curved_hessian_energy(
     )
     # Each unique edge's two halfedges are recorded by the same face pass.
     edge_halfedges = _launch.full((n_edges, 2), -1, dtype=wp.int32, device=device)
-    # Each unique edge's halfedge count; the edge-manifold flag of the launch after, and the long
-    # fans' key count (``kernels/energies.curved_long_ring_count``) beside it for the same read.
-    cursor, flags = _launch.carve(wp.int32, (n_edges, 2), device, zeroed=True)
+    # Each unique edge's halfedge count, and the edge-manifold flag of the launch after.
+    cursor, flags = _launch.carve(wp.int32, (n_edges, 1), device, zeroed=True)
     _launch.launch(
         kernel_energies.internal_angles_and_sums,
         dim=n_faces,
@@ -969,19 +962,14 @@ def curved_hessian_energy(
         outputs=[angles, angle_sums, edge_halfedges, mass],
         device=device,
     )
-    # Under the deterministic mode the angle sums' sort gives the vertex-face rows too, the ones
-    # ``vertex_face_adjacency`` would sort the same face buffer again for.
-    sorted_rows = None
     if deterministic:
-        angle_sums, sorted_rows = _sorted_vertex_corner_sums(
-            faces, angles, n_vertices, with_rows=True
-        )
+        angle_sums, _ = _sorted_vertex_corner_sums(faces, angles, n_vertices)
     # ``cursor`` now counts each unique edge's halfedges, which settles the topology the rest
     # needs: an edge on three or more faces fails the edge-manifold precondition (flagged by the
     # launch below), and an edge on one is a boundary edge.
     # igl::cr_vector_curvature_correction's kappa scaling, ``angle_defect / angle_sum``, is zero
     # on the boundary (curvature is only corrected at interior vertices) and for a non-positive
-    # angle sum: zeroing the boundary's *sums* gives that zero where the row kernel forms the
+    # angle sum: zeroing the boundary's *sums* gives that zero where the block kernel forms the
     # kappa as it reads it, and it forms each edge's inverse mass likewise.
     _launch.launch(
         kernel_energies.zero_at_boundary_edges,
@@ -990,21 +978,8 @@ def curved_hessian_energy(
         outputs=[angle_sums, flags],
         device=device,
     )
-    if sorted_rows is not None:
-        vf_indices, vf_offsets = sorted_rows
-    else:
-        vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
-    _launch.launch(
-        kernel_energies.curved_long_ring_count,
-        dim=n_vertices,
-        inputs=[vf_offsets],
-        outputs=[flags],
-        device=device,
-    )
-    # The validation raises on the host, so its flag is read back, and the long fans' key count
-    # sizes their face lists.
-    nonmanifold, n_long_keys = read_values(flags, 0, 2)
-    if int(nonmanifold) != 0:
+    # The validation raises on the host, so its flag is read back.
+    if int(read_scalar(flags, 0)) != 0:
         raise ValueError(
             "mesh must be edge-manifold (every edge shared by at most two faces); the "
             "Crouzeix-Raviart discretization curved_hessian_energy is built on is undefined "
@@ -1022,8 +997,8 @@ def curved_hessian_energy(
     )
 
     # The pattern first: 36 keys a face, the pairs of the vertices its edges' gradient rows touch,
-    # sorted into the rows; the values are then gathered a row a thread in the order a triplet
-    # sort would have summed them (``kernels/energies.curved_hessian_rows``).
+    # sorted into the rows; each face's 6x6 block then lands in the sorted keys' lower half, which
+    # nothing reads again, at its keys' payloads, and an entry sums its run of them.
     n_keys = 36 * n_faces
     keys, order = od.array.csr_key_buffers(n_keys, device)
     _launch.launch(
@@ -1032,7 +1007,7 @@ def curved_hessian_energy(
         inputs=[vertices, faces, inverse, vertex_slots, wp.int32(n_vertices), keys, order],
         device=device,
     )
-    offsets, key_columns, _starts = od.array.csr_from_keys(
+    offsets, key_columns, starts = od.array.csr_from_keys(
         keys, order, n_keys, n_vertices, n_vertices
     )
     # Host readback: the entry count is known only on the device, and it sizes the operator.
@@ -1040,75 +1015,34 @@ def curved_hessian_energy(
     columns = _launch.empty(n_entries, dtype=wp.int32, device=device)
     if n_entries > 0:
         wp.copy(columns, key_columns, count=n_entries)
-    # The key buffers and the key-sized columns go before the values arrive.
-    del keys, order, key_columns, _starts
-    # A long fan's row walks its faces sorted (``kernels/energies.CURVED_LONG_RING_FACES``); no
-    # list is built when no fan is long.
-    long_offsets = long_faces = _launch.empty(0, dtype=wp.int32, device=device)
-    if n_long_keys > 0:
-        long_keys, long_order = od.array.csr_key_buffers(int(n_long_keys), device)
-        _launch.launch_tiled(
-            kernel_energies.curved_long_ring_keys,
-            dim=n_vertices,
-            inputs=[
-                inverse,
-                edge_halfedges,
-                vf_offsets,
-                vf_indices,
-                wp.int32(n_vertices),
-                wp.int32(n_faces),
-                _launch.zeros(1, dtype=wp.int32, device=device),
-            ],
-            outputs=[long_keys, long_order],
-            block_dim=256,
-            device=device,
-        )
-        long_offsets, long_faces, _ = od.array.csr_from_keys(
-            long_keys, long_order, int(n_long_keys), n_vertices, n_faces
-        )
-        del long_keys, long_order
-    # ``-0.0``: the identity of floating-point addition, so each entry is its contributions' sum
-    # from the first one on.
-    values = _launch.full(n_entries, -0.0, dtype=dtype, device=device)
+    # The key-sized columns go before the values arrive; the keys stay, holding the blocks.
+    del key_columns
+    values = _launch.empty(n_entries, dtype=dtype, device=device)
     if n_entries > 0:
-        # A long fan's row a thread an entry (``kernels/energies.curved_hessian_long_rows``) and
-        # its long columns a block a row (``curved_hessian_long_columns``); every other row a
-        # thread a row.
-        rows = [
-            vertices,
-            faces,
-            inverse,
-            angles,
-            angle_sums,
-            mass,
-            edge_halfedges,
-            vertex_slots,
-            par,
-            perp,
-            vf_offsets,
-            vf_indices,
-        ]
+        blocks = _launch.alias(keys, wp.float64, 0, n_keys)
         _launch.launch(
-            kernel_energies.CURVED_HESSIAN_ROWS[dtype],
-            dim=n_vertices,
-            inputs=[*rows, long_offsets, offsets, columns, values],
+            kernel_energies.curved_hessian_face_blocks,
+            dim=n_faces,
+            inputs=[
+                vertices,
+                faces,
+                inverse,
+                angles,
+                angle_sums,
+                mass,
+                vertex_slots,
+                par,
+                perp,
+                blocks,
+            ],
             device=device,
         )
-        if n_long_keys > 0:
-            long_inputs = [*rows, long_offsets, long_faces, offsets, columns, values]
-            _launch.launch(
-                kernel_energies.CURVED_HESSIAN_LONG_ROWS[dtype],
-                dim=n_entries,
-                inputs=long_inputs,
-                device=device,
-            )
-            _launch.launch_tiled(
-                kernel_energies.CURVED_HESSIAN_LONG_COLUMNS[dtype],
-                dim=n_vertices,
-                inputs=long_inputs,
-                block_dim=256,
-                device=device,
-            )
+        _launch.launch(
+            kernel_energies.CURVED_HESSIAN_VALUES[dtype],
+            dim=n_entries,
+            inputs=[blocks, order, starts, values],
+            device=device,
+        )
     return od.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values, nnz=n_entries)
 
 

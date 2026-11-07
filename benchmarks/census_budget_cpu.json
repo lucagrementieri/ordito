@@ -1569,11 +1569,11 @@
  },
  "benchmarks/test_energies.py::test_curved_hessian_energy[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 12,
-   "alloc": 13,
+   "launch": 10,
+   "alloc": 12,
    "h2h": 1,
    "readback": 3,
-   "scan": 2,
+   "scan": 1,
    "sort": 2
   }
  },
