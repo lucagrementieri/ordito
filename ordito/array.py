@@ -13,7 +13,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device, scan_count
+from ordito._device import index_extrema, read_scalar, read_values, require_same_device, scan_count
 from ordito.constants import ALLCLOSE_ATOL, ALLCLOSE_RTOL, TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import reduce as kernel_reduce
@@ -2899,13 +2899,15 @@ def index_bound(indices: odt.ArrayNdInt, *, require_non_negative: bool = False) 
     """
     if int(indices.size) == 0:
         return 0
-    # Device-side tiled max: only the 4-byte result crosses to the host, not the whole buffer.
-    if not require_non_negative:
-        return int(od.reduce.max(indices)) + 1
-    low, high = od.reduce.minmax(indices)
+    # Device-side extrema: only the two clamped ends cross to the host, not the whole buffer.
+    low, high = index_extrema(indices)
     if low < 0:
-        raise ValueError(f"indices must be non-negative, got a minimum of {int(low)}")
-    return int(high) + 1
+        if require_non_negative:
+            raise ValueError(f"indices must be non-negative, got a minimum of {low}")
+        if high == 0:
+            # The maximum clamped at zero: every index may be negative, so measure it.
+            return int(od.reduce.max(indices)) + 1
+    return high + 1
 
 
 def indices_to_mask(

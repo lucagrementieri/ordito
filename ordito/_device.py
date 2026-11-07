@@ -25,7 +25,8 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito.constants import ITEMS_PER_SLICE_CPU, ITEMS_PER_SLICE_CUDA
+from ordito.constants import ITEMS_PER_SLICE_CPU, ITEMS_PER_SLICE_CUDA, TILE_1D
+from ordito.kernels import reduce as kernel_reduce
 
 T = TypeVar("T")
 
@@ -309,12 +310,10 @@ def require_valid_faces(faces: wp.array[wp.int32], n_vertices: int, name: str) -
     """
     if faces.size == 0:
         return
-    # One ``minmax`` rather than a ``min`` and a ``max``: both ends come out of the same launch,
-    # the same buffer and the same readback, so asking for both costs nothing over asking for one.
-    # Measured a win on both devices at every size -- what it removes is the second reduction's own
-    # readback rather than any device work.
-    lo, hi = od.reduce.minmax(faces)
+    # Both ends from one launch and one readback; the range the message quotes is re-measured.
+    lo, hi = index_extrema(faces)
     if lo < 0 or hi >= n_vertices:
+        lo, hi = od.reduce.minmax(faces)
         raise ValueError(
             f"{name}: faces must reference vertex indices in [0, {n_vertices}), "
             f"got a range of [{lo}, {hi}]"
@@ -532,6 +531,47 @@ def read_values(arr: wp.array[Any], start: int, count: int) -> list[Any]:
 
 # ``read_values``' scratch per ``(dtype, count)`` and its NumPy view, as ``_SCALAR_SCRATCH``.
 _VALUES_SCRATCH: dict[tuple[type, int], tuple[wp.array[Any], np.ndarray[Any, Any]]] = {}
+
+
+def index_extrema(indices: odt.ArrayNdInt) -> tuple[int, int]:
+    """
+    ``(min(0, minimum), max(0, maximum))`` of a non-empty index buffer, in one readback.
+
+    Exact wherever an index check acts -- a negative minimum, a non-negative maximum -- so a caller
+    testing ``low < 0`` and ``high >= bound``, or taking ``high + 1`` as a bound once a negative
+    is rejected, reads it as it would ``reduce.minmax``'s pair; a message quoting the range
+    re-measures with ``reduce.minmax`` on its error path. A contiguous ``wp.int32`` buffer of any
+    rank takes one launch of ``kernels/reduce.index_extrema`` into a zeroed two-slot buffer, with
+    neither ``minmax``'s seeded buffer and fill nor its dispatch; any other dtype or a strided
+    view takes ``reduce.minmax``, clamped the same way.
+
+    Parameters
+    ----------
+    indices
+        Non-empty index buffer of any rank.
+
+    Returns
+    -------
+    tuple[int, int]
+        ``(min(0, minimum), max(0, maximum))``.
+    """
+    if indices.dtype is not wp.int32 or not indices.is_contiguous:
+        low, high = od.reduce.minmax(cast(odt.ScalarArray, indices))
+        return min(int(low), 0), max(int(high), 0)
+    flat = indices if indices.ndim == 1 else indices.flatten()
+    n = int(flat.size)
+    device = flat.device
+    out = _launch.zeros(2, dtype=wp.int32, device=device)
+    _launch.launch_tiled(
+        kernel_reduce.index_extrema,
+        dim=[kernel_reduce.blocks_1d(n)],
+        inputs=[flat, n, 0, out],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    # The pair is the answer.
+    low, high = read_values(out, 0, 2)
+    return int(low), int(high)
 
 
 def _detached(value: T) -> T:

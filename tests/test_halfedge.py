@@ -273,13 +273,13 @@ def test_unbounded_pairing_reads_its_vertex_bound(
     monkeypatch.setattr(od.halfedge, "_INFERRED_BOUND_FROM_HALFEDGES", 0)
     monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
     reductions: list[int] = []
-    minmax = od.reduce.minmax
+    index_extrema = od.halfedge.index_extrema
 
-    def counted_minmax(array: odt.ArrayNdInt) -> tuple[int, int]:
+    def counted_index_extrema(array: odt.ArrayNdInt) -> tuple[int, int]:
         reductions.append(array.size)
-        return minmax(array)
+        return index_extrema(array)
 
-    monkeypatch.setattr(od.reduce, "minmax", counted_minmax)
+    monkeypatch.setattr(od.halfedge, "index_extrema", counted_index_extrema)
     bucket_builds: list[int] = []
     edge_buckets = od.halfedge._edge_buckets  # pyright: ignore[reportPrivateUsage]
 

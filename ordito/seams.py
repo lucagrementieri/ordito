@@ -34,7 +34,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device, scan_count
+from ordito._device import index_extrema, require_same_device, scan_count
 from ordito.kernels import seams as kernel_seams
 from ordito.kernels.algorithms import connected_components as kernel_connected_components
 
@@ -753,8 +753,10 @@ def _validate_uv_inputs(
         # indexes ``texcoords`` with it directly, and an out-of-range entry (a stale ``FTC`` after
         # ``texcoords`` was trimmed, an off-by-one building the pool) is a device-side out-of-bounds
         # read rather than a Python exception. Caught here rather than left to the kernel.
-        min_index, max_index = od.reduce.minmax(face_texcoords)
+        min_index, max_index = index_extrema(face_texcoords)
         if min_index < 0 or max_index >= texcoords.size:
+            # The range the message quotes.
+            min_index, max_index = od.reduce.minmax(face_texcoords)
             raise ValueError(
                 f"face_texcoords entries must be in [0, {texcoords.size}) (texcoords' "
                 f"length), got a range of [{min_index}, {max_index}]"

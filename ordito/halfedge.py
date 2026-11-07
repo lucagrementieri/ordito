@@ -22,7 +22,7 @@ import warp as wp
 
 import ordito as od
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._device import index_extrema, read_scalar, read_values, require_same_device
 from ordito.adjacency import _sorted_face_edge_buffers  # pyright: ignore[reportPrivateUsage]
 from ordito.constants import INDEX_RADIX_PAIR, INT32_MAX
 from ordito.kernels import halfedge as kernel_halfedge
@@ -953,8 +953,8 @@ def _pairing_vertex_bound(
     ):
         return n_vertices
     # Readback: the index range bounds the buckets, which a large mesh pairs through.
-    low, high = od.reduce.minmax(faces)
-    return int(high) + 1 if int(low) >= 0 else None
+    low, high = index_extrema(faces)
+    return high + 1 if low >= 0 else None
 
 
 def _raise_twin_defects(defect_counts: Sequence[int]) -> None:

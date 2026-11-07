@@ -22,7 +22,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, read_values, require_same_device
+from ordito._device import index_extrema, read_scalar, read_values, require_same_device
 from ordito.array import arange_repeat
 from ordito.constants import INDEX_RADIX_PAIR, TILE_1D
 from ordito.kernels import adjacency as kernel_adjacency
@@ -269,7 +269,7 @@ def edges_unique(
         elif validate:
             # The packing's range check: the reduction's readback, then the same two raises as
             # the face path's key-pass check.
-            low, high = od.reduce.minmax(edges_sorted)
+            low, high = index_extrema(edges_sorted)
             if low < 0:
                 raise ValueError(f"edge indices must be non-negative, got a minimum of {low}")
             if high >= n_vertices:
@@ -464,7 +464,7 @@ def _sorted_face_edge_keys(
         # alone and the sort only overwrites once the host has the bound for its key width --
         # ``reduce.minmax`` without its own seeded result buffer.
         _launch.launch_tiled(
-            kernel_edges.face_index_extrema,
+            kernel_reduce.index_extrema,
             dim=[kernel_reduce.blocks_1d(n)],
             inputs=[faces, n, n, order],
             block_dim=TILE_1D,

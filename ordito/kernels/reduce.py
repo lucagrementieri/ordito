@@ -153,6 +153,44 @@ def commit_block_total(lane: wp.int32, local: Any, out: wp.array[Any], slot: wp.
         wp.atomic_add(out, slot, block)
 
 
+@wp.kernel
+def index_extrema(
+    indices: wp.array[wp.int32],
+    n_indices: wp.int32,
+    slot: wp.int32,
+    out_extrema: wp.array[wp.int32],
+) -> None:
+    # ``_device.index_extrema``: the minimum and maximum of the first ``n_indices`` entries of an
+    # index buffer, committed by ``atomic_min`` / ``atomic_max`` into ``out_extrema[slot]`` and
+    # ``out_extrema[slot + 1]``, two zeroed slots -- of a buffer the caller allocates anyway where
+    # it has one (``edges.edges_unique``'s sort payload). The zero seeds clamp the pair to
+    # ``(min(0, minimum), max(0, maximum))``, which is exact wherever an index check acts: a
+    # negative minimum, a non-negative maximum. That is what lets it skip ``reduce.minmax``'s
+    # seeded result buffer, its fill and its dispatch. A block commits its minimum only when it is
+    # negative. Lane-strided by ``wp.block_dim()``; integer, so exact in any order.
+    # Measured through ``edges_unique`` with no ``n_vertices`` (2026-11-07, CUDA new/old, with
+    # ``edges.face_edge_keys_inferred`` issued before the read): 0.78-0.81x on 1 k-82 k faces,
+    # 0.87x at 330 k, 0.93x at 1.3 M; the device-read radix alone was worth 0.97x of that. CPU
+    # 0.78-0.84x at 1 k faces, 0.97-1.02x from 20 k. Declined there: packing against
+    # ``INDEX_RADIX_PAIR`` with no bound read at all, since the 64-bit sort costs the extra passes
+    # the read saves (0.94-0.97x the old ``minmax`` path on 1 k-80 k faces, 1.08-1.15x from 1.3 M)
+    # and loses to this one.
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(n_indices, block)
+    low = wp.int32(0)
+    high = wp.int32(0)
+    for k in range(lane, count, wp.block_dim()):
+        v = indices[offset + k]
+        low = wp.min(low, v)
+        high = wp.max(high, v)
+    block_low = block_min(low)
+    block_high = block_max(high)
+    if lane == 0:
+        if block_low < 0:
+            wp.atomic_min(out_extrema, slot, block_low)
+        wp.atomic_max(out_extrema, slot + 1, block_high)
+
+
 # The run-to-run reproducible block commit, in the launch that forms the block sums.
 #
 # One ``atomic_add`` per block adds the blocks in arrival order, so on CUDA a float total's last

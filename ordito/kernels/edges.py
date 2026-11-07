@@ -10,14 +10,7 @@ from ordito.kernels.array import sorted_run_start, unpack_edge_key
 from ordito.kernels.grouping import add_sorted_run_length
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import segment_aabb, side_lengths
-from ordito.kernels.reduce import (
-    block_chunk_1d,
-    block_max,
-    block_min,
-    block_sum,
-    commit_block_total,
-    term_sum_1d,
-)
+from ordito.kernels.reduce import block_chunk_1d, block_sum, commit_block_total, term_sum_1d
 from ordito.kernels.triangles import corner_triple, face_vertices
 
 wp.set_module_options({"enable_backward": False})
@@ -121,51 +114,17 @@ def face_edge_keys_checked(
 
 
 @wp.kernel
-def face_index_extrema(
-    faces: wp.array[wp.int32], n_indices: wp.int32, slot: wp.int32, out_order: wp.array[wp.int32]
-) -> None:
-    # ``edges.edges_unique``'s inferred bound with no ``n_vertices``: the minimum and maximum of the
-    # first ``n_indices`` face indices, committed by ``atomic_min`` / ``atomic_max`` into
-    # ``out_order[slot]`` and ``out_order[slot + 1]``, two zeroed slots of the sort payload's
-    # scratch half that the key pass and the sort only touch after the host has read them. The
-    # zero seeds are why a block commits its minimum only when it is negative: the host reads the
-    # pair as ``reduce.minmax``'s minimum and maximum wherever the minimum is negative or the
-    # maximum is the bound's, which is every case it acts on. Lane-strided by ``wp.block_dim()``;
-    # integer, so exact in any order. With ``face_edge_keys_inferred`` issued before the read it
-    # replaced ``reduce.minmax`` and its readback (2026-11-07, CUDA new/old): ``edges_unique``
-    # 0.78-0.81x on 1 k-82 k faces, 0.87x at 330 k, 0.93x at 1.3 M; ``unique_edge_count``
-    # 0.75-0.79x; the device-read radix alone was worth 0.97x of that. CPU 0.78-0.84x at 1 k faces,
-    # 0.97-1.02x from 20 k. Declined: packing against ``INDEX_RADIX_PAIR`` with no bound read at
-    # all, since the 64-bit sort costs the extra passes the read saves (0.94-0.97x the old
-    # ``minmax`` path on 1 k-80 k faces, 1.08-1.15x from 1.3 M) and loses to this one.
-    block, lane = wp.tid()
-    offset, count = block_chunk_1d(n_indices, block)
-    low = wp.int32(0)
-    high = wp.int32(0)
-    for k in range(lane, count, wp.block_dim()):
-        v = faces[offset + k]
-        low = wp.min(low, v)
-        high = wp.max(high, v)
-    block_low = block_min(low)
-    block_high = block_max(high)
-    if lane == 0:
-        if block_low < 0:
-            wp.atomic_min(out_order, slot, block_low)
-        wp.atomic_max(out_order, slot + 1, block_high)
-
-
-@wp.kernel
 def face_edge_keys_inferred(
     faces: wp.array[wp.int32],
     slot: wp.int32,
     out_keys: wp.array[wp.uint64],
     out_order: wp.array[wp.int32],
 ) -> None:
-    # ``adjacency.face_edge_keys_and_order`` packed against the bound ``face_index_extrema`` left in
-    # ``out_order[slot + 1]`` (one past the largest index), read on the device, so the launch is
-    # issued before the host has read that bound back and overlaps the readback's wait. A negative
-    # index makes the keys garbage; the host raises on it before the sort. The packing radix is
-    # the only difference from ``face_edge_keys_and_order``.
+    # ``adjacency.face_edge_keys_and_order`` packed against the bound ``reduce.index_extrema``
+    # left in ``out_order[slot + 1]`` (one past the largest index), read on the device, so the
+    # launch is issued before the host has read that bound back and overlaps the readback's wait.
+    # A negative index makes the keys garbage; the host raises on it before the sort. The packing
+    # radix is the only difference from ``face_edge_keys_and_order``.
     f = wp.int32(wp.tid())
     write_face_edge_keys_and_order(
         faces, f, wp.uint64(out_order[slot + 1]) + wp.uint64(1), out_keys, out_order
