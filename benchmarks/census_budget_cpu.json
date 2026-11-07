@@ -1551,7 +1551,6 @@
    "launch": 2,
    "alloc": 2,
    "readback": 1,
-   "scan": 1,
    "sort": 1
   }
  },

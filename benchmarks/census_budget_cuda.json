@@ -1628,7 +1628,6 @@
    "alloc": 2,
    "memset": 1,
    "d2h": 1,
-   "scan": 1,
    "sort": 1
   }
  },

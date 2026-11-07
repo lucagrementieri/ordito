@@ -5,7 +5,7 @@ from ordito.kernels.array import sorted_run_start, unpack_edge_key
 from ordito.kernels.grouping import add_sorted_run_length
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import segment_aabb, side_lengths
-from ordito.kernels.reduce import block_chunk_1d, block_sum, term_sum_1d
+from ordito.kernels.reduce import block_chunk_1d, block_sum, commit_block_total, term_sum_1d
 from ordito.kernels.triangles import corner_triple, face_vertices
 
 wp.set_module_options({"enable_backward": False})
@@ -254,6 +254,27 @@ HALFEDGE_LENGTH_SUM = term_sum_1d(halfedge_length_term, HalfedgeLengthTerms, "ha
 
 
 @wp.kernel
+def sorted_key_run_count(
+    sorted_keys: wp.array[wp.uint64],
+    n_keys: wp.int32,
+    slot: wp.int32,
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # ``edges.unique_edge_count``: the run starts of the first ``n_keys`` sorted corner keys, one
+    # per unique edge, added into the zeroed ``out_counts[slot]`` a block at a time. The count the
+    # ``mark_sorted_run_starts`` scan's tail would give, with no marks, no scan and no tail read of
+    # its own (``kernels/measures.referenced_vertex_and_unique_edge_counts`` folds the same test
+    # beside its vertex count). Lane-strided by ``wp.block_dim()``; integer, so exact in any order.
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(n_keys, block)
+    local = wp.int32(0)
+    for k in range(lane, count, wp.block_dim()):
+        if sorted_run_start(sorted_keys, offset + k):
+            local += 1
+    commit_block_total(lane, local, out_counts, slot)
+
+
+@wp.kernel
 def unique_edge_length_partials(
     vertices: wp.array[wp.vec3],
     sorted_keys: wp.array[wp.uint64],
@@ -269,6 +290,11 @@ def unique_edge_length_partials(
     # no run scan, no emitted edge table, no length buffer and no edge-count readback. Block 0 adds
     # ``flags[flag_slot]`` (``face_edge_keys_checked``'s range code, or a zero slot) as the third
     # component, so the one readback of the total also carries the validation.
+    # Declined (2026-11-07): the same triple as a ``wp.vec3`` ``term_sum_1d`` (one launch with the
+    # determinism setting off, the total aliased into the payload's zeroed tail) cost CUDA
+    # 1.02-1.03x on 1.3 M-28 M faces and the CPU 1.5-1.7x (the mapped term reads the flag per
+    # element); the saved launch and allocation bought nothing on 5 k-70 k faces, where the call
+    # waits on the sort and the readback.
     block, lane = wp.tid()
     offset, count = block_chunk_1d(n_keys, block)
     # A raised flag means some key unpacks to an index outside ``vertices``: read none of them.

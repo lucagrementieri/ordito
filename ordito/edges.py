@@ -292,8 +292,8 @@ def unique_edge_count(
     """
     Count the unique undirected edges, without building the edge table.
 
-    Equals ``edges_unique(faces, n_vertices=n_vertices)[0].shape[0]``: the same sort and run scan,
-    stopped before the rows and the inverse map are written.
+    Equals ``edges_unique(faces, n_vertices=n_vertices)[0].shape[0]``: the same sort, its runs
+    counted rather than ranked, and neither the rows nor the inverse map written.
 
     Parameters
     ----------
@@ -336,7 +336,21 @@ def unique_edge_count(
     if n_faces == 0:
         return 0
     radix, check = _face_edge_radix(faces, n_faces, n_vertices, validate)
-    return _sorted_edge_run_ranks(faces, n_faces, radix, check)[3]
+    n = 3 * n_faces
+    # Two zeroed slots after the payload: the key pass's range flag, then the run count.
+    keys, order = _sorted_face_edge_keys(faces, n_faces, radix, radix if check else None, tail=2)
+    _launch.launch_tiled(
+        kernel_edges.sorted_key_run_count,
+        dim=[kernel_reduce.blocks_1d(n)],
+        inputs=[keys, n, 2 * n + 1, order],
+        block_dim=TILE_1D,
+        device=faces.device,
+    )
+    # The count is the answer; the range flag rides in the same copy.
+    code, n_edges = read_values(order, 2 * n, 2)
+    if check:
+        _raise_on_range_code(int(code), radix)
+    return int(n_edges)
 
 
 def _face_edge_radix(
@@ -409,9 +423,9 @@ def _sorted_edge_run_ranks(
     ``(keys, order, ranks, n_edges)``: sorted edge keys, their 1-based unique-edge ranks, the count.
 
     The part of [`edges_unique`][ordito.edges.edges_unique] that both the table emit and
-    [`unique_edge_count`][ordito.edges.unique_edge_count] need. The run marks and their scan live
-    in the payload's upper half, which is free scratch once the sort has run. With ``check`` the
-    key pass range-checks every index against ``radix`` and its flag sits in the slot after the
+    [`edges_unique_length`][ordito.edges.edges_unique_length] need. The run marks and their scan
+    live in the payload's upper half, which is free scratch once the sort has run. With ``check``
+    the key pass range-checks every index against ``radix`` and its flag sits in the slot after the
     scan, so the count and the validation come back in one read, raising before any emit.
     """
     n = 3 * n_faces
@@ -421,20 +435,32 @@ def _sorted_edge_run_ranks(
 
 
 def _sorted_face_edge_keys(
-    faces: wp.array[wp.int32], n_faces: int, radix: int, bound: int | None
+    faces: wp.array[wp.int32], n_faces: int, radix: int, bound: int | None, tail: int = 0
 ) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
     """
     Every corner's packed edge key, radix-sorted with its corner index as the payload.
 
     The keys and the identity payload are written straight into the sort's double-width buffers
-    (the launch ``adjacency.sorted_face_edge_keys`` makes). With a ``bound`` the key kernel also
-    range-checks every face index against it and raises the zeroed slot ``order[6 * n_faces]`` to
-    a nonzero code on a miss; [`_raise_on_range_code`][ordito.edges._raise_on_range_code] reads it.
+    (the launch ``adjacency.sorted_face_edge_keys`` makes). The payload carries ``tail`` zeroed
+    slots after its ``6 * n_faces`` (at least one with a ``bound``). With a ``bound`` the key
+    kernel also range-checks every face index against it and raises the first,
+    ``order[6 * n_faces]``, to a nonzero code on a miss;
+    [`_raise_on_range_code`][ordito.edges._raise_on_range_code] reads it.
     """
+    # The payload is zeroed whole by its allocation. Declined (2026-11-07): carving it from the
+    # keys' allocation and zeroing only the tail slots saved the memset's bandwidth (lucy 0.97x,
+    # dragon at par) but the separate one-slot memset cost ~3 us of host time, every call
+    # (``edges_unique`` 1.05-1.09x on 5 k-70 k faces).
     device = faces.device
     n = 3 * n_faces
-    if bound is None:
+    if bound is not None:
+        tail = max(tail, 1)
+    if tail == 0:
         keys, order = _launch.sort_buffers(n, wp.uint64, device)
+    else:
+        keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+        order = _launch.zeros(2 * n + tail, dtype=wp.int32, device=device)
+    if bound is None:
         _launch.launch(
             kernel_adjacency.face_edge_keys_and_order,
             dim=n_faces,
@@ -442,8 +468,6 @@ def _sorted_face_edge_keys(
             device=device,
         )
     else:
-        keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
-        order = _launch.zeros(2 * n + 1, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_edges.face_edge_keys_checked,
             dim=n_faces,
