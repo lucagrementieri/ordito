@@ -584,7 +584,6 @@ def test_interpolate_from_points_is_exact_at_the_sources(device: str):
     assert np.allclose(interpolated_wp, values_np[:5], rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parity("interpolate_from_points", "pyvista")
 @pytest.mark.parametrize("radius", [0.3, 0.6])
 def test_interpolate_from_points_few_query_walk_matches_one_thread_walk(
     device: str, monkeypatch: pytest.MonkeyPatch, radius: float
@@ -613,6 +612,7 @@ def test_interpolate_from_points_few_query_walk_matches_one_thread_walk(
     assert np.isclose(first_np[-1], values_np[0]) or np.isclose(first_np[-1], values_np[-1])
 
 
+@pytest.mark.parity("interpolate_from_points", "pyvista")
 def test_interpolate_from_points_unreached_queries_get_the_null_value(device: str):
     """Class A on the miss case: a radius reaching almost nothing leaves 47 of 50 queries null."""
     source_np, values_np, query_np = _scattered_cloud()
