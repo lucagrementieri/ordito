@@ -891,6 +891,26 @@ def binary_search_index(values: wp.array[wp.Scalar], value: wp.Scalar) -> wp.int
 
 
 @wp.func
+def outer_product_slot(
+    segment_offsets: wp.array[wp.int32],
+    a_offsets: wp.array[wp.int32],
+    b_offsets: wp.array[wp.int32],
+    slot: wp.int32,
+) -> tuple[wp.int32, wp.int32, wp.int32]:
+    # Row ``t``, ``a`` and ``b`` of ``slot`` in a buffer holding, row after row, each row's outer
+    # product of two CSR rows row-major: entry ``a`` of ``a_offsets``' row ``t`` against entry
+    # ``b`` of ``b_offsets``' row ``t``, at ``segment_offsets[t] + (a - a_start) * n_b +
+    # (b - b_start)``, with ``segment_offsets`` the ``n_rows + 1`` scanned products (an empty
+    # row's segment holds no slot). A thread a slot writes such a buffer with contiguous stores,
+    # which a thread a row, writing its segment in turn, does not.
+    t = binary_search_index(segment_offsets, slot) - 1
+    local = slot - segment_offsets[t]
+    b_start = b_offsets[t]
+    n_b = b_offsets[t + 1] - b_start
+    return t, a_offsets[t] + local // n_b, b_start + local % n_b
+
+
+@wp.func
 def binary_search_index_left(values: wp.array[wp.Scalar], value: wp.Scalar) -> wp.int32:
     """First index i with values[i] >= value, or len(values) (numpy searchsorted side='left')."""
     # ``wp.lower_bound`` is the same search, but it clamps its result to ``n - 1``

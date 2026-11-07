@@ -453,17 +453,17 @@ def test_triplet_count_refuses_a_scan_that_wrapped(device: str) -> None:
     assert exact.numpy()[1:4].tolist() == [3, 3, 7]
 
 
-@pytest.mark.parametrize("hub_faces", [21, 30, 64])
+@pytest.mark.parametrize("hub_faces", [21, 64, 2000])
 @pytest.mark.parity("hessian_energy", "igl")
-def test_hessian_energy_matches_igl_past_its_corner_mask(device: str, hub_faces: int) -> None:
+def test_hessian_energy_matches_igl_on_a_long_fan(device: str, hub_faces: int) -> None:
     """
-    Class A: ``igl.hessian_energy`` on a closed double cone whose hubs pass the corner mask.
+    Class A: ``igl.hessian_energy`` on a closed double cone whose hubs couple every vertex.
 
-    A fan of more than 21 faces passes ``HESSIAN_MASK_CORNERS`` (64 corners), where a star
-    vertex's first occurrence is tested again as its keys are written. The wavy ring reaches
-    star vertices first seen past corner 64 from 22 faces on; before that test was made there,
-    their rows were missing from the pattern and the row gather wrote outside its row (CUDA error
-    700, a CPU crash). 21 faces stays inside the mask.
+    A hub's star is the whole ring, so its rows are dense: the pattern's keys pair every ring
+    vertex, and each ring entry's value meets the hub among the vertices both one-rings hold, the
+    shorter ring searched into the hub's. A wavy ring reaches star vertices first seen past the
+    fan's 64th corner from 22 faces on, which a first-occurrence mask over the corners once missed
+    (CUDA error 700, a CPU crash).
     """
     vertices_np, faces_np = _double_cone_np(hub_faces)
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)

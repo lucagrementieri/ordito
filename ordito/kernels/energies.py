@@ -3,6 +3,7 @@ import warp as wp
 from ordito.kernels.array import (
     OverloadTable,
     binary_search_index,
+    outer_product_slot,
     sorted_run_end,
     sorted_run_start,
     store_coo_key,
@@ -355,13 +356,10 @@ def sandwich_triplets(
                 )  # fmt: skip
                 cursor += 1
     else:
-        t = binary_search_index(segment_offsets, i) - 1
-        local = i - segment_offsets[t]
-        b_start = b_offsets[t]
-        n_b = b_offsets[t + 1] - b_start
+        t, a, b = outer_product_slot(segment_offsets, a_offsets, b_offsets, i)
         sandwich_store(
-            i, t, a_offsets[t] + local // n_b, b_start + local % n_b, a_columns, a_values,
-            b_columns, b_values, inv_mass, sign, n_rows, out_keys, out_order, out_vals,
+            i, t, a, b, a_columns, a_values, b_columns, b_values, inv_mass, sign, n_rows,
+            out_keys, out_order, out_vals,
         )  # fmt: skip
 
 
@@ -387,19 +385,29 @@ def triangle_geometry_f64(
     return l2_0, l2_1, l2_2, dbl_area
 
 
+# ``hessian_face_terms``' two parts.
+HESSIAN_FACE_GRADIENTS = wp.int32(0)
+HESSIAN_FACE_MASS = wp.int32(1)
+
+
 @wp.kernel
 def hessian_face_terms(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
+    part: wp.int32,
     out_gradients: wp.array[wp.vec3d],
     out_areas: wp.array[wp.float64],
     out_mass: wp.array[wp.float64],
     out_corner_mass: wp.array2d[wp.float64],
 ) -> None:
-    # ``hessian_energy``'s two per-face passes in one launch. The corner gradients and the Voronoi
-    # mass lumping are independent quantities over the same faces -- neither reads the other -- so
-    # nothing is shared but the face index and the vertex loads, and running them in one thread
-    # removes a launch and lets the two share those loads.
+    # ``hessian_energy``'s two per-face quantities, the corner gradients and areas
+    # (``HESSIAN_FACE_GRADIENTS``) or the Voronoi mass lumping (``HESSIAN_FACE_MASS``): independent
+    # quantities over the same faces, which share the vertex loads and the double area. Launched
+    # once for each: the mass gates the pattern's counts, and the gradients, read only by the
+    # blocks, are formed after the pattern's sort, so they are not held through it.
+    #
+    # Declined: both in one launch, which saved a launch but held the gradients and areas
+    # (``80 * n_faces`` bytes) through the key sort, raising the call's peak 3 % on ``dragon``.
     f = wp.int32(wp.tid())
 
     # Gradient of each corner's hat function inside its face, ``n x e_c / (2 A)`` with ``e_c`` the
@@ -408,19 +416,21 @@ def hessian_face_terms(
     v0, v1, v2 = face_vertices_vec3d(vertices, faces, f)
     normal = wp.cross(v1 - v0, v2 - v0)
     dbl_area = wp.length(normal)
-    out_areas[f] = wp.float64(0.5) * dbl_area
     zero = wp.float64(0.0)
-    g0 = wp.vec3d(zero, zero, zero)
-    g1 = wp.vec3d(zero, zero, zero)
-    g2 = wp.vec3d(zero, zero, zero)
-    if dbl_area > zero:
-        unit = normal / dbl_area
-        g0 = wp.cross(unit, v2 - v1) / dbl_area
-        g1 = wp.cross(unit, v0 - v2) / dbl_area
-        g2 = wp.cross(unit, v1 - v0) / dbl_area
-    out_gradients[f * 3 + 0] = g0
-    out_gradients[f * 3 + 1] = g1
-    out_gradients[f * 3 + 2] = g2
+    if part == HESSIAN_FACE_GRADIENTS:
+        out_areas[f] = wp.float64(0.5) * dbl_area
+        g0 = wp.vec3d(zero, zero, zero)
+        g1 = wp.vec3d(zero, zero, zero)
+        g2 = wp.vec3d(zero, zero, zero)
+        if dbl_area > zero:
+            unit = normal / dbl_area
+            g0 = wp.cross(unit, v2 - v1) / dbl_area
+            g1 = wp.cross(unit, v0 - v2) / dbl_area
+            g2 = wp.cross(unit, v1 - v0) / dbl_area
+        out_gradients[f * 3 + 0] = g0
+        out_gradients[f * 3 + 1] = g1
+        out_gradients[f * 3 + 2] = g2
+        return
 
     # The ``igl::massmatrix`` MASSMATRIX_TYPE_VORONOI lumping: true Voronoi quad areas on
     # non-obtuse triangles, the 1/2 : 1/4 : 1/4 split on obtuse ones (the obtuse corner gets the
@@ -428,11 +438,10 @@ def hessian_face_terms(
     # ``triangles.face_voronoi_areas`` is the same lumping in different arithmetic (cosines from
     # lengths, an even split on a degenerate face, rounded to ``float32``), so the two stay apart.
     # ``dbl_area`` above is ``wp.length(wp.cross(v1 - v0, v2 - v0))``, which is exactly what
-    # ``triangle_double_area`` computes, so the mass half reuses it rather than re-deriving the
-    # face's geometry -- that shared preamble is the second thing the fusion removes, after the
-    # launch. The corner shares go to exactly one of two outputs, whichever the caller sized: added
-    # atomically into ``out_mass``, or written per corner into ``out_corner_mass`` for the caller
-    # to sum in a fixed order when ``ordito.config`` asks for reproducible results.
+    # ``triangle_double_area`` computes, so the mass part reuses it. The corner shares go to exactly
+    # one of two outputs, whichever the caller sized: added atomically into ``out_mass``, or written
+    # per corner into ``out_corner_mass`` for the caller to sum in a fixed order when
+    # ``ordito.config`` asks for reproducible results.
     corners = out_corner_mass.shape[0] > 0
     if corners:
         out_corner_mass[f, 0] = zero
@@ -530,61 +539,12 @@ def row_vertex_on_boundary(
     return False
 
 
-# The Hessian energy's corner mask covers up to this many corners of a vertex's fan (a valence of
-# 21): past it a star vertex's first-occurrence flag is not kept but tested again where the keys
-# are written (``star_corner_is_first``), and its pattern keys pair each star vertex with every
-# corner, duplicates included, which the key sort folds.
-HESSIAN_MASK_CORNERS = 64
-
-# The most corners a vertex's fan may have: its key count is at most the corner count squared,
-# which past this (``isqrt(2**31 - 1)``, a vertex in 15 447 faces) can wrap a vertex's ``int32``
-# count. Such a vertex's Hessian rows are dense over a star of thousands of vertices, and its
-# first-occurrence dedupe alone (``hessian_star_mask``, quadratic in the corners, in one thread)
-# would run for minutes before the count overflowed, so ``hessian_energy_counts`` refuses the fan
-# before the dedupe: it writes a negative count, which ``_common.scan_count_checked`` raises on.
+# The most corners a vertex's fan may have. Its rows are dense over its star then, its boundary
+# test (``row_vertex_on_boundary``, quadratic in the corners, in one thread) would run for minutes,
+# and past this (``isqrt(2**31 - 1)``) its star's key count could near the ``int32`` range, so
+# ``hessian_energy_counts`` refuses the fan before the test: it writes a negative count, which
+# ``_common.scan_count_checked`` raises on.
 HESSIAN_MAX_CORNERS = 46340
-
-
-@wp.func
-def star_corner_is_first(
-    faces: wp.array[wp.int32],
-    vf_indices: wp.array[wp.int32],
-    start: wp.int32,
-    a: wp.int32,
-    c: wp.int32,
-) -> wp.bool:
-    # Whether corner ``c`` of the fan's ``a``-th face (a row starting at ``start``) is its vertex's
-    # first occurrence in the fan: no earlier corner holds the same vertex.
-    vertex = faces[vf_indices[a] * 3 + c]
-    for a2 in range(start, a + 1):
-        for c2 in range(3):
-            if (a2 < a or c2 < c) and faces[vf_indices[a2] * 3 + c2] == vertex:
-                return False
-    return True
-
-
-@wp.func
-def hessian_star_mask(
-    faces: wp.array[wp.int32],
-    vf_offsets: wp.array[wp.int32],
-    vf_indices: wp.array[wp.int32],
-    k: wp.int32,
-) -> tuple[wp.uint64, wp.int32]:
-    # The corners of vertex ``k``'s fan that are a star vertex's first occurrence, as bits
-    # ``3 * (a - start) + c`` (corner ``c`` of the ``a``-th face of ``k``'s row), and how many
-    # there are. Bits past ``HESSIAN_MASK_CORNERS`` are counted but not stored.
-    start = vf_offsets[k]
-    end = vf_offsets[k + 1]
-    mask = wp.uint64(0)
-    unique = wp.int32(0)
-    for a in range(start, end):
-        for c in range(3):
-            if star_corner_is_first(faces, vf_indices, start, a, c):
-                unique += 1
-                bit = 3 * (a - start) + c
-                if bit < HESSIAN_MASK_CORNERS:
-                    mask = mask | (wp.uint64(1) << wp.uint64(bit))
-    return mask, unique
 
 
 @wp.kernel
@@ -593,20 +553,22 @@ def hessian_energy_counts(
     vf_offsets: wp.array[wp.int32],
     vf_indices: wp.array[wp.int32],
     mass: wp.array[wp.float64],
+    ring_offsets: wp.array[wp.int32],
     out_inverse_mass: wp.array[wp.float64],
     out_counts: wp.array[wp.int32],
 ) -> None:
-    # Vertex ``k`` couples every pair of vertices of its star (the vertices of its faces); a
-    # killed degree of freedom (boundary vertex, zeroed mass) couples nothing. Its count is the
-    # pattern keys ``hessian_energy_keys`` writes for those pairs, or ``-1`` for a fan past
-    # ``HESSIAN_MAX_CORNERS``, boundary or not. The mass is defined only at
-    # interior vertices, so a boundary vertex (``row_vertex_on_boundary``) inverts as a zero mass.
-    # The mass inversion rides in the same launch: the gate reads the inverse it has just written,
-    # which is the value ``hessian_energy_keys`` and ``hessian_energy_blocks`` gate on.
+    # Vertex ``k`` couples every pair of vertices of its star (the vertices of its faces: its
+    # closed one-ring, ``ring_offsets``' row); a killed degree of freedom (boundary vertex, zeroed
+    # mass) couples nothing. Its count is the pattern keys ``hessian_energy_keys`` writes for those
+    # pairs, or ``-1`` for a fan past ``HESSIAN_MAX_CORNERS``, boundary or not. The mass is defined
+    # only at interior vertices, so a boundary vertex (``row_vertex_on_boundary``) inverts as a
+    # zero mass. The mass inversion rides in the same launch: the gate reads the inverse it has
+    # just written, which is the value ``hessian_energy_blocks`` and ``hessian_energy_values``
+    # gate on.
     k = wp.int32(wp.tid())
     corners = 3 * (vf_offsets[k + 1] - vf_offsets[k])
     if corners > HESSIAN_MAX_CORNERS:
-        # Ahead of the boundary test too, which is quadratic in the corners as well.
+        # Ahead of the boundary test, which is quadratic in the corners.
         out_inverse_mass[k] = wp.float64(0.0)
         out_counts[k] = -1
         return
@@ -614,52 +576,48 @@ def hessian_energy_counts(
     if not row_vertex_on_boundary(faces, vf_offsets, vf_indices, k):
         inverse = reciprocal_or_zero(mass[k])
     out_inverse_mass[k] = inverse
-    if not (inverse > wp.float64(0.0)):
-        out_counts[k] = 0
-    else:
-        _mask, unique = hessian_star_mask(faces, vf_offsets, vf_indices, k)
-        out_counts[k] = unique * wp.where(corners <= HESSIAN_MASK_CORNERS, unique, corners)
+    star = ring_offsets[k + 1] - ring_offsets[k]
+    out_counts[k] = wp.where(inverse > wp.float64(0.0), star * star, 0)
 
 
 @wp.kernel
 def hessian_energy_keys(
-    faces: wp.array[wp.int32],
-    vf_offsets: wp.array[wp.int32],
-    vf_indices: wp.array[wp.int32],
-    inv_mass: wp.array[wp.float64],
+    ring_offsets: wp.array[wp.int32],
+    ring_columns: wp.array[wp.int32],
     segment_offsets: wp.array[wp.int32],
     n_vertices: wp.int32,
+    rows: wp.int32,
     out_keys: wp.array[wp.uint64],
     out_order: wp.array[wp.int32],
 ) -> None:
     # The Hessian energy's pattern: entry ``(i, j)`` exists where an active vertex ``k`` has both
-    # in its star, which is where ``hessian_energy_values`` finds a common ``k``. One thread per
-    # vertex, one key per pair of its star vertices (first occurrences, ``hessian_star_mask``);
-    # the payload is unread, the values coming from the gather.
-    k = wp.int32(wp.tid())
-    if not (inv_mass[k] > wp.float64(0.0)):
-        return
-    start = vf_offsets[k]
-    end = vf_offsets[k + 1]
-    corners = 3 * (end - start)
-    mask, _unique = hessian_star_mask(faces, vf_offsets, vf_indices, k)
-    cursor = segment_offsets[k]
-    full = corners <= HESSIAN_MASK_CORNERS
-    for p in range(corners):
-        first = wp.bool(False)
-        if p < HESSIAN_MASK_CORNERS:
-            first = (mask >> wp.uint64(p)) & wp.uint64(1) != wp.uint64(0)
-        else:
-            # Past the mask the first-occurrence test is made again, as ``hessian_star_mask``
-            # counted it.
-            first = star_corner_is_first(faces, vf_indices, start, start + p // 3, p % 3)
-        if first:
-            row = faces[vf_indices[start + p // 3] * 3 + p % 3]
-            for q in range(corners):
-                if not full or (mask >> wp.uint64(q)) & wp.uint64(1) != wp.uint64(0):
-                    column = faces[vf_indices[start + q // 3] * 3 + q % 3]
-                    store_coo_key(cursor, row, column, n_vertices, n_vertices, out_keys, out_order)
-                    cursor += 1
+    # in its star, which is where ``hessian_energy_values`` finds a common ``k``: one key per
+    # ordered pair of ``k``'s closed one-ring, in ``k``'s segment of the counts' scanned
+    # ``n_vertices + 1`` bounds (a killed ``k``'s is empty). The payload is unread, the values
+    # coming from the blocks. On CUDA (``rows`` zero) a thread a key, so a warp's stores are
+    # contiguous (``array.outer_product_slot``); on the CPU (``rows`` set), whose threads run in
+    # turn, a thread a vertex.
+    #
+    # Replaced: a thread a vertex finding its star's first occurrences in its fan's corners
+    # (quadratic in the corners, once in the count pass and again here) and writing its keys in
+    # turn, a warp's stores a star's square apart.
+    i = wp.int32(wp.tid())
+    if rows != 0:
+        cursor = segment_offsets[i]
+        if cursor == segment_offsets[i + 1]:
+            return
+        for a in range(ring_offsets[i], ring_offsets[i + 1]):
+            for b in range(ring_offsets[i], ring_offsets[i + 1]):
+                store_coo_key(
+                    cursor, ring_columns[a], ring_columns[b], n_vertices, n_vertices, out_keys,
+                    out_order,
+                )  # fmt: skip
+                cursor += 1
+    else:
+        _k, a, b = outer_product_slot(segment_offsets, ring_offsets, ring_offsets, i)
+        store_coo_key(
+            i, ring_columns[a], ring_columns[b], n_vertices, n_vertices, out_keys, out_order
+        )
 
 
 @wp.kernel

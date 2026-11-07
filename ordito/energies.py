@@ -702,14 +702,10 @@ def hessian_energy(
     if n_faces == 0:
         return od.array.empty_square_bsr(n_vertices, dtype, device)
 
-    # The per-face gradients and areas and the per-vertex inverse mass, each written whole before
-    # it is read: one allocation.
-    gradient_entries, areas, inverse_mass = _launch.carve(
-        wp.float64, (9 * n_faces, n_faces, n_vertices), device, zeroed=False
-    )
-    gradients = gradient_entries.reshape((3 * n_faces, 3)).view(wp.vec3d)
-    # The triplets below are emitted in the vertex-face rows' order and summed in that order, so
-    # a reproducible result needs ordered rows as well as an ordered mass sum: under
+    # The per-vertex inverse mass, written whole by the count pass before it is read.
+    inverse_mass = _launch.empty(n_vertices, dtype=wp.float64, device=device)
+    # The blocks below sum over the vertex-face rows in their order, so a reproducible result
+    # needs ordered rows as well as an ordered mass sum: under
     # ``ordito.config``'s deterministic mode the kernel writes each corner's share and one sort of
     # the corners gives both; otherwise it adds the shares atomically.
     deterministic = is_deterministic()
@@ -720,7 +716,7 @@ def hessian_energy(
     _launch.launch(
         kernel_energies.hessian_face_terms,
         dim=n_faces,
-        inputs=[vertices, faces, gradients, areas, mass, corner_mass],
+        inputs=[vertices, faces, kernel_energies.HESSIAN_FACE_MASS, None, None, mass, corner_mass],
         device=device,
     )
     sorted_rows = None
@@ -735,6 +731,11 @@ def hessian_energy(
         vf_indices, vf_offsets = sorted_rows
     else:
         vf_indices, vf_offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    # The closed one-ring is each vertex's star: its pairs are the pattern's keys, and it indexes
+    # the blocks ``M_kr`` the values are formed from. Its sort buffers go at once.
+    ring = mesh_operator_pattern(faces, n_vertices)
+    ring_offsets, ring_columns = ring.offsets, ring.columns
+    del ring
     # Each vertex's count lands in the offsets' buffer past its leading zero, scanned in place;
     # the trailing slot flags a scan that wrapped (``_common.scan_count_checked``).
     segment_offsets = _launch.zeros(n_vertices + 2, dtype=wp.int32, device=device)
@@ -742,25 +743,28 @@ def hessian_energy(
     _launch.launch(
         kernel_energies.hessian_energy_counts,
         dim=n_vertices,
-        inputs=[faces, vf_offsets, vf_indices, mass, inverse_mass, counts],
+        inputs=[faces, vf_offsets, vf_indices, mass, ring_offsets, inverse_mass, counts],
         device=device,
     )
+    # The mass lives on as its inverse.
+    del mass, corner_mass
     # The pattern first: one key per pair of an active vertex's star vertices, sorted into the
     # rows; the values are then formed an entry a thread from the stacked Hessian's 3x3 blocks
     # (``kernels/energies.hessian_energy_values``), so no triplet is stored.
     n_keys = scan_count_checked(segment_offsets, "the operator")
     keys, order = od.array.csr_key_buffers(n_keys, device)
     if n_keys > 0:
+        # A thread a key on CUDA, a vertex on the CPU (``kernels/energies.hessian_energy_keys``).
+        rows = wp.get_device(device).is_cpu
         _launch.launch(
             kernel_energies.hessian_energy_keys,
-            dim=n_vertices,
+            dim=n_vertices if rows else n_keys,
             inputs=[
-                faces,
-                vf_offsets,
-                vf_indices,
-                inverse_mass,
-                segment_offsets,
+                ring_offsets,
+                ring_columns,
+                _launch.view(segment_offsets, 0, n_vertices + 1),
                 wp.int32(n_vertices),
+                wp.int32(rows),
                 keys,
                 order,
             ],
@@ -778,11 +782,26 @@ def hessian_energy(
     del keys, order, key_columns, _starts
     values = _launch.empty(n_entries, dtype=dtype, device=device)
     if n_entries > 0:
-        # The closed one-ring indexes the blocks ``M_kr``: an entry ``(i, j)`` pairs the blocks of
-        # the vertices both rings hold. Its sort buffers go before the blocks arrive.
-        ring = mesh_operator_pattern(faces, n_vertices)
-        ring_offsets, ring_columns = ring.offsets, ring.columns
-        del ring
+        # The per-face gradients and areas, written whole: one allocation, after the sort.
+        gradient_entries, areas = _launch.carve(
+            wp.float64, (9 * n_faces, n_faces), device, zeroed=False
+        )
+        gradients = gradient_entries.reshape((3 * n_faces, 3)).view(wp.vec3d)
+        _launch.launch(
+            kernel_energies.hessian_face_terms,
+            dim=n_faces,
+            inputs=[
+                vertices,
+                faces,
+                kernel_energies.HESSIAN_FACE_GRADIENTS,
+                gradients,
+                areas,
+                None,
+                None,
+            ],
+            device=device,
+        )
+        # An entry ``(i, j)`` pairs the blocks of the vertices both rings hold.
         blocks = _launch.empty(ring_columns.size, dtype=wp.mat33d, device=device)
         _launch.launch(
             kernel_energies.hessian_energy_blocks,

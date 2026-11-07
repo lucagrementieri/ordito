@@ -1670,8 +1670,8 @@
  },
  "benchmarks/test_energies.py::test_hessian_energy[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 13,
-   "alloc": 13,
+   "launch": 14,
+   "alloc": 14,
    "memset": 4,
    "d2d": 1,
    "d2h": 2,
