@@ -713,6 +713,7 @@ def _descend(
         gradients = od.laplacian.face_gradients(vertices, faces, values)
     incident_faces, face_offsets = vertex_faces
 
+    lanes = _walk_lanes(n_paths, device)
     stop_mask = (
         od.array.indices_to_mask(complete_to[1], n_vertices)
         if complete_to is not None
@@ -731,6 +732,7 @@ def _descend(
         stop_mask,
         wp.int32(max_steps),
         *_length_epsilon(vertices, faces),
+        wp.int32(lanes),
     ]
     kernel = kernel_geodesic_walk.descent_paths
     no_graph = _launch.empty(0, dtype=wp.float32, device=device)
@@ -750,7 +752,7 @@ def _descend(
     counts = _launch.view(offsets, 1, n_paths + 1)
     _launch.launch(
         kernel,
-        dim=n_paths,
+        dim=n_paths * lanes,
         inputs=[*inputs, no_graph, short_paths, no_offsets],
         outputs=[counts, no_points],
         device=device,
@@ -771,7 +773,7 @@ def _descend(
             graph = _edge_graph_distance(*complete_to)
             _launch.launch(
                 kernel,
-                dim=n_paths,
+                dim=n_paths * lanes,
                 inputs=[*inputs, graph, short_paths, no_offsets],
                 outputs=[counts, no_points],
                 device=device,
@@ -784,7 +786,7 @@ def _descend(
     points = _launch.empty(total, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel,
-        dim=n_paths,
+        dim=n_paths * lanes,
         inputs=[*inputs, graph, short_paths, offsets],
         outputs=[counts, points],
         device=device,
@@ -1779,13 +1781,29 @@ def _trace(
     counts = _launch.view(offsets, 1, n_rays + 1)
     no_offsets = _launch.empty(0, dtype=wp.int32, device=device)
     no_points = _launch.empty(0, dtype=wp.vec3, device=device)
+    lanes = _walk_lanes(n_rays, device)
+    inputs = [*inputs, wp.int32(lanes)]
     _launch.launch(
-        kernel, dim=n_rays, inputs=[*inputs, no_offsets, counts, no_points], device=device
+        kernel, dim=n_rays * lanes, inputs=[*inputs, no_offsets, counts, no_points], device=device
     )
     _launch.array_scan(counts, out_array=counts, inclusive=True)
 
     # Host readback: only the device knows the walk's total length, and it sizes the point buffer.
     total = int(read_scalar(offsets, n_rays))
     points = _launch.empty(total, dtype=wp.vec3, device=device)
-    _launch.launch(kernel, dim=n_rays, inputs=[*inputs, offsets, counts, points], device=device)
+    _launch.launch(
+        kernel, dim=n_rays * lanes, inputs=[*inputs, offsets, counts, points], device=device
+    )
     return points, offsets
+
+
+def _walk_lanes(n_walks: int, device: wp.DeviceLike) -> int:
+    """
+    Threads a walk for the tracing and descent kernels: up to a warp a walk on CUDA, one on the CPU.
+
+    A walk is a serial state machine whose steps branch, so walks sharing a warp wait on each
+    other's branches and on the longest of them; few walks each get a warp of their own
+    ([`walk_lanes`][ordito._launch.walk_lanes]). The CPU runs a launch's threads one after
+    another, where the idle lanes would only cost.
+    """
+    return _launch.walk_lanes(n_walks) if wp.get_device(device).is_cuda else 1

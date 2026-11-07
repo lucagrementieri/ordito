@@ -427,6 +427,7 @@ def trace_from_vertices(
     max_steps: wp.int32,
     edge_length_total: wp.array[wp.float32],
     n_halfedges: wp.int32,
+    lanes: wp.int32,
     offsets: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
     out_points: wp.array[wp.vec3],
@@ -436,7 +437,10 @@ def trace_from_vertices(
     # call) was bit-identical but lengthened every ray's serial chain, in both the counting and the
     # writing launch, more than the frame pass costs: CUDA, ``icosphere(6)``, 0.97-1.0x at 1-64
     # rays, 1.05x at 256-4 096, 1.07x at one ray a vertex.
-    r = wp.int32(wp.tid())
+    t = wp.int32(wp.tid())
+    if t % lanes != 0:
+        return
+    r = t // lanes
     length_epsilon = mean_length_epsilon(edge_length_total, n_halfedges)
     v = start_vertices[r]
     direction = directions[r]
@@ -486,6 +490,7 @@ def trace_from_faces(
     max_steps: wp.int32,
     edge_length_total: wp.array[wp.float32],
     n_halfedges: wp.int32,
+    lanes: wp.int32,
     offsets: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
     out_points: wp.array[wp.vec3],
@@ -493,7 +498,10 @@ def trace_from_faces(
     # One ray per thread. ``offsets`` is empty on the counting pass, which is how the two passes
     # share ``trace_walk``. Only the counting pass writes ``out_counts``: the wrapper counts into
     # the offsets' own tail and scans it in place, so the writing pass reads it as ``offsets``.
-    r = wp.int32(wp.tid())
+    t = wp.int32(wp.tid())
+    if t % lanes != 0:
+        return
+    r = t // lanes
     length_epsilon = mean_length_epsilon(edge_length_total, n_halfedges)
     f = start_faces[r]
     bary = start_bary[r]
@@ -938,6 +946,7 @@ def descent_paths(
     max_steps: wp.int32,
     edge_length_total: wp.array[wp.float32],
     n_halfedges: wp.int32,
+    lanes: wp.int32,
     graph_distance: wp.array[wp.float32],
     short_paths: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
@@ -956,7 +965,10 @@ def descent_paths(
     #   path's change.
     # * Writing, ``offsets`` given: every path walks and writes its points, and leaves
     #   ``out_counts`` alone: the counts are the offsets' tail, scanned in place.
-    r = wp.int32(wp.tid())
+    t = wp.int32(wp.tid())
+    if t % lanes != 0:
+        return
+    r = t // lanes
     length_epsilon = mean_length_epsilon(edge_length_total, n_halfedges)
     n_paths = starts.shape[0]
     write_begin = wp.int32(-1)
