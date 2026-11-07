@@ -989,6 +989,20 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   shorter row paid only with the waves replayed from a device counter.
 - **CPU code generation on Warp 1.19 (SLP vectorization):** 1.18 -> 1.19 over every ordito CPU benchmark row at `--size small` (two interleaved passes, CUDA hidden): geomean 0.876 / 0.885, 450 rows faster than 0.9x in both passes, 21 slower than 1.1x. The largest gains: `face_tangent_frames` 0.22-0.31x, `vertex_normals` 0.39-0.42x, `fast_marching_distance` 0.49x, `principal_curvature_taubin` and `marching_cubes_lewiner` 0.52x, `isotropic_remesh` and `flip_to_delaunay` 0.57x. SLP is nearly all of it: with `-fno-slp-vectorize` the same rows read 0.94-1.02x, and also dropping loop vectorization changes nothing further. The stable losses are SLP too: `mls_principal_curvature` rimls 1.18-1.26x and apss 1.12-1.21x (0.4-1.7 s rows; 0.98x without SLP), `upsample_polyline` 1.14-1.17x (0.93x without), and other polyline rows and `parametric_surface` at 1.13-1.2x (not flag-tested). Declined: a module-wide flag on `kernels/curvature.py` would forfeit taubin's 0.52x along with MLS's loss, and CUDA is the target (§9). Only MLS kernels in a module of their own could take it. CUDA over the same rows (`--size small,medium`): geomean 0.995 / 1.006 with pass-to-pass correlation 0.00, so nothing moved except `descend_field` 0.88x and the Laplacian rows 0.77-0.81x. Ray queries (GH-1840), hash grid (GH-2119 / GH-2163) and the newly unrolled `continue` loops (GH-1552) were flat at 0.975-1.009 module geomeans. The §14 CPU verdicts above were measured on 1.18; the one-launch forms sped up with everything else.
 - **Shapes that lose:** a line-per-thread lattice pass absorbing a cell-per-thread one (`fill_orthographic`, 0.4-0.85x); a single-thread serial walk storing gathered values instead of computed indices (1.5-3x, polyline downsample); a per-face edge marker instead of a per-edge one plus a child-count launch (1.2x, remesh split).
+- **A thread a row writing its segment in turn** (2026-11-07): a warp's stores sit a segment
+  apart, which costs nothing while the output fits in L2 and is the whole kernel past it:
+  `k_harmonic`'s sandwich (49 triplets a row) took 0.068 ms on `sphere_med` and 1.49 ms on
+  `sphere_large` (4x the rows, 22x the time). A thread a slot, its row searched in the scanned
+  segment bounds (`kernels/array.outer_product_slot`), 0.16 ms; a pair-major slot layout
+  (`(6 p + q) n_faces + f`) took the curved Hessian's 36-key face pass 1.48 -> 0.34 ms on
+  `dragon`. The CPU keeps the row walk, its threads running in turn: a search a slot cost it
+  1.45-1.56x, a slot's `//` and `%` 1.03-1.05x.
+- **A row gather in a triplet sort's order loses to the regrouped sum** (2026-11-07, §2.2):
+  `hessian_energy`'s thread a row adding ~250 searched contributions became the stacked Hessian's
+  3x3 block per one-ring entry and a thread an entry merging two rings (0.29-0.56x);
+  `curved_hessian_energy`'s became each face's 6x6 block written into the sorted keys' spent lower
+  half and an entry summing its run (0.26-0.46x, no extra memory, no long-row special case).
+  Look for the factorization the contributions share before tuning a row gather.
 - **Rasterization:** one `atomic_min` owner pass per face, then one thread per pixel to resolve, beats a pre-filled image plus a per-face scatter 1.5-4.9x.
 - **Per-class compaction:** scan a one-hot `wp.vec{K}i` per item; the last entry holds all K counts (one read) and each item's in-class rank is the step from the previous entry. A compaction folds into its emit when the emit follows the size readback anyway. A `vec2i` scan of `(flag, count)` gives a compaction rank and CSR offsets with both totals in one read.
 - **`store_block_sum` / `store_block_total` count blocks from the partials buffer**, so two reductions of different widths share one launch at `dim = max(blocks)`. `0 + block_sum(x)` equals the one-block commit bit for bit, so "frame then reduce" fuses whenever `blocks_1d(n) == 1`.
@@ -1070,6 +1084,15 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   bucket count, scan, scatter and pairing are 52-54 % of the call's device time on dragon and
   lucy (2026-11-06), the union-find the rest. Not re-examined in the adjacency sweep, which took
   the union-find side only; the lower-degree owner is a hub-balancing choice to keep.
+- **`energies` leftovers (2026-11-07 sweep):** `normal_consistency_loss` and
+  `laplacian_smoothing_loss`'s term sums are latency-bound on `kernels/reduce.term_sum_1d`'s
+  fold (16 items a lane): 28-37 us flat from 15 k to 983 k terms, about a fifth of each call; a
+  per-`TermSum` fold width would break its bit-for-bit match with `reduce.sum`. `edge_length_loss`
+  could fold `edges_unique_length`'s emit into its mean (a readback, a scan and a launch fewer),
+  which needs `edges`' internals. `hessian_energy` on `dragon`: its pattern's key sort
+  (one-ring squared a vertex) sets the peak, which a symbolic square of the one-ring could
+  replace. Outside the scope, `smoothing.normals_to_points_keys` and `mumford_shah_face_keys`
+  write per-thread key segments (9 and 4 a face): the pair-major layout's candidates.
 - **`combine` leftovers outside its scope (2026-11-06 sweep):** `require_same_device` is about
   half of `concatenate`'s host time at 4 096 pieces (one recursive descent per array);
   `split` reads its vertex and face offsets in two readbacks (`array.split` twice) where one
