@@ -1780,7 +1780,7 @@
  "benchmarks/test_geodesic_walk.py::test_shorten_loop[handles_1-ordito-cpu]": {
   "counts": {
    "launch": 4,
-   "alloc": 16,
+   "alloc": 12,
    "h2h": 4,
    "readback": 3,
    "scan": 1,
@@ -1790,7 +1790,7 @@
  "benchmarks/test_geodesic_walk.py::test_shorten_loop[handles_64-ordito-cpu]": {
   "counts": {
    "launch": 4,
-   "alloc": 16,
+   "alloc": 12,
    "h2h": 4,
    "readback": 3,
    "scan": 1,
@@ -1800,7 +1800,7 @@
  "benchmarks/test_geodesic_walk.py::test_shorten_loop_with_offsets[handles_1-ordito-cpu]": {
   "counts": {
    "launch": 4,
-   "alloc": 15,
+   "alloc": 11,
    "h2h": 3,
    "readback": 2,
    "scan": 1,
@@ -1810,7 +1810,7 @@
  "benchmarks/test_geodesic_walk.py::test_shorten_loop_with_offsets[handles_64-ordito-cpu]": {
   "counts": {
    "launch": 4,
-   "alloc": 15,
+   "alloc": 11,
    "h2h": 3,
    "readback": 2,
    "scan": 1,
@@ -6153,7 +6153,7 @@
  "benchmarks/test_repair.py::test_remove_tunnels[handles_1-ordito-cpu]": {
   "counts": {
    "launch": 39,
-   "alloc": 48,
+   "alloc": 44,
    "h2h": 8,
    "readback": 15,
    "scan": 6,
@@ -6163,7 +6163,7 @@
  "benchmarks/test_repair.py::test_remove_tunnels[handles_64-ordito-cpu]": {
   "counts": {
    "launch": 39,
-   "alloc": 48,
+   "alloc": 44,
    "h2h": 8,
    "readback": 15,
    "scan": 6,

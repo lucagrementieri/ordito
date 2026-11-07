@@ -1613,19 +1613,20 @@ class _LoopSweep:
         self._tolerance = tolerance
         self._state = state
         self._capacity = capacity
-        # The current loops, and the rewrite the compaction reads back into them.
+        # The current loops, which the call returns, and the rewrite the compaction reads back
+        # into them, carved with the per-slot arc tables.
         self.loops = _launch.empty(capacity, dtype=wp.int32, device=device)
         self.loop_offsets = _launch.empty(n_loops + 1, dtype=wp.int32, device=device)
-        self._rewritten = _launch.empty(capacity, dtype=wp.int32, device=device)
-        self._rewritten_offsets = _launch.empty(n_loops + 1, dtype=wp.int32, device=device)
+        self._rewritten, self._rewritten_offsets, self._arc_slot, self._arc_step = _launch.carve(
+            wp.int32, (capacity, n_loops + 1, capacity, capacity), device
+        )
         # Each is the per-slot counts behind a leading zero, scanned in place into exclusive
         # offsets with the total at entry ``capacity``.
-        self.positions = _launch.zeros(capacity + 1, dtype=wp.int32, device=device)
-        self._kept = _launch.zeros(capacity + 1, dtype=wp.int32, device=device)
-        self._counts = odt.as_dense(self.positions[1:])
-        self._kept_counts = odt.as_dense(self._kept[1:])
-        self._arc_slot = _launch.empty(capacity, dtype=wp.int32, device=device)
-        self._arc_step = _launch.empty(capacity, dtype=wp.int32, device=device)
+        self.positions, self._kept = _launch.carve(
+            wp.int32, (capacity + 1, capacity + 1), device, zeroed=True
+        )
+        self._counts = _launch.view(self.positions, 1, capacity + 1)
+        self._kept_counts = _launch.view(self._kept, 1, capacity + 1)
 
     def load(
         self, loops: wp.array[wp.int32], loop_offsets: wp.array[wp.int32], length: int

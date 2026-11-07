@@ -1884,8 +1884,8 @@
  "benchmarks/test_geodesic_walk.py::test_shorten_loop[handles_1-ordito-cuda]": {
   "counts": {
    "launch": 30,
-   "alloc": 17,
-   "memset": 4,
+   "alloc": 13,
+   "memset": 3,
    "d2d": 2,
    "h2d": 2,
    "d2h": 5,
@@ -1895,8 +1895,8 @@
  "benchmarks/test_geodesic_walk.py::test_shorten_loop[handles_64-ordito-cuda]": {
   "counts": {
    "launch": 30,
-   "alloc": 17,
-   "memset": 4,
+   "alloc": 13,
+   "memset": 3,
    "d2d": 2,
    "h2d": 2,
    "d2h": 6,
@@ -1906,8 +1906,8 @@
  "benchmarks/test_geodesic_walk.py::test_shorten_loop_with_offsets[handles_1-ordito-cuda]": {
   "counts": {
    "launch": 30,
-   "alloc": 15,
-   "memset": 4,
+   "alloc": 11,
+   "memset": 3,
    "d2d": 2,
    "h2d": 1,
    "d2h": 4,
@@ -1917,8 +1917,8 @@
  "benchmarks/test_geodesic_walk.py::test_shorten_loop_with_offsets[handles_64-ordito-cuda]": {
   "counts": {
    "launch": 30,
-   "alloc": 15,
-   "memset": 4,
+   "alloc": 11,
+   "memset": 3,
    "d2d": 2,
    "h2d": 1,
    "d2h": 5,
@@ -6779,8 +6779,8 @@
  "benchmarks/test_repair.py::test_remove_tunnels[handles_1-ordito-cuda]": {
   "counts": {
    "launch": 89,
-   "alloc": 54,
-   "memset": 12,
+   "alloc": 50,
+   "memset": 11,
    "d2d": 3,
    "h2d": 5,
    "d2h": 17,
@@ -6791,8 +6791,8 @@
  "benchmarks/test_repair.py::test_remove_tunnels[handles_64-ordito-cuda]": {
   "counts": {
    "launch": 90,
-   "alloc": 54,
-   "memset": 12,
+   "alloc": 50,
+   "memset": 11,
    "d2d": 3,
    "h2d": 5,
    "d2h": 18,
