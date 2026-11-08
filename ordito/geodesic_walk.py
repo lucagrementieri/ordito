@@ -732,26 +732,30 @@ def _descend(
         twins = halfedge_twins(faces, n_vertices=n_vertices)
     if vertex_faces is None:
         vertex_faces = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
-    if gradients is None:
-        gradients = od.laplacian.face_gradients(vertices, faces, values)
     incident_faces, face_offsets = vertex_faces
-    # On CUDA each face's descent terms are formed once, off the walks' serial chains
-    # (``kernels/geodesic_walk.face_descent_terms``); the CPU forms them in the walk, where a pass
-    # over every face costs more than the walks' own lengths.
+    # On CUDA each face's descent terms and normal are formed once, off the walks' serial chains
+    # (``kernels/geodesic_walk.descent_face_terms``), the gradient with them when the caller gave
+    # none, so no ``float64`` gradient table is stored. The CPU forms them in the walk, where a
+    # pass over every face costs more than the walks' own lengths.
     face_gradient = _launch.empty(0, dtype=wp.vec3, device=device)
     face_slope = _launch.empty(0, dtype=wp.float64, device=device)
+    face_normals = face_gradient
     if wp.get_device(device).is_cuda:
         n_faces = faces.size // 3
-        face_gradient, face_slope = _launch.carve_typed(
-            ((wp.vec3, n_faces), (wp.float64, n_faces)), device
+        face_gradient, face_slope, face_normals = _launch.carve_typed(
+            ((wp.vec3, n_faces), (wp.float64, n_faces), (wp.vec3, n_faces)), device
         )
+        if gradients is None:
+            gradients = _launch.empty(0, dtype=wp.vec3d, device=device)
         _launch.launch(
             kernel_geodesic_walk.descent_face_terms,
             dim=n_faces,
-            inputs=[gradients],
-            outputs=[face_gradient, face_slope],
+            inputs=[vertices, faces, values, gradients],
+            outputs=[face_gradient, face_slope, face_normals],
             device=device,
         )
+    elif gradients is None:
+        gradients = od.laplacian.face_gradients(vertices, faces, values)
 
     lanes = _launch.walk_lanes(n_paths, device)
     stop_mask = (
@@ -769,6 +773,7 @@ def _descend(
         gradients,
         face_gradient,
         face_slope,
+        face_normals,
         starts,
         wp.float64(stop_value),
         stop_mask,

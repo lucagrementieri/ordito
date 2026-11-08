@@ -15,7 +15,13 @@ from ordito.kernels.array import (
 from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import project_out_normal, unit_tangent, world_to_tangent
 from ordito.kernels.tangent_space import fan_anchor, ring_angle_total
-from ordito.kernels.triangles import face_normal, halfedge_corner_angle, local_corner
+from ordito.kernels.triangles import (
+    face_gradient_given,
+    face_normal,
+    face_normals_and_area,
+    halfedge_corner_angle,
+    local_corner,
+)
 
 wp.set_module_options({"enable_backward": False})
 
@@ -614,6 +620,20 @@ def gradient_descent_terms(gradient: wp.vec3d) -> tuple[wp.vec3, wp.float64]:
 
 
 @wp.func
+def face_descent_normal(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_normals: wp.array[wp.vec3],
+    f: wp.int32,
+) -> wp.vec3:
+    # Face ``f``'s unit normal as the descent reads it: from ``descent_face_terms``' table when it
+    # is given (CUDA), ``face_normal`` here otherwise. The same function either way.
+    if face_normals.shape[0] > 0:
+        return face_normals[f]
+    return face_normal(vertices, faces, f)
+
+
+@wp.func
 def face_descent_terms(
     gradients: wp.array[wp.vec3d],
     face_gradient: wp.array[wp.vec3],
@@ -630,18 +650,32 @@ def face_descent_terms(
 
 @wp.kernel
 def descent_face_terms(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    values: wp.array[wp.float64],
     gradients: wp.array[wp.vec3d],
     out_face_gradient: wp.array[wp.vec3],
     out_face_slope: wp.array[wp.float64],
+    out_face_normals: wp.array[wp.vec3],
 ) -> None:
-    # Each face's gradient as the descent reads it: its ``float32`` copy and its ``float64`` length,
-    # formed once a face rather than at every step of every walk that reads it (the length is a
-    # ``float64`` square root on a serial chain). The same operations as the walk's, so the walk
-    # takes the same bits.
+    # Each face's descent terms (``gradient_descent_terms``) and unit normal, formed once a face
+    # rather than at every step of every walk that reads them (the length is a ``float64`` square
+    # root, the normal three dependent position loads, on a serial chain). The gradient is the
+    # caller's ``gradients``, or with none ``laplacian.face_gradients``' own (its
+    # ``face_gradients_from_positions`` body, ``face_gradient_given`` over
+    # ``face_normals_and_area``), so no gradient table is stored; ``face_normals_and_area``'s normal
+    # is ``face_normal``'s. The same bits as the walk forming them itself.
     f = wp.int32(wp.tid())
-    gradient, slope = gradient_descent_terms(gradients[f])
+    normal, area = face_normals_and_area(vertices, faces, f)
+    gradient64 = wp.vec3d()
+    if gradients.shape[0] > 0:
+        gradient64 = gradients[f]
+    else:
+        gradient64 = face_gradient_given(vertices, faces, normal, area, values, f)
+    gradient, slope = gradient_descent_terms(gradient64)
     out_face_gradient[f] = gradient
     out_face_slope[f] = slope
+    out_face_normals[f] = normal
 
 
 @wp.func
@@ -653,6 +687,7 @@ def descend_at_vertex(
     gradients: wp.array[wp.vec3d],
     face_gradient: wp.array[wp.vec3],
     face_slope: wp.array[wp.float64],
+    face_normals: wp.array[wp.vec3],
     v: wp.int32,
 ) -> wp.int32:
     # Which of ``v``'s incident faces the descent continues into, or -1 if none does.
@@ -679,7 +714,7 @@ def descend_at_vertex(
         if slope <= wp.float64(0.0):
             continue
         direction = -gradient / wp.float32(slope)
-        normal_of = face_normal(vertices, faces, f)
+        normal_of = face_descent_normal(vertices, faces, face_normals, f)
         # Is the direction inside the fan wedge at ``v``? The wedge is spanned by the two incident
         # edges, and the test is the orientation-agnostic "same side of each": ``d`` is inside when
         # it turns the same way from the first edge as the second does, and the same way from the
@@ -811,6 +846,7 @@ def descent_walk(
     gradients: wp.array[wp.vec3d],
     face_gradient: wp.array[wp.vec3],
     face_slope: wp.array[wp.float64],
+    face_normals: wp.array[wp.vec3],
     start_vertex: wp.int32,
     stop_value: wp.float64,
     stop_mask: wp.array[wp.bool],
@@ -885,6 +921,7 @@ def descent_walk(
                     gradients,
                     face_gradient,
                     face_slope,
+                    face_normals,
                     vertex,
                 )
             if chosen >= wp.int32(0):
@@ -916,7 +953,7 @@ def descent_walk(
 
         # --- inside a face -------------------------------------------------------------------
         gradient, slope = face_descent_terms(gradients, face_gradient, face_slope, face)
-        normal = face_normal(vertices, faces, face)
+        normal = face_descent_normal(vertices, faces, face_normals, face)
         edge = wp.int32(-1)
         distance = wp.float32(0.0)
         direction = wp.vec3(0.0, 0.0, 0.0)
@@ -1053,7 +1090,7 @@ def descent_walk(
             # Does the next face's descent point *into* it? Tested against the edge's true inward
             # normal in that face's plane -- a cheaper test against "the direction of the opposite
             # corner" is wrong on an obtuse triangle, which is what left paths stopping early.
-            next_normal = face_normal(vertices, faces, next_face)
+            next_normal = face_descent_normal(vertices, faces, face_normals, next_face)
             inward = wp.cross(next_normal, vertices[end] - vertices[start])
             opposite = faces[next_face * 3 + (twin % wp.int32(3) + 2) % 3]
             if wp.dot(inward, vertices[opposite] - vertices[start]) < 0.0:
@@ -1145,6 +1182,7 @@ def descent_paths(
     gradients: wp.array[wp.vec3d],
     face_gradient: wp.array[wp.vec3],
     face_slope: wp.array[wp.float64],
+    face_normals: wp.array[wp.vec3],
     starts: wp.array[wp.int32],
     stop_value: wp.float64,
     stop_mask: wp.array[wp.bool],
@@ -1198,6 +1236,7 @@ def descent_paths(
         gradients,
         face_gradient,
         face_slope,
+        face_normals,
         starts[r],
         stop_value,
         stop_mask,
