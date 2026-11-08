@@ -683,6 +683,8 @@ def connected_component_parity_from_edges(
 
     device = edges.device
     # ``ecl_flatten_parity`` writes both for every node, so neither needs an initial value.
+    # Declined, both carved from one allocation (``_launch.carve``): 1.02-1.04x on CUDA from
+    # ``sphere_small`` to ``dragon``, 0.99x on ``lucy`` (2026-11-08).
     labels = _launch.empty(node_count, dtype=wp.int32, device=device)
     parity = _launch.empty(node_count, dtype=wp.int32, device=device)
     if node_count == 0:
