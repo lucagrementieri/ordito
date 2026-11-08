@@ -552,6 +552,103 @@ def test_filter_laplacian_implicit_on_a_hub_matches_trimesh(device: str) -> None
     assert np.allclose(smoothed_wp.numpy(), mesh_ref.vertices, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize(
+    "filter_name", ["laplacian", "taubin", "humphrey", "neighborhood_average", "sharpen", "mut_dif"]
+)
+def test_explicit_filters_on_a_hub_match_their_references(device: str, filter_name: str) -> None:
+    """
+    Class A: each explicit filter whose pass walks a long row as a warp, against its reference.
+
+    A cone of 1 100 sections has hub rows past ``kernels/linalg.CSR_LONG_ROW_ENTRIES``, which the
+    pass kernels hand to the warp (``kernels/smoothing.warp_long_operator_row``): the diffuse kind
+    (``filter_laplacian``, ``filter_taubin``), the neighbourhood average and the graph sharpen
+    (``vec3_pass_rows``), both Humphrey passes and the MUT/DIF pass. References as in each
+    filter's own test: trimesh, and open3d for the average and the sharpen. ``mut_dif`` runs on a
+    spherical cap fanned from its pole (``_hub_cap``), since its reciprocal is chaotic where
+    ``N . (V - L.V)`` nears zero: on the cone without its base, and on caps of one or two rings,
+    the CPU device (the thread walk alone) sat 2e-5 to 3e-4 from trimesh; this cap, 9e-8.
+    """
+    if filter_name == "mut_dif":
+        vertices_np, faces_np = _hub_cap(spokes=1100, rings=3, theta=0.9)
+    else:
+        cone_tm = tm.creation.cone(radius=1.0, height=1.0, sections=1100)
+        vertices_np, faces_np = (
+            cone_tm.vertices.astype(np.float32).astype(np.float64),
+            cone_tm.faces,
+        )
+    mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    degrees_np = np.bincount(mesh_tm.edges_unique.ravel(), minlength=len(vertices_np))
+    assert degrees_np.max() >= int(kernel_linalg.CSR_LONG_ROW_ENTRIES)
+
+    mesh_ref = mesh_tm.copy()
+    if filter_name == "laplacian":
+        smoothed_wp = od.smoothing.filter_laplacian(
+            vertices_wp, faces_wp, iterations=5, volume_constraint=False
+        )
+        tms.filter_laplacian(mesh_ref, iterations=5, volume_constraint=False)
+        reference_np = mesh_ref.vertices
+    elif filter_name == "taubin":
+        smoothed_wp = od.smoothing.filter_taubin(
+            vertices_wp, faces_wp, lamb=0.5, nu=0.53, iterations=4
+        )
+        tms.filter_taubin(mesh_ref, lamb=0.5, nu=0.53, iterations=4)
+        reference_np = mesh_ref.vertices
+    elif filter_name == "humphrey":
+        smoothed_wp = od.smoothing.filter_humphrey(
+            vertices_wp, faces_wp, alpha=0.1, beta=0.5, iterations=4
+        )
+        tms.filter_humphrey(mesh_ref, alpha=0.1, beta=0.5, iterations=4)
+        reference_np = mesh_ref.vertices
+    elif filter_name == "neighborhood_average":
+        smoothed_wp = od.smoothing.filter_neighborhood_average(vertices_wp, faces_wp, iterations=3)
+        mesh_o3d = trimesh_to_open3d(mesh_tm).filter_smooth_simple(number_of_iterations=3)
+        reference_np = np.asarray(mesh_o3d.vertices)
+    elif filter_name == "sharpen":
+        smoothed_wp = od.smoothing.filter_sharpen(
+            vertices_wp, faces_wp, weight=1e-4, iterations=1, method="graph_laplacian"
+        )
+        reference_np = np.asarray(trimesh_to_open3d(mesh_tm).filter_sharpen(1, 1e-4).vertices)
+    else:
+        smoothed_wp = od.smoothing.filter_mut_dif_laplacian(
+            vertices_wp, faces_wp, lamb=0.5, iterations=4, volume_constraint=False
+        )
+        tms.filter_mut_dif_laplacian(mesh_ref, lamb=0.5, iterations=4, volume_constraint=False)
+        reference_np = mesh_ref.vertices
+
+    hubs_np = np.flatnonzero(degrees_np >= int(kernel_linalg.CSR_LONG_ROW_ENTRIES))
+    # Non-vacuity: the filter moves the hubs, whose rows the warp walks.
+    assert np.abs(reference_np[hubs_np] - vertices_np[hubs_np]).max() > 1e-4
+    assert np.allclose(smoothed_wp.numpy(), reference_np, rtol=1e-5, atol=1e-5)
+
+
+def _hub_cap(spokes: int, rings: int, theta: float) -> tuple[np.ndarray, np.ndarray]:
+    """Return a unit-sphere cap of polar angle ``theta``, ``rings`` rings fanned from its pole."""
+    phi = 2.0 * np.pi * np.arange(spokes) / spokes
+    points = [np.array([[0.0, 0.0, 1.0]])]
+    for ring in range(1, rings + 1):
+        angle = theta * ring / rings
+        points.append(
+            np.stack(
+                [
+                    np.sin(angle) * np.cos(phi),
+                    np.sin(angle) * np.sin(phi),
+                    np.full(spokes, np.cos(angle)),
+                ],
+                axis=1,
+            )
+        )
+    spoke = np.arange(spokes)
+    following = (spoke + 1) % spokes
+    faces = [np.stack([np.zeros(spokes, dtype=np.int64), 1 + spoke, 1 + following], axis=1)]
+    for ring in range(1, rings):
+        inner, outer = 1 + (ring - 1) * spokes, 1 + ring * spokes
+        faces.append(np.stack([inner + spoke, outer + spoke, outer + following], axis=1))
+        faces.append(np.stack([inner + spoke, outer + following, inner + following], axis=1))
+    vertices_np = np.concatenate(points).astype(np.float32).astype(np.float64)
+    return vertices_np, np.concatenate(faces)
+
+
 @pytest.mark.parametrize("lamb", [0.0, 0.5, 50.0])
 def test_filter_laplacian_implicit_with_volume_constraint_matches_trimesh(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], lamb: float

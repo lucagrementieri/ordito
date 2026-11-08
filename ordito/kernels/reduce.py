@@ -837,6 +837,74 @@ def warp_lanes_sum_float(lanes: wp.int32, value: wp.float64) -> wp.float64: ...
 def warp_lane_leads(lanes: wp.int32) -> wp.int32: ...
 
 
+# A warp sharing one long walk (a CSR row ``linalg.csr_row_long`` names) among its active lanes,
+# in a thread-a-row launch with no block barrier: ``warp_active_lanes`` is the converged lanes'
+# mask, ``warp_ballot`` the lanes of a mask whose ``flag`` is set, ``warp_lane_rank`` a
+# lane's rank in a mask and ``array.popcount32`` its size (the walk's start and stride),
+# ``warp_lowest_lane`` the lowest lane in a mask and ``warp_broadcast`` a value from one lane to
+# the mask. Each thread is its own warp on the CPU device, where the active mask and every ballot
+# read 0, so a caller's ordinary path takes every row there.
+_WARP_ACTIVE_LANES = """
+#if defined(__CUDA_ARCH__)
+return (int)__activemask();
+#else
+return 0;
+#endif
+"""
+
+_WARP_BALLOT = """
+#if defined(__CUDA_ARCH__)
+return (int)__ballot_sync((unsigned)lanes, flag != 0);
+#else
+return 0;
+#endif
+"""
+
+_WARP_LANE_RANK = """
+#if defined(__CUDA_ARCH__)
+return __popc((unsigned)lanes & ((1u << (threadIdx.x & 31u)) - 1u));
+#else
+return 0;
+#endif
+"""
+
+_WARP_LOWEST_LANE = """
+#if defined(__CUDA_ARCH__)
+return __ffs((unsigned)lanes) - 1;
+#else
+return 0;
+#endif
+"""
+
+_WARP_BROADCAST = """
+#if defined(__CUDA_ARCH__)
+return __shfl_sync((unsigned)lanes, value, source);
+#else
+return value;
+#endif
+"""
+
+
+@wp.func_native(_WARP_ACTIVE_LANES)
+def warp_active_lanes() -> wp.int32: ...
+
+
+@wp.func_native(_WARP_BALLOT)
+def warp_ballot(lanes: wp.int32, flag: wp.int32) -> wp.int32: ...
+
+
+@wp.func_native(_WARP_LANE_RANK)
+def warp_lane_rank(lanes: wp.int32) -> wp.int32: ...
+
+
+@wp.func_native(_WARP_LOWEST_LANE)
+def warp_lowest_lane(lanes: wp.int32) -> wp.int32: ...
+
+
+@wp.func_native(_WARP_BROADCAST)
+def warp_broadcast(lanes: wp.int32, value: wp.int32, source: wp.int32) -> wp.int32: ...
+
+
 # The largest non-negative ``value`` over the lanes in the ``lanes`` mask (from
 # ``warp_uniform_lanes``), to every one of them: a non-negative float orders like its bits, so the
 # integer warp reduction is exact. The CPU device returns ``value``.

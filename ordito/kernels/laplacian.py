@@ -7,12 +7,19 @@ from ordito.kernels.array import (
     csr_key,
     csr_run_start,
     device_is_cpu,
+    popcount32,
     sorted_run_end,
     store_coo_key,
 )
 from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import doublearea_from_lengths, triangle_double_area
-from ordito.kernels.reduce import GroupSumPass, block_chunk_1d, block_min
+from ordito.kernels.reduce import (
+    GroupSumPass,
+    block_chunk_1d,
+    block_min,
+    warp_lane_rank,
+    warp_lanes_sum_float,
+)
 from ordito.kernels.scatter import (
     ARRIVAL_POOL_UNIFORM,
     arrival_order_add_vector,
@@ -436,6 +443,30 @@ def operator_row_entries(
         w = wp.float64(values[k])
         acc += w * wp.vec3d(field[columns[k]])
     return acc
+
+
+@wp.func
+def operator_row_warp(
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float32],
+    field: wp.array[Any],
+    start: wp.int32,
+    end: wp.int32,
+    lanes: wp.int32,
+) -> wp.vec3d:
+    # ``operator_row``'s sum over entries ``start`` to ``end`` by the warp's lanes in ``lanes``
+    # (``reduce.warp_active_lanes``), every one of which must call it: each strides the entries
+    # from its rank, and the partial sums are shuffled into the lowest lane, which alone holds the
+    # row's sum (``reduce.warp_lane_leads``). Four interleaved sums a lane cost the hub's walk
+    # 1.34x (2026-11-09, ``fan_hub``: 845 -> 1 134 us a pass); one walk a lane it stays.
+    part = operator_row_entries(
+        columns, values, field, start + warp_lane_rank(lanes), end, popcount32(wp.uint32(lanes))
+    )
+    return wp.vec3d(
+        warp_lanes_sum_float(lanes, part[0]),
+        warp_lanes_sum_float(lanes, part[1]),
+        warp_lanes_sum_float(lanes, part[2]),
+    )
 
 
 @wp.func

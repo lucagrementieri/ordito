@@ -20,6 +20,7 @@ from ordito.kernels.laplacian import (
     face_half_cotangents,
     operator_row,
     operator_row_entries,
+    operator_row_warp,
     point_edge_weight,
     umbrella_entry,
 )
@@ -33,7 +34,18 @@ from ordito.kernels.linalg import (
 )
 from ordito.kernels.normals import gathered_area_weighted_normal
 from ordito.kernels.predicates import angle_defect, closest_point_on_segment, plane_basis
-from ordito.kernels.reduce import block_barrier, block_chunk, block_max, block_sum, store_block_sum
+from ordito.kernels.reduce import (
+    block_barrier,
+    block_chunk,
+    block_max,
+    block_sum,
+    store_block_sum,
+    warp_active_lanes,
+    warp_ballot,
+    warp_broadcast,
+    warp_lane_leads,
+    warp_lowest_lane,
+)
 from ordito.kernels.scatter import add_corner_triple, claim_row_slot
 from ordito.kernels.triangles import corner_triple, local_corner
 
@@ -1269,6 +1281,12 @@ def mut_dif_step(
 
 
 @wp.func
+def diffused_value(position: wp.vec3d, lv: wp.vec3d, coeff: wp.float64) -> wp.vec3d:
+    # A ``diffuse_vec3_pass`` row's value from its position and ``(L v)_i``.
+    return wp.lerp(position, lv, coeff)
+
+
+@wp.func
 def diffused_row(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
@@ -1279,7 +1297,7 @@ def diffused_row(
 ) -> wp.vec3d:
     # Row ``i`` of a ``diffuse_vec3_pass``, before the store's narrowing.
     lv = operator_row(offsets, columns, values, positions, i)
-    return wp.lerp(wp.vec3d(positions[i]), lv, coeff)
+    return diffused_value(wp.vec3d(positions[i]), lv, coeff)
 
 
 @wp.func
@@ -1304,6 +1322,12 @@ def neighborhood_averaged_row(
 
 
 @wp.func
+def graph_sharpened_value(position: wp.vec3d, gv: wp.vec3d, weight: wp.float64) -> wp.vec3d:
+    # A ``graph_sharpen_pass`` row's value from its position and ``(G v)_i``.
+    return position - weight * gv
+
+
+@wp.func
 def graph_sharpened_row(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
@@ -1314,7 +1338,7 @@ def graph_sharpened_row(
 ) -> wp.vec3d:
     # Row ``i`` of a ``graph_sharpen_pass``, before the store's narrowing.
     gv = operator_row(offsets, columns, values, positions, i)
-    return wp.vec3d(positions[i]) - weight * gv
+    return graph_sharpened_value(wp.vec3d(positions[i]), gv, weight)
 
 
 # ``vec3_passes_serial``'s pass kinds: the row of ``diffuse_vec3_pass``,
@@ -1340,6 +1364,80 @@ def vec3_pass_row(
     if kind == PASS_GRAPH_SHARPEN:
         return graph_sharpened_row(offsets, columns, values, positions, coeff, i)
     return diffused_row(offsets, columns, values, positions, coeff, i)
+
+
+@wp.func
+def vec3_pass_value(
+    kind: wp.int32, position: wp.vec3d, lv: wp.vec3d, degree: wp.float64, coeff: wp.float64
+) -> wp.vec3d:
+    # ``vec3_pass_row``'s value from the row's position, its operator sum and its length: the
+    # form a long row's block sum is finished in.
+    if kind == PASS_NEIGHBORHOOD_AVERAGE:
+        return closed_ring_average(position, lv, degree)
+    if kind == PASS_GRAPH_SHARPEN:
+        return graph_sharpened_value(position, lv, coeff)
+    return diffused_value(position, lv, coeff)
+
+
+# A thread-a-row pass kernel takes a long row (``linalg.csr_row_long``, a fan's hub) as a warp:
+# one ballot names the warp's long rows (``warp_long_rows``), each lane whose row is short writes it
+# as before, and the warp walks each long row in turn (``warp_long_operator_row``, through
+# ``laplacian.operator_row_warp``), its lowest lane finishing it. Every short row is its thread's,
+# to the bit; on the CPU device the ballot is empty and every row is. 2026-11-09: ``fan_hub``'s
+# hub held an explicit pass at 7.0 ms in one thread, a warp 0.85 ms (both hubs). A block per long
+# row instead (tiled at 256 rows, a block barrier deciding) reached 0.15 ms but cost every
+# ordinary pass its barrier: 1.25x device time (``sphere_small`` 5.6 -> 7.1 us, ``bunny`` 7.3 ->
+# 8.9 us), 1.07-1.15x the call; the ballot costs them nothing measurable.
+
+
+@wp.func
+def warp_long_rows(offsets: wp.array[wp.int32], i: wp.int32, lanes: wp.int32) -> wp.int32:
+    # The lanes of ``lanes`` whose row is long: 0 on the CPU device and wherever none is.
+    return warp_ballot(lanes, wp.where(csr_row_long(offsets, i), 1, 0))
+
+
+@wp.func
+def warp_long_operator_row(
+    lanes: wp.int32,
+    long_rows: wp.int32,
+    i: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float32],
+    field: wp.array[Any],
+) -> tuple[wp.int32, wp.vec3d]:
+    # The lowest long row of ``long_rows`` and its operator sum over ``field``, by every lane of
+    # ``lanes``; only ``warp_lane_leads(lanes)`` holds the sum.
+    row = warp_broadcast(lanes, i, warp_lowest_lane(long_rows))
+    return row, operator_row_warp(columns, values, field, offsets[row], offsets[row + 1], lanes)
+
+
+@wp.func
+def vec3_pass_rows(
+    kind: wp.int32,
+    i: wp.int32,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float32],
+    positions: wp.array[Any],
+    coeff: wp.float64,
+    out_next: wp.array[Any],
+):
+    # Row ``i`` of the pass ``kind`` names, the body of ``diffuse_vec3_pass``,
+    # ``neighborhood_average_pass`` and ``graph_sharpen_pass``, long rows by the warp.
+    lanes = warp_active_lanes()
+    long_rows = warp_long_rows(offsets, i, lanes)
+    if long_rows == 0 or not csr_row_long(offsets, i):
+        out_next[i] = out_next.dtype(
+            vec3_pass_row(kind, offsets, columns, values, positions, coeff, i)
+        )
+    while long_rows != 0:
+        row, lv = warp_long_operator_row(lanes, long_rows, i, offsets, columns, values, positions)
+        if warp_lane_leads(lanes) != 0:
+            degree = wp.float64(offsets[row + 1] - offsets[row])
+            value = vec3_pass_value(kind, wp.vec3d(positions[row]), lv, degree, coeff)
+            out_next[row] = out_next.dtype(value)
+        long_rows = long_rows & (long_rows - 1)
 
 
 # The ``_serial`` kernels below run every pass of a ping-pong loop in one launch of one thread, in
@@ -1418,9 +1516,9 @@ def diffuse_vec3_pass(
 ) -> None:
     # Explicit diffusion step v' = v + coeff * (L.v - v); coeff = +lambda (shrink) or -nu
     # (inflate). ``wp.lerp`` extrapolates for coeff outside [0, 1], which the inflating step of
-    # ``filter_taubin`` relies on.
+    # ``filter_taubin`` relies on. The row is ``vec3_pass_rows``'.
     i = wp.int32(wp.tid())
-    out_next[i] = out_next.dtype(diffused_row(offsets, columns, values, positions, coeff, i))
+    vec3_pass_rows(PASS_DIFFUSE, i, offsets, columns, values, positions, coeff, out_next)
 
 
 @wp.kernel
@@ -1476,8 +1574,12 @@ def neighborhood_average_pass(
 ) -> None:
     # Closed 1-ring average: new_v = (v + deg * L.v) / (deg + 1), where L is the neighbors-only
     # averaging operator and deg is the CSR row length (the vertex degree). deg = 0 -> new_v = v.
+    # The row is ``vec3_pass_rows``'.
     i = wp.int32(wp.tid())
-    out_next[i] = out_next.dtype(neighborhood_averaged_row(offsets, columns, values, positions, i))
+    vec3_pass_rows(
+        PASS_NEIGHBORHOOD_AVERAGE, i, offsets, columns, values, positions, wp.float64(0.0),
+        out_next,
+    )  # fmt: skip
 
 
 @wp.kernel
@@ -1614,6 +1716,21 @@ def apply_spike_rows(
 
 
 @wp.func
+def humphrey_residual_store(
+    lv_out: wp.array[wp.vec3d],
+    b_out: wp.array[wp.vec3d],
+    i: wp.int32,
+    lv: wp.vec3d,
+    positions: wp.array[Any],
+    original: wp.array[wp.vec3],
+    alpha: wp.float64,
+):
+    # A ``humphrey_residual_pass`` row's ``L.v`` and ``b`` from its operator sum ``lv``.
+    lv_out[i] = lv
+    b_out[i] = lv - wp.lerp(wp.vec3d(positions[i]), to_vec3d(original[i]), alpha)
+
+
+@wp.func
 def humphrey_residual_row(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
@@ -1626,9 +1743,10 @@ def humphrey_residual_row(
     i: wp.int32,
 ) -> None:
     # Row ``i`` of a ``humphrey_residual_pass``: writes its ``L.v`` and ``b``.
-    lv = operator_row(offsets, columns, values, positions, i)
-    lv_out[i] = lv
-    b_out[i] = lv - wp.lerp(wp.vec3d(positions[i]), to_vec3d(original[i]), alpha)
+    humphrey_residual_store(
+        lv_out, b_out, i, operator_row(offsets, columns, values, positions, i), positions, original,
+        alpha,
+    )  # fmt: skip
 
 
 @wp.kernel
@@ -1644,9 +1762,28 @@ def humphrey_residual_pass(
 ) -> None:
     # b = L.v - (alpha * original + (1 - alpha) * q), the Humphrey correction term. ``out_lv`` is
     # still written because the update pass below reads it; only ``L.b`` disappears. ``original``
-    # is the ``float32`` input, widened as it is read.
+    # is the ``float32`` input, widened as it is read. A long row is the warp's
+    # (``warp_long_operator_row``).
     i = wp.int32(wp.tid())
-    humphrey_residual_row(offsets, columns, values, positions, original, alpha, out_lv, out_b, i)
+    lanes = warp_active_lanes()
+    long_rows = warp_long_rows(offsets, i, lanes)
+    if long_rows == 0 or not csr_row_long(offsets, i):
+        humphrey_residual_row(
+            offsets, columns, values, positions, original, alpha, out_lv, out_b, i
+        )
+    while long_rows != 0:
+        row, lv = warp_long_operator_row(lanes, long_rows, i, offsets, columns, values, positions)
+        if warp_lane_leads(lanes) != 0:
+            humphrey_residual_store(out_lv, out_b, row, lv, positions, original, alpha)
+        long_rows = long_rows & (long_rows - 1)
+
+
+@wp.func
+def humphrey_update_value(
+    lv: wp.vec3d, b: wp.vec3d, lb: wp.vec3d, beta: wp.float64, neighbour_sign: wp.float64
+) -> wp.vec3d:
+    # A ``humphrey_update_pass`` row's value from its ``L.v``, ``b`` and operator sum ``lb``.
+    return lv - wp.lerp(neighbour_sign * lb, b, beta)
 
 
 @wp.func
@@ -1662,7 +1799,7 @@ def humphrey_update_row(
 ) -> wp.vec3d:
     # Row ``i`` of a ``humphrey_update_pass``, before the store's narrowing.
     lb = operator_row(offsets, columns, values, b, i)
-    return lv[i] - wp.lerp(neighbour_sign * lb, b[i], beta)
+    return humphrey_update_value(lv[i], b[i], lb, beta, neighbour_sign)
 
 
 @wp.kernel
@@ -1679,11 +1816,20 @@ def humphrey_update_pass(
     # v' = L.v - (beta * b + (1 - beta) * s * L.b), with L.b formed here rather than in a buffer.
     # ``s`` is ``1`` for Vollmer et al.'s update and ``-1`` for MeshLab's, which adds the
     # neighbours' mean push where the paper subtracts it; ``1 * L.b`` is exact, so the paper's
-    # update keeps its bits.
+    # update keeps its bits. A long row is the warp's (``warp_long_operator_row``).
     i = wp.int32(wp.tid())
-    out_next[i] = out_next.dtype(
-        humphrey_update_row(offsets, columns, values, lv, b, beta, neighbour_sign, i)
-    )
+    lanes = warp_active_lanes()
+    long_rows = warp_long_rows(offsets, i, lanes)
+    if long_rows == 0 or not csr_row_long(offsets, i):
+        out_next[i] = out_next.dtype(
+            humphrey_update_row(offsets, columns, values, lv, b, beta, neighbour_sign, i)
+        )
+    while long_rows != 0:
+        row, lb = warp_long_operator_row(lanes, long_rows, i, offsets, columns, values, b)
+        if warp_lane_leads(lanes) != 0:
+            value = humphrey_update_value(lv[row], b[row], lb, beta, neighbour_sign)
+            out_next[row] = out_next.dtype(value)
+        long_rows = long_rows & (long_rows - 1)
 
 
 @wp.kernel
@@ -1758,6 +1904,22 @@ def mut_dif_adil_rounding(position: wp.vec3d, adil: wp.float64) -> wp.float64:
     return adil * adil * delta
 
 
+@wp.func
+def mut_dif_adil_row(
+    i: wp.int32,
+    lv: wp.vec3d,
+    positions: wp.array[Any],
+    normals: wp.array[wp.vec3],
+    out_lv: wp.array[wp.vec3d],
+) -> wp.vec2d:
+    # Row ``i`` of a ``mut_dif_adil_pass`` from its operator sum: stores ``lv`` and returns the
+    # row's ``(mut_dif_adil, rounding sensitivity)`` for the block's sums.
+    out_lv[i] = lv
+    position = wp.vec3d(positions[i])
+    adil = mut_dif_adil(normals[i], position, lv)
+    return wp.vec2d(adil, mut_dif_adil_rounding(position, adil))
+
+
 @wp.kernel
 def mut_dif_adil_pass(
     offsets: wp.array[wp.int32],
@@ -1788,12 +1950,23 @@ def mut_dif_adil_pass(
     rounding = wp.float64(0.0)
     for r in range(lane, remaining, wp.block_dim()):
         i = offset + r
-        lv = operator_row(offsets, columns, values, positions, i)
-        out_lv[i] = lv
-        position = wp.vec3d(positions[i])
-        adil = mut_dif_adil(normals[i], position, lv)
-        total = total + adil
-        rounding = rounding + mut_dif_adil_rounding(position, adil)
+        # A long row is the warp's (``warp_long_operator_row``), its sum added by the lowest lane.
+        lanes = warp_active_lanes()
+        long_rows = warp_long_rows(offsets, i, lanes)
+        if long_rows == 0 or not csr_row_long(offsets, i):
+            lv = operator_row(offsets, columns, values, positions, i)
+            sums = mut_dif_adil_row(i, lv, positions, normals, out_lv)
+            total = total + sums[0]
+            rounding = rounding + sums[1]
+        while long_rows != 0:
+            row, lv = warp_long_operator_row(
+                lanes, long_rows, i, offsets, columns, values, positions
+            )
+            if warp_lane_leads(lanes) != 0:
+                sums = mut_dif_adil_row(row, lv, positions, normals, out_lv)
+                total = total + sums[0]
+                rounding = rounding + sums[1]
+            long_rows = long_rows & (long_rows - 1)
     store_block_sum(chunk, lane, wp.vec2d(total, rounding), out_adil_sum, 0, stride)
 
 
@@ -2902,11 +3075,9 @@ def graph_sharpen_pass(
     # Open3D's ``filter_sharpen`` step v' = v + weight * sum_j (v - v_j) over the undirected
     # 1-ring, read off the graph Laplacian ``G = A - D`` as v - weight * (G.v).
     # ``diffuse_vec3_pass`` steps toward a row-stochastic average instead; the two share
-    # ``operator_row``.
+    # ``operator_row``. The row is ``vec3_pass_rows``'.
     i = wp.int32(wp.tid())
-    out_next[i] = out_next.dtype(
-        graph_sharpened_row(offsets, columns, values, positions, weight, i)
-    )
+    vec3_pass_rows(PASS_GRAPH_SHARPEN, i, offsets, columns, values, positions, weight, out_next)
 
 
 @wp.func
