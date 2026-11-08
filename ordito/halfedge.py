@@ -416,7 +416,7 @@ def vertex_one_rings(
             _raise_twin_defects(counts_np)
         n_incomplete = int(counts_np[2])
         if rank_starts is not None and int(counts_np[4]) > 0:
-            _rank_long_rings(faces, twins, rank_starts, offsets, rings[0], ring_counts)
+            _rank_long_rings(faces, twins, rank_starts, offsets, rings[0], ring_counts, known=True)
             # Readback: the ranked rings' pinches, on a mesh with a long ring alone.
             n_incomplete = int(read_scalar(defect_counts, 2))
         if validate and n_incomplete > 0:
@@ -425,7 +425,7 @@ def vertex_one_rings(
                 f"have more than one fan of faces (a pinch point)."
             )
     elif rank_starts is not None:
-        _rank_long_rings(faces, twins, rank_starts, offsets, rings[0], ring_counts)
+        _rank_long_rings(faces, twins, rank_starts, offsets, rings[0], ring_counts, known=False)
     if return_twins:
         return (*rings, twins)
     return rings
@@ -524,14 +524,31 @@ def _rank_long_rings(
     offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
     ring_counts: wp.array[wp.int32],
+    *,
+    known: bool,
 ) -> None:
-    """Rank the rings ``_walk_one_rings`` listed in ``ring_counts``, a block a ring."""
+    """
+    Rank the rings ``_walk_one_rings`` listed in ``ring_counts``, a block a ring.
+
+    ``known`` is whether the call read back that a long ring exists: the rulers are then listed
+    over the whole grid first, where each ranking block would otherwise scan every halfedge for its
+    own, the form a call that reads nothing back keeps rather than pay a second launch for nothing.
+    """
+    device = faces.device
+    if known:
+        _launch.launch(
+            kernel_halfedge.append_long_ring_rulers,
+            dim=faces.size // 3 * 3,
+            inputs=[faces, offsets],
+            outputs=[ring_halfedges],
+            device=device,
+        )
     _launch.launch_tiled(
         kernel_halfedge.rank_long_rings,
         dim=kernel_halfedge.RING_RANK_BLOCKS,
-        inputs=[starts, twins, faces, offsets],
+        inputs=[starts, twins, faces, offsets, int(known)],
         outputs=[ring_halfedges, ring_counts],
-        device=faces.device,
+        device=device,
         block_dim=kernel_halfedge.RING_RANK_LANES,
     )
 

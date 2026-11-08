@@ -825,6 +825,10 @@ def write_one_rings(
     degree = offsets[v + 1] - begin
     if degree >= ring_long_from(twins.shape[0]):
         out_ring_counts[RING_LISTED + 1 + wp.atomic_add(out_ring_counts, RING_LISTED, 1)] = v
+        # The ruler list's head: ``start`` first, the count in the row's last slot, out of the
+        # tables' reach (``rank_long_ring``).
+        out_halfedges[begin] = start
+        out_halfedges[begin + degree - 1] = wp.int32(1)
         return
     count = walk_one_ring(twins, start, begin, degree, out_halfedges)
     if count != degree:
@@ -1018,16 +1022,14 @@ def append_ring_rulers(
     out_halfedges: wp.array[wp.int32],
 ):
     # Vertex ``v``'s rulers (``is_ring_ruler``, ``start`` excluded) appended to its row after
-    # ``start``, their count kept in the row's last slot, by one scan of the halfedges by the whole
-    # block (every lane must call it). A lane loads ``RING_SCAN_UNROLL`` corners before testing
-    # any, so its loads overlap rather than each waiting on the last. A plain atomic append:
+    # ``start``, their count kept in the row's last slot (both written by ``write_one_rings``), by
+    # one scan of the halfedges by the whole block (every lane must call it): the ranking's own
+    # scan where no ``append_long_ring_rulers`` launch ran first. A lane loads ``RING_SCAN_UNROLL``
+    # corners before testing any, so its loads overlap rather than each waiting on the last. A plain
+    # atomic append:
     # ``array.append_slot`` cost the scan 1.06x and the branch-free ``append_slot_if`` 1.32x on
     # ``fan_hub`` (2026-11-08), the rulers too sparse in a warp for its lanes to share one.
     lanes = wp.block_dim()
-    if lane == 0:
-        out_halfedges[begin] = start
-        out_halfedges[begin + degree - 1] = wp.int32(1)
-    block_barrier()
     shift = ring_ruler_shift(degree)
     cursor = begin + degree - 1
     n_halfedges = faces.shape[0] // 3 * 3
@@ -1048,17 +1050,40 @@ def append_ring_rulers(
 
 
 @wp.kernel
+def append_long_ring_rulers(
+    faces: wp.array[wp.int32], offsets: wp.array[wp.int32], out_halfedges: wp.array[wp.int32]
+) -> None:
+    # One thread per halfedge: a ruler (``is_ring_ruler``) of a long ring (``ring_long_from``)
+    # appended to its row, behind the start and onto the count ``write_one_rings`` put there --
+    # ``append_ring_rulers``' scan spread over the grid rather than one block a ring, where one SM's
+    # bandwidth held it at a third of ``fan_hub``'s ranking. Launched only once the call has read
+    # back that a long ring exists, so it costs a mesh without one nothing.
+    h = wp.int32(wp.tid())
+    v = faces[h]
+    begin = offsets[v]
+    degree = offsets[v + 1] - begin
+    if degree < ring_long_from(faces.shape[0] // 3 * 3):
+        return
+    if is_ring_ruler(h, ring_ruler_shift(degree)) and h != out_halfedges[begin]:
+        slot = wp.atomic_add(out_halfedges, begin + degree - 1, 1)
+        if slot < degree - 1:
+            out_halfedges[begin + slot] = h
+
+
+@wp.kernel
 def rank_long_rings(
     starts: wp.array[wp.int32],
     twins: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
+    rulers_listed: wp.int32,
     out_halfedges: wp.array[wp.int32],
     out_ring_counts: wp.array[wp.int32],
 ) -> None:
-    # The rings ``write_one_rings`` listed, a block a ring (``rank_long_ring`` over the rulers
-    # ``append_ring_rulers`` finds), so a call's long rings rank side by side. A launch over an
-    # empty list returns at once. CUDA only: the CPU device lists no ring.
+    # The rings ``write_one_rings`` listed, a block a ring (``rank_long_ring``), so a call's long
+    # rings rank side by side, over the rulers ``append_long_ring_rulers`` listed when
+    # ``rulers_listed``, else found by the block's own scan (``append_ring_rulers``). A launch over
+    # an empty list returns at once. CUDA only: the CPU device lists no ring.
     blk, lane = wp.tid()
     lanes = wp.block_dim()
     for i in range(blk, out_ring_counts[RING_LISTED], RING_RANK_BLOCKS):
@@ -1066,7 +1091,8 @@ def rank_long_rings(
         start, _on_boundary = ring_walk_start(starts, v)
         begin = offsets[v]
         degree = offsets[v + 1] - begin
-        append_ring_rulers(faces, v, start, begin, degree, lane, out_halfedges)
+        if rulers_listed == 0:
+            append_ring_rulers(faces, v, start, begin, degree, lane, out_halfedges)
         count = rank_long_ring(twins, start, begin, degree, lane, out_halfedges)
         if count != degree:
             if lane == 0:

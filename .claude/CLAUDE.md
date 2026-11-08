@@ -1130,10 +1130,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   Open: a separate long-ring kernel launched only when the caller knows a long ring exists (the
   count `vertex_one_rings` already reads back, carried with the rings), or a frame walk whose
   per-lane and block forms are one code path.
-- **`rank_long_rings`' floor:** each long ring's block scans every halfedge for its rulers (one
-  SM's bandwidth, a third of the ranking on `fan_hub`). A pairing pass that already reads every
-  halfedge with the degrees known (the bucketed path) could append the rulers instead; price the
-  added per-halfedge test on ordinary meshes, which have no long ring.
 - **`INT32_MAX` fills left after the walk-start carve:** `heat.py` `face_claim` (`n_cover`) and
   the four- and six-slot bounds in `graph.py` / `voxels.py`; the `INT32_MAX - x` under
   `atomic_max` encoding drops the fill only where a zeroed allocation sits alongside.
