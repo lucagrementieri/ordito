@@ -608,13 +608,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # argument is not free (see that struct's docstring). So the bundle itself is the written
     # argument here, and ``out_tables`` would misread as write-only -- it is overwhelmingly
     # read-only inputs.
-    # ``scatter_neighbor_lists``' ``cursor`` is the per-node write head the CSR fill hands out with
-    # ``wp.atomic_add``: caller-allocated scratch, zeroed before the launch and meaningless after
-    # it, so ``out_`` would advertise it as the answer -- the same role, and the same exemption, as
-    # ``adjacency.scatter_vertex_faces``' argument of that name. ``bfs_push_level``'s ``state`` is
-    # the level loop's persistent word -- the level to claim and the claim flag -- carried across
-    # launches and both read and written every level.
-    ("graph", "scatter_neighbor_lists"): frozenset({"cursor"}),
     # The validated union-find kernels work on the forest in place, as their unchecked siblings in
     # ``algorithms.connected_components`` do through their shared ``@wp.func``s: the pre-hook
     # rewrites the identity ``parents`` and the parity hook the packed ``words``, each with the
@@ -624,6 +617,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``shortest_path_envelope_serial`` relaxes ``labels`` in place across its passes, ping-ponging
     # through ``scratch``, whose contents are meaningless after the launch.
     ("graph", "shortest_path_envelope_serial"): frozenset({"labels", "scratch"}),
+    # ``shortest_path_envelope_dijkstra`` lowers ``labels`` in place, keyed in a heap whose
+    # ``heap`` and ``position`` tables are scratch, meaningless after the launch.
+    ("graph", "shortest_path_envelope_dijkstra"): frozenset({"labels", "heap", "position"}),
     # ``signed_distance_level_set``'s winding lattice: ``column_suffix_sums`` turns each column's
     # per-node crossing deltas into suffix sums where they lie; ``take_exact_winding`` and
     # ``warp_winding_sign`` overwrite the lattice winding number of the nodes in doubt, and the
@@ -631,6 +627,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("levelset", "column_suffix_sums"): frozenset({"crossings"}),
     ("levelset", "take_exact_winding"): frozenset({"winding", "slots"}),
     ("levelset", "warp_winding_sign"): frozenset({"winding"}),
+    # ``bfs_push_level``'s ``state`` is the level loop's persistent word -- the level to claim and
+    # the claim flag -- carried across launches and both read and written every level.
     ("homology", "bfs_push_level"): frozenset({"state"}),
     # ``previous`` is a settle monitor's snapshot of the field at the last check, compared against
     # and then advanced to the current one: loop state carried across launches, not the answer.

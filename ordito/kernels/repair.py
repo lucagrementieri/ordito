@@ -10,6 +10,8 @@ from ordito.kernels.array import (
     binary_search_index,
     binary_search_sorted_contains,
     declare_map_signatures,
+    indexed_heap_pop,
+    indexed_heap_sift_up,
     map_probe,
     map_probe_single,
     pack_edge_key,
@@ -1590,61 +1592,6 @@ def tunnel_slot_insert(table: wp.array[wp.int32], vertex: wp.int32, slot: wp.int
 
 
 @wp.func
-def tunnel_heap_before(dist: wp.array[wp.float32], a: wp.int32, b: wp.int32) -> wp.bool:
-    """Heap order: nearer first, the earlier slot on a tie, so the search is deterministic."""
-    return dist[a] < dist[b] or (dist[a] == dist[b] and a < b)
-
-
-@wp.func
-def tunnel_heap_sift_up(
-    heap: wp.array[wp.int32], position: wp.array[wp.int32], dist: wp.array[wp.float32], k: wp.int32
-) -> None:
-    """Move heap entry ``k`` toward the top until its parent comes first."""
-    slot = heap[k]
-    while k > 0:
-        parent = (k - 1) // 2
-        above = heap[parent]
-        if not tunnel_heap_before(dist, slot, above):
-            break
-        heap[k] = above
-        position[above] = k
-        k = parent
-    heap[k] = slot
-    position[slot] = k
-
-
-@wp.func
-def tunnel_heap_pop(
-    heap: wp.array[wp.int32],
-    position: wp.array[wp.int32],
-    dist: wp.array[wp.float32],
-    size: wp.int32,
-) -> wp.int32:
-    """Remove and return the top slot of a heap of ``size >= 1``, marking it settled (``-1``)."""
-    top = heap[0]
-    position[top] = wp.int32(-1)
-    last = size - 1
-    if last == 0:
-        return top
-    slot = heap[last]
-    k = wp.int32(0)
-    while True:
-        child = 2 * k + 1
-        if child >= last:
-            break
-        if child + 1 < last and tunnel_heap_before(dist, heap[child + 1], heap[child]):
-            child += 1
-        if not tunnel_heap_before(dist, heap[child], slot):
-            break
-        heap[k] = heap[child]
-        position[heap[k]] = k
-        k = child
-    heap[k] = slot
-    position[slot] = k
-    return top
-
-
-@wp.func
 def tunnel_tree_depth(parent: wp.array[wp.int32], slot: wp.int32) -> wp.int32:
     """Hops from ``slot`` up to the root of its search tree."""
     depth = wp.int32(0)
@@ -1764,7 +1711,7 @@ def shortest_nontrivial_loop_per_root(
     best_t = wp.int32(-1)
     reach_limit = radius
     while heap_size > 0 and not overflow:
-        s = tunnel_heap_pop(row_heap, row_position, row_dist, heap_size)
+        s = indexed_heap_pop(row_heap, row_position, row_dist, heap_size)
         heap_size -= 1
         settled = row_dist[s]
         if wp.float32(2.0) * settled >= best:
@@ -1800,13 +1747,13 @@ def shortest_nontrivial_loop_per_root(
                 row_parent[t] = s
                 row_class[t] = row_class[s] ^ cocycle[h]
                 row_heap[heap_size] = t
-                tunnel_heap_sift_up(row_heap, row_position, row_dist, heap_size)
+                indexed_heap_sift_up(row_heap, row_position, row_dist, heap_size)
                 heap_size += 1
             elif reach < row_dist[t]:
                 row_dist[t] = reach
                 row_parent[t] = s
                 row_class[t] = row_class[s] ^ cocycle[h]
-                tunnel_heap_sift_up(row_heap, row_position, row_dist, row_position[t])
+                indexed_heap_sift_up(row_heap, row_position, row_dist, row_position[t])
     if overflow:
         out_count[r] = wp.int32(-1)
         return

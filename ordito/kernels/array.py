@@ -157,6 +157,65 @@ def merge_window_minimum(
 
 
 @wp.func
+def indexed_heap_before(dist: wp.array[wp.float32], a: wp.int32, b: wp.int32) -> wp.bool:
+    """Heap order: nearer first, the earlier slot on a tie, so the search is deterministic."""
+    return dist[a] < dist[b] or (dist[a] == dist[b] and a < b)
+
+
+@wp.func
+def indexed_heap_sift_up(
+    heap: wp.array[wp.int32], position: wp.array[wp.int32], dist: wp.array[wp.float32], k: wp.int32
+) -> None:
+    """Move heap entry ``k`` toward the top until its parent comes first."""
+    # A one-thread binary min-heap of slots keyed by ``dist[slot]``, with each slot's place in
+    # ``position`` for a decrease-key: lower ``dist[slot]``, then sift ``position[slot]`` up. A
+    # popped slot's ``position`` reads ``-1`` (settled). ``repair``'s tunnel search and the CPU
+    # form of ``graph.shortest_path_envelope`` run their Dijkstra over it.
+    slot = heap[k]
+    while k > 0:
+        parent = (k - 1) // 2
+        above = heap[parent]
+        if not indexed_heap_before(dist, slot, above):
+            break
+        heap[k] = above
+        position[above] = k
+        k = parent
+    heap[k] = slot
+    position[slot] = k
+
+
+@wp.func
+def indexed_heap_pop(
+    heap: wp.array[wp.int32],
+    position: wp.array[wp.int32],
+    dist: wp.array[wp.float32],
+    size: wp.int32,
+) -> wp.int32:
+    """Remove and return the top slot of a heap of ``size >= 1``, marking it settled (``-1``)."""
+    top = heap[0]
+    position[top] = wp.int32(-1)
+    last = size - 1
+    if last == 0:
+        return top
+    slot = heap[last]
+    k = wp.int32(0)
+    while True:
+        child = 2 * k + 1
+        if child >= last:
+            break
+        if child + 1 < last and indexed_heap_before(dist, heap[child + 1], heap[child]):
+            child += 1
+        if not indexed_heap_before(dist, heap[child], slot):
+            break
+        heap[k] = heap[child]
+        position[heap[k]] = k
+        k = child
+    heap[k] = slot
+    position[slot] = k
+    return top
+
+
+@wp.func
 def loop_point(k: wp.int32, n: wp.int32) -> wp.int32:
     # Point index of entry ``k`` in ``[0, n]`` of a closed loop's ``n + 1`` entries, the last being
     # the first point again -- ``wrap_index`` for an index known to be at most ``n``, as a select

@@ -944,23 +944,29 @@ def test_shortest_path_envelope_is_the_edge_graph_distance(
     assert np.allclose(envelope_wp.numpy(), distance_sp, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("field", ["source", "random"])
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_shortest_path_envelope_in_place_matches_the_capped_passes(
-    request: pytest.FixtureRequest, mesh_name: str
+    request: pytest.FixtureRequest, mesh_name: str, field: str
 ) -> None:
     """
-    Ordito against ordito: the uncapped in-place relaxation and the capped passes agree bit for bit.
+    Ordito against ordito: the uncapped forms and the capped passes agree bit for bit.
 
-    The two forms of ``kernels/graph.shortest_path_envelope_pass``: uncapped, a pass reads whatever
-    its neighbours hold, which may be this pass's labels; with ``max_iterations`` it reads the last
-    pass's alone. Both fall to one fixpoint, so a cap that does not bind must give the same bits,
-    and a cap that binds a coarser answer. The distance oracle is
+    Uncapped, a CUDA pass relaxes in place (``kernels/graph.shortest_path_envelope_pass``) and the
+    CPU device sweeps and then runs Dijkstra (``shortest_path_envelope_dijkstra``); with
+    ``max_iterations`` each pass reads the last pass's labels alone. All fall to one fixpoint, so a
+    cap that does not bind must give the same bits, and a cap that binds a coarser answer. A
+    distance from one source needs many passes, a random field few, which sends the CPU device
+    down both of its branches. The distance oracle is
     ``test_shortest_path_envelope_is_the_edge_graph_distance``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_tm.vertices.shape[0]
-    seeded_np = np.full(n_vertices, 1e6, dtype=np.float32)
-    seeded_np[0] = 0.0
+    if field == "source":
+        seeded_np = np.full(n_vertices, 1e6, dtype=np.float32)
+        seeded_np[0] = 0.0
+    else:
+        seeded_np = np.random.default_rng(7).random(n_vertices).astype(np.float32)
     adjacency = _length_weighted_csr(mesh_wp)
     values_wp = wp.array(seeded_np, dtype=wp.float32, device=mesh_wp.device)
 
@@ -970,9 +976,11 @@ def test_shortest_path_envelope_in_place_matches_the_capped_passes(
     ).numpy()
     binding_np = od.graph.shortest_path_envelope(adjacency, values_wp, max_iterations=2).numpy()
 
-    # Anti-vacuity: the field crossed the mesh, and two passes do not reach the fixpoint.
-    assert in_place_np.max() < 1e5
-    assert binding_np.max() == 1e6
+    # Anti-vacuity: the field moved, and (from a source) two passes do not reach the fixpoint.
+    assert np.any(in_place_np < seeded_np)
+    if field == "source":
+        assert in_place_np.max() < 1e5
+        assert binding_np.max() == 1e6
     assert np.array_equal(in_place_np.view(np.int32), capped_np.view(np.int32))
     assert np.all(binding_np >= in_place_np)
     assert np.array_equal(values_wp.numpy(), seeded_np)

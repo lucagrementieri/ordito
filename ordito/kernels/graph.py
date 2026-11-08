@@ -261,18 +261,16 @@ def shortest_path_envelope_serial(
     scratch: wp.array[wp.float32],
     out_state: wp.array[wp.int32],
 ) -> None:
-    # Every ``shortest_path_envelope_pass`` in one launch and one thread: the CPU device's form,
-    # where a launch's threads run one after another anyway, so a launch and a progress readback a
-    # pass buy no parallelism. Each pass reads one buffer whole and writes the other (``labels`` ->
-    # ``scratch`` on even passes), each entry ``envelope_relaxed_label``, tested before it is
-    # stored; the loop stops after the first pass that lowered nothing, or at the cap. With two
-    # buffers these are the per-pass Jacobi loop's labels to the bit, and a result left in
-    # ``scratch`` is copied back; with ``scratch`` *being* ``labels`` it is the in-place form, a
-    # Gauss-Seidel sweep in node order, reaching the same fixpoint in fewer passes: a distance from
-    # one source 0.5-0.85x the Jacobi passes' CPU time, ``sphere_small`` to ``bunny`` (2026-11-08).
-    # Declined, odd passes sweeping down the nodes: ``bunny`` 0.55x the forward sweep, but the
-    # icospheres 1.7-1.8x. A negative weight stops the first pass and raises
-    # ``ENVELOPE_NEGATIVE_WEIGHT``.
+    # Every capped ``shortest_path_envelope_pass`` in one launch and one thread: the CPU device's
+    # form, where a launch's threads run one after another anyway, so a launch and a progress
+    # readback a pass buy no parallelism. Each pass reads one buffer whole and writes the other
+    # (``labels`` -> ``scratch`` on even passes), each entry ``envelope_relaxed_label``; the loop
+    # stops after the first pass that lowered nothing, or at the cap. These are the per-pass Jacobi
+    # loop's labels to the bit, and a result left in ``scratch`` is copied back. A negative weight
+    # stops the first pass and raises ``ENVELOPE_NEGATIVE_WEIGHT``. Uncapped, the CPU device takes
+    # ``shortest_path_envelope_dijkstra``; before it, the passes ran in place there, a Gauss-Seidel
+    # sweep in node order (0.5-0.85x these passes; sweeping odd passes down the nodes was 0.55x on
+    # ``bunny`` but 1.7-1.8x on icospheres).
     n = labels.shape[0]
     parity = wp.int32(0)
     for _pass in range(max_pass_count):
@@ -297,6 +295,85 @@ def shortest_path_envelope_serial(
     if parity == 1:
         for i in range(n):
             labels[i] = scratch[i]
+
+
+# In-place sweeps ``shortest_path_envelope_dijkstra`` makes before its heap (plain: a launch
+# argument). A field that settles in a few sweeps (a spike, a random field) stops there; one that
+# needs many (a distance from one source) hands the heap labels that are already lower. Swept on
+# the CPU device against the in-place sweeps alone, a distance / a random field / a spike: 4 gives
+# 0.04-0.43x / 0.39-0.65x / 0.96-1.09x from ``sphere_small`` to a scrambled ``dragon``, with
+# ``sphere_small``'s random field at 1.08x; 2 gave 0.03-0.35x / 0.41-1.08x / 0.94-1.11x, 8 lost
+# on every distance (2026-11-08).
+ENVELOPE_CPU_SWEEPS = 4
+
+
+@wp.kernel
+def shortest_path_envelope_dijkstra(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    weights: wp.array[wp.float32],
+    sweeps: wp.int32,
+    labels: wp.array[wp.float32],
+    heap: wp.array[wp.int32],
+    position: wp.array[wp.int32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # The uncapped envelope on the CPU device, in one launch and one thread, lowering ``labels`` in
+    # place: up to ``sweeps`` Gauss-Seidel sweeps in node order, and if those leave a label still
+    # moving, Dijkstra keyed by the labels (``array.indexed_heap_*``). The heap starts with the
+    # nodes that can lower a neighbour, found in one sweep, and takes another node only when it is
+    # lowered: labels only fall, so a node that lowers no neighbour at the start never will.
+    # Settling each node once where a sweep visits every node, it took a distance from one source
+    # to 0.03-0.31x the sweeps alone, but heaping every node lost 2.7-4.3x on a spike, and a
+    # random field on an icosphere, which a few sweeps settle, 1.7-1.9x with the improvers alone:
+    # hence the sweeps first (``ENVELOPE_CPU_SWEEPS``).
+    #
+    # The labels are the passes' to the bit. The sweeps leave labels between the fixpoint and the
+    # input, so the fixpoint below them is the input's; with ``w >= 0`` a path's rounded sums
+    # never fall along it, so the node popped next holds the least sum over its paths, which is
+    # that fixpoint. A node holding NaN, which no relaxation lowers or propagates, never enters. A
+    # negative weight raises ``ENVELOPE_NEGATIVE_WEIGHT`` in the first sweep. ``heap`` and
+    # ``position`` are scratch, one entry a node; ``position`` reads ``-2`` off the heap and ``-1``
+    # once popped.
+    n = labels.shape[0]
+    for _sweep in range(sweeps):
+        moved = wp.int32(0)
+        for i in range(n):
+            best, lowest = envelope_relaxed_label(i, offsets, columns, weights, labels)
+            if lowest < 0.0:
+                out_state[ENVELOPE_NEGATIVE_WEIGHT] = 1
+                return
+            if best < labels[i]:
+                labels[i] = best
+                moved = wp.int32(1)
+        if moved == 0:
+            return
+    size = wp.int32(0)
+    for v in range(n):
+        position[v] = -2
+    for u in range(n):
+        own = labels[u]
+        for k in range(offsets[u], offsets[u + 1]):
+            if own + weights[k] < labels[columns[k]]:
+                heap[size] = u
+                kernel_array.indexed_heap_sift_up(heap, position, labels, size)
+                size += 1
+                break
+    while size > 0:
+        u = kernel_array.indexed_heap_pop(heap, position, labels, size)
+        size -= 1
+        settled = labels[u]
+        for k in range(offsets[u], offsets[u + 1]):
+            v = columns[k]
+            reach = settled + weights[k]
+            if reach < labels[v]:
+                labels[v] = reach
+                if position[v] >= 0:
+                    kernel_array.indexed_heap_sift_up(heap, position, labels, position[v])
+                else:
+                    heap[size] = v
+                    kernel_array.indexed_heap_sift_up(heap, position, labels, size)
+                    size += 1
 
 
 # ---------------------------------------------------------------------------------------------

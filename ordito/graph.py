@@ -1287,14 +1287,34 @@ def shortest_path_envelope(
     state = _launch.array([0, 1, 0, 0], dtype=wp.int32, device=device)
     if not device.is_cuda:
         # The CPU device runs a launch's threads one after another, so a launch and a progress
-        # readback a pass buy nothing: every pass runs in one single-thread launch, bit for bit the
-        # per-pass loop's labels (``kernels/graph.shortest_path_envelope_serial``).
-        _launch.launch(
-            kernel_graph.shortest_path_envelope_serial,
-            dim=1,
-            inputs=[offsets, columns, weights, max_pass_count, labels, relaxed, state],
-            device=device,
-        )
+        # readback a pass buy nothing: one single-thread launch, uncapped a few sweeps and then a
+        # Dijkstra over what still moves (``kernels/graph.shortest_path_envelope_dijkstra``),
+        # capped every pass, bit for bit the per-pass loop's labels
+        # (``kernels/graph.shortest_path_envelope_serial``).
+        if relaxed is labels:
+            heap, position = _launch.carve(wp.int32, (node_count, node_count), device)
+            _launch.launch(
+                kernel_graph.shortest_path_envelope_dijkstra,
+                dim=1,
+                inputs=[
+                    offsets,
+                    columns,
+                    weights,
+                    kernel_graph.ENVELOPE_CPU_SWEEPS,
+                    labels,
+                    heap,
+                    position,
+                    state,
+                ],
+                device=device,
+            )
+        else:
+            _launch.launch(
+                kernel_graph.shortest_path_envelope_serial,
+                dim=1,
+                inputs=[offsets, columns, weights, max_pass_count, labels, relaxed, state],
+                device=device,
+            )
         # Decides whether to raise.
         if read_scalar(state, int(kernel_graph.ENVELOPE_NEGATIVE_WEIGHT)) != 0:
             _raise_negative_weights()
