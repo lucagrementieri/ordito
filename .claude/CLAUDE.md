@@ -1012,7 +1012,14 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   pinch split 0.6-0.7x; declined where the walk is no share of the call (homology's generator
   loops about 1 %, cholesky's structure paths under 0.3 %, holes' traceback one loop). A descent
   also reads each face's gradient and float64 slope from a per-face pass on CUDA instead of
-  taking the length every step (counting walk 2.12 -> 1.36 ms at 4 096 paths).
+  taking the length every step (counting walk 2.12 -> 1.36 ms at 4 096 paths), and its normal
+  (1.33 -> 0.96 ms), forming the gradient itself so no `float64` gradient table is stored.
+- **A relaxation to a fixpoint takes block rounds only over spatial patches** (2026-11-08): a
+  block re-relaxing its own nodes a few rounds a pass (`wp.tile_sum` the barrier) carries a value
+  across the block only where the block is a patch. Over mesh indices it lost (the icosphere
+  numbers its midpoints by edge: 1.3-2.9x); over a Hilbert order (`_common.hilbert_point_order`)
+  the potpourri3d shortest-edge tree took 0.34-0.65x from `sphere_med` to `dragon` at 8 rounds
+  (4 best small, 16 on `dragon`), byte-identical, since any schedule reaches the same least sums.
 - **A thread a row writing its segment in turn** (2026-11-07): a warp's stores sit a segment
   apart, which costs nothing while the output fits in L2 and is the whole kernel past it:
   `k_harmonic`'s sandwich (49 triplets a row) took 0.068 ms on `sphere_med` and 1.49 ms on
@@ -1114,11 +1121,12 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   buffer read once would do; the one-component `split` pays `submesh_from_face_indices`' memset
   for an identity face order. Each is a few percent of the call at the benchmark sizes; price
   before acting.
-- **`geodesic_walk` leftovers (2026-11-08):** `geodesic_path(method="potpourri3d")`'s
-  shortest-edge tree relaxes in 2.4 ms of passes on CUDA at one path (`sphere_med`). Any schedule
-  reaches the same distances; a block re-relaxing its own vertices lost (the icosphere's numbering
-  is not local: 3.2-7.0 ms), so what is left is a frontier relaxation or a locality reorder. A
-  descent's counting walk is still latency-bound at about 2.3 us a point (one path, 0.55 ms).
+- **Hilbert-ordered blocks for `graph.shortest_path_envelope`:** its declined block-rounds pass
+  (1.2-1.7x on icospheres and a scrambled `dragon`, 0.5-0.58x on scans) ran blocks over node
+  indices, which are no patches there. `geodesic_walk`'s shortest-edge tree took the same rounds
+  over a Hilbert order (`_common.hilbert_point_order`) and won at every size (0.34-0.65x, §14).
+  The envelope takes a CSR without positions, so a caller with geometry (`geodesic_path`'s
+  completion) would pass the order in; untried.
 - **`graph` sweep leftovers (2026-11-08):** `shortest_path_envelope` on CUDA is still a pass a
   graph hop (668 on `dragon`, 2.3 s on `lucy` from one source); a near-far or delta-stepping
   frontier is the open algorithm (a block-local fixpoint was priced and declined at the kernel).
