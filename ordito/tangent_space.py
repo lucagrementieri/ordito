@@ -321,18 +321,20 @@ def halfedge_tangent_angles(
 
     if face_angles is None:
         # The ring walk forms each corner angle itself, as ``triangles.face_angles`` would.
-        _launch.launch(
+        _launch.launch_tiled(
             kernel_tangent_space.halfedge_tangent_angles_from_positions,
-            dim=n,
+            dim=-(-n // kernel_tangent_space.TANGENT_ROWS_PER_BLOCK),
             inputs=[vertices, faces, ring_offsets, ring_halfedges, is_boundary, angles],
             device=device,
+            block_dim=kernel_tangent_space.TANGENT_ROWS_PER_BLOCK,
         )
         return angles
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_tangent_space.halfedge_tangent_angles,
-        dim=n,
+        dim=-(-n // kernel_tangent_space.TANGENT_ROWS_PER_BLOCK),
         inputs=[face_angles, ring_offsets, ring_halfedges, is_boundary, angles],
         device=device,
+        block_dim=kernel_tangent_space.TANGENT_ROWS_PER_BLOCK,
     )
     return angles
 

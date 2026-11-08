@@ -1123,11 +1123,10 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   lucy (2026-11-06), the union-find the rest. Not re-examined in the adjacency sweep, which took
   the union-find side only; the lower-degree owner is a hub-balancing choice to keep.
 - **Hub rings outside `vertex_one_rings` (2026-11-08 halfedge sweep):**
-  `tangent_space.halfedge_tangent_angles_from_positions` walks each ring in one thread summing
-  `float64` corner angles, ~1 760x `sphere_med`'s kernel on `fan_hub` (the hub alone); the rings
-  now arrive ordered, so a long row could take a block's segmented scan
-  (`kernels/halfedge.rank_long_rings` is the listing pattern). Price the other per-ring walks
-  over the same rows (`tangent_space`, `heat`'s vector rows, `geodesic_walk`) on `fan_hub` first.
+  `tangent_space.vertex_tangent_frames_gathered` walks each ring in one thread (total angle, then
+  the fan anchor's trigonometry), ~2 850x `sphere_med`'s kernel on `fan_hub`. The tangent angles
+  took the deferral (`kernels/tangent_space.tangent_angle_rows`: a long ring's block, chunked
+  `float64` sums); the frames' walk can take the same shape.
 - **`rank_long_rings`' floor:** each long ring's block scans every halfedge for its rulers (one
   SM's bandwidth, a third of the ranking on `fan_hub`). A pairing pass that already reads every
   halfedge with the degrees known (the bucketed path) could append the rulers instead; price the
