@@ -980,6 +980,13 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   from 1 000 unconverged rounds to 18, 266 -> 31 ms ("Multigrid on a hub").
   A sparse Cholesky ordering leaves long rows out of the nested dissection for a root eliminated
   last ("Cholesky ordering with dense rows").
+  **A latency-bound thread-a-row pass with no readback to carry a flag takes its long rows as a
+  warp** (2026-11-09, `kernels/smoothing.warp_long_operator_row`): one ballot names the warp's
+  long rows, short rows stay their thread's (bit-identical, the CPU's ballot empty) and the warp
+  walks each long one. The explicit smoothing passes: `fan_hub` 7.0 -> 0.85 ms a pass, ordinary
+  meshes at par (5.6 us a pass on `sphere_small`), where the block deferral cost them 1.25x
+  device time a pass (a barrier in a 5 us launch) for 0.15 ms on the hub. Four interleaved sums
+  a lane lost 1.34x on the hub.
 - **Solvers:** a single-level polynomial preconditioner wins on long solves; a Chebyshev multigrid smoother loses (no single `(degree, interval)` is robust). A small synthetic system can mislead.
 - **Refuted, do not re-propose:** a single-block BFS drain, a one-block hole-fill DP and merged-level blocked interval DPs (the grid must stay full); voxel aggregation for multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches.
 - **Producer-consumer fusion:** always fuse consecutive same-`dim` launches where the consumer reads the producer only at its own index; every pair measured was faster. Price the fused region, not the call containing it, and cross-check kernel and allocation counts. Also fold a map into its consumer, merge two launches of one kernel into a wider one, and walk-and-reduce neighbour lists in one thread per query. A fusion that changes a slot or box index needs a debug-mode run. Inline single-caller helpers it leaves behind; fold-on-read loses on dependent chases.
@@ -1138,12 +1145,13 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   Open: a separate long-ring kernel launched only when the caller knows a long ring exists (the
   count `vertex_one_rings` already reads back, carried with the rings), or a frame walk whose
   per-lane and block forms are one code path.
-- **Hub rows in the explicit smoothing steps** (2026-11-08): the kernels reading
-  `kernels/laplacian.operator_row` a thread a row (explicit `filter_laplacian`, `filter_taubin`
-  and their siblings) walk `fan_hub`'s hub row in one thread: 88 / 82 ms against 0.22 / 0.20 ms
-  on `sphere_med`. `implicit_laplacian_step_long_rows` is the model (`operator_row_entries`, a
-  long-row flag read back with a value the call already reads, so ordinary meshes keep the
-  thread-a-row kernel); the explicit passes have no readback to carry the flag.
+- **Hub rows in the operator builders** (2026-11-09): `kernels/laplacian.laplacian_rows` writes
+  `fan_hub`'s hub row from one thread, 6.3 ms of a uniform-Laplacian build (40 % of
+  `filter_neighborhood_average` there once the passes take the warp form). The warp form
+  (`kernels/smoothing.warp_long_operator_row`) needs the row's sum broadcast to every lane, a
+  `float32` and `float64` shuffle native `kernels/reduce` lacks, and `csr_row_long` from
+  `kernels/linalg` without an import cycle. The explicit passes' own warp walk stays at
+  ~0.4 ms a hub (32 lanes over 41 k dependent loads).
 - **A CG round is two launches at the small-launch floor** (2026-11-08): `cg_matvec_dots` and
   `cg_update` (5.4 + 6.0 us at 2.5 k rows, each ending in a last-block fold) and the Chebyshev
   steps are 80-90 % of device time in `heat_geodesic` and `log_map` from `sphere_small` to
