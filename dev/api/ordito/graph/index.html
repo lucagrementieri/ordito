@@ -6438,93 +6438,83 @@ deduplicate with <a class="autorefs autorefs-internal" title="edges_unique" href
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/graph.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 22</span>
-<span class="normal"> 23</span>
-<span class="normal"> 24</span>
-<span class="normal"> 25</span>
-<span class="normal"> 26</span>
-<span class="normal"> 27</span>
-<span class="normal"> 28</span>
-<span class="normal"> 29</span>
-<span class="normal"> 30</span>
-<span class="normal"> 31</span>
-<span class="normal"> 32</span>
-<span class="normal"> 33</span>
-<span class="normal"> 34</span>
-<span class="normal"> 35</span>
-<span class="normal"> 36</span>
-<span class="normal"> 37</span>
-<span class="normal"> 38</span>
-<span class="normal"> 39</span>
-<span class="normal"> 40</span>
-<span class="normal"> 41</span>
-<span class="normal"> 42</span>
-<span class="normal"> 43</span>
-<span class="normal"> 44</span>
-<span class="normal"> 45</span>
-<span class="normal"> 46</span>
-<span class="normal"> 47</span>
-<span class="normal"> 48</span>
-<span class="normal"> 49</span>
-<span class="normal"> 50</span>
-<span class="normal"> 51</span>
-<span class="normal"> 52</span>
-<span class="normal"> 53</span>
-<span class="normal"> 54</span>
-<span class="normal"> 55</span>
-<span class="normal"> 56</span>
-<span class="normal"> 57</span>
-<span class="normal"> 58</span>
-<span class="normal"> 59</span>
-<span class="normal"> 60</span>
-<span class="normal"> 61</span>
-<span class="normal"> 62</span>
-<span class="normal"> 63</span>
-<span class="normal"> 64</span>
-<span class="normal"> 65</span>
-<span class="normal"> 66</span>
-<span class="normal"> 67</span>
-<span class="normal"> 68</span>
-<span class="normal"> 69</span>
-<span class="normal"> 70</span>
-<span class="normal"> 71</span>
-<span class="normal"> 72</span>
-<span class="normal"> 73</span>
-<span class="normal"> 74</span>
-<span class="normal"> 75</span>
-<span class="normal"> 76</span>
-<span class="normal"> 77</span>
-<span class="normal"> 78</span>
-<span class="normal"> 79</span>
-<span class="normal"> 80</span>
-<span class="normal"> 81</span>
-<span class="normal"> 82</span>
-<span class="normal"> 83</span>
-<span class="normal"> 84</span>
-<span class="normal"> 85</span>
-<span class="normal"> 86</span>
-<span class="normal"> 87</span>
-<span class="normal"> 88</span>
-<span class="normal"> 89</span>
-<span class="normal"> 90</span>
-<span class="normal"> 91</span>
-<span class="normal"> 92</span>
-<span class="normal"> 93</span>
-<span class="normal"> 94</span>
-<span class="normal"> 95</span>
-<span class="normal"> 96</span>
-<span class="normal"> 97</span>
-<span class="normal"> 98</span>
-<span class="normal"> 99</span>
-<span class="normal">100</span>
-<span class="normal">101</span>
-<span class="normal">102</span>
-<span class="normal">103</span>
-<span class="normal">104</span>
-<span class="normal">105</span>
-<span class="normal">106</span>
-<span class="normal">107</span>
-<span class="normal">108</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edges_to_csr</span><span class="p">(</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">22</span>
+<span class="normal">23</span>
+<span class="normal">24</span>
+<span class="normal">25</span>
+<span class="normal">26</span>
+<span class="normal">27</span>
+<span class="normal">28</span>
+<span class="normal">29</span>
+<span class="normal">30</span>
+<span class="normal">31</span>
+<span class="normal">32</span>
+<span class="normal">33</span>
+<span class="normal">34</span>
+<span class="normal">35</span>
+<span class="normal">36</span>
+<span class="normal">37</span>
+<span class="normal">38</span>
+<span class="normal">39</span>
+<span class="normal">40</span>
+<span class="normal">41</span>
+<span class="normal">42</span>
+<span class="normal">43</span>
+<span class="normal">44</span>
+<span class="normal">45</span>
+<span class="normal">46</span>
+<span class="normal">47</span>
+<span class="normal">48</span>
+<span class="normal">49</span>
+<span class="normal">50</span>
+<span class="normal">51</span>
+<span class="normal">52</span>
+<span class="normal">53</span>
+<span class="normal">54</span>
+<span class="normal">55</span>
+<span class="normal">56</span>
+<span class="normal">57</span>
+<span class="normal">58</span>
+<span class="normal">59</span>
+<span class="normal">60</span>
+<span class="normal">61</span>
+<span class="normal">62</span>
+<span class="normal">63</span>
+<span class="normal">64</span>
+<span class="normal">65</span>
+<span class="normal">66</span>
+<span class="normal">67</span>
+<span class="normal">68</span>
+<span class="normal">69</span>
+<span class="normal">70</span>
+<span class="normal">71</span>
+<span class="normal">72</span>
+<span class="normal">73</span>
+<span class="normal">74</span>
+<span class="normal">75</span>
+<span class="normal">76</span>
+<span class="normal">77</span>
+<span class="normal">78</span>
+<span class="normal">79</span>
+<span class="normal">80</span>
+<span class="normal">81</span>
+<span class="normal">82</span>
+<span class="normal">83</span>
+<span class="normal">84</span>
+<span class="normal">85</span>
+<span class="normal">86</span>
+<span class="normal">87</span>
+<span class="normal">88</span>
+<span class="normal">89</span>
+<span class="normal">90</span>
+<span class="normal">91</span>
+<span class="normal">92</span>
+<span class="normal">93</span>
+<span class="normal">94</span>
+<span class="normal">95</span>
+<span class="normal">96</span>
+<span class="normal">97</span>
+<span class="normal">98</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edges_to_csr</span><span class="p">(</span>
     <span class="n">node_count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">weights</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -6587,29 +6577,19 @@ deduplicate with <a class="autorefs autorefs-internal" title="edges_unique" href
         <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">"weights must have one entry per edge, got </span><span class="si">{</span><span class="n">weights</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2"> for </span><span class="si">{</span><span class="n">m</span><span class="si">}</span><span class="s2"> edges"</span><span class="p">)</span>
 
     <span class="n">n_entries</span> <span class="o">=</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">m</span>
-    <span class="c1"># The edge kernel writes each directed entry's key straight into the sort buffers, so no</span>
-    <span class="c1"># ``rows`` / ``cols`` triplet table is written only to be packed. One launch either way: the</span>
-    <span class="c1"># weighted form emits the keys and the two duplicated values together, and the unweighted</span>
-    <span class="c1"># form's values are a fill rather than a launch at all.</span>
+    <span class="c1"># The edge kernel writes each directed entry's key straight into the sort buffers, and both of</span>
+    <span class="c1"># its values, so no ``rows`` / ``cols`` triplet table is written only to be packed and the unit</span>
+    <span class="c1"># weights take no fill: one launch, weighted or not.</span>
     <span class="n">keys</span><span class="p">,</span> <span class="n">order</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_key_buffers</span><span class="p">(</span><span class="n">n_entries</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
-    <span class="k">if</span> <span class="n">weights</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="n">data</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">ones</span><span class="p">(</span><span class="n">n_entries</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">m</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-                <span class="n">kernel_graph</span><span class="o">.</span><span class="n">edges_to_adjacency_keys</span><span class="p">,</span>
-                <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
-                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">node_count</span><span class="p">),</span> <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">],</span>
-                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-            <span class="p">)</span>
-    <span class="k">else</span><span class="p">:</span>
-        <span class="n">data</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_entries</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-        <span class="k">if</span> <span class="n">m</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
-            <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-                <span class="n">kernel_graph</span><span class="o">.</span><span class="n">edges_to_adjacency_keys_weighted</span><span class="p">,</span>
-                <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
-                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="p">,</span> <span class="n">weights</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">node_count</span><span class="p">),</span> <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">data</span><span class="p">],</span>
-                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-            <span class="p">)</span>
+    <span class="n">data</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_entries</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">m</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_graph</span><span class="o">.</span><span class="n">edges_to_adjacency_keys</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="p">,</span> <span class="n">weights</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">node_count</span><span class="p">)],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">data</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
     <span class="k">return</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">csr_from_coo_keys</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">node_count</span><span class="p">,</span> <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">,</span> <span class="n">data</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
@@ -6882,7 +6862,17 @@ same structure for a fraction of the work on a bounded-degree graph.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/graph.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">111</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">101</span>
+<span class="normal">102</span>
+<span class="normal">103</span>
+<span class="normal">104</span>
+<span class="normal">105</span>
+<span class="normal">106</span>
+<span class="normal">107</span>
+<span class="normal">108</span>
+<span class="normal">109</span>
+<span class="normal">110</span>
+<span class="normal">111</span>
 <span class="normal">112</span>
 <span class="normal">113</span>
 <span class="normal">114</span>
@@ -7027,9 +7017,7 @@ same structure for a fraction of the work on a bounded-degree graph.</p>
 <span class="normal">253</span>
 <span class="normal">254</span>
 <span class="normal">255</span>
-<span class="normal">256</span>
-<span class="normal">257</span>
-<span class="normal">258</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edges_to_neighbor_lists</span><span class="p">(</span>
+<span class="normal">256</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edges_to_neighbor_lists</span><span class="p">(</span>
     <span class="n">node_count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="n">edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">validate</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span> <span class="n">sort_rows</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7152,31 +7140,39 @@ same structure for a fraction of the work on a bounded-degree graph.</p>
             <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">node_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
         <span class="p">)</span>
 
+    <span class="c1"># The degrees are counted in the offsets' own buffer, behind two zeros, and scanned there in</span>
+    <span class="c1"># place, so the fill's atomics advance each row's start to its end and the buffer ends as the</span>
+    <span class="c1"># offsets (``kernels/scatter.claim_row_slot``). The rows share its allocation (a CSR pair is</span>
+    <span class="c1"># held and dropped together); only the counts are zeroed, as the rows are written whole.</span>
+    <span class="n">buffer</span><span class="p">,</span> <span class="n">neighbors</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="p">(</span><span class="n">node_count</span> <span class="o">+</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">m</span><span class="p">),</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">zero_</span><span class="p">(</span><span class="n">buffer</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">validate</span><span class="p">:</span>
-        <span class="c1"># The count skips an out-of-range row and flags it in one slot past the degrees, so the</span>
-        <span class="c1"># check is this launch's and one 4-byte read, and the fill below never sees such a row.</span>
-        <span class="n">counts_and_flag</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">node_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="c1"># The count skips an out-of-range row and flags it in entry 1, which must read zero for the</span>
+        <span class="c1"># fill anyway, so the check is this launch's and one 4-byte read, and the fill below never</span>
+        <span class="c1"># sees such a row.</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_graph</span><span class="o">.</span><span class="n">count_edge_endpoints_checked</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="p">,</span> <span class="n">counts_and_flag</span><span class="p">],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="p">],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">node_count</span> <span class="o">+</span> <span class="mi">2</span><span class="p">)],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
         <span class="c1"># Decides whether to raise before the fill indexes by the raw endpoints.</span>
-        <span class="k">if</span> <span class="n">read_scalar</span><span class="p">(</span><span class="n">counts_and_flag</span><span class="p">,</span> <span class="n">node_count</span><span class="p">)</span> <span class="o">!=</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">read_scalar</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="mi">1</span><span class="p">)</span> <span class="o">!=</span> <span class="mi">0</span><span class="p">:</span>
             <span class="n">_raise_edge_range</span><span class="p">(</span><span class="n">edges</span><span class="p">,</span> <span class="n">node_count</span><span class="p">)</span>
-        <span class="n">degree</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">counts_and_flag</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">node_count</span><span class="p">)</span>
     <span class="k">else</span><span class="p">:</span>
         <span class="c1"># An ``(m, 2)`` edge buffer flattened *is* the entry -&gt; node map, so one histogram over it</span>
         <span class="c1"># is every node's degree. ``count_occurrences``' own docstring names this as what it is for.</span>
-        <span class="n">degree</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_scatter</span><span class="o">.</span><span class="n">count_occurrences</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="mi">2</span> <span class="o">*</span> <span class="n">m</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="o">.</span><span class="n">flatten</span><span class="p">(),</span> <span class="n">degree</span><span class="p">],</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="o">.</span><span class="n">flatten</span><span class="p">()],</span>
+            <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="n">node_count</span> <span class="o">+</span> <span class="mi">2</span><span class="p">)],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
-    <span class="k">return</span> <span class="n">edges_to_neighbor_lists_from_counts</span><span class="p">(</span><span class="n">edges</span><span class="p">,</span> <span class="n">degree</span><span class="p">,</span> <span class="n">sort_rows</span><span class="o">=</span><span class="n">sort_rows</span><span class="p">)</span>
+    <span class="n">counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="n">node_count</span> <span class="o">+</span> <span class="mi">2</span><span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">counts</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_fill_neighbor_lists</span><span class="p">(</span><span class="n">edges</span><span class="p">,</span> <span class="n">node_count</span><span class="p">,</span> <span class="n">buffer</span><span class="p">,</span> <span class="n">neighbors</span><span class="p">,</span> <span class="n">sort_rows</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -7204,9 +7200,7 @@ same structure for a fraction of the work on a bounded-degree graph.</p>
         <p><a class="autorefs autorefs-internal" title="edges_to_neighbor_lists" href="./#ordito.graph.edges_to_neighbor_lists"><code>edges_to_neighbor_lists</code></a> from degrees already counted.</p>
 <p>The second half of that function, for a caller whose own kernel counted every node's degree in
 a pass it makes anyway: the degree histogram is the one launch this skips. <code>counts</code> is
-trusted, not checked -- it must be exactly each node's number of entries in <code>edges</code> -- and it
-is <strong>consumed</strong>: the fill counts its entries down as a per-row cursor, so it holds zeros
-afterwards.</p>
+trusted, not checked: it must be exactly each node's number of entries in <code>edges</code>.</p>
 
 
 <p><span class="doc-section-title">Parameters:</span></p>
@@ -7253,7 +7247,7 @@ for <code>validate=False</code>.</p>
             <td>
               <div class="doc-md-description">
                 <p><code>(n_nodes,)</code> <code>int32</code> number of times each node appears in <code>edges</code>, on
-<code>edges.device</code>. Overwritten.</p>
+<code>edges.device</code>. Not modified.</p>
               </div>
             </td>
             <td>
@@ -7367,7 +7361,9 @@ ascending in one extra launch, which makes the row order reproducible.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/graph.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">261</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">259</span>
+<span class="normal">260</span>
+<span class="normal">261</span>
 <span class="normal">262</span>
 <span class="normal">263</span>
 <span class="normal">264</span>
@@ -7438,20 +7434,7 @@ ascending in one extra launch, which makes the row order reproducible.</p>
 <span class="normal">329</span>
 <span class="normal">330</span>
 <span class="normal">331</span>
-<span class="normal">332</span>
-<span class="normal">333</span>
-<span class="normal">334</span>
-<span class="normal">335</span>
-<span class="normal">336</span>
-<span class="normal">337</span>
-<span class="normal">338</span>
-<span class="normal">339</span>
-<span class="normal">340</span>
-<span class="normal">341</span>
-<span class="normal">342</span>
-<span class="normal">343</span>
-<span class="normal">344</span>
-<span class="normal">345</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edges_to_neighbor_lists_from_counts</span><span class="p">(</span>
+<span class="normal">332</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">edges_to_neighbor_lists_from_counts</span><span class="p">(</span>
     <span class="n">edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">counts</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="o">*</span><span class="p">,</span> <span class="n">sort_rows</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -7459,9 +7442,7 @@ ascending in one extra launch, which makes the row order reproducible.</p>
 
 <span class="sd">    The second half of that function, for a caller whose own kernel counted every node's degree in</span>
 <span class="sd">    a pass it makes anyway: the degree histogram is the one launch this skips. ``counts`` is</span>
-<span class="sd">    trusted, not checked -- it must be exactly each node's number of entries in ``edges`` -- and it</span>
-<span class="sd">    is **consumed**: the fill counts its entries down as a per-row cursor, so it holds zeros</span>
-<span class="sd">    afterwards.</span>
+<span class="sd">    trusted, not checked: it must be exactly each node's number of entries in ``edges``.</span>
 
 <span class="sd">    Parameters</span>
 <span class="sd">    ----------</span>
@@ -7471,7 +7452,7 @@ ascending in one extra launch, which makes the row order reproducible.</p>
 <span class="sd">        for ``validate=False``.</span>
 <span class="sd">    counts</span>
 <span class="sd">        ``(n_nodes,)`` ``int32`` number of times each node appears in ``edges``, on</span>
-<span class="sd">        ``edges.device``. Overwritten.</span>
+<span class="sd">        ``edges.device``. Not modified.</span>
 <span class="sd">    sort_rows</span>
 <span class="sd">        As in [`edges_to_neighbor_lists`][ordito.graph.edges_to_neighbor_lists]: sort each row</span>
 <span class="sd">        ascending in one extra launch, which makes the row order reproducible.</span>
@@ -7513,29 +7494,20 @@ ascending in one extra launch, which makes the row order reproducible.</p>
     <span class="n">device</span> <span class="o">=</span> <span class="n">edges</span><span class="o">.</span><span class="n">device</span>
     <span class="n">m</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">edges</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
     <span class="n">node_count</span> <span class="o">=</span> <span class="n">counts</span><span class="o">.</span><span class="n">size</span>
-    <span class="n">offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">node_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
-    <span class="n">neighbors</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">m</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">m</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">node_count</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
-        <span class="k">return</span> <span class="n">neighbors</span><span class="p">,</span> <span class="n">offsets</span>
-    <span class="c1"># Deliberately NOT od.array.counts_to_offsets: that helper always reads the total back, and</span>
-    <span class="c1"># this function never needs it (it is 2 * m, known on the host). The same decline</span>
-    <span class="c1"># ``adjacency.vertex_face_adjacency`` and ``halfedge.vertex_one_rings`` already write down.</span>
-    <span class="n">tail</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">offsets</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">node_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">tail</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-    <span class="c1"># ``counts`` has done its job and becomes the fill's write cursor, counting each row's free</span>
-    <span class="c1"># slots down to zero -- which saves an allocation and a fill, and is why the scatter takes both</span>
-    <span class="c1"># it and ``offsets``.</span>
-    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-        <span class="n">kernel_graph</span><span class="o">.</span><span class="n">scatter_neighbor_lists</span><span class="p">,</span>
-        <span class="n">dim</span><span class="o">=</span><span class="n">m</span><span class="p">,</span>
-        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">counts</span><span class="p">,</span> <span class="n">neighbors</span><span class="p">],</span>
-        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-    <span class="p">)</span>
-    <span class="k">if</span> <span class="n">sort_rows</span><span class="p">:</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_array</span><span class="o">.</span><span class="n">sort_segments</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="n">node_count</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">offsets</span><span class="p">,</span> <span class="n">neighbors</span><span class="p">],</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
+        <span class="k">return</span> <span class="p">(</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">m</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">node_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
         <span class="p">)</span>
-    <span class="k">return</span> <span class="n">neighbors</span><span class="p">,</span> <span class="n">offsets</span>
+    <span class="c1"># The offsets' buffer as ``edges_to_neighbor_lists`` leaves it before its fill, one entry</span>
+    <span class="c1"># shorter: the exclusive scan of ``counts`` behind entry 0 puts each row's start where the</span>
+    <span class="c1"># fill's claims read it, row 0's zero included, and the fill writes entry 0 itself, so nothing</span>
+    <span class="c1"># is zeroed. Deliberately NOT od.array.counts_to_offsets: that helper always reads the total</span>
+    <span class="c1"># back, and this function never needs it (it is 2 * m, known on the host). The same decline</span>
+    <span class="c1"># ``adjacency.vertex_face_adjacency`` and ``halfedge.vertex_one_rings`` already write down.</span>
+    <span class="n">buffer</span><span class="p">,</span> <span class="n">neighbors</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="p">(</span><span class="n">node_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">2</span> <span class="o">*</span> <span class="n">m</span><span class="p">),</span> <span class="n">device</span><span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">buffer</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="n">node_count</span> <span class="o">+</span> <span class="mi">1</span><span class="p">),</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">_fill_neighbor_lists</span><span class="p">(</span><span class="n">edges</span><span class="p">,</span> <span class="n">node_count</span><span class="p">,</span> <span class="n">buffer</span><span class="p">,</span> <span class="n">neighbors</span><span class="p">,</span> <span class="n">sort_rows</span><span class="p">)</span>
 </code></pre></div></td></tr></table></div>
             </details>
     </div>
@@ -7675,23 +7647,7 @@ receive distinct labels, so a matrix with no entries gives <code>labels[i] == i<
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/graph.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">348</span>
-<span class="normal">349</span>
-<span class="normal">350</span>
-<span class="normal">351</span>
-<span class="normal">352</span>
-<span class="normal">353</span>
-<span class="normal">354</span>
-<span class="normal">355</span>
-<span class="normal">356</span>
-<span class="normal">357</span>
-<span class="normal">358</span>
-<span class="normal">359</span>
-<span class="normal">360</span>
-<span class="normal">361</span>
-<span class="normal">362</span>
-<span class="normal">363</span>
-<span class="normal">364</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">364</span>
 <span class="normal">365</span>
 <span class="normal">366</span>
 <span class="normal">367</span>
@@ -7754,7 +7710,23 @@ receive distinct labels, so a matrix with no entries gives <code>labels[i] == i<
 <span class="normal">424</span>
 <span class="normal">425</span>
 <span class="normal">426</span>
-<span class="normal">427</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">connected_component_labels</span><span class="p">(</span><span class="n">adjacency</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Scalar</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
+<span class="normal">427</span>
+<span class="normal">428</span>
+<span class="normal">429</span>
+<span class="normal">430</span>
+<span class="normal">431</span>
+<span class="normal">432</span>
+<span class="normal">433</span>
+<span class="normal">434</span>
+<span class="normal">435</span>
+<span class="normal">436</span>
+<span class="normal">437</span>
+<span class="normal">438</span>
+<span class="normal">439</span>
+<span class="normal">440</span>
+<span class="normal">441</span>
+<span class="normal">442</span>
+<span class="normal">443</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">connected_component_labels</span><span class="p">(</span><span class="n">adjacency</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">Scalar</span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
 <span class="sd">    Per-node connected-component labels from a sparse adjacency matrix.</span>
 
@@ -8037,23 +8009,7 @@ glibc's allocator metadata and aborts the process later, somewhere unrelated.</p
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/graph.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">430</span>
-<span class="normal">431</span>
-<span class="normal">432</span>
-<span class="normal">433</span>
-<span class="normal">434</span>
-<span class="normal">435</span>
-<span class="normal">436</span>
-<span class="normal">437</span>
-<span class="normal">438</span>
-<span class="normal">439</span>
-<span class="normal">440</span>
-<span class="normal">441</span>
-<span class="normal">442</span>
-<span class="normal">443</span>
-<span class="normal">444</span>
-<span class="normal">445</span>
-<span class="normal">446</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">446</span>
 <span class="normal">447</span>
 <span class="normal">448</span>
 <span class="normal">449</span>
@@ -8160,7 +8116,26 @@ glibc's allocator metadata and aborts the process later, somewhere unrelated.</p
 <span class="normal">550</span>
 <span class="normal">551</span>
 <span class="normal">552</span>
-<span class="normal">553</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">connected_component_labels_from_edges</span><span class="p">(</span>
+<span class="normal">553</span>
+<span class="normal">554</span>
+<span class="normal">555</span>
+<span class="normal">556</span>
+<span class="normal">557</span>
+<span class="normal">558</span>
+<span class="normal">559</span>
+<span class="normal">560</span>
+<span class="normal">561</span>
+<span class="normal">562</span>
+<span class="normal">563</span>
+<span class="normal">564</span>
+<span class="normal">565</span>
+<span class="normal">566</span>
+<span class="normal">567</span>
+<span class="normal">568</span>
+<span class="normal">569</span>
+<span class="normal">570</span>
+<span class="normal">571</span>
+<span class="normal">572</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">connected_component_labels_from_edges</span><span class="p">(</span>
     <span class="n">edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">node_count</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">validate</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8251,7 +8226,10 @@ glibc's allocator metadata and aborts the process later, somewhere unrelated.</p
             <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">edges</span><span class="p">,</span> <span class="n">parents_and_flag</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
-        <span class="c1"># Decides whether to raise.</span>
+        <span class="c1"># Decides whether to raise. Declined, a checked hook skipping the same rows and this read</span>
+        <span class="c1"># made after the flatten: 1.03-1.35x from ``sphere_small`` to scrambled ``dragon`` on</span>
+        <span class="c1"># CUDA (2026-11-08). Read here, the host waits on the short pre-hook alone and the hook</span>
+        <span class="c1"># and flatten run on while the caller issues its next work; read last, it waits on all.</span>
         <span class="k">if</span> <span class="n">read_scalar</span><span class="p">(</span><span class="n">parents_and_flag</span><span class="p">,</span> <span class="n">node_count</span><span class="p">)</span> <span class="o">!=</span> <span class="n">node_count</span><span class="p">:</span>
             <span class="n">_raise_edge_range</span><span class="p">(</span><span class="n">edges</span><span class="p">,</span> <span class="n">node_count</span><span class="p">)</span>
         <span class="n">parents</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">view</span><span class="p">(</span><span class="n">parents_and_flag</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">node_count</span><span class="p">)</span>
@@ -8542,26 +8520,7 @@ returned <code>parity</code>. This is the same best-effort contract a flood fill
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/graph.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">556</span>
-<span class="normal">557</span>
-<span class="normal">558</span>
-<span class="normal">559</span>
-<span class="normal">560</span>
-<span class="normal">561</span>
-<span class="normal">562</span>
-<span class="normal">563</span>
-<span class="normal">564</span>
-<span class="normal">565</span>
-<span class="normal">566</span>
-<span class="normal">567</span>
-<span class="normal">568</span>
-<span class="normal">569</span>
-<span class="normal">570</span>
-<span class="normal">571</span>
-<span class="normal">572</span>
-<span class="normal">573</span>
-<span class="normal">574</span>
-<span class="normal">575</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">575</span>
 <span class="normal">576</span>
 <span class="normal">577</span>
 <span class="normal">578</span>
@@ -8693,7 +8652,28 @@ returned <code>parity</code>. This is the same best-effort contract a flood fill
 <span class="normal">704</span>
 <span class="normal">705</span>
 <span class="normal">706</span>
-<span class="normal">707</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">connected_component_parity_from_edges</span><span class="p">(</span>
+<span class="normal">707</span>
+<span class="normal">708</span>
+<span class="normal">709</span>
+<span class="normal">710</span>
+<span class="normal">711</span>
+<span class="normal">712</span>
+<span class="normal">713</span>
+<span class="normal">714</span>
+<span class="normal">715</span>
+<span class="normal">716</span>
+<span class="normal">717</span>
+<span class="normal">718</span>
+<span class="normal">719</span>
+<span class="normal">720</span>
+<span class="normal">721</span>
+<span class="normal">722</span>
+<span class="normal">723</span>
+<span class="normal">724</span>
+<span class="normal">725</span>
+<span class="normal">726</span>
+<span class="normal">727</span>
+<span class="normal">728</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">connected_component_parity_from_edges</span><span class="p">(</span>
     <span class="n">edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">signs</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">node_count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">validate</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -8804,6 +8784,8 @@ returned <code>parity</code>. This is the same best-effort contract a flood fill
 
     <span class="n">device</span> <span class="o">=</span> <span class="n">edges</span><span class="o">.</span><span class="n">device</span>
     <span class="c1"># ``ecl_flatten_parity`` writes both for every node, so neither needs an initial value.</span>
+    <span class="c1"># Declined, both carved from one allocation (``_launch.carve``): 1.02-1.04x on CUDA from</span>
+    <span class="c1"># ``sphere_small`` to ``dragon``, 0.99x on ``lucy`` (2026-11-08).</span>
     <span class="n">labels</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">parity</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="n">node_count</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
@@ -9059,28 +9041,7 @@ out-edges keeps one of them.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/graph.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">738</span>
-<span class="normal">739</span>
-<span class="normal">740</span>
-<span class="normal">741</span>
-<span class="normal">742</span>
-<span class="normal">743</span>
-<span class="normal">744</span>
-<span class="normal">745</span>
-<span class="normal">746</span>
-<span class="normal">747</span>
-<span class="normal">748</span>
-<span class="normal">749</span>
-<span class="normal">750</span>
-<span class="normal">751</span>
-<span class="normal">752</span>
-<span class="normal">753</span>
-<span class="normal">754</span>
-<span class="normal">755</span>
-<span class="normal">756</span>
-<span class="normal">757</span>
-<span class="normal">758</span>
-<span class="normal">759</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">759</span>
 <span class="normal">760</span>
 <span class="normal">761</span>
 <span class="normal">762</span>
@@ -9174,7 +9135,28 @@ out-edges keeps one of them.</p>
 <span class="normal">850</span>
 <span class="normal">851</span>
 <span class="normal">852</span>
-<span class="normal">853</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">successor_cycles</span><span class="p">(</span>
+<span class="normal">853</span>
+<span class="normal">854</span>
+<span class="normal">855</span>
+<span class="normal">856</span>
+<span class="normal">857</span>
+<span class="normal">858</span>
+<span class="normal">859</span>
+<span class="normal">860</span>
+<span class="normal">861</span>
+<span class="normal">862</span>
+<span class="normal">863</span>
+<span class="normal">864</span>
+<span class="normal">865</span>
+<span class="normal">866</span>
+<span class="normal">867</span>
+<span class="normal">868</span>
+<span class="normal">869</span>
+<span class="normal">870</span>
+<span class="normal">871</span>
+<span class="normal">872</span>
+<span class="normal">873</span>
+<span class="normal">874</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">successor_cycles</span><span class="p">(</span>
     <span class="n">edges</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">Array2dInt32</span><span class="p">,</span> <span class="n">node_count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">validate</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -9495,28 +9477,7 @@ write node <code>2 * v + s</code> out as <code>v</code>.</p>
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/graph.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">856</span>
-<span class="normal">857</span>
-<span class="normal">858</span>
-<span class="normal">859</span>
-<span class="normal">860</span>
-<span class="normal">861</span>
-<span class="normal">862</span>
-<span class="normal">863</span>
-<span class="normal">864</span>
-<span class="normal">865</span>
-<span class="normal">866</span>
-<span class="normal">867</span>
-<span class="normal">868</span>
-<span class="normal">869</span>
-<span class="normal">870</span>
-<span class="normal">871</span>
-<span class="normal">872</span>
-<span class="normal">873</span>
-<span class="normal">874</span>
-<span class="normal">875</span>
-<span class="normal">876</span>
-<span class="normal">877</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">877</span>
 <span class="normal">878</span>
 <span class="normal">879</span>
 <span class="normal">880</span>
@@ -9569,7 +9530,28 @@ write node <code>2 * v + s</code> out as <code>v</code>.</p>
 <span class="normal">927</span>
 <span class="normal">928</span>
 <span class="normal">929</span>
-<span class="normal">930</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">successor_cycles_from_table</span><span class="p">(</span>
+<span class="normal">930</span>
+<span class="normal">931</span>
+<span class="normal">932</span>
+<span class="normal">933</span>
+<span class="normal">934</span>
+<span class="normal">935</span>
+<span class="normal">936</span>
+<span class="normal">937</span>
+<span class="normal">938</span>
+<span class="normal">939</span>
+<span class="normal">940</span>
+<span class="normal">941</span>
+<span class="normal">942</span>
+<span class="normal">943</span>
+<span class="normal">944</span>
+<span class="normal">945</span>
+<span class="normal">946</span>
+<span class="normal">947</span>
+<span class="normal">948</span>
+<span class="normal">949</span>
+<span class="normal">950</span>
+<span class="normal">951</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">successor_cycles_from_table</span><span class="p">(</span>
     <span class="n">tails</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="n">next_node</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
     <span class="o">*</span><span class="p">,</span>
@@ -9822,12 +9804,14 @@ parallel and repeats until nothing improves. Shortest-path distances are unique,
 agree on the result; what differs is the cost model -- <code>O(diameter)</code> launches over the whole
 CSR here against <code>O(E log V)</code> sequential work there. The name is the result, per this
 package's naming rule, not the algorithm.</p>
-<p>One relaxation kernel per pass, so a pass is a pure function of the previous labels and the
-answer does not depend on thread interleaving. The pass count is data-dependent; on CUDA the
-whole pass loop runs as one device-side conditional graph (<code>wp.capture_while</code>), so the
-convergence check costs no host readback at all rather than the one-per-pass a naive early exit
-would need. The CPU backend, which has no conditional-graph capture, still checks with a plain
-readback per pass.</p>
+<p>The answer does not depend on thread interleaving. Uncapped, each pass relaxes the labels in
+place, reading whatever its neighbours hold; every value read is an upper bound the relaxation
+reaches anyway, so the labels fall to the same fixpoint bit for bit, in no more passes. With
+<code>max_iterations</code> each pass is a pure function of the previous labels, so a capped answer is
+exactly that many passes. The pass count is data-dependent; on CUDA the passes after the first
+run as one device-side conditional graph (<code>wp.capture_while</code>), so the convergence check costs
+one host readback, after the first pass, rather than one a pass. The CPU device runs every pass
+in one launch.</p>
 <p>For distance <em>across</em> a surface rather than along its edges -- shorter, and what "geodesic"
 usually means -- use <a class="autorefs autorefs-internal" title="heat_geodesic" href="../heat/#ordito.heat.heat_geodesic"><code>heat_geodesic</code></a>. The edge-graph distance is
 an upper bound on it.</p>
@@ -9882,28 +9866,7 @@ grid's diagonals run corner to corner, so the far corner is at distance <code>sq
 
             <details class="mkdocstrings-source">
               <summary>Source code in <code>ordito/graph.py</code></summary>
-              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1124</span>
-<span class="normal">1125</span>
-<span class="normal">1126</span>
-<span class="normal">1127</span>
-<span class="normal">1128</span>
-<span class="normal">1129</span>
-<span class="normal">1130</span>
-<span class="normal">1131</span>
-<span class="normal">1132</span>
-<span class="normal">1133</span>
-<span class="normal">1134</span>
-<span class="normal">1135</span>
-<span class="normal">1136</span>
-<span class="normal">1137</span>
-<span class="normal">1138</span>
-<span class="normal">1139</span>
-<span class="normal">1140</span>
-<span class="normal">1141</span>
-<span class="normal">1142</span>
-<span class="normal">1143</span>
-<span class="normal">1144</span>
-<span class="normal">1145</span>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">1145</span>
 <span class="normal">1146</span>
 <span class="normal">1147</span>
 <span class="normal">1148</span>
@@ -10077,7 +10040,47 @@ grid's diagonals run corner to corner, so the far corner is at distance <code>sq
 <span class="normal">1316</span>
 <span class="normal">1317</span>
 <span class="normal">1318</span>
-<span class="normal">1319</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shortest_path_envelope</span><span class="p">(</span>
+<span class="normal">1319</span>
+<span class="normal">1320</span>
+<span class="normal">1321</span>
+<span class="normal">1322</span>
+<span class="normal">1323</span>
+<span class="normal">1324</span>
+<span class="normal">1325</span>
+<span class="normal">1326</span>
+<span class="normal">1327</span>
+<span class="normal">1328</span>
+<span class="normal">1329</span>
+<span class="normal">1330</span>
+<span class="normal">1331</span>
+<span class="normal">1332</span>
+<span class="normal">1333</span>
+<span class="normal">1334</span>
+<span class="normal">1335</span>
+<span class="normal">1336</span>
+<span class="normal">1337</span>
+<span class="normal">1338</span>
+<span class="normal">1339</span>
+<span class="normal">1340</span>
+<span class="normal">1341</span>
+<span class="normal">1342</span>
+<span class="normal">1343</span>
+<span class="normal">1344</span>
+<span class="normal">1345</span>
+<span class="normal">1346</span>
+<span class="normal">1347</span>
+<span class="normal">1348</span>
+<span class="normal">1349</span>
+<span class="normal">1350</span>
+<span class="normal">1351</span>
+<span class="normal">1352</span>
+<span class="normal">1353</span>
+<span class="normal">1354</span>
+<span class="normal">1355</span>
+<span class="normal">1356</span>
+<span class="normal">1357</span>
+<span class="normal">1358</span>
+<span class="normal">1359</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">shortest_path_envelope</span><span class="p">(</span>
     <span class="n">adjacency</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">BsrMatrix</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">values</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">max_iterations</span><span class="p">:</span> <span class="nb">int</span> <span class="o">=</span> <span class="mi">0</span>
 <span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]:</span>
 <span class="w">    </span><span class="sd">"""</span>
@@ -10141,12 +10144,14 @@ grid's diagonals run corner to corner, so the far corner is at distance <code>sq
 <span class="sd">    CSR here against ``O(E log V)`` sequential work there. The name is the result, per this</span>
 <span class="sd">    package's naming rule, not the algorithm.</span>
 
-<span class="sd">    One relaxation kernel per pass, so a pass is a pure function of the previous labels and the</span>
-<span class="sd">    answer does not depend on thread interleaving. The pass count is data-dependent; on CUDA the</span>
-<span class="sd">    whole pass loop runs as one device-side conditional graph (``wp.capture_while``), so the</span>
-<span class="sd">    convergence check costs no host readback at all rather than the one-per-pass a naive early exit</span>
-<span class="sd">    would need. The CPU backend, which has no conditional-graph capture, still checks with a plain</span>
-<span class="sd">    readback per pass.</span>
+<span class="sd">    The answer does not depend on thread interleaving. Uncapped, each pass relaxes the labels in</span>
+<span class="sd">    place, reading whatever its neighbours hold; every value read is an upper bound the relaxation</span>
+<span class="sd">    reaches anyway, so the labels fall to the same fixpoint bit for bit, in no more passes. With</span>
+<span class="sd">    ``max_iterations`` each pass is a pure function of the previous labels, so a capped answer is</span>
+<span class="sd">    exactly that many passes. The pass count is data-dependent; on CUDA the passes after the first</span>
+<span class="sd">    run as one device-side conditional graph (``wp.capture_while``), so the convergence check costs</span>
+<span class="sd">    one host readback, after the first pass, rather than one a pass. The CPU device runs every pass</span>
+<span class="sd">    in one launch.</span>
 
 <span class="sd">    For distance *across* a surface rather than along its edges -- shorter, and what "geodesic"</span>
 <span class="sd">    usually means -- use [`heat_geodesic`][ordito.heat.heat_geodesic]. The edge-graph distance is</span>
@@ -10209,69 +10214,86 @@ grid's diagonals run corner to corner, so the far corner is at distance <code>sq
         <span class="k">return</span> <span class="n">labels</span>
 
     <span class="n">weights</span> <span class="o">=</span> <span class="n">adjacency</span><span class="o">.</span><span class="n">values</span>
-    <span class="k">if</span> <span class="n">weights</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="nb">float</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">reduce</span><span class="o">.</span><span class="n">min</span><span class="p">(</span><span class="n">weights</span><span class="p">))</span> <span class="o">&lt;</span> <span class="mf">0.0</span><span class="p">:</span>
-        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"adjacency weights must be non-negative for the envelope to converge"</span><span class="p">)</span>
-
     <span class="n">max_pass_count</span> <span class="o">=</span> <span class="n">max_iterations</span> <span class="ow">or</span> <span class="n">node_count</span>
-    <span class="n">relaxed</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="c1"># Uncapped, the passes relax ``labels`` in place: the same fixpoint bit for bit, in no more</span>
+    <span class="c1"># passes and with no copy a pass (``kernels/graph.shortest_path_envelope_pass``). A cap keeps</span>
+    <span class="c1"># the Jacobi passes, whose second buffer starts as the labels, so a capped answer is exactly</span>
+    <span class="c1"># that many passes on either device.</span>
+    <span class="n">relaxed</span> <span class="o">=</span> <span class="n">labels</span> <span class="k">if</span> <span class="n">max_iterations</span> <span class="o">==</span> <span class="mi">0</span> <span class="k">else</span> <span class="n">_launch</span><span class="o">.</span><span class="n">clone</span><span class="p">(</span><span class="n">values</span><span class="p">)</span>
+    <span class="c1"># The shared round-loop word (``kernels/array.py``) and the envelope's negative-weight flag past</span>
+    <span class="c1"># it. ``wp.capture_while`` reads the condition before the first round, so it starts non-zero.</span>
+    <span class="n">state</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="k">if</span> <span class="ow">not</span> <span class="n">device</span><span class="o">.</span><span class="n">is_cuda</span><span class="p">:</span>
         <span class="c1"># The CPU device runs a launch's threads one after another, so a launch and a progress</span>
-        <span class="c1"># readback a pass buy nothing: every pass runs in one single-thread launch, bit for bit the</span>
-        <span class="c1"># per-pass loop's labels (``kernels/graph.shortest_path_envelope_serial``).</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
-            <span class="n">kernel_graph</span><span class="o">.</span><span class="n">shortest_path_envelope_serial</span><span class="p">,</span>
-            <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
-            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">weights</span><span class="p">,</span> <span class="n">max_pass_count</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">relaxed</span><span class="p">],</span>
-            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
-        <span class="p">)</span>
+        <span class="c1"># readback a pass buy nothing: one single-thread launch, uncapped a few sweeps and then a</span>
+        <span class="c1"># Dijkstra over what still moves (``kernels/graph.shortest_path_envelope_dijkstra``),</span>
+        <span class="c1"># capped every pass, bit for bit the per-pass loop's labels</span>
+        <span class="c1"># (``kernels/graph.shortest_path_envelope_serial``).</span>
+        <span class="k">if</span> <span class="n">relaxed</span> <span class="ow">is</span> <span class="n">labels</span><span class="p">:</span>
+            <span class="n">heap</span><span class="p">,</span> <span class="n">position</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">carve</span><span class="p">(</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="p">(</span><span class="n">node_count</span><span class="p">,</span> <span class="n">node_count</span><span class="p">),</span> <span class="n">device</span><span class="p">)</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+                <span class="n">kernel_graph</span><span class="o">.</span><span class="n">shortest_path_envelope_dijkstra</span><span class="p">,</span>
+                <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span>
+                    <span class="n">offsets</span><span class="p">,</span>
+                    <span class="n">columns</span><span class="p">,</span>
+                    <span class="n">weights</span><span class="p">,</span>
+                    <span class="n">kernel_graph</span><span class="o">.</span><span class="n">ENVELOPE_CPU_SWEEPS</span><span class="p">,</span>
+                    <span class="n">labels</span><span class="p">,</span>
+                    <span class="n">heap</span><span class="p">,</span>
+                    <span class="n">position</span><span class="p">,</span>
+                    <span class="n">state</span><span class="p">,</span>
+                <span class="p">],</span>
+                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="k">else</span><span class="p">:</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+                <span class="n">kernel_graph</span><span class="o">.</span><span class="n">shortest_path_envelope_serial</span><span class="p">,</span>
+                <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">weights</span><span class="p">,</span> <span class="n">max_pass_count</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">relaxed</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span>
+                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="c1"># Decides whether to raise.</span>
+        <span class="k">if</span> <span class="n">read_scalar</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="nb">int</span><span class="p">(</span><span class="n">kernel_graph</span><span class="o">.</span><span class="n">ENVELOPE_NEGATIVE_WEIGHT</span><span class="p">))</span> <span class="o">!=</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">_raise_negative_weights</span><span class="p">()</span>
         <span class="k">return</span> <span class="n">labels</span>
-    <span class="c1"># The shared round-loop state word (``kernels/array.py``): the relaxation pass raises</span>
-    <span class="c1"># ``LOOP_PROGRESS`` and ``array.loop_advance`` publishes the condition against the pass cap.</span>
-    <span class="c1"># CUDA: the whole pass loop runs on-device via ``wp.capture_while``, so the</span>
-    <span class="c1"># only host sync in the common case is none at all -- each pass's convergence check and</span>
-    <span class="c1"># iteration cap are folded into ``array.loop_advance``, the package's shared round-closing</span>
-    <span class="c1"># kernel, which runs after the relax kernel and the label copy below.</span>
-    <span class="c1">#</span>
-    <span class="c1"># Buffer *swapping* (the CPU path's ``labels, relaxed = relaxed, labels``) cannot be captured:</span>
-    <span class="c1"># a conditional graph replays the exact pointers its body recorded the one time it was traced,</span>
-    <span class="c1"># so a Python-level rebind between iterations has no effect on the device-side loop -- every</span>
-    <span class="c1"># replayed pass would keep reading and writing the same two buffers in the same direction.</span>
-    <span class="c1"># ``wp.copy`` moves this pass's answer into ``labels`` in place instead, which is itself just a</span>
-    <span class="c1"># device memcpy and captures fine (no allocation, no host sync, unlike ``wp.utils.array_scan``).</span>
-    <span class="c1">#</span>
-    <span class="c1"># Unrolling two passes per round into each other's buffer would remove that copy and is **not</span>
-    <span class="c1"># portable** -- a ``wp.capture_while`` body is not guaranteed to replay as an indivisible unit</span>
-    <span class="c1"># across devices, so a loop whose result buffer depends on it cannot rely on it. The numbers and</span>
-    <span class="c1"># the ping-pong corollary are at ``kernels/graph.shortest_path_envelope_pass``.</span>
-    <span class="c1"># ``wp.capture_while`` reads the condition before the first round, so it starts non-zero.</span>
-    <span class="n">state</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
     <span class="n">max_pass_count_i32</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">max_pass_count</span><span class="p">)</span>
 
     <span class="k">def</span><span class="w"> </span><span class="nf">envelope_pass_body</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
-        <span class="c1"># One pass, then a copy of its result back over ``labels``. **Two passes per round, written</span>
-        <span class="c1"># into each other's buffer, would remove the copy** -- it is a whole device pass over the</span>
-        <span class="c1"># node array and a real fraction of this call -- and it is **not portable**: the two devices</span>
-        <span class="c1"># then disagree. Measured with the unrolled body, the CPU device relaxed strictly fewer</span>
+        <span class="c1"># One pass, then (Jacobi) a copy of its result back over ``labels``, then the shared</span>
+        <span class="c1"># round-closing kernel, which turns the pass's progress and the cap into the condition.</span>
+        <span class="c1"># **Two Jacobi passes per round, written into each other's buffer, would remove the copy**</span>
+        <span class="c1"># and are **not portable**: measured with that body, the CPU device relaxed strictly fewer</span>
         <span class="c1"># nodes per round than CUDA at every cap, because the recorded body did not replay as two</span>
         <span class="c1"># passes per round there. A ``wp.capture_while`` body is not guaranteed to execute as an</span>
-        <span class="c1"># indivisible unit across devices, so a loop whose *result</span>
-        <span class="c1"># buffer* depends on the body running whole cannot rely on it. A Python-level ping-pong</span>
-        <span class="c1"># cannot help either: the body is recorded once and replayed, so rebinding the names would</span>
-        <span class="c1"># only take effect at record time.</span>
+        <span class="c1"># indivisible unit across devices, so a loop whose *result buffer* depends on the body</span>
+        <span class="c1"># running whole cannot rely on it. A Python-level ping-pong cannot help either: the body is</span>
+        <span class="c1"># recorded once and replayed, so rebinding the names would only take effect at record time.</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_graph</span><span class="o">.</span><span class="n">shortest_path_envelope_pass</span><span class="p">,</span>
             <span class="n">dim</span><span class="o">=</span><span class="n">node_count</span><span class="p">,</span>
             <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">offsets</span><span class="p">,</span> <span class="n">columns</span><span class="p">,</span> <span class="n">weights</span><span class="p">,</span> <span class="n">labels</span><span class="p">,</span> <span class="n">relaxed</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span>
             <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
         <span class="p">)</span>
-        <span class="n">_launch</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">labels</span><span class="p">,</span> <span class="n">relaxed</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">relaxed</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">labels</span><span class="p">:</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">copy</span><span class="p">(</span><span class="n">labels</span><span class="p">,</span> <span class="n">relaxed</span><span class="p">)</span>
         <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
             <span class="n">kernel_array</span><span class="o">.</span><span class="n">loop_advance</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">max_pass_count_i32</span><span class="p">,</span> <span class="n">state</span><span class="p">],</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span>
         <span class="p">)</span>
 
-    <span class="n">run_device_loop</span><span class="p">(</span>
-        <span class="n">device</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">state</span><span class="p">[</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_CONDITION_VIEW</span><span class="p">]),</span> <span class="n">envelope_pass_body</span>
-    <span class="p">)</span>
+    <span class="c1"># The first pass runs uncaptured and its read is the call's one readback: it carries the</span>
+    <span class="c1"># negative-weight flag (a negative weight would keep the labels falling until the cap) and the</span>
+    <span class="c1"># loop's condition, so a field that one pass leaves unmoved records no graph at all.</span>
+    <span class="n">envelope_pass_body</span><span class="p">()</span>
+    <span class="n">_</span><span class="p">,</span> <span class="n">condition</span><span class="p">,</span> <span class="n">_</span><span class="p">,</span> <span class="n">negative</span> <span class="o">=</span> <span class="n">read_values</span><span class="p">(</span><span class="n">state</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="n">kernel_graph</span><span class="o">.</span><span class="n">ENVELOPE_STATE_SIZE</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">negative</span> <span class="o">!=</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">_raise_negative_weights</span><span class="p">()</span>
+    <span class="c1"># The rest of the passes run on-device via ``wp.capture_while``, so their convergence checks</span>
+    <span class="c1"># and the cap cost no host readback.</span>
+    <span class="k">if</span> <span class="n">condition</span> <span class="o">!=</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">run_device_loop</span><span class="p">(</span>
+            <span class="n">device</span><span class="p">,</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">state</span><span class="p">[</span><span class="n">kernel_array</span><span class="o">.</span><span class="n">LOOP_CONDITION_VIEW</span><span class="p">]),</span> <span class="n">envelope_pass_body</span>
+        <span class="p">)</span>
     <span class="k">return</span> <span class="n">labels</span>
 </code></pre></div></td></tr></table></div>
             </details>

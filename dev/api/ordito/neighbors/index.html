@@ -12634,7 +12634,7 @@ device.</p>
     <span class="n">lanes</span> <span class="o">=</span> <span class="p">(</span>
         <span class="p">[]</span>
         <span class="k">if</span> <span class="n">kernel</span> <span class="ow">is</span> <span class="ow">not</span> <span class="n">kernel_neighbors</span><span class="o">.</span><span class="n">query_hashgrid_nearest_neighbors</span>
-        <span class="k">else</span> <span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">_launch</span><span class="o">.</span><span class="n">walk_lanes</span><span class="p">(</span><span class="n">m</span><span class="p">))]</span>
+        <span class="k">else</span> <span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">_launch</span><span class="o">.</span><span class="n">walk_lanes</span><span class="p">(</span><span class="n">m</span><span class="p">,</span> <span class="n">device</span><span class="p">))]</span>
     <span class="p">)</span>
     <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
         <span class="n">kernel</span><span class="p">,</span>
