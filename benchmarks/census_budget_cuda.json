@@ -2041,7 +2041,6 @@
   "counts": {
    "launch": 3,
    "alloc": 5,
-   "memset": 1,
    "scan": 1,
    "sort": 1
   }

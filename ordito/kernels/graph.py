@@ -13,41 +13,8 @@ from ordito.kernels.scatter import claim_row_slot
 wp.set_module_options({"enable_backward": False})
 
 
-@wp.func
-def write_adjacency_keys(
-    edges: wp.array2d[wp.int32],
-    e: wp.int32,
-    n: wp.int32,
-    out_keys: wp.array[wp.uint64],
-    out_order: wp.array[wp.int32],
-) -> None:
-    # One undirected edge becomes two directed entry keys in ``array.csr_key_buffers``' layout:
-    # slot ``2e`` is ``(a, b)`` and ``2e + 1`` is ``(b, a)``, each carrying its own slot as the
-    # payload -- what ``array.coo_keys`` would write from a two-column triplet table, without the
-    # table. Both kernels below emit in exactly this layout, which is what lets the weighted one
-    # duplicate the weight into the matching slots.
-    a = edges[e, 0]
-    b = edges[e, 1]
-    base = e * 2
-    out_keys[base] = kernel_array.csr_key(a, b, n, n)
-    out_order[base] = base
-    out_keys[base + 1] = kernel_array.csr_key(b, a, n, n)
-    out_order[base + 1] = base + 1
-
-
 @wp.kernel
 def edges_to_adjacency_keys(
-    edges: wp.array2d[wp.int32],
-    n: wp.int32,
-    out_keys: wp.array[wp.uint64],
-    out_order: wp.array[wp.int32],
-) -> None:
-    # The unweighted path, whose values are a ``wp.ones`` fill rather than a launch.
-    write_adjacency_keys(edges, wp.int32(wp.tid()), n, out_keys, out_order)
-
-
-@wp.kernel
-def edges_to_adjacency_keys_weighted(
     edges: wp.array2d[wp.int32],
     weights: wp.array[wp.float32],
     n: wp.int32,
@@ -55,11 +22,26 @@ def edges_to_adjacency_keys_weighted(
     out_order: wp.array[wp.int32],
     out_values: wp.array[wp.float32],
 ) -> None:
-    # The weighted path: the keys and the two duplicated values in one launch.
+    # One undirected edge becomes two directed entry keys in ``array.csr_key_buffers``' layout:
+    # slot ``2e`` is ``(a, b)`` and ``2e + 1`` is ``(b, a)``, each carrying its own slot as the
+    # payload -- what ``array.coo_keys`` would write from a two-column triplet table, without the
+    # table -- and both slots' value, the edge's weight, or ``1`` where ``weights`` is empty. The
+    # unit values were a fill of their own before the weighted and unweighted kernels became this
+    # one: unweighted ``graph.edges_to_csr`` 0.96-0.97x on ``sphere_small`` and ``bunny``, at par
+    # from ``dragon`` on, where the sort is the call (2026-11-08).
     e = wp.int32(wp.tid())
-    write_adjacency_keys(edges, e, n, out_keys, out_order)
-    out_values[e * 2] = weights[e]
-    out_values[e * 2 + 1] = weights[e]
+    a = edges[e, 0]
+    b = edges[e, 1]
+    base = e * 2
+    out_keys[base] = kernel_array.csr_key(a, b, n, n)
+    out_order[base] = base
+    out_keys[base + 1] = kernel_array.csr_key(b, a, n, n)
+    out_order[base + 1] = base + 1
+    weight = wp.float32(1.0)
+    if weights.shape[0] > 0:
+        weight = weights[e]
+    out_values[base] = weight
+    out_values[base + 1] = weight
 
 
 @wp.func
