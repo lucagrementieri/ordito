@@ -19,6 +19,7 @@ from ordito.kernels.laplacian import (
     cotmatrix_offdiagonal,
     face_half_cotangents,
     operator_row,
+    operator_row_entries,
     point_edge_weight,
     umbrella_entry,
 )
@@ -1955,6 +1956,18 @@ def mark_single_use_edge_vertices(
         out_mask[unique_edges[e, 1]] = True
 
 
+@wp.func
+def row_abs_sum(
+    values: wp.array[wp.float32], start: wp.int32, end: wp.int32, step: wp.int32
+) -> wp.float64:
+    # ``operator_max_row_abs_sum``'s sum over a row's entries ``start``, ``start + step``, ...
+    # below ``end``: a lane's whole row at step 1, a block's lanes a long row at the block width.
+    total = wp.float64(0.0)
+    for e in range(start, end, step):
+        total += wp.abs(wp.float64(values[e]))
+    return total
+
+
 @wp.kernel
 def operator_max_row_abs_sum(
     offsets: wp.array[wp.int32],
@@ -1968,24 +1981,46 @@ def operator_max_row_abs_sum(
     # device) by ``wp.block_dim()`` (right on the CPU device too, where a block is one lane), one
     # ``block_max`` and one commit per block into ``out_max`` (zero-initialized; every row sum is
     # non-negative). An empty row reads 1:
-    # ``operator_row`` applies it as the identity.
+    # ``operator_row`` applies it as the identity. A long row (``csr_row_long``, a fan's hub) is
+    # left to the whole block after the lanes' pass, so a block without one pays one reduction;
+    # a block that holds one also raises ``out_max[1]`` to 1, which picks the fixed-point step
+    # kernel (``implicit_laplacian_step_long_rows``).
     i, t = wp.tid()
     n = offsets.shape[0] - 1
     base, remaining = block_chunk(n, i, rows_per_block)
     if remaining <= 0:
         return
     local = wp.float64(0.0)
+    found = wp.int32(0)
     for k in range(t, remaining, wp.block_dim()):
         row = base + k
+        if csr_row_long(offsets, row):
+            found = 1
+            continue
         start = offsets[row]
         end = offsets[row + 1]
-        total = wp.float64(0.0)
-        for e in range(start, end):
-            total += wp.abs(wp.float64(values[e]))
-        local = wp.max(local, wp.where(end == start, wp.float64(1.0), total))
+        local = wp.max(
+            local, wp.where(end == start, wp.float64(1.0), row_abs_sum(values, start, end, 1))
+        )
+    if block_sum(found) != 0:
+        for k in range(remaining):
+            row = base + k
+            if csr_row_long(offsets, row):
+                total = block_sum(
+                    row_abs_sum(values, offsets[row] + t, offsets[row + 1], wp.block_dim())
+                )
+                local = wp.max(local, total)
+        if t == 0:
+            wp.atomic_max(out_max, 1, wp.float64(1.0))
     block = block_max(local)
     if t == 0:
         wp.atomic_max(out_max, 0, block)
+
+
+@wp.func
+def implicit_step_value(rhs: Any, lamb: wp.float64, lx: wp.vec3d) -> wp.vec3d:
+    # One fixed-point step's value from its row's ``rhs`` entry and ``(L x)_i``.
+    return (wp.vec3d(rhs) + lamb * lx) / (wp.float64(1.0) + lamb)
 
 
 @wp.func
@@ -1999,9 +2034,7 @@ def implicit_laplacian_row(
     i: wp.int32,
 ) -> wp.vec3d:
     # Row ``i`` of one fixed-point step: ``(rhs + lamb L x) / (1 + lamb)``.
-    return (wp.vec3d(rhs[i]) + lamb * operator_row(offsets, columns, values, x, i)) / (
-        wp.float64(1.0) + lamb
-    )
+    return implicit_step_value(rhs[i], lamb, operator_row(offsets, columns, values, x, i))
 
 
 @wp.kernel
@@ -2022,9 +2055,57 @@ def implicit_laplacian_step(
     # Shares ``operator_row`` with the explicit step, empty-row convention included. ``rhs`` and
     # ``x`` are ``wp.vec3d``, or on a filter's first pass the ``float32`` input widened as it is
     # read (``_register_overloads``). The row is ``implicit_laplacian_row``, shared with
-    # ``implicit_laplacian_steps_serial``.
+    # ``implicit_laplacian_steps_serial`` and ``implicit_laplacian_step_long_rows``, the form an
+    # operator with a long row takes.
     i = wp.int32(wp.tid())
     out_x[i] = implicit_laplacian_row(offsets, columns, values, lamb, rhs, x, i)
+
+
+# Rows a block of ``implicit_laplacian_step_long_rows`` holds, a row a lane on CUDA (a
+# thread-a-row launch's occupancy); on the CPU device the block's one lane walks them all.
+IMPLICIT_ROWS_PER_BLOCK = 256
+
+
+@wp.kernel
+def implicit_laplacian_step_long_rows(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float32],
+    lamb: wp.float64,
+    rhs: wp.array[Any],
+    x: wp.array[Any],
+    out_x: wp.array[wp.vec3d],
+) -> None:
+    # ``implicit_laplacian_step`` for an operator with a long row (``linalg.csr_row_long``, a
+    # fan's hub), which one thread would walk alone (2026-11-08: ``fan_hub``'s held each step at
+    # 6 ms). Launch tiled over ``IMPLICIT_ROWS_PER_BLOCK`` rows a block: a lane writes its short
+    # rows, then a block holding a long one walks it with every lane
+    # (``laplacian.operator_row_entries``) and sums it in a fixed tree. Only an operator whose
+    # norm pass found a long row takes it: the block's reduction cost the plain step 1.13x (5.5 ->
+    # 6.2 us a step on ``sphere_med``).
+    blk, lane = wp.tid()
+    base, rows = block_chunk(offsets.shape[0] - 1, blk, IMPLICIT_ROWS_PER_BLOCK)
+    if rows <= 0:
+        return
+    found = wp.int32(0)
+    for r in range(lane, rows, wp.block_dim()):
+        i = base + r
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
+        out_x[i] = implicit_laplacian_row(offsets, columns, values, lamb, rhs, x, i)
+    if block_sum(found) == 0:
+        return
+    for r in range(rows):
+        i = base + r
+        if csr_row_long(offsets, i):
+            lx = block_sum(
+                operator_row_entries(
+                    columns, values, x, offsets[i] + lane, offsets[i + 1], wp.block_dim()
+                )
+            )
+            if lane == 0:
+                out_x[i] = implicit_step_value(rhs[i], lamb, lx)
 
 
 @wp.kernel
@@ -4056,6 +4137,7 @@ HUMPHREY_UPDATE_PASS: OverloadTable
 MUT_DIF_ADIL_PASS: OverloadTable
 MUT_DIF_STEP_SCALED: OverloadTable
 IMPLICIT_LAPLACIAN_STEP: OverloadTable
+IMPLICIT_LAPLACIAN_STEP_LONG_ROWS: OverloadTable
 IMPLICIT_LAPLACIAN_STEPS_SERIAL: OverloadTable
 
 
@@ -4069,7 +4151,10 @@ def _register_overloads() -> None:
         HUMPHREY_RESIDUAL_PASS
     global HUMPHREY_UPDATE_PASS, SHARPEN_PASS, GRAPH_SHARPEN_PASS, MUT_DIF_ADIL_PASS
     global MUT_DIF_STEP_SCALED
-    global IMPLICIT_LAPLACIAN_STEP, IMPLICIT_LAPLACIAN_STEPS_SERIAL
+    global \
+        IMPLICIT_LAPLACIAN_STEP, \
+        IMPLICIT_LAPLACIAN_STEP_LONG_ROWS, \
+        IMPLICIT_LAPLACIAN_STEPS_SERIAL
     global CORNER_CROSS_NORMALS, SMOOTH_FACE_NORMALS_MESHLAB, FIT_VERTICES_TO_NORMALS
     global SMOOTH_FACE_NORMALS_MESHLAB_SERIAL, FIT_VERTICES_TO_NORMALS_SERIAL
     vectors = (wp.vec3, wp.vec3d)
@@ -4142,6 +4227,13 @@ def _register_overloads() -> None:
     rows = [wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.float32]]
     IMPLICIT_LAPLACIAN_STEP = OverloadTable(
         implicit_laplacian_step,
+        {
+            (rhs, x): [*rows, wp.float64, wp.array[rhs], wp.array[x], wp.array[wp.vec3d]]
+            for rhs, x in ((wp.vec3, wp.vec3), (wp.vec3, wp.vec3d), (wp.vec3d, wp.vec3d))
+        },
+    )
+    IMPLICIT_LAPLACIAN_STEP_LONG_ROWS = OverloadTable(
+        implicit_laplacian_step_long_rows,
         {
             (rhs, x): [*rows, wp.float64, wp.array[rhs], wp.array[x], wp.array[wp.vec3d]]
             for rhs, x in ((wp.vec3, wp.vec3), (wp.vec3, wp.vec3d), (wp.vec3d, wp.vec3d))

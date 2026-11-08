@@ -1054,6 +1054,30 @@ def refresh_pooled_operator(
             wp.atomic_max(out_bound, 0, bound)
 
 
+@wp.func
+def scaled_row_entries(
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    weight_sums: wp.array[wp.float64],
+    scale: wp.float64,
+    start: wp.int32,
+    end: wp.int32,
+    step: wp.int32,
+    out_scaled: wp.array[wp.float64],
+    out_scaled_t: wp.array[wp.float64],
+) -> wp.float64:
+    # ``scaled_rows_and_bound``'s walk of a row's entries ``start``, ``start + step``, ... below
+    # ``end``: writes both scaled values and returns the entries' absolute sum. A lane walks a row
+    # at step 1; a block's lanes walk a long one at the block width.
+    total = wp.float64(0.0)
+    for e in range(start, end, step):
+        value = values[e]
+        total += wp.abs(value)
+        out_scaled[e] = value * scale
+        out_scaled_t[e] = value * inverse_or_one(weight_sums[columns[e]])
+    return total
+
+
 @wp.kernel
 def scaled_rows_and_bound(
     offsets: wp.array[wp.int32],
@@ -1074,24 +1098,37 @@ def scaled_rows_and_bound(
     # diagonal of ``L`` it is ``1 +`` the ``jacobi_dominance_bound`` ratio; with any other positive
     # ``D`` -- ``sqrt(M)`` for the k = 2 harmonic operator ``L M^-1 L`` -- it is the bound that
     # ratio is not, and an interval fitted short of the spectrum amplifies what it should invert.
-    # The block shape (``rows_per_block``) and the ``atomic_max`` commit into the seeded
-    # ``out_bound[0]`` are ``jacobi_dominance_bound``'s.
+    # The block shape (``rows_per_block``), the long-row deferral to the whole block and the
+    # ``atomic_max`` commit into the seeded ``out_bound[0]`` are ``jacobi_dominance_bound``'s.
     block, lane = wp.tid()
     base, count = block_chunk(offsets.shape[0] - 1, block, rows_per_block)
     if count <= 0:
         return
     local = wp.float64(-1.0e308)
+    found = wp.int32(0)
     for k in range(lane, count, wp.block_dim()):
         i = base + k
+        if csr_row_long(offsets, i):
+            found = 1
+            continue
         weight = weight_sums[i]
-        scale = inverse_or_one(weight)
-        total = wp.float64(0.0)
-        for e in range(offsets[i], offsets[i + 1]):
-            value = values[e]
-            total += wp.abs(value)
-            out_scaled[e] = value * scale
-            out_scaled_t[e] = value * inverse_or_one(weight_sums[columns[e]])
+        total = scaled_row_entries(
+            columns, values, weight_sums, inverse_or_one(weight), offsets[i], offsets[i + 1], 1,
+            out_scaled, out_scaled_t,
+        )  # fmt: skip
         local = wp.max(local, total / weight)
+    if block_sum(found) != 0:
+        for k in range(count):
+            i = base + k
+            if csr_row_long(offsets, i):
+                weight = weight_sums[i]
+                total = scaled_row_entries(
+                    columns, values, weight_sums, inverse_or_one(weight), offsets[i] + lane,
+                    offsets[i + 1], wp.block_dim(), out_scaled, out_scaled_t,
+                )  # fmt: skip
+                total = block_sum(total)
+                if lane == 0:
+                    local = wp.max(local, total / weight)
     bound = block_max(local)
     if lane == 0:
         wp.atomic_max(out_bound, 0, bound)

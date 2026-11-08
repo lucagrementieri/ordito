@@ -335,7 +335,8 @@ def filter_laplacian(
             lambda _index, src, dst: _diffuse_pass(operator, coeff, src, dst),
             serial=_SerialPasses(kernel_smoothing.PASS_DIFFUSE, operator, lamb, lamb),
         )
-    steps = _implicit_fixed_point_steps(operator, lamb) if implicit_time_integration else None
+    fixed_point = _implicit_fixed_point_steps(operator, lamb) if implicit_time_integration else None
+    steps, long_rows = (None, False) if fixed_point is None else fixed_point
     # With nothing to anchor, the fixed-point passes start from the ``float32`` input itself: the
     # first pass reads it widened as each entry is read, and its last step writes the ``float64``
     # iterate, so no widening copy is made.
@@ -364,13 +365,17 @@ def filter_laplacian(
                 wp.capture_launch(graph)
             elif index > 0 and wp.get_device(device).is_cuda:
                 with wp.ScopedCapture(device) as capture:
-                    _implicit_fixed_point_pass(operator, coeff, steps, positions, scratch)
+                    _implicit_fixed_point_pass(
+                        operator, coeff, steps, long_rows, positions, scratch
+                    )
                 graph = capture.graph
                 assert graph is not None
                 wp.capture_launch(graph)
             else:
                 source = vertices if widen_on_read and index == 0 else None
-                _implicit_fixed_point_pass(operator, coeff, steps, positions, scratch, source)
+                _implicit_fixed_point_pass(
+                    operator, coeff, steps, long_rows, positions, scratch, source
+                )
             if constraint is not None:
                 constraint.apply(positions)
     elif implicit_time_integration:
@@ -423,9 +428,14 @@ def filter_laplacian(
     return _as_vec3(positions)
 
 
-def _implicit_fixed_point_steps(operator: odt.BsrMatrix[wp.float32], lamb: float) -> int | None:
+def _implicit_fixed_point_steps(
+    operator: odt.BsrMatrix[wp.float32], lamb: float
+) -> tuple[int, bool] | None:
     """
     Count the steps of ``x' = (b + lamb L x) / (1 + lamb)`` bounding the error at the tolerance.
+
+    Returned with whether ``L`` has a long row (``kernels/linalg.csr_row_long``), which the same
+    pass over the rows finds and which picks the step kernel.
 
     The iteration contracts by ``q = lamb ||L||_inf / (1 + lamb)`` in the infinity norm, and
     ``||x*||_inf <= ||b||_inf`` for a row-stochastic ``L``, so from ``x_0 = b`` the error after
@@ -434,7 +444,7 @@ def _implicit_fixed_point_steps(operator: odt.BsrMatrix[wp.float32], lamb: float
     """
     n_rows = int(operator.nrow)
     device = operator.values.device
-    norm = _launch.zeros(1, dtype=wp.float64, device=device)
+    norm = _launch.zeros(2, dtype=wp.float64, device=device)
     if n_rows > 0:
         rows_per_block, blocks = kernel_reduce.spanned_blocks_1d(n_rows, device)
         _launch.launch_tiled(
@@ -445,22 +455,26 @@ def _implicit_fixed_point_steps(operator: odt.BsrMatrix[wp.float32], lamb: float
             block_dim=TILE_1D,
             device=device,
         )
-    # The step count is host control flow, so the norm is read back.
-    contraction = lamb * float(read_scalar(norm, 0)) / (1.0 + lamb)
+    # The step count and the step kernel are host control flow, so the norm and the long-row flag
+    # are read back, together.
+    norm_value, long_flag = read_values(norm, 0, 2)
+    long_rows = float(long_flag) > 0.0
+    contraction = lamb * float(norm_value) / (1.0 + lamb)
     if contraction <= 0.0:
         # ``lamb == 0``: the system is the identity and two steps reproduce ``b`` exactly.
-        return 2
+        return 2, long_rows
     if contraction >= 1.0:
         return None
     steps = math.ceil(math.log(0.5 * twl.CG_TOLERANCE) / math.log(contraction))
     # At least two, so the last step never reads the buffer it writes.
-    return max(steps, 2) if steps <= _IMPLICIT_FIXED_POINT_MAX_STEPS else None
+    return (max(steps, 2), long_rows) if steps <= _IMPLICIT_FIXED_POINT_MAX_STEPS else None
 
 
 def _implicit_fixed_point_pass(
     operator: odt.BsrMatrix[wp.float32],
     coeff: wp.float64,
     steps: int,
+    long_rows: bool,
     positions: wp.array[wp.vec3d],
     scratch: list[wp.array[wp.vec3d]],
     start: wp.array[wp.vec3] | None = None,
@@ -469,7 +483,8 @@ def _implicit_fixed_point_pass(
     One backward-Euler pass in place: ``steps`` fixed-point steps from ``positions`` itself.
 
     Given ``start``, the pass is from ``start`` instead, which its steps read widened, and the last
-    writes ``positions`` (which they never read).
+    writes ``positions`` (which they never read). With ``long_rows`` the steps take the kernel that
+    walks a long row with a block's lanes.
     """
     rhs: _Positions = positions if start is None else start
     if wp.get_device(positions.device).is_cpu:
@@ -483,16 +498,28 @@ def _implicit_fixed_point_pass(
             device=positions.device,
         )
         return
+    rows_per_block = int(kernel_smoothing.IMPLICIT_ROWS_PER_BLOCK)
     for step in range(steps):
         source = rhs if step == 0 else scratch[(step - 1) % 2]
         target = positions if step == steps - 1 else scratch[step % 2]
-        _launch.launch(
-            kernel_smoothing.IMPLICIT_LAPLACIAN_STEP[rhs.dtype, source.dtype],
-            dim=positions.size,
-            inputs=[operator.offsets, operator.columns, operator.values, coeff, rhs, source],
-            outputs=[target],
-            device=positions.device,
-        )
+        inputs = [operator.offsets, operator.columns, operator.values, coeff, rhs, source]
+        if long_rows:
+            _launch.launch_tiled(
+                kernel_smoothing.IMPLICIT_LAPLACIAN_STEP_LONG_ROWS[rhs.dtype, source.dtype],
+                dim=[-(-positions.size // rows_per_block)],
+                inputs=inputs,
+                outputs=[target],
+                block_dim=rows_per_block,
+                device=positions.device,
+            )
+        else:
+            _launch.launch(
+                kernel_smoothing.IMPLICIT_LAPLACIAN_STEP[rhs.dtype, source.dtype],
+                dim=positions.size,
+                inputs=inputs,
+                outputs=[target],
+                device=positions.device,
+            )
 
 
 def _build_implicit_system(

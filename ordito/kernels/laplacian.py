@@ -421,6 +421,24 @@ def row_normalize(offsets: wp.array[wp.int32], out_values: wp.array[wp.Float]) -
 
 
 @wp.func
+def operator_row_entries(
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float32],
+    field: wp.array[Any],
+    start: wp.int32,
+    end: wp.int32,
+    step: wp.int32,
+) -> wp.vec3d:
+    # ``operator_row``'s sum over a row's entries ``start``, ``start + step``, ... below ``end``:
+    # a thread's whole row at step 1, or a block's lanes over a long row at the block width.
+    acc = wp.vec3d(0.0, 0.0, 0.0)
+    for k in range(start, end, step):
+        w = wp.float64(values[k])
+        acc += w * wp.vec3d(field[columns[k]])
+    return acc
+
+
+@wp.func
 def operator_row(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
@@ -437,11 +455,7 @@ def operator_row(
         # Isolated vertex (empty row): the averaging operator acts as the identity so the
         # vertex does not drift toward the origin.
         return wp.vec3d(field[i])
-    acc = wp.vec3d(0.0, 0.0, 0.0)
-    for k in range(start, end):
-        w = wp.float64(values[k])
-        acc += w * wp.vec3d(field[columns[k]])
-    return acc
+    return operator_row_entries(columns, values, field, start, end, 1)
 
 
 @wp.func

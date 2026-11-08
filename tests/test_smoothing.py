@@ -26,6 +26,7 @@ from scipy.spatial import cKDTree
 import ordito as od
 import ordito.typing as odt
 from benchmarks.meshes import BUILDERS
+from ordito.kernels import linalg as kernel_linalg
 from ordito.kernels import smoothing as kernel_smoothing
 from tests.comparisons import meshlab_umbrella
 from tests.conftest import (
@@ -515,6 +516,39 @@ def test_filter_laplacian_implicit_on_open_meshes(
     )
     # Non-vacuity: the filter must actually move the mesh.
     assert np.abs(mesh_ref.vertices - mesh_tm.vertices).max() > 1e-3
+    assert np.allclose(smoothed_wp.numpy(), mesh_ref.vertices, rtol=1e-4, atol=1e-4)
+
+
+def test_filter_laplacian_implicit_on_a_hub_matches_trimesh(device: str) -> None:
+    """
+    Class A: the implicit filter on a cone whose two hub rows are long, against trimesh.
+
+    A cone of 1 100 sections has an apex and a base centre of valence 1 100, past
+    ``kernels/linalg.CSR_LONG_ROW_ENTRIES``: the norm pass flags the operator and each fixed-point
+    step takes ``implicit_laplacian_step_long_rows``, which walks a hub row with a block's lanes.
+    """
+    mesh_tm = tm.creation.cone(radius=1.0, height=1.0, sections=1100)
+    vertices_np = mesh_tm.vertices.astype(np.float32).astype(np.float64)
+    mesh_tm = tm.Trimesh(vertices_np, mesh_tm.faces, process=False)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, mesh_tm.faces, device)
+    operator = od.laplacian.laplacian(vertices_wp, faces_wp)
+    row_lengths_np = np.diff(operator.offsets.numpy())
+    assert row_lengths_np.max() >= int(kernel_linalg.CSR_LONG_ROW_ENTRIES)
+    smoothed_wp = od.smoothing.filter_laplacian(
+        vertices_wp,
+        faces_wp,
+        lamb=0.5,
+        iterations=3,
+        implicit_time_integration=True,
+        volume_constraint=False,
+        laplacian_operator=operator,
+    )
+    mesh_ref = mesh_tm.copy()
+    tms.filter_laplacian(
+        mesh_ref, lamb=0.5, iterations=3, implicit_time_integration=True, volume_constraint=False
+    )
+    # Non-vacuity: the filter must move the hubs, whose rows the block walks.
+    assert np.abs(mesh_ref.vertices - vertices_np).max() > 1e-3
     assert np.allclose(smoothed_wp.numpy(), mesh_ref.vertices, rtol=1e-4, atol=1e-4)
 
 
