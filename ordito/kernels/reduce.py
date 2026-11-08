@@ -1068,6 +1068,44 @@ def blocks_1d(n: int) -> int:
     return (n + items - 1) // items
 
 
+# The block count a spanned fold (``spanned_blocks_1d``) narrows toward on CUDA: enough to fill
+# the device. Past it each extra block costs the last block's fold of the partials more than its
+# lanes' shorter walks save (2026-11-08, ``heat.upper_edge_length_sum_and_count``: a row a lane
+# 0.20x on ``sphere_small`` to ``bunny``, but 1.31x on ``lucy``'s 219 k blocks).
+SPANNED_TARGET_BLOCKS_1D = 2048
+
+
+def spanned_blocks_1d(n: int) -> tuple[int, int]:
+    """
+    ``(items a block, blocks)`` for a lane-strided fold whose items are each a dependent walk.
+
+    A lane folding [`ITEMS_PER_BLOCK_1D`][ordito.kernels.reduce.ITEMS_PER_BLOCK_1D] items walks
+    ``TILES_PER_BLOCK_1D`` of them in turn, which costs nothing for a load a term and is the whole
+    launch for a term that chases indices (a CSR row's entries, then their vertices). This is the
+    fewest whole powers of two of ``TILE_1D`` items a block, from one item a lane up to the
+    standard fold width, that bring the block count to at most ``SPANNED_TARGET_BLOCKS_1D``. The
+    kernel takes the width as its block chunk (``block_chunk(n, block, width)``) and launches
+    ``blocks`` blocks of ``TILE_1D`` lanes; its partials hold ``blocks`` rows. The CPU runs a
+    block as one lane, so a CPU launch keeps [`blocks_1d`][ordito.kernels.reduce.blocks_1d].
+
+    Parameters
+    ----------
+    n
+        Number of items in the fold.
+
+    Returns
+    -------
+    tuple[int, int]
+        The items each block owns and the block count.
+    """
+    tiles = max((n + TILE_1D - 1) // TILE_1D, 1)
+    per_block = 1
+    while per_block < TILES_PER_BLOCK_1D and tiles > per_block * SPANNED_TARGET_BLOCKS_1D:
+        per_block *= 2
+    width = per_block * TILE_1D
+    return width, (n + width - 1) // width
+
+
 def chunks_1d(n: int) -> int:
     """
     Launch width for [`minmax_vec3_chunked`][ordito.kernels.reduce.minmax_vec3_chunked].

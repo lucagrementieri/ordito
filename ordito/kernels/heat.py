@@ -185,6 +185,7 @@ def upper_edge_length_sum_and_count(
     count: wp.int32,
     vertices: wp.array[wp.vec3],
     face_edges: wp.int32,
+    rows_per_block: wp.int32,
     stride: wp.int32,
     out_sum_and_count: wp.array[wp.float64],
 ) -> None:
@@ -199,14 +200,18 @@ def upper_edge_length_sum_and_count(
     # in the ``cotmatrix`` pattern -- which is the mean over every face's three edges, MeshLab's
     # heat-method timestep, where the unique mean is igl's and geometry-central's.
     #
-    # ``reduce``'s mask-shaped block fold over *rows*: lanes stride the block's rows by
-    # ``wp.block_dim()`` (right on the CPU device too), and one tile sum per quantity is stored in
-    # the block's row (``store_sum_and_count``), added in a fixed order afterwards. A long row
+    # ``reduce``'s mask-shaped block fold over *rows*: lanes stride the block's ``rows_per_block``
+    # rows by ``wp.block_dim()`` (right on the CPU device too), and one tile sum per quantity is
+    # stored in the block's row (``store_sum_and_count``), added in a fixed order afterwards. A
+    # row is a chain of dependent loads, so on CUDA a block spans as few rows as fill the device
+    # (``reduce.spanned_blocks_1d``, 2026-11-08): sixteen rows a lane held the launch at 27-42 us
+    # from ``saddle`` to ``sphere_med``, a row a lane 6-7 us; ``dragon`` 56 -> 28 us at four, and
+    # ``lucy`` stays at its bandwidth floor (~585 us) at the standard sixteen. A long row
     # (``linalg.csr_row_long``, a fan's hub) is left to the whole block after, its lanes striding
     # the entries into their own sums, so a block without one pays one reduction.
     i, t = wp.tid()
     n = offsets.shape[0] - 1
-    base, remaining = block_chunk_1d(n, i)
+    base, remaining = block_chunk(n, i, rows_per_block)
     if remaining <= 0:
         return
     sums = wp.vec2d()

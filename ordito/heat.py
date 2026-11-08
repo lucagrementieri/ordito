@@ -1845,7 +1845,7 @@ def _heat_operators(
     # on the device for the system's assembly to square.
     sum_blocks = 0
     if t is None and edge_sums is None and pattern is not None and pattern.n_vertices > 0:
-        sum_blocks = kernel_reduce.blocks_1d(pattern.n_vertices)
+        sum_blocks = _edge_sum_layout(pattern.n_vertices, device)[1]
     lumped, sum_and_count = _launch.carve(
         wp.float64,
         (n_vertices, _launch.block_partials_size(sum_blocks, 2) if sum_blocks else 0),
@@ -2039,8 +2039,8 @@ def _edge_length_sums(
     the mesh to recover the same set. The two sums stay on the device, where
     ``kernels/linalg.shift_factor`` squares their mean -- ``0`` for a mesh with no edges (``None``
     for the pattern of a mesh with no faces), as that function returns. ``sum_and_count``, when
-    given, is the zeroed ``block_partials_size(blocks_1d(pattern.n_vertices), 2)`` buffer the
-    sums go into (allocated here otherwise).
+    given, is the zeroed ``block_partials_size(blocks, 2)`` buffer the sums go into, ``blocks``
+    being ``_edge_sum_layout``'s (allocated here otherwise).
     """
     device = vertices.device
     if pattern is None or pattern.n_vertices == 0:
@@ -2048,7 +2048,7 @@ def _edge_length_sums(
     n_rows = pattern.n_vertices
     _, _, offsets, columns, run_start, keys, count, _ = pattern
     # Block rows added in a fixed order, so the timestep repeats bit for bit on CUDA.
-    blocks = kernel_reduce.blocks_1d(n_rows)
+    rows_per_block, blocks = _edge_sum_layout(n_rows, device)
     out: wp.array[wp.float64] = (
         _launch.block_partials(blocks, 2, wp.float64, device)[0]
         if sum_and_count is None
@@ -2065,6 +2065,7 @@ def _edge_length_sums(
             wp.int32(count),
             vertices,
             wp.int32(timestep == "face_edges"),
+            wp.int32(rows_per_block),
             2,
             out,
         ],
@@ -2072,6 +2073,19 @@ def _edge_length_sums(
         device=device,
     )
     return out
+
+
+def _edge_sum_layout(n_rows: int, device: wp.DeviceLike) -> tuple[int, int]:
+    """
+    ``(rows a block, blocks)`` of ``_edge_length_sums``' fold over ``n_rows`` rows.
+
+    Each row is a walk (its entries, then their vertices), so on CUDA the fold spans as few rows
+    a block as fill the device (``kernel_reduce.spanned_blocks_1d``). The CPU runs a block as one
+    lane, which walks every width alike, so it keeps the standard fold.
+    """
+    if wp.get_device(device).is_cpu:
+        return kernel_reduce.ITEMS_PER_BLOCK_1D, kernel_reduce.blocks_1d(n_rows)
+    return kernel_reduce.spanned_blocks_1d(n_rows)
 
 
 @overload
