@@ -100,6 +100,9 @@ A kernel whose lanes cooperate (`wp.tile_sum` / `tile_min` / `tile_max` per lane
 
 Use one block per item only when the outer per-item dimension alone would starve the device. A kernel that already has a slice dimension does not qualify; collapsing it into lanes loses 2-8x. Compute the launch's thread count and measure at the large end first, since the small end flatters. Verdicts: §14.
 
+- A thread-per-item serial walk (a trace, a descent, a search per root, a loop walk) launched over few items gives each item a warp through the shared pair, never a hand-written mapping: `dim = m * _launch.walk_lanes(m, device)` (one on the CPU) and `item = kernels/array.walk_item(wp.int32(wp.tid()), lanes)`, returning on `-1`.
+- A serial walk counted in one launch and written in another walks once: the counting pass stages its points (`kernels/array.stage_point`, from `first_staged_chunk`), the writing pass copies them (`copy_staged`) and walks again only on `False`; `_common.staging_pool` allocates the pool. Price it first: it pays where the walk is the device time (§14), not on a host-bound call.
+
 ### 2.4 Fusing a kernel: extract the shared part as a `@wp.func` in the same commit
 
 A fusion is done when the code it duplicated has a name. Whenever a kernel is fused, split, specialised or given a second variant, the same commit must:
@@ -1004,7 +1007,12 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   0.57-0.66x. Size the pool for the total, not each walk's bound (the walks share it), and keep it
   in plain arrays: a `@wp.struct` of four arrays cost a host-bound call its device saving. Few
   walks also take a warp each (`_launch.walk_lanes`; 0.63x at 4 096 descents), which pays where
-  walks sharing a warp diverge, and not for a few long walks already alone in theirs.
+  walks sharing a warp diverge, and not for a few long walks already alone in theirs (§2.3 names
+  the helpers). Spread 2026-11-08: `repair`'s tunnel root search 0.21-0.29x kernel, `boundary`'s
+  pinch split 0.6-0.7x; declined where the walk is no share of the call (homology's generator
+  loops about 1 %, cholesky's structure paths under 0.3 %, holes' traceback one loop). A descent
+  also reads each face's gradient and float64 slope from a per-face pass on CUDA instead of
+  taking the length every step (counting walk 2.12 -> 1.36 ms at 4 096 paths).
 - **A thread a row writing its segment in turn** (2026-11-07): a warp's stores sit a segment
   apart, which costs nothing while the output fits in L2 and is the whole kernel past it:
   `k_harmonic`'s sandwich (49 triplets a row) took 0.068 ms on `sphere_med` and 1.49 ms on
@@ -1106,14 +1114,11 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   buffer read once would do; the one-component `split` pays `submesh_from_face_indices`' memset
   for an identity face order. Each is a few percent of the call at the benchmark sizes; price
   before acting.
-- **`geodesic_walk` leftovers (2026-11-07 sweep):** `geodesic_path(method="potpourri3d")` at one
-  path is 12 ms on `sphere_med`, of which the shortest-edge tree's relaxation passes are 2.4 ms on
-  CUDA (a pass a hop of the tree, replayed in a conditional graph; any schedule converges to the
-  same distances, so a frontier or block-local relaxation is open) and the tables' copies to the
-  host 2.3 ms. A descent's counting walk is latency-bound at about 2.6 us a point (one path,
-  0.6 ms), and is now the descent's whole device time. The staging pool's 12 MiB cap holds about
-  a quarter of 4 096 descents on `dragon`, which then run at par: a larger cap was declined (memory
-  for time, 2026-11-08).
+- **`geodesic_walk` leftovers (2026-11-08):** `geodesic_path(method="potpourri3d")`'s
+  shortest-edge tree relaxes in 2.4 ms of passes on CUDA at one path (`sphere_med`). Any schedule
+  reaches the same distances; a block re-relaxing its own vertices lost (the icosphere's numbering
+  is not local: 3.2-7.0 ms), so what is left is a frontier relaxation or a locality reorder. A
+  descent's counting walk is still latency-bound at about 2.3 us a point (one path, 0.55 ms).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
