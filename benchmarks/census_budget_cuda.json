@@ -2079,10 +2079,9 @@
  },
  "benchmarks/test_graph.py::test_shortest_path_envelope[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 3,
-   "alloc": 4,
-   "memset": 1,
-   "d2d": 2,
+   "launch": 4,
+   "alloc": 2,
+   "d2d": 1,
    "h2d": 1,
    "d2h": 1
   }

@@ -1185,12 +1185,14 @@ def shortest_path_envelope(
     CSR here against ``O(E log V)`` sequential work there. The name is the result, per this
     package's naming rule, not the algorithm.
 
-    One relaxation kernel per pass, so a pass is a pure function of the previous labels and the
-    answer does not depend on thread interleaving. The pass count is data-dependent; on CUDA the
-    whole pass loop runs as one device-side conditional graph (``wp.capture_while``), so the
-    convergence check costs no host readback at all rather than the one-per-pass a naive early exit
-    would need. The CPU backend, which has no conditional-graph capture, still checks with a plain
-    readback per pass.
+    The answer does not depend on thread interleaving. Uncapped, each pass relaxes the labels in
+    place, reading whatever its neighbours hold; every value read is an upper bound the relaxation
+    reaches anyway, so the labels fall to the same fixpoint bit for bit, in no more passes. With
+    ``max_iterations`` each pass is a pure function of the previous labels, so a capped answer is
+    exactly that many passes. The pass count is data-dependent; on CUDA the passes after the first
+    run as one device-side conditional graph (``wp.capture_while``), so the convergence check costs
+    one host readback, after the first pass, rather than one a pass. The CPU device runs every pass
+    in one launch.
 
     For distance *across* a surface rather than along its edges -- shorter, and what "geodesic"
     usually means -- use [`heat_geodesic`][ordito.heat.heat_geodesic]. The edge-graph distance is
@@ -1253,11 +1255,15 @@ def shortest_path_envelope(
         return labels
 
     weights = adjacency.values
-    if weights.size > 0 and float(od.reduce.min(weights)) < 0.0:
-        raise ValueError("adjacency weights must be non-negative for the envelope to converge")
-
     max_pass_count = max_iterations or node_count
-    relaxed = _launch.empty(node_count, dtype=wp.float32, device=device)
+    # Uncapped, the passes relax ``labels`` in place: the same fixpoint bit for bit, in no more
+    # passes and with no copy a pass (``kernels/graph.shortest_path_envelope_pass``). A cap keeps
+    # the Jacobi passes, whose second buffer starts as the labels, so a capped answer is exactly
+    # that many passes on either device.
+    relaxed = labels if max_iterations == 0 else _launch.clone(values)
+    # The shared round-loop word (``kernels/array.py``) and the envelope's negative-weight flag past
+    # it. ``wp.capture_while`` reads the condition before the first round, so it starts non-zero.
+    state = _launch.array([0, 1, 0, 0], dtype=wp.int32, device=device)
     if not device.is_cuda:
         # The CPU device runs a launch's threads one after another, so a launch and a progress
         # readback a pass buy nothing: every pass runs in one single-thread launch, bit for bit the
@@ -1265,58 +1271,56 @@ def shortest_path_envelope(
         _launch.launch(
             kernel_graph.shortest_path_envelope_serial,
             dim=1,
-            inputs=[offsets, columns, weights, max_pass_count, labels, relaxed],
+            inputs=[offsets, columns, weights, max_pass_count, labels, relaxed, state],
             device=device,
         )
+        # Decides whether to raise.
+        if read_scalar(state, int(kernel_graph.ENVELOPE_NEGATIVE_WEIGHT)) != 0:
+            _raise_negative_weights()
         return labels
-    # The shared round-loop state word (``kernels/array.py``): the relaxation pass raises
-    # ``LOOP_PROGRESS`` and ``array.loop_advance`` publishes the condition against the pass cap.
-    # CUDA: the whole pass loop runs on-device via ``wp.capture_while``, so the
-    # only host sync in the common case is none at all -- each pass's convergence check and
-    # iteration cap are folded into ``array.loop_advance``, the package's shared round-closing
-    # kernel, which runs after the relax kernel and the label copy below.
-    #
-    # Buffer *swapping* (the CPU path's ``labels, relaxed = relaxed, labels``) cannot be captured:
-    # a conditional graph replays the exact pointers its body recorded the one time it was traced,
-    # so a Python-level rebind between iterations has no effect on the device-side loop -- every
-    # replayed pass would keep reading and writing the same two buffers in the same direction.
-    # ``wp.copy`` moves this pass's answer into ``labels`` in place instead, which is itself just a
-    # device memcpy and captures fine (no allocation, no host sync, unlike ``wp.utils.array_scan``).
-    #
-    # Unrolling two passes per round into each other's buffer would remove that copy and is **not
-    # portable** -- a ``wp.capture_while`` body is not guaranteed to replay as an indivisible unit
-    # across devices, so a loop whose result buffer depends on it cannot rely on it. The numbers and
-    # the ping-pong corollary are at ``kernels/graph.shortest_path_envelope_pass``.
-    # ``wp.capture_while`` reads the condition before the first round, so it starts non-zero.
-    state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
     max_pass_count_i32 = wp.int32(max_pass_count)
 
     def envelope_pass_body() -> None:
-        # One pass, then a copy of its result back over ``labels``. **Two passes per round, written
-        # into each other's buffer, would remove the copy** -- it is a whole device pass over the
-        # node array and a real fraction of this call -- and it is **not portable**: the two devices
-        # then disagree. Measured with the unrolled body, the CPU device relaxed strictly fewer
+        # One pass, then (Jacobi) a copy of its result back over ``labels``, then the shared
+        # round-closing kernel, which turns the pass's progress and the cap into the condition.
+        # **Two Jacobi passes per round, written into each other's buffer, would remove the copy**
+        # and are **not portable**: measured with that body, the CPU device relaxed strictly fewer
         # nodes per round than CUDA at every cap, because the recorded body did not replay as two
         # passes per round there. A ``wp.capture_while`` body is not guaranteed to execute as an
-        # indivisible unit across devices, so a loop whose *result
-        # buffer* depends on the body running whole cannot rely on it. A Python-level ping-pong
-        # cannot help either: the body is recorded once and replayed, so rebinding the names would
-        # only take effect at record time.
+        # indivisible unit across devices, so a loop whose *result buffer* depends on the body
+        # running whole cannot rely on it. A Python-level ping-pong cannot help either: the body is
+        # recorded once and replayed, so rebinding the names would only take effect at record time.
         _launch.launch(
             kernel_graph.shortest_path_envelope_pass,
             dim=node_count,
             inputs=[offsets, columns, weights, labels, relaxed, state],
             device=device,
         )
-        _launch.copy(labels, relaxed)
+        if relaxed is not labels:
+            _launch.copy(labels, relaxed)
         _launch.launch(
             kernel_array.loop_advance, dim=1, inputs=[max_pass_count_i32, state], device=device
         )
 
-    run_device_loop(
-        device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), envelope_pass_body
-    )
+    # The first pass runs uncaptured and its read is the call's one readback: it carries the
+    # negative-weight flag (a negative weight would keep the labels falling until the cap) and the
+    # loop's condition, so a field that one pass leaves unmoved records no graph at all.
+    envelope_pass_body()
+    _, condition, _, negative = read_values(state, 0, kernel_graph.ENVELOPE_STATE_SIZE)
+    if negative != 0:
+        _raise_negative_weights()
+    # The rest of the passes run on-device via ``wp.capture_while``, so their convergence checks
+    # and the cap cost no host readback.
+    if condition != 0:
+        run_device_loop(
+            device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), envelope_pass_body
+        )
     return labels
+
+
+def _raise_negative_weights() -> None:
+    """Raise the error for a negative weight the envelope's first pass flagged."""
+    raise ValueError("adjacency weights must be non-negative for the envelope to converge")
 
 
 # --- private helpers ---------------------------------------------------------------------

@@ -1967,9 +1967,9 @@
  },
  "benchmarks/test_graph.py::test_shortest_path_envelope[sphere_small-ordito-cpu]": {
   "counts": {
-   "launch": 2,
-   "alloc": 3,
-   "h2h": 1,
+   "launch": 1,
+   "alloc": 2,
+   "h2h": 2,
    "readback": 1
   }
  },

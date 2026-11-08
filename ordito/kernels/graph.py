@@ -196,6 +196,12 @@ def signed_edge_bounds(
         wp.atomic_min(out_bounds, 3, low_sign_flip)
 
 
+# ``graph.shortest_path_envelope``'s slot past the shared round-loop word (``kernels/array.py``):
+# raised by a pass that met a negative weight, read back with the first pass's condition.
+ENVELOPE_NEGATIVE_WEIGHT = wp.int32(3)
+ENVELOPE_STATE_SIZE = 4  # plain: a Python-scope read length
+
+
 @wp.func
 def envelope_relaxed_label(
     i: wp.int32,
@@ -203,15 +209,19 @@ def envelope_relaxed_label(
     columns: wp.array[wp.int32],
     weights: wp.array[wp.float32],
     labels: wp.array[wp.float32],
-) -> wp.float32:
-    # Node ``i``'s label after one Bellman-Ford relaxation against ``labels``: the per-pass
-    # kernel's entry and the serial loop's, so the two agree to the bit.
+) -> tuple[wp.float32, wp.float32]:
+    # Node ``i``'s label after one Bellman-Ford relaxation against ``labels``, and the smallest
+    # weight in its row (the negative-weight guard): the per-pass kernel's entry and the serial
+    # loop's, so the two agree to the bit.
     best = labels[i]
+    lowest = wp.float32(0.0)
     for k in range(offsets[i], offsets[i + 1]):
-        relaxed = labels[columns[k]] + weights[k]
+        weight = weights[k]
+        lowest = wp.min(lowest, weight)
+        relaxed = labels[columns[k]] + weight
         if relaxed < best:
             best = relaxed
-    return best
+    return best, lowest
 
 
 @wp.kernel
@@ -223,30 +233,38 @@ def shortest_path_envelope_pass(
     out_labels: wp.array[wp.float32],
     out_state: wp.array[wp.int32],
 ) -> None:
-    # One Bellman-Ford relaxation of ``q_i <= q_j + w(i, j)``, one thread per node, pulling from the
-    # neighbours' labels of the *previous* round -- so the pass is a pure function of ``labels`` and
-    # the result does not depend on how the threads interleave. Labels only ever go down, so the
-    # iteration is monotone and converges in at most (graph diameter) passes.
-    # (VCG ``UpdateQuality::VertexSaturate`` is this loop.)
+    # One Bellman-Ford relaxation of ``q_i <= q_j + w(i, j)``, one thread per node, storing a label
+    # only where it went down. (VCG ``UpdateQuality::VertexSaturate`` is this loop.)
     #
-    # **Two passes per round, written into each other's buffer, would remove the wrapper's
-    # ``wp.copy``** -- it is a whole device pass over the node array and worth a real fraction of
-    # that call -- and it is **not portable**: the two devices then disagree. Measured with the
-    # unrolled body, the CPU device relaxed strictly fewer nodes per round than CUDA at every cap,
-    # because the recorded body did not replay as two passes per round there; even caps agreed
-    # exactly. A ``wp.capture_while`` body is not guaranteed to execute as an indivisible unit
-    # across devices, so a loop whose *result buffer* depends on the body running whole cannot rely
-    # on it. A Python-level ping-pong cannot help either: the body is recorded once and replayed,
-    # so rebinding the names would only take effect at record time.
+    # Two forms, by what ``out_labels`` is. **In place** (``out_labels`` *is* ``labels``, the
+    # uncapped call): a thread reads whatever its neighbours hold, this pass's labels or the last's,
+    # and only it writes its own. Every value read is an upper bound the iteration reaches anyway,
+    # and ``min(x, y + w)`` is monotone in rounded ``float32`` for ``w >= 0``, so the labels fall
+    # to the same greatest fixpoint as the Jacobi passes, bit for bit, in no more passes; what the
+    # interleaving moves is only how many. It drops the Jacobi form's copy a pass and its buffer:
+    # 0.70-0.88x the call from ``sphere_small`` to ``lucy``, a scrambled ``dragon`` included
+    # (2026-11-08). **Jacobi** (a second buffer holding ``labels``' values, copied back after each
+    # pass, under an explicit pass cap): a pass is a pure function of the previous labels, so a
+    # capped answer is exactly that many passes on every device.
+    #
+    # Declined, a block a range of nodes relaxing in place behind a barrier until its range stops
+    # moving (``wp.tile_sum`` of the moved flags, at most 8 rounds a pass): passes fell 668 -> 168
+    # on ``dragon`` and the call 0.58x there and 0.50x on ``lucy``, but it was 1.2-1.7x from
+    # ``sphere_small`` to ``bunny`` and 1.18x on a scrambled ``dragon``, where a front block's
+    # rounds each move a few nodes while it holds its SM (2026-11-08). Two rounds: 0.51x ``lucy``,
+    # 0.75x ``dragon``, 1.03-1.14x on icospheres.
     #
     # ``out_state`` is the shared round-loop word of ``kernels/array.py``; raising
     # ``LOOP_PROGRESS`` is this pass's "something moved", which the closing ``array.loop_advance``
     # turns into the next round's condition and clears. A plain store, not an atomic: the slot only
-    # ever goes 0 -> 1 within a round, so every writer writes the same value.
+    # ever goes 0 -> 1 within a round, so every writer writes the same value. A negative weight
+    # raises ``ENVELOPE_NEGATIVE_WEIGHT`` the same way, for the wrapper's read after the first pass.
     i = wp.int32(wp.tid())
-    best = envelope_relaxed_label(i, offsets, columns, weights, labels)
-    out_labels[i] = best
+    best, lowest = envelope_relaxed_label(i, offsets, columns, weights, labels)
+    if lowest < 0.0:
+        out_state[ENVELOPE_NEGATIVE_WEIGHT] = 1
     if best < labels[i]:
+        out_labels[i] = best
         out_state[kernel_array.LOOP_PROGRESS] = 1
 
 
@@ -258,28 +276,38 @@ def shortest_path_envelope_serial(
     max_pass_count: wp.int32,
     labels: wp.array[wp.float32],
     scratch: wp.array[wp.float32],
+    out_state: wp.array[wp.int32],
 ) -> None:
     # Every ``shortest_path_envelope_pass`` in one launch and one thread: the CPU device's form,
     # where a launch's threads run one after another anyway, so a launch and a progress readback a
-    # pass buy no parallelism. Each pass reads the previous pass's buffer whole and writes the
-    # other (``labels`` -> ``scratch`` on even passes), each entry ``envelope_relaxed_label``, so
-    # the labels are the per-pass loop's to the bit; the loop stops after the first pass that
-    # lowered nothing, or at the cap. A result left in ``scratch`` is copied back over ``labels``.
+    # pass buy no parallelism. Each pass reads one buffer whole and writes the other (``labels`` ->
+    # ``scratch`` on even passes), each entry ``envelope_relaxed_label``, tested before it is
+    # stored; the loop stops after the first pass that lowered nothing, or at the cap. With two
+    # buffers these are the per-pass Jacobi loop's labels to the bit, and a result left in
+    # ``scratch`` is copied back; with ``scratch`` *being* ``labels`` it is the in-place form, a
+    # Gauss-Seidel sweep in node order, reaching the same fixpoint in fewer passes: a distance from
+    # one source 0.5-0.85x the Jacobi passes' CPU time, ``sphere_small`` to ``bunny`` (2026-11-08).
+    # Declined, odd passes sweeping down the nodes: ``bunny`` 0.55x the forward sweep, but the
+    # icospheres 1.7-1.8x. A negative weight stops the first pass and raises
+    # ``ENVELOPE_NEGATIVE_WEIGHT``.
     n = labels.shape[0]
     parity = wp.int32(0)
     for _pass in range(max_pass_count):
         moved = wp.int32(0)
         for i in range(n):
             if parity == 0:
-                best = envelope_relaxed_label(i, offsets, columns, weights, labels)
-                scratch[i] = best
+                best, lowest = envelope_relaxed_label(i, offsets, columns, weights, labels)
                 if best < labels[i]:
                     moved = wp.int32(1)
+                scratch[i] = best
             else:
-                best = envelope_relaxed_label(i, offsets, columns, weights, scratch)
-                labels[i] = best
+                best, lowest = envelope_relaxed_label(i, offsets, columns, weights, scratch)
                 if best < scratch[i]:
                     moved = wp.int32(1)
+                labels[i] = best
+            if lowest < 0.0:
+                out_state[ENVELOPE_NEGATIVE_WEIGHT] = 1
+                return
         parity = 1 - parity
         if moved == 0:
             break
