@@ -246,14 +246,17 @@ def hash_insert(
     # of it gives the compaction's write positions directly. Every thread landing in a slot stores
     # the same 1, which is why the unsynchronized store is benign; writing it here rather than in a
     # second pass over the whole `mask + 2` table saves that pass, which is a real share of
-    # ``unique_1d`` since the table is several times the input.
+    # ``unique_1d`` since the table is several times the input. A caller that reads only the counts
+    # (``grouping.hashed_occurrence_counts``) passes a null descriptor and pays neither the table
+    # nor its scattered stores.
     i = wp.int32(wp.tid())
     key = data[i]
     slot = mask + 1
     if encode_key(key) != empty_key(key):
         slot = hash_find_or_insert(key, slot_key, mask)
     wp.atomic_add(slot_counts, slot, wp.int32(1))
-    out_occupied[slot] = wp.int32(1)
+    if out_occupied.shape[0] > 0:
+        out_occupied[slot] = wp.int32(1)
 
 
 @wp.kernel
@@ -263,25 +266,22 @@ def compact_from_table(
     occupied_scan: wp.array[wp.int32],
     out_keys: wp.array[wp.Int],
     out_counts: wp.array[wp.int32],
-    out_perm: wp.array[wp.int32],
 ) -> None:
     # ``occupied_scan`` is ``hash_insert``'s 0/1 occupancy, scanned *in place* and inclusively, so
     # a slot is occupied exactly where the scan steps and its compact position is the exclusive
     # value (``array.scanned_count``) -- no second table-sized buffer for the scan, and the scan's
     # last element reads ``n_unique`` outright.
     #
-    # ``out_perm`` is the identity permutation the radix sort pairs with the keys. Writing it here
-    # replaces an ``arange`` launch of its own, which cost about as much as the sort it feeds. Only
-    # the leading ``n_unique`` entries are written; the rest of the buffer is the sort's
-    # double-buffer scratch, which it fills before reading. ``out_counts`` may be a null
-    # descriptor (``None`` at the launch) for a caller that does not want the counts.
+    # ``out_counts`` is the payload the radix sort pairs with the keys: the stable sort carries each
+    # key's count to its sorted position, so the counts come out in unique order with no identity
+    # permutation to sort and no gather by it afterwards. Only the leading ``n_unique`` entries of
+    # either buffer are written; the rest is the sort's double-buffer scratch, which it fills
+    # before reading.
     h = wp.int32(wp.tid())
     pos, occupied = kernel_array.scanned_count(occupied_scan, h)
     if occupied != 0:
         out_keys[pos] = decode_key(slot_key[h])
-        if out_counts.shape[0] > 0:
-            out_counts[pos] = slot_counts[h]
-        out_perm[pos] = pos
+        out_counts[pos] = slot_counts[h]
 
 
 @wp.kernel
@@ -610,7 +610,7 @@ def _register_overloads() -> None:
             for d in _TABLE_DTYPES
         },
     )
-    # ``slot_key`` and ``out_keys`` carry the key dtype; every count/offset buffer is int32.
+    # ``slot_key`` and ``out_keys`` carry the key dtype; every count buffer is int32.
     COMPACT_FROM_TABLE = OverloadTable(
         compact_from_table,
         {
@@ -619,7 +619,6 @@ def _register_overloads() -> None:
                 wp.array[wp.int32],
                 wp.array[wp.int32],
                 wp.array[d],
-                wp.array[wp.int32],
                 wp.array[wp.int32],
             ]
             for d in _TABLE_DTYPES

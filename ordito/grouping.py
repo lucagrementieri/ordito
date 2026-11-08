@@ -388,7 +388,8 @@ def _unique_hash(
     device = data_int.device
 
     # Phase 1: parallel insert into the open-addressing hash table.
-    slot_key, slot_counts, occupied = _hash_insert(data_int, n, mask)
+    slot_key, slot_counts, occupied = _hash_insert(data_int, n, mask, stamp_occupied=True)
+    assert occupied is not None
     cap = slot_key.size
 
     # Phase 2: prefix-scan the occupancy in place to get compact positions -- nothing reads the
@@ -398,24 +399,22 @@ def _unique_hash(
     # ``array.flatnonzero`` and ``array.counts_to_offsets``.
     n_unique = scan_count(occupied)
 
-    # Phase 3: compact unique keys, their occurrence counts, and the identity permutation the sort
-    # below pairs with them -- all three in one pass over the table.
+    # Phase 3: compact the unique keys and their occurrence counts in one pass over the table.
     #
-    # ``keys_compact`` is allocated at the *sort's* double width and the kernel writes its leading
-    # half, so the radix sort below can ping-pong in this same buffer. Sizing it to ``n_unique``
+    # Both are allocated at the *sort's* double width and the kernel writes their leading halves,
+    # so the radix sort below can ping-pong in these same buffers. Sizing the keys to ``n_unique``
     # and widening afterwards means ``bitcast_from_int`` allocates the double-width buffer and
     # copies the keys into it -- an allocation and a full copy, to move bytes that could have been
-    # written here in the first place.
+    # written here in the first place. The counts are the sort's payload, so they come out in unique
+    # order with no identity permutation to sort and gather by. Separate allocations, not one cut
+    # in two: the sorted prefix of each is handed back as a view, which would hold the other alive.
     sort_dtype = cast("type[Any]", odt.sortable_dtype(original_dtype))
     keys_compact = _launch.empty(2 * n_unique, dtype=key_dtype, device=device)
-    counts_compact = (
-        _launch.empty(n_unique, dtype=wp.int32, device=device) if return_counts else None
-    )
-    perm_buf = _launch.empty(2 * n_unique, dtype=wp.int32, device=device)
+    counts_buf = _launch.empty(2 * n_unique, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_grouping.COMPACT_FROM_TABLE[key_dtype],
         dim=cap,
-        inputs=[slot_key, slot_counts, occupied, keys_compact, counts_compact, perm_buf],
+        inputs=[slot_key, slot_counts, occupied, keys_compact, counts_buf],
         device=device,
     )
 
@@ -429,7 +428,7 @@ def _unique_hash(
         if wp.types.type_size_in_bytes(sort_dtype) == wp.types.type_size_in_bytes(key_dtype)
         else bitcast_from_int(keys_compact, sort_dtype, count=2 * n_unique)
     )
-    _launch.radix_sort_pairs(keys_buf, perm_buf, count=n_unique, end_bit=end_bit)
+    _launch.radix_sort_pairs(keys_buf, counts_buf, count=n_unique, end_bit=end_bit)
 
     if sort_dtype == original_dtype:
         # The sorted prefix of the sort's own scratch, handed back as a view rather than copied out:
@@ -442,11 +441,8 @@ def _unique_hash(
             bitcast_to_int(keys_buf, n_unique), original_dtype, count=n_unique
         )
 
-    unique_counts = None
-    if counts_compact is not None:
-        # A contiguous prefix slice, not a gather-unsafe strided view -- no copy
-        # needed before handing it to ``gather`` as the index array.
-        unique_counts = gather(counts_compact, _launch.view(perm_buf, 0, n_unique))
+    # The sorted counts, as the keys: a prefix view of the payload the sort carried them in.
+    unique_counts = _launch.view(counts_buf, 0, n_unique) if return_counts else None
 
     unique_inverse = None
     if return_inverse:
@@ -514,27 +510,34 @@ def hashed_occurrence_counts(keys: wp.array[wp.uint64] | wp.array[wp.int64]) -> 
     ```
     """
     n = keys.size
-    return _hash_insert(keys.view(wp.int64), n, wp.int32(kernel_grouping.hash_table_mask(n)))[1]
+    mask = wp.int32(kernel_grouping.hash_table_mask(n))
+    return _hash_insert(keys.view(wp.int64), n, mask, stamp_occupied=False)[1]
 
 
 def _hash_insert(
-    keys: wp.array[wp.int32] | wp.array[wp.int64], n: int, mask: wp.int32
-) -> tuple[wp.array[Any], wp.array[wp.int32], wp.array[wp.int32]]:
+    keys: wp.array[wp.int32] | wp.array[wp.int64], n: int, mask: wp.int32, *, stamp_occupied: bool
+) -> tuple[wp.array[Any], wp.array[wp.int32], wp.array[wp.int32] | None]:
     """
     Insert ``n`` keys into a fresh table; return its ``(slot_key, slot_counts, occupied)``.
 
     One slot past the ``mask + 1`` table is reserved for the single key that collides with the
     empty-slot sentinel; see the comment on ``kernel_grouping.hash_insert``. ``occupied`` is stamped
     by the insert itself rather than derived from ``slot_counts`` in a second pass, so it is
-    zero-filled rather than ``wp.empty``; it shares one zero-filled allocation with
-    ``slot_counts``, the two ``int32`` tables being adjacent halves of it.
+    zero-filled rather than ``wp.empty``. With ``stamp_occupied`` the three tables are cut from one
+    zero-filled allocation, all three dying inside the caller; without it ``occupied`` is ``None``
+    (a null descriptor at the launch, never written), and ``slot_counts`` takes an allocation of
+    its own, since it is the caller's answer and a view would hold the key table alive with it.
     """
     cap = int(mask) + 2
     device = keys.device
-    slot_key = _launch.zeros(cap, dtype=keys.dtype, device=device)
-    counts_and_occupied = _launch.zeros(2 * cap, dtype=wp.int32, device=device)
-    slot_counts = _launch.view(counts_and_occupied, 0, cap)
-    occupied = _launch.view(counts_and_occupied, cap, 2 * cap)
+    if stamp_occupied:
+        slot_key, slot_counts, occupied = _launch.carve_typed(
+            ((keys.dtype, cap), (wp.int32, cap), (wp.int32, cap)), device, zeroed=True
+        )
+    else:
+        slot_key = _launch.zeros(cap, dtype=keys.dtype, device=device)
+        slot_counts = _launch.zeros(cap, dtype=wp.int32, device=device)
+        occupied = None
     _launch.launch(
         kernel_grouping.HASH_INSERT[keys.dtype],
         dim=n,
@@ -1391,7 +1394,9 @@ def sorted_undirected_edge_keys(edges: odt.Array2dInt32, n_vertices: int) -> wp.
     # The keys are packed straight into the leading half of the radix sort's double-width buffer,
     # and the payload the sort insists on is left uninitialized: nothing reads the permutation, so
     # seeding it with an identity (``sort_and_argsort``) and staging the keys in a buffer of their
-    # own would be an allocation, a fill and a copy for an answer that is thrown away.
+    # own would be an allocation, a fill and a copy for an answer that is thrown away. Not
+    # ``_launch.sort_buffers``: one allocation for both would save one, but the returned key view
+    # would then hold the payload alive with it, 1.5x the bytes the answer needs.
     keys = _launch.empty(2 * n_edges, dtype=wp.uint64, device=device)
     _launch.launch(
         kernel_grouping.pack_undirected_edge_keys,

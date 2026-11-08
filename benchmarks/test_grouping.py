@@ -162,17 +162,30 @@ def test_group_int_rows(bench_case: BenchCase) -> None:
         assert pairs_tm.shape[0] > 0
 
 
+_float_inverse_cache: dict[tuple[str, str], wp.array[wp.float32]] = {}
+
+
+def _edge_inverse_float32(bench_case: BenchCase) -> wp.array[wp.float32]:
+    """Return ``_edge_inverse`` as ``float32``: exact below ``2**24`` classes, merged above."""
+    key = (bench_case.mesh_name, str(bench_case.device))
+    if key not in _float_inverse_cache:
+        _float_inverse_cache[key] = od.array.astype(_edge_inverse(bench_case), wp.float32)
+    return _float_inverse_cache[key]
+
+
 @pytest.mark.benchmark(group="unique_1d")
 @pytest.mark.benchlibs("ordito")
-def test_unique_1d(bench_case: BenchCase) -> None:
+@pytest.mark.parametrize("dtype", ["int32", "float32"])
+def test_unique_1d(bench_case: BenchCase, dtype: str) -> None:
     """
-    Sorted unique values of the edge inverse, with inverse and counts: the hash-table dedup.
+    Sorted unique values of the edge inverse, with inverse and counts.
 
     Every interior edge's class id appears twice, so the input is ``3F`` keys and the output about
-    ``1.5F``: the hash inserts scale with the input and the final sort with the output. Ordito only:
-    the test oracle is ``numpy.unique``, not a mesh library.
+    ``1.5F``. The two dtypes take the two algorithms: ``int32`` one radix sort of every value,
+    ``float32`` the hash table, whose inserts scale with the input and whose final sort with the
+    output. Ordito only: the test oracle is ``numpy.unique``, not a mesh library.
     """
-    inverse = _edge_inverse(bench_case)
+    inverse = _edge_inverse(bench_case) if dtype == "int32" else _edge_inverse_float32(bench_case)
     unique, inverse_out, counts = bench_case.run(
         lambda: od.grouping.unique_1d(inverse, return_inverse=True, return_counts=True)
     )
