@@ -920,7 +920,9 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   `heat.upper_edge_length_sum_and_count`: 0.20x device time to `bunny`, 0.50x on `dragon`, `lucy`
   at its bandwidth floor at the standard width, where a row a lane cost 1.31x for the last
   block's fold of 219 k partials; CPU flat, keeps `blocks_1d`). Wall-neutral on the heat calls,
-  whose host issue hides the launch.
+  whose host issue hides the launch. Spread to `jacobi_dominance_bound`,
+  `operator_max_row_abs_sum` and `scaled_rows_and_bound`: kernels 0.14-0.34x to `bunny`, calls
+  0.98-0.99x.
 - A tile kernel whose reduced extent is under one tile loses ~49x; `tile_chunk` reports what remains, so clamp with `reduce.block_chunk`.
 - Tuning constants are per-device: CUDA wants long strided slices, CPU short (`ITEMS_PER_SLICE_CUDA = 128`, `_CPU = 32`). Sweep both devices and more than two values, split the constant if the optima differ, and re-probe after an upgrade (§9).
 - **Reproducibility prices (§12.3):** the last-block commit adds 2-5 µs of device time to a launch (fence, ticket, the last block's fold, latency-bound: fold its rows with interleaved accumulators), against 3-8 µs of host for a separate fold launch. The fixed-order scan is two launches and an allocation above one 2048-element chunk (+10-15 µs, 3x CUB's device time at 5 M) and cheaper than CUB below. On a 15-100 µs call either crosses 10 %, which is why the setting can be switched off (`ordito.config`, §2.2); on solves and loops it is noise.
@@ -1136,14 +1138,22 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   Open: a separate long-ring kernel launched only when the caller knows a long ring exists (the
   count `vertex_one_rings` already reads back, carried with the rings), or a frame walk whose
   per-lane and block forms are one code path.
-- **Row folds still at the standard width** (2026-11-08 heat sweep): `linalg.jacobi_dominance_bound`
-  and `smoothing.operator_max_row_abs_sum` walk sixteen CSR rows a lane at `blocks_1d(n_rows)`,
-  the shape `spanned_blocks_1d` took 0.20-0.50x off in `heat`. Price each on the device and in
-  its call before spreading (the heat calls were wall-neutral).
-- **The heat solves are CG rounds at the small-launch floor** (2026-11-08): `cg_update`,
-  `cg_matvec_dots` and `chebyshev_step` are 80-90 % of device time in `heat_geodesic` and
-  `log_map` from `sphere_small` to `saddle`, at 3-6 us a launch on 2.5 k-41 k rows. Not examined
-  in the heat sweep (`linalg` scope).
+- **Hub rows in the explicit smoothing steps** (2026-11-08): the kernels reading
+  `kernels/laplacian.operator_row` a thread a row (explicit `filter_laplacian`, `filter_taubin`
+  and their siblings) walk `fan_hub`'s hub row in one thread: 88 / 82 ms against 0.22 / 0.20 ms
+  on `sphere_med`. `implicit_laplacian_step_long_rows` is the model (`operator_row_entries`, a
+  long-row flag read back with a value the call already reads, so ordinary meshes keep the
+  thread-a-row kernel); the explicit passes have no readback to carry the flag.
+- **A CG round is two launches at the small-launch floor** (2026-11-08): `cg_matvec_dots` and
+  `cg_update` (5.4 + 6.0 us at 2.5 k rows, each ending in a last-block fold) and the Chebyshev
+  steps are 80-90 % of device time in `heat_geodesic` and `log_map` from `sphere_small` to
+  `saddle`. The one-block solve already loses from ~1 200 rows (`CG_ONE_BLOCK_MAX_ROWS`). The
+  lever left is one launch a round: a pipelined CG (Ghysels-Vanroose, one reduction a round)
+  whose mat-vec recomputes each neighbour's updated vectors from double-buffered old ones (Jacobi
+  only, so a recompute is local). Expected ~0.6x a Jacobi round where launches bind, 3x the
+  mat-vec's reads where bytes do (size gate); changes every CG solve's rounding and convergence,
+  and the heat settle test's exact-zero far field must survive it. Not started: needs the
+  owner's go-ahead.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
