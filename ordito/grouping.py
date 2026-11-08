@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal, TypeVar, cast, overload
 
 import warp as wp
 
-import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import checked_index_bound, index_extrema, read_scalar, scan_count
@@ -14,11 +14,17 @@ from ordito.array import bitcast_from_int, bitcast_to_int, copyto, gather, sort_
 from ordito.constants import INDEX_RADIX_PAIR
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
+from ordito.kernels import reduce as kernel_reduce
 
 # The element dtype of ``unique_1d``'s input, so the checker gives its unique values the same
 # one: ``wp.array[wp.float32]`` in, ``wp.array[wp.float32]`` out. A static name only; which
 # dtypes the call accepts at runtime is in its docstring.
 DType = TypeVar("DType")
+
+# The relative widening of ``hash_vector_rows``' radix: the device rounds a ``float32`` product
+# where the radix divides in ``float64``, and the slack plus the three cells ``vec3_cell_radix``
+# adds cover the difference.
+_RADIX_SLACK = 1.0 + 1e-6
 
 
 def group(values: wp.array[wp.Int], length: int) -> odt.Array2dInt32:
@@ -1196,19 +1202,30 @@ def hash_vector_rows(data: wp.array[wp.vec3], epsilon: float = 0.0) -> wp.array[
         # true minimum cannot give a negative result, so no validation pass or shift is needed. The
         # bounds also supply the radix, and doing it per component keeps that radix as small as the
         # widest single extent rather than the whole diagonal, which matters because the row packing
-        # is only injective while ``radix ** 3`` fits a ``uint64``.
-        min_bound, max_bound = od.bounds.aabb(data)
-        extent = max(float(max_bound[c]) - float(min_bound[c]) for c in range(3)) / epsilon
-        # The device rounds a float32 product where this divides in float64; the relative slack plus
-        # the half-cell of rounding covers the difference, and an over-wide radix is harmless.
-        radix = int(extent * (1.0 + 1e-6)) + 3
+        # is only injective while ``radix ** 3`` fits a ``uint64``. The box and the radix stay on
+        # the device, the radix in the two slots past the box's six, so nothing is read back.
+        device = data.device
+        corners = _launch.full(8, math.inf, dtype=wp.float32, device=device)
+        radix = _launch.alias(corners, wp.uint64, 24, 1)
+        _launch.launch(
+            kernel_reduce.minmax_vec3_chunked,
+            dim=kernel_reduce.chunks_1d(n),
+            inputs=[data, corners],
+            device=device,
+        )
+        _launch.launch(
+            kernel_grouping.vec3_cell_radix,
+            dim=1,
+            inputs=[corners, wp.float64(epsilon), wp.float64(_RADIX_SLACK), radix],
+            device=device,
+        )
         # Each vertex is rounded and packed in one pass; no ``(n, 3)`` cell table is written.
-        hashes = _launch.empty(n, dtype=wp.uint64, device=data.device)
+        hashes = _launch.empty(n, dtype=wp.uint64, device=device)
         _launch.launch(
             kernel_grouping.round_pack_vec3,
             dim=n,
-            inputs=[data, min_bound, wp.float32(1.0 / epsilon), wp.uint64(radix), hashes],
-            device=data.device,
+            inputs=[data, corners, wp.float32(1.0 / epsilon), radix, hashes],
+            device=device,
         )
         return hashes
     hashes = _launch.empty(data.size, dtype=wp.uint64, device=data.device)

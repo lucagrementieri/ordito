@@ -2175,10 +2175,9 @@
  },
  "benchmarks/test_grouping.py::test_hash_vector_rows[sphere_small-ordito-cuda-absolute]": {
   "counts": {
-   "launch": 2,
+   "launch": 3,
    "alloc": 2,
-   "memset": 1,
-   "d2h": 1
+   "memset": 1
   }
  },
  "benchmarks/test_grouping.py::test_hash_vector_rows[sphere_small-ordito-cuda-relative]": {
@@ -6491,10 +6490,10 @@
  },
  "benchmarks/test_repair.py::test_duplicate_vertex_inverse[sphere_med-ordito-cuda-eps1e-6]": {
   "counts": {
-   "launch": 7,
+   "launch": 8,
    "alloc": 6,
    "memset": 1,
-   "d2h": 2,
+   "d2h": 1,
    "scan": 2,
    "sort": 1
   }
@@ -6665,10 +6664,10 @@
  },
  "benchmarks/test_repair.py::test_remove_duplicated_vertices[sphere_med-ordito-cuda-eps1e-6]": {
   "counts": {
-   "launch": 8,
+   "launch": 9,
    "alloc": 8,
    "memset": 1,
-   "d2h": 2,
+   "d2h": 1,
    "scan": 2,
    "sort": 1
   }

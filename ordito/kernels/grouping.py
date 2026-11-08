@@ -540,21 +540,45 @@ def pack_sorted_face_keys_and_order(
 
 
 @wp.kernel
+def vec3_cell_radix(
+    corners: wp.array[wp.float32],
+    epsilon: wp.float64,
+    slack: wp.float64,
+    out_radix: wp.array[wp.uint64],
+) -> None:
+    # ``round_pack_vec3``'s radix, launched on one thread from the packed box
+    # ``kernels/reduce.minmax_vec3_chunked`` left on the device (``[lower, -upper]``), so no
+    # readback sits between the box and the pack. The widest extent in cells, widened by the
+    # relative ``slack`` plus three cells: the device rounds a ``float32`` product where this
+    # divides in ``float64``, and an over-wide radix is harmless. Every step is a correctly rounded
+    # ``float64`` operation in the order the host formula had, with nothing to contract, so the
+    # radix equals what ``int(max(upper - lower) / epsilon * slack) + 3`` gave on the host. Once,
+    # not in every thread of the pack: ``float64`` runs at 1/64 rate here.
+    extent = wp.float64(0.0)
+    for c in range(3):
+        extent = wp.max(extent, wp.float64(-corners[3 + c]) - wp.float64(corners[c]))
+    out_radix[0] = wp.uint64(wp.int64(extent / epsilon * slack)) + wp.uint64(3)
+
+
+@wp.kernel
 def round_pack_vec3(
     vertices: wp.array[wp.vec3],
-    origin: wp.vec3,
+    corners: wp.array[wp.float32],
     inv_epsilon: wp.float32,
-    max_index: wp.uint64,
+    radix: wp.array[wp.uint64],
     out_packed: wp.array[wp.uint64],
 ) -> None:
-    # Snapping relative to `origin` -- the data's own minimum corner -- rather than to the
-    # coordinate origin does two things. The cell indices come out non-negative, which the row
-    # packing needs since it treats a row as digits in a positive radix. And the product stays the
-    # size of the data's *extent* instead of its distance from zero: float32 carries about 7 digits,
-    # so scaling a coordinate near 100 by 1e6 has already quantised away the low bits. The cell row
-    # is packed where it is rounded, through the same `pack_index_digit` `pack_indices` folds, so
-    # the key equals packing a stored `(n, 3)` cell table and no table is written.
+    # Snapping relative to the data's own minimum corner (``corners``' lower half, the packed box
+    # ``vec3_cell_radix`` read) rather than to the coordinate origin does two things. The cell
+    # indices come out non-negative, which the row packing needs since it treats a row as digits in
+    # a positive radix. And the product stays the size of the data's *extent* instead of its
+    # distance from zero: float32 carries about 7 digits, so scaling a coordinate near 100 by 1e6
+    # has already quantised away the low bits. The cell row is packed where it is rounded, through
+    # the same `pack_index_digit` `pack_indices` folds, so the key equals packing a stored `(n, 3)`
+    # cell table and no table is written.
     tid = wp.int32(wp.tid())
+    origin = wp.vec3(corners[0], corners[1], corners[2])
+    max_index = radix[0]
     v = (vertices[tid] - origin) * inv_epsilon
     packed = wp.uint64(0)
     power = wp.uint64(1)
