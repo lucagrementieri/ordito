@@ -1826,13 +1826,19 @@ def test_require_same_device_flags_a_mismatch_and_ignores_none(device: str) -> N
     No other library shares Warp's launch-time device hazard, so there is nothing to compare its
     verdict against. Pins its three contracts directly instead: a ``None`` argument is skipped
     rather than compared, a ``list``/``tuple`` argument is unpacked element-wise with an
-    ``f"{name}[{i}]"`` label, and same-device arguments are a silent no-op.
+    ``f"{name}[{i}]"`` label, and same-device arguments are a silent no-op. A sequence of pairs
+    (``combine.concatenate``'s meshes) is scanned flattened in one pass, so a mismatch in any
+    position of any pair must still raise, and a ``None``, an empty pair or a bare array among
+    the pairs must still fall back to the element-wise walk.
     """
     a_wp = wp.zeros(3, dtype=wp.float32, device=device)
     b_wp = wp.zeros(3, dtype=wp.float32, device=device)
 
     _common.require_same_device(a=a_wp, b=b_wp, unset=None)  # no raise
     _common.require_same_device(loops=[a_wp, b_wp, None])  # no raise
+    _common.require_same_device(pairs=[(a_wp, b_wp), (b_wp, None), (), [a_wp]])  # no raise
+    _common.require_same_device(pairs=[(None, a_wp), (b_wp, a_wp)])  # no raise
+    _common.require_same_device(pairs=[(a_wp, b_wp), a_wp])  # no raise
 
     if not wp.is_cuda_available():
         pytest.skip("needs both devices to construct a mismatch")
@@ -1841,6 +1847,16 @@ def test_require_same_device_flags_a_mismatch_and_ignores_none(device: str) -> N
         _common.require_same_device(a=a_wp, c=c_wp)
     with pytest.raises(RuntimeError, match=r"'loops\[0\]' is on .+ while 'loops\[1\]' is on"):
         _common.require_same_device(loops=[a_wp, c_wp])
+    pair_mismatches = [
+        [(a_wp, b_wp), (b_wp, c_wp)],
+        [(a_wp, b_wp), (c_wp, b_wp)],
+        [(a_wp, None), (b_wp, c_wp)],
+        [(), (a_wp, b_wp), (b_wp, c_wp)],
+        [(a_wp, b_wp), c_wp],
+    ]
+    for pairs in pair_mismatches:
+        with pytest.raises(RuntimeError, match="one device"):
+            _common.require_same_device(pairs=pairs)
 
 
 _EMPTY_INPUT_CASES = [

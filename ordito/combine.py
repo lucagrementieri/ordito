@@ -28,6 +28,7 @@ from ordito import _launch
 from ordito._common import require_same_device, scan_count
 from ordito.adjacency import _face_component_forest  # pyright: ignore[reportPrivateUsage]
 from ordito.kernels import combine as kernel_combine
+from ordito.selection import _submeshes_from_face_groups  # pyright: ignore[reportPrivateUsage]
 
 
 def concatenate(
@@ -284,16 +285,20 @@ def split(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, labels=labels)
-    vertices_all, vertex_offsets, faces_all, face_offsets = split_with_offsets(
-        vertices, faces, labels=labels
-    )
-    if vertex_offsets.size == 2:
+    vertices_all, faces_all, offsets = _split_packed(vertices, faces, labels)
+    n_components = offsets.size // 2 - 1
+    if n_components == 0:
+        return []
+    if n_components == 1:
         # One component is the whole of both buffers, so its offsets need no readback.
         if copy:
             return [(_launch.clone(vertices_all), _launch.clone(faces_all))]
         return [(vertices_all, faces_all)]
-    component_vertices = od.array.split(vertices_all, vertex_offsets, copy=copy)
-    component_faces = od.array.split(faces_all, face_offsets, copy=copy, row_size=3)
+    # The one readback: both offsets share a buffer, so a second read is not needed.
+    # Host bounds as array slices: a list round trip of the offsets cost more than the read saved.
+    bounds = cast("Sequence[int]", offsets.numpy())
+    component_vertices = od.array.split(vertices_all, bounds[n_components + 1 :], copy=copy)
+    component_faces = od.array.split(faces_all, bounds[: n_components + 1], copy=copy, row_size=3)
     return list(zip(component_vertices, component_faces, strict=True))
 
 
@@ -367,10 +372,32 @@ def split_with_offsets(
     ```
     """
     require_same_device(vertices=vertices, faces=faces, labels=labels)
+    vertices_all, faces_all, offsets = _split_packed(vertices, faces, labels)
+    k = offsets.size // 2 - 1
+    return (
+        vertices_all,
+        _launch.view(offsets, k + 1, 2 * k + 2),
+        faces_all,
+        _launch.view(offsets, 0, k + 1),
+    )
+
+
+def _split_packed(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], labels: wp.array[wp.int32] | None
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    ``split_with_offsets`` with both offsets in one ``(2 * k + 2,)`` buffer, face offsets first.
+
+    One buffer is one readback for ``split``, which needs both on the host.
+    """
     device = vertices.device
     n_faces = faces.size // 3
     if n_faces == 0:
-        return (*_launch.empty_packed(wp.vec3, device), *_launch.empty_packed(wp.int32, device))
+        return (
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.zeros(2, dtype=wp.int32, device=device),
+        )
 
     # The labels and the identity payload go straight into the sort's double-width buffers, with
     # each component's root flagged in the keys' upper half; the flags' scan numbers the components.
@@ -394,18 +421,15 @@ def split_with_offsets(
 
     if n_components == 1:
         # One component is every face in its own order: no sort, and both offsets are known here.
+        # The memset under the extraction stays: its vertex mask is scattered from the faces, so
+        # an identity order still needs the zeros (about 1 % of the call on CUDA).
         component_vertices, component_faces = od.selection.submesh_from_face_indices(
             vertices, faces, _launch.view(order_buffer, 0, n_faces)
         )
         offsets = _launch.array(
             [0, n_faces, 0, component_vertices.size], dtype=wp.int32, device=device
         )
-        return (
-            component_vertices,
-            _launch.view(offsets, 2, 4),
-            component_faces,
-            _launch.view(offsets, 0, 2),
-        )
+        return component_vertices, component_faces, offsets
 
     # Sorting by component number rather than label orders ``key_bits(k)`` bits, not
     # ``key_bits(n_faces)``; the stable sort keeps each component's faces ascending.
@@ -415,14 +439,19 @@ def split_with_offsets(
     sorted_components, sorted_face_ids = od.array.sort_and_argsort_in_place(
         keys_buffer, order_buffer, end_bit=_launch.key_bits(n_components)
     )
-    face_offsets = _launch.empty(n_components + 1, dtype=wp.int32, device=device)
+    offsets = _launch.empty(2 * n_components + 2, dtype=wp.int32, device=device)
+    face_offsets = _launch.view(offsets, 0, n_components + 1)
     _launch.launch(
         kernel_combine.component_face_offsets,
         dim=n_components + 1,
         inputs=[sorted_components, face_offsets],
         device=device,
     )
-    vertices_all, vertex_offsets, faces_all = od.selection.submeshes_from_face_groups(
-        vertices, faces, sorted_face_ids, face_offsets
+    vertices_all, faces_all = _submeshes_from_face_groups(
+        vertices,
+        faces,
+        sorted_face_ids,
+        face_offsets,
+        _launch.view(offsets, n_components + 1, 2 * n_components + 2),
     )
-    return vertices_all, vertex_offsets, faces_all, face_offsets
+    return vertices_all, faces_all, offsets

@@ -891,7 +891,31 @@ def submeshes_from_face_groups(
         raise ValueError(
             f"submeshes_from_face_groups cannot pack {k} groups x {radix} vertices into int64"
         )
+    vertex_offsets = _launch.empty(k + 1, dtype=wp.int32, device=device)
+    vertices_all, faces_all = _submeshes_from_face_groups(
+        vertices, faces, group_face_indices, group_offsets, vertex_offsets
+    )
+    return vertices_all, vertex_offsets, faces_all
 
+
+def _submeshes_from_face_groups(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    group_face_indices: wp.array[wp.int32],
+    group_offsets: wp.array[wp.int32],
+    vertex_offsets: wp.array[wp.int32],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    ``submeshes_from_face_groups`` past its checks, writing the vertex offsets into a held buffer.
+
+    ``vertex_offsets`` is any ``(k + 1,)`` contiguous ``int32`` buffer, so a caller can place it
+    beside offsets of its own and read both back at once (``combine.split``). ``k`` and the
+    selection are non-empty and the keys fit ``int64``, as the public form checks.
+    """
+    device = vertices.device
+    k = group_offsets.size - 1
+    n_selected = group_face_indices.size
+    radix = max(vertices.size, 1)
     n_corners = 3 * n_selected
     keys = _launch.empty(2 * n_corners, dtype=wp.int64, device=device)
     order = _launch.empty(2 * n_corners, dtype=wp.int32, device=device)
@@ -915,7 +939,6 @@ def submeshes_from_face_groups(
     # keys, so an empty group still gets a zero-length entry and no host synchronisation is needed
     # to size it.
     slot_groups = _launch.empty(n_slots, dtype=wp.int32, device=device)
-    vertex_offsets = _launch.empty(k + 1, dtype=wp.int32, device=device)
     vertices_all = _launch.empty(n_slots, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel_selection.decode_group_vertex_keys,
@@ -931,7 +954,7 @@ def submeshes_from_face_groups(
         inputs=[inverse, slot_groups, vertex_offsets, faces_all],
         device=device,
     )
-    return vertices_all, vertex_offsets, faces_all
+    return vertices_all, faces_all
 
 
 @overload

@@ -12,8 +12,9 @@ lives in ``_launch``.
 
 from __future__ import annotations
 
+import itertools
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any, TypeVar, cast
 
 import numpy as np
@@ -357,14 +358,21 @@ def _first_device_mismatch(value: object, first: list[object]) -> bool:
     if isinstance(value, (list, tuple)):
         if not value:
             return False
+        items: Iterable[Any] = value
+        head: Any = value[0]
+        if all(map(isinstance, value, itertools.repeat((list, tuple)))):
+            # A sequence of pairs (``combine.concatenate``'s meshes) flattens one level into the
+            # same single pass: a call per pair cost 3x the whole comparison at 4 096 pairs.
+            items = itertools.chain.from_iterable(value)
+            head = head[0] if head else None
         try:
             # The common case, a flat sequence of arrays, compares without a call per element;
-            # ``None`` or a nested sequence has no ``.device`` and takes the element-wise walk.
-            head = value[0].device
+            # ``None`` or a deeper nesting has no ``.device`` and takes the element-wise walk.
+            device = head.device
             if not first:
-                first.append(head)
+                first.append(device)
             reference = first[0]
-            return any(item.device is not reference and item.device != reference for item in value)
+            return any(item.device is not reference and item.device != reference for item in items)
         except AttributeError:
             return any(_first_device_mismatch(item, first) for item in value)
     device = getattr(value, "device", None)

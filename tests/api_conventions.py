@@ -226,6 +226,11 @@ _PRIVATE_IMPORT_ALLOWLIST: dict[tuple[str, str], str] = {
         "the radix sort's double-width buffers; face_connected_component_labels would store them "
         "for a launch to copy there"
     ),
+    ("combine", "selection._submeshes_from_face_groups"): (
+        "split_with_offsets has the extraction write its vertex offsets beside its own face "
+        "offsets, so split reads both back at once; the public form allocates them alone, which "
+        "is a second readback"
+    ),
     ("repair", "adjacency._face_component_forest"): (
         "remove_small_components' face-count criteria histogram the component labels in the "
         "flatten that writes them; face_connected_component_labels would store the labels for a "

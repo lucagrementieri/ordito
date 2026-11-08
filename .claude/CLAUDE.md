@@ -1135,12 +1135,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
 - **`INT32_MAX` fills left after the walk-start carve:** `heat.py` `face_claim` (`n_cover`) and
   the four- and six-slot bounds in `graph.py` / `voxels.py`; the `INT32_MAX - x` under
   `atomic_max` encoding drops the fill only where a zeroed allocation sits alongside.
-- **`combine` leftovers outside its scope (2026-11-06 sweep):** `require_same_device` is about
-  half of `concatenate`'s host time at 4 096 pieces (one recursive descent per array);
-  `split` reads its vertex and face offsets in two readbacks (`array.split` twice) where one
-  buffer read once would do; the one-component `split` pays `submesh_from_face_indices`' memset
-  for an identity face order. Each is a few percent of the call at the benchmark sizes; price
-  before acting.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

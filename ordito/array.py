@@ -471,10 +471,11 @@ def split(
     print([segment.numpy().tolist() for segment in segments])  # [[1, 2], [3], [4, 5, 6]]
     ```
     """
-    require_same_device(array=array, offsets=offsets)
+    on_device = isinstance(offsets, wp.array)
+    # Host bounds carry no device, and walking them for one costs a call per bound.
+    require_same_device(array=array, offsets=offsets if on_device else None)
     if int(array.ndim) != 1:
         raise ValueError(f"split requires a rank-1 array, got ndim={array.ndim}")
-    on_device = isinstance(offsets, wp.array)
     offsets_ndim = int(offsets.ndim) if on_device else np.ndim(offsets)
     if offsets_ndim != 1:
         raise ValueError(f"split requires rank-1 offsets, got ndim={offsets_ndim}")
