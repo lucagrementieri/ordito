@@ -27,6 +27,21 @@ lived here and was removed.** It advanced both columns against one shared subspa
 iteration count on a uniform mesh, but its iteration costs more launches than this one's and on
 an ill-conditioned system the count goes the other way -- see ``_cg_columns`` in
 ``ordito/linalg.py`` for the measurement that retired it.
+
+**One launch a Jacobi round was built and declined (2026-11-09).** A ``cg_fused_round`` ran a
+round's update and the next round's mat-vec with its dots as one launch on the fold layout: Warp
+has no grid barrier, so each block formed every neighbour's next ``u`` where it read it, from the
+neighbour's previous ``r``, ``w``, ``s`` and inverse diagonal and the scalars every block folds
+alike, with ``r``, ``u``, ``w``, ``s``, the partials, the recurrence's scalars and the round
+count double-buffered and the host alternating the sets a launch at a time. The iterates were
+the two launches' own to the bit (heat geodesic, log map, extension, signed distance, transport,
+implicit fairing on ``sphere_small``, ``saddle``, ``sphere_med``). It lost: a replayed graph
+node costs about a microsecond, while the gather of four vectors an entry held a round at 14.6 us
+of device time against the two launches' 12.4 on ``sphere_med`` (11.85 against 11.4 on
+``sphere_small``). Whole calls, CUDA, new/old: ``extend_scalar`` 1.24x on ``sphere_med`` and
+1.14x on ``bunny``, ``heat_geodesic`` 1.10x on ``sphere_med``, ``log_map`` 1.06-1.08x on
+``sphere_small`` and ``saddle``; ``heat_signed_distance`` 0.93-0.95x on ``saddle`` and ``bunny``
+only, which no size gate separates from the losses.
 """
 
 from typing import Any

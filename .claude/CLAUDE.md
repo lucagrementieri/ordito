@@ -983,12 +983,16 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   **A latency-bound thread-a-row pass with no readback to carry a flag takes its long rows as a
   warp** (2026-11-09, `kernels/smoothing.warp_long_operator_row`): one ballot names the warp's
   long rows, short rows stay their thread's (bit-identical, the CPU's ballot empty) and the warp
-  walks each long one. The explicit smoothing passes: `fan_hub` 7.0 -> 0.85 ms a pass, ordinary
-  meshes at par (5.6 us a pass on `sphere_small`), where the block deferral cost them 1.25x
-  device time a pass (a barrier in a 5 us launch) for 0.15 ms on the hub. Four interleaved sums
+  walks each long one. The explicit smoothing passes: `fan_hub` 7.0 -> 0.85 ms a pass (calls
+  0.20-0.34x), ordinary meshes at par on small meshes and 1.01-1.03x on `dragon`, whose passes
+  are device-bound (the ballot); the block deferral cost them 1.25x device time a pass (a barrier
+  in a 5 us launch) for 0.15 ms on the hub. Four interleaved sums
   a lane lost 1.34x on the hub.
 - **Solvers:** a single-level polynomial preconditioner wins on long solves; a Chebyshev multigrid smoother loses (no single `(degree, interval)` is robust). A small synthetic system can mislead.
-- **Refuted, do not re-propose:** a single-block BFS drain, a one-block hole-fill DP and merged-level blocked interval DPs (the grid must stay full); voxel aggregation for multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches.
+- **Refuted, do not re-propose:** one launch a Jacobi CG round by recomputing each neighbour's
+  next `u` in the mat-vec (2026-11-09, bit-identical iterates, 1.10-1.24x whole calls on
+  `sphere_med` / `bunny`: a replayed node costs ~1 us, the four-vector gather ~2 us; notes in
+  `kernels/algorithms/conjugate_gradient.py`); a single-block BFS drain, a one-block hole-fill DP and merged-level blocked interval DPs (the grid must stay full); voxel aggregation for multigrid; micro-tuned Bridson blue noise; two-stream overlap of sequential branches.
 - **Producer-consumer fusion:** always fuse consecutive same-`dim` launches where the consumer reads the producer only at its own index; every pair measured was faster. Price the fused region, not the call containing it, and cross-check kernel and allocation counts. Also fold a map into its consumer, merge two launches of one kernel into a wider one, and walk-and-reduce neighbour lists in one thread per query. A fusion that changes a slot or box index needs a debug-mode run. Inline single-caller helpers it leaves behind; fold-on-read loses on dependent chases.
 - **Blocked wavefront:** a 2-D DP with local directional dependencies and small per-step work wins as one block per tile and one launch per tile-diagonal, with `wp.tile_sum` as the barrier. It loses where levels are already wide (the fill DP). Test it above 32 lanes and pin it byte for byte to the simple schedule.
 - **Serial-order sweeps as a dataflow wavefront:** an in-place sweep in index order (Gauss-Seidel, `filter_laplacian(method="pyvista")`) runs on CUDA as one launch a wave over all vertices: a vertex with `c` sweeps done runs the next once its lower-index ring neighbours have `c + 1` and its higher-index ones exactly `c`. Two neighbours are never both ready, so positions update in place race-free with only the counts ping-ponged, and the result equals the serial loop bit for bit. The wave count is the numbering's critical path: 13-16 a sweep scrambled; a scan numbering's longest increasing neighbour path plus about 17 a sweep (bunny 255 / 977 waves at 1 / 10 sweeps, dragon 1 132 / 1 301). 10 sweeps, new/VTK: icosphere(6) 1.4 / 54 ms, bunny 8.3 / 46, dragon 21 / 751; one GPU thread would be seconds. Waves go in batches of `16 x sweeps` (at least 128) a readback, so a small mesh pays the batch (sphere_small 1.35 vs VTK 1.56 ms, 160 launches for ~60 waves); graph-capturing the batch lost (2026-10-31: recording each call, then replaying past the first read, 1.00-1.01x on scrambled meshes, which one batch ends, and 1.04-1.49x on bunny / dragon, whose waves are device-bound at ~10 µs), and so does a smaller first batch (16 a sweep + 8: 0.40-0.60x on scrambled meshes at 1-3 sweeps but 1.06-1.18x on scan meshes, which then pay a second read). **The schedule depends on the stencil and the sweep count alone**, so the volume-constrained path (one sweep a call, `iterations` calls) records the first sweep's exact wave count (`gauss_seidel_wave_counted`: the counts' trailing slot counts waves, the vertex taking the last finished slot stores it) and issues exactly that many waves with no readback afterwards: 10 sweeps 0.26-0.28x on scrambled icospheres (8 -> 2.1 ms), 0.93-0.95x on bunny / dragon, bit-identical. The bookkeeping lives in its own kernel because inside the plain wave it cost 5-9 % device time on dragon even unused, and a single sweep does not record (the counted waves cost it 1.07-1.14x). The CPU device runs the serial loop (waves do `waves x n` work).
@@ -1152,16 +1156,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   `float32` and `float64` shuffle native `kernels/reduce` lacks, and `csr_row_long` from
   `kernels/linalg` without an import cycle. The explicit passes' own warp walk stays at
   ~0.4 ms a hub (32 lanes over 41 k dependent loads).
-- **A CG round is two launches at the small-launch floor** (2026-11-08): `cg_matvec_dots` and
-  `cg_update` (5.4 + 6.0 us at 2.5 k rows, each ending in a last-block fold) and the Chebyshev
-  steps are 80-90 % of device time in `heat_geodesic` and `log_map` from `sphere_small` to
-  `saddle`. The one-block solve already loses from ~1 200 rows (`CG_ONE_BLOCK_MAX_ROWS`). The
-  lever left is one launch a round: a pipelined CG (Ghysels-Vanroose, one reduction a round)
-  whose mat-vec recomputes each neighbour's updated vectors from double-buffered old ones (Jacobi
-  only, so a recompute is local). Expected ~0.6x a Jacobi round where launches bind, 3x the
-  mat-vec's reads where bytes do (size gate); changes every CG solve's rounding and convergence,
-  and the heat settle test's exact-zero far field must survive it. Not started: needs the
-  owner's go-ahead.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
