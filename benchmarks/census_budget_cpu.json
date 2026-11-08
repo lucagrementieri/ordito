@@ -119,14 +119,14 @@
  "benchmarks/test_adjacency.py::test_vertex_face_adjacency_from_counts[fan_hub-ordito-cpu]": {
   "counts": {
    "launch": 1,
-   "alloc": 2,
+   "alloc": 1,
    "scan": 1
   }
  },
  "benchmarks/test_adjacency.py::test_vertex_face_adjacency_from_counts[sphere_med-ordito-cpu]": {
   "counts": {
    "launch": 1,
-   "alloc": 2,
+   "alloc": 1,
    "scan": 1
   }
  },

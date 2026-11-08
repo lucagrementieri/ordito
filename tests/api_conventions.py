@@ -696,7 +696,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # re-zeroed in place for the next pass's face pass.
     ("smoothing", "fairing_system_rows"): frozenset({"area_sums"}),
     # scratch / persistent state
-    ("adjacency", "scatter_vertex_faces"): frozenset({"cursor"}),
     ("smoothing", "scatter_incidence_rows"): frozenset({"cursor"}),
     # ``smooth_region``'s right-hand side, written by ``normal_equations_setup``, is overwritten in
     # place with the seed on the rows of a component no fixed vertex touches, which the product's
@@ -714,8 +713,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # round. The answer is ``out_selected``; this buffer is the sweep's state.
     ("points", "farthest_point_sample_block"): frozenset({"min_distance_sq"}),
     # ``slot_count`` is the per-vertex atomic cursor picking which of the two neighbour slots each
-    # scattered edge lands in -- the ``scatter_vertex_faces`` case exactly, under a name that says
-    # what it holds. The answer is ``out_neighbors``.
+    # scattered edge lands in: caller-allocated scratch, under a name that says what it holds. The
+    # answer is ``out_neighbors``.
     ("boundary", "scatter_boundary_neighbors"): frozenset({"slot_count"}),
     # ``next_node`` is the boundary halfedges' successor table, rewritten in place where the walk
     # crosses a pinch's gap instead of staying in its fan.

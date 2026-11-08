@@ -85,7 +85,7 @@ def scatter_neighbor_lists(
     # row's start in entry ``v + 1`` (``scatter.claim_row_slot``), which ends as the offsets. Entry
     # 0, which no claim touches, is written here: ``graph.edges_to_neighbor_lists_from_counts``
     # scans the starts in behind it and zeroes nothing. The same counting-sort fill as
-    # ``adjacency.scatter_vertex_faces_to_offsets``; what differs is the payload, which is the
+    # ``adjacency.scatter_vertex_faces``; what differs is the payload, which is the
     # *other endpoint* here and the owning face there.
     #
     # The column order within a row is arrival order and **not sorted** -- nor stable, so two runs

@@ -405,35 +405,23 @@ def face_adjacency_angles_from_positions(
 
 @wp.kernel
 def scatter_vertex_faces(
-    faces: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
-    cursor: wp.array[wp.int32],
-    out_vertex_faces: wp.array[wp.int32],
+    faces: wp.array[wp.int32], out_offsets: wp.array[wp.int32], out_vertex_faces: wp.array[wp.int32]
 ) -> None:
-    # Vertex-to-face CSR payload. Row order is thread-order and therefore arbitrary: the wrapper's
+    # Vertex-to-face CSR payload. Row order is arrival order and therefore arbitrary: the wrapper's
     # path when ``ordito.config`` does not ask for reproducible results (``corner_face`` and
     # ``emit_sorted_vertex_faces`` below are the other). A rotational order would need halfedge
     # twins and would refuse a vertex-non-manifold mesh, which the decimator that consumes this
     # must not do.
     #
-    # ``cursor`` is the counting pass's per-vertex count and counts *down*, as in
-    # ``graph.scatter_neighbor_lists``: the atomic returns how many slots of the row are still
-    # free, so ``offsets[v + 1]`` minus it is the next free slot from the front.
+    # Over an offsets buffer holding each row's start in entry ``v + 1``, which the claims advance
+    # to the row's end (``scatter.claim_row_slot``): ``adjacency.vertex_face_adjacency`` counts the
+    # corners into ``out_offsets[2:]`` and scans them there, and
+    # ``vertex_face_adjacency_from_counts`` scans the caller's counts exclusively in behind entry 0
+    # and zeroes nothing, so entry 0 is written here. ``graph.scatter_neighbor_lists`` is the same
+    # fill with the other endpoint of an edge as the payload.
     f = wp.int32(wp.tid())
-    for k in range(3):
-        v = faces[f * 3 + k]
-        out_vertex_faces[offsets[v + 1] - wp.atomic_add(cursor, v, -1)] = f
-
-
-@wp.kernel
-def scatter_vertex_faces_to_offsets(
-    faces: wp.array[wp.int32], out_offsets: wp.array[wp.int32], out_vertex_faces: wp.array[wp.int32]
-) -> None:
-    # ``scatter_vertex_faces`` without its cursor buffer, for a caller that counted the corners
-    # into ``out_offsets[2:]`` and scanned them there (``scatter.claim_row_slot``; the slots go in
-    # the same order as there). ``graph.scatter_neighbor_lists`` is the same fill with the other
-    # endpoint of an edge as the payload.
-    f = wp.int32(wp.tid())
+    if f == 0:
+        out_offsets[0] = 0
     for k in range(3):
         v = faces[f * 3 + k]
         out_vertex_faces[claim_row_slot(out_offsets, v)] = f

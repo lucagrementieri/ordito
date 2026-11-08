@@ -389,7 +389,7 @@ def vertex_face_adjacency(
         _fill_sorted_vertex_faces(faces, row_count, vertex_faces)
     else:
         _launch.launch(
-            kernel_adjacency.scatter_vertex_faces_to_offsets,
+            kernel_adjacency.scatter_vertex_faces,
             dim=n_faces,
             inputs=[faces],
             outputs=[buffer, vertex_faces],
@@ -406,9 +406,8 @@ def vertex_face_adjacency_from_counts(
 
     The second half of that function, for a caller whose own kernel visits every corner in a pass
     it makes anyway and counts each vertex's corners there: the corner histogram is the one launch
-    this skips. ``counts`` is trusted, not checked -- it must be exactly each vertex's number of
-    corners in ``faces`` -- and it is **consumed**: its buffer becomes the scan's input and, when
-    rows are filled by atomics, their per-row cursor, so its contents are unspecified afterwards.
+    this skips. ``counts`` is trusted, not checked: it must be exactly each vertex's number of
+    corners in ``faces``.
 
     Parameters
     ----------
@@ -416,7 +415,7 @@ def vertex_face_adjacency_from_counts(
         ``(3 * n_faces,)`` flat triangle index buffer, every index in ``[0, n_vertices)``.
     counts
         ``(n_vertices,)`` ``int32`` number of corners of ``faces`` naming each vertex, on
-        ``faces.device``. Overwritten.
+        ``faces.device``. Not modified.
 
     Returns
     -------
@@ -460,28 +459,33 @@ def vertex_face_adjacency_from_counts(
             _launch.zeros(3 * n_faces, dtype=wp.int32, device=device),
             _launch.zeros(row_count + 1, dtype=wp.int32, device=device),
         )
-    vertex_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
     deterministic = is_deterministic()
     if deterministic and not wp.get_device(device).is_cpu:
         # The sort gives the offsets as well, so the counts go unread.
-        offsets = _launch.empty(row_count + 1, dtype=wp.int32, device=device)
+        offsets, vertex_faces = _launch.carve(wp.int32, (row_count + 1, 3 * n_faces), device)
         _fill_sorted_vertex_faces(faces, row_count, vertex_faces, offsets)
         return vertex_faces, offsets
-    offsets = _launch.zeros(row_count + 1, dtype=wp.int32, device=device)
     # Deliberately NOT od.array.counts_to_offsets: that helper always reads the total back, and
     # this function never needs it (it is 3 * n_faces, known on the host). Converting for
-    # symmetry would add a device synchronization where there is currently none.
-    tail = _launch.view(offsets, 1, row_count + 1)
-    _launch.array_scan(counts, out_array=tail, inclusive=True)
+    # symmetry would add a device synchronization where there is currently none. The rows share
+    # the offsets' allocation (a CSR pair is held and dropped together).
+    offsets, vertex_faces = _launch.carve(wp.int32, (row_count + 1, 3 * n_faces), device)
     if deterministic:
+        _launch.zero_(_launch.view(offsets, 0, 1))
+        _launch.array_scan(
+            counts, out_array=_launch.view(offsets, 1, row_count + 1), inclusive=True
+        )
         _fill_sorted_vertex_faces(faces, row_count, vertex_faces)
         return vertex_faces, offsets
-    # The counts are spent once scanned, so their buffer becomes the scatter's per-row cursor,
-    # counting each row's free slots down to zero: no second buffer and no re-zeroing.
+    # Each row's start, scanned in behind entry 0, which the scatter writes: its claims advance the
+    # starts to the rows' ends (``kernels/scatter.claim_row_slot``), so nothing is zeroed and the
+    # counts are only read.
+    _launch.array_scan(counts, out_array=_launch.view(offsets, 1, row_count + 1), inclusive=False)
     _launch.launch(
         kernel_adjacency.scatter_vertex_faces,
         dim=n_faces,
-        inputs=[faces, offsets, counts, vertex_faces],
+        inputs=[faces],
+        outputs=[offsets, vertex_faces],
         device=device,
     )
     return vertex_faces, offsets

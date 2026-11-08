@@ -319,8 +319,7 @@ def test_vertex_face_adjacency_from_counts(bench_case: BenchCase) -> None:
     The same incidence CSR from per-vertex corner counts the caller already holds.
 
     At ``vertex_face_adjacency``'s operating point, so the two read side by side as the price of
-    the count pass and row-count inference this form skips. ``counts`` is overwritten by the call,
-    so each round gets a fresh copy outside the timed region. Ordito only: the test pins it against
+    the count pass and row-count inference this form skips. Ordito only: the test pins it against
     ``vertex_face_adjacency``.
     """
     n_vertices = bench_case.n_vertices
@@ -328,8 +327,7 @@ def test_vertex_face_adjacency_from_counts(bench_case: BenchCase) -> None:
     counts_np = np.bincount(bench_case.faces_np.reshape(-1), minlength=n_vertices)
     counts = wp.array(counts_np.astype(np.int32), dtype=wp.int32, device=bench_case.device)
     vertex_faces, offsets = bench_case.run(
-        lambda fresh: od.adjacency.vertex_face_adjacency_from_counts(faces_wp, fresh),
-        setup=lambda: wp.clone(counts),
+        lambda: od.adjacency.vertex_face_adjacency_from_counts(faces_wp, counts)
     )
     assert offsets.size == n_vertices + 1
     assert vertex_faces.size == 3 * bench_case.n_faces

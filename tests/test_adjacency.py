@@ -366,7 +366,7 @@ def test_vertex_face_adjacency_from_counts_is_the_counted_form(
 
     ``vertex_face_adjacency`` carries the oracle (igl, above); this pins that handing it the corner
     counts taken on the host builds the same CSR, bit for bit under the deterministic setting and
-    as the same row sets without it.
+    as the same row sets without it, and leaves the counts as it found them.
     """
     _, mesh_wp = sphere_irregular
     faces_wp, n_vertices = mesh_wp.indices, mesh_wp.points.size
@@ -388,6 +388,7 @@ def test_vertex_face_adjacency_from_counts_is_the_counted_form(
         assert np.array_equal(payload_np, expected_np)
     for start, stop in itertools.pairwise(offsets_np):
         assert np.array_equal(np.sort(payload_np[start:stop]), np.sort(expected_np[start:stop]))
+    assert np.array_equal(counts_wp.numpy(), counts_np)
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
