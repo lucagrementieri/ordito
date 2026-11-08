@@ -465,17 +465,20 @@ def pair_bucketed_halfedges(
 
 @wp.func
 def record_ring_start(
-    faces: wp.array[wp.int32], h: wp.int32, twin: wp.int32, out_starts: wp.array2d[wp.int32]
+    faces: wp.array[wp.int32], h: wp.int32, twin: wp.int32, out_starts: wp.array[wp.int32]
 ) -> None:
     # Halfedge ``h``'s bid for its origin's ring-walk start: the lowest-indexed outgoing halfedge,
-    # tracked twice -- row 0 over all of them, row 1 over the twin-less (boundary) ones alone, since
-    # a boundary vertex must start its CCW walk at its boundary halfedge (the clockwise-most edge of
-    # its fan) or the walk covers only part of the fan. ``atomic_min`` makes both picks
-    # deterministic regardless of thread order; ``out_starts`` arrives filled with ``INT32_MAX``.
+    # tracked twice -- the first half of ``out_starts`` over all of them, the second over the
+    # twin-less (boundary) ones alone, since a boundary vertex must start its CCW walk at its
+    # boundary halfedge (the clockwise-most edge of its fan) or the walk covers only part of the
+    # fan. A bid is stored as ``INT32_MAX - h`` and taken by ``atomic_max``, so ``out_starts``
+    # arrives zeroed (no halfedge bids 0) and is cut from the call's zeroed buffer rather than
+    # filled; the atomic makes both picks deterministic regardless of thread order.
     origin = faces[h]
-    wp.atomic_min(out_starts, 0, origin, h)
+    bid = INT32_MAX_CONSTANT - h
+    wp.atomic_max(out_starts, origin, bid)
     if twin == wp.int32(-1):
-        wp.atomic_min(out_starts, 1, origin, h)
+        wp.atomic_max(out_starts, out_starts.shape[0] // 2 + origin, bid)
 
 
 @wp.kernel
@@ -486,7 +489,7 @@ def pair_bucketed_halfedges_and_ring_starts(
     buckets: wp.array[wp.vec2i],
     out_twins: wp.array[wp.int32],
     out_defect_counts: wp.array[wp.int32],
-    out_ring_starts: wp.array2d[wp.int32],
+    out_ring_starts: wp.array[wp.int32],
 ) -> None:
     # ``pair_bucketed_halfedges`` for ``halfedge.vertex_one_rings``, which bids each halfedge for
     # its origin's walk start as soon as its twin is known: the ``ring_degrees_and_starts`` pass the
@@ -539,14 +542,13 @@ def record_ring_degree_and_start(
     h: wp.int32,
     twin: wp.int32,
     out_degrees: wp.array[wp.int32],
-    out_starts: wp.array2d[wp.int32],
+    out_starts: wp.array[wp.int32],
 ) -> None:
     # Both per-vertex questions the ring walk needs before it can start: the ring size (every face
     # contributes exactly one outgoing halfedge per corner, so it is how often the vertex appears
     # in the flat face buffer) and the walk's start candidates (``record_ring_start``). Both are a
     # scatter over the same ``faces[h]`` index, so they share one pass rather than a
-    # ``scatter.count_occurrences`` launch of their own over the same buffer. ``out_degrees``
-    # arrives zeroed and ``out_starts`` filled with ``INT32_MAX``.
+    # ``scatter.count_occurrences`` launch of their own over the same buffer. Both arrive zeroed.
     wp.atomic_add(out_degrees, faces[h], 1)
     record_ring_start(faces, h, twin, out_starts)
 
@@ -559,7 +561,7 @@ def pair_sorted_halfedges_and_ring_starts(
     out_twins: wp.array[wp.int32],
     out_defect_counts: wp.array[wp.int32],
     out_degrees: wp.array[wp.int32],
-    out_ring_starts: wp.array2d[wp.int32],
+    out_ring_starts: wp.array[wp.int32],
 ) -> None:
     # ``pair_sorted_halfedges`` for ``halfedge.vertex_one_rings``, which takes each halfedge's ring
     # degree and walk-start bid as soon as its twin is known: the ``ring_degrees_and_starts`` pass
@@ -690,7 +692,7 @@ def ring_degrees_and_starts(
     faces: wp.array[wp.int32],
     twins: wp.array[wp.int32],
     out_degrees: wp.array[wp.int32],
-    out_starts: wp.array2d[wp.int32],
+    out_starts: wp.array[wp.int32],
 ) -> None:
     # One thread per halfedge: ``record_ring_degree_and_start`` for a twin table the call did not
     # pair itself.
@@ -699,19 +701,19 @@ def ring_degrees_and_starts(
 
 
 @wp.func
-def ring_walk_start(starts: wp.array2d[wp.int32], v: wp.int32) -> tuple[wp.int32, wp.bool]:
-    # ``starts`` is ``record_ring_start``'s two candidate rows, resolved at vertex ``v``: the walk
+def ring_walk_start(starts: wp.array[wp.int32], v: wp.int32) -> tuple[wp.int32, wp.bool]:
+    # ``starts`` is ``record_ring_start``'s two candidate halves, resolved at vertex ``v``: the walk
     # start (``-1`` for an isolated vertex) and whether ``v`` is on the boundary. Prefer the
-    # boundary halfedge; ``INT32_MAX`` means "no candidate of this kind". A vertex lies on the
-    # boundary exactly when an outgoing halfedge has no twin, which is the same comparison.
-    boundary_start = starts[1, v]
-    interior_start = starts[0, v]
-    on_boundary = boundary_start != INT32_MAX_CONSTANT
+    # boundary halfedge; ``0`` means "no candidate of this kind". A vertex lies on the boundary
+    # exactly when an outgoing halfedge has no twin, which is the same comparison.
+    boundary_bid = starts[starts.shape[0] // 2 + v]
+    interior_bid = starts[v]
+    on_boundary = boundary_bid != wp.int32(0)
     start = wp.int32(-1)
     if on_boundary:
-        start = boundary_start
-    elif interior_start != INT32_MAX_CONSTANT:
-        start = interior_start
+        start = INT32_MAX_CONSTANT - boundary_bid
+    elif interior_bid != wp.int32(0):
+        start = INT32_MAX_CONSTANT - interior_bid
     return start, on_boundary
 
 
@@ -797,7 +799,7 @@ def ring_long_from(n_halfedges: wp.int32) -> wp.int32:
 
 @wp.kernel
 def write_one_rings(
-    starts: wp.array2d[wp.int32],
+    starts: wp.array[wp.int32],
     twins: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     out_halfedges: wp.array[wp.int32],
@@ -1047,7 +1049,7 @@ def append_ring_rulers(
 
 @wp.kernel
 def rank_long_rings(
-    starts: wp.array2d[wp.int32],
+    starts: wp.array[wp.int32],
     twins: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
