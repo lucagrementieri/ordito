@@ -261,6 +261,57 @@ def shortest_path_envelope_pass(
         out_state[kernel_array.LOOP_PROGRESS] = 1
 
 
+# Rounds a block of ``shortest_path_envelope_patch_pass`` relaxes its patch in one pass, at most
+# (plain: a launch argument). Swept against the plain passes on CUDA (2026-11-08, Hilbert order),
+# a distance from one source: 4 rounds 0.60-0.92x but 1.07x on ``dragon``, 8 0.62-0.92x, 16
+# 0.51-0.75x on the dragons but 1.08x on ``bunny_decimated``; a spike and a random field lost at
+# every count, least at 4-8 (1.0-1.5x).
+ENVELOPE_PATCH_ROUNDS = 8
+
+
+@wp.kernel
+def shortest_path_envelope_patch_pass(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    weights: wp.array[wp.float32],
+    order: wp.array[wp.int32],
+    rounds: wp.int32,
+    labels: wp.array[wp.float32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # The uncapped CUDA pass in place over a caller's node order, tiled: when consecutive nodes of
+    # ``order`` are near each other in the graph (a Hilbert order of the vertices), a block's
+    # nodes are a patch, and the block relaxes them round after round (``wp.tile_sum`` the barrier)
+    # until none moves or ``rounds`` ran, so a pass carries a label across the patch rather than an
+    # edge. Any schedule of in-place relaxations falls to the passes' fixpoint, bit for bit. A
+    # distance from one source, CUDA new/old with the wrapper's plain first pass: 0.63-0.81x from
+    # ``sphere_small`` to a scrambled ``dragon`` (0.97x on ``bunny_decimated``); a spike or a random
+    # field on ``dragon`` 1.2-1.37x, where most blocks move and run every round. In
+    # the graph's own order a block is no patch and the rounds lost (declined at
+    # ``shortest_path_envelope_pass``); ``flip_geodesics.relax_distances`` is the same pass over a
+    # halfedge mesh, which won there in Hilbert order.
+    block, lane = wp.tid()
+    i = block * wp.block_dim() + lane
+    v = wp.int32(-1)
+    if i < labels.shape[0]:
+        v = order[i]
+    moved_any = wp.int32(0)
+    for _round in range(rounds):
+        moved = wp.int32(0)
+        if v >= 0:
+            best, lowest = envelope_relaxed_label(v, offsets, columns, weights, labels)
+            if lowest < 0.0:
+                out_state[ENVELOPE_NEGATIVE_WEIGHT] = 1
+            if best < labels[v]:
+                labels[v] = best
+                moved = wp.int32(1)
+        if wp.tile_sum(wp.tile(moved))[0] == 0:
+            break
+        moved_any = wp.int32(1)
+    if moved_any != 0 and lane == 0:
+        out_state[kernel_array.LOOP_PROGRESS] = 1
+
+
 @wp.kernel
 def shortest_path_envelope_serial(
     offsets: wp.array[wp.int32],

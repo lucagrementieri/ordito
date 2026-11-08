@@ -1121,13 +1121,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   buffer read once would do; the one-component `split` pays `submesh_from_face_indices`' memset
   for an identity face order. Each is a few percent of the call at the benchmark sizes; price
   before acting.
-- **Hilbert-ordered blocks for `graph.shortest_path_envelope`:** its declined block-rounds pass
-  (1.2-1.7x on icospheres and a scrambled `dragon`, 0.5-0.58x on scans) ran blocks over node
-  indices, which are no patches there. `geodesic_walk`'s shortest-edge tree took the same rounds
-  over a Hilbert order (`_common.hilbert_point_order`) and won at every size (0.34-0.65x, §14).
-  The envelope takes a CSR without positions, so a caller with geometry (`geodesic_path`'s
-  completion) would pass the order in; untried. The frontier forms are priced and declined at
-  `kernels/graph.shortest_path_envelope_pass` (push rounds 1.4-1.7x, near-far 1.3-3.8x).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

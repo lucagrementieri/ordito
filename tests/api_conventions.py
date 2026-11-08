@@ -620,6 +620,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``shortest_path_envelope_dijkstra`` lowers ``labels`` in place, keyed in a heap whose
     # ``heap`` and ``position`` tables are scratch, meaningless after the launch.
     ("graph", "shortest_path_envelope_dijkstra"): frozenset({"labels", "heap", "position"}),
+    # ``shortest_path_envelope_patch_pass`` lowers ``labels`` in place, as the plain pass does with
+    # ``out_labels`` aliasing it.
+    ("graph", "shortest_path_envelope_patch_pass"): frozenset({"labels"}),
     # ``signed_distance_level_set``'s winding lattice: ``column_suffix_sums`` turns each column's
     # per-node crossing deltas into suffix sums where they lie; ``take_exact_winding`` and
     # ``warp_winding_sign`` overwrite the lattice winding number of the nodes in doubt, and the

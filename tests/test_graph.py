@@ -16,6 +16,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
+from ordito._common import hilbert_point_order
 from tests.comparisons import same_partition
 from tests.conftest import MESHES
 from tests.conversions import (
@@ -944,10 +945,11 @@ def test_shortest_path_envelope_is_the_edge_graph_distance(
     assert np.allclose(envelope_wp.numpy(), distance_sp, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("order", ["none", "hilbert", "shuffled"])
 @pytest.mark.parametrize("field", ["source", "random"])
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_shortest_path_envelope_in_place_matches_the_capped_passes(
-    request: pytest.FixtureRequest, mesh_name: str, field: str
+    request: pytest.FixtureRequest, mesh_name: str, field: str, order: str
 ) -> None:
     """
     Ordito against ordito: the uncapped forms and the capped passes agree bit for bit.
@@ -957,8 +959,9 @@ def test_shortest_path_envelope_in_place_matches_the_capped_passes(
     ``max_iterations`` each pass reads the last pass's labels alone. All fall to one fixpoint, so a
     cap that does not bind must give the same bits, and a cap that binds a coarser answer. A
     distance from one source needs many passes, a random field few, which sends the CPU device
-    down both of its branches. The distance oracle is
-    ``test_shortest_path_envelope_is_the_edge_graph_distance``.
+    down both of its branches. A node ``order`` (a Hilbert order of the vertices, or any
+    permutation) changes only the schedule of the CUDA passes, so the bits stay. The distance
+    oracle is ``test_shortest_path_envelope_is_the_edge_graph_distance``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_tm.vertices.shape[0]
@@ -970,7 +973,16 @@ def test_shortest_path_envelope_in_place_matches_the_capped_passes(
     adjacency = _length_weighted_csr(mesh_wp)
     values_wp = wp.array(seeded_np, dtype=wp.float32, device=mesh_wp.device)
 
-    in_place_np = od.graph.shortest_path_envelope(adjacency, values_wp).numpy()
+    order_wp = None
+    if order == "hilbert":
+        order_wp = hilbert_point_order(mesh_wp.points)
+    elif order == "shuffled":
+        order_wp = wp.array(
+            np.random.default_rng(3).permutation(n_vertices).astype(np.int32),
+            dtype=wp.int32,
+            device=mesh_wp.device,
+        )
+    in_place_np = od.graph.shortest_path_envelope(adjacency, values_wp, order=order_wp).numpy()
     capped_np = od.graph.shortest_path_envelope(
         adjacency, values_wp, max_iterations=n_vertices
     ).numpy()
@@ -1009,6 +1021,10 @@ def test_shortest_path_envelope_invalid(sphere_irregular: tuple[tm.Trimesh, wp.M
         od.graph.shortest_path_envelope(adjacency, values_wp, max_iterations=-1)
     with pytest.raises(ValueError, match="one entry per node"):
         od.graph.shortest_path_envelope(adjacency, odt.as_dense(values_wp[:3]))
+    with pytest.raises(ValueError, match="order must list every node once"):
+        od.graph.shortest_path_envelope(
+            adjacency, values_wp, order=wp.zeros(3, dtype=wp.int32, device=mesh_wp.device)
+        )
     edges, n_vertices = _mesh_vertex_edges(mesh_wp)
     with pytest.raises(ValueError, match="one entry per edge"):
         od.graph.edges_to_csr(n_vertices, edges, values_wp)

@@ -863,7 +863,10 @@ def _edge_graph_distance(mesh: Trimesh, sources: wp.array[wp.int32]) -> wp.array
         outputs=[seed],
         device=device,
     )
-    return od.graph.shortest_path_envelope(adjacency, seed)
+    # On CUDA the relaxation's passes take patches of a Hilbert order (``order``); the CPU device
+    # settles the field serially and reads no order.
+    order = hilbert_point_order(mesh.vertices) if wp.get_device(device).is_cuda else None
+    return od.graph.shortest_path_envelope(adjacency, seed, order=order)
 
 
 # ``geodesic_path(method="potpourri3d")``'s pools for the shortening: the wedge queue's entries

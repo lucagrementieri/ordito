@@ -1143,7 +1143,11 @@ def _closed_cycle_rounds(
 
 
 def shortest_path_envelope(
-    adjacency: odt.BsrMatrix[wp.float32], values: wp.array[wp.float32], max_iterations: int = 0
+    adjacency: odt.BsrMatrix[wp.float32],
+    values: wp.array[wp.float32],
+    max_iterations: int = 0,
+    *,
+    order: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.float32]:
     """
 
@@ -1183,6 +1187,14 @@ def shortest_path_envelope(
         Cap on relaxation passes. Each pass propagates one edge further, so the number needed is the
         graph diameter of the region that violates the bound. ``0`` (the default) means
         ``node_count``, which can never be exceeded.
+    order
+        ``(node_count,)`` every node once, in an order whose consecutive nodes lie close together
+        in the graph, such as the vertices sorted along a space-filling curve. Trusted, not
+        checked: a node it misses is never relaxed. On a CUDA device without ``max_iterations``,
+        the passes after the first then relax patches of consecutive nodes several times over, so
+        a label crosses a patch in a pass. That pays on a field many passes deep, a distance from
+        a few sources; on one a few passes settle, the extra rounds can cost more than they save.
+        Elsewhere it is unused. The answer is identical either way.
 
     Returns
     -------
@@ -1261,13 +1273,17 @@ def shortest_path_envelope(
     print(capped.numpy().tolist())  # [0.0, 1.0, 2.0, 3.0, 4.0]
     ```
     """
-    require_same_device(adjacency=adjacency, values=values)
+    require_same_device(adjacency=adjacency, values=values, order=order)
     node_count, offsets, columns = _validate_square_csr(adjacency)
     if max_iterations < 0:
         raise ValueError(f"max_iterations must be non-negative, got {max_iterations}")
     if values.size != node_count:
         raise ValueError(
             f"values must have one entry per node, got {values.size} for {node_count} nodes"
+        )
+    if order is not None and order.size != node_count:
+        raise ValueError(
+            f"order must list every node once, got {order.size} entries for {node_count} nodes"
         )
 
     device = wp.get_device(values.device)
@@ -1320,6 +1336,10 @@ def shortest_path_envelope(
             _raise_negative_weights()
         return labels
     max_pass_count_i32 = wp.int32(max_pass_count)
+    # With an ``order``, the captured passes relax patches of it a block, several rounds a pass
+    # (``kernels/graph.shortest_path_envelope_patch_pass``); the first pass stays a plain pull, so a
+    # field it all but settles pays for no patch rounds.
+    patches = [False]
 
     def envelope_pass_body() -> None:
         # One pass, then (Jacobi) a copy of its result back over ``labels``, then the shared
@@ -1331,12 +1351,22 @@ def shortest_path_envelope(
         # indivisible unit across devices, so a loop whose *result buffer* depends on the body
         # running whole cannot rely on it. A Python-level ping-pong cannot help either: the body is
         # recorded once and replayed, so rebinding the names would only take effect at record time.
-        _launch.launch(
-            kernel_graph.shortest_path_envelope_pass,
-            dim=node_count,
-            inputs=[offsets, columns, weights, labels, relaxed, state],
-            device=device,
-        )
+        if patches[0]:
+            _launch.launch_tiled(
+                kernel_graph.shortest_path_envelope_patch_pass,
+                dim=[-(-node_count // _ENVELOPE_PATCH_LANES)],
+                inputs=[offsets, columns, weights, order, kernel_graph.ENVELOPE_PATCH_ROUNDS],
+                outputs=[labels, state],
+                block_dim=_ENVELOPE_PATCH_LANES,
+                device=device,
+            )
+        else:
+            _launch.launch(
+                kernel_graph.shortest_path_envelope_pass,
+                dim=node_count,
+                inputs=[offsets, columns, weights, labels, relaxed, state],
+                device=device,
+            )
         if relaxed is not labels:
             _launch.copy(labels, relaxed)
         _launch.launch(
@@ -1352,11 +1382,17 @@ def shortest_path_envelope(
         _raise_negative_weights()
     # The rest of the passes run on-device via ``wp.capture_while``, so their convergence checks
     # and the cap cost no host readback.
+    patches[0] = order is not None and relaxed is labels
     if condition != 0:
         run_device_loop(
             device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), envelope_pass_body
         )
     return labels
+
+
+# Lanes of a ``shortest_path_envelope_patch_pass`` block, a patch: ``_launch.launch``'s width,
+# which a tiled launch of the module must share or build it again.
+_ENVELOPE_PATCH_LANES = 256
 
 
 def _raise_negative_weights() -> None:

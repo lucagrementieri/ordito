@@ -68,6 +68,7 @@ from meshlib import mrmeshpy as mm
 import ordito as od
 import ordito.typing as odt
 from conftest import BenchCase, skip_larger_than
+from ordito._common import hilbert_point_order
 
 _adjacency_cache: dict[tuple[str, str], odt.BsrMatrix[wp.float32]] = {}
 _scipy_cache: dict[str, sp.csr_matrix] = {}
@@ -514,4 +515,31 @@ def test_shortest_path_envelope(bench_case: BenchCase) -> None:
         _source_field_np(bench_case).astype(np.float32), dtype=wp.float32, device=bench_case.device
     )
     envelope = bench_case.run(lambda: od.graph.shortest_path_envelope(adjacency, values), rounds=3)
+    assert envelope.shape == (n_vertices,)
+
+
+@pytest.mark.benchmark(group="shortest_path_envelope_ordered")
+@pytest.mark.benchlibs("ordito")
+def test_shortest_path_envelope_ordered(bench_case: BenchCase) -> None:
+    """
+    The same distance relaxation handed a Hilbert order of the vertices, built inside the row.
+
+    Read against ``shortest_path_envelope``: on CUDA the passes after the first relax patches of the
+    order a block, several rounds a pass, and the row pays for building the order as
+    ``geodesic_walk``'s edge-graph completion does. The CPU device ignores the order. Ordito only:
+    the order changes the schedule, not the answer (``tests/test_graph.py`` pins the bits).
+    """
+    skip_larger_than(bench_case, "bunny_decimated", "a source-seeded relaxation is diameter-deep")
+    n_vertices = bench_case.n_vertices
+    adjacency = _length_weighted_adjacency(bench_case)
+    values = wp.array(
+        _source_field_np(bench_case).astype(np.float32), dtype=wp.float32, device=bench_case.device
+    )
+    vertices = bench_case.vertices_wp
+    envelope = bench_case.run(
+        lambda: od.graph.shortest_path_envelope(
+            adjacency, values, order=hilbert_point_order(vertices)
+        ),
+        rounds=3,
+    )
     assert envelope.shape == (n_vertices,)

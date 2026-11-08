@@ -1836,14 +1836,14 @@
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cuda-4096]": {
   "counts": {
-   "launch": 43,
-   "alloc": 31,
-   "memset": 14,
+   "launch": 45,
+   "alloc": 33,
+   "memset": 15,
    "d2d": 3,
    "h2d": 1,
    "d2h": 10,
    "scan": 6,
-   "sort": 3
+   "sort": 4
   }
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cuda-64]": {
@@ -2082,6 +2082,17 @@
    "d2d": 1,
    "h2d": 1,
    "d2h": 1
+  }
+ },
+ "benchmarks/test_graph.py::test_shortest_path_envelope_ordered[sphere_small-ordito-cuda]": {
+  "counts": {
+   "launch": 6,
+   "alloc": 4,
+   "memset": 1,
+   "d2d": 1,
+   "h2d": 1,
+   "d2h": 1,
+   "sort": 1
   }
  },
  "benchmarks/test_graph.py::test_successor_cycles[sphere_small-ordito-cuda-faces]": {

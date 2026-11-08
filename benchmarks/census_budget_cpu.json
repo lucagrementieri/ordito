@@ -1973,6 +1973,15 @@
    "readback": 1
   }
  },
+ "benchmarks/test_graph.py::test_shortest_path_envelope_ordered[sphere_small-ordito-cpu]": {
+  "counts": {
+   "launch": 3,
+   "alloc": 5,
+   "h2h": 2,
+   "readback": 1,
+   "sort": 1
+  }
+ },
  "benchmarks/test_graph.py::test_successor_cycles[sphere_small-ordito-cpu-faces]": {
   "counts": {
    "launch": 3,
