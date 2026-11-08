@@ -404,7 +404,7 @@ def _unique_edges_from_faces(
             device=device,
         )
         return unique_edges, inverse, None
-    counts = _launch.zeros(n_edges, dtype=wp.int32, device=device)
+    counts = _launch.empty(n_edges, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_edges.emit_sorted_unique_edges_counts,
         dim=n,
@@ -530,7 +530,7 @@ def _unique_edges_from_sorted_rows(
     ranks, n_edges = _sorted_run_ranks(keys, order, n, None)
     unique_edges = odt.empty_2d((n_edges, 2), wp.int32, device=device)
     inverse = _launch.empty(n, dtype=wp.int32, device=device)
-    counts = _launch.zeros(n_edges, dtype=wp.int32, device=device) if return_counts else None
+    counts = _launch.empty(n_edges, dtype=wp.int32, device=device) if return_counts else None
     _launch.launch(
         kernel_edges.emit_sorted_unique_edges_from_keys,
         dim=n,

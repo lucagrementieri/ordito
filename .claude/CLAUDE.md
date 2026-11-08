@@ -1121,12 +1121,6 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   buffer read once would do; the one-component `split` pays `submesh_from_face_indices`' memset
   for an identity face order. Each is a few percent of the call at the benchmark sizes; price
   before acting.
-- **`grouping` leftovers (2026-11-08 sweep):** `hash_vector_rows(epsilon > 0)` reads its bounds
-  back only to size the radix on the host; a `dim=1` launch forming it in `float64` from the
-  device corners (byte-identical; per thread it costs ~15 `float64` ops, more than the read)
-  would trade the sync for a launch. The sorted `unique_1d`'s counts take a memset and two
-  atomics a run where a run start could gallop to its end in `ranks`. Each is a few
-  microseconds of host time; price on an idle GPU before acting.
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

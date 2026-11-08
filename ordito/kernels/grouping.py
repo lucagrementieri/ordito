@@ -3,7 +3,12 @@ from typing import Any
 import warp as wp
 
 from ordito.kernels import array as kernel_array
-from ordito.kernels.array import OverloadTable, pack_triangle_key, sorted_run_start
+from ordito.kernels.array import (
+    OverloadTable,
+    pack_triangle_key,
+    sorted_run_end_galloping,
+    sorted_run_start,
+)
 from ordito.kernels.triangles import corner_triple
 
 wp.set_module_options({"enable_backward": False})
@@ -362,23 +367,18 @@ def emit_sorted_unique(
 
 
 @wp.func
-def add_sorted_run_length(
+def store_sorted_run_length(
     i: wp.int32,
     r: wp.int32,
     start: wp.bool,
     ranks: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
 ) -> None:
-    # Sorted position ``i``'s share of its run's length, for a zeroed ``out_counts``: the run's
-    # first position subtracts its index and its last adds one past it, two integer atomics per
-    # run (exact in any order), so no offsets buffer and no second pass. ``start`` is whether ``i``
-    # begins its run, ``r`` the run's unique index.
+    # Run ``r``'s length, stored by its first sorted position ``i`` (``start``), which gallops to
+    # the run's end through ``ranks`` (constant along a run): one plain store a run, so
+    # ``out_counts`` needs no zero fill and takes no atomics.
     if start:
-        wp.atomic_sub(out_counts, r, i)
-    if i == ranks.shape[0] - 1:
-        wp.atomic_add(out_counts, r, i + 1)
-    elif ranks[i + 1] != ranks[i]:
-        wp.atomic_add(out_counts, r, i + 1)
+        out_counts[r] = sorted_run_end_galloping(ranks, i, ranks.shape[0]) - i
 
 
 @wp.kernel
@@ -392,11 +392,11 @@ def emit_sorted_unique_counts(
     out_first: wp.array[wp.int32],
 ) -> None:
     # ``emit_sorted_unique`` with each run's length in place of its offsets
-    # (``add_sorted_run_length``).
+    # (``store_sorted_run_length``).
     i = wp.int32(wp.tid())
     r = ranks[i] - 1
     start = emit_sorted_run(i, r, sorted_keys, order, out_unique, out_inverse, out_first)
-    add_sorted_run_length(i, r, start, ranks, out_counts)
+    store_sorted_run_length(i, r, start, ranks, out_counts)
 
 
 @wp.kernel
@@ -422,7 +422,7 @@ def emit_sorted_unique_rows(
     if start:
         out_rows[r] = rows[order[i]]
     if out_counts.shape[0] > 0:
-        add_sorted_run_length(i, r, start, ranks, out_counts)
+        store_sorted_run_length(i, r, start, ranks, out_counts)
 
 
 @wp.func

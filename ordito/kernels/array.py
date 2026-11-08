@@ -1178,6 +1178,30 @@ def sorted_run_end(keys: wp.array[wp.uint64], i: wp.int32, count: wp.int32) -> w
 
 
 @wp.func
+def sorted_run_end_galloping(values: wp.array[wp.Int], i: wp.int32, count: wp.int32) -> wp.int32:
+    """``sorted_run_end`` in ``O(log length)`` loads, for a caller that only needs the end."""
+    # Doubles a step from ``i`` until it leaves the run, then bisects the last step: one load for a
+    # run of one, where the linear walk suits a caller that visits every entry anyway. Steps stay
+    # below ``2 * count``, inside ``int32`` for any count below ``2**30``.
+    value = values[i]
+    inside = i
+    step = wp.int32(1)
+    outside = i + step
+    while outside < count and values[outside] == value:
+        inside = outside
+        step = step * 2
+        outside = i + step
+    outside = wp.min(outside, count)
+    while outside - inside > 1:
+        mid = inside + (outside - inside) // 2
+        if values[mid] == value:
+            inside = mid
+        else:
+            outside = mid
+    return outside
+
+
+@wp.func
 def csr_run_sum(
     keys: wp.array[wp.uint64],
     order: wp.array[wp.int32],

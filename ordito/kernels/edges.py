@@ -7,7 +7,7 @@ from ordito.kernels.adjacency import (
     write_face_edge_keys_and_order,
 )
 from ordito.kernels.array import sorted_run_start, unpack_edge_key
-from ordito.kernels.grouping import add_sorted_run_length
+from ordito.kernels.grouping import store_sorted_run_length
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import segment_aabb, side_lengths
 from ordito.kernels.reduce import block_chunk_1d, block_sum, commit_block_total, term_sum_1d
@@ -56,7 +56,7 @@ def emit_sorted_unique_edges_from_keys(
     # a run's first position writes its row by unpacking its key instead. ``pack_indices`` packs a
     # sorted ``(lo, hi)`` row as ``lo + hi * base``, which ``array.unpack_edge_key`` inverts
     # exactly, so the unique rows equal those a gather of each run's first row would give.
-    # ``out_counts``, zeroed or a null descriptor, takes each run's length.
+    # ``out_counts``, a null descriptor or not, takes each run's length.
     i = wp.int32(wp.tid())
     e = ranks[i] - 1
     out_inverse[order[i]] = e
@@ -66,7 +66,7 @@ def emit_sorted_unique_edges_from_keys(
         out_unique_edges[e, 0] = lo
         out_unique_edges[e, 1] = hi
     if out_counts.shape[0] > 0:
-        add_sorted_run_length(i, e, start, ranks, out_counts)
+        store_sorted_run_length(i, e, start, ranks, out_counts)
 
 
 # Codes ``face_edge_keys_checked`` raises its range flag to; the larger wins, so a negative index is
@@ -186,14 +186,14 @@ def emit_sorted_unique_edges_counts(
     out_inverse: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
 ) -> None:
-    # ``emit_sorted_unique_edges`` plus each unique edge's corner count, its run length, into a
-    # zeroed ``out_counts`` (``grouping.add_sorted_run_length``): ``edges.edges_unique``'s
+    # ``emit_sorted_unique_edges`` plus each unique edge's corner count, its run length, into
+    # ``out_counts`` (``grouping.store_sorted_run_length``): ``edges.edges_unique``'s
     # ``return_counts``, where a histogram of the inverse would be a second launch.
     i = wp.int32(wp.tid())
     _corner, e, start = emit_sorted_unique_edge(
         faces, sorted_keys, order, ranks, i, out_unique_edges, out_inverse
     )
-    add_sorted_run_length(i, e, start, ranks, out_counts)
+    store_sorted_run_length(i, e, start, ranks, out_counts)
 
 
 @wp.func

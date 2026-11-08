@@ -897,9 +897,9 @@ def _unique_sorted_runs(
     unique_values = _launch.empty(n_unique, dtype=dtype, device=device) if return_values else None
     inverse = _launch.empty(n, dtype=wp.int32, device=device) if return_inverse else None
     first = _launch.empty(n_unique, dtype=wp.int32, device=device) if return_first else None
-    # The counts are summed in the emit pass itself, from each run's two ends; integer atomics, so
-    # in any order the same.
-    counts = _launch.zeros(n_unique, dtype=wp.int32, device=device) if return_counts else None
+    # Each run's first position stores its length in the emit pass itself, so the counts take no
+    # fill.
+    counts = _launch.empty(n_unique, dtype=wp.int32, device=device) if return_counts else None
     emit = (
         kernel_grouping.EMIT_SORTED_UNIQUE_COUNTS[dtype]
         if return_counts
@@ -965,7 +965,7 @@ def _unique_sorted_rows(
     unique_vectors = _row_vectors(unique)
     assert unique_vectors is not None  # the same row type as ``rows``, freshly allocated
     inverse = _launch.empty(n, dtype=wp.int32, device=device) if return_inverse else None
-    counts = _launch.zeros(n_unique, dtype=wp.int32, device=device) if return_counts else None
+    counts = _launch.empty(n_unique, dtype=wp.int32, device=device) if return_counts else None
     _launch.launch(
         kernel_grouping.EMIT_SORTED_UNIQUE_ROWS[row_vectors.dtype],
         dim=n,
