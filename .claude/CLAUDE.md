@@ -1122,6 +1122,19 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   bucket count, scan, scatter and pairing are 52-54 % of the call's device time on dragon and
   lucy (2026-11-06), the union-find the rest. Not re-examined in the adjacency sweep, which took
   the union-find side only; the lower-degree owner is a hub-balancing choice to keep.
+- **Hub rings outside `vertex_one_rings` (2026-11-08 halfedge sweep):**
+  `tangent_space.halfedge_tangent_angles_from_positions` walks each ring in one thread summing
+  `float64` corner angles, ~1 760x `sphere_med`'s kernel on `fan_hub` (the hub alone); the rings
+  now arrive ordered, so a long row could take a block's segmented scan
+  (`kernels/halfedge.rank_long_rings` is the listing pattern). Price the other per-ring walks
+  over the same rows (`tangent_space`, `heat`'s vector rows, `geodesic_walk`) on `fan_hub` first.
+- **`rank_long_rings`' floor:** each long ring's block scans every halfedge for its rulers (one
+  SM's bandwidth, a third of the ranking on `fan_hub`). A pairing pass that already reads every
+  halfedge with the degrees known (the bucketed path) could append the rulers instead; price the
+  added per-halfedge test on ordinary meshes, which have no long ring.
+- **`INT32_MAX` fills left after the walk-start carve:** `heat.py` `face_claim` (`n_cover`) and
+  the four- and six-slot bounds in `graph.py` / `voxels.py`; the `INT32_MAX - x` under
+  `atomic_max` encoding drops the fill only where a zeroed allocation sits alongside.
 - **`combine` leftovers outside its scope (2026-11-06 sweep):** `require_same_device` is about
   half of `concatenate`'s host time at 4 096 pieces (one recursive descent per array);
   `split` reads its vertex and face offsets in two readbacks (`array.split` twice) where one
