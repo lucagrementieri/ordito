@@ -63,13 +63,7 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import (
-    offsets_buffer,
-    read_scalar,
-    read_values,
-    require_same_device,
-    run_device_loop,
-)
+from ordito._common import read_scalar, read_values, require_same_device, run_device_loop
 from ordito.cholesky import SparseCholesky, held_nbytes
 from ordito.config import is_deterministic
 from ordito.constants import TILE_1D, TOLERANCE_MOLLIFY
@@ -770,17 +764,68 @@ def _unfolding_front(
     n_vertices = vertices.size
     n_faces = faces.size // 3
     several = sources.size > 1
-    labels = _launch.full(n_vertices, math.inf, dtype=wp.float64, device=device)
     if sources.size == 0:
-        return labels
-    relaxed = _launch.full(n_vertices, math.inf, dtype=wp.float64, device=device)
+        return _launch.full(n_vertices, math.inf, dtype=wp.float64, device=device)
     n_labelled = n_vertices if several else 0
-    source_of = _launch.full(n_labelled, -1, dtype=wp.int32, device=device)
-    next_source_of = _launch.full(n_labelled, -1, dtype=wp.int32, device=device)
-    listed = _launch.full(n_vertices, -1, dtype=wp.int32, device=device)
-    front = _launch.empty(2 * n_vertices, dtype=wp.int32, device=device)
-    counts = _launch.zeros(4, dtype=wp.int32, device=device)
-    invalid = _launch.zeros(1, dtype=wp.int32, device=device)
+    blocks = min(n_vertices, _ORDERED_FRONT_BLOCKS)
+    lanes = _ORDERED_FRONT_LANES
+    n_scratch = 1 if wp.get_device(device).is_cpu else blocks * lanes
+    # Every table lives exactly as long as the call, so one uninitialized allocation holds them
+    # all and ``init_ordered_front`` writes their starting values in one launch. A part of zero
+    # length (the labels of a single source, the per-face tables of a mesh with no faces) would
+    # make ``carve_typed`` allocate every part apart, so those are left out and allocated empty.
+    parts: list[tuple[Any, int]] = [
+        *[(wp.float64, n_vertices)] * 3,
+        (wp.float64, 2),
+        (wp.float64, 1),
+        *[(wp.int32, n_vertices)] * 3,
+        (wp.int32, n_vertices + 1),
+        (wp.int32, 4),
+        (wp.int32, 1),
+        (wp.int32, 3),
+        *[(wp.int32, 2 * n_vertices)] * 2,
+        (wp.int32, n_scratch),
+        (wp.float64, n_scratch),
+    ]
+    if several:
+        parts += [(wp.int32, n_labelled)] * 3
+    if n_faces > 0:
+        parts += [*[(wp.vec3d, n_faces)] * 3, (wp.vec4i, 3 * n_faces)]
+    tables = _launch.carve_typed(parts, device)
+    (labels, relaxed, popped, window, window_scale, listed, popped_step, pop_count) = tables[:8]
+    (corner_offsets, counts, invalid, state, front, touched) = tables[8:14]
+    scratch_targets, scratch_offers = tables[14:16]
+    empty_labelled = _launch.empty(0, dtype=wp.int32, device=device)
+    source_of, next_source_of, bids = tables[16:19] if several else (empty_labelled,) * 3
+    if n_faces > 0:
+        lengths, cosines, angles, corner_records = tables[-4:]
+    else:
+        lengths = cosines = angles = _launch.empty(0, dtype=wp.vec3d, device=device)
+        corner_records = _launch.empty(0, dtype=wp.vec4i, device=device)
+    mean_length = od.edges.mean_edge_length(vertices, faces) if n_faces > 0 else 0.0
+    _launch.launch(
+        kernel_heat.init_ordered_front,
+        dim=n_vertices,
+        inputs=[wp.float64(kernel_heat.UNFOLDING_WINDOW_EDGES * mean_length)],
+        outputs=[
+            labels,
+            relaxed,
+            popped,
+            listed,
+            popped_step,
+            pop_count,
+            corner_offsets,
+            source_of,
+            next_source_of,
+            bids,
+            counts,
+            invalid,
+            window,
+            window_scale,
+            state,
+        ],
+        device=device,
+    )
     _launch.launch(
         kernel_heat.seed_ordered_front,
         dim=sources.size,
@@ -791,9 +836,6 @@ def _unfolding_front(
     _require_indices_in_range(invalid, n_vertices, "fast_marching_distance", "sources")
     if n_faces == 0:
         return labels
-    lengths = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
-    cosines = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
-    angles = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
     _launch.launch(
         kernel_heat.unfolding_face_geometry,
         dim=n_faces,
@@ -804,7 +846,6 @@ def _unfolding_front(
     # Each vertex's corners in ascending order (one stable sort of the face buffer), which the
     # pops walk backwards: vcg's vertex-face lists hold a vertex's faces newest first.
     _, corner_order = od.array.sort_and_argsort(faces, end_bit=_launch.key_bits(n_vertices))
-    corner_records = _launch.empty(3 * n_faces, dtype=wp.vec4i, device=device)
     _launch.launch(
         kernel_heat.ordered_corner_records,
         dim=3 * n_faces,
@@ -812,7 +853,7 @@ def _unfolding_front(
         outputs=[corner_records],
         device=device,
     )
-    corner_offsets, corner_counts = offsets_buffer(n_vertices, device)
+    corner_counts = _launch.view(corner_offsets, 1, n_vertices + 1)
     _launch.launch(
         kernel_scatter.count_occurrences,
         dim=3 * n_faces,
@@ -824,19 +865,6 @@ def _unfolding_front(
     neighbors, neighbor_offsets = od.graph.edges_to_neighbor_lists(
         n_vertices, edges, validate=False
     )
-    window_scale = _launch.full(
-        1,
-        kernel_heat.UNFOLDING_WINDOW_EDGES * od.edges.mean_edge_length(vertices, faces),
-        dtype=wp.float64,
-        device=device,
-    )
-    bids = _launch.full(n_labelled, kernel_heat.ORDERED_NO_BID, dtype=wp.int32, device=device)
-    popped = _launch.full(n_vertices, math.inf, dtype=wp.float64, device=device)
-    pop_count = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
-    popped_step = _launch.full(n_vertices, -1, dtype=wp.int32, device=device)
-    touched = _launch.empty(2 * n_vertices, dtype=wp.int32, device=device)
-    window = _launch.array([0.0, math.inf], dtype=wp.float64, device=device)
-    state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
     # Each round of two steps pops at least the smallest pending vertex, and every pop lowers a
     # ``float64`` distance, so the loop ends; the cap is insurance for a captured loop, far above
     # what a cycle takes to settle (12 k steps on the 481 vertices of ``torus_irregular_holes``
@@ -845,8 +873,6 @@ def _unfolding_front(
     if wp.get_device(device).is_cpu:
         # The CPU runs a block as one lane and a launch's blocks one after another, so the whole
         # loop runs as one lane's steps in that same order (``kernels/heat.ordered_front_serial``).
-        scratch_targets = _launch.empty(1, dtype=wp.int32, device=device)
-        scratch_offers = _launch.empty(1, dtype=wp.float64, device=device)
         _launch.launch_tiled(
             kernel_heat.ordered_front_serial,
             dim=1,
@@ -881,11 +907,6 @@ def _unfolding_front(
             block_dim=1,
         )
         return labels
-
-    blocks = min(n_vertices, _ORDERED_FRONT_BLOCKS)
-    lanes = _ORDERED_FRONT_LANES
-    scratch_targets = _launch.empty(blocks * lanes, dtype=wp.int32, device=device)
-    scratch_offers = _launch.empty(blocks * lanes, dtype=wp.float64, device=device)
 
     def front_steps() -> None:
         for parity in range(2):

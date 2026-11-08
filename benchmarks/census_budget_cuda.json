@@ -2373,10 +2373,9 @@
  },
  "benchmarks/test_heat.py::test_fast_marching_distance_meshlab[sphere_small-ordito-cuda]": {
   "counts": {
-   "launch": 17,
-   "alloc": 27,
-   "memset": 12,
-   "h2d": 2,
+   "launch": 18,
+   "alloc": 8,
+   "memset": 2,
    "d2h": 3,
    "scan": 3,
    "sort": 2

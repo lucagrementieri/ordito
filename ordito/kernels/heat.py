@@ -206,7 +206,13 @@ def upper_edge_length_sum_and_count(
     # row is a chain of dependent loads, so on CUDA a block spans as few rows as fill the device
     # (``reduce.spanned_blocks_1d``, 2026-11-08): sixteen rows a lane held the launch at 27-42 us
     # from ``saddle`` to ``sphere_med``, a row a lane 6-7 us; ``dragon`` 56 -> 28 us at four, and
-    # ``lucy`` stays at its bandwidth floor (~585 us) at the standard sixteen. A long row
+    # ``lucy`` stays at its bandwidth floor (~585 us) at the standard sixteen.
+    #
+    # A ``HeatSolver`` at the default time launches this twice, once for the time its host reads
+    # (``_mean_edge_length``) and once inside the mesh's cached bundle. Handing the first's sums to
+    # the bundle needs a keyword on public ``heat_operators`` and a sum cached on the ``Trimesh``,
+    # for one launch, one allocation and one fill: ~17 us, 0.8 % of ``extend_scalar`` on
+    # ``sphere_small`` (2026-11-08), less on every larger call. Declined. A long row
     # (``linalg.csr_row_long``, a fan's hub) is left to the whole block after, its lanes striding
     # the entries into their own sums, so a block without one pays one reduction.
     i, t = wp.tid()
@@ -1730,6 +1736,54 @@ ORDERED_FRONT = 0
 ORDERED_TOUCHED = 2
 # A source label no cycling pop has bid (``ordered_relabel_pass``).
 ORDERED_NO_BID = 2147483647
+
+
+@wp.kernel
+def init_ordered_front(
+    window_scale: wp.float64,
+    out_labels: wp.array[wp.float64],
+    out_relaxed: wp.array[wp.float64],
+    out_popped: wp.array[wp.float64],
+    out_listed: wp.array[wp.int32],
+    out_popped_step: wp.array[wp.int32],
+    out_pop_count: wp.array[wp.int32],
+    out_corner_offsets: wp.array[wp.int32],
+    out_source_of: wp.array[wp.int32],
+    out_next_source_of: wp.array[wp.int32],
+    out_bids: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_invalid: wp.array[wp.int32],
+    out_window: wp.array[wp.float64],
+    out_window_scale: wp.array[wp.float64],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # Every starting value of ``fast_marching_distance(method="meshlab")``'s tables, which one
+    # allocation holds uninitialized: a thread a vertex (no distance, label, list entry, pop or
+    # bid; a zero corner count), and thread 0 the lists' counts, the range flag, the window
+    # ``[0, inf]``, its scale and the loop state. In place of a fill and an upload each.
+    v = wp.int32(wp.tid())
+    inf = wp.float64(wp.inf)
+    out_labels[v] = inf
+    out_relaxed[v] = inf
+    out_popped[v] = inf
+    out_listed[v] = -1
+    out_popped_step[v] = -1
+    out_pop_count[v] = 0
+    out_corner_offsets[v + 1] = 0
+    if out_source_of.shape[0] != 0:
+        out_source_of[v] = -1
+        out_next_source_of[v] = -1
+        out_bids[v] = ORDERED_NO_BID
+    if v == 0:
+        out_corner_offsets[0] = 0
+        for slot in range(out_counts.shape[0]):
+            out_counts[slot] = 0
+        out_invalid[0] = 0
+        out_window[0] = wp.float64(0.0)
+        out_window[1] = inf
+        out_window_scale[0] = window_scale
+        for slot in range(out_state.shape[0]):
+            out_state[slot] = wp.where(slot == LOOP_CONDITION, 1, 0)
 
 
 @wp.kernel
