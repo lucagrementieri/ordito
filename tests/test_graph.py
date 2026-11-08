@@ -434,6 +434,22 @@ def test_connected_component_labels_infers_the_node_count(device: str) -> None:
         od.graph.connected_component_labels_from_edges(_edges_wp(edges_np, device), node_count=-1)
 
 
+@pytest.mark.parametrize("bad_row", [[1, 9], [-1, 2]], ids=["past_the_end", "negative"])
+def test_connected_component_labels_from_edges_rejects_an_out_of_range_endpoint(
+    device: str, bad_row: list[int]
+) -> None:
+    """
+    Not a library comparison: an endpoint outside ``[0, node_count)`` raises under ``validate``.
+
+    The pre-hook and the hook both skip the row, so the forest stays in range while the flag waits
+    for its read after the flatten; unchecked, either kernel would index the ``node_count``-entry
+    forest by the raw endpoint (on the CPU device a host-heap write).
+    """
+    edges_np = np.array([[0, 1], bad_row, [2, 3]], dtype=np.int32)
+    with pytest.raises(ValueError, match="edge indices must lie in"):
+        od.graph.connected_component_labels_from_edges(_edges_wp(edges_np, device), node_count=5)
+
+
 def test_connected_component_labels_rejects_a_malformed_adjacency(device: str) -> None:
     """
     Not a library comparison: a non-square or blocked matrix is not an adjacency, and raises.

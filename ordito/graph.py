@@ -534,7 +534,10 @@ def connected_component_labels_from_edges(
             inputs=[edges, parents_and_flag],
             device=device,
         )
-        # Decides whether to raise.
+        # Decides whether to raise. Declined, a checked hook skipping the same rows and this read
+        # made after the flatten: 1.03-1.35x from ``sphere_small`` to scrambled ``dragon`` on
+        # CUDA (2026-11-08). Read here, the host waits on the short pre-hook alone and the hook
+        # and flatten run on while the caller issues its next work; read last, it waits on all.
         if read_scalar(parents_and_flag, node_count) != node_count:
             _raise_edge_range(edges, node_count)
         parents = _launch.view(parents_and_flag, 0, node_count)
