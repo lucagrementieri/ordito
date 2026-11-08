@@ -735,7 +735,7 @@ def _raise_signed_edge_range(
     Raise the error for a signed edge list ``ecl_hook_parity_checked`` flagged, naming its bounds.
 
     One launch folds both ranges (``kernels/graph.signed_edge_bounds``) and one read brings them
-    back, on the error path only.
+    back, on the error path only, so its ``INT32_MAX`` fill costs a successful call nothing.
     """
     m = int(edges.shape[0])
     bounds = _launch.full(4, INT32_MAX, dtype=wp.int32, device=edges.device)

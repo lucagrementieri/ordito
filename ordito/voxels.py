@@ -3108,7 +3108,9 @@ def _cell_bounds(grid: wp.Volume) -> tuple[tuple[int, int, int], tuple[int, int,
     if int(voxels.shape[0]) == 0:
         return (0, 0, 0), (1, 1, 1)
     # One launch and one readback of six integers into one buffer: the dense lattice has to be
-    # sized on the host. Slots 3..5 hold the bit-complemented upper corner; see the kernel.
+    # sized on the host. Slots 3..5 hold the bit-complemented upper corner; see the kernel. The
+    # ``INT32_MAX`` fill stays: a zero-initialized complement would cost the same allocation and
+    # memset, there being no zeroed buffer here to cut it from.
     corners = _launch.full(6, INT32_MAX, dtype=wp.int32, device=grid.device)
     _launch.launch(
         kernel_reduce.minmax_rows3_int32_chunked,

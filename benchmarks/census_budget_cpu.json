@@ -2293,7 +2293,7 @@
  "benchmarks/test_heat.py::test_heat_geodesic_potpourri3d[sphere_small-ordito-cpu-robust]": {
   "counts": {
    "launch": 28,
-   "alloc": 26,
+   "alloc": 25,
    "readback": 8,
    "sort": 3
   }

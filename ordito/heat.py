@@ -72,7 +72,7 @@ from ordito._common import (
 )
 from ordito.cholesky import SparseCholesky, held_nbytes
 from ordito.config import is_deterministic
-from ordito.constants import INT32_MAX, TILE_1D, TOLERANCE_MOLLIFY
+from ordito.constants import TILE_1D, TOLERANCE_MOLLIFY
 from ordito.halfedge import vertex_one_rings
 from ordito.kernels import array as kernel_array
 from ordito.kernels import heat as kernel_heat
@@ -4172,9 +4172,12 @@ def _tufted_intrinsic_delaunay(
     )
     flipped_face = _launch.view(tables, 5 * n_slots, 5 * n_slots + n_cover)
     count = _launch.view(tables, 5 * n_slots + n_cover, 5 * n_slots + n_cover + 1)
-    face_claim = _launch.full(n_cover, INT32_MAX, dtype=wp.int32, device=device)
+    # The face claims (``kernels/heat.cover_flip_candidates``) and the non-manifold flag both start
+    # zeroed, one allocation.
+    zeroed = _launch.zeros(n_cover + 1, dtype=wp.int32, device=device)
+    face_claim = _launch.view(zeroed, 0, n_cover)
+    nonmanifold = _launch.view(zeroed, n_cover, n_cover + 1)
     new_length = _launch.empty(n_slots, dtype=wp.float64, device=device)
-    nonmanifold = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_heat.tufted_cover,
         dim=3 * n_faces,

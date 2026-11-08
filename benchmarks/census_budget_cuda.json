@@ -2462,8 +2462,8 @@
  "benchmarks/test_heat.py::test_heat_geodesic_potpourri3d[sphere_small-ordito-cuda-robust]": {
   "counts": {
    "launch": 32,
-   "alloc": 26,
-   "memset": 15,
+   "alloc": 25,
+   "memset": 14,
    "d2d": 2,
    "d2h": 9,
    "scan": 2,

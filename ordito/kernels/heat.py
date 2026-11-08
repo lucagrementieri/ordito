@@ -1016,8 +1016,10 @@ def cover_flip_candidates(
         return
     out_flip[h] = 1
     out_new_length[h] = new_length
-    wp.atomic_min(out_face_claim, f0, h)
-    wp.atomic_min(out_face_claim, f1, h)
+    # The lowest candidate claims each face, stored as ``INT32_MAX - h`` under ``atomic_max`` so a
+    # claim table arriving zeroed means "unclaimed" and is cut from a zeroed allocation unfilled.
+    wp.atomic_max(out_face_claim, f0, INT32_MAX_CONSTANT - h)
+    wp.atomic_max(out_face_claim, f1, INT32_MAX_CONSTANT - h)
 
 
 @wp.func
@@ -1058,7 +1060,8 @@ def cover_flip_commit(
     t = twin[h]
     f0 = h // 3
     f1 = t // 3
-    if face_claim[f0] != h or face_claim[f1] != h:
+    claim = INT32_MAX_CONSTANT - h
+    if face_claim[f0] != claim or face_claim[f1] != claim:
         return
     e0 = h % 3
     e1 = t % 3
@@ -1120,7 +1123,7 @@ def cover_flip_fixup(
         other = remap[other]
     out_twin[h] = other
     if h % 3 == 0:
-        out_face_claim[f] = INT32_MAX_CONSTANT
+        out_face_claim[f] = wp.int32(0)
 
 
 @wp.kernel
