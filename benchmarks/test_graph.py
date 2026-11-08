@@ -333,12 +333,15 @@ def test_successor_cycles_from_table(bench_case: BenchCase, shape: str) -> None:
     The cycles of ``successor_cycles``'s graphs, from a successor table the caller already holds.
 
     No range check and no table scatter, so read against ``successor_cycles`` for what those cost.
-    Ordito only: no reference library ranks the cycles of a successor graph.
+    The tails are in ascending node order, as the boundary walks emit theirs (in key order) and as
+    ``successor_cycles`` lists its own: the ranking's reads follow the tails, and the shuffled rows
+    made it 7x ``successor_cycles`` on ``sphere_large``'s faces graph. Ordito only: no reference
+    library ranks the cycles of a successor graph.
     """
     edges_np, node_count = _successor_edges_np(bench_case, shape)
     next_np = np.full(node_count, -1, dtype=np.int32)
     next_np[edges_np[:, 0]] = edges_np[:, 1]
-    tails = wp.array(np.ascontiguousarray(edges_np[:, 0]), dtype=wp.int32, device=bench_case.device)
+    tails = wp.array(np.sort(edges_np[:, 0]), dtype=wp.int32, device=bench_case.device)
     next_node = wp.array(next_np, dtype=wp.int32, device=bench_case.device)
     flat_cycles, offsets = bench_case.run(
         lambda: od.graph.successor_cycles_from_table(tails, next_node)
