@@ -468,14 +468,40 @@ def relax_vertex(mesh: InputMesh, distance: wp.array[wp.float64], v: wp.int32) -
     return moved
 
 
+# Rounds a block of ``relax_distances`` runs over its own vertices in one pass, at most. Measured
+# (2026-11-08, one source, CUDA): 4 best on ``sphere_med`` and bunny, 16 on dragon, 8 within 10 %
+# of both and best on ``sphere_large``; past it a block's rounds chase values its neighbours are
+# still lowering.
+BLOCK_RELAX_ROUNDS = wp.int32(8)
+
+
 @wp.kernel
 def relax_distances(
-    mesh: InputMesh, distance: wp.array[wp.float64], out_state: wp.array[wp.int32]
+    mesh: InputMesh,
+    distance: wp.array[wp.float64],
+    order: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    out_state: wp.array[wp.int32],
 ) -> None:
     # One relaxation pass, in place: a neighbour's value read before or after its own update this
-    # pass is a path's sum either way, so the passes reach the same least sums.
-    v = wp.int32(wp.tid())
-    if relax_vertex(mesh, distance, v):
+    # pass is a path's sum either way, so any schedule of passes reaches the same least sums. The
+    # vertices go in Hilbert order (``order``), tiled, so a block's vertices are a patch of the
+    # mesh, and the block relaxes them round after round (``wp.tile_sum`` the barrier) until none
+    # moves: a pass carries a distance across the patch rather than an edge or two.
+    block, lane = wp.tid()
+    i = block * wp.block_dim() + lane
+    v = wp.int32(-1)
+    if i < n_vertices:
+        v = order[i]
+    moved_any = wp.int32(0)
+    for _round in range(BLOCK_RELAX_ROUNDS):
+        moved = wp.int32(0)
+        if v >= 0 and relax_vertex(mesh, distance, v):
+            moved = wp.int32(1)
+        if wp.tile_sum(wp.tile(moved))[0] == 0:
+            break
+        moved_any = wp.int32(1)
+    if moved_any != 0 and lane == 0:
         out_state[LOOP_PROGRESS] = 1
 
 

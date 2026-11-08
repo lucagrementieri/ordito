@@ -12,6 +12,7 @@ lives in ``_launch``.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from typing import Any, TypeVar, cast
 
@@ -731,3 +732,28 @@ def staging_pool(
 # twice, as every walk was before the pool. Its own size is the peak memory it adds
 # (``geodesic_walk.descend_field``: 4 096 paths on a sphere of 82 k faces, 12.7 -> 25 MiB).
 STAGED_POINTS = 1 << 20
+
+
+def hilbert_point_order(points: wp.array[wp.vec3]) -> wp.array[wp.int32]:
+    """
+    Return ``(n,)`` the points' indices in Hilbert order over their bounding box.
+
+    A launch over the points in this order puts a compact patch in each block: a block-local
+    iteration then carries a value across the patch (``geodesic_walk``'s shortest-edge tree). One
+    box reduction, one key pass and a 30-bit radix sort, with no readback.
+    """
+    device = points.device
+    n = points.size
+    corners = _launch.full(6, math.inf, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_reduce.minmax_vec3_chunked,
+        dim=kernel_reduce.chunks_1d(n),
+        inputs=[points, corners],
+        device=device,
+    )
+    keys, order = _launch.carve(wp.int32, (2 * n, 2 * n), device)
+    _launch.launch(
+        kernel_array.point_hilbert_keys, dim=n, inputs=[points, corners, keys, order], device=device
+    )
+    _launch.radix_sort_pairs(keys, order, count=n, end_bit=30)
+    return _launch.view(order, 0, n)

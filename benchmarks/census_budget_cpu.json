@@ -1740,9 +1740,9 @@
  },
  "benchmarks/test_geodesic_walk.py::test_geodesic_path[sphere_med-ordito-cpu-4096]": {
   "counts": {
-   "launch": 35,
+   "launch": 34,
    "alloc": 32,
-   "h2h": 1,
+   "h2h": 2,
    "readback": 9,
    "scan": 3,
    "sort": 4

@@ -48,6 +48,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._common import (
+    hilbert_point_order,
     read_scalar,
     read_values,
     require_same_device,
@@ -897,7 +898,9 @@ def _flip_geodesic_paths(
         outputs=[flags],
         device=device,
     )
-    incoming = _flip_shortest_edge_tree(input_mesh, n_vertices, 2 * n_edges, source, targets, flags)
+    incoming = _flip_shortest_edge_tree(
+        input_mesh, mesh.vertices, n_vertices, 2 * n_edges, source, targets, flags
+    )
     # Host readback: whether the mesh or an index was refused decides whether the call raises,
     # before any path is shortened.
     flag_values = [int(v) for v in read_values(flags, 0, kernel_flip_geodesics.FLAG_SIZE)]
@@ -1049,6 +1052,7 @@ def _flip_input_mesh(mesh: Trimesh) -> tuple[StructInstance, wp.array[wp.int32],
 
 def _flip_shortest_edge_tree(
     input_mesh: StructInstance,
+    positions: wp.array[wp.vec3],
     n_vertices: int,
     n_halfedges: int,
     source: wp.array[wp.int32],
@@ -1068,22 +1072,24 @@ def _flip_shortest_edge_tree(
             device=device,
         )
     if device.is_cuda:
-        # The relaxation passes as one conditional graph; a pass that moves nothing ends it.
-        # Declined (2026-11-08): a tiled pass whose blocks re-relax their own vertices until they
-        # settle (``wp.tile_sum`` the barrier), to carry a distance across a block a pass: the
-        # icosphere numbers its midpoints by edge, so a block is no patch and the extra rounds
-        # re-relax stale values. ``sphere_med``, one source: 2.4 ms at 1 round a block, 3.2 at 4,
-        # 5.4 at 16, 7.0 at 64.
+        # The relaxation passes as one conditional graph; a pass that moves nothing ends it. Each
+        # block relaxes a patch of the vertices in Hilbert order for up to ``BLOCK_RELAX_ROUNDS``
+        # rounds a pass; in the mesh's own order a block is no patch (the icosphere numbers its
+        # midpoints by edge) and the rounds lost: 2.4 ms at 1, 3.2 at 4, 7.0 at 64 on
+        # ``sphere_med``, against 1.3 ms ordered.
         state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
         n_vertices_i32 = wp.int32(n_vertices)
+        order = hilbert_point_order(positions)
+        n_blocks = -(-n_vertices // _RELAX_BLOCK_DIM)
 
         def relaxation_pass() -> None:
-            _launch.launch(
+            _launch.launch_tiled(
                 kernel_flip_geodesics.relax_distances,
-                dim=n_vertices,
-                inputs=[input_mesh, distance],
+                dim=[n_blocks],
+                inputs=[input_mesh, distance, order, n_vertices_i32],
                 outputs=[state],
                 device=device,
+                block_dim=_RELAX_BLOCK_DIM,
             )
             _launch.launch(
                 kernel_array.loop_advance, dim=1, inputs=[n_vertices_i32, state], device=device
@@ -1122,6 +1128,11 @@ def _flip_shortest_edge_tree(
         device=device,
     )
     return incoming
+
+
+# Lanes of a ``relax_distances`` block: ``_launch.launch``'s width, which a tiled launch of the
+# module must share or build it again.
+_RELAX_BLOCK_DIM = 256
 
 
 def _flip_shorten_on_host(

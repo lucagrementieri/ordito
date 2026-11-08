@@ -1678,6 +1678,22 @@ def morton_frame(corners: wp.array[wp.float32]) -> tuple[wp.vec3, wp.vec3]:
     return lower, inv_extent
 
 
+@wp.kernel
+def point_hilbert_keys(
+    points: wp.array[wp.vec3],
+    corners: wp.array[wp.float32],
+    out_keys: wp.array[wp.int32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # Each point's ``hilbert_code_30`` over the box ``corners`` (``morton_frame``), with its index,
+    # into the radix sort's double-width buffers (``_common.hilbert_point_order``): consecutive
+    # points of the sorted order are a compact patch.
+    i = wp.int32(wp.tid())
+    lower, inv_extent = morton_frame(corners)
+    out_keys[i] = hilbert_code_30(points[i], lower, inv_extent)
+    out_order[i] = i
+
+
 # Threads a register-blocked ``(item, slice)`` reduction must still launch after grouping its outer
 # items (``RegisterBlockedTable.launch_shape``). Grouping ``width`` items per thread divides the
 # grid by ``width``, so past this floor a wider group trades occupancy for traffic it no longer
