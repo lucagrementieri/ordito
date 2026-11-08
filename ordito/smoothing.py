@@ -5213,22 +5213,24 @@ def _incidence_rows(
     """
     device = indices.device
     n_entries = indices.size
-    # One zeroed allocation: the offsets, the items and the row counts.
-    offsets, items, counts = _launch.carve(
-        wp.int32, (n_rows + 1, n_entries, n_rows), device, zeroed=True
-    )
+    # One zeroed allocation: the offsets, whose entries from 2 on take the row counts, and the
+    # items. The counts are scanned in place, and the fill's claims advance each row's start to its
+    # end (``kernels/scatter.claim_row_slot``), so the buffer ends as the offsets.
+    buffer, items = _launch.carve(wp.int32, (n_rows + 2, n_entries), device, zeroed=True)
+    offsets = _launch.view(buffer, 0, n_rows + 1)
     if n_entries == 0:
         return offsets, items
+    counts = _launch.view(buffer, 2, n_rows + 2)
     _launch.launch(
         kernel_scatter.count_occurrences, dim=n_entries, inputs=[indices, counts], device=device
     )
-    # The total is the entry count, known on the host, so the scan needs no readback; the counts
-    # stay intact, as the fill's per-row cursor.
-    _launch.array_scan(counts, out_array=offsets[1:], inclusive=True)
+    # The total is the entry count, known on the host, so the scan needs no readback.
+    _launch.array_scan(counts, out_array=counts, inclusive=True)
     _launch.launch(
         kernel_smoothing.scatter_incidence_rows,
         dim=n_entries,
-        inputs=[indices, arity, offsets, counts, items],
+        inputs=[indices, arity],
+        outputs=[buffer, items],
         device=device,
     )
     if is_deterministic():

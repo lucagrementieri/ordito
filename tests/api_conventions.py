@@ -696,7 +696,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # re-zeroed in place for the next pass's face pass.
     ("smoothing", "fairing_system_rows"): frozenset({"area_sums"}),
     # scratch / persistent state
-    ("smoothing", "scatter_incidence_rows"): frozenset({"cursor"}),
     # ``smooth_region``'s right-hand side, written by ``normal_equations_setup``, is overwritten in
     # place with the seed on the rows of a component no fixed vertex touches, which the product's
     # value pass pins to the identity as it writes them.

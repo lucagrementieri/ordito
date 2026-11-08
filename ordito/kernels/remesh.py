@@ -2386,8 +2386,13 @@ def fill_edge_topology_at(
     # ``out_feature_count`` skips it), and face
     # ``t`` writes itself into its three
     # vertices' face rows. ``cursor`` is the spent count buffer, counting each row's free slots down
-    # as in ``graph.scatter_neighbor_lists`` and ``adjacency.scatter_vertex_faces``. A ``state``
-    # holds the live edge and face counts of fixed-width arrays (``emit_edge_topology``).
+    # to zero. A ``state`` holds the live edge and face counts of fixed-width arrays
+    # (``emit_edge_topology``). Declined, the counts taken in the offsets' own buffer and claimed
+    # (``scatter.claim_row_slot``, as ``graph.scatter_neighbor_lists`` and
+    # ``adjacency.scatter_vertex_faces`` fill): counting down is what leaves the collapse rounds'
+    # persistent counts zeroed for the next round's count pass, which claims would turn into
+    # offsets and a memset a round; the one-shot rebuild's counts share a zeroed allocation with
+    # the face and feature counts, so no allocation or memset would go (2026-11-08).
     n_vertices = cursor.shape[0] // 2
     n_edges = unique_edges.shape[0]
     n_faces = faces.shape[0] // 3

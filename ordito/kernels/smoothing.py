@@ -40,7 +40,7 @@ from ordito.kernels.reduce import (
     block_sum,
     store_block_sum,
 )
-from ordito.kernels.scatter import add_corner_triple
+from ordito.kernels.scatter import add_corner_triple, claim_row_slot
 from ordito.kernels.triangles import corner_triple, local_corner
 
 wp.set_module_options({"enable_backward": False})
@@ -2166,21 +2166,19 @@ def diffuse_scalar_passes_serial(
 def scatter_incidence_rows(
     indices: wp.array[wp.int32],
     arity: wp.int32,
-    offsets: wp.array[wp.int32],
-    cursor: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
     out_items: wp.array[wp.int32],
 ) -> None:
     # The incidence CSR of a flat ``arity``-wide index buffer: row ``r`` lists every item
     # ``e // arity`` with an entry ``e`` naming ``r`` -- a vertex's faces from the face buffer
     # (``arity = 3``), a face's adjacency rows from the flattened ``(m, 2)`` pairs (``arity = 2``).
-    # One thread per entry. ``cursor`` arrives holding each row's length and counts it down, and
-    # the slot is taken from the row's end, so the CPU device, which runs the entries in turn,
-    # fills every row in ascending entry order -- the order the item-major scatters these rows
-    # replace committed their atomics in -- with no cleared cursor; a CUDA device fills in arrival
-    # order unless the caller sorts the rows (the deterministic setting).
+    # One thread per entry, over the counted and scanned offsets buffer of
+    # ``scatter.claim_row_slot``, whose claims hand each row's slots out from its start: the CPU
+    # device, which runs the entries in turn, fills every row in ascending entry order -- the order
+    # the item-major scatters these rows replace committed their atomics in; a CUDA device fills in
+    # arrival order unless the caller sorts the rows (the deterministic setting).
     e = wp.int32(wp.tid())
-    r = indices[e]
-    out_items[offsets[r + 1] - wp.atomic_add(cursor, r, -1)] = e // arity
+    out_items[claim_row_slot(out_offsets, indices[e])] = e // arity
 
 
 @wp.func
