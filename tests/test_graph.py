@@ -153,7 +153,7 @@ def test_edges_to_neighbor_lists_from_counts_is_the_counted_form(
 
     ``edges_to_neighbor_lists`` carries the oracle (igl, above); this pins that handing it the
     degrees counted on the host builds the same structure -- bit for bit with ``sort_rows``, the
-    same row sets without -- and that the counts come back consumed, as documented.
+    same row sets without -- and that the counts come back unmodified, as documented.
     """
     _, mesh_wp = sphere_irregular
     n_vertices = mesh_wp.points.size
@@ -175,7 +175,7 @@ def test_edges_to_neighbor_lists_from_counts_is_the_counted_form(
         assert np.array_equal(neighbors_np, expected_np)
     for start, stop in itertools.pairwise(offsets_np):
         assert np.array_equal(np.sort(neighbors_np[start:stop]), np.sort(expected_np[start:stop]))
-    assert np.array_equal(counts_wp.numpy(), np.zeros(n_vertices, dtype=np.int32))
+    assert np.array_equal(counts_wp.numpy(), degrees_np)
 
 
 @pytest.mark.parametrize(("node_count", "n_edges"), [(64, 24), (2048, 2047)])

@@ -8,6 +8,7 @@ from ordito.kernels.algorithms.connected_components import (
     parity_root_word,
 )
 from ordito.kernels.reduce import block_chunk_1d, block_min
+from ordito.kernels.scatter import claim_row_slot
 
 wp.set_module_options({"enable_backward": False})
 
@@ -76,48 +77,48 @@ def edge_in_range(edges: wp.array2d[wp.int32], e: wp.int32, n: wp.int32) -> wp.i
 
 @wp.kernel
 def count_edge_endpoints_checked(
-    edges: wp.array2d[wp.int32], out_counts_and_flag: wp.array[wp.int32]
+    edges: wp.array2d[wp.int32], out_flag_and_counts: wp.array[wp.int32]
 ) -> None:
-    # ``graph.edges_to_neighbor_lists``' degree count under ``validate``: each row in range adds
-    # one to both endpoints' counts (``scatter.count_occurrences`` over the flattened edges, the
-    # unchecked form), and a row outside sets the flag in the last slot instead of writing past the
-    # ``n``-entry count table in front of it. Launch over the edge rows.
+    # ``graph.edges_to_neighbor_lists``' degree count under ``validate``, node ``v``'s count in
+    # entry ``v + 1``: each row in range adds one to both endpoints' counts
+    # (``scatter.count_occurrences`` over the flattened edges, the unchecked form), and a row
+    # outside sets the flag in entry ``0`` instead of writing past the counts. Launched on the
+    # offsets buffer from its entry 1, whose zero (the flag clear) is the first row's start for
+    # ``scatter.claim_row_slot``. Launch over the edge rows.
     e = wp.int32(wp.tid())
-    n = out_counts_and_flag.shape[0] - 1
+    n = out_flag_and_counts.shape[0] - 1
     if edge_in_range(edges, e, n) == 0:
-        out_counts_and_flag[n] = 1
+        out_flag_and_counts[0] = 1
         return
-    wp.atomic_add(out_counts_and_flag, edges[e, 0], 1)
-    wp.atomic_add(out_counts_and_flag, edges[e, 1], 1)
+    wp.atomic_add(out_flag_and_counts, edges[e, 0] + 1, 1)
+    wp.atomic_add(out_flag_and_counts, edges[e, 1] + 1, 1)
 
 
 @wp.kernel
 def scatter_neighbor_lists(
-    edges: wp.array2d[wp.int32],
-    offsets: wp.array[wp.int32],
-    cursor: wp.array[wp.int32],
-    out_neighbors: wp.array[wp.int32],
+    edges: wp.array2d[wp.int32], out_offsets: wp.array[wp.int32], out_neighbors: wp.array[wp.int32]
 ) -> None:
     # Both directed entries of each undirected edge, into the CSR row the counting pass sized --
-    # the payload half of ``graph.edges_to_neighbor_lists``. The same counting-sort fill as
-    # [`scatter_vertex_faces`][ordito.kernels.adjacency.scatter_vertex_faces]; what differs is the
-    # payload, which is the *other endpoint* here and the owning face there, so the two are
-    # siblings rather than one kernel.
+    # the payload half of ``graph.edges_to_neighbor_lists``, over an offsets buffer holding each
+    # row's start in entry ``v + 1`` (``scatter.claim_row_slot``), which ends as the offsets. Entry
+    # 0, which no claim touches, is written here: ``graph.edges_to_neighbor_lists_from_counts``
+    # scans the starts in behind it and zeroes nothing. The same counting-sort fill as
+    # ``adjacency.scatter_vertex_faces_to_offsets``; what differs is the payload, which is the
+    # *other endpoint* here and the owning face there.
     #
-    # ``cursor`` is the counting pass's per-node degree, not an output, and it counts *down*: the
-    # atomic returns how many slots of the row are still free, so ``offsets[row + 1]`` minus it is
-    # the next free slot from the front -- the slot a zeroed cursor counting up hands out, without
-    # zeroing the cursor first. The column order within a row is thread order and **not sorted**
-    # -- nor stable, so two runs return different permutations. That is deliberate and is what
-    # this build costs less than ``bsr_from_triplets`` for.
-    # ``graph.edges_to_neighbor_lists(sort_rows=True)`` pins it with one ``array.sort_segments``
-    # launch, which makes the buffer identical to ``graph.edges_to_csr``'s; that is what
-    # ``neighbors.geodesic_ball`` asks for, because it emits its BFS queue in visit order.
+    # The column order within a row is arrival order and **not sorted** -- nor stable, so two runs
+    # return different permutations. That is deliberate and is what this build costs less than
+    # ``bsr_from_triplets`` for. ``graph.edges_to_neighbor_lists(sort_rows=True)`` pins it with one
+    # ``array.sort_segments`` launch, which makes the buffer identical to ``graph.edges_to_csr``'s;
+    # that is what ``neighbors.geodesic_ball`` asks for, because it emits its BFS queue in visit
+    # order.
     e = wp.int32(wp.tid())
+    if e == 0:
+        out_offsets[0] = 0
     a = edges[e, 0]
     b = edges[e, 1]
-    out_neighbors[offsets[a + 1] - wp.atomic_sub(cursor, a, 1)] = b
-    out_neighbors[offsets[b + 1] - wp.atomic_sub(cursor, b, 1)] = a
+    out_neighbors[claim_row_slot(out_offsets, a)] = b
+    out_neighbors[claim_row_slot(out_offsets, b)] = a
 
 
 @wp.kernel

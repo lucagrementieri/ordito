@@ -231,31 +231,39 @@ def edges_to_neighbor_lists(
             _launch.zeros(node_count + 1, dtype=wp.int32, device=device),
         )
 
+    # The degrees are counted in the offsets' own buffer, behind two zeros, and scanned there in
+    # place, so the fill's atomics advance each row's start to its end and the buffer ends as the
+    # offsets (``kernels/scatter.claim_row_slot``). The rows share its allocation (a CSR pair is
+    # held and dropped together); only the counts are zeroed, as the rows are written whole.
+    buffer, neighbors = _launch.carve(wp.int32, (node_count + 2, 2 * m), device)
+    _launch.zero_(buffer)
     if validate:
-        # The count skips an out-of-range row and flags it in one slot past the degrees, so the
-        # check is this launch's and one 4-byte read, and the fill below never sees such a row.
-        counts_and_flag = _launch.zeros(node_count + 1, dtype=wp.int32, device=device)
+        # The count skips an out-of-range row and flags it in entry 1, which must read zero for the
+        # fill anyway, so the check is this launch's and one 4-byte read, and the fill below never
+        # sees such a row.
         _launch.launch(
             kernel_graph.count_edge_endpoints_checked,
             dim=m,
-            inputs=[edges, counts_and_flag],
+            inputs=[edges],
+            outputs=[_launch.view(buffer, 1, node_count + 2)],
             device=device,
         )
         # Decides whether to raise before the fill indexes by the raw endpoints.
-        if read_scalar(counts_and_flag, node_count) != 0:
+        if read_scalar(buffer, 1) != 0:
             _raise_edge_range(edges, node_count)
-        degree = _launch.view(counts_and_flag, 0, node_count)
     else:
         # An ``(m, 2)`` edge buffer flattened *is* the entry -> node map, so one histogram over it
         # is every node's degree. ``count_occurrences``' own docstring names this as what it is for.
-        degree = _launch.zeros(node_count, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_scatter.count_occurrences,
             dim=2 * m,
-            inputs=[edges.flatten(), degree],
+            inputs=[edges.flatten()],
+            outputs=[_launch.view(buffer, 2, node_count + 2)],
             device=device,
         )
-    return edges_to_neighbor_lists_from_counts(edges, degree, sort_rows=sort_rows)
+    counts = _launch.view(buffer, 2, node_count + 2)
+    _launch.array_scan(counts, out_array=counts, inclusive=True)
+    return _fill_neighbor_lists(edges, node_count, buffer, neighbors, sort_rows)
 
 
 def edges_to_neighbor_lists_from_counts(
@@ -266,9 +274,7 @@ def edges_to_neighbor_lists_from_counts(
 
     The second half of that function, for a caller whose own kernel counted every node's degree in
     a pass it makes anyway: the degree histogram is the one launch this skips. ``counts`` is
-    trusted, not checked -- it must be exactly each node's number of entries in ``edges`` -- and it
-    is **consumed**: the fill counts its entries down as a per-row cursor, so it holds zeros
-    afterwards.
+    trusted, not checked: it must be exactly each node's number of entries in ``edges``.
 
     Parameters
     ----------
@@ -278,7 +284,7 @@ def edges_to_neighbor_lists_from_counts(
         for ``validate=False``.
     counts
         ``(n_nodes,)`` ``int32`` number of times each node appears in ``edges``, on
-        ``edges.device``. Overwritten.
+        ``edges.device``. Not modified.
     sort_rows
         As in [`edges_to_neighbor_lists`][ordito.graph.edges_to_neighbor_lists]: sort each row
         ascending in one extra launch, which makes the row order reproducible.
@@ -320,24 +326,44 @@ def edges_to_neighbor_lists_from_counts(
     device = edges.device
     m = int(edges.shape[0])
     node_count = counts.size
-    offsets = _launch.zeros(node_count + 1, dtype=wp.int32, device=device)
-    neighbors = _launch.empty(2 * m, dtype=wp.int32, device=device)
     if m == 0 or node_count == 0:
-        return neighbors, offsets
-    # Deliberately NOT od.array.counts_to_offsets: that helper always reads the total back, and
-    # this function never needs it (it is 2 * m, known on the host). The same decline
+        return (
+            _launch.empty(2 * m, dtype=wp.int32, device=device),
+            _launch.zeros(node_count + 1, dtype=wp.int32, device=device),
+        )
+    # The offsets' buffer as ``edges_to_neighbor_lists`` leaves it before its fill, one entry
+    # shorter: the exclusive scan of ``counts`` behind entry 0 puts each row's start where the
+    # fill's claims read it, row 0's zero included, and the fill writes entry 0 itself, so nothing
+    # is zeroed. Deliberately NOT od.array.counts_to_offsets: that helper always reads the total
+    # back, and this function never needs it (it is 2 * m, known on the host). The same decline
     # ``adjacency.vertex_face_adjacency`` and ``halfedge.vertex_one_rings`` already write down.
-    tail = _launch.view(offsets, 1, node_count + 1)
-    _launch.array_scan(counts, out_array=tail, inclusive=True)
-    # ``counts`` has done its job and becomes the fill's write cursor, counting each row's free
-    # slots down to zero -- which saves an allocation and a fill, and is why the scatter takes both
-    # it and ``offsets``.
+    buffer, neighbors = _launch.carve(wp.int32, (node_count + 1, 2 * m), device)
+    _launch.array_scan(counts, out_array=_launch.view(buffer, 1, node_count + 1), inclusive=False)
+    return _fill_neighbor_lists(edges, node_count, buffer, neighbors, sort_rows)
+
+
+def _fill_neighbor_lists(
+    edges: odt.Array2dInt32,
+    node_count: int,
+    buffer: wp.array[wp.int32],
+    neighbors: wp.array[wp.int32],
+    sort_rows: bool,
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Fill the neighbour lists from each row's start in ``buffer[v + 1]``; return them packed.
+
+    The fill's claims (``kernels/scatter.claim_row_slot``) advance each start to its row's end, and
+    the fill writes ``buffer[0]``, so the first ``node_count + 1`` entries end as the offsets.
+    """
+    device = edges.device
     _launch.launch(
         kernel_graph.scatter_neighbor_lists,
-        dim=m,
-        inputs=[edges, offsets, counts, neighbors],
+        dim=int(edges.shape[0]),
+        inputs=[edges],
+        outputs=[buffer, neighbors],
         device=device,
     )
+    offsets = _launch.view(buffer, 0, node_count + 1)
     if sort_rows:
         _launch.launch(
             kernel_array.sort_segments, dim=node_count, inputs=[offsets, neighbors], device=device

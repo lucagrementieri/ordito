@@ -2049,8 +2049,8 @@
  "benchmarks/test_graph.py::test_edges_to_neighbor_lists[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 2,
-   "alloc": 3,
-   "memset": 2,
+   "alloc": 1,
+   "memset": 1,
    "d2h": 1,
    "scan": 1
   }
@@ -2058,8 +2058,7 @@
  "benchmarks/test_graph.py::test_edges_to_neighbor_lists_from_counts[sphere_small-ordito-cuda]": {
   "counts": {
    "launch": 1,
-   "alloc": 2,
-   "memset": 1,
+   "alloc": 1,
    "scan": 1
   }
  },

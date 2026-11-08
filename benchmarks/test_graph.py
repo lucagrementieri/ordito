@@ -144,16 +144,14 @@ def test_edges_to_neighbor_lists_from_counts(bench_case: BenchCase) -> None:
     The same neighbour lists from degrees the caller already holds: the scan and the scatter only.
 
     Read against ``edges_to_neighbor_lists`` for the price of the range check and degree count it
-    skips. ``counts`` is overwritten by the call, so each round gets a fresh copy outside the timed
-    region. Ordito only: the test pins it against ``edges_to_neighbor_lists``.
+    skips. Ordito only: the test pins it against ``edges_to_neighbor_lists``.
     """
     n_vertices = bench_case.n_vertices
     unique_edges, _ = od.edges.edges_unique(bench_case.faces_wp, n_vertices=n_vertices)
     counts_np = np.bincount(unique_edges.numpy().reshape(-1), minlength=n_vertices)
     counts = wp.array(counts_np.astype(np.int32), dtype=wp.int32, device=bench_case.device)
     neighbors, offsets = bench_case.run(
-        lambda fresh: od.graph.edges_to_neighbor_lists_from_counts(unique_edges, fresh),
-        setup=lambda: wp.clone(counts),
+        lambda: od.graph.edges_to_neighbor_lists_from_counts(unique_edges, counts)
     )
     assert offsets.shape == (n_vertices + 1,)
     assert neighbors.shape == (2 * unique_edges.shape[0],)

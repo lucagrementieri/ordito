@@ -11,6 +11,7 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import vector_angle
+from ordito.kernels.scatter import claim_row_slot
 from ordito.kernels.triangles import corner_triple, face_normals_and_area
 
 wp.set_module_options({"enable_backward": False})
@@ -429,14 +430,13 @@ def scatter_vertex_faces_to_offsets(
     faces: wp.array[wp.int32], out_offsets: wp.array[wp.int32], out_vertex_faces: wp.array[wp.int32]
 ) -> None:
     # ``scatter_vertex_faces`` without its cursor buffer, for a caller that counted the corners
-    # into ``out_offsets[2:]`` and scanned them there: ``out_offsets[v + 1]`` then holds row
-    # ``v``'s start, each atomic hands out the row's next slot from the front (the slots go in the
-    # same order as there), and the entry ends at row ``v``'s end, row ``v + 1``'s start. So
-    # ``out_offsets[: n_vertices + 1]`` ends as the CSR offsets, its leading zero never written.
+    # into ``out_offsets[2:]`` and scanned them there (``scatter.claim_row_slot``; the slots go in
+    # the same order as there). ``graph.scatter_neighbor_lists`` is the same fill with the other
+    # endpoint of an edge as the payload.
     f = wp.int32(wp.tid())
     for k in range(3):
         v = faces[f * 3 + k]
-        out_vertex_faces[wp.atomic_add(out_offsets, v + 1, 1)] = f
+        out_vertex_faces[claim_row_slot(out_offsets, v)] = f
 
 
 @wp.func

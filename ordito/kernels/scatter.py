@@ -420,6 +420,18 @@ def count_occurrences(indices: wp.array[wp.int32], out_counts: wp.array[wp.int32
 
 
 @wp.func
+def claim_row_slot(out_offsets: wp.array[wp.int32], row: wp.int32) -> wp.int32:
+    # The next free slot of CSR row ``row``, in a counting-sort fill with no cursor buffer:
+    # ``out_offsets[row + 1]`` holds the row's start (the caller counted the rows into
+    # ``out_offsets[2:]`` of an ``(n_rows + 2,)`` buffer whose first two entries are zero and
+    # scanned them there in place, or scanned counts it holds exclusively into ``out_offsets[1:]``),
+    # and each claim advances it by one; a full row has advanced it to its end, row ``row + 1``'s
+    # start. So ``out_offsets[: n_rows + 1]`` ends as the CSR offsets, its leading entry never
+    # claimed, and the slots go to the claims in arrival order, from the front.
+    return wp.atomic_add(out_offsets, row + 1, 1)
+
+
+@wp.func
 def add_edge_valence(
     sorted_keys: wp.array[wp.uint64], i: wp.int32, base: wp.uint64, out_valence: wp.array[wp.int32]
 ) -> None:
