@@ -436,10 +436,11 @@ def _implicit_fixed_point_steps(operator: odt.BsrMatrix[wp.float32], lamb: float
     device = operator.values.device
     norm = _launch.zeros(1, dtype=wp.float64, device=device)
     if n_rows > 0:
+        rows_per_block, blocks = kernel_reduce.spanned_blocks_1d(n_rows, device)
         _launch.launch_tiled(
             kernel_smoothing.operator_max_row_abs_sum,
-            dim=[kernel_reduce.blocks_1d(n_rows)],
-            inputs=[operator.offsets, operator.values],
+            dim=[blocks],
+            inputs=[operator.offsets, operator.values, wp.int32(rows_per_block)],
             outputs=[norm],
             block_dim=TILE_1D,
             device=device,

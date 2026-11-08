@@ -32,14 +32,7 @@ from ordito.kernels.linalg import (
 )
 from ordito.kernels.normals import gathered_area_weighted_normal
 from ordito.kernels.predicates import angle_defect, closest_point_on_segment, plane_basis
-from ordito.kernels.reduce import (
-    block_barrier,
-    block_chunk,
-    block_chunk_1d,
-    block_max,
-    block_sum,
-    store_block_sum,
-)
+from ordito.kernels.reduce import block_barrier, block_chunk, block_max, block_sum, store_block_sum
 from ordito.kernels.scatter import add_corner_triple, claim_row_slot
 from ordito.kernels.triangles import corner_triple, local_corner
 
@@ -1964,16 +1957,21 @@ def mark_single_use_edge_vertices(
 
 @wp.kernel
 def operator_max_row_abs_sum(
-    offsets: wp.array[wp.int32], values: wp.array[wp.float32], out_max: wp.array[wp.float64]
+    offsets: wp.array[wp.int32],
+    values: wp.array[wp.float32],
+    rows_per_block: wp.int32,
+    out_max: wp.array[wp.float64],
 ) -> None:
     # ``max_i sum_j |L_ij|``, the infinity norm the fixed-point iteration below contracts by, in
-    # one block fold over rows: lanes stride the block's rows by ``wp.block_dim()`` (right on the
-    # CPU device too, where a block is one lane), one ``block_max`` and one commit per block into
-    # ``out_max`` (zero-initialized; every row sum is non-negative). An empty row reads 1:
+    # one block fold over rows: lanes stride the block's ``rows_per_block`` rows
+    # (``reduce.spanned_blocks_1d``: a row is a walk, so on CUDA a block spans as few as fill the
+    # device) by ``wp.block_dim()`` (right on the CPU device too, where a block is one lane), one
+    # ``block_max`` and one commit per block into ``out_max`` (zero-initialized; every row sum is
+    # non-negative). An empty row reads 1:
     # ``operator_row`` applies it as the identity.
     i, t = wp.tid()
     n = offsets.shape[0] - 1
-    base, remaining = block_chunk_1d(n, i)
+    base, remaining = block_chunk(n, i, rows_per_block)
     if remaining <= 0:
         return
     local = wp.float64(0.0)

@@ -35,7 +35,7 @@ from warp._src.types import array as array_type
 from warp._src.types import type_is_generic
 
 from ordito.kernels.array import OverloadTable, inverse_or_one
-from ordito.kernels.reduce import block_chunk, block_chunk_1d, block_max, block_sum, thread_fence
+from ordito.kernels.reduce import block_chunk, block_max, block_sum, thread_fence
 
 wp.set_module_options({"enable_backward": False})
 
@@ -850,6 +850,7 @@ def jacobi_dominance_bound(
     columns: wp.array[wp.int32],
     values: wp.array[wp.float64],
     write_inverse: wp.int32,
+    rows_per_block: wp.int32,
     out_inverse_diagonal: wp.array[wp.float64],
     out_bound: wp.array[wp.float64],
 ) -> None:
@@ -861,8 +862,9 @@ def jacobi_dominance_bound(
     # hierarchy -- see ``linalg.CG_PROBE_ITERATIONS`` for the 29 systems behind that gate -- and
     # what the Jacobi-Chebyshev interval is fitted to, which also wants the scaling.
     #
-    # Lanes stride the block's ``ITEMS_PER_BLOCK_1D`` rows by ``wp.block_dim()`` (right on the CPU
-    # device too, where a block is one lane), and lane 0 commits the block's maximum with one
+    # Lanes stride the block's ``rows_per_block`` rows (``reduce.spanned_blocks_1d``: a row is a
+    # walk, so on CUDA a block spans as few as fill the device) by ``wp.block_dim()`` (right on the
+    # CPU device too, where a block is one lane), and lane 0 commits the block's maximum with one
     # ``atomic_max`` into ``out_bound[0]``, which the caller seeds below any ratio. A maximum is
     # exact in any order, so the bound repeats bit for bit, and no per-row ratio is stored.
     #
@@ -880,7 +882,7 @@ def jacobi_dominance_bound(
     # A long row (``csr_row_long``, a fan's hub) is left to the whole block after the lanes' pass
     # (``jacobi_row_block``), so a block without one pays one reduction.
     block, lane = wp.tid()
-    base, count = block_chunk_1d(offsets.shape[0] - 1, block)
+    base, count = block_chunk(offsets.shape[0] - 1, block, rows_per_block)
     if count <= 0:
         return
     local = wp.float64(-1.0e308)
@@ -1058,6 +1060,7 @@ def scaled_rows_and_bound(
     columns: wp.array[wp.int32],
     values: wp.array[wp.float64],
     weight_sums: wp.array[wp.float64],
+    rows_per_block: wp.int32,
     out_scaled: wp.array[wp.float64],
     out_scaled_t: wp.array[wp.float64],
     out_bound: wp.array[wp.float64],
@@ -1071,10 +1074,10 @@ def scaled_rows_and_bound(
     # diagonal of ``L`` it is ``1 +`` the ``jacobi_dominance_bound`` ratio; with any other positive
     # ``D`` -- ``sqrt(M)`` for the k = 2 harmonic operator ``L M^-1 L`` -- it is the bound that
     # ratio is not, and an interval fitted short of the spectrum amplifies what it should invert.
-    # The block shape and the ``atomic_max`` commit into the seeded ``out_bound[0]`` are
-    # ``jacobi_dominance_bound``'s.
+    # The block shape (``rows_per_block``) and the ``atomic_max`` commit into the seeded
+    # ``out_bound[0]`` are ``jacobi_dominance_bound``'s.
     block, lane = wp.tid()
-    base, count = block_chunk_1d(offsets.shape[0] - 1, block)
+    base, count = block_chunk(offsets.shape[0] - 1, block, rows_per_block)
     if count <= 0:
         return
     local = wp.float64(-1.0e308)

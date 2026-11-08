@@ -1075,7 +1075,7 @@ def blocks_1d(n: int) -> int:
 SPANNED_TARGET_BLOCKS_1D = 2048
 
 
-def spanned_blocks_1d(n: int) -> tuple[int, int]:
+def spanned_blocks_1d(n: int, device: wp.DeviceLike) -> tuple[int, int]:
     """
     ``(items a block, blocks)`` for a lane-strided fold whose items are each a dependent walk.
 
@@ -1086,18 +1086,23 @@ def spanned_blocks_1d(n: int) -> tuple[int, int]:
     standard fold width, that bring the block count to at most ``SPANNED_TARGET_BLOCKS_1D``. The
     kernel takes the width as its block chunk (``block_chunk(n, block, width)``) and launches
     ``blocks`` blocks of ``TILE_1D`` lanes; its partials hold ``blocks`` rows. The CPU runs a
-    block as one lane, so a CPU launch keeps [`blocks_1d`][ordito.kernels.reduce.blocks_1d].
+    block as one lane, which walks every width alike, so on the CPU this is the standard fold,
+    [`blocks_1d`][ordito.kernels.reduce.blocks_1d] blocks of ``ITEMS_PER_BLOCK_1D`` items.
 
     Parameters
     ----------
     n
         Number of items in the fold.
+    device
+        The device the fold runs on.
 
     Returns
     -------
     tuple[int, int]
         The items each block owns and the block count.
     """
+    if wp.get_device(device).is_cpu:
+        return ITEMS_PER_BLOCK_1D, blocks_1d(n)
     tiles = max((n + TILE_1D - 1) // TILE_1D, 1)
     per_block = 1
     while per_block < TILES_PER_BLOCK_1D and tiles > per_block * SPANNED_TARGET_BLOCKS_1D:

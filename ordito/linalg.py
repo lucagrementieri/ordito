@@ -4989,10 +4989,17 @@ class SquaredLaplacianPreconditioner:
         scaled, scaled_t = _launch.carve(wp.float64, (laplacian.values.size,) * 2, self._device)
         bound = _launch.full(1, -math.inf, dtype=wp.float64, device=self._device)
         if self._n > 0:
+            rows_per_block, blocks = kernel_reduce.spanned_blocks_1d(self._n, self._device)
             _launch.launch_tiled(
                 kernel_linalg.scaled_rows_and_bound,
-                dim=[kernel_reduce.blocks_1d(self._n)],
-                inputs=[laplacian.offsets, laplacian.columns, laplacian.values, weight_sums],
+                dim=[blocks],
+                inputs=[
+                    laplacian.offsets,
+                    laplacian.columns,
+                    laplacian.values,
+                    weight_sums,
+                    wp.int32(rows_per_block),
+                ],
                 outputs=[scaled, scaled_t, bound],
                 block_dim=TILE_1D,
                 device=self._device,
@@ -5707,9 +5714,10 @@ def _dominance_bound(
     if bound is None:
         bound = _launch.full(1, -math.inf, dtype=wp.float64, device=device)
     if n_rows > 0:
+        rows_per_block, blocks = kernel_reduce.spanned_blocks_1d(n_rows, device)
         _launch.launch_tiled(
             kernel_linalg.jacobi_dominance_bound,
-            dim=[kernel_reduce.blocks_1d(n_rows)],
+            dim=[blocks],
             # ``nnz`` is a stale capacity, but ``offsets``/``columns``/``values`` are indexed
             # through the row offsets here rather than sliced by it, so no count is read off the
             # matrix.
@@ -5718,6 +5726,7 @@ def _dominance_bound(
                 matrix.columns,
                 matrix.values,
                 wp.int32(0 if inverse_diagonal is None else 1),
+                wp.int32(rows_per_block),
             ],
             outputs=[inverse_diagonal, bound],
             block_dim=TILE_1D,
