@@ -915,6 +915,12 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   `reduce.sum_of_terms` through `TermSum.blocks`): 4 took `normal_consistency_loss` 0.76-0.79x on
   `sphere_small` and `laplacian_smoothing_loss` 0.87-0.94x at every size, CPU at par; 1 lost
   1.16x on `dragon`. A narrowed total is its own width's tree, no longer `reduce.sum`'s bits.
+  A lane-strided fold over CSR *rows* has the same latency: `kernels/reduce.spanned_blocks_1d`
+  spans the fewest power-of-two tiles a block that leave at most 2 048 blocks (2026-11-08,
+  `heat.upper_edge_length_sum_and_count`: 0.20x device time to `bunny`, 0.50x on `dragon`, `lucy`
+  at its bandwidth floor at the standard width, where a row a lane cost 1.31x for the last
+  block's fold of 219 k partials; CPU flat, keeps `blocks_1d`). Wall-neutral on the heat calls,
+  whose host issue hides the launch.
 - A tile kernel whose reduced extent is under one tile loses ~49x; `tile_chunk` reports what remains, so clamp with `reduce.block_chunk`.
 - Tuning constants are per-device: CUDA wants long strided slices, CPU short (`ITEMS_PER_SLICE_CUDA = 128`, `_CPU = 32`). Sweep both devices and more than two values, split the constant if the optima differ, and re-probe after an upgrade (§9).
 - **Reproducibility prices (§12.3):** the last-block commit adds 2-5 µs of device time to a launch (fence, ticket, the last block's fold, latency-bound: fold its rows with interleaved accumulators), against 3-8 µs of host for a separate fold launch. The fixed-order scan is two launches and an allocation above one 2048-element chunk (+10-15 µs, 3x CUB's device time at 5 M) and cheaper than CUB below. On a 15-100 µs call either crosses 10 %, which is why the setting can be switched off (`ordito.config`, §2.2); on solves and loops it is noise.
@@ -1130,6 +1136,14 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   Open: a separate long-ring kernel launched only when the caller knows a long ring exists (the
   count `vertex_one_rings` already reads back, carried with the rings), or a frame walk whose
   per-lane and block forms are one code path.
+- **Row folds still at the standard width** (2026-11-08 heat sweep): `linalg.jacobi_dominance_bound`
+  and `smoothing.operator_max_row_abs_sum` walk sixteen CSR rows a lane at `blocks_1d(n_rows)`,
+  the shape `spanned_blocks_1d` took 0.20-0.50x off in `heat`. Price each on the device and in
+  its call before spreading (the heat calls were wall-neutral).
+- **The heat solves are CG rounds at the small-launch floor** (2026-11-08): `cg_update`,
+  `cg_matvec_dots` and `chebyshev_step` are 80-90 % of device time in `heat_geodesic` and
+  `log_map` from `sphere_small` to `saddle`, at 3-6 us a launch on 2.5 k-41 k rows. Not examined
+  in the heat sweep (`linalg` scope).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;
