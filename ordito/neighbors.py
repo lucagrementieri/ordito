@@ -1465,7 +1465,7 @@ def query_nearest(
     lanes = (
         []
         if kernel is not kernel_neighbors.query_hashgrid_nearest_neighbors
-        else [wp.int32(_launch.walk_lanes(m))]
+        else [wp.int32(_launch.walk_lanes(m, device))]
     )
     _launch.launch(
         kernel,

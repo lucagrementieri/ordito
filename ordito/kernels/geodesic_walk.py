@@ -9,6 +9,7 @@ from ordito.kernels.array import (
     loop_point,
     stage_point,
     to_vec3,
+    walk_item,
     wrap_index,
 )
 from ordito.kernels.halfedge import halfedge_destination
@@ -494,10 +495,9 @@ def trace_from_vertices(
     # call) was bit-identical but lengthened every ray's serial chain, in both the counting and the
     # writing launch, more than the frame pass costs: CUDA, ``icosphere(6)``, 0.97-1.0x at 1-64
     # rays, 1.05x at 256-4 096, 1.07x at one ray a vertex.
-    t = wp.int32(wp.tid())
-    if t % lanes != 0:
+    r = walk_item(wp.int32(wp.tid()), lanes)
+    if r < 0:
         return
-    r = t // lanes
     write_begin, first_chunk, copied = begin_walk(
         offsets, staged_points, staged_next, out_points, r
     )
@@ -566,10 +566,9 @@ def trace_from_faces(
     # the offsets' own tail and scans it in place, so the writing pass reads it as ``offsets``.
     # The counting pass stages each ray's points, and the writing pass copies them
     # (``begin_walk``).
-    t = wp.int32(wp.tid())
-    if t % lanes != 0:
+    r = walk_item(wp.int32(wp.tid()), lanes)
+    if r < 0:
         return
-    r = t // lanes
     write_begin, first_chunk, copied = begin_walk(
         offsets, staged_points, staged_next, out_points, r
     )
@@ -609,12 +608,51 @@ def trace_from_faces(
 
 
 @wp.func
+def gradient_descent_terms(gradient: wp.vec3d) -> tuple[wp.vec3, wp.float64]:
+    # A face gradient as the descent reads it: its ``float32`` copy and its ``float64`` length.
+    return to_vec3(gradient), wp.length(gradient)
+
+
+@wp.func
+def face_descent_terms(
+    gradients: wp.array[wp.vec3d],
+    face_gradient: wp.array[wp.vec3],
+    face_slope: wp.array[wp.float64],
+    f: wp.int32,
+) -> tuple[wp.vec3, wp.float64]:
+    # Face ``f``'s gradient as the descent reads it, ``float32``, and its ``float64`` length: read
+    # from ``descent_face_terms``' tables when they are given (CUDA), formed here otherwise (the
+    # CPU, where a pass over every face costs more than the walks' own lengths).
+    if face_slope.shape[0] > 0:
+        return face_gradient[f], face_slope[f]
+    return gradient_descent_terms(gradients[f])
+
+
+@wp.kernel
+def descent_face_terms(
+    gradients: wp.array[wp.vec3d],
+    out_face_gradient: wp.array[wp.vec3],
+    out_face_slope: wp.array[wp.float64],
+) -> None:
+    # Each face's gradient as the descent reads it: its ``float32`` copy and its ``float64`` length,
+    # formed once a face rather than at every step of every walk that reads it (the length is a
+    # ``float64`` square root on a serial chain). The same operations as the walk's, so the walk
+    # takes the same bits.
+    f = wp.int32(wp.tid())
+    gradient, slope = gradient_descent_terms(gradients[f])
+    out_face_gradient[f] = gradient
+    out_face_slope[f] = slope
+
+
+@wp.func
 def descend_at_vertex(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     face_offsets: wp.array[wp.int32],
     vertex_faces: wp.array[wp.int32],
     gradients: wp.array[wp.vec3d],
+    face_gradient: wp.array[wp.vec3],
+    face_slope: wp.array[wp.float64],
     v: wp.int32,
 ) -> wp.int32:
     # Which of ``v``'s incident faces the descent continues into, or -1 if none does.
@@ -637,11 +675,10 @@ def descend_at_vertex(
         corner = local_corner(faces, f, v)
         if corner < 0:
             continue
-        gradient = gradients[f]
-        slope = wp.length(gradient)
+        gradient, slope = face_descent_terms(gradients, face_gradient, face_slope, f)
         if slope <= wp.float64(0.0):
             continue
-        direction = -to_vec3(gradient) / wp.float32(slope)
+        direction = -gradient / wp.float32(slope)
         normal_of = face_normal(vertices, faces, f)
         # Is the direction inside the fan wedge at ``v``? The wedge is spanned by the two incident
         # edges, and the test is the orientation-agnostic "same side of each": ``d`` is inside when
@@ -772,6 +809,8 @@ def descent_walk(
     vertex_faces: wp.array[wp.int32],
     values: wp.array[wp.float64],
     gradients: wp.array[wp.vec3d],
+    face_gradient: wp.array[wp.vec3],
+    face_slope: wp.array[wp.float64],
     start_vertex: wp.int32,
     stop_value: wp.float64,
     stop_mask: wp.array[wp.bool],
@@ -839,7 +878,14 @@ def descent_walk(
             chosen = wp.int32(-1)
             if not face_blocked:
                 chosen = descend_at_vertex(
-                    vertices, faces, face_offsets, vertex_faces, gradients, vertex
+                    vertices,
+                    faces,
+                    face_offsets,
+                    vertex_faces,
+                    gradients,
+                    face_gradient,
+                    face_slope,
+                    vertex,
                 )
             if chosen >= wp.int32(0):
                 face = chosen
@@ -869,14 +915,13 @@ def descent_walk(
             continue
 
         # --- inside a face -------------------------------------------------------------------
-        gradient = gradients[face]
-        slope = wp.length(gradient)
+        gradient, slope = face_descent_terms(gradients, face_gradient, face_slope, face)
         normal = face_normal(vertices, faces, face)
         edge = wp.int32(-1)
         distance = wp.float32(0.0)
         direction = wp.vec3(0.0, 0.0, 0.0)
         if slope > wp.float64(0.0):
-            descent = -to_vec3(gradient) / wp.float32(slope)
+            descent = -gradient / wp.float32(slope)
             direction, tangential_length = unit_tangent(descent, normal, TOLERANCE_ZERO_CONSTANT)
             if tangential_length > TOLERANCE_ZERO_CONSTANT:
                 edge, distance = exit_edge(
@@ -1000,9 +1045,11 @@ def descent_walk(
             short_face = face  # the descent ran into the mesh boundary
             break
         next_face = twin // wp.int32(3)
-        next_gradient = gradients[next_face]
+        next_gradient, next_slope = face_descent_terms(
+            gradients, face_gradient, face_slope, next_face
+        )
         enters = wp.bool(False)
-        if wp.length(next_gradient) > wp.float64(0.0):
+        if next_slope > wp.float64(0.0):
             # Does the next face's descent point *into* it? Tested against the edge's true inward
             # normal in that face's plane -- a cheaper test against "the direction of the opposite
             # corner" is wrong on an obtuse triangle, which is what left paths stopping early.
@@ -1011,7 +1058,7 @@ def descent_walk(
             opposite = faces[next_face * 3 + (twin % wp.int32(3) + 2) % 3]
             if wp.dot(inward, vertices[opposite] - vertices[start]) < 0.0:
                 inward = -inward
-            next_descent = -to_vec3(next_gradient)
+            next_descent = -next_gradient
             enters = wp.dot(next_descent, inward) > 0.0
         if enters:
             face = next_face
@@ -1096,6 +1143,8 @@ def descent_paths(
     vertex_faces: wp.array[wp.int32],
     values: wp.array[wp.float64],
     gradients: wp.array[wp.vec3d],
+    face_gradient: wp.array[wp.vec3],
+    face_slope: wp.array[wp.float64],
     starts: wp.array[wp.int32],
     stop_value: wp.float64,
     stop_mask: wp.array[wp.bool],
@@ -1124,10 +1173,9 @@ def descent_paths(
     # * Writing, ``offsets`` given: every path copies the points a counting pass staged, or walks
     #   and writes them where the pool did not hold them (``begin_walk``), and leaves
     #   ``out_counts`` alone: the counts are the offsets' tail, scanned in place.
-    t = wp.int32(wp.tid())
-    if t % lanes != 0:
+    r = walk_item(wp.int32(wp.tid()), lanes)
+    if r < 0:
         return
-    r = t // lanes
     length_epsilon = mean_length_epsilon(edge_length_total, n_halfedges)
     n_paths = starts.shape[0]
     completing = wp.bool(False)
@@ -1148,6 +1196,8 @@ def descent_paths(
         vertex_faces,
         values,
         gradients,
+        face_gradient,
+        face_slope,
         starts[r],
         stop_value,
         stop_mask,

@@ -503,7 +503,7 @@ def _rebuild_grown_fans(
     # Few grown fans get a warp each, so their serial optimizations do not wait on one another in
     # a shared warp. Measured on the rebuild kernel (CUDA): 182 fans (a crown cloud) 6.9 ms at one
     # lane, 1.35 at 32; 12 762 fans 5.6 at one, 3.7 at 8; 99 778 fans 7.4 at one, 9.5 at two.
-    lanes = _launch.walk_lanes(n_grown)
+    lanes = _launch.walk_lanes(n_grown, points.device)
     neighbor_idx, neighbor_dist = od.neighbors.query_nearest(
         points, queries, k=k_grown + 1, bounds=bounds, max_radius=query_radii
     )

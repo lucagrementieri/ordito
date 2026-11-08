@@ -466,7 +466,7 @@ def _split_at_pinches(
     # the path and the depths in their upper halves, the representatives and the cycles' vertices
     # in their lower ones.
     sentinel = n_vertices << 32
-    lanes = _launch.walk_lanes(n_loops) if wp.get_device(device).is_cuda else 1
+    lanes = _launch.walk_lanes(n_loops, device)
     _launch.launch(
         kernel_boundary.split_pinched_loops,
         dim=n_loops * lanes,

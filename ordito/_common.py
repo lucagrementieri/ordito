@@ -22,6 +22,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito.constants import ITEMS_PER_SLICE_CPU, ITEMS_PER_SLICE_CUDA, TILE_1D
+from ordito.kernels import array as kernel_array
 from ordito.kernels import reduce as kernel_reduce
 
 T = TypeVar("T")
@@ -673,8 +674,6 @@ def scan_count_checked(offsets: wp.array[wp.int32], what: str) -> int:
     ValueError
         If the counts sum past ``2**31 - 1``; the message names ``what``.
     """
-    from ordito.kernels import array as kernel_array
-
     n = offsets.size - 2
     counts = _launch.view(offsets, 1, n + 1)
     _launch.array_scan(counts, out_array=counts, inclusive=True)
@@ -704,3 +703,31 @@ def offsets_buffer(n: int, device: wp.DeviceLike) -> tuple[wp.array[wp.int32], w
     """
     offsets = _launch.zeros(n + 1, dtype=wp.int32, device=device)
     return offsets, _launch.view(offsets, 1, n + 1)
+
+
+def staging_pool(
+    n_walks: int, points_per_walk: int, device: wp.DeviceLike
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Allocate the pool a serial walk's counting pass stages its points in, and its chunk links.
+
+    The walk-once form of a counting pass and a writing pass over the same serial walks: the
+    counting pass stages each walk's points (``kernels/array.stage_point``) and the writing pass
+    copies them (``copy_staged``), walking again only a walk the pool ran out on. The walks share
+    the pool, so ``points_per_walk`` sizes the total (``n_walks`` times it, at most
+    ``STAGED_POINTS``), in one allocation; the links' last slot, the chunk counter, starts past the
+    walks' own first chunks. Returns ``(staged_points, staged_next)`` as the kernels take them.
+    """
+    chunk = int(kernel_array.STAGED_CHUNK)
+    n_chunks = min(n_walks * -(-points_per_walk // chunk), STAGED_POINTS // chunk)
+    staged_next, points = _launch.carve_typed(
+        ((wp.int32, n_chunks + 1), (wp.vec3, n_chunks * chunk)), device
+    )
+    _launch.fill_(_launch.view(staged_next, n_chunks, n_chunks + 1), min(n_walks, n_chunks))
+    return points, staged_next
+
+
+# The most points one call stages (12 MiB), however many walks: what it does not hold is walked
+# twice, as every walk was before the pool. Its own size is the peak memory it adds
+# (``geodesic_walk.descend_field``: 4 096 paths on a sphere of 82 k faces, 12.7 -> 25 MiB).
+STAGED_POINTS = 1 << 20

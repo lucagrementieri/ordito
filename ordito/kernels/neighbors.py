@@ -6,7 +6,13 @@ from ordito.constants import FLOAT32_INF_CONSTANT, INT64_MAX
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels.algorithms import bfs as kernel_bfs
-from ordito.kernels.array import append_slot, declare_map_signatures, map_probe, map_probe_single
+from ordito.kernels.array import (
+    append_slot,
+    declare_map_signatures,
+    map_probe,
+    map_probe_single,
+    walk_item,
+)
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.reduce import block_chunk_1d, block_min, thread_fence
 
@@ -1229,10 +1235,9 @@ def query_hashgrid_nearest_neighbors(
     # a start radius, so it takes the arguments and ignores them. It launches ``lanes`` threads a
     # query, the first doing the work: a few long walks then do not share a warp, where they
     # would run one after the other.
-    thread = wp.int32(wp.tid())
-    if thread % lanes != 0:
+    tid = walk_item(wp.int32(wp.tid()), lanes)
+    if tid < 0:
         return
-    tid = thread // lanes
     max_radius = row_max_radius(query_max_radius, row_radii, tid)
     q = queries[tid]
     out_indices_row = out_indices[tid]

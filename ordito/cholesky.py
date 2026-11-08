@@ -1760,7 +1760,10 @@ def _structure(
     # its pattern is structurally symmetric, and the row structure as paths: every operator
     # entry's row up the tree from its column's supernode to its own, all pairs written, sorted by
     # ``(height, supernode, row)`` and deduplicated once -- the rows level-major, each
-    # supernode's ascending. Both counts in one launch and one scan.
+    # supernode's ascending. Both counts in one launch and one scan. Declined (2026-11-08): the
+    # counting pass staging its paths for the writing pass to copy (``array.stage_point``, as
+    # ``geodesic_walk``'s walks do): the two launches are 14 + 12 us of a 2.4 ms factorization on
+    # ``sphere_small`` and 90 + 106 us of 75 ms on ``dragon``.
     path_inputs = [offsets, columns, pos, owner, column_end, parent]
     _launch.launch(
         kernel_cholesky.count_row_entries,

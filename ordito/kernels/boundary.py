@@ -11,6 +11,7 @@ from ordito.kernels.array import (
     pack_ranked_key,
     scanned_count,
     store_counted_ballot_bit,
+    walk_item,
 )
 from ordito.kernels.halfedge import (
     HALFEDGE_MATE_BOUNDARY,
@@ -581,10 +582,9 @@ def split_pinched_loops(
     # most one value and one cycle per entry); the loop's other record slots get ``sentinel``,
     # which sorts after every key. ``out_totals`` counts the cycles and their entries. ``lanes``
     # threads a loop, the first walking (``_launch.walk_lanes``).
-    t = wp.int32(wp.tid())
-    if t % lanes != 0:
+    ell = walk_item(wp.int32(wp.tid()), lanes)
+    if ell < 0:
         return
-    ell = t // lanes
     start = offsets[ell]
     end = offsets[ell + 1]
     depth = wp.int32(0)

@@ -47,7 +47,13 @@ from warp._src.codegen import StructInstance
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._common import read_scalar, read_values, require_same_device, run_device_loop
+from ordito._common import (
+    read_scalar,
+    read_values,
+    require_same_device,
+    run_device_loop,
+    staging_pool,
+)
 from ordito.halfedge import halfedge_twins, vertex_one_rings
 from ordito.kernels import array as kernel_array
 from ordito.kernels import geodesic_walk as kernel_geodesic_walk
@@ -728,8 +734,25 @@ def _descend(
     if gradients is None:
         gradients = od.laplacian.face_gradients(vertices, faces, values)
     incident_faces, face_offsets = vertex_faces
+    # On CUDA each face's descent terms are formed once, off the walks' serial chains
+    # (``kernels/geodesic_walk.face_descent_terms``); the CPU forms them in the walk, where a pass
+    # over every face costs more than the walks' own lengths.
+    face_gradient = _launch.empty(0, dtype=wp.vec3, device=device)
+    face_slope = _launch.empty(0, dtype=wp.float64, device=device)
+    if wp.get_device(device).is_cuda:
+        n_faces = faces.size // 3
+        face_gradient, face_slope = _launch.carve_typed(
+            ((wp.vec3, n_faces), (wp.float64, n_faces)), device
+        )
+        _launch.launch(
+            kernel_geodesic_walk.descent_face_terms,
+            dim=n_faces,
+            inputs=[gradients],
+            outputs=[face_gradient, face_slope],
+            device=device,
+        )
 
-    lanes = _walk_lanes(n_paths, device)
+    lanes = _launch.walk_lanes(n_paths, device)
     stop_mask = (
         od.array.indices_to_mask(complete_to[1], n_vertices)
         if complete_to is not None
@@ -743,6 +766,8 @@ def _descend(
         incident_faces,
         values,
         gradients,
+        face_gradient,
+        face_slope,
         starts,
         wp.float64(stop_value),
         stop_mask,
@@ -755,7 +780,9 @@ def _descend(
     no_offsets = _launch.empty(0, dtype=wp.int32, device=device)
     # A descent writes its start, at most two points a step (a crossing and the stop it lands
     # on), and with ``complete_to`` a point a step of the completion and the corner it starts from.
-    staged_points, staged_next = _staged_points(n_paths, 3 * max_steps + 3, faces.size // 3, device)
+    staged_points, staged_next = staging_pool(
+        n_paths, _walk_points(3 * max_steps + 3, faces.size // 3), device
+    )
     # The counting passes write nothing to ``out_points``; the pool's own buffer stands in.
     no_points = staged_points
     # The counts are written straight into the offsets' tail and scanned there in place (the
@@ -900,10 +927,12 @@ def _flip_geodesic_paths(
     n_faces = mesh.faces.size // 3
     max_iterations = _FLIP_TRACE_STEPS_PER_FACE * n_faces
     # The counting pass stages each traced entry's points, and the writing pass copies them.
-    # Declined (2026-11-07): a warp an entry (``_walk_lanes``, which the walk kernels take): the
-    # entries are few and long, each already alone in its warp, and the two trace kernels read
-    # 2.9 / 3.3 ms against 2.8 / 2.5 ms (64 paths, ``sphere_med``).
-    staged_points, staged_next = _staged_points(n_entries, max_iterations + 2, n_faces, device)
+    # Declined (2026-11-07): a warp an entry (``_launch.walk_lanes``, which the walk kernels
+    # take): the entries are few and long, each already alone in its warp, and the two trace
+    # kernels read 2.9 / 3.3 ms against 2.8 / 2.5 ms (64 paths, ``sphere_med``).
+    staged_points, staged_next = staging_pool(
+        n_entries, _walk_points(max_iterations + 2, n_faces), device
+    )
     traced = [
         input_mesh,
         path_offsets,
@@ -1040,6 +1069,11 @@ def _flip_shortest_edge_tree(
         )
     if device.is_cuda:
         # The relaxation passes as one conditional graph; a pass that moves nothing ends it.
+        # Declined (2026-11-08): a tiled pass whose blocks re-relax their own vertices until they
+        # settle (``wp.tile_sum`` the barrier), to carry a distance across a block a pass: the
+        # icosphere numbers its midpoints by edge, so a block is no patch and the extra rounds
+        # re-relax stale values. ``sphere_med``, one source: 2.4 ms at 1 round a block, 3.2 at 4,
+        # 5.4 at 16, 7.0 at 64.
         state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
         n_vertices_i32 = wp.int32(n_vertices)
 
@@ -1159,6 +1193,10 @@ def _flip_shorten_on_host(
             # Each range copies its triangulation and allocates its pools on its own thread too
             # (Warp's native copies and allocations release the interpreter), the first on this
             # one, which loads the kernel's module before any other thread records a launch.
+            # Declined (2026-11-08): the calling thread's range copying its triangulation from the
+            # tables on the mesh's device instead of their host copies. Both copies are bound by
+            # first-touch page faults on the fresh host pages (one path on ``sphere_med``: 2.1 ms
+            # of copies either way, the call 1.04x).
             first = record(pending[0])
             others = [pool.submit(record_and_launch, g) for g in pending[1:]]
             first[0].launch()
@@ -1830,7 +1868,7 @@ def _trace(
     The walk's length is not known in advance, so counting first and sizing the output exactly
     beats reserving ``max_steps`` points per ray, which at the default cap would be tens of
     megabytes for a few thousand rays. The counting pass stages the points it counts
-    (``_staged_points``), so the writing pass copies a ray rather than walking it again.
+    (``_common.staging_pool``), so the writing pass copies a ray rather than walking it again.
     """
     # A ray writes its start, then at most one point a step.
     max_points = max_steps + 1
@@ -1839,8 +1877,8 @@ def _trace(
     offsets = _launch.zeros(n_rays + 1, dtype=wp.int32, device=device)
     counts = _launch.view(offsets, 1, n_rays + 1)
     no_offsets = _launch.empty(0, dtype=wp.int32, device=device)
-    lanes = _walk_lanes(n_rays, device)
-    staged_points, staged_next = _staged_points(n_rays, max_points, n_faces, device)
+    lanes = _launch.walk_lanes(n_rays, device)
+    staged_points, staged_next = staging_pool(n_rays, _walk_points(max_points, n_faces), device)
     inputs = [*inputs, wp.int32(lanes), staged_points, staged_next]
     # The counting pass writes nothing to ``out_points``; the pool's own buffer stands in.
     _launch.launch(
@@ -1860,42 +1898,11 @@ def _trace(
     return points, offsets
 
 
-def _staged_points(
-    n_walks: int, max_points: int, n_faces: int, device: wp.DeviceLike
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+def _walk_points(max_points: int, n_faces: int) -> int:
     """
-    Return the pool a walk kernel's counting pass stages its points in, and its chunk links.
+    Points to stage a walk (``_common.staging_pool``): about a walk across the mesh.
 
-    The writing pass then copies each walk from it instead of walking it again, and walks again
-    only one the pool did not hold (``kernels/array.copy_staged``). The walks share the
-    pool, a long one taking what a short one left, so it is sized for each at about a walk across
-    the mesh (``isqrt(n_faces)`` points, at most its ``max_points`` bound), up to
-    ``_STAGED_POINTS`` in all, in one allocation. The links' last slot, the chunk counter, starts
-    past the walks' own first chunks.
+    ``isqrt(n_faces)`` points, at most the walk's ``max_points`` bound. The walks share the pool,
+    a long one taking what a short one left, so this sizes the total, not any one walk.
     """
-    chunk = int(kernel_array.STAGED_CHUNK)
-    per_walk = min(max_points, math.isqrt(n_faces) + chunk)
-    n_chunks = min(n_walks * -(-per_walk // chunk), _STAGED_POINTS // chunk)
-    staged_next, staged_points = _launch.carve_typed(
-        ((wp.int32, n_chunks + 1), (wp.vec3, n_chunks * chunk)), device
-    )
-    _launch.fill_(_launch.view(staged_next, n_chunks, n_chunks + 1), min(n_walks, n_chunks))
-    return staged_points, staged_next
-
-
-# The most points a walk call stages (12 MiB), however many walks: what it does not hold is
-# walked twice, as every walk was before the pool. Its own size is the call's peak memory it adds
-# (``descend_field``: 4 096 paths on a sphere of 82 k faces, 12.7 -> 25 MiB).
-_STAGED_POINTS = 1 << 20
-
-
-def _walk_lanes(n_walks: int, device: wp.DeviceLike) -> int:
-    """
-    Threads a walk for the tracing and descent kernels: up to a warp a walk on CUDA, one on the CPU.
-
-    A walk is a serial state machine whose steps branch, so walks sharing a warp wait on each
-    other's branches and on the longest of them; few walks each get a warp of their own
-    ([`walk_lanes`][ordito._launch.walk_lanes]). The CPU runs a launch's threads one after
-    another, where the idle lanes would only cost.
-    """
-    return _launch.walk_lanes(n_walks) if wp.get_device(device).is_cuda else 1
+    return min(max_points, math.isqrt(n_faces) + int(kernel_array.STAGED_CHUNK))

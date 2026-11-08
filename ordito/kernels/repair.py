@@ -21,6 +21,7 @@ from ordito.kernels.array import (
     sorted_run_end,
     sorted_run_start,
     update_argmin_pair,
+    walk_item,
 )
 from ordito.kernels.bounds import packed_box_diagonal
 from ordito.kernels.grouping import hash_slot, next_slot, pack_vec3
@@ -1735,10 +1736,9 @@ def shortest_nontrivial_loop_per_root(
     # cycle is written over the root's ``heap`` row, which the search no longer reads. ``lanes``
     # threads a root, the first searching (``_launch.walk_lanes``): the searches differ in length,
     # and a warp's roots would wait on the longest.
-    t = wp.int32(wp.tid())
-    if t % lanes != 0:
+    r = walk_item(wp.int32(wp.tid()), lanes)
+    if r < 0:
         return
-    r = t // lanes
     row_table = table[r]
     row_vertex = slot_vertex[r]
     row_dist = slot_dist[r]

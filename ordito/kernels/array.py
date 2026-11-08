@@ -2261,6 +2261,18 @@ return flag != 0
 def append_slot_if(counter: wp.array[wp.int32], index: wp.int32, flag: wp.int32) -> wp.int32: ...
 
 
+@wp.func
+def walk_item(thread: wp.int32, lanes: wp.int32) -> wp.int32:
+    # The item a thread of a launch of ``lanes`` threads an item works on, ``-1`` for the idle
+    # lanes: the first lane of each group of ``lanes`` walks it alone. Few serial walks of
+    # different lengths then each own a warp rather than wait on each other's branches in a
+    # shared one (``_launch.walk_lanes`` picks ``lanes``, one on the CPU).
+    item = wp.int32(-1)
+    if thread % lanes == 0:
+        item = thread // lanes
+    return item
+
+
 # Points a staged chunk holds.
 STAGED_CHUNK = wp.int32(16)
 
@@ -2271,7 +2283,7 @@ STAGED_CHUNK = wp.int32(16)
 # them a walk at a time: walk ``w``'s first chunk is chunk ``w`` (none when ``w >= n_chunks``),
 # ``staged_next[c]`` is the chunk after ``c``, ``-1`` where the pool ran out (the walk is then
 # walked again), and the last slot counts the chunks handed out, from ``min(n_walks, n_chunks)``.
-# A ``staged_next`` of one slot stages nothing. ``geodesic_walk._staged_points`` allocates both.
+# A ``staged_next`` of one slot stages nothing. ``_common.staging_pool`` allocates both.
 
 
 @wp.func

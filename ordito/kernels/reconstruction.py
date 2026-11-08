@@ -38,6 +38,7 @@ from ordito.kernels.array import (
     trilinear_weight,
     unravel_cube,
     update_argmax,
+    walk_item,
 )
 from ordito.kernels.predicates import (
     circumcircle_center,
@@ -833,10 +834,9 @@ def rebuild_grown_local_triangulations(
     # Launched with ``lanes`` threads a fan, of which the first does the work: when the fans are
     # few their serial optimizations, which take different paths, would run one after the other
     # in a warp of fans.
-    tid = wp.int32(wp.tid())
-    if tid % lanes != 0:
+    t = walk_item(wp.int32(wp.tid()), lanes)
+    if t < 0:
         return
-    t = tid // lanes
     v = grown_points[t]
     nbr = wp.zeros(shape=GROWN_NEIGHBOURS, dtype=wp.int32)
     ang = wp.zeros(shape=GROWN_NEIGHBOURS, dtype=wp.float32)
