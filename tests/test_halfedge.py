@@ -13,6 +13,7 @@ import warp as wp
 
 import ordito as od
 import ordito.typing as odt
+from ordito.kernels import halfedge as kernel_halfedge
 from tests.conftest import MESHES, OPEN_MESHES
 from tests.conversions import flags_to_warp_bitmask, warp_empty
 
@@ -562,6 +563,106 @@ def test_vertex_one_rings_bucketed_walk_matches_the_sorted_walk(
     assert sorted_rings[0].size == mesh_wp.indices.size
     for bucketed_wp, sorted_wp in zip(bucketed_rings, sorted_rings, strict=True):
         assert np.array_equal(bucketed_wp.numpy(), sorted_wp.numpy())
+
+
+def _hub_faces(spokes: int, *, closed: bool, hub: int, first_spoke: int) -> np.ndarray:
+    """``(n, 3)`` faces of a fan of ``spokes`` spokes around vertex ``hub``, closed into a cone."""
+    spoke = np.arange(spokes if closed else spokes - 1)
+    return np.stack(
+        [np.full_like(spoke, hub), first_spoke + spoke, first_spoke + (spoke + 1) % spokes], axis=1
+    )
+
+
+def _hub_meshes() -> dict[str, tuple[np.ndarray, int]]:
+    """Fans whose hub ring reaches ``RING_LONG_FROM``, which a CUDA call ranks by block."""
+    spokes = kernel_halfedge.RING_LONG_FROM + 76
+    rng = np.random.default_rng(0)
+    cone = _hub_faces(spokes, closed=True, hub=0, first_spoke=1)
+    hubs = np.concatenate(
+        [
+            _hub_faces(spokes, closed=hub % 2 == 0, hub=hub, first_spoke=4 + hub * spokes)
+            for hub in range(4)
+        ]
+    )
+    return {
+        "cone": (cone, spokes + 1),
+        "open_fan": (_hub_faces(spokes, closed=False, hub=0, first_spoke=1), spokes + 1),
+        "four_hubs_one_block": (hubs, 4 + 4 * spokes),
+        "cone_scrambled": (np.roll(cone[rng.permutation(len(cone))], 1, axis=1), spokes + 1),
+    }
+
+
+def _one_rings_np(faces_np: np.ndarray, twins_np: np.ndarray, n_vertices: int) -> np.ndarray:
+    """Return every vertex's serial rotation ``h -> twins[prev(h)]``, as ``write_one_rings``."""
+    flat_np = faces_np.reshape(-1)
+    degrees_np = np.bincount(flat_np, minlength=n_vertices)
+    offsets_np = np.concatenate([[0], np.cumsum(degrees_np)])
+    ring_np = np.full(flat_np.size, -1, dtype=np.int64)
+    for vertex in range(n_vertices):
+        outgoing = np.flatnonzero(flat_np == vertex)
+        if outgoing.size == 0:
+            continue
+        boundary = outgoing[twins_np[outgoing] == -1]
+        start = int(boundary.min() if boundary.size else outgoing.min())
+        halfedge, count = start, 0
+        while count < degrees_np[vertex]:
+            ring_np[offsets_np[vertex] + count] = halfedge
+            count += 1
+            halfedge = int(twins_np[halfedge + 2 if halfedge % 3 == 0 else halfedge - 1])
+            if halfedge < 0 or halfedge == start:
+                break
+    return ring_np
+
+
+@pytest.mark.parametrize("mesh_name", ["cone", "open_fan", "four_hubs_one_block", "cone_scrambled"])
+def test_vertex_one_rings_long_rings_match_the_serial_walk(device: str, mesh_name: str) -> None:
+    """
+    Not a library comparison: the hub rings a CUDA call ranks by block, against the serial walk.
+
+    The ring order is ordito's own convention (``test_vertex_one_rings_are_rotationally_ordered``
+    checks it), so the oracle is a NumPy transcription of the one-thread rotation the CPU device
+    and every short ring still take. Each mesh has a ring of ``RING_LONG_FROM`` halfedges or more:
+    a lone closed or open hub, four hubs sharing one launch's list, and a hub whose halfedges are
+    numbered in no order (shuffled faces, rotated corners), with and without a supplied table.
+    """
+    faces_np, n_vertices = _hub_meshes()[mesh_name]
+    assert np.bincount(faces_np.reshape(-1)).max() >= kernel_halfedge.RING_LONG_FROM
+    faces_wp = wp.array(faces_np.reshape(-1).astype(np.int32), dtype=wp.int32, device=device)
+    twins_wp = od.halfedge.halfedge_twins(faces_wp, n_vertices=n_vertices)
+    ring_np = _one_rings_np(faces_np, twins_wp.numpy(), n_vertices)
+    for twins in (None, twins_wp):
+        ring_wp, _offsets, _boundary = od.halfedge.vertex_one_rings(
+            faces_wp, twins=twins, n_vertices=n_vertices
+        )
+        assert np.array_equal(ring_wp.numpy(), ring_np)
+
+
+def test_vertex_one_rings_long_pinched_ring_is_rejected(device: str) -> None:
+    """
+    Not a library comparison: a pinched hub past the long-ring threshold is still a pinch.
+
+    Two closed fans share hub 0, so its rotation closes after the first: under ``validate`` the
+    call raises, and without it the hub's row is the first fan followed by ``-1``, as the serial
+    walk writes it.
+    """
+    spokes = kernel_halfedge.RING_LONG_FROM + 76
+    faces_np = np.concatenate(
+        [
+            _hub_faces(spokes, closed=True, hub=0, first_spoke=1),
+            _hub_faces(spokes, closed=True, hub=0, first_spoke=1 + spokes),
+        ]
+    )
+    n_vertices = 1 + 2 * spokes
+    faces_wp = wp.array(faces_np.reshape(-1).astype(np.int32), dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match="pinch point"):
+        od.halfedge.vertex_one_rings(faces_wp, n_vertices=n_vertices)
+    ring_wp, offsets_wp, _boundary = od.halfedge.vertex_one_rings(
+        faces_wp, n_vertices=n_vertices, validate=False
+    )
+    twins_np = od.halfedge.halfedge_twins(faces_wp, n_vertices=n_vertices).numpy()
+    ring_np = _one_rings_np(faces_np, twins_np, n_vertices)
+    assert np.array_equal(ring_wp.numpy(), ring_np)
+    assert (ring_wp.numpy()[: offsets_wp.numpy()[1]] == -1).sum() == spokes  # the second fan
 
 
 def test_vertex_one_rings_isolated_vertex_is_empty(device: str) -> None:

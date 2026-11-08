@@ -1034,6 +1034,13 @@ Warp-typed values at Python scope are slow: `wp.int32` arithmetic, slices with W
   `curved_hessian_energy`'s became each face's 6x6 block written into the sorted keys' spent lower
   half and an entry summing its run (0.26-0.46x, no extra memory, no long-row special case).
   Look for the factorization the contributions share before tuning a row gather.
+- **A long linked walk in one thread ranks by rulers in a block** (2026-11-08,
+  `kernels/halfedge.rank_long_rings`): a hub's ring walked by one thread is a chain of dependent
+  loads as long as the ring (`fan_hub` 150x a uniform mesh). Rulers chosen by a hash of the node
+  (testable with no table), one segment walk a ruler, pointer jumping over the rulers and a second
+  walk writing give the serial order at 0.05x. More rulers pay only with an O(1) next-ruler
+  lookup (an open-addressing index in free slots); the walk stays in its own kernel so the plain
+  walk keeps its registers, and the ranking launches off a count the call reads back anyway.
 - **Rasterization:** one `atomic_min` owner pass per face, then one thread per pixel to resolve, beats a pre-filled image plus a per-face scatter 1.5-4.9x.
 - **Per-class compaction:** scan a one-hot `wp.vec{K}i` per item; the last entry holds all K counts (one read) and each item's in-class rank is the step from the previous entry. A compaction folds into its emit when the emit follows the size readback anyway. A `vec2i` scan of `(flag, count)` gives a compaction rank and CSR offsets with both totals in one read.
 - **`store_block_sum` / `store_block_total` count blocks from the partials buffer**, so two reductions of different widths share one launch at `dim = max(blocks)`. `0 + block_sum(x)` equals the one-block commit bit for bit, so "frame then reduce" fuses whenever `blocks_1d(n) == 1`.

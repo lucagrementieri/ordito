@@ -6,17 +6,20 @@ Two axes, and they measure different things:
 * **scale** -- ``halfedge_twins`` is a hash, a radix sort and a pair-up pass, so its cost is the
   pure ``N`` one and this axis is the whole story for it.
 * **valence** -- ``sphere_med`` against ``fan_hub``, with ``V`` and ``F`` pinned and the maximum
-  vertex valence going 6 -> 40 960. ``vertex_one_rings`` gives one thread the whole rotation around
-  one vertex, so the *widest* ring sets the launch's critical path however small the mesh is. This
-  is the group to watch: a 40 960-halfedge serial walk in a single thread is the shape that made
-  ``igl.principal_curvature`` take 110 s on this same mesh.
+  vertex valence going 6 -> 40 960. ``vertex_one_rings`` gives one thread the rotation around each
+  vertex, a linked walk of ``k`` dependent steps at a valence-``k`` hub, so the *widest* ring would
+  set the launch's critical path however small the mesh is: a 40 960-halfedge serial walk in a
+  single thread is the shape that made ``igl.principal_curvature`` take 110 s on this same mesh.
+  On CUDA a ring that long is ranked by a block instead (rulers, segment walks and pointer jumping,
+  ``kernels/halfedge.rank_long_rings``): ``fan_hub`` 0.054x its serial walk, about 4x
+  ``sphere_med``'s call (2026-11-08). This is the group to watch for that path; the CPU device
+  still walks.
 
 ``halfedge_twins`` sits on the suite's host-side floor over most of the scale axis, so that axis is
-reporting launch overhead until the largest mesh, while ``vertex_one_rings`` spreads by an order of
-magnitude on the valence axis at pinned ``V`` and ``F``. That spread is inherent rather than a
-defect: the rotation
-around a vertex is a linked walk, so a valence-``k`` hub is ``k`` dependent steps that no amount of
-parallelism removes. It is recorded here so a future change that makes it *worse* is visible.
+reporting launch overhead until the largest mesh, while ``vertex_one_rings`` still spreads on the
+valence axis at pinned ``V`` and ``F``: the block ranking a hub scans every halfedge for its
+rulers and walks segments of its ring, a floor a fixed share of a ring's length above a short
+ring's walk.
 
 ``vertex_one_rings_scale`` re-times the same walk with twins precomputed over uniform valence-6
 meshes, and is flat and launch-bound across a 64x face-count range. With the valence group that is

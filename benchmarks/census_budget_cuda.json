@@ -2292,10 +2292,10 @@
  },
  "benchmarks/test_halfedge.py::test_vertex_one_rings[fan_hub-ordito-cuda]": {
   "counts": {
-   "launch": 5,
+   "launch": 6,
    "alloc": 6,
    "memset": 2,
-   "d2h": 1,
+   "d2h": 2,
    "scan": 2
   }
  },
@@ -7637,10 +7637,10 @@
  },
  "benchmarks/test_tangent_space.py::test_halfedge_tangent_angles[fan_hub-ordito-cuda]": {
   "counts": {
-   "launch": 6,
+   "launch": 7,
    "alloc": 7,
    "memset": 3,
-   "d2h": 1,
+   "d2h": 2,
    "scan": 2
   }
  },

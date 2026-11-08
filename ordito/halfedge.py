@@ -47,6 +47,8 @@ _INFERRED_BOUND_FROM_HALFEDGES = 1 << 19
 # when the flag says so, the sort being cheaper there.
 _ROW_MATES_BELOW_HALFEDGES = 1 << 18
 _ROW_PAIRING_ON_CPU = False
+# ``vertex_one_rings``' long-ring list on a CUDA device: a count and ``RING_LONG_CAP`` rings.
+_RING_LONG_SLOTS = 1 + kernel_halfedge.RING_LONG_CAP
 
 
 def halfedge_twins(
@@ -366,7 +368,9 @@ def vertex_one_rings(
     # reads back once rather than once per table and again for the rings. The rejections are
     # raised in the order the contract lists them. The CSR offsets start zeroed too, so they follow
     # the counts in the same allocation (and the bucketed pairing's zeroed counters after them).
-    n_zeroed = 4 + n_vertices + 1
+    # Between them a CUDA call lists its long rings, slot 4 their count, for
+    # ``kernels/halfedge.rank_long_rings`` (``_defects_and_offsets``).
+    n_zeroed = 4 + n_vertices + 1 + (_RING_LONG_SLOTS if wp.get_device(device).is_cuda else 0)
     check_twins = not twins_given and validate
     if twins is None and n_halfedges > 0 and n_vertices > 0 and _buckets_on(faces):
         # The bucketed pairing bids every halfedge for its ring's walk start as it writes the twin,
@@ -374,75 +378,105 @@ def vertex_one_rings(
         # writes only the first two slots of the buffer, so it takes it whole.
         starts = _launch.full((2, n_vertices), INT32_MAX, dtype=wp.int32, device=device)
         twins, degrees, zeroed = _pair_bucketed_halfedges(faces, n_vertices, n_zeroed, starts)
-        defect_counts, offsets = _defects_and_offsets(zeroed)
-        rings = _walk_one_rings(faces, twins, n_vertices, defect_counts, offsets, (degrees, starts))
+        defect_counts, offsets, ring_counts = _defects_and_offsets(zeroed, n_vertices)
+        rings, starts = _walk_one_rings(
+            faces, twins, n_vertices, offsets, ring_counts, (degrees, starts)
+        )
     elif twins is None and n_halfedges > 0 and n_vertices > 0:
         # The sort path's pairing takes the ring degrees and walk-start bids in the same pass, the
         # degrees counted straight into the CSR offsets' zeroed tail.
         starts = _launch.full((2, n_vertices), INT32_MAX, dtype=wp.int32, device=device)
-        defect_counts, offsets = _defects_and_offsets(
-            _launch.zeros(n_zeroed, dtype=wp.int32, device=device)
+        defect_counts, offsets, ring_counts = _defects_and_offsets(
+            _launch.zeros(n_zeroed, dtype=wp.int32, device=device), n_vertices
         )
         degrees = _launch.view(offsets, 1, n_vertices + 1)
         twins = _pair_sorted_halfedges(faces, n_vertices, defect_counts, (degrees, starts))
-        rings = _walk_one_rings(faces, twins, n_vertices, defect_counts, offsets, (degrees, starts))
+        rings, starts = _walk_one_rings(
+            faces, twins, n_vertices, offsets, ring_counts, (degrees, starts)
+        )
     else:
         if twins is None:
             twins, zeroed = _pair_halfedges(faces, n_vertices, n_zeroed)
         else:
             zeroed = _launch.zeros(n_zeroed, dtype=wp.int32, device=device)
-        defect_counts, offsets = _defects_and_offsets(zeroed)
+        defect_counts, offsets, ring_counts = _defects_and_offsets(zeroed, n_vertices)
         if twins_given and n_halfedges > 0:
             # ``require_matching_twins``' structural half, read back with the rings' own counts.
             # The walk below reads a table that fails it only within bounds (``write_one_rings``),
             # and nothing it wrote is returned before the raise.
             _count_mispaired_twins(faces, twins, _launch.view(defect_counts, 3, 4))
-        rings = _walk_one_rings(faces, twins, n_vertices, defect_counts, offsets)
+        rings, starts = _walk_one_rings(faces, twins, n_vertices, offsets, ring_counts)
+    # A CUDA walk leaves its long rings listed, their count in slot 4 of the defect counts. The
+    # checks' readback takes it with them, so only a mesh with a long ring launches the ranking
+    # (and reads its pinch count again); a call reading nothing back launches it unconditionally.
+    rank_starts = starts if defect_counts.size > 4 else None
     if n_halfedges > 0 and (twins_given or validate):
-        counts_np = read_values(defect_counts, 0, 4)
+        counts_np = read_values(defect_counts, 0, defect_counts.size)
         _raise_mispaired_twins(int(counts_np[3]))
         if check_twins:
             _raise_twin_defects(counts_np)
         n_incomplete = int(counts_np[2])
+        if rank_starts is not None and int(counts_np[4]) > 0:
+            _rank_long_rings(faces, twins, rank_starts, offsets, rings[0], ring_counts)
+            # Readback: the ranked rings' pinches, on a mesh with a long ring alone.
+            n_incomplete = int(read_scalar(defect_counts, 2))
         if validate and n_incomplete > 0:
             raise ValueError(
                 f"vertex_one_rings requires a vertex-manifold mesh: {n_incomplete} vertex/vertices "
                 f"have more than one fan of faces (a pinch point)."
             )
+    elif rank_starts is not None:
+        _rank_long_rings(faces, twins, rank_starts, offsets, rings[0], ring_counts)
     if return_twins:
         return (*rings, twins)
     return rings
 
 
 def _defects_and_offsets(
-    zeroed: wp.array[wp.int32],
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
-    """``vertex_one_rings``' four defect counts and its CSR offsets, from their zeroed buffer."""
-    return _launch.view(zeroed, 0, 4), _launch.view(zeroed, 4, zeroed.size)
+    zeroed: wp.array[wp.int32], n_vertices: int
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    ``vertex_one_rings``' defect counts, CSR offsets and long-ring list, from their zeroed buffer.
+
+    The long-ring list (its count, then the vertices) follows the four counts, which only a CUDA
+    call allocates; there the counts' view takes the list's count as a fifth slot, so one readback
+    reads both. The walk's counts are a view from the pinch count to the offsets, so its kernels
+    take the pinch count and the list as one argument
+    (``kernels/halfedge.RING_INCOMPLETE``, ``RING_LISTED``).
+    """
+    start = zeroed.size - n_vertices - 1
+    defect_counts = _launch.view(zeroed, 0, min(start, 5))
+    ring_counts = _launch.view(zeroed, 2, start)
+    return defect_counts, _launch.view(zeroed, start, zeroed.size), ring_counts
 
 
 def _walk_one_rings(
     faces: wp.array[wp.int32],
     twins: wp.array[wp.int32],
     n_vertices: int,
-    defect_counts: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
+    ring_counts: wp.array[wp.int32],
     degrees_and_starts: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]]:
+) -> tuple[
+    tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]], wp.array[wp.int32] | None
+]:
     """
     ``vertex_one_rings``' CSR build into the zeroed ``(n_vertices + 1,)`` ``offsets``.
 
-    Pinched vertices are counted into slot 2 of ``defect_counts``. ``degrees_and_starts`` is the
+    Pinched vertices are counted into ``ring_counts`` (``_defects_and_offsets``), and on a CUDA
+    device every long ring is listed there and left for ``_rank_long_rings``, which reads the
+    walk-start candidates returned beside the rings (``None`` when nothing was walked).
+    ``degrees_and_starts`` is the
     ring sizes and the ``(2, n_vertices)`` walk-start candidates when the pairing already formed
     them (``pair_bucketed_halfedges_and_ring_starts``, ``pair_sorted_halfedges_and_ring_starts``);
     ``None`` forms them here in one pass over ``twins``.
     """
     device = faces.device
     n_halfedges = faces.size // 3 * 3
-    out_incomplete = _launch.view(defect_counts, 2, 3)
     if n_halfedges == 0 or n_vertices == 0:
         ring_halfedges = _launch.full(n_halfedges, -1, dtype=wp.int32, device=device)
-        return ring_halfedges, offsets, _launch.zeros(n_vertices, dtype=wp.bool, device=device)
+        is_boundary = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
+        return (ring_halfedges, offsets, is_boundary), None
     # Every slot lies in one vertex's row, which the walk writes whole -- the halfedges it reached,
     # then ``-1`` where a pinched vertex's walk closed early -- so the buffer needs no fill.
     ring_halfedges = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
@@ -477,10 +511,30 @@ def _walk_one_rings(
     _launch.launch(
         kernel_halfedge.write_one_rings,
         dim=n_vertices,
-        inputs=[candidate_starts, twins, offsets, ring_halfedges, is_boundary, out_incomplete],
+        inputs=[candidate_starts, twins, offsets],
+        outputs=[ring_halfedges, is_boundary, ring_counts],
         device=device,
     )
-    return ring_halfedges, offsets, is_boundary
+    return (ring_halfedges, offsets, is_boundary), candidate_starts
+
+
+def _rank_long_rings(
+    faces: wp.array[wp.int32],
+    twins: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    ring_halfedges: wp.array[wp.int32],
+    ring_counts: wp.array[wp.int32],
+) -> None:
+    """Rank the rings ``_walk_one_rings`` listed in ``ring_counts``, a block a ring."""
+    _launch.launch_tiled(
+        kernel_halfedge.rank_long_rings,
+        dim=kernel_halfedge.RING_RANK_BLOCKS,
+        inputs=[starts, twins, faces, offsets],
+        outputs=[ring_halfedges, ring_counts],
+        device=faces.device,
+        block_dim=kernel_halfedge.RING_RANK_LANES,
+    )
 
 
 @overload

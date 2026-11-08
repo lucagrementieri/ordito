@@ -19,7 +19,8 @@ already imported from here.
 import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT
-from ordito.kernels.array import launched_set_bit, pack_edge_key
+from ordito.kernels.array import device_is_cpu, launched_set_bit, pack_edge_key
+from ordito.kernels.reduce import block_barrier, block_sum
 
 wp.set_module_options({"enable_backward": False})
 
@@ -697,6 +698,103 @@ def ring_degrees_and_starts(
     record_ring_degree_and_start(faces, h, twins[h], out_degrees, out_starts)
 
 
+@wp.func
+def ring_walk_start(starts: wp.array2d[wp.int32], v: wp.int32) -> tuple[wp.int32, wp.bool]:
+    # ``starts`` is ``record_ring_start``'s two candidate rows, resolved at vertex ``v``: the walk
+    # start (``-1`` for an isolated vertex) and whether ``v`` is on the boundary. Prefer the
+    # boundary halfedge; ``INT32_MAX`` means "no candidate of this kind". A vertex lies on the
+    # boundary exactly when an outgoing halfedge has no twin, which is the same comparison.
+    boundary_start = starts[1, v]
+    interior_start = starts[0, v]
+    on_boundary = boundary_start != INT32_MAX_CONSTANT
+    start = wp.int32(-1)
+    if on_boundary:
+        start = boundary_start
+    elif interior_start != INT32_MAX_CONSTANT:
+        start = interior_start
+    return start, on_boundary
+
+
+@wp.func
+def ring_successor(twins: wp.array[wp.int32], h: wp.int32) -> wp.int32:
+    # The outgoing halfedge after ``h`` counter-clockwise around its origin, ``twin(prev(h))``,
+    # which steps from edge ``v->a`` to edge ``v->b`` within the CCW-oriented face ``(v, a, b)``;
+    # ``-1`` where the fan ends. A boundary (``-1``) ends it, and so does any other entry outside
+    # the halfedges: only a caller-supplied table that ``count_mispaired_twins`` rejects in the same
+    # call holds one, and the range test keeps a walk over it from reading past ``twins``.
+    nxt = twins[halfedge_prev(h)]
+    if nxt < wp.int32(0) or nxt >= twins.shape[0]:
+        return wp.int32(-1)
+    return nxt
+
+
+@wp.func
+def walk_one_ring(
+    twins: wp.array[wp.int32],
+    start: wp.int32,
+    begin: wp.int32,
+    degree: wp.int32,
+    out_halfedges: wp.array[wp.int32],
+) -> wp.int32:
+    # The serial rotation from ``start``, written into the row at ``begin`` and bounded by the
+    # vertex's known ring size, so a pinched (vertex-non-manifold) vertex -- where the rotation
+    # closes early on one of its fans -- is reported instead of silently truncated. Returns the
+    # number of halfedges written. The loop keeps its own range test rather than reading
+    # ``ring_successor``'s ``-1``: through it the CPU walk cost 1.22x (2026-11-08).
+    count = wp.int32(0)
+    h = start
+    while h != wp.int32(-1) and count < degree:
+        out_halfedges[begin + count] = h
+        count += wp.int32(1)
+        nxt = twins[halfedge_prev(h)]
+        if nxt < wp.int32(0) or nxt >= twins.shape[0] or nxt == start:
+            break
+        h = nxt
+    return count
+
+
+@wp.func
+def close_one_ring(
+    begin: wp.int32,
+    count: wp.int32,
+    degree: wp.int32,
+    first: wp.int32,
+    stride: wp.int32,
+    out_halfedges: wp.array[wp.int32],
+):
+    # The slots a closed-early walk left in its row, marked ``-1`` by lanes ``first``, ``first +
+    # stride``, ...: the row is the vertex's alone, so no fill of the whole buffer beforehand.
+    for j in range(begin + count + first, begin + degree, stride):
+        out_halfedges[j] = wp.int32(-1)
+
+
+# Ring size from which a CUDA ``write_one_rings`` leaves a vertex's ring to ``rank_long_rings``,
+# and the shift that raises it with the mesh: the ranking block scans every halfedge for the ring's
+# rulers (a halfedge of that scan on one block costs about 1/500 of a serial walk's step), which
+# pays only from a ring that long against the mesh. The shift also bounds how many rings are long:
+# at most ``2**RING_LONG_SCAN_SHIFT``, the list ``RING_LONG_CAP`` holds.
+RING_LONG_FROM = 1024
+RING_LONG_SCAN_SHIFT = 8
+RING_LONG_CAP = 1 << RING_LONG_SCAN_SHIFT
+# Lanes a block of ``rank_long_rings`` ranks one ring with, and the blocks of its launch, each
+# taking the listed rings in turn.
+RING_RANK_LANES = 256
+RING_RANK_BLOCKS = 64
+# Slots of the ring counts both kernels share (``halfedge._defects_and_offsets``): the pinched
+# vertices, then the listed long rings' count and, from the next slot, the rings themselves.
+RING_INCOMPLETE = 0
+RING_LISTED = 2
+
+
+@wp.func
+def ring_long_from(n_halfedges: wp.int32) -> wp.int32:
+    # The ring size from which ``write_one_rings`` lists a ring for ``rank_long_rings`` (CUDA), or
+    # one no ring reaches on the CPU device, whose single lane walks every ring in turn anyway.
+    if device_is_cpu() != 0:
+        return INT32_MAX_CONSTANT
+    return wp.max(RING_LONG_FROM, n_halfedges >> RING_LONG_SCAN_SHIFT)
+
+
 @wp.kernel
 def write_one_rings(
     starts: wp.array2d[wp.int32],
@@ -704,47 +802,271 @@ def write_one_rings(
     offsets: wp.array[wp.int32],
     out_halfedges: wp.array[wp.int32],
     out_is_boundary: wp.array[wp.bool],
-    out_incomplete: wp.array[wp.int32],
+    out_ring_counts: wp.array[wp.int32],
 ) -> None:
-    # Rotate counter-clockwise through the outgoing halfedges at one vertex: ``h -> twin(prev(h))``
-    # steps from edge ``v->a`` to edge ``v->b`` within the CCW-oriented face ``(v, a, b)``. The walk
-    # is bounded by the vertex's known ring size, so a pinched (vertex-non-manifold) vertex — where
-    # the rotation closes early on one of its fans — is reported instead of silently truncated.
+    # One thread per vertex: its ring (``walk_one_ring`` from ``ring_walk_start``) into its row of
+    # the CSR, and its boundary flag, written here for every vertex, isolated ones included, rather
+    # than by a pass of its own over the same candidates.
     #
-    # ``starts`` is ``record_ring_start``'s two candidate rows, resolved at this thread's own
-    # vertex. Start: prefer the boundary halfedge; ``INT32_MAX`` means "no candidate of this kind".
-    # Boundary: a vertex lies on one exactly when an outgoing halfedge has no twin, which is the
-    # same comparison -- so ``out_is_boundary`` is written here, for every vertex, isolated ones
-    # included, rather than by a pass of its own over the same row.
+    # Pinched vertices are counted into ``out_ring_counts[RING_INCOMPLETE]``. A ring of
+    # ``ring_long_from`` halfedges or more is listed there (``RING_LISTED``, zeroed) for
+    # ``rank_long_rings`` instead: one thread walking a hub's fan is a chain of dependent loads as
+    # long as the fan, which held the launch at 150x ``sphere_med``'s on ``fan_hub``'s two
+    # 40 960-spoke hubs. The list lives outside this kernel so the plain walk keeps its registers
+    # (64 against 40 with the ranking inlined, which cost ordinary meshes up to 1.12x).
     v = wp.int32(wp.tid())
-    boundary_start = starts[1, v]
-    interior_start = starts[0, v]
-    on_boundary = boundary_start != INT32_MAX_CONSTANT
+    start, on_boundary = ring_walk_start(starts, v)
     out_is_boundary[v] = on_boundary
-    start = wp.int32(-1)
-    if on_boundary:
-        start = boundary_start
-    elif interior_start != INT32_MAX_CONSTANT:
-        start = interior_start
     if start == wp.int32(-1):
         return
     begin = offsets[v]
     degree = offsets[v + 1] - begin
-    count = wp.int32(0)
-    h = start
-    while h != wp.int32(-1) and count < degree:
-        out_halfedges[begin + count] = h
-        count += wp.int32(1)
-        nxt = twins[halfedge_prev(h)]
-        # A boundary (``-1``) ends the fan. So does any other entry outside the halfedges: only a
-        # caller-supplied table that ``count_mispaired_twins`` rejects in the same call holds one,
-        # and the range test keeps the walk over it from reading past ``twins``.
-        if nxt < wp.int32(0) or nxt >= twins.shape[0] or nxt == start:
-            break
-        h = nxt
+    if degree >= ring_long_from(twins.shape[0]):
+        out_ring_counts[RING_LISTED + 1 + wp.atomic_add(out_ring_counts, RING_LISTED, 1)] = v
+        return
+    count = walk_one_ring(twins, start, begin, degree, out_halfedges)
     if count != degree:
-        wp.atomic_add(out_incomplete, 0, 1)
-        # The row is this thread's alone, so the slots a closed-early walk left are marked ``-1``
-        # here rather than by a fill of the whole buffer beforehand.
-        for j in range(begin + count, begin + degree):
-            out_halfedges[j] = wp.int32(-1)
+        wp.atomic_add(out_ring_counts, RING_INCOMPLETE, 1)
+        close_one_ring(begin, count, degree, 0, 1, out_halfedges)
+
+
+# Rulers a lane stages across ``rank_long_ring``'s barriers, and the count the ruler spacing aims
+# at (under the cap a block of ``RING_RANK_LANES`` lanes stages, by a margin the hash's spread never
+# crosses in practice; a ring that does takes the serial walk). More rulers make shorter segments:
+# on ``fan_hub`` a target of 2 560 ranked 0.75x the time of 1 024 (both hubs, 2026-11-08).
+RING_RULERS_PER_LANE = 16
+RING_RULER_TARGET = 2560
+_vec_rulers = wp.types.vector(length=RING_RULERS_PER_LANE, dtype=wp.int32)
+# Corners a lane of ``append_ring_rulers``' scan loads at once.
+RING_SCAN_UNROLL = 8
+_vec_scan = wp.types.vector(length=RING_SCAN_UNROLL, dtype=wp.int32)
+# Knuth's multiplicative (Fibonacci) hash constant, ``2**32`` over the golden ratio.
+RING_RULER_HASH = wp.uint32(2654435761)
+
+
+@wp.func
+def ring_ruler_shift(degree: wp.int32) -> wp.int32:
+    # ``log2`` of the ruler spacing of a long ring of ``degree`` halfedges: the least shift of at
+    # least 4 (so the rulers' tables fit the row) leaving at most ``RING_RULER_TARGET``.
+    shift = wp.int32(4)
+    while (degree >> shift) > RING_RULER_TARGET:
+        shift += 1
+    return shift
+
+
+@wp.func
+def is_ring_ruler(h: wp.int32, shift: wp.int32) -> wp.bool:
+    # Whether halfedge ``h`` is a ruler at spacing ``2**shift``: the top ``shift`` bits of its
+    # Fibonacci hash clear. A property of ``h`` alone, so a walk tests it with no table, and the
+    # hash spreads a hub's halfedges however they are numbered (every other face, one corner).
+    return (wp.uint32(h) * RING_RULER_HASH) >> wp.uint32(32 - shift) == wp.uint32(0)
+
+
+@wp.func
+def ring_ruler_slot(h: wp.int32, shift: wp.int32, table_bits: wp.int32) -> wp.int32:
+    # Ruler ``h``'s home slot in ``rank_long_ring``'s index table of ``2**table_bits`` slots: the
+    # ``table_bits`` bits of its hash below the ``shift`` that are zero on every ruler.
+    x = (wp.uint32(h) * RING_RULER_HASH) << wp.uint32(shift)
+    return wp.int32(x >> wp.uint32(32 - table_bits))
+
+
+@wp.func
+def rank_long_ring(
+    twins: wp.array[wp.int32],
+    start: wp.int32,
+    begin: wp.int32,
+    degree: wp.int32,
+    lane: wp.int32,
+    out_halfedges: wp.array[wp.int32],
+) -> wp.int32:
+    # ``walk_one_ring`` by the whole block (every lane must call it), for a ring the serial walk
+    # would take ``degree`` dependent loads over: list ranking by rulers. The row arrives holding
+    # its rulers (``start`` first, then every ``is_ring_ruler`` halfedge of the vertex, appended by
+    # ``append_ring_rulers``) and their count in its last slot. Each lane walks from its rulers
+    # to the next ruler, which partitions the fan into segments; pointer jumping over the rulers
+    # sums the segment lengths into each ruler's distance from the fan's last one; and each lane
+    # walks its segments again, writing them at ``total - distance``. A ruler off ``start``'s fan
+    # (a pinched vertex) ends at another last ruler and writes nothing. The row's slots past the
+    # rulers hold their tables, which a lane copies out (its rulers' halfedge and slot) before the
+    # write overwrites them. Returns the halfedges written, the serial walk's count; the slots past
+    # it are ``close_one_ring``'s.
+    #
+    # Declined on ``fan_hub`` (2026-11-08): the rulers' tables in eight-wide register vectors with
+    # unrolled loops (168 registers; each walk 2.2x a dynamic loop's), a lane stepping its segments
+    # together rather than in turn (1.11x), and finding each next ruler by a pass over the ruler
+    # list rather than the index table (quadratic: 3.2x at 2 560 rulers).
+    lanes = wp.block_dim()
+    shift = ring_ruler_shift(degree)
+    count = out_halfedges[begin + degree - 1]
+    # The index table holds at most half its slots, a power of two.
+    table_bits = wp.int32(1)
+    while (1 << table_bits) < 2 * count:
+        table_bits += 1
+    table_size = 1 << table_bits
+    table_at = begin + 5 * count
+    if count > RING_RULERS_PER_LANE * lanes or 5 * count + table_size >= degree:
+        # A hash spread past the copies a lane holds (or the row): the serial walk, by one lane.
+        written = wp.int32(0)
+        block_barrier()
+        if lane == 0:
+            written = walk_one_ring(twins, start, begin, degree, out_halfedges)
+        return block_sum(written)
+    next_at = begin + count
+    ptr_at = next_at + count
+    sum_at = ptr_at + count
+    last_at = sum_at + count
+    # Walk each ruler's segment: up to the next ruler, ``start`` (the fan closes) or the end; the
+    # next ruler is stored as a halfedge until the search below turns it into an index.
+    for k in range(lane, count, lanes):
+        length = wp.int32(1)
+        g = ring_successor(twins, out_halfedges[begin + k])
+        while g >= 0 and g != start and not is_ring_ruler(g, shift) and length < degree:
+            length += 1
+            g = ring_successor(twins, g)
+        out_halfedges[next_at + k] = wp.where(g == start, wp.int32(-1), g)
+        out_halfedges[sum_at + k] = length
+        out_halfedges[last_at + k] = k
+    block_barrier()
+    # Each next ruler's index, through a table of the ruler indices in the row's free slots past
+    # the four tables, open addressing on the hash bits below the ruler bits (a halfedge no ruler
+    # holds ends the chain).
+    for i in range(lane, table_size, lanes):
+        out_halfedges[table_at + i] = wp.int32(-1)
+    block_barrier()
+    for k in range(lane, count, lanes):
+        slot = ring_ruler_slot(out_halfedges[begin + k], shift, table_bits)
+        while wp.atomic_cas(out_halfedges, table_at + slot, wp.int32(-1), k) != wp.int32(-1):
+            slot = (slot + 1) & (table_size - 1)
+    block_barrier()
+    for k in range(lane, count, lanes):
+        target = out_halfedges[next_at + k]
+        index = wp.int32(-1)
+        if target >= 0:
+            slot = ring_ruler_slot(target, shift, table_bits)
+            entry = out_halfedges[table_at + slot]
+            while entry >= 0:
+                if out_halfedges[begin + entry] == target:
+                    index = entry
+                    break
+                slot = (slot + 1) & (table_size - 1)
+                entry = out_halfedges[table_at + slot]
+        out_halfedges[ptr_at + k] = index
+    block_barrier()
+    # Pointer jumping: every round doubles the rulers each one has summed past, until all reach
+    # the last ruler of their fan. A round reads every neighbour before any lane writes.
+    staged_sums = _vec_rulers()
+    staged_lasts = _vec_rulers()
+    staged_ptrs = _vec_rulers()
+    reach = wp.int32(1)
+    while reach < count:
+        j = wp.int32(0)
+        for k in range(lane, count, lanes):
+            p = out_halfedges[ptr_at + k]
+            staged_ptrs[j] = p
+            staged_sums[j] = out_halfedges[sum_at + k]
+            staged_lasts[j] = out_halfedges[last_at + k]
+            if p >= 0:
+                staged_sums[j] = staged_sums[j] + out_halfedges[sum_at + p]
+                staged_lasts[j] = out_halfedges[last_at + p]
+                staged_ptrs[j] = out_halfedges[ptr_at + p]
+            j += 1
+        block_barrier()
+        j = wp.int32(0)
+        for k in range(lane, count, lanes):
+            out_halfedges[ptr_at + k] = staged_ptrs[j]
+            out_halfedges[sum_at + k] = staged_sums[j]
+            out_halfedges[last_at + k] = staged_lasts[j]
+            j += 1
+        block_barrier()
+        reach *= 2
+    # ``start`` is ruler 0, so its distance is the fan's length and its last ruler the fan's. A
+    # lane copies its on-fan rulers' halfedge and first slot out of the row before any writes.
+    total = wp.min(out_halfedges[sum_at], degree)
+    fan_last = out_halfedges[last_at]
+    j = wp.int32(0)
+    for k in range(lane, count, lanes):
+        staged_ptrs[j] = out_halfedges[begin + k]
+        staged_sums[j] = wp.int32(-1)
+        if out_halfedges[last_at + k] == fan_last:
+            staged_sums[j] = total - out_halfedges[sum_at + k]
+        j += 1
+    block_barrier()
+    # Each segment written from its slot up to the next ruler, the walk the measure took.
+    for jj in range(j):
+        slot = staged_sums[jj]
+        if slot >= 0:
+            g = staged_ptrs[jj]
+            while slot < total:
+                out_halfedges[begin + slot] = g
+                slot += 1
+                g = ring_successor(twins, g)
+                if g < 0 or g == start or is_ring_ruler(g, shift):
+                    break
+    return total
+
+
+@wp.func
+def append_ring_rulers(
+    faces: wp.array[wp.int32],
+    v: wp.int32,
+    start: wp.int32,
+    begin: wp.int32,
+    degree: wp.int32,
+    lane: wp.int32,
+    out_halfedges: wp.array[wp.int32],
+):
+    # Vertex ``v``'s rulers (``is_ring_ruler``, ``start`` excluded) appended to its row after
+    # ``start``, their count kept in the row's last slot, by one scan of the halfedges by the whole
+    # block (every lane must call it). A lane loads ``RING_SCAN_UNROLL`` corners before testing
+    # any, so its loads overlap rather than each waiting on the last. A plain atomic append:
+    # ``array.append_slot`` cost the scan 1.06x and the branch-free ``append_slot_if`` 1.32x on
+    # ``fan_hub`` (2026-11-08), the rulers too sparse in a warp for its lanes to share one.
+    lanes = wp.block_dim()
+    if lane == 0:
+        out_halfedges[begin] = start
+        out_halfedges[begin + degree - 1] = wp.int32(1)
+    block_barrier()
+    shift = ring_ruler_shift(degree)
+    cursor = begin + degree - 1
+    n_halfedges = faces.shape[0] // 3 * 3
+    origins = _vec_scan()
+    for chunk in range(0, n_halfedges, lanes * RING_SCAN_UNROLL):
+        for u in range(RING_SCAN_UNROLL):
+            h = chunk + u * lanes + lane
+            origins[u] = wp.int32(-1)
+            if h < n_halfedges:
+                origins[u] = faces[h]
+        for u in range(RING_SCAN_UNROLL):
+            h = chunk + u * lanes + lane
+            if origins[u] == v and h != start and is_ring_ruler(h, shift):
+                slot = wp.atomic_add(out_halfedges, cursor, 1)
+                if slot < degree - 1:
+                    out_halfedges[begin + slot] = h
+    block_barrier()
+
+
+@wp.kernel
+def rank_long_rings(
+    starts: wp.array2d[wp.int32],
+    twins: wp.array[wp.int32],
+    faces: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    out_halfedges: wp.array[wp.int32],
+    out_ring_counts: wp.array[wp.int32],
+) -> None:
+    # The rings ``write_one_rings`` listed, a block a ring (``rank_long_ring`` over the rulers
+    # ``append_ring_rulers`` finds), so a call's long rings rank side by side. A launch over an
+    # empty list returns at once. CUDA only: the CPU device lists no ring.
+    blk, lane = wp.tid()
+    lanes = wp.block_dim()
+    for i in range(blk, out_ring_counts[RING_LISTED], RING_RANK_BLOCKS):
+        v = out_ring_counts[RING_LISTED + 1 + i]
+        start, _on_boundary = ring_walk_start(starts, v)
+        begin = offsets[v]
+        degree = offsets[v + 1] - begin
+        append_ring_rulers(faces, v, start, begin, degree, lane, out_halfedges)
+        count = rank_long_ring(twins, start, begin, degree, lane, out_halfedges)
+        if count != degree:
+            if lane == 0:
+                wp.atomic_add(out_ring_counts, RING_INCOMPLETE, 1)
+            close_one_ring(begin, count, degree, lane, lanes, out_halfedges)
