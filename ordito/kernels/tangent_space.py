@@ -421,6 +421,14 @@ def vertex_tangent_frames_gathered(
     # zeroed accumulator and a launch; the same walk totals the corner angles the frame's scale
     # reads, which the caller-normal kernel walks for alone. The normal written is
     # ``vertex_normals``' up to the order its ``float64`` sum is taken in.
+    #
+    # A hub's ring stays one thread's walk here (``fan_hub`` ~2 850x ``sphere_med``'s kernel).
+    # ``tangent_angle_rows``' block deferral was built for both frame kernels (2026-11-08):
+    # byte-identical elsewhere, the hub 0.016-0.018x and 450x nearer a ``float64`` frame, but the
+    # inlined block path alone cost ordinary meshes 1.11-1.23x, wherever the block's decision was
+    # taken (a reduction after or before the walks, a barrier-free warp vote) and under a
+    # 56-register cap; packing its sums into vectors cost 1.2-1.7x. Only removing the block code
+    # restored par.
     v = wp.int32(wp.tid())
     sums, total = gathered_angle_weighted_sums(vertices, faces, ring_offsets, ring_halfedges, v)
     normal = normalized_narrowed(sums[0], sums[1], sums[2])

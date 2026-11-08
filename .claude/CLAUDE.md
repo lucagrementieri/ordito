@@ -1123,10 +1123,13 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   lucy (2026-11-06), the union-find the rest. Not re-examined in the adjacency sweep, which took
   the union-find side only; the lower-degree owner is a hub-balancing choice to keep.
 - **Hub rings outside `vertex_one_rings` (2026-11-08 halfedge sweep):**
-  `tangent_space.vertex_tangent_frames_gathered` walks each ring in one thread (total angle, then
-  the fan anchor's trigonometry), ~2 850x `sphere_med`'s kernel on `fan_hub`. The tangent angles
-  took the deferral (`kernels/tangent_space.tangent_angle_rows`: a long ring's block, chunked
-  `float64` sums); the frames' walk can take the same shape.
+  `tangent_space.vertex_tangent_frames_gathered` / `vertex_tangent_frames` walk each ring in one
+  thread, ~2 850x `sphere_med`'s kernel on `fan_hub`. The tangent angles' block deferral
+  (`tangent_angle_rows`) ports to them (hub 0.016-0.018x) but its inlined code costs the ordinary
+  walk 1.11-1.23x however the decision is taken (declines at `vertex_tangent_frames_gathered`).
+  Open: a separate long-ring kernel launched only when the caller knows a long ring exists (the
+  count `vertex_one_rings` already reads back, carried with the rings), or a frame walk whose
+  per-lane and block forms are one code path.
 - **`rank_long_rings`' floor:** each long ring's block scans every halfedge for its rulers (one
   SM's bandwidth, a third of the ranking on `fan_hub`). A pairing pass that already reads every
   halfedge with the degrees known (the bucketed path) could append the rulers instead; price the
