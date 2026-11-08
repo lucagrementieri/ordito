@@ -1126,16 +1126,8 @@ what is still open. Re-measure before acting on any of it, and delete an item wh
   indices, which are no patches there. `geodesic_walk`'s shortest-edge tree took the same rounds
   over a Hilbert order (`_common.hilbert_point_order`) and won at every size (0.34-0.65x, §14).
   The envelope takes a CSR without positions, so a caller with geometry (`geodesic_path`'s
-  completion) would pass the order in; untried.
-- **`graph` sweep leftovers (2026-11-08):** `shortest_path_envelope` on CUDA is still a pass a
-  graph hop (668 on `dragon`, 2.3 s on `lucy` from one source); a near-far or delta-stepping
-  frontier is the open algorithm (a block-local fixpoint was priced and declined at the kernel).
-  `kernels/scatter.claim_row_slot` (the counted offsets' buffer as the fill's cursor) has three
-  cursor-down fills left outside the sweep's scope: `adjacency`'s `scatter_vertex_faces` path,
-  `remesh`'s topology rebuild and `smoothing.fill_edge_topology`, each an allocation and a memset
-  a call to price. `benchmarks/test_graph.py::test_successor_cycles_from_table` hands the ranking
-  shuffled tails (1.15 ms against `successor_cycles`' 0.16 ms on `sphere_large`), which no caller
-  does: the boundary walks emit theirs in key order.
+  completion) would pass the order in; untried. The frontier forms are priced and declined at
+  `kernels/graph.shortest_path_envelope_pass` (push rounds 1.4-1.7x, near-far 1.3-3.8x).
 - **Class C pairs an option could make Class A**, each by porting the reference's algorithm:
   `offset_mesh` against pymeshlab's and MeshLib's `offsetMesh` (its OpenVDB narrow-band sign;
   `resample_uniform` already has `method="igl"`, `"meshlib"` and `"meshlab"`;

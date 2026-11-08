@@ -237,6 +237,16 @@ def shortest_path_envelope_pass(
     # rounds each move a few nodes while it holds its SM (2026-11-08). Two rounds: 0.51x ``lucy``,
     # 0.75x ``dragon``, 1.03-1.14x on icospheres.
     #
+    # Declined, the rounds after a first full pass pushing from a frontier, the nodes the last
+    # round lowered (``atomic_min``, listed once a round by a round stamp, a fixed grid striding
+    # over a ping-pong list): the rounds equal these passes (667 / 668 on ``dragon``), but on
+    # Euclidean weights each round re-lowers a tenth of the graph (31.8 M pushes for 437 k nodes,
+    # fronts of 47 k), so a scattered atomic round cost 1.4-1.7x a coalesced pull (0.81x only on
+    # a scrambled ``dragon``). Near-far on top (push only within ``c`` times the largest edge
+    # weight above the front's least label, carry the rest) multiplied the rounds instead:
+    # 1.3-3.8x for ``c`` in 0.5-4, 0.67-0.88x on the scrambled ``dragon`` (2026-11-08). Both were
+    # byte-identical to these passes.
+    #
     # ``out_state`` is the shared round-loop word of ``kernels/array.py``; raising
     # ``LOOP_PROGRESS`` is this pass's "something moved", which the closing ``array.loop_advance``
     # turns into the next round's condition and clears. A plain store, not an atomic: the slot only
